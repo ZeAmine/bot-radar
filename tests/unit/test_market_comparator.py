@@ -139,6 +139,21 @@ def test_comparator_with_historical_low_1y():
     assert "Derniere MAJ :" in card
 
 
+def test_comparator_historical_low_when_status_unavailable():
+    # Même si l'offre en direct est indisponible aujourd'hui, le plus bas historique 1 an sert de référence
+    book = create_book_with_cache(
+        status=ComparisonStatus.UNAVAILABLE,
+        lowest_delivered_cents=None,
+        historical_low_1y_cents=1850,
+    )
+    listing = create_listing(estimated_total_cents=1369)
+
+    summary = MarketPriceService.get_comparison_summary(listing, book)
+    assert summary is not None
+    assert "📉 Occasion : 18,50 €" in summary
+    assert "✅ Écart : -4,81 €" in summary
+
+
 def test_comparator_excludes_brand_new_and_inferior_conditions():
     """Vérifie l'exclusion des offres Neuf, Bon, Correct et le plafonnement aux 5 meilleures offres."""
     book = create_book_with_cache(lowest_delivered_cents=869)

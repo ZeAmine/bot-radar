@@ -273,6 +273,16 @@ class TomeExtractor:
                 if 2 <= count <= 30:
                     return TomeMatchResult(is_lot=True, lot_count=count, confidence="high")
 
+            # C bis. Nombre explicite de tomes/volumes (ex: '(3 volumes)', '3 tomes')
+            vol_count_match = re.search(
+                r"(?:\b(?:lot\s*(?:de)?\s*)?|[(\[])([0-9]{1,2})\s*(?:volumes?|vols?|tomes?|bd|livres?)\b(?!\s*(?:€|eur|euros?|ct|cts|%))",
+                text,
+            )
+            if vol_count_match:
+                count = int(vol_count_match.group(1))
+                if 2 <= count <= 30:
+                    return TomeMatchResult(is_lot=True, lot_count=count, confidence="high")
+
             # D. Mot-clé générique de lot
             for kw in cls.LOT_KEYWORDS:
                 if re.search(rf"\b{re.escape(kw)}\b", text):

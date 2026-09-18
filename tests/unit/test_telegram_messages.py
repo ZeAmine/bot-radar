@@ -37,8 +37,8 @@ def test_telegram_caption_bd_without_market_price():
 
     assert "🆕 <b>Blacksad — Intégrale</b>" in caption
     assert "💎 Très bon état" in caption
-    assert "💰 Prix : 9,00 € | 13,69 € (TTC)" in caption
-    assert "📉 Occasion : indisponible" in caption
+    assert "💵 9,00 € | 13,69 € (TTC)" in caption
+    assert "Occasion :" not in caption
 
 
 def test_telegram_caption_bd_with_market_price_and_keywords():
@@ -52,7 +52,7 @@ def test_telegram_caption_bd_with_market_price_and_keywords():
 
     assert "🆕 <b>Blacksad — Intégrale</b>" in caption
     assert "💎 Très bon état" in caption
-    assert "💰 Prix : 9,00 € | 13,69 € (TTC)" in caption
+    assert "💵 9,00 € | 13,69 € (TTC)" in caption
     assert "📉 Occasion : 22,00 € livré" in caption
     assert "✅ Écart : -8,31 €" in caption
     assert "🔍 Mots-clés : blacksad, intégrale" in caption
@@ -69,7 +69,7 @@ def test_telegram_caption_clothes():
 
     assert "🆕 <b>Veste Carhartt Detroit</b>" in caption
     assert "💎 Très bon état" in caption
-    assert "💰 Prix : 45,00 € | 51,00 € (TTC)" in caption
+    assert "💵 45,00 € | 51,00 € (TTC)" in caption
     # Jamais de prix marché pour les vêtements
     assert "Occasion :" not in caption
 
@@ -86,7 +86,7 @@ def test_telegram_caption_tech():
 
     assert "🆕 <b>Logitech MX Master 3S</b>" in caption
     assert "💎 Très bon état" in caption
-    assert "💰 Prix : 60,00 € | 66,58 € (TTC)" in caption
+    assert "💵 60,00 € | 66,58 € (TTC)" in caption
     assert "Occasion :" not in caption
 
 

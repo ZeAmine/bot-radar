@@ -48,12 +48,9 @@ def build_listing_caption(
         price_line,
     ])
 
-    if market_comparison_line:
+    if market_comparison_line and market_comparison_line != "📉 Occasion : indisponible":
         lines.append("")
         lines.append(market_comparison_line)
-    elif listing.category_slug == CategorySlug.BD_COMICS.value:
-        lines.append("")
-        lines.append("📉 Occasion : indisponible")
 
     if alert_keywords:
         keywords_str = ", ".join(html.escape(kw) for kw in alert_keywords)

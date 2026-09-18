@@ -122,12 +122,14 @@ class MarketPriceService:
         # 1. Cas d'un livre précis résolu (tome unique ou one-shot)
         if book and book.market_cache:
             cache = book.market_cache
-            # Vérification de validité du cache
-            if (
+            is_live_valid = (
                 cache.comparison_status == ComparisonStatus.AVAILABLE
-                and (cache.historical_low_1y_cents is not None or cache.lowest_delivered_price_cents is not None)
+                and cache.lowest_delivered_price_cents is not None
                 and (cache.expires_at is None or cache.expires_at >= now)
-            ):
+            )
+            has_hist_low = cache.historical_low_1y_cents is not None
+
+            if is_live_valid or has_hist_low:
                 # Priorité absolue au minimum historique sur 1 an
                 ref_price = cache.historical_low_1y_cents or cache.lowest_delivered_price_cents
                 ref_str = format_cents(ref_price)
@@ -158,11 +160,19 @@ class MarketPriceService:
         # 2. Cas d'un lot détecté
         if tome_result and tome_result.is_lot and books_in_series:
             valid_prices = [
-                (b.market_cache.historical_low_1y_cents or b.market_cache.lowest_delivered_price_cents)
+                (
+                    b.market_cache.historical_low_1y_cents
+                    or b.market_cache.lowest_delivered_price_cents
+                )
                 for b in books_in_series
                 if b.market_cache
-                and b.market_cache.comparison_status == ComparisonStatus.AVAILABLE
-                and (b.market_cache.historical_low_1y_cents is not None or b.market_cache.lowest_delivered_price_cents is not None)
+                and (
+                    b.market_cache.historical_low_1y_cents is not None
+                    or (
+                        b.market_cache.comparison_status == ComparisonStatus.AVAILABLE
+                        and b.market_cache.lowest_delivered_price_cents is not None
+                    )
+                )
             ]
             if valid_prices:
                 cumulated_market = sum(valid_prices)
@@ -189,11 +199,19 @@ class MarketPriceService:
         # 3. Cas d'une série multi-tomes sans tome identifié
         if books_in_series and len(books_in_series) > 1:
             valid_prices = [
-                (b.market_cache.historical_low_1y_cents or b.market_cache.lowest_delivered_price_cents)
+                (
+                    b.market_cache.historical_low_1y_cents
+                    or b.market_cache.lowest_delivered_price_cents
+                )
                 for b in books_in_series
                 if b.market_cache
-                and b.market_cache.comparison_status == ComparisonStatus.AVAILABLE
-                and (b.market_cache.historical_low_1y_cents is not None or b.market_cache.lowest_delivered_price_cents is not None)
+                and (
+                    b.market_cache.historical_low_1y_cents is not None
+                    or (
+                        b.market_cache.comparison_status == ComparisonStatus.AVAILABLE
+                        and b.market_cache.lowest_delivered_price_cents is not None
+                    )
+                )
             ]
             if valid_prices:
                 p_min = min(valid_prices)

@@ -1,6 +1,5 @@
 """Tests unitaires pour le module d'extraction de tomes et de lots TomeExtractor."""
 
-import pytest
 from app.services.tome_extractor import TomeExtractor
 
 
@@ -71,7 +70,7 @@ def test_tome_extractor_subtitles():
 
 
 def test_tome_extractor_price_not_a_tome():
-    """Vérifie qu'un prix en euros (ex: 15€, 20 euros) n'est jamais confondu avec un numéro de tome."""
+    """Vérifie qu'un prix en euros (ex: 15€, 20 euros) n'est jamais confondu avec un tome."""
     res1 = TomeExtractor.extract("BD RIP 15€", series_key="RIP")
     assert res1.tome_number is None
 
@@ -108,6 +107,11 @@ def test_tome_extractor_lot_detection():
     # Mot-clé intégrale ou coffret
     res5 = TomeExtractor.extract("Coffret RIP intégrale", series_key="RIP")
     assert res5.is_lot is True
+
+    # Volumes explicites entre parenthèses ou suffixe
+    res6 = TomeExtractor.extract("Slava (3 volumes) Dargaud", series_key="Slava")
+    assert res6.is_lot is True
+    assert res6.lot_count == 3
 
 
 def test_tome_extractor_description_fallback():
