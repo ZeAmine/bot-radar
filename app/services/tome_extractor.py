@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 
 def _normalize(text: str) -> str:
-    """Normalise une chaîne : minuscules, suppression des accents et ponctuation nettoyée."""
+    """Normalise une chaîne : minuscules, suppression des accents sans altérer ponctuation et tirets."""
     norm = unicodedata.normalize("NFKD", text)
     stripped = "".join(c for c in norm if not unicodedata.combining(c))
     return stripped.lower()

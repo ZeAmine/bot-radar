@@ -39,7 +39,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Nettoyage à la fermeture
-    pass
+    from app.core.http_client import close_shared_http_client
+    from app.core.tasks import wait_all_background_tasks
+
+    await wait_all_background_tasks(timeout=5.0)
+    await close_shared_http_client()
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):

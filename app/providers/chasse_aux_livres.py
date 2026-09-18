@@ -12,6 +12,7 @@ import httpx
 from app.core.constants import MatchConfidence
 from app.providers.base import MarketOffer
 from app.services.market_price_service import is_very_good_or_better
+from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.providers.chasse_aux_livres")
 
@@ -52,13 +53,8 @@ class ChasseAuxLivresProvider:
         if not expected or not found:
             return True
 
-        def norm(s: str) -> str:
-            s = unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("utf-8")
-            s = re.sub(r"[^a-zA-Z0-9\s]", " ", s)
-            return " ".join(s.lower().split())
-
-        exp_norm = norm(expected)
-        fnd_norm = norm(found)
+        exp_norm = normalize_text(expected)
+        fnd_norm = normalize_text(found)
 
         # Inclusion directe (ex: "do a powerbomb" vs "do a power bomb")
         if exp_norm in fnd_norm or fnd_norm in exp_norm:

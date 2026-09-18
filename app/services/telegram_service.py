@@ -8,6 +8,7 @@ from aiogram.exceptions import TelegramAPIError
 from app.bot.keyboards.listings import get_listing_alert_keyboard
 from app.core.config import settings
 from app.core.constants import CategorySlug
+from app.core.tasks import safe_create_task
 from app.db.models.listing import Listing
 from app.services.matcher_service import CONDITION_ALIASES
 from app.services.price_calculator import format_price_summary
@@ -116,13 +117,14 @@ async def send_listing_alert(
             CategorySlug.BD_COMICS.value,
             CategorySlug.GAMING.value,
         ):
-            asyncio.create_task(
+            safe_create_task(
                 VisionGuardService.check_and_notify(
                     bot=bot,
                     chat_id=chat_id,
                     message_id=sent_msg.message_id,
                     listing=listing,
-                )
+                ),
+                name=f"vision_guard_{listing.id}",
             )
 
         return True

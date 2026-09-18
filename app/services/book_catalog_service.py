@@ -5,23 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import MatchConfidence
 from app.db.models.book import Book
 from app.db.repositories.book_repo import BookRepository
-from app.services.matcher_service import normalize_text
-
-
-def isbn10_to_isbn13(isbn10: str) -> str | None:
-    """Convertit un ISBN-10 en ISBN-13 standard (préfixe 978)."""
-    cleaned = isbn10.replace("-", "").replace(" ", "").upper()
-    if len(cleaned) != 10:
-        return None
-
-    core = "978" + cleaned[:9]
-    # Calcul de la clé de contrôle ISBN-13
-    checksum = 0
-    for i, digit in enumerate(core):
-        weight = 1 if i % 2 == 0 else 3
-        checksum += int(digit) * weight
-    check_digit = (10 - (checksum % 10)) % 10
-    return core + str(check_digit)
+from app.utils.isbn import isbn10_to_isbn13
+from app.utils.text import normalize_text
 
 
 class BookCatalogService:
