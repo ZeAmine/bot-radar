@@ -1,0 +1,88 @@
+"""Point d'entrée principal de l'application FastAPI."""
+
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import sentry_sdk
+from fastapi import FastAPI, Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+
+from app.api.middlewares.security import (
+    PayloadSizeLimitMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
+from app.api.routes import health, ingest, internal, telegram
+from app.core.config import settings
+from app.core.logging import setup_logging
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Gestion du cycle de vie de l'application (démarrage et extinction)."""
+    # Initialisation du logging structuré
+    setup_logging(settings.LOG_LEVEL)
+
+    # Initialisation facultative de Sentry
+    if settings.SENTRY_DSN:
+        sentry_sdk.init(
+            dsn=settings.SENTRY_DSN,
+            environment=settings.APP_ENV,
+            traces_sample_rate=1.0 if not settings.is_production else 0.1,
+        )
+
+    # Configuration des commandes du menu Telegram
+    from app.bot.bot_instance import bot, setup_bot_commands
+    await setup_bot_commands(bot)
+
+    yield
+
+    # Nettoyage à la fermeture
+    pass
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Injecte un request_id unique dans chaque requête pour l'observabilité."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+def create_app() -> FastAPI:
+    """Fabrique de l'application FastAPI."""
+    # Désactivation de la documentation interactive et du schéma OpenAPI en production
+    docs_url = None if settings.is_production else "/docs"
+    redoc_url = None if settings.is_production else "/redoc"
+    openapi_url = None if settings.is_production else "/openapi.json"
+
+    application = FastAPI(
+        title="Radar Bot API",
+        description="API d'ingestion et bot Telegram privé de détection des bonnes affaires.",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url=docs_url,
+        redoc_url=redoc_url,
+        openapi_url=openapi_url,
+    )
+
+    # Middlewares (ordonnés : SecurityHeadersMiddleware le plus externe)
+    application.add_middleware(RequestIdMiddleware)
+    application.add_middleware(RateLimitMiddleware)
+    application.add_middleware(PayloadSizeLimitMiddleware)
+    application.add_middleware(SecurityHeadersMiddleware)
+
+    # Inclusion des routes
+    application.include_router(health.router)
+    application.include_router(ingest.router)
+    application.include_router(internal.router)
+    application.include_router(telegram.router)
+
+    return application
+
+
+app = create_app()

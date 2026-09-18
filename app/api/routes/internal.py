@@ -1,0 +1,113 @@
+"""Endpoints internes sécurisés (dashboard et consultation du cache)."""
+
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.api.dependencies import get_db, require_internal_token
+from app.core.constants import AlertStatus
+from app.db.models.alert import Alert
+from app.db.repositories.book_repo import BookRepository
+from app.services.vinted_scraper import vinted_session_manager
+
+router = APIRouter(
+    prefix="/api/v1/internal",
+    tags=["Internal"],
+    dependencies=[Depends(require_internal_token)],
+)
+
+
+@router.get("/alerts")
+async def list_internal_alerts(
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Retourne la liste des alertes sans secret."""
+    stmt = (
+        select(Alert)
+        .options(selectinload(Alert.category))
+        .where(Alert.status != AlertStatus.DELETED)
+        .order_by(Alert.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    alerts = result.scalars().all()
+
+    return [
+        {
+            "id": str(a.id),
+            "name": a.name,
+            "category": a.category.slug if a.category else None,
+            "status": a.status.value,
+            "vinted_search_url": a.vinted_search_url,
+            "max_item_price_cents": a.max_item_price_cents,
+            "include_keywords": a.include_keywords,
+            "exclude_keywords": a.exclude_keywords,
+            "variants": a.variants,
+            "accepted_conditions": a.accepted_conditions,
+            "created_at": a.created_at.isoformat(),
+        }
+        for a in alerts
+    ]
+
+
+@router.get("/books/{isbn13}/market-price")
+async def get_book_market_price(
+    isbn13: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Retourne le cache de prix marché d'un livre catalogué."""
+    book_repo = BookRepository(db)
+    book = await book_repo.get_by_isbn13(isbn13)
+    if not book or not book.market_cache:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Livre ou cache de prix introuvable.",
+        )
+
+    cache = book.market_cache
+    return {
+        "isbn13": book.isbn13,
+        "title": book.title,
+        "lowest_delivered_price_cents": cache.lowest_delivered_price_cents,
+        "best_provider_name": cache.best_provider_name,
+        "best_source_url": cache.best_source_url,
+        "confidence": cache.confidence.value if cache.confidence else None,
+        "comparison_status": cache.comparison_status.value,
+        "checked_at": cache.checked_at.isoformat() if cache.checked_at else None,
+        "expires_at": cache.expires_at.isoformat() if cache.expires_at else None,
+    }
+
+
+@router.post("/vinted/session")
+async def update_vinted_session(
+    payload: dict[str, str],
+) -> dict[str, Any]:
+    """Injecte manuellement des cookies de session Vinted valides dans Redis."""
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Le dictionnaire de cookies ne peut pas être vide.",
+        )
+    await vinted_session_manager.set_manual_session(payload)
+    return {
+        "status": "success",
+        "cookies_stored": len(payload),
+        "keys": list(payload.keys()),
+    }
+
+
+@router.get("/vinted/session")
+async def get_vinted_session_status() -> dict[str, Any]:
+    """Retourne l'état actuel de la session Vinted sans exposer les jetons sensibles."""
+    cookies = vinted_session_manager.cookies
+    if not cookies:
+        cookies = await vinted_session_manager._load_cookies_from_redis()
+    return {
+        "active_cookies_count": len(cookies),
+        "cookie_names": list(cookies.keys()),
+        "has_access_token": bool(cookies.get("access_token_web")),
+        "last_refreshed": vinted_session_manager.last_refreshed,
+    }
+

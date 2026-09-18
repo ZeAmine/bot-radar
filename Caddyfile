@@ -1,0 +1,6 @@
+{$DOMAIN_NAME} {
+    reverse_proxy app:8000 {
+        header_down -Server
+    }
+    header Server "Radar-API"
+}

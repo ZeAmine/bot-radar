@@ -1,0 +1,436 @@
+"""Fournisseur de prix d'occasion agrégés Chasse-aux-livres."""
+
+import asyncio
+import html
+import logging
+import re
+import unicodedata
+import urllib.parse
+
+import httpx
+
+from app.core.constants import MatchConfidence
+from app.providers.base import MarketOffer
+from app.services.market_price_service import is_very_good_or_better
+
+logger = logging.getLogger("radar.providers.chasse_aux_livres")
+
+CHASSE_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Sec-Ch-Ua": '"Google Chrome";v="128", "Chromium";v="128", "Not.A/Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+
+
+class ChasseAuxLivresProvider:
+    """Connecteur vers le comparateur multi-boutiques Chasse-aux-livres.
+
+    Agrège en temps réel les offres de Momox, RecycLivre, Rakuten, eBay,
+    Fnac 2nde main, AbeBooks, Gibert, etc., et extrait l'offre au meilleur prix livré.
+    """
+
+    name: str = "chasse_aux_livres"
+    BASE_URL: str = "https://www.chasse-aux-livres.fr"
+
+    def __init__(self, timeout_seconds: float = 10.0) -> None:
+        self.timeout_seconds = timeout_seconds
+
+    @staticmethod
+    def is_title_coherent(expected: str, found: str) -> bool:
+        """Vérifie si le titre retourné par Chasse-aux-livres est cohérent avec le titre attendu."""
+        if not expected or not found:
+            return True
+
+        def norm(s: str) -> str:
+            s = unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("utf-8")
+            s = re.sub(r"[^a-zA-Z0-9\s]", " ", s)
+            return " ".join(s.lower().split())
+
+        exp_norm = norm(expected)
+        fnd_norm = norm(found)
+
+        # Inclusion directe (ex: "do a powerbomb" vs "do a power bomb")
+        if exp_norm in fnd_norm or fnd_norm in exp_norm:
+            return True
+
+        exp_nospace = exp_norm.replace(" ", "")
+        fnd_nospace = fnd_norm.replace(" ", "")
+        if exp_nospace and fnd_nospace and (exp_nospace in fnd_nospace or fnd_nospace in exp_nospace):
+            return True
+
+        # Cas des œuvres adaptées ou collections éditeur (ex: Gou Tanabe Lovecraft, Daredevil L'Homme sans peur)
+        collection_equivalents = {
+            "montagnes hallucinees": {"lovecraft", "tanabe"},
+            "appel de cthulhu": {"lovecraft", "tanabe"},
+            "homme sans peur": {"daredevil"},
+        }
+        for trigger, equivs in collection_equivalents.items():
+            if trigger in exp_norm and any(eq in fnd_norm for eq in equivs):
+                return True
+
+        stop_words = {
+            "tome", "volume", "integrale", "edition", "livre", "bd",
+            "des", "les", "une", "par", "pour", "dans", "avec", "sur",
+        }
+        exp_words = {w for w in exp_norm.split() if len(w) >= 3 and w not in stop_words}
+        fnd_words = {w for w in fnd_norm.split() if len(w) >= 3 and w not in stop_words}
+
+        if not exp_words or not fnd_words:
+            return True
+
+        common = exp_words & fnd_words
+        return len(common) > 0
+
+    async def get_offers(
+        self,
+        *,
+        isbn13: str | None,
+        title: str,
+        author: str | None = None,
+        edition: str | None = None,
+    ) -> list[MarketOffer]:
+        """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique."""
+        _ = edition
+        query = ""
+        if isbn13 and len(isbn13.strip()) >= 10:
+            query = isbn13.strip()
+        elif title and len(title.strip()) > 0:
+            query = title.strip()
+            if author:
+                query = f"{query} {author.strip()}"
+        else:
+            return []
+
+        search_encoded = urllib.parse.quote_plus(query)
+        search_url = f"{self.BASE_URL}/search?query={search_encoded}&catalog=fr"
+
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                async with httpx.AsyncClient(
+                    headers=CHASSE_BROWSER_HEADERS,
+                    timeout=self.timeout_seconds,
+                    follow_redirects=True,
+                ) as client:
+                    # Étape 1 : Récupérer la page de recherche avec ses cookies et son token hash
+                    resp1 = await client.get(search_url)
+                    if resp1.status_code == 429 or "Vérification robot" in resp1.text:
+                        if attempt < max_retries:
+                            wait_time = 2.0 * (attempt + 1)
+                            logger.warning(
+                                "Chasse-aux-livres anti-bot/rate-limit pour '%s' (tentative %d/%d). Pause %.1fs...",
+                                query,
+                                attempt + 1,
+                                max_retries + 1,
+                                wait_time,
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue
+                        logger.warning("Chasse-aux-livres rate-limit persistant pour '%s'.", query)
+                        return []
+
+                    if resp1.status_code != 200:
+                        logger.debug(
+                            "Chasse-aux-livres returned HTTP %d on search page", resp1.status_code
+                        )
+                        return []
+
+                    html_page = resp1.text
+                    hash_match = re.search(r'data-hash=["\']([a-zA-Z0-9_-]{16,128})["\']', html_page)
+                    if not hash_match:
+                        logger.debug("No search data-hash found in Chasse-aux-livres page")
+                        return []
+
+                    data_hash = hash_match.group(1)
+
+                    # Étape 2 : Récupérer les résultats agrégés via l'endpoint REST
+                    ajax_headers = {
+                        "Accept": "application/json, text/javascript, */*; q=0.01",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": search_url,
+                    }
+                    rest_url = f"{self.BASE_URL}/rest/search-results?h={data_hash}&p=1&l=1&b=d"
+                    resp2 = await client.get(rest_url, headers=ajax_headers)
+                    if resp2.status_code != 200:
+                        logger.debug(
+                            "Chasse-aux-livres returned HTTP %d on search-results", resp2.status_code
+                        )
+                        return []
+
+                    data = resp2.json()
+                    d_html = data.get("d", "")
+                    if not d_html:
+                        return []
+
+                    # Récupération fine et vérifiée des offres partenaires d'occasion
+                    deep_offers = await self._try_deep_lookup(
+                        client, d_html, query, expected_title=title
+                    )
+                    if deep_offers:
+                        return deep_offers
+
+                    return []
+
+            except Exception as exc:
+                if attempt < max_retries:
+                    await asyncio.sleep(1.5)
+                    continue
+                logger.debug("Erreur silencieuse connecteur Chasse-aux-livres: %s", exc)
+                return []
+
+        return []
+
+    async def _try_deep_lookup(
+        self,
+        client: httpx.AsyncClient,
+        d_html: str,
+        query: str,
+        expected_title: str | None = None,
+    ) -> list[MarketOffer] | None:
+        """Tente une extraction détaillée des offres par boutique (eBay, Momox, Rakuten, Fnac, etc.)."""
+        try:
+            url_match = re.search(r'href=["\'](/prix/[^"\']+)["\']', d_html)
+            if not url_match:
+                return None
+            product_path = url_match.group(1)
+            product_url = f"{self.BASE_URL}{product_path}"
+
+            # Extraction ISBN et Titre depuis d_html
+            isbn_match = re.search(r"ISBN&nbsp;:\s*(\d{10,13})", d_html)
+            found_isbn = isbn_match.group(1) if isbn_match else None
+            title_match = re.search(r'class=["\']title["\'][^>]*>\s*<a[^>]*>([^<]+)</a>', d_html, re.DOTALL)
+            if not title_match:
+                title_match = re.search(r'<a[^>]+href=["\']/prix/[^"\']+["\'][^>]+title=["\']([^"\']+)["\']', d_html)
+            
+            found_title = html.unescape(title_match.group(1).strip()) if title_match else None
+            slug_m = re.search(r'/prix/[^/]+/([^/]+)', product_path)
+            slug_title = slug_m.group(1).replace("-", " ") if slug_m else ""
+
+            if not found_title or found_title.isdigit():
+                found_title = slug_title or query
+
+            # Contrôle strict de cohérence du titre (rejet si hors sujet, ex: Ogrest pour Loba Loca)
+            # On vérifie contre le titre affiché et contre le slug URL qui contient les sous-titres et collections complètes
+            is_coherent = self.is_title_coherent(expected_title, found_title) or (
+                bool(slug_title) and self.is_title_coherent(expected_title, slug_title)
+            )
+            if expected_title and not is_coherent:
+                logger.warning(
+                    "Rejet Chasse-aux-livres pour '%s' : le titre retourné '%s' (slug: '%s', ISBN: %s) est incohérent.",
+                    expected_title,
+                    found_title,
+                    slug_title,
+                    found_isbn,
+                )
+                return None
+
+            resp_prod = await client.get(product_url)
+            if resp_prod.status_code != 200:
+                return None
+
+            p_html = resp_prod.text
+            asin_m = re.search(r'data-asin="([^"]+)"', p_html)
+            lvs_m = re.search(r'data-lvs="([^"]+)"', p_html)
+            nbeng_m = re.search(r'data-nbeng="(\d+)"', p_html)
+            if not (asin_m and lvs_m and nbeng_m):
+                return None
+
+            asin = asin_m.group(1)
+            lvs = lvs_m.group(1)
+            nbeng = int(nbeng_m.group(1))
+            engines = "_".join(str(i) for i in range(min(nbeng, 32)))
+
+            ajax_headers = {
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": product_url,
+            }
+            lookup_url = (
+                f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
+                f"&retry=0&duih=&lvs={lvs}&ui=&engines={engines}&f=false"
+            )
+            resp_lookup = await client.get(lookup_url, headers=ajax_headers)
+            if resp_lookup.status_code != 200:
+                return None
+
+            data = resp_lookup.json()
+            raw_offers = data.get("offers", {})
+            if not isinstance(raw_offers, dict):
+                return None
+
+            # Si le moteur eBay (22) n'a pas encore répondu au premier appel, interroger retry=1
+            if "22" not in raw_offers:
+                retry_url = (
+                    f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
+                    f"&retry=1&duih=&lvs={lvs}&ui=&engines={engines}&f=false"
+                )
+                try:
+                    resp_retry = await client.get(retry_url, headers=ajax_headers, timeout=3.5)
+                    if resp_retry.status_code == 200:
+                        data_retry = resp_retry.json()
+                        offers_retry = data_retry.get("offers", {})
+                        if isinstance(offers_retry, dict):
+                            for k, v in offers_retry.items():
+                                if k not in raw_offers:
+                                    raw_offers[k] = v
+                                elif isinstance(v, list) and isinstance(raw_offers[k], list):
+                                    raw_offers[k].extend(v)
+                except Exception:
+                    pass
+
+            partners: dict[str, dict] = {}
+            best_used: dict | None = None
+
+            for _, off_list in raw_offers.items():
+                if not isinstance(off_list, list):
+                    continue
+                for off in off_list:
+                    merchant_raw = (
+                        off.get("logo", {}).get("name")
+                        or off.get("origin", {}).get("name")
+                        or "Partenaire"
+                    )
+                    merchant_clean = (
+                        merchant_raw.replace("_SHOP", "")
+                        .replace("_MARKET", "")
+                        .replace("_DE", " (DE)")
+                        .replace("_", " ")
+                        .title()
+                    )
+                    is_used = off.get("condition", {}).get("_name") != "NEW"
+                    sub_cond = off.get("subCondition", {}).get("name") or (
+                        "Occasion" if is_used else "Neuf"
+                    )
+                    tot = off.get("totalPrice", {}).get("amount", 0)
+                    aff_url = off.get("affiliateUrl") or product_url
+
+                    if tot <= 0:
+                        continue
+
+                    # Filtrage STRICT occasion : exclusion absolue du Neuf
+                    cond_clean = str(sub_cond).strip().lower()
+                    is_brand_new = (
+                        not is_used
+                        or cond_clean in ("neuf", "new")
+                        or (
+                            (cond_clean.startswith("neuf ") or cond_clean.endswith(" neuf"))
+                            and "comme" not in cond_clean
+                            and "like" not in cond_clean
+                        )
+                    )
+                    if is_brand_new:
+                        continue
+
+                    # Filtrage STRICT état : uniquement Très bon et Comme neuf (rejet Bon, Correct, etc.)
+                    if not is_very_good_or_better(sub_cond):
+                        continue
+
+                    entry = {
+                        "merchant": merchant_clean,
+                        "is_used": True,
+                        "condition": sub_cond,
+                        "total_cents": tot,
+                        "url": aff_url,
+                    }
+
+                    if (
+                        merchant_clean not in partners
+                        or partners[merchant_clean]["total_cents"] > tot
+                    ):
+                        partners[merchant_clean] = entry
+
+                    if best_used is None or tot < best_used["total_cents"]:
+                        best_used = entry
+
+            # Zéro Neuf déguisé : Si aucune occasion n'est disponible sur le marché, on renvoie None
+            if not best_used:
+                return None
+
+            primary = best_used
+            cond_str = f"{primary['condition']} ({primary['merchant']})"
+
+            # Extraction du minimum historique sur 1 an via l'API /rest/jcd de Chasse-aux-livres
+            hist_low_1y_cents: int | None = None
+            didh_m = re.search(r'data-didh=["\']([a-f0-9]+)["\']', p_html)
+            if didh_m:
+                didh = didh_m.group(1)
+                ui = "HHA42EYUVBC"
+                duih = "HHA42EYUVBC.aee0de7aeaeff016cd3747d859d9811d4cc3c9c5"
+                jcd_url = (
+                    f"{self.BASE_URL}/rest/jcd?id={asin}&all=true&days=365"
+                    f"&ui={ui}&duih={duih}&didh={didh}"
+                )
+                try:
+                    resp_jcd = await client.get(jcd_url, headers=ajax_headers, timeout=4.0)
+                    if resp_jcd.status_code == 200 and len(resp_jcd.text) > 0:
+                        jcd_data = resp_jcd.json()
+                        series_by_label: dict[str, float] = {}
+                        for s in jcd_data.get("stats", []):
+                            label = s.get("label")
+                            if label:
+                                pts: list[float] = []
+                                for v in s.get("statValues", []):
+                                    try:
+                                        t_str = str(v.get("t", ""))
+                                        t_m = re.search(r"#\[([0-9]+)[,\.]([0-9]{2})\s*€", t_str)
+                                        if t_m:
+                                            eur = float(f"{t_m.group(1)}.{t_m.group(2)}")
+                                        else:
+                                            eur = float(v.get("y", 0))
+                                        if eur > 0:
+                                            pts.append(eur)
+                                    except Exception:
+                                        pass
+                                if pts:
+                                    series_by_label[label] = min(pts)
+
+                        priority_order = (
+                            "Très bon état +",
+                            "Comme neuf +",
+                            "D'occasion",
+                            "Meilleur prix",
+                            "Bon état +",
+                        )
+                        for pref in priority_order:
+                            if pref in series_by_label:
+                                hist_low_1y_cents = round(series_by_label[pref] * 100)
+                                break
+                except Exception as jcd_exc:
+                    logger.debug("Historique des prix Chasse-aux-livres indisponible: %s", jcd_exc)
+
+            return [
+                MarketOffer(
+                    provider_name=self.name,
+                    item_price_cents=primary["total_cents"],
+                    shipping_price_cents=0,
+                    delivered_price_cents=primary["total_cents"],
+                    source_url=primary["url"],
+                    currency="EUR",
+                    item_condition=cond_str,
+                    confidence=MatchConfidence.HIGH,
+                    is_available=True,
+                    is_comparable=True,
+                    raw_payload={
+                        "isbn13": found_isbn,
+                        "title": found_title,
+                        "query": query,
+                        "best_merchant": primary["merchant"],
+                        "partners": partners,
+                        "historical_low_1y_cents": hist_low_1y_cents,
+                    },
+                )
+            ]
+        except Exception as exc:
+            logger.debug("Échec de l'extraction détaillée Chasse-aux-livres: %s", exc)
+            return None

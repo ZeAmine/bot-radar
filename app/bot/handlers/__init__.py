@@ -1,0 +1,21 @@
+"""Handlers Telegram pour Radar Bot."""
+
+from aiogram import Router
+
+from app.bot.handlers import alerts, callbacks, categories, help, start, stats, status
+
+
+def get_bot_router() -> Router:
+    """Agrège et configure tous les routeurs de handlers Telegram."""
+    main_router = Router(name="main_bot_router")
+    main_router.include_router(start.router)
+    main_router.include_router(status.router)
+    main_router.include_router(help.router)
+    main_router.include_router(categories.router)
+    main_router.include_router(stats.router)
+    main_router.include_router(alerts.router)
+    main_router.include_router(callbacks.router)
+    return main_router
+
+
+__all__ = ["get_bot_router", "start", "status", "help", "categories", "alerts", "callbacks", "stats"]

@@ -1,0 +1,61 @@
+[project]
+name = "radar-bot"
+version = "0.1.0"
+description = "Radar Bot - Bot Telegram privé d'aide à la décision pour les bonnes affaires de seconde main"
+authors = [{ name = "Radar Bot Team" }]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "aiogram>=3.13.0",
+    "sqlalchemy[asyncio]>=2.0.35",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.2",
+    "redis[hiredis]>=5.0.8",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "httpx>=0.27.2",
+    "apscheduler>=3.10.4",
+    "sentry-sdk>=2.14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.5",
+    "mypy>=1.11.2",
+    "pre-commit>=3.8.0",
+    "aiosqlite>=0.20.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "SIM", "ARG"]
+ignore = ["B008", "A003", "A004"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/*" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
