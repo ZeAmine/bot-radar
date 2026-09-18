@@ -49,7 +49,9 @@ class MarketPriceRepository:
         return result.scalar_one_or_none()
 
     async def get_historical_low_1y(self, book_id: uuid.UUID) -> int | None:
-        """Calcule le prix le plus bas constaté sur les 365 derniers jours à partir des snapshots."""
+        """Calcule le prix le plus bas constaté sur les 365 derniers jours
+        à partir des snapshots.
+        """
         one_year_ago = datetime.now(UTC) - timedelta(days=365)
         stmt = select(func.min(MarketPriceSnapshot.delivered_price_cents)).where(
             MarketPriceSnapshot.book_id == book_id,

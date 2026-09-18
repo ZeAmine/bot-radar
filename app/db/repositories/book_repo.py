@@ -18,6 +18,11 @@ from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 class BookRepository:
     """Gestion des opérations en base de données pour les livres et liaisons d'alertes."""
 
+    _BOOK_EAGER_LOAD = (
+        selectinload(Book.market_cache),
+        selectinload(Book.snapshots),
+    )
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
@@ -25,10 +30,7 @@ class BookRepository:
         """Récupère un livre par son UUID avec son cache de marché."""
         stmt = (
             select(Book)
-            .options(
-                selectinload(Book.market_cache),
-                selectinload(Book.snapshots),
-            )
+            .options(*self._BOOK_EAGER_LOAD)
             .where(Book.id == book_id)
         )
         result = await self.session.execute(stmt)
@@ -38,10 +40,7 @@ class BookRepository:
         """Recherche un livre par son ISBN-13 exact."""
         stmt = (
             select(Book)
-            .options(
-                selectinload(Book.market_cache),
-                selectinload(Book.snapshots),
-            )
+            .options(*self._BOOK_EAGER_LOAD)
             .where(Book.isbn13 == isbn13.strip())
         )
         result = await self.session.execute(stmt)
@@ -51,10 +50,7 @@ class BookRepository:
         """Recherche des livres par titre normalisé."""
         stmt = (
             select(Book)
-            .options(
-                selectinload(Book.market_cache),
-                selectinload(Book.snapshots),
-            )
+            .options(*self._BOOK_EAGER_LOAD)
             .where(Book.normalized_title == normalized_title.strip())
         )
         result = await self.session.execute(stmt)
@@ -151,10 +147,7 @@ class BookRepository:
         stmt = (
             select(Book)
             .join(AlertBook, Book.id == AlertBook.book_id)
-            .options(
-                selectinload(Book.market_cache),
-                selectinload(Book.snapshots),
-            )
+            .options(*self._BOOK_EAGER_LOAD)
             .where(AlertBook.alert_id == alert_id)
             .order_by(Book.title.asc())
         )
@@ -168,7 +161,9 @@ class BookRepository:
         listing_title: str,
         listing_description: str | None = None,
     ) -> tuple[Book | None, list[Book], TomeMatchResult]:
-        """Résout le livre le plus approprié pour une annonce Vinted en détectant le tome ou le lot."""
+        """Résout le livre le plus approprié pour une annonce Vinted
+        en détectant le tome ou le lot.
+        """
         tome_res = TomeExtractor.extract(
             title=listing_title,
             description=listing_description,

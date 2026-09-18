@@ -17,8 +17,24 @@ from app.db.models.category import Category
 class AlertRepository:
     """Gestion des opérations en base de données pour les alertes."""
 
+    _ALERT_EAGER_LOAD = (selectinload(Alert.category),)
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    @staticmethod
+    def _apply_status_filter(stmt: Any, status: AlertStatus | None) -> Any:
+        """Applique le filtre de statut (exclut DELETED par défaut)."""
+        if status:
+            return stmt.where(Alert.status == status)
+        return stmt.where(Alert.status != AlertStatus.DELETED)
+
+    @staticmethod
+    def _apply_category_filter(stmt: Any, category_slug: str | None) -> Any:
+        """Applique le filtre par catégorie si différent de 'all'."""
+        if category_slug and category_slug != "all":
+            return stmt.join(Alert.category).where(Category.slug == category_slug)
+        return stmt
 
     async def create(
         self,
@@ -57,7 +73,7 @@ class AlertRepository:
         user_id: uuid.UUID | None = None,
     ) -> Alert | None:
         """Récupère une alerte par son UUID, optionnellement filtrée par utilisateur."""
-        stmt = select(Alert).options(selectinload(Alert.category)).where(Alert.id == alert_id)
+        stmt = select(Alert).options(*self._ALERT_EAGER_LOAD).where(Alert.id == alert_id)
         if user_id:
             stmt = stmt.where(Alert.user_id == user_id)
 
@@ -75,20 +91,14 @@ class AlertRepository:
         """Récupère la liste paginée des alertes d'un utilisateur, optionnellement par catégorie."""
         stmt = (
             select(Alert)
-            .options(selectinload(Alert.category))
+            .options(*self._ALERT_EAGER_LOAD)
             .where(Alert.user_id == user_id)
             .order_by(Alert.created_at.desc())
             .limit(limit)
             .offset(offset)
         )
-        if status:
-            stmt = stmt.where(Alert.status == status)
-        else:
-            # Exclure les alertes supprimées par défaut
-            stmt = stmt.where(Alert.status != AlertStatus.DELETED)
-
-        if category_slug and category_slug != "all":
-            stmt = stmt.join(Alert.category).where(Category.slug == category_slug)
+        stmt = self._apply_status_filter(stmt, status)
+        stmt = self._apply_category_filter(stmt, category_slug)
 
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -101,13 +111,8 @@ class AlertRepository:
     ) -> int:
         """Compte le nombre total d'alertes d'un utilisateur, optionnellement par catégorie."""
         stmt = select(func.count(Alert.id)).where(Alert.user_id == user_id)
-        if status:
-            stmt = stmt.where(Alert.status == status)
-        else:
-            stmt = stmt.where(Alert.status != AlertStatus.DELETED)
-
-        if category_slug and category_slug != "all":
-            stmt = stmt.join(Alert.category).where(Category.slug == category_slug)
+        stmt = self._apply_status_filter(stmt, status)
+        stmt = self._apply_category_filter(stmt, category_slug)
 
         result = await self.session.execute(stmt)
         return result.scalar_one() or 0
@@ -123,10 +128,7 @@ class AlertRepository:
             .join(Alert, Alert.category_id == Category.id)
             .where(Alert.user_id == user_id)
         )
-        if status:
-            stmt = stmt.where(Alert.status == status)
-        else:
-            stmt = stmt.where(Alert.status != AlertStatus.DELETED)
+        stmt = self._apply_status_filter(stmt, status)
         stmt = stmt.group_by(Category.slug)
         result = await self.session.execute(stmt)
         return dict(result.all())
@@ -237,7 +239,7 @@ class AlertRepository:
         pattern = f"%{clean_q}%"
         stmt = (
             select(Alert)
-            .options(selectinload(Alert.category))
+            .options(*self._ALERT_EAGER_LOAD)
             .where(
                 Alert.user_id == user_id,
                 Alert.status != AlertStatus.DELETED,
@@ -249,8 +251,7 @@ class AlertRepository:
             .order_by(Alert.created_at.desc())
             .limit(limit)
         )
-        if category_slug and category_slug != "all":
-            stmt = stmt.join(Alert.category).where(Category.slug == category_slug)
+        stmt = self._apply_category_filter(stmt, category_slug)
 
         result = await self.session.execute(stmt)
         matched = list(result.scalars().all())
@@ -281,7 +282,7 @@ class AlertRepository:
         if conditions:
             stmt = (
                 select(Alert)
-                .options(selectinload(Alert.category))
+                .options(*self._ALERT_EAGER_LOAD)
                 .where(
                     Alert.user_id == user_id,
                     Alert.status != AlertStatus.DELETED,
@@ -302,7 +303,7 @@ class AlertRepository:
 
             stmt_book = (
                 select(Alert)
-                .options(selectinload(Alert.category))
+                .options(*self._ALERT_EAGER_LOAD)
                 .join(AlertBook, AlertBook.alert_id == Alert.id)
                 .join(Book, Book.id == AlertBook.book_id)
                 .where(
