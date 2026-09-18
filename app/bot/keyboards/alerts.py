@@ -53,28 +53,27 @@ def get_category_selection_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def get_edit_category_selection_keyboard(
+def _build_category_selection_keyboard(
     categories: list,
     counts: dict[str, int],
     total_count: int,
+    callback_prefix: str,
 ) -> InlineKeyboardMarkup:
-    """Retourne le clavier de sélection de catégorie lors de la commande /edit."""
-    buttons: list[list[InlineKeyboardButton]] = []
-    for cat in categories:
-        count = counts.get(cat.slug, 0)
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=f"{cat.emoji} {cat.label} ({count})",
-                    callback_data=f"ed_cat:{cat.slug}:0",
-                )
-            ]
-        )
+    """Générateur mutualisé de clavier de sélection de catégorie."""
+    buttons: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=f"{cat.emoji} {cat.label} ({counts.get(cat.slug, 0)})",
+                callback_data=f"{callback_prefix}:{cat.slug}:0",
+            )
+        ]
+        for cat in categories
+    ]
     buttons.append(
         [
             InlineKeyboardButton(
                 text=f"🌐 Toutes les alertes ({total_count})",
-                callback_data="ed_cat:all:0",
+                callback_data=f"{callback_prefix}:all:0",
             )
         ]
     )
@@ -87,6 +86,15 @@ def get_edit_category_selection_keyboard(
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_edit_category_selection_keyboard(
+    categories: list,
+    counts: dict[str, int],
+    total_count: int,
+) -> InlineKeyboardMarkup:
+    """Retourne le clavier de sélection de catégorie lors de la commande /edit."""
+    return _build_category_selection_keyboard(categories, counts, total_count, "ed_cat")
 
 
 def get_list_category_selection_keyboard(
@@ -95,34 +103,7 @@ def get_list_category_selection_keyboard(
     total_count: int,
 ) -> InlineKeyboardMarkup:
     """Retourne le clavier de sélection de catégorie pour la commande /list."""
-    buttons: list[list[InlineKeyboardButton]] = []
-    for cat in categories:
-        count = counts.get(cat.slug, 0)
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=f"{cat.emoji} {cat.label} ({count})",
-                    callback_data=f"al_list_cat:{cat.slug}:0",
-                )
-            ]
-        )
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                text=f"🌐 Toutes les alertes ({total_count})",
-                callback_data="al_list_cat:all:0",
-            )
-        ]
-    )
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                text="❌ Fermer",
-                callback_data="al_close",
-            )
-        ]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return _build_category_selection_keyboard(categories, counts, total_count, "al_list_cat")
 
 
 def get_alert_card_keyboard(
@@ -143,14 +124,20 @@ def get_alert_card_keyboard(
     ]
 
     row_nav: list[InlineKeyboardButton] = []
-    page_prefix = f"al_page:{category_slug}" if category_slug and category_slug != "all" else "al_page"
+    page_prefix = (
+        f"al_page:{category_slug}" if category_slug and category_slug != "all" else "al_page"
+    )
     if current_page > 0:
         row_nav.append(
-            InlineKeyboardButton(text="← Précédent", callback_data=f"{page_prefix}:{current_page - 1}")
+            InlineKeyboardButton(
+                text="← Précédent", callback_data=f"{page_prefix}:{current_page - 1}"
+            )
         )
     if current_page < total_pages - 1:
         row_nav.append(
-            InlineKeyboardButton(text="Suivant →", callback_data=f"{page_prefix}:{current_page + 1}")
+            InlineKeyboardButton(
+                text="Suivant →", callback_data=f"{page_prefix}:{current_page + 1}"
+            )
         )
 
     inline_keyboard = [row_actions]
@@ -158,10 +145,14 @@ def get_alert_card_keyboard(
         inline_keyboard.append(row_nav)
 
     list_page = current_page // 10
-    inline_keyboard.append([
-        InlineKeyboardButton(text="📋 Liste", callback_data=f"al_list_cat:{category_slug}:{list_page}"),
-        InlineKeyboardButton(text="📁 Catégories", callback_data="ed_cat_menu"),
-    ])
+    inline_keyboard.append(
+        [
+            InlineKeyboardButton(
+                text="📋 Liste", callback_data=f"al_list_cat:{category_slug}:{list_page}"
+            ),
+            InlineKeyboardButton(text="📁 Catégories", callback_data="ed_cat_menu"),
+        ]
+    )
 
     return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
@@ -181,7 +172,11 @@ def get_alert_edit_fields_keyboard(
             ("Variantes", "variants"),
             ("États acceptés", "conditions"),
         ]
-    elif category_slug in (CategorySlug.TECH.value, CategorySlug.CLOTHES.value, CategorySlug.GAMING.value):
+    elif category_slug in (
+        CategorySlug.TECH.value,
+        CategorySlug.CLOTHES.value,
+        CategorySlug.GAMING.value,
+    ):
         if category_slug == CategorySlug.TECH.value:
             name_label = "Nom du produit"
         elif category_slug == CategorySlug.GAMING.value:
@@ -254,7 +249,11 @@ def get_alerts_list_keyboard(
 
     # Ligne de navigation paginée
     nav_row: list[InlineKeyboardButton] = []
-    page_prefix = f"al_list_page:{category_slug}" if category_slug and category_slug != "all" else "al_list_page:all"
+    page_prefix = (
+        f"al_list_page:{category_slug}"
+        if category_slug and category_slug != "all"
+        else "al_list_page:all"
+    )
     if current_page > 0:
         nav_row.append(
             InlineKeyboardButton(
@@ -263,15 +262,19 @@ def get_alerts_list_keyboard(
         )
     if current_page < total_pages - 1:
         nav_row.append(
-            InlineKeyboardButton(text="Suivant ➡️", callback_data=f"{page_prefix}:{current_page + 1}")
+            InlineKeyboardButton(
+                text="Suivant ➡️", callback_data=f"{page_prefix}:{current_page + 1}"
+            )
         )
     if nav_row:
         buttons.append(nav_row)
 
     # Ligne d'actions globales : retour au choix de catégorie ou fermer
-    buttons.append([
-        InlineKeyboardButton(text="📁 Catégories", callback_data="al_list_cat_menu"),
-        InlineKeyboardButton(text="❌ Fermer", callback_data="al_close"),
-    ])
+    buttons.append(
+        [
+            InlineKeyboardButton(text="📁 Catégories", callback_data="al_list_cat_menu"),
+            InlineKeyboardButton(text="❌ Fermer", callback_data="al_close"),
+        ]
+    )
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
