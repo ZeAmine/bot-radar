@@ -1,4 +1,3 @@
-import asyncio
 import html
 import logging
 
@@ -45,7 +44,7 @@ def build_listing_caption(
 
     lines.extend([
         f"🆕 <b>{safe_title}</b>",
-        f"🏷️ {safe_condition}",
+        f"💎 {safe_condition}",
         price_line,
     ])
 

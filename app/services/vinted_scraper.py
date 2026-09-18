@@ -12,6 +12,10 @@ import httpx
 
 from app.core.config import settings
 from app.core.redis import get_redis_client
+from app.services.price_calculator import (
+    DEFAULT_SHIPPING_CENTS,
+    calculate_buyer_protection_cents,
+)
 
 logger = logging.getLogger("radar.vinted_scraper")
 
@@ -19,7 +23,9 @@ logger = logging.getLogger("radar.vinted_scraper")
 class VintedBlockError(Exception):
     """Exception levée en cas de blocage Cloudflare/DataDome (403)."""
 
-    def __init__(self, status_code: int = 403, message: str = "Blocage Cloudflare Vinted (403)") -> None:
+    def __init__(
+        self, status_code: int = 403, message: str = "Blocage Cloudflare Vinted (403)"
+    ) -> None:
         self.status_code = status_code
         super().__init__(message)
 
@@ -183,7 +189,7 @@ def extract_photo_url(html_content: str, item_id: str) -> str | None:
 
 
 def extract_item_page_photos(html_content: str) -> list[str]:
-    """Extrait toutes les photos haute résolution réelles d'une annonce Vinted sans avatar vendeur."""
+    """Extrait toutes les photos HD réelles d'une annonce Vinted sans avatar vendeur."""
     norm = html_content.replace(r"\"", '"').replace(r"\/", "/")
     found = re.findall(r'https:(?:[\\/])+images1\.vinted\.net[^\s"\'<>]+', norm)
     cleaned: list[str] = []
@@ -307,7 +313,7 @@ def is_session_refresh_page(html_content: str) -> bool:
 
 
 class VintedSessionManager:
-    """Gestionnaire automatique de session Vinted avec auto-renouvellement des cookies et persistance Redis."""
+    """Gestionnaire automatique de session Vinted avec cookies et persistance Redis."""
 
     def __init__(self, refresh_interval_seconds: int = 7200) -> None:
         self.refresh_interval = refresh_interval_seconds
@@ -349,10 +355,13 @@ class VintedSessionManager:
             self.cookies = dict(cookies)
             self.last_refreshed = time.time()
             await self._save_cookies_to_redis(self.cookies)
-            logger.info("Nouvelle session Vinted manuelle enregistrée (%d cookies).", len(self.cookies))
+            logger.info(
+                "Nouvelle session Vinted manuelle enregistrée (%d cookies).",
+                len(self.cookies),
+            )
 
     async def refresh_session(self, client: httpx.AsyncClient) -> bool:
-        """Effectue une visite sur la page d'accueil de Vinted pour récupérer des cookies et jetons frais."""
+        """Visite la page d'accueil de Vinted pour récupérer des cookies et jetons frais."""
         now = time.time()
         if now - self.last_attempt < 30:
             return False
@@ -418,7 +427,7 @@ class VintedSessionManager:
             await self.refresh_session(client)
 
     def clear_session(self) -> None:
-        """Vide les cookies en mémoire et réinitialise les horodatages pour forcer une négociation propre."""
+        """Vide les cookies en mémoire et réinitialise les horodatages."""
         self.cookies.clear()
         self.last_refreshed = 0
         self.last_attempt = 0
@@ -492,8 +501,8 @@ def to_ingest_payload(
 ) -> dict[str, Any]:
     """Convertit une annonce extraite en payload pour l'API d'ingestion."""
     # Calcul des frais standards Vinted
-    protection_cents = 70 + int(item.item_price_cents * 0.05)
-    shipping_cents = 299
+    protection_cents = calculate_buyer_protection_cents(item.item_price_cents)
+    shipping_cents = DEFAULT_SHIPPING_CENTS
 
     payload: dict[str, Any] = {
         "source_name": "vinted",

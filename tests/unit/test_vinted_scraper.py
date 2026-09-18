@@ -1,9 +1,18 @@
-"""Tests unitaires pour le service d'extraction et de parsing Vinted."""
+import base64
+import json
+import time
+from unittest.mock import AsyncMock, patch
+
+import httpx
+import pytest
 
 from app.services.vinted_scraper import (
+    VintedSessionManager,
     extract_all_catalog_photos,
     extract_item_page_photos,
     extract_photo_url,
+    get_jwt_exp,
+    is_session_refresh_page,
     parse_vinted_catalog_html,
     parse_vinted_overlay_title,
     to_ingest_payload,
@@ -73,7 +82,7 @@ def test_to_ingest_payload():
     assert payload["source_name"] == "vinted"
     assert payload["external_id"] == "9951815312"
     assert payload["item_price_cents"] == 1500
-    assert payload["estimated_shipping_cents"] == 299
+    assert payload["estimated_shipping_cents"] == 288
     assert payload["estimated_protection_cents"] == 70 + int(1500 * 0.05)
     assert payload["condition"] == "Neuf sans étiquette"
     assert len(payload["photos"]) == 1
@@ -125,18 +134,14 @@ def test_avatar_filtering_excludes_seller_profile_pictures():
         <img src="https://images1.vinted.net/t/01/users/avatar_123.jpg" alt="Seller" />
       </div>
       <div class="product-photo">
-        <img src="https://images1.vinted.net/t/01/310x430/item_456.jpg" data-testid="product-item-id-999999--image--img" />
+        <img src="https://images1.vinted.net/t/01/310x430/item_456.jpg"
+             data-testid="product-item-id-999999--image--img" />
       </div>
     </div>
     """
     photo_url = extract_photo_url(sample_with_avatar, "999999")
     assert photo_url == "https://images1.vinted.net/t/01/310x430/item_456.jpg"
     assert "avatar" not in photo_url
-
-
-import pytest
-from unittest.mock import AsyncMock, patch
-from app.services.vinted_scraper import VintedSessionManager
 
 
 @pytest.mark.asyncio
@@ -146,7 +151,9 @@ async def test_vinted_session_manager_manual_and_redis():
 
     # Test injection manuelle avec mock Redis
     with patch.object(mgr, "_save_cookies_to_redis", new_callable=AsyncMock) as mock_save:
-        await mgr.set_manual_session({"anon_id": "test-anon-123", "access_token_web": "jwt-token-456"})
+        await mgr.set_manual_session(
+            {"anon_id": "test-anon-123", "access_token_web": "jwt-token-456"}
+        )
         assert mgr.cookies.get("anon_id") == "test-anon-123"
         mock_save.assert_awaited_once()
 
@@ -157,13 +164,15 @@ async def test_vinted_session_manager_manual_and_redis():
 
 @pytest.mark.asyncio
 async def test_vinted_session_manager_load_from_redis():
-    import httpx
     mgr = VintedSessionManager()
     fake_client = AsyncMock()
     fake_client.cookies = httpx.Cookies()
 
     with patch.object(mgr, "_load_cookies_from_redis", new_callable=AsyncMock) as mock_load:
-        mock_load.return_value = {"anon_id": "cached-redis-id", "access_token_web": "cached-token"}
+        mock_load.return_value = {
+            "anon_id": "cached-redis-id",
+            "access_token_web": "cached-token",
+        }
         await mgr.ensure_valid_session(fake_client)
 
         assert mgr.cookies.get("anon_id") == "cached-redis-id"
@@ -172,19 +181,24 @@ async def test_vinted_session_manager_load_from_redis():
 
 
 def test_is_session_refresh_page_and_jwt_exp():
-    import time
-    from app.services.vinted_scraper import get_jwt_exp, is_session_refresh_page
-
     assert is_session_refresh_page("<html><body>Session refresh</body></html>") is True
     assert is_session_refresh_page("") is True
     assert is_session_refresh_page("small page") is True
-    assert is_session_refresh_page('<html><div data-testid="product-item-id-123"></div>' + "x" * 90000) is False
+    assert (
+        is_session_refresh_page(
+            '<html><div data-testid="product-item-id-123"></div>' + "x" * 90000
+        )
+        is False
+    )
 
     # Test JWT decode
     now = int(time.time())
-    import base64, json
     header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode("utf-8").rstrip("=")
-    payload = base64.urlsafe_b64encode(json.dumps({"exp": now + 3600}).encode("utf-8")).decode("utf-8").rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": now + 3600}).encode("utf-8"))
+        .decode("utf-8")
+        .rstrip("=")
+    )
     token = f"{header}.{payload}.signature"
     exp = get_jwt_exp(token)
     assert exp == float(now + 3600)

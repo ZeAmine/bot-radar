@@ -122,7 +122,7 @@ def format_semi_auto_recap(
     )
     lines.extend(
         [
-            f"🏷️ <b>États :</b> {cond_display}\n",
+            f"💎 <b>États :</b> {cond_display}\n",
             "Confirmer la création de cette alerte ?",
         ]
     )
@@ -311,7 +311,7 @@ async def process_bd_query_lookup(
         f"🔢 <b>ISBN :</b> <code>{meta.isbn13 or 'Non trouvé'}</code>\n\n"
         f"🔑 <b>Inclus :</b> {', '.join(meta.recommended_includes)}\n"
         f"🚫 <b>Exclus :</b> {', '.join(meta.recommended_excludes)}\n"
-        "🏷️ <b>États :</b> Neuf avec étiquette, Neuf sans étiquette, Très bon état\n\n"
+        "💎 <b>États :</b> Neuf avec étiquette, Neuf sans étiquette, Très bon état\n\n"
         "💶 <b>Indique ton prix maximum pour cette alerte (en €)</b> <i>(ou /cancel)</i> :"
     )
     await status_msg.edit_text(prompt)
@@ -487,7 +487,7 @@ async def process_tech_or_clothes_query(
         f"{cat_emoji} <b>{html.escape(clean_query)}</b> ({cat_label})\n\n"
         f"🔑 <b>Inclus :</b> {', '.join(includes)}\n"
         f"🚫 <b>Exclus :</b> {', '.join(default_excludes)}\n"
-        f"🏷️ <b>États :</b> {', '.join(default_conditions)}\n\n"
+        f"💎 <b>États :</b> {', '.join(default_conditions)}\n\n"
         "💶 <b>Indique ton prix maximum pour cette alerte (en €)</b> <i>(ou /cancel)</i> :"
     )
     if isinstance(event, CallbackQuery) and event.message and hasattr(event.message, "edit_text"):

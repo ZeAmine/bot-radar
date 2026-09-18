@@ -53,6 +53,7 @@ class ListingRepository:
             item_price_cents=payload.item_price_cents,
             estimated_protection_cents=payload.estimated_protection_cents,
             estimated_shipping_cents=payload.estimated_shipping_cents,
+            fallback_defaults=True,
         )
 
         listing = Listing(

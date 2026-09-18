@@ -450,7 +450,7 @@ async def save_alert(
             f"🎯 <b>Prix max :</b> {price_str}\n"
             f"🔑 <b>Mots-clés requis :</b> {', '.join(includes)}\n"
             f"🚫 <b>Exclusions :</b> {', '.join(excludes) if excludes else 'Aucune'}\n"
-            f"🏷️ <b>États acceptés :</b> {cond_str}\n\n"
+            f"💎 <b>États acceptés :</b> {cond_str}\n\n"
             "⚡ <i>Surveillance active 24h/24 sur Vinted. "
             "Vous recevrez une notification instantanée dès qu'une offre éligible apparaît.</i>"
         )
