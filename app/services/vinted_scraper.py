@@ -9,10 +9,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-import redis.asyncio as aioredis
 
-from app.api.dependencies import get_redis_pool
 from app.core.config import settings
+from app.core.redis import get_redis_client
 
 logger = logging.getLogger("radar.vinted_scraper")
 
@@ -320,8 +319,7 @@ class VintedSessionManager:
     async def _load_cookies_from_redis(self) -> dict[str, str]:
         """Tente de restaurer les cookies Vinted persistés dans Redis."""
         try:
-            pool = get_redis_pool()
-            client = aioredis.Redis(connection_pool=pool)
+            client = get_redis_client()
             raw_data = await client.get(REDIS_SESSION_KEY)
             if raw_data:
                 data = json.loads(raw_data)
@@ -337,8 +335,7 @@ class VintedSessionManager:
         if not cookies:
             return
         try:
-            pool = get_redis_pool()
-            client = aioredis.Redis(connection_pool=pool)
+            client = get_redis_client()
             await client.set(REDIS_SESSION_KEY, json.dumps(cookies), ex=REDIS_SESSION_TTL)
             logger.info("Session Vinted persistée dans Redis (%d cookies, TTL 18h).", len(cookies))
         except Exception as exc:

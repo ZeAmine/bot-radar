@@ -9,6 +9,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.constants import MatchConfidence
+from app.core.http_client import get_shared_http_client
 from app.providers.base import MarketOffer
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,8 @@ class EbayBrowseProvider:
             return False
         return not ("your_ebay" in client_id.lower() or "your_ebay" in client_secret.lower())
 
-    def __init__(self) -> None:
+    def __init__(self, http_client: httpx.AsyncClient | None = None) -> None:
+        self.http_client = http_client
         self.is_sandbox = settings.EBAY_ENV.upper() == "SANDBOX"
         self.auth_url = (
             "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
@@ -100,50 +102,51 @@ class EbayBrowseProvider:
         """Recherche les offres d'occasion sur eBay pour un livre donné."""
         if not self.is_configured():
             return []
-        async with httpx.AsyncClient() as client:
-            token = await self._get_access_token(client)
-            if not token:
+
+        client = self.http_client or get_shared_http_client()
+        token = await self._get_access_token(client)
+        if not token:
+            return []
+
+        # Priorité absolue à l'ISBN-13 (GTIN), sinon requête textuelle combinée
+        confidence = MatchConfidence.HIGH
+        if isbn13 and len(isbn13.strip()) >= 10:
+            query = f"gtin:{isbn13.strip()}"
+        else:
+            parts = [title]
+            if author:
+                parts.append(author)
+            if edition:
+                parts.append(edition)
+            query = " ".join(parts)
+            confidence = MatchConfidence.MEDIUM if author else MatchConfidence.LOW
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR",
+            "Accept-Language": "fr-FR,fr;q=0.9",
+            "Content-Type": "application/json",
+        }
+
+        params: dict[str, Any] = {
+            "q": query,
+            "limit": "10",
+            "filter": "buyingOptions:{FIXED_PRICE},conditions:{USED}",
+        }
+
+        search_url = f"{self.api_base_url}/item_summary/search"
+        try:
+            response = await client.get(search_url, headers=headers, params=params, timeout=5.0)
+            if response.status_code != 200:
+                logger.warning("Erreur recherche eBay (HTTP %s)", response.status_code)
                 return []
 
-            # Priorité absolue à l'ISBN-13 (GTIN), sinon requête textuelle combinée
-            confidence = MatchConfidence.HIGH
-            if isbn13 and len(isbn13.strip()) >= 10:
-                query = f"gtin:{isbn13.strip()}"
-            else:
-                parts = [title]
-                if author:
-                    parts.append(author)
-                if edition:
-                    parts.append(edition)
-                query = " ".join(parts)
-                confidence = MatchConfidence.MEDIUM if author else MatchConfidence.LOW
-
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR",
-                "Accept-Language": "fr-FR,fr;q=0.9",
-                "Content-Type": "application/json",
-            }
-
-            params: dict[str, Any] = {
-                "q": query,
-                "limit": "10",
-                "filter": "buyingOptions:{FIXED_PRICE},conditions:{USED}",
-            }
-
-            search_url = f"{self.api_base_url}/item_summary/search"
-            try:
-                response = await client.get(search_url, headers=headers, params=params, timeout=5.0)
-                if response.status_code != 200:
-                    logger.warning("Erreur recherche eBay (HTTP %s)", response.status_code)
-                    return []
-
-                data = response.json()
-                items = data.get("itemSummaries", [])
-                return self._parse_items(items, confidence)
-            except Exception as exc:
-                logger.warning("Erreur lors de l'appel eBay Browse API: %s", exc)
-                return []
+            data = response.json()
+            items = data.get("itemSummaries", [])
+            return self._parse_items(items, confidence)
+        except Exception as exc:
+            logger.warning("Erreur lors de l'appel eBay Browse API: %s", exc)
+            return []
 
     def _parse_items(
         self, items: list[dict[str, Any]], confidence: MatchConfidence

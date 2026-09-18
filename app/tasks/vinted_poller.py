@@ -2,21 +2,23 @@
 
 import asyncio
 import contextlib
-from datetime import datetime, timedelta
 import json
 import logging
 import random
 import time
+from collections import deque
+from collections.abc import Iterable
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
-import redis.asyncio as aioredis
 from sqlalchemy import select
 
-from app.api.dependencies import get_redis_pool
 from app.core.config import settings
 from app.core.constants import AlertStatus, CategorySlug
+from app.core.redis import get_redis_client
+from app.core.tasks import safe_create_task
 from app.db.models.alert import Alert
 from app.db.models.category import Category
 from app.db.models.listing import Listing
@@ -36,11 +38,40 @@ logger = logging.getLogger("radar.vinted_poller")
 VINTED_POLLER_STATUS_KEY = "radar:vinted_poller_status"
 
 
+class FifoSet(set):
+    """Ensemble d'identifiants avec purge FIFO déterministe par ordre d'insertion."""
+
+    def __init__(
+        self,
+        iterable: Iterable[str] = (),
+        max_size: int = 15000,
+        trim_size: int = 8000,
+    ) -> None:
+        super().__init__()
+        self.max_size = max_size
+        self.trim_size = trim_size
+        self._order: deque[str] = deque()
+        for item in iterable:
+            self.add(item)
+
+    def add(self, item: str) -> None:
+        if item not in self:
+            super().add(item)
+            self._order.append(item)
+            if len(self) > self.max_size:
+                self.trim()
+
+    def trim(self) -> None:
+        """Purge les identifiants les plus anciens jusqu'à trim_size."""
+        while len(self._order) > self.trim_size:
+            oldest = self._order.popleft()
+            super().discard(oldest)
+
+
 async def save_poller_status(data: dict[str, Any]) -> None:
     """Enregistre l'état actuel du poller dans Redis (TTL 24h)."""
     try:
-        pool = get_redis_pool()
-        client = aioredis.Redis(connection_pool=pool)
+        client = get_redis_client()
         await client.set(VINTED_POLLER_STATUS_KEY, json.dumps(data), ex=86400)
     except Exception as exc:
         logger.debug("Impossible d'enregistrer l'état du poller dans Redis: %s", exc)
@@ -49,8 +80,7 @@ async def save_poller_status(data: dict[str, Any]) -> None:
 async def get_poller_status() -> dict[str, Any] | None:
     """Récupère l'état actuel du poller depuis Redis."""
     try:
-        pool = get_redis_pool()
-        client = aioredis.Redis(connection_pool=pool)
+        client = get_redis_client()
         raw = await client.get(VINTED_POLLER_STATUS_KEY)
         if raw:
             return json.loads(raw)
@@ -107,7 +137,7 @@ def get_night_mode_remaining_seconds(now: datetime | None = None) -> float:
     return max(0.0, (target - now).total_seconds())
 
 
-async def load_initial_seen_ids() -> set[str]:
+async def load_initial_seen_ids() -> FifoSet:
     """Charge les IDs d'annonces récemment enregistrées en base pour éviter les doublons."""
     try:
         async with AsyncSessionLocal() as session:
@@ -118,10 +148,11 @@ async def load_initial_seen_ids() -> set[str]:
                 .limit(3000)
             )
             result = await session.execute(stmt)
-            return set(result.scalars().all())
+            raw_ids = list(result.scalars().all())
+            return FifoSet(reversed(raw_ids))
     except Exception as exc:
         logger.warning("Impossible de charger les anciens IDs d'annonces : %s", exc)
-        return set()
+        return FifoSet()
 
 
 async def load_active_custom_searches() -> list[tuple[str, str]]:
@@ -319,14 +350,15 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 if consecutive_blocks > 0:
                     logger.info("🛡️ Garde anti-blocage : Connexion Vinted rétablie avec succès (IP propre).")
                     consecutive_blocks = 0
-                    asyncio.create_task(
+                    safe_create_task(
                         notify_admins(
                             text=(
                                 "✅ <b>Radar Bot — Surveillance Vinted rétablie</b>\n\n"
                                 "🟢 La connexion à Vinted est de nouveau opérationnelle !\n"
                                 "Le scan des nouvelles annonces a repris normalement."
                             )
-                        )
+                        ),
+                        name="notify_vinted_recovered",
                     )
 
                 await save_poller_status({
@@ -341,7 +373,10 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
 
                 # Si trop d'IDs en mémoire, purger les plus anciens
                 if len(seen_ids) > 15000:
-                    seen_ids = set(list(seen_ids)[-8000:])
+                    if hasattr(seen_ids, "trim"):
+                        seen_ids.trim()
+                    else:
+                        seen_ids = set(list(seen_ids)[-8000:])
 
             except (VintedBlockError, VintedRateLimitError) as block_exc:
                 consecutive_blocks += 1
@@ -385,7 +420,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 vinted_session_manager.clear_session()
 
                 # Notification Telegram proactive
-                asyncio.create_task(
+                safe_create_task(
                     notify_admins(
                         text=(
                             f"🛡️ <b>Alerte Radar Bot — Pause de sécurité</b>\n\n"
@@ -394,7 +429,8 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                             f"⏱ <b>Reprise prévue à</b> : {resume_time_str}\n"
                             f"<i>Le bot tentera automatiquement de se reconnecter à l'heure indiquée.</i>"
                         )
-                    )
+                    ),
+                    name="notify_vinted_blocked",
                 )
 
                 with contextlib.suppress(TimeoutError):

@@ -13,28 +13,13 @@ from app.db.session import get_db_session
 
 security_bearer = HTTPBearer(auto_error=True)
 
-# Pool Redis réutilisable
-_redis_pool: aioredis.ConnectionPool | None = None
-
-
-def get_redis_pool() -> aioredis.ConnectionPool:
-    global _redis_pool
-    if _redis_pool is None:
-        _redis_pool = aioredis.ConnectionPool.from_url(
-            settings.REDIS_URL,
-            decode_responses=True,
-        )
-    return _redis_pool
+from app.core.redis import get_redis_pool, get_redis_session
 
 
 async def get_redis_client() -> AsyncGenerator[aioredis.Redis, None]:
-    """Fournit une connexion Redis asynchrone."""
-    pool = get_redis_pool()
-    client = aioredis.Redis(connection_pool=pool)
-    try:
+    """Fournit une connexion Redis asynchrone via la session gérée."""
+    async with get_redis_session() as client:
         yield client
-    finally:
-        await client.aclose()
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

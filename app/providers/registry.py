@@ -3,6 +3,8 @@
 import asyncio
 import logging
 
+import httpx
+
 from app.providers.base import BookMarketProvider, MarketOffer
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 from app.providers.ebay_browse import EbayBrowseProvider
@@ -20,19 +22,20 @@ class ProviderRegistry:
         self,
         providers: list[BookMarketProvider] | None = None,
         max_concurrency: int = 5,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         if providers is not None:
             self.providers = providers
         else:
             # Providers activés par défaut : Chasse-aux-livres en priorité (agrégateur)
             default_providers: list[BookMarketProvider] = [
-                ChasseAuxLivresProvider(),
-                MomoxProvider(),
-                RecyclivreProvider(),
-                GibertProvider(),
+                ChasseAuxLivresProvider(http_client=http_client),
+                MomoxProvider(http_client=http_client),
+                RecyclivreProvider(http_client=http_client),
+                GibertProvider(http_client=http_client),
             ]
             if EbayBrowseProvider.is_configured():
-                default_providers.append(EbayBrowseProvider())
+                default_providers.append(EbayBrowseProvider(http_client=http_client))
             self.providers = default_providers
         self._semaphore = asyncio.Semaphore(max_concurrency)
 

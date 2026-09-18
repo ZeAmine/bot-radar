@@ -89,3 +89,107 @@ async def test_safe_create_task_with_exception():
     await wait_all_background_tasks(timeout=1.0)
     assert task.done()
     assert isinstance(task.exception(), ValueError)
+
+
+def test_fifo_set_ordering_and_trimming():
+    """Vérifie que FifoSet maintient l'ordre FIFO et purge strictement les plus anciens."""
+    from app.tasks.vinted_poller import FifoSet
+
+    fifo = FifoSet(["a", "b", "c"], max_size=4, trim_size=2)
+    assert len(fifo) == 3
+    assert "a" in fifo
+    assert "b" in fifo
+    assert "c" in fifo
+
+    # L'ajout d'un élément existant ne modifie ni la taille ni l'ordre
+    fifo.add("b")
+    assert len(fifo) == 3
+
+    # Ajout du 4ème élément (atteint max_size)
+    fifo.add("d")
+    assert len(fifo) == 4
+
+    # Ajout du 5ème élément (dépasse max_size=4, purge automatique vers trim_size=2)
+    fifo.add("e")
+    assert len(fifo) == 2
+    # Les plus anciens (a, b, c) sont purgés, les plus récents (d, e) sont conservés
+    assert "a" not in fifo
+    assert "b" not in fifo
+    assert "c" not in fifo
+    assert "d" in fifo
+    assert "e" in fifo
+
+
+@pytest.mark.asyncio
+async def test_redis_core_singleton_and_session():
+    """Vérifie le cycle de vie du pool et du client Redis dans app.core.redis."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import app.core.redis as redis_mod
+
+    # Réinitialisation de l'état du module pour le test
+    redis_mod._redis_pool = None
+    redis_mod._redis_client = None
+
+    with patch("redis.asyncio.ConnectionPool.from_url") as mock_from_url:
+        fake_pool = MagicMock()
+        fake_pool.disconnect = AsyncMock()
+        mock_from_url.return_value = fake_pool
+
+        with patch("redis.asyncio.Redis") as mock_redis_cls:
+            fake_client = MagicMock()
+            fake_client.aclose = AsyncMock()
+            mock_redis_cls.return_value = fake_client
+
+            pool1 = redis_mod.get_redis_pool()
+            pool2 = redis_mod.get_redis_pool()
+            assert pool1 is pool2
+
+            client1 = redis_mod.get_redis_client()
+            client2 = redis_mod.get_redis_client()
+            assert client1 is client2
+
+            async with redis_mod.get_redis_session() as session_client:
+                assert session_client is client1
+
+            await redis_mod.close_redis()
+            fake_client.aclose.assert_awaited_once()
+            fake_pool.disconnect.assert_awaited_once()
+
+
+def test_providers_accept_custom_http_client():
+    """Vérifie que chaque provider et registry accepte l'injection d'un client HTTP personnalisé."""
+    from unittest.mock import MagicMock
+
+    from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
+    from app.providers.ebay_browse import EbayBrowseProvider
+    from app.providers.gibert import GibertProvider
+    from app.providers.momox import MomoxProvider
+    from app.providers.recyclivre import RecyclivreProvider
+    from app.providers.registry import ProviderRegistry
+    from app.services.book_metadata_service import BookMetadataService
+
+    dummy_client = MagicMock()
+
+    momox = MomoxProvider(http_client=dummy_client)
+    assert momox.http_client is dummy_client
+
+    recyclivre = RecyclivreProvider(http_client=dummy_client)
+    assert recyclivre.http_client is dummy_client
+
+    gibert = GibertProvider(http_client=dummy_client)
+    assert gibert.http_client is dummy_client
+
+    ebay = EbayBrowseProvider(http_client=dummy_client)
+    assert ebay.http_client is dummy_client
+
+    chasse = ChasseAuxLivresProvider(http_client=dummy_client)
+    assert chasse.http_client is dummy_client
+
+    registry = ProviderRegistry(http_client=dummy_client)
+    for p in registry.providers:
+        if hasattr(p, "http_client"):
+            assert p.http_client is dummy_client
+
+    meta_service = BookMetadataService(http_client=dummy_client)
+    assert meta_service.http_client is dummy_client

@@ -10,6 +10,7 @@ import urllib.parse
 import httpx
 
 from app.core.constants import MatchConfidence
+from app.core.http_client import get_shared_http_client
 from app.providers.base import MarketOffer
 from app.services.market_price_service import is_very_good_or_better
 from app.utils.text import normalize_text
@@ -44,8 +45,13 @@ class ChasseAuxLivresProvider:
     name: str = "chasse_aux_livres"
     BASE_URL: str = "https://www.chasse-aux-livres.fr"
 
-    def __init__(self, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        timeout_seconds: float = 10.0,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
+        self.http_client = http_client
 
     @staticmethod
     def is_title_coherent(expected: str, found: str) -> bool:
@@ -111,72 +117,73 @@ class ChasseAuxLivresProvider:
         search_encoded = urllib.parse.quote_plus(query)
         search_url = f"{self.BASE_URL}/search?query={search_encoded}&catalog=fr"
 
+        client = self.http_client or get_shared_http_client()
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
-                async with httpx.AsyncClient(
+                # Étape 1 : Récupérer la page de recherche avec ses cookies et son token hash
+                resp1 = await client.get(
+                    search_url,
                     headers=CHASSE_BROWSER_HEADERS,
                     timeout=self.timeout_seconds,
                     follow_redirects=True,
-                ) as client:
-                    # Étape 1 : Récupérer la page de recherche avec ses cookies et son token hash
-                    resp1 = await client.get(search_url)
-                    if resp1.status_code == 429 or "Vérification robot" in resp1.text:
-                        if attempt < max_retries:
-                            wait_time = 2.0 * (attempt + 1)
-                            logger.warning(
-                                "Chasse-aux-livres anti-bot/rate-limit pour '%s' (tentative %d/%d). Pause %.1fs...",
-                                query,
-                                attempt + 1,
-                                max_retries + 1,
-                                wait_time,
-                            )
-                            await asyncio.sleep(wait_time)
-                            continue
-                        logger.warning("Chasse-aux-livres rate-limit persistant pour '%s'.", query)
-                        return []
-
-                    if resp1.status_code != 200:
-                        logger.debug(
-                            "Chasse-aux-livres returned HTTP %d on search page", resp1.status_code
+                )
+                if resp1.status_code == 429 or "Vérification robot" in resp1.text:
+                    if attempt < max_retries:
+                        wait_time = 2.0 * (attempt + 1)
+                        logger.warning(
+                            "Chasse-aux-livres anti-bot/rate-limit pour '%s' (tentative %d/%d). Pause %.1fs...",
+                            query,
+                            attempt + 1,
+                            max_retries + 1,
+                            wait_time,
                         )
-                        return []
-
-                    html_page = resp1.text
-                    hash_match = re.search(r'data-hash=["\']([a-zA-Z0-9_-]{16,128})["\']', html_page)
-                    if not hash_match:
-                        logger.debug("No search data-hash found in Chasse-aux-livres page")
-                        return []
-
-                    data_hash = hash_match.group(1)
-
-                    # Étape 2 : Récupérer les résultats agrégés via l'endpoint REST
-                    ajax_headers = {
-                        "Accept": "application/json, text/javascript, */*; q=0.01",
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Referer": search_url,
-                    }
-                    rest_url = f"{self.BASE_URL}/rest/search-results?h={data_hash}&p=1&l=1&b=d"
-                    resp2 = await client.get(rest_url, headers=ajax_headers)
-                    if resp2.status_code != 200:
-                        logger.debug(
-                            "Chasse-aux-livres returned HTTP %d on search-results", resp2.status_code
-                        )
-                        return []
-
-                    data = resp2.json()
-                    d_html = data.get("d", "")
-                    if not d_html:
-                        return []
-
-                    # Récupération fine et vérifiée des offres partenaires d'occasion
-                    deep_offers = await self._try_deep_lookup(
-                        client, d_html, query, expected_title=title
-                    )
-                    if deep_offers:
-                        return deep_offers
-
+                        await asyncio.sleep(wait_time)
+                        continue
+                    logger.warning("Chasse-aux-livres rate-limit persistant pour '%s'.", query)
                     return []
+
+                if resp1.status_code != 200:
+                    logger.debug(
+                        "Chasse-aux-livres returned HTTP %d on search page", resp1.status_code
+                    )
+                    return []
+
+                html_page = resp1.text
+                hash_match = re.search(r'data-hash=["\']([a-zA-Z0-9_-]{16,128})["\']', html_page)
+                if not hash_match:
+                    logger.debug("No search data-hash found in Chasse-aux-livres page")
+                    return []
+
+                data_hash = hash_match.group(1)
+
+                # Étape 2 : Récupérer les résultats agrégés via l'endpoint REST
+                ajax_headers = {
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": search_url,
+                }
+                rest_url = f"{self.BASE_URL}/rest/search-results?h={data_hash}&p=1&l=1&b=d"
+                resp2 = await client.get(rest_url, headers=ajax_headers, timeout=self.timeout_seconds)
+                if resp2.status_code != 200:
+                    logger.debug(
+                        "Chasse-aux-livres returned HTTP %d on search-results", resp2.status_code
+                    )
+                    return []
+
+                data = resp2.json()
+                d_html = data.get("d", "")
+                if not d_html:
+                    return []
+
+                # Récupération fine et vérifiée des offres partenaires d'occasion
+                deep_offers = await self._try_deep_lookup(
+                    client, d_html, query, expected_title=title
+                )
+                if deep_offers:
+                    return deep_offers
+
+                return []
 
             except Exception as exc:
                 if attempt < max_retries:

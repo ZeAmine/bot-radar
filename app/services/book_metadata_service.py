@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.core.constants import MatchConfidence
-from app.services.matcher_service import normalize_text
+from app.core.http_client import get_shared_http_client
+from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.book_metadata")
 
@@ -138,8 +139,13 @@ class BookMetadataService:
 
     BNF_SRU_URL = "https://catalogue.bnf.fr/api/SRU"
 
-    def __init__(self, timeout_seconds: float = 8.0) -> None:
+    def __init__(
+        self,
+        timeout_seconds: float = 8.0,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
+        self.http_client = http_client
 
     async def lookup(self, query: str) -> BookMetadata | None:
         """Identifie une œuvre BD à partir d'un titre, ISBN ou URL Vinted."""
@@ -213,58 +219,62 @@ class BookMetadataService:
 
         results: list[tuple[float, BookMetadata]] = []
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds, headers={"User-Agent": "RadarBot/1.0"}) as client:
-                resp = await client.get(url)
-                if resp.status_code != 200:
-                    logger.warning("BNF SRU returned status %d", resp.status_code)
-                    return []
+            client = self.http_client or get_shared_http_client()
+            resp = await client.get(
+                url,
+                timeout=self.timeout_seconds,
+                headers={"User-Agent": "RadarBot/1.0"},
+            )
+            if resp.status_code != 200:
+                logger.warning("BNF SRU returned status %d", resp.status_code)
+                return []
 
-                root = ET.fromstring(resp.content)
-                for record in root.findall(".//{http://www.loc.gov/zing/srw/}recordData"):
-                    titles = [t.text for t in record.findall(".//{http://purl.org/dc/elements/1.1/}title") if t.text]
-                    creators = [c.text for c in record.findall(".//{http://purl.org/dc/elements/1.1/}creator") if c.text]
-                    identifiers = [i.text for i in record.findall(".//{http://purl.org/dc/elements/1.1/}identifier") if i.text]
-                    publishers = [p.text for p in record.findall(".//{http://purl.org/dc/elements/1.1/}publisher") if p.text]
+            root = ET.fromstring(resp.content)
+            for record in root.findall(".//{http://www.loc.gov/zing/srw/}recordData"):
+                titles = [t.text for t in record.findall(".//{http://purl.org/dc/elements/1.1/}title") if t.text]
+                creators = [c.text for c in record.findall(".//{http://purl.org/dc/elements/1.1/}creator") if c.text]
+                identifiers = [i.text for i in record.findall(".//{http://purl.org/dc/elements/1.1/}identifier") if i.text]
+                publishers = [p.text for p in record.findall(".//{http://purl.org/dc/elements/1.1/}publisher") if p.text]
 
-                    if not titles:
-                        continue
+                if not titles:
+                    continue
 
-                    isbn13: str | None = None
-                    for ident in identifiers:
-                        if "ISBN" in ident.upper():
-                            c_isbn = re.sub(r"[^0-9X]", "", ident.upper())
-                            if len(c_isbn) == 13:
-                                isbn13 = c_isbn
-                                break
-                            elif len(c_isbn) == 10 and not isbn13:
-                                isbn13 = c_isbn
+                isbn13: str | None = None
+                for ident in identifiers:
+                    if "ISBN" in ident.upper():
+                        c_isbn = re.sub(r"[^0-9X]", "", ident.upper())
+                        if len(c_isbn) == 13:
+                            isbn13 = c_isbn
+                            break
+                        elif len(c_isbn) == 10 and not isbn13:
+                            isbn13 = c_isbn
 
-                    if not isbn13:
-                        continue
+                if not isbn13:
+                    continue
 
-                    main_title = clean_bnf_title(titles[0])
-                    author_name = clean_bnf_creator(creators[0]) if creators else None
-                    pub_name = clean_bnf_publisher(publishers[0]) if publishers else None
+                main_title = clean_bnf_title(titles[0])
+                author_name = clean_bnf_creator(creators[0]) if creators else None
+                pub_name = clean_bnf_publisher(publishers[0]) if publishers else None
 
-                    # Calcul d'un score de similarité d'auteur si un indice d'auteur est donné
-                    score = 1.0
-                    if author_hint and creators:
-                        hint_norm = normalize_text(author_hint)
-                        creators_norm = " ".join(normalize_text(c) for c in creators)
-                        ratio = difflib.SequenceMatcher(None, hint_norm, creators_norm).ratio()
-                        for word in hint_norm.split():
-                            if len(word) >= 3 and word in creators_norm:
-                                ratio += 0.4
-                        score += ratio
+                # Calcul d'un score de similarité d'auteur si un indice d'auteur est donné
+                score = 1.0
+                if author_hint and creators:
+                    hint_norm = normalize_text(author_hint)
+                    creators_norm = " ".join(normalize_text(c) for c in creators)
+                    ratio = difflib.SequenceMatcher(None, hint_norm, creators_norm).ratio()
+                    for word in hint_norm.split():
+                        if len(word) >= 3 and word in creators_norm:
+                            ratio += 0.4
+                    score += ratio
 
-                    meta = BookMetadata(
-                        title=main_title,
-                        author=author_name,
-                        publisher=pub_name,
-                        isbn13=isbn13,
-                        source="bnf",
-                    )
-                    results.append((score, meta))
+                meta = BookMetadata(
+                    title=main_title,
+                    author=author_name,
+                    publisher=pub_name,
+                    isbn13=isbn13,
+                    source="bnf",
+                )
+                results.append((score, meta))
 
         except Exception as exc:
             logger.warning("Erreur lors de la requête BNF SRU (%s) : %s", cql_query, exc)

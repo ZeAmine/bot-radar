@@ -45,6 +45,15 @@ async def run_worker() -> None:
         poller_task.cancel()
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await poller_task
+
+        from app.core.http_client import close_shared_http_client
+        from app.core.redis import close_redis
+        from app.core.tasks import wait_all_background_tasks
+
+        await wait_all_background_tasks(timeout=5.0)
+        await close_shared_http_client()
+        await close_redis()
+
         logger.info("Worker autonome Radar Bot arrêté proprement.")
 
 
