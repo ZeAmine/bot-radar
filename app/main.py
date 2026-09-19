@@ -1,5 +1,7 @@
 """Point d'entrée principal de l'application FastAPI."""
 
+import asyncio
+import contextlib
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -36,9 +38,30 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from app.bot.bot_instance import bot, setup_bot_commands
     await setup_bot_commands(bot)
 
+    # Démarrage du planificateur APScheduler et du poller Vinted unifiés
+    from app.core.tasks import safe_create_task
+    from app.tasks.scheduler import scheduler
+    from app.tasks.vinted_poller import run_vinted_poller
+
+    stop_event = asyncio.Event()
+    poller_task = None
+
+    if settings.VINTED_POLLER_ENABLED:
+        scheduler.start()
+        poller_task = safe_create_task(run_vinted_poller(stop_event))
+
     yield
 
     # Nettoyage à la fermeture
+    stop_event.set()
+    if poller_task:
+        poller_task.cancel()
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await poller_task
+
+    with contextlib.suppress(Exception):
+        scheduler.shutdown(wait=False)
+
     from app.core.http_client import close_shared_http_client
     from app.core.redis import close_redis
     from app.core.tasks import wait_all_background_tasks

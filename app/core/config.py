@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     PRICE_REFRESH_TIMES: str = "07:00,19:00"
 
     # Surveillance Vinted en temps réel
-    RADAR_API_URL: str = "http://app:8000"
+    RADAR_API_URL: str = "http://127.0.0.1:8000"
     PUBLIC_BASE_URL: str = "https://radar.aminezegmou.fr"
     VINTED_POLL_INTERVAL_SECONDS: int = 20
     VINTED_POLLER_ENABLED: bool = True

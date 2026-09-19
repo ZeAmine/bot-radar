@@ -9,8 +9,7 @@ Le projet est déployé en production 24h/24 sur une instance Oracle Cloud Free 
 - **Répertoire distant** : `~/radar-bot/`
 - **Domaine public** : `https://radar.aminezegmou.fr`
 - **Stack Docker Compose** :
-  - `radar_app` : API FastAPI & webhook Telegram (port 8000)
-  - `radar_worker` : Worker d'arrière-plan APScheduler
+  - `radar_app` : API FastAPI, webhook Telegram, APScheduler et Vinted Poller unifiés (port 8000)
   - `radar_postgres` : PostgreSQL 16
   - `radar_redis` : Redis 7
   - `radar_caddy` : Reverse proxy HTTPS automatique

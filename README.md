@@ -368,8 +368,7 @@ Pour les bandes dessinées, mangas et comics, le bot propose un avantage décisi
 
 ### Architecture recommandée
 - **Reverse Proxy** : NGINX ou Traefik gérant les certificats SSL/TLS Let's Encrypt.
-- **Serveur d'application** : Conteneur `radar_app` (FastAPI + Uvicorn) exposé uniquement au reverse proxy.
-- **Worker de fond** : Conteneur `radar_worker` (`python -m app.worker`) gérant l'ordonnancement APScheduler.
+- **Serveur d'application unifié** : Conteneur `radar_app` (FastAPI + Uvicorn, bot Telegram, APScheduler et Vinted Poller intégrés) exposé uniquement au reverse proxy.
 - **Base de données** : PostgreSQL 16 avec sauvegardes régulières (`pg_dump`).
 - **Cache / FSM** : Redis 7 avec persistance AOF activée.
 
