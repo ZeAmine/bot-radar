@@ -136,9 +136,12 @@ class BookRepository:
         books = await self.get_all_books_for_alert(alert_id)
         if not books:
             return None
-        # Privilégier un livre qui possède déjà un cache de prix valide
+        # Privilégier un livre qui possède déjà un cache de prix valide (live ou historique 1 an)
         for b in books:
-            if b.market_cache and b.market_cache.lowest_delivered_price_cents:
+            if b.market_cache and (
+                b.market_cache.lowest_delivered_price_cents is not None
+                or b.market_cache.historical_low_1y_cents is not None
+            ):
                 return b
         return books[0]
 

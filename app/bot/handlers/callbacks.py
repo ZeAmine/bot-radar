@@ -137,14 +137,23 @@ async def handle_view_market_details(
             title=listing.title,
         )
 
+    has_valid_price = (
+        book is not None
+        and book.market_cache is not None
+        and (
+            book.market_cache.lowest_delivered_price_cents is not None
+            or book.market_cache.historical_low_1y_cents is not None
+        )
+    )
+
     # Si le livre ou le cache de prix est absent, tenter un rafraîchissement direct
-    if (book and not book.market_cache) or (not book and not books_in_series):
+    if (book and not has_valid_price) or (not book and not books_in_series):
         try:
             from app.core.constants import ComparisonStatus
             from app.db.repositories.market_price_repo import MarketPriceRepository
             from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 
-            provider = ChasseAuxLivresProvider(timeout_seconds=5.0)
+            provider = ChasseAuxLivresProvider(timeout_seconds=6.0)
             if target_isbn:
                 offers = await provider.get_offers(isbn13=target_isbn, title="")
             else:

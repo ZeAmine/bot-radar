@@ -230,8 +230,12 @@ class MarketPriceService:
         tome_result: "TomeMatchResult | None" = None,
     ) -> str:
         """Génère le texte complet du panneau callback 'Prix du marché'."""
+        # Résolution de repli : si book est None mais qu'un seul livre est présent dans la série
+        if not book and books_in_series and len(books_in_series) == 1 and not (tome_result and tome_result.is_lot):
+            book = books_in_series[0]
+
         # A. Cas d'un lot ou d'une série sans tome unique
-        if not book and books_in_series and len(books_in_series) > 1:
+        if not book and books_in_series and (len(books_in_series) > 1 or (tome_result and tome_result.is_lot)):
             vinted_str = (
                 format_cents(listing.estimated_total_cents)
                 if listing.estimated_total_cents
@@ -335,7 +339,8 @@ class MarketPriceService:
 
         cache = book.market_cache
         lowest_delivered = cache.lowest_delivered_price_cents
-        if lowest_delivered is None:
+        ref_price = cache.historical_low_1y_cents or lowest_delivered
+        if ref_price is None:
             return (
                 "📉 <b>Prix du marché</b>\n\n"
                 "Aucune offre d'occasion comparable n'a pu être trouvée "
@@ -426,6 +431,8 @@ class MarketPriceService:
                 p_cents = p_data.get("total_cents", 0)
                 p_cond = normalize_secondhand_condition(p_data.get("condition"))
                 lines.append(f"• {p_name} : {format_cents(p_cents)} ({p_cond})")
+        elif cache.historical_low_1y_cents:
+            lines.append("\n<i>(Cote d'occasion basée sur le plus bas historique 1 an)</i>")
 
         if books_in_series and len(books_in_series) > 1:
             other_books = [b for b in books_in_series if b.id != book.id]

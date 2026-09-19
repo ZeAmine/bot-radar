@@ -153,6 +153,43 @@ def test_comparator_historical_low_when_status_unavailable():
     assert "📉 Occasion : 18,50 €" in summary
     assert "✅ Écart : -4,81 €" in summary
 
+    # Vérifier que le panneau 'Prix du marché' ne renvoie plus 'Aucune offre d'occasion comparable'
+    card = MarketPriceService.format_market_details_card(listing, book)
+    assert "📉 <b>Prix du marché</b>" in card
+    assert "💵 Offres : 18,50 €" in card
+    assert "✅ Écart : -4,81 €" in card
+    assert "Cote d'occasion basée sur le plus bas historique 1 an" in card
+
+
+def test_comparator_single_book_series_fallback():
+    # Si book est None mais que books_in_series contient 1 livre
+    book = create_book_with_cache(
+        lowest_delivered_cents=None,
+        historical_low_1y_cents=1548,
+    )
+    listing = create_listing(estimated_total_cents=1200)
+
+    card = MarketPriceService.format_market_details_card(
+        listing=listing,
+        book=None,
+        books_in_series=[book],
+    )
+    assert "📉 <b>Prix du marché</b>" in card
+    assert "💵 Offres : 15,48 €" in card
+    assert "✅ Écart : -3,48 €" in card
+
+
+def test_comparator_no_price_at_all_returns_unavailable():
+    # Si le cache n'a ni offre directe ni historique 1 an
+    book = create_book_with_cache(
+        lowest_delivered_cents=None,
+        historical_low_1y_cents=None,
+    )
+    listing = create_listing(estimated_total_cents=1200)
+
+    card = MarketPriceService.format_market_details_card(listing, book)
+    assert "Aucune offre d'occasion comparable n'a pu être trouvée" in card
+
 
 def test_comparator_excludes_brand_new_and_inferior_conditions():
     """Vérifie l'exclusion des offres Neuf, Bon, Correct et le plafonnement aux 5 meilleures offres."""
