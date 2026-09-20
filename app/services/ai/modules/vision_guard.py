@@ -11,13 +11,15 @@ from app.services.ai.schemas import VisionGuardAnalysisResult, VisionPhotoInspec
 
 logger = logging.getLogger(__name__)
 
-VISION_SYSTEM_PROMPT = """Tu es l'inspecteur visuel de Radar Bot (détection de défauts Vinted et identification d'articles).
-Tu reçois jusqu'à 5 photos d'une annonce avec l'état déclaré et la description.
+VISION_SYSTEM_PROMPT = """Tu es l'inspecteur visuel de Radar Bot (détection de défauts et
+identification d'articles). Tu reçois jusqu'à 5 photos avec l'état déclaré et la description.
 
 Examine CHAQUE photo attentivement :
 1. Défauts physiques visibles : accrocs, déchirures, coins tassés, plis, pliures, rayures, etc.
 2. Incohérences : Défauts contredisant un état déclaré comme 'Neuf' ou 'Très bon état'.
-3. Livres, BD, mangas, jeux : identifier le numéro de tome (ex: 1, 2...) ou sous-titre visible sur la couverture ou la tranche (spine).
+3. Livres, BD, mangas, jeux :
+   - S'il y a un SEUL tome : identifier le tome (ex: 1, 2...) ou sous-titre sur couverture/tranche.
+   - S'il y a PLUSIEURS tomes ou un LOT : "is_lot": true, et "identified_tomes": [1, 2, 3].
 4. Boîtes vides / arnaques : jaquette seule, fourreau sans livre, cartouche manquante.
 
 Retourne STRICTEMENT un objet JSON :
@@ -25,7 +27,9 @@ Retourne STRICTEMENT un objet JSON :
   "has_visual_defects": bool,
   "is_suspicious": bool,
   "summary": "synthèse en 1 phrase claire",
+  "is_lot": bool,
   "identified_tome": int ou null,
+  "identified_tomes": [int],
   "identified_subtitle": "sous-titre exact ou null",
   "inspections": [
     {
@@ -110,14 +114,33 @@ class VisionGuardModule(BaseAIModule):
             elif isinstance(tome_raw, str) and tome_raw.isdigit():
                 identified_tome = int(tome_raw)
 
+            is_lot = bool(data.get("is_lot", False))
+            tomes_raw = data.get("identified_tomes", [])
+            identified_tomes: list[int] = []
+            if isinstance(tomes_raw, list):
+                for t in tomes_raw:
+                    if isinstance(t, int):
+                        identified_tomes.append(t)
+                    elif isinstance(t, str) and t.isdigit():
+                        identified_tomes.append(int(t))
+
+            if len(identified_tomes) > 1:
+                is_lot = True
+            elif len(identified_tomes) == 1 and identified_tome is None:
+                identified_tome = identified_tomes[0]
+
             sub_raw = data.get("identified_subtitle")
-            identified_subtitle = str(sub_raw).strip() if sub_raw and str(sub_raw).lower() != "null" else None
+            identified_subtitle = (
+                str(sub_raw).strip() if sub_raw and str(sub_raw).lower() != "null" else None
+            )
 
             return VisionGuardAnalysisResult(
                 has_visual_defects=bool(data.get("has_visual_defects", False)),
                 is_suspicious=bool(data.get("is_suspicious", False)),
                 summary=str(data.get("summary", "")).strip(),
+                is_lot=is_lot,
                 identified_tome=identified_tome,
+                identified_tomes=identified_tomes,
                 identified_subtitle=identified_subtitle,
                 inspections=inspections,
             )

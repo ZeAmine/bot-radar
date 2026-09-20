@@ -1,14 +1,13 @@
 """Tests unitaires pour la comparaison de prix sur séries multi-tomes et lots."""
 
 from datetime import UTC, datetime, timedelta
-import pytest
 
 from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
 from app.services.market_price_service import MarketPriceService
-from app.services.tome_extractor import TomeMatchResult
+from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 
 
 def _create_mock_book(title: str, price_cents: int) -> Book:
@@ -82,7 +81,7 @@ def test_series_matching_lot_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📦 Lot (3 tomes) : ~54,50 €" in summary
+    assert "📊 Prix du marché (Lot T1, T2, T3) : ~54,50 €" in summary
     # Gain : 25.00 - 54.50 = -29.50 €
     assert "-29,50 €" in summary
 
@@ -142,8 +141,58 @@ def test_series_matching_lot_card():
         tome_result=tome_res,
     )
     assert "📊 <b>Prix du marché</b>" in card
-    assert "💵 Lot (2 tomes) : ~34,50 €" in card
+    assert "💵 Lot (T1, T2) : ~34,50 €" in card
     assert "Cote par tome (Min sur 1 an) :" in card
     assert "• Tome 1 : 16,00 €" in card
     assert "• Tome 2 : 18,50 €" in card
     assert "Derniere MAJ :" in card
+
+
+def test_series_matching_chateau_des_animaux_lot_1_2_3():
+    """Vérifie le cas réel de 'Le château des animaux 1.2.3' avec historique et live."""
+    b1 = _create_mock_book("Le Château des animaux — Tome 1 (Miss Bengalore)", 1267)
+    b1.market_cache.historical_low_1y_cents = 1267
+
+    b2 = _create_mock_book("Le Château des animaux — Tome 2 (Les Marguerites d'hiver)", 1548)
+    b2.market_cache.historical_low_1y_cents = 1548
+
+    b3 = _create_mock_book("Le Château des animaux — Tome 3 (La Nuit des justes)", 2223)
+    b3.market_cache.historical_low_1y_cents = 1415
+
+    b4 = _create_mock_book("Le Château des animaux — Tome 4 (Le Sang du roi)", 1563)
+    b4.market_cache.historical_low_1y_cents = 1563
+
+    books = [b1, b2, b3, b4]
+
+    # Extraction depuis le titre de l'utilisateur
+    tome_res = TomeExtractor.extract(
+        title="Le château des animaux,  1.2.3",
+        series_key="Le château des animaux",
+    )
+    assert tome_res.is_lot is True
+    assert tome_res.lot_tomes == [1, 2, 3]
+
+    listing = Listing(
+        source_name="vinted",
+        external_id="chateau_123",
+        url="https://vinted.fr",
+        title="Le château des animaux,  1.2.3",
+        normalized_title="le chateau des animaux 1 2 3",
+        category_slug="bd_comics",
+        item_price_cents=3300,
+        estimated_total_cents=3718,
+    )
+
+    summary = MarketPriceService.get_comparison_summary(
+        listing=listing,
+        book=None,
+        books_in_series=books,
+        tome_result=tome_res,
+    )
+    assert summary is not None
+    # Live: 12.67 + 15.48 + 22.23 = 50.38 €
+    assert "📊 Prix du marché (Lot T1, T2, T3) : ~50,38 €" in summary
+    # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
+    assert "🎯 Plus bas constaté (Lot) : ~42,30 €" in summary
+    # Écart vs hist: 37.18 - 42.30 = -5.12 €
+    assert "✅ Écart : <b>-5,12 €</b>" in summary

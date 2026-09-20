@@ -11,7 +11,9 @@ class NaturalAddResult(BaseModel):
         default="bd_comics",
         description="Slug de catégorie: bd_comics, tech, gaming, clothes",
     )
-    isbn13: str | None = Field(default=None, description="ISBN-13 officiel si livre unique / tome précis")
+    isbn13: str | None = Field(
+        default=None, description="ISBN-13 officiel si livre unique / tome précis"
+    )
     is_series: bool = Field(default=False, description="True s'il s'agit d'une série multi-tomes")
     author: str | None = Field(default=None, description="Auteur identifié")
     publisher: str | None = Field(default=None, description="Éditeur ou collection identifié")
@@ -86,8 +88,19 @@ class VisionGuardAnalysisResult(BaseModel):
     has_visual_defects: bool = Field(default=False, description="True si au moins 1 défaut visuel")
     is_suspicious: bool = Field(default=False, description="True si arnaque/boîte vide suspectée")
     summary: str = Field(default="", description="Résumé synthétique pour Telegram")
-    identified_tome: int | None = Field(default=None, description="Numéro de tome identifié sur couverture/tranche")
-    identified_subtitle: str | None = Field(default=None, description="Sous-titre ou titre du tome identifié")
+    is_lot: bool = Field(
+        default=False, description="True si plusieurs tomes/articles sont visibles ensemble (lot)"
+    )
+    identified_tome: int | None = Field(
+        default=None, description="Numéro de tome identifié sur couverture/tranche"
+    )
+    identified_tomes: list[int] = Field(
+        default_factory=list,
+        description="Numéros de tomes identifiés si lot ou plusieurs tomes visibles",
+    )
+    identified_subtitle: str | None = Field(
+        default=None, description="Sous-titre ou titre du tome identifié"
+    )
     inspections: list[VisionPhotoInspection] = Field(default_factory=list)
 
 

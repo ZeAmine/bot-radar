@@ -113,6 +113,55 @@ def test_tome_extractor_lot_detection():
     assert res6.is_lot is True
     assert res6.lot_count == 3
 
+    # Séquences séparées par des points, virgules, tirets, etc. (ex: 1.2.3)
+    res7 = TomeExtractor.extract(
+        "Le château des animaux,  1.2.3", series_key="Le château des animaux"
+    )
+    assert res7.is_lot is True
+    assert res7.lot_tomes == [1, 2, 3]
+
+    res8 = TomeExtractor.extract(
+        "Le château des animaux 1. 2. 3", series_key="Le château des animaux"
+    )
+    assert res8.is_lot is True
+    assert res8.lot_tomes == [1, 2, 3]
+
+    res9 = TomeExtractor.extract(
+        "Le château des animaux 1, 2, 3", series_key="Le château des animaux"
+    )
+    assert res9.is_lot is True
+    assert res9.lot_tomes == [1, 2, 3]
+
+    res10 = TomeExtractor.extract(
+        "Le château des animaux 1-2-3", series_key="Le château des animaux"
+    )
+    assert res10.is_lot is True
+    assert res10.lot_tomes == [1, 2, 3]
+
+    res11 = TomeExtractor.extract(
+        "Le château des animaux 1/2/3", series_key="Le château des animaux"
+    )
+    assert res11.is_lot is True
+    assert res11.lot_tomes == [1, 2, 3]
+
+    res12 = TomeExtractor.extract(
+        "Le château des animaux 1 à 3", series_key="Le château des animaux"
+    )
+    assert res12.is_lot is True
+    assert res12.lot_tomes == [1, 2, 3]
+
+    res13 = TomeExtractor.extract(
+        "Le château des animaux 1-3", series_key="Le château des animaux"
+    )
+    assert res13.is_lot is True
+    assert res13.lot_tomes == [1, 2, 3]
+
+    res14 = TomeExtractor.extract(
+        "Le château des animaux tomes 1, 2 et 3", series_key="Le château des animaux"
+    )
+    assert res14.is_lot is True
+    assert res14.lot_tomes == [1, 2, 3]
+
 
 def test_tome_extractor_description_fallback():
     """Vérifie le repli sur la description si le titre ne mentionne pas le tome."""
