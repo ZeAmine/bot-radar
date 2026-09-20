@@ -547,7 +547,7 @@ async def save_alert(
             lines.append(f"📊 <b>Prix du marché :</b> {lowest_str}")
             if hist_low:
                 hist_low_str = f"{hist_low / 100:.2f} €".replace(".", ",")
-                lines.append(f"🎯 <b>Plus bas constaté (1 an) :</b> {hist_low_str}")
+                lines.append(f"📉 <b>Prix bas constaté (1 an) :</b> {hist_low_str}")
             lines.append("")
 
         lines.append(

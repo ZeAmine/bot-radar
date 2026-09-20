@@ -143,7 +143,9 @@ def test_series_matching_lot_card():
         tome_result=tome_res,
     )
     assert "📊 <b>Prix du marché</b>" in card
-    assert "💵 Lot (T1, T2) : ~34,50 €" in card
+    assert "💵 Lot" not in card
+    assert "🆕 Vinted" not in card
+    assert "Écart" not in card
     assert "Cote par tome (Min sur 1 an) :" in card
     assert "• Tome 1 : 16,00 €" in card
     assert "• Tome 2 : 18,50 €" in card
@@ -195,7 +197,7 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     # Live: 12.67 + 15.48 + 22.23 = 50.38 €
     assert "📊 Prix du marché (Lot T1, T2, T3) : ~50,38 €" in summary
     # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
-    assert "🎯 Plus bas constaté (Lot) : ~42,30 €" in summary
+    assert "📉 Prix bas constaté (Lot) : ~42,30 €" in summary
     # Écart vs marché en direct: 37.18 - 50.38 = -13.20 €
     assert "✅ Écart : <b>-13,20 €</b>" in summary
 

@@ -132,25 +132,26 @@ def test_comparator_with_historical_low_1y():
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     assert "📊 Prix du marché : 22,00 €" in summary
-    assert "🎯 Plus bas constaté : 18,50 €" in summary
+    assert "📉 Prix bas constaté : 18,50 €" in summary
     assert "✅ Écart : <b>-8,31 €</b>" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
-    assert "💵 Offres : 22,00 €" in card
-    assert "✅ Écart : -8,31 €" in card
-    assert "🆕 Vinted : 13,69 €" in card
+    # Les lignes redondantes Vinted, Offres et Écart sont supprimées
+    assert "🆕 Vinted" not in card
+    assert "💵 Offres" not in card
+    assert "Écart" not in card
     assert "Derniere MAJ :" in card
 
 
 def test_comparator_no_historical_low_does_not_display_target_line():
-    """Vérifie que si aucun historique 1 an n'existe, la ligne '🎯 Plus bas constaté' n'est pas affichée."""
+    """Vérifie que si aucun historique 1 an n'existe, la ligne '📉 Prix bas constaté' n'est pas affichée."""
     book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=None)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     assert "📊 Prix du marché : 22,00 €" in summary
-    assert "🎯 Plus bas constaté" not in summary
+    assert "Prix bas constaté" not in summary
     assert "✅ Écart : <b>-8,31 €</b>" in summary
 
 
@@ -178,14 +179,13 @@ def test_comparator_market_details_card_excludes_amazon_de():
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "Amazon (De)" not in card
     assert "• Rakuten : 20,00 € (Très bon)" in card
-    assert "💵 Offres : 20,00 €" in card
-    assert "✅ Écart : -2,00 €" in card
-
-
+    assert "🆕 Vinted" not in card
+    assert "💵 Offres" not in card
+    assert "Écart" not in card
 
 
 def test_comparator_historical_low_when_status_unavailable():
-    # Même si l'offre en direct est indisponible aujourd'hui, le plus bas historique 1 an sert de référence
+    # Même si l'offre en direct est indisponible aujourd'hui, le prix bas historique 1 an sert de référence
     book = create_book_with_cache(
         status=ComparisonStatus.UNAVAILABLE,
         lowest_delivered_cents=None,
@@ -196,15 +196,17 @@ def test_comparator_historical_low_when_status_unavailable():
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     assert "📊 Prix du marché : Indisponible (occasion)" in summary
-    assert "🎯 Plus bas constaté : 18,50 €" in summary
+    assert "📉 Prix bas constaté : 18,50 €" in summary
     assert "✅ Écart : <b>-4,81 €</b>" in summary
 
-    # Vérifier que le panneau 'Prix du marché' ne renvoie plus 'Aucune offre d'occasion comparable'
+    # Vérifier que le panneau 'Prix du marché' affiche le prix bas constaté
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "📊 <b>Prix du marché</b>" in card
-    assert "💵 Offres : 18,50 €" in card
-    assert "✅ Écart : -4,81 €" in card
-    assert "Cote d'occasion basée sur le plus bas historique 1 an" in card
+    assert "📉 Prix bas constaté : 18,50 €" in card
+    assert "🆕 Vinted" not in card
+    assert "💵 Offres" not in card
+    assert "Écart" not in card
+    assert "Cote d'occasion basée sur le prix bas constaté 1 an" in card
 
 
 def test_comparator_single_book_series_fallback():
@@ -221,8 +223,7 @@ def test_comparator_single_book_series_fallback():
         books_in_series=[book],
     )
     assert "📊 <b>Prix du marché</b>" in card
-    assert "💵 Offres : 15,48 €" in card
-    assert "✅ Écart : -3,48 €" in card
+    assert "📉 Prix bas constaté : 15,48 €" in card
 
 
 def test_comparator_no_price_at_all_returns_unavailable():
@@ -259,10 +260,9 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
 
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "📊 <b>Prix du marché</b>" in card
-    assert "🆕 Vinted : 12,09 €" in card
-    # Le lowest_delivered doit s'aligner sur la meilleure offre TRÈS BON/COMME NEUF (Rakuten 8,69 € et non Momox 7,50 € Bon)
-    assert "💵 Offres : 8,69 €" in card
-    assert "⛔️ Écart : +3,40 €" in card
+    assert "🆕 Vinted" not in card
+    assert "💵 Offres" not in card
+    assert "Écart" not in card
 
     assert "<b>Comparatif par boutique :</b>" in card
     assert "• Rakuten : 8,69 € (Comme neuf)" in card

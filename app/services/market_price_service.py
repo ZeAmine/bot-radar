@@ -164,10 +164,10 @@ class MarketPriceService:
                 else:
                     lines.append(f"📊 Prix du marché{tome_suffix} : Indisponible (occasion)")
 
-                # Ligne 2 : Plus bas constaté sur 1 an
+                # Ligne 2 : Prix bas constaté sur 1 an
                 if has_hist_low and cache.historical_low_1y_cents is not None:
                     hist_str = format_cents(cache.historical_low_1y_cents)
-                    lines.append(f"🎯 Plus bas constaté{tome_suffix} : {hist_str}")
+                    lines.append(f"📉 Prix bas constaté{tome_suffix} : {hist_str}")
 
                 # Ligne 3 : Écart par rapport au marché (ou plus bas constaté si marché absent)
                 ref_price = (
@@ -266,7 +266,7 @@ class MarketPriceService:
                 if hist_prices:
                     hist_cumulated = sum(hist_prices)
                     lot_lines.append(
-                        f"🎯 Plus bas constaté (Lot) : ~{format_cents(hist_cumulated)}"
+                        f"📉 Prix bas constaté (Lot) : ~{format_cents(hist_cumulated)}"
                     )
 
                 if listing.estimated_total_cents is not None:
@@ -326,11 +326,11 @@ class MarketPriceService:
                 h_min = min(hist_prices)
                 h_max = max(hist_prices)
                 if h_min == h_max:
-                    series_lines.append(f"🎯 Plus bas constaté : {format_cents(h_min)}")
+                    series_lines.append(f"📉 Prix bas constaté : {format_cents(h_min)}")
                 else:
                     h_min_str = format_cents(h_min)
                     h_max_str = format_cents(h_max)
-                    series_lines.append(f"🎯 Plus bas constaté : {h_min_str} - {h_max_str}")
+                    series_lines.append(f"📉 Prix bas constaté : {h_min_str} - {h_max_str}")
 
             target_diff_prices = hist_prices if hist_prices else ref_prices
             if listing.estimated_total_cents is not None and target_diff_prices:
@@ -441,40 +441,8 @@ class MarketPriceService:
 
                 lines = [
                     "📊 <b>Prix du marché</b>\n",
-                    f"🆕 Vinted : {vinted_str}",
+                    "<b>Cote par tome (Min sur 1 an) :</b>",
                 ]
-                valid_books = [
-                    b
-                    for b in target_series_books
-                    if b.market_cache
-                    and (
-                        b.market_cache.historical_low_1y_cents is not None
-                        or b.market_cache.lowest_delivered_price_cents is not None
-                    )
-                ]
-                if valid_books:
-                    cumulated = sum(
-                        (
-                            b.market_cache.historical_low_1y_cents
-                            or b.market_cache.lowest_delivered_price_cents
-                        )
-                        for b in valid_books
-                    )
-                    tomes_desc = (
-                        f"T{', T'.join(str(t) for t in sorted(tome_result.lot_tomes))}"
-                        if tome_result.lot_tomes
-                        else f"{len(valid_books)} tomes"
-                    )
-                    lines.append(f"💵 Lot ({tomes_desc}) : ~{format_cents(cumulated)}")
-                    if listing.estimated_total_cents:
-                        diff = listing.estimated_total_cents - cumulated
-                        if diff < 0:
-                            lines.append(f"✅ Écart : -{format_cents(abs(diff))}")
-                        elif diff > 0:
-                            lines.append(f"⛔️ Écart : +{format_cents(abs(diff))}")
-                        else:
-                            lines.append("✅ Écart : 0,00 €")
-                lines.append("\n<b>Cote par tome (Min sur 1 an) :</b>")
                 for b in target_series_books:
                     t_name = clean_tome_display_title(b.title)
                     ref = (
@@ -596,22 +564,10 @@ class MarketPriceService:
 
         lines = [
             "📊 <b>Prix du marché</b>\n",
-            f"🆕 Vinted : {vinted_str}",
-            f"💵 Offres : {format_cents(ref_price)}",
         ]
 
-        if listing.estimated_total_cents is not None and ref_price:
-            diff_cents = listing.estimated_total_cents - ref_price
-            diff_euros = format_cents(abs(diff_cents))
-            if diff_cents > 0:
-                lines.append(f"⛔️ Écart : +{diff_euros}")
-            elif diff_cents < 0:
-                lines.append(f"✅ Écart : -{diff_euros}")
-            else:
-                lines.append("✅ Écart : 0,00 €")
-
         if valid_used_partners:
-            lines.append("\n<b>Comparatif par boutique :</b>")
+            lines.append("<b>Comparatif par boutique :</b>")
             sorted_partners = sorted(
                 valid_used_partners.items(),
                 key=lambda item: item[1].get("total_cents", 999999),
@@ -621,7 +577,8 @@ class MarketPriceService:
                 p_cond = normalize_secondhand_condition(p_data.get("condition"))
                 lines.append(f"• {p_name} : {format_cents(p_cents)} ({p_cond})")
         elif cache.historical_low_1y_cents:
-            lines.append("\n<i>(Cote d'occasion basée sur le plus bas historique 1 an)</i>")
+            lines.append(f"📉 Prix bas constaté : {format_cents(cache.historical_low_1y_cents)}")
+            lines.append("<i>(Cote d'occasion basée sur le prix bas constaté 1 an)</i>")
 
         if books_in_series and len(books_in_series) > 1:
             other_books = [b for b in books_in_series if b.id != book.id]

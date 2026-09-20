@@ -91,10 +91,11 @@ class IngestService:
             if already_notified:
                 continue
 
-            # 4. Calcul de la comparaison de marché
-            market_comparison_line = await self._resolve_market_comparison(listing, alert)
+            # 4. Résolution locale rapide du livre et liaison à l'alerte (< 5ms, zéro appel réseau externe)
+            if listing.category_slug == CategorySlug.BD_COMICS.value:
+                await self._link_bd_book(listing, alert)
 
-            # 5. Envoi de l'alerte Telegram
+            # 5. Envoi INSTANTANÉ de l'alerte Telegram (Priorité absolue, zéro attente réseau)
             notification_sent = False
             if alert.user and alert.user.telegram_user_id:
                 alert_kws = alert.include_keywords or ([alert.name] if alert.name else None)
@@ -103,7 +104,7 @@ class IngestService:
                     bot=self.bot,
                     chat_id=alert.user.telegram_user_id,
                     listing=listing,
-                    market_comparison_line=market_comparison_line,
+                    market_comparison_line=None,
                     alert_keywords=alert_kws,
                     is_bundle=getattr(match_result, "is_bundle", False),
                     alert=alert,
@@ -148,45 +149,21 @@ class IngestService:
             matches=match_items,
         )
 
-    async def _resolve_market_comparison(self, listing: Listing, alert: Any) -> str | None:
-        """Détermine la comparaison de marché appropriée selon la catégorie de l'annonce."""
-        if listing.category_slug == CategorySlug.BD_COMICS.value:
-            return await self._resolve_bd_market_comparison(listing, alert)
-
-        if listing.category_slug in (
-            CategorySlug.TECH.value,
-            CategorySlug.CLOTHES.value,
-            CategorySlug.GAMING.value,
-        ):
-            return TechMarketService.get_comparison_summary(
-                listing=listing,
-                alert=alert,
-            )
-
-        return None
-
-    async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> str | None:
-        """Résout le livre et le cache de prix de marché pour les BD & Comics de manière stricte par ISBN."""
+    async def _link_bd_book(self, listing: Listing, alert: Any) -> None:
+        """Résout le livre dans le catalogue local et le relie à l'alerte (pure requête SQL locale, < 5ms)."""
         book_repo = BookRepository(self.db)
         catalog_service = BookCatalogService(self.db)
 
         book = None
-        books_in_series = None
-        tome_result = None
-
-        # Cas 1 : L'alerte est une série multi-tomes (isbn is NULL)
         if not alert.isbn:
-            resolved_book, books_in_series, tome_result = (
-                await book_repo.resolve_book_for_listing(
-                    alert_id=alert.id,
-                    alert_name=alert.name,
-                    listing_title=listing.title,
-                    listing_description=listing.description,
-                )
+            resolved_book, _, tome_result = await book_repo.resolve_book_for_listing(
+                alert_id=alert.id,
+                alert_name=alert.name,
+                listing_title=listing.title,
+                listing_description=listing.description,
             )
             book = resolved_book
 
-            # Si aucun livre précis n'est encore lié pour ce tome dans cette série, tenter de résoudre l'ISBN exact
             if not book:
                 discovered_isbn = listing.isbn13
                 if not discovered_isbn and not (tome_result and tome_result.is_lot and tome_result.lot_tomes):
@@ -200,7 +177,6 @@ class IngestService:
                         logger.debug("Échec résolution ISBN pour l'annonce '%s': %s", listing.title, meta_err)
 
                 if discovered_isbn:
-                    # Persistance définitive du tome dans la base pour éviter les futurs appels
                     book = await book_repo.get_by_isbn13(discovered_isbn)
                     if not book:
                         book = await catalog_service.add_book(
@@ -210,7 +186,6 @@ class IngestService:
                     if book:
                         await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
         else:
-            # Cas 2 : L'alerte est un One-Shot ou possède un ISBN fixé
             book = await book_repo.get_book_for_alert(alert.id)
             if not book and alert.isbn:
                 book = await book_repo.get_by_isbn13(alert.isbn)
@@ -221,68 +196,3 @@ class IngestService:
                     )
                 if book:
                     await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
-
-        # Déterminer l'ISBN cible strict
-        target_isbn = (book.isbn13 if book else None) or alert.isbn or listing.isbn13
-
-        # RÈGLE D'OR : Sans ISBN-13 strict, NE PAS faire d'appel textuel aléatoire à Chasse-aux-livres !
-        if not target_isbn or len(target_isbn) < 10:
-            if books_in_series:
-                return MarketPriceService.get_comparison_summary(
-                    listing=listing,
-                    book=book,
-                    books_in_series=books_in_series,
-                    tome_result=tome_result,
-                )
-            return None
-
-        # Si le livre existe avec un ISBN strict mais sans cache valide, interroger Chasse-aux-livres UNIQUEMENT par ISBN
-        if book:
-            now_utc = datetime.now(UTC)
-            cache = book.market_cache
-            is_cache_valid = (
-                cache is not None
-                and cache.comparison_status == ComparisonStatus.AVAILABLE
-                and cache.lowest_delivered_price_cents is not None
-                and (cache.expires_at is None or cache.expires_at > now_utc)
-            )
-
-            if not is_cache_valid:
-                try:
-                    from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
-
-                    chasse_provider = ChasseAuxLivresProvider(timeout_seconds=6.0)
-                    # Interrogation EXCLUSIVEMENT par ISBN-13
-                    offers = await chasse_provider.get_offers(
-                        isbn13=target_isbn,
-                        title="",
-                    )
-                    if offers:
-                        market_repo = MarketPriceRepository(self.db)
-                        best = offers[0]
-                        await market_repo.save_snapshot(book.id, best)
-                        hist_low = (
-                            best.raw_payload.get("historical_low_1y_cents")
-                            if best.raw_payload
-                            else None
-                        )
-                        cache = await market_repo.update_or_create_cache(
-                            book_id=book.id,
-                            lowest_delivered_price_cents=best.delivered_price_cents,
-                            best_provider_name=best.raw_payload.get("best_merchant") or best.provider_name,
-                            best_source_url=best.source_url,
-                            confidence=best.confidence,
-                            comparison_status=ComparisonStatus.AVAILABLE,
-                            cache_duration_hours=24,
-                            historical_low_1y_cents=hist_low,
-                        )
-                        book.market_cache = cache
-                except Exception as exc:
-                    logger.debug("Échec de l'interrogation Chasse-aux-livres par ISBN '%s': %s", target_isbn, exc)
-
-        return MarketPriceService.get_comparison_summary(
-            listing=listing,
-            book=book,
-            books_in_series=books_in_series,
-            tome_result=tome_result,
-        )
