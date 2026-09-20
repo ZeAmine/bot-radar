@@ -219,3 +219,47 @@ async def test_chasse_aux_livres_strict_used_filtering():
 
         offers = await provider.get_offers(isbn13="9791095670568", title="Rip Tome 1")
         assert len(offers) == 0
+
+
+@pytest.mark.asyncio
+async def test_chasse_aux_livres_excludes_amazon_de():
+    """Vérifie que les offres Amazon (De) sont strictement ignorées au profit des marchands francophones."""
+    provider = ChasseAuxLivresProvider()
+
+    resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+    resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
+    resp_prod = httpx.Response(200, text=MOCK_PROD_HTML)
+    mock_lookup_with_amazon_de = {
+        "offers": {
+            "0": [
+                {
+                    "logo": {"name": "AMAZON_DE"},
+                    "condition": {"_name": "USED"},
+                    "subCondition": {"name": "Très bon"},
+                    "totalPrice": {"amount": 1200, "formattedPrice": "12,00 €"},
+                    "affiliateUrl": "https://example.com/amazon_de",
+                },
+                {
+                    "logo": {"name": "RAKUTEN"},
+                    "condition": {"_name": "USED"},
+                    "subCondition": {"name": "Très bon"},
+                    "totalPrice": {"amount": 1500, "formattedPrice": "15,00 €"},
+                    "affiliateUrl": "https://example.com/rakuten",
+                },
+            ]
+        }
+    }
+    resp_lookup = httpx.Response(200, json=mock_lookup_with_amazon_de)
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [resp_search, resp_rest, resp_prod, resp_lookup]
+
+        offers = await provider.get_offers(isbn13="9791095670568", title="Rip Tome 1")
+        assert len(offers) == 1
+        offer = offers[0]
+        # Doit choisir Rakuten (15,00 €) et PAS Amazon (De) (12,00 €)
+        assert offer.delivered_price_cents == 1500
+        assert "Rakuten" in offer.item_condition
+        assert "Amazon (De)" not in offer.item_condition
+        assert "Amazon (De)" not in offer.raw_payload["partners"]
+

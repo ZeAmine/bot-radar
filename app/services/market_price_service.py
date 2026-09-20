@@ -18,6 +18,25 @@ def format_cents(cents: int) -> str:
     return f"{cents / 100:.2f} €".replace(".", ",")
 
 
+# Marchands non francophones ou non pertinents à exclure formellement du comparateur
+EXCLUDED_MERCHANTS: frozenset[str] = frozenset({
+    "amazon (de)",
+    "amazon_de",
+})
+
+
+def is_merchant_excluded(merchant_name: str | None) -> bool:
+    """Vérifie si un marchand doit être strictement exclu (ex: Amazon DE / Allemagne)."""
+    if not merchant_name:
+        return False
+    name_clean = merchant_name.strip().lower()
+    if name_clean in EXCLUDED_MERCHANTS:
+        return True
+    if "amazon" in name_clean and ("(de)" in name_clean or "_de" in name_clean or "-de" in name_clean):
+        return True
+    return False
+
+
 def is_brand_new_partner(p_data: dict) -> bool:
     """Détecte si une offre partenaire est du Neuf (à exclure rigoureusement du comparatif d'occasion)."""
     if not p_data.get("is_used", True):
@@ -150,11 +169,11 @@ class MarketPriceService:
                     hist_str = format_cents(cache.historical_low_1y_cents)
                     lines.append(f"🎯 Plus bas constaté{tome_suffix} : {hist_str}")
 
-                # Ligne 3 : Écart par rapport au plus bas constaté (ou marché si historique absent)
+                # Ligne 3 : Écart par rapport au marché (ou plus bas constaté si marché absent)
                 ref_price = (
-                    cache.historical_low_1y_cents
-                    if (has_hist_low and cache.historical_low_1y_cents is not None)
-                    else cache.lowest_delivered_price_cents
+                    cache.lowest_delivered_price_cents
+                    if (is_live_valid and cache.lowest_delivered_price_cents is not None)
+                    else cache.historical_low_1y_cents
                 )
 
                 if listing.estimated_total_cents is not None and ref_price is not None:
@@ -191,18 +210,22 @@ class MarketPriceService:
 
             ref_prices = [
                 (
-                    b.market_cache.historical_low_1y_cents
-                    if b.market_cache.historical_low_1y_cents is not None
-                    else b.market_cache.lowest_delivered_price_cents
+                    b.market_cache.lowest_delivered_price_cents
+                    if (
+                        b.market_cache.comparison_status == ComparisonStatus.AVAILABLE
+                        and b.market_cache.lowest_delivered_price_cents is not None
+                        and (b.market_cache.expires_at is None or b.market_cache.expires_at >= now)
+                    )
+                    else b.market_cache.historical_low_1y_cents
                 )
                 for b in target_books
                 if b.market_cache
                 and (
-                    b.market_cache.historical_low_1y_cents is not None
-                    or (
+                    (
                         b.market_cache.comparison_status == ComparisonStatus.AVAILABLE
                         and b.market_cache.lowest_delivered_price_cents is not None
                     )
+                    or b.market_cache.historical_low_1y_cents is not None
                 )
             ]
 
@@ -550,12 +573,14 @@ class MarketPriceService:
             raw_payload = getattr(cache, "raw_payload", None) or {}
             partners = raw_payload.get("partners") if isinstance(raw_payload, dict) else None
 
-        # Filtrage STRICT : uniquement l'occasion en état Très bon ou Comme neuf (exclusion Bon, Correct, etc.)
+        # Filtrage STRICT : uniquement l'occasion en état Très bon ou Comme neuf (exclusion Bon, Correct, Amazon DE, etc.)
         valid_used_partners: dict[str, dict] = {}
         if partners and isinstance(partners, dict):
             for p_name, p_data in partners.items():
                 if (
                     isinstance(p_data, dict)
+                    and not is_merchant_excluded(p_name)
+                    and not is_merchant_excluded(p_data.get("merchant"))
                     and not is_brand_new_partner(p_data)
                     and is_very_good_or_better(p_data.get("condition"))
                     and p_data.get("total_cents", 0) > 0
@@ -566,8 +591,8 @@ class MarketPriceService:
         if valid_used_partners:
             lowest_delivered = min(p["total_cents"] for p in valid_used_partners.values())
 
-        # Priorité absolue au prix le plus bas sur 1 an si disponible
-        ref_price = cache.historical_low_1y_cents or lowest_delivered
+        # Priorité au prix du marché actuel en direct si disponible, sinon repli sur l'historique 1 an
+        ref_price = lowest_delivered or cache.historical_low_1y_cents
 
         lines = [
             "📊 <b>Prix du marché</b>\n",

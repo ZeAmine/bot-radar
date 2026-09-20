@@ -12,7 +12,7 @@ import httpx
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
 from app.providers.base import MarketOffer
-from app.services.market_price_service import is_very_good_or_better
+from app.services.market_price_service import is_merchant_excluded, is_very_good_or_better
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.providers.chasse_aux_livres")
@@ -315,6 +315,11 @@ class ChasseAuxLivresProvider:
                         .replace("_", " ")
                         .title()
                     )
+
+                    # Exclusion stricte des marchands étrangers (ex: Amazon DE)
+                    if is_merchant_excluded(merchant_raw) or is_merchant_excluded(merchant_clean):
+                        continue
+
                     is_used = off.get("condition", {}).get("_name") != "NEW"
                     sub_cond = off.get("subCondition", {}).get("name") or (
                         "Occasion" if is_used else "Neuf"

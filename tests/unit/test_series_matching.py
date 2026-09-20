@@ -196,8 +196,8 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     assert "📊 Prix du marché (Lot T1, T2, T3) : ~50,38 €" in summary
     # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
     assert "🎯 Plus bas constaté (Lot) : ~42,30 €" in summary
-    # Écart vs hist: 37.18 - 42.30 = -5.12 €
-    assert "✅ Écart : <b>-5,12 €</b>" in summary
+    # Écart vs marché en direct: 37.18 - 50.38 = -13.20 €
+    assert "✅ Écart : <b>-13,20 €</b>" in summary
 
 
 @pytest.mark.parametrize(

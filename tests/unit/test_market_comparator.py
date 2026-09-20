@@ -124,6 +124,8 @@ def test_comparator_no_book_or_cache():
 
 
 def test_comparator_with_historical_low_1y():
+    # Vinted total : 13,69 €, Marché actuel : 22,00 €, Plus bas historique : 18,50 €
+    # L'écart doit être calculé par rapport au marché actuel (22,00 € -> -8,31 €)
     book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=1850)
     listing = create_listing(estimated_total_cents=1369)
 
@@ -131,13 +133,54 @@ def test_comparator_with_historical_low_1y():
     assert summary is not None
     assert "📊 Prix du marché : 22,00 €" in summary
     assert "🎯 Plus bas constaté : 18,50 €" in summary
-    assert "✅ Écart : <b>-4,81 €</b>" in summary
+    assert "✅ Écart : <b>-8,31 €</b>" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
-    assert "💵 Offres : 18,50 €" in card
-    assert "✅ Écart : -4,81 €" in card
+    assert "💵 Offres : 22,00 €" in card
+    assert "✅ Écart : -8,31 €" in card
     assert "🆕 Vinted : 13,69 €" in card
     assert "Derniere MAJ :" in card
+
+
+def test_comparator_no_historical_low_does_not_display_target_line():
+    """Vérifie que si aucun historique 1 an n'existe, la ligne '🎯 Plus bas constaté' n'est pas affichée."""
+    book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=None)
+    listing = create_listing(estimated_total_cents=1369)
+
+    summary = MarketPriceService.get_comparison_summary(listing, book)
+    assert summary is not None
+    assert "📊 Prix du marché : 22,00 €" in summary
+    assert "🎯 Plus bas constaté" not in summary
+    assert "✅ Écart : <b>-8,31 €</b>" in summary
+
+
+def test_comparator_market_details_card_excludes_amazon_de():
+    """Vérifie que Amazon (De) est rigoureusement exclu de la carte de détails, même présent en raw_payload."""
+    book = create_book_with_cache(lowest_delivered_cents=2000)
+    book.market_cache.raw_payload = {
+        "partners": {
+            "Amazon (De)": {
+                "merchant": "Amazon (De)",
+                "is_used": True,
+                "condition": "Très bon",
+                "total_cents": 1500,
+            },
+            "Rakuten": {
+                "merchant": "Rakuten",
+                "is_used": True,
+                "condition": "Très bon",
+                "total_cents": 2000,
+            },
+        }
+    }
+    listing = create_listing(estimated_total_cents=1800)
+
+    card = MarketPriceService.format_market_details_card(listing, book)
+    assert "Amazon (De)" not in card
+    assert "• Rakuten : 20,00 € (Très bon)" in card
+    assert "💵 Offres : 20,00 €" in card
+    assert "✅ Écart : -2,00 €" in card
+
 
 
 

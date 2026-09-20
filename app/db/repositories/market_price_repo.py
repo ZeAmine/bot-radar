@@ -50,17 +50,22 @@ class MarketPriceRepository:
 
     async def get_historical_low_1y(self, book_id: uuid.UUID) -> int | None:
         """Calcule le prix le plus bas constaté sur les 365 derniers jours
-        à partir des snapshots.
+        à partir des données certifiées stockées dans les snapshots (raw_payload).
         """
         one_year_ago = datetime.now(UTC) - timedelta(days=365)
-        stmt = select(func.min(MarketPriceSnapshot.delivered_price_cents)).where(
+        stmt = select(MarketPriceSnapshot.raw_payload).where(
             MarketPriceSnapshot.book_id == book_id,
             MarketPriceSnapshot.checked_at >= one_year_ago,
-            MarketPriceSnapshot.delivered_price_cents > 0,
             MarketPriceSnapshot.is_comparable.is_(True),
         )
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        payloads = result.scalars().all()
+        hist_lows = [
+            p.get("historical_low_1y_cents")
+            for p in payloads
+            if p and isinstance(p, dict) and p.get("historical_low_1y_cents") is not None
+        ]
+        return min(hist_lows) if hist_lows else None
 
     async def update_or_create_cache(
         self,
@@ -83,18 +88,19 @@ class MarketPriceRepository:
 
         cache = await self.get_cache_by_book_id(book_id)
 
-        # Calcul ou conservation du plus bas historique sur 1 an
+        # Calcul ou conservation du plus bas historique certifié sur 1 an
         computed_hist_low: int | None = historical_low_1y_cents
-        if computed_hist_low is None and lowest_delivered_price_cents is not None:
-            snapshot_min = await self.get_historical_low_1y(book_id)
-            if snapshot_min is not None:
-                computed_hist_low = min(snapshot_min, lowest_delivered_price_cents)
-            elif cache and cache.historical_low_1y_cents is not None:
-                computed_hist_low = min(cache.historical_low_1y_cents, lowest_delivered_price_cents)
+        if computed_hist_low is None:
+            # Si le fournisseur courant n'a pas renvoyé d'historique, préserver le cache ou chercher dans les snapshots certifiés
+            if cache and cache.historical_low_1y_cents is not None:
+                computed_hist_low = cache.historical_low_1y_cents
             else:
-                computed_hist_low = lowest_delivered_price_cents
-        elif cache and cache.historical_low_1y_cents is not None and computed_hist_low is not None:
+                computed_hist_low = await self.get_historical_low_1y(book_id)
+        elif cache and cache.historical_low_1y_cents is not None:
+            # Si le fournisseur et le cache ont tous deux un historique certifié, conserver le plus bas
             computed_hist_low = min(cache.historical_low_1y_cents, computed_hist_low)
+
+        # Ne JAMAIS inventer un historique bas à partir du prix du jour (lowest_delivered_price_cents)
 
         if cache:
             cache.lowest_delivered_price_cents = lowest_delivered_price_cents
@@ -104,9 +110,8 @@ class MarketPriceRepository:
             cache.checked_at = now
             cache.expires_at = expires_at
             cache.comparison_status = comparison_status
-            if computed_hist_low is not None:
-                cache.historical_low_1y_cents = computed_hist_low
-                cache.historical_low_at = now
+            cache.historical_low_1y_cents = computed_hist_low
+            cache.historical_low_at = now if computed_hist_low is not None else None
             await self.session.flush()
             return cache
 

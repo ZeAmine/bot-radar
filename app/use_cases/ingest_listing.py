@@ -294,7 +294,7 @@ class ProcessListingUseCase:
                 try:
                     from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 
-                    chasse_provider = ChasseAuxLivresProvider(timeout_seconds=6.0)
+                    chasse_provider = ChasseAuxLivresProvider(timeout_seconds=8.0)
                     offers = await chasse_provider.get_offers(
                         isbn13=target_isbn,
                         title="",
