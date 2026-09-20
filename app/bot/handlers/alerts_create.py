@@ -20,6 +20,7 @@ from app.bot.handlers.alerts_helpers import (
 from app.bot.keyboards.alerts import (
     get_alert_confirmation_keyboard,
     get_category_selection_keyboard,
+    get_conditions_toggle_keyboard,
 )
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
@@ -29,6 +30,7 @@ from app.core.constants import (
     DEFAULT_CLOTHES_CONDITIONS,
     DEFAULT_GAMING_CONDITIONS,
     DEFAULT_TECH_CONDITIONS,
+    STANDARD_CONDITIONS,
     CategorySlug,
     ComparisonStatus,
     MatchConfidence,
@@ -40,7 +42,13 @@ from app.db.repositories.category_repo import CategoryRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 from app.providers.registry import ProviderRegistry
-from app.services.alert_service import AlertServiceError, parse_price_to_cents
+from app.services.ai.modules.natural_add import natural_add_module
+from app.services.alert_service import (
+    AlertServiceError,
+    parse_comma_separated_list,
+    parse_price_to_cents,
+)
+from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text
 
 logger = logging.getLogger(__name__)
@@ -79,8 +87,8 @@ def _get_market_price_repo(session: Any) -> Any:
 async def start_add_alert(
     event: Message | CallbackQuery,
     state: FSMContext,
-    _db_session: Any,
-    _db_user: User,
+    db_session: Any = None,
+    db_user: User | None = None,
 ) -> None:
     """Point d'entrée unifié pour l'ajout d'alertes multi-catégories."""
     await state.clear()
@@ -91,6 +99,51 @@ async def start_add_alert(
         parts = raw_text.split(maxsplit=1)
         if len(parts) > 1:
             inline_query = parts[1].strip()
+
+    if inline_query and natural_add_module.is_enabled:
+        # Tenter le parsing en langage naturel via DeepSeek-V4.1-Flash
+        parsed = await natural_add_module.parse_prompt(inline_query)
+        if parsed:
+            state_data = {
+                "name": parsed.name,
+                "category_slug": parsed.category_slug,
+                "isbn": parsed.isbn13,
+                "is_series": parsed.is_series,
+                "author": parsed.author,
+                "publisher": parsed.publisher,
+                "include_keywords": parsed.include_keywords or [parsed.name],
+                "exclude_keywords": parsed.exclude_keywords or [],
+                "max_item_price_cents": parsed.max_price_cents,
+                "selected_conditions": parsed.conditions,
+            }
+            await state.update_data(**state_data)
+            await state.set_state(AlertCreationState.confirm_creation)
+
+            recap = format_semi_auto_recap(
+                title=parsed.name,
+                author=parsed.author,
+                publisher=parsed.publisher,
+                isbn=parsed.isbn13,
+                max_price_cents=parsed.max_price_cents,
+                include_keywords=parsed.include_keywords or [parsed.name],
+                exclude_keywords=parsed.exclude_keywords or [],
+                category_slug=parsed.category_slug,
+                conditions=parsed.conditions,
+                is_series=parsed.is_series,
+            )
+            prompt_text = (
+                "🪄 <b>Alerte configurée en langage naturel !</b>\n\n"
+                f"{recap}\n\n"
+                "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
+            )
+            keyboard = get_alert_confirmation_keyboard()
+            if isinstance(event, CallbackQuery):
+                await event.answer()
+                if event.message:
+                    await event.message.answer(prompt_text, reply_markup=keyboard)
+            else:
+                await event.answer(prompt_text, reply_markup=keyboard)
+            return
 
     if inline_query:
         await state.update_data(inline_query=inline_query)
@@ -275,8 +328,69 @@ async def process_max_price_input(
         exclude_keywords=data.get("exclude_keywords", []),
         category_slug=data.get("category_slug", CategorySlug.BD_COMICS.value),
         conditions=data.get("selected_conditions"),
+        variants=data.get("variants"),
     )
     await message.answer(recap_text, reply_markup=get_alert_confirmation_keyboard())
+
+
+@router.callback_query(AlertCreationState.confirm_creation, F.data == "alert_create_ai_variants")
+async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) -> None:
+    """Génère et ajoute les variantes orthographiques et exclusions au brouillon d'alerte."""
+    data = await state.get_data()
+    name = data.get("name") or data.get("inline_query") or ""
+    if not name:
+        await callback.answer("Aucun titre disponible pour générer des variantes.", show_alert=True)
+        return
+
+    category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
+    await callback.answer("🤖 Recherche des variantes et exclusions IA...")
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    variants, new_exclusions = await keyword_variants_module.generate_variants_and_exclusions(
+        name, category_slug=category_slug
+    )
+    if not variants and not new_exclusions:
+        await callback.answer("Aucune variante ou exclusion spécifique trouvée.", show_alert=True)
+        return
+
+    # Stocker les variantes dans 'variants' sans polluer 'include_keywords'
+    existing_variants = list(data.get("variants") or [])
+    for v in variants:
+        if v.lower() not in [x.lower() for x in existing_variants]:
+            existing_variants.append(v)
+
+    # Fusionner les exclusions sans doublons
+    existing_exclusions = list(data.get("exclude_keywords") or [])
+    for e in new_exclusions:
+        if e.lower() not in [x.lower() for x in existing_exclusions]:
+            existing_exclusions.append(e)
+
+    await state.update_data(variants=existing_variants, exclude_keywords=existing_exclusions)
+
+    include_keywords = data.get("include_keywords") or [name]
+    max_price_cents = data.get("max_item_price_cents")
+    conditions = data.get("selected_conditions") or []
+
+    recap = format_semi_auto_recap(
+        title=name,
+        author=data.get("author"),
+        publisher=data.get("publisher"),
+        isbn=data.get("isbn"),
+        max_price_cents=max_price_cents,
+        include_keywords=include_keywords,
+        exclude_keywords=existing_exclusions,
+        category_slug=category_slug,
+        conditions=conditions,
+        variants=existing_variants,
+    )
+    prompt_text = (
+        "🪄 <b>Alerte mise à jour avec les optimisations IA !</b>\n\n"
+        f"{recap}\n\n"
+        "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
+    )
+    keyboard = get_alert_confirmation_keyboard(show_variants_btn=False)
+    if callback.message and hasattr(callback.message, "edit_text"):
+        await callback.message.edit_text(prompt_text, reply_markup=keyboard)
 
 
 @router.callback_query(AlertCreationState.confirm_creation, F.data == "alert_create_confirm")
@@ -326,97 +440,121 @@ async def save_alert(
     alert_repo = _get_alert_repo(db_session)
 
     if category_slug == CategorySlug.BD_COMICS.value:
-        # 2. Livre dans le catalogue
         book_repo = _get_book_repo(db_session)
         book = None
-        if isbn:
-            book = await book_repo.get_by_isbn13(isbn)
-        if not book:
-            book = await book_repo.create(
-                title=name,
-                normalized_title=normalize_text(name),
-                isbn13=isbn,
-                author=author,
-                publisher=publisher,
-            )
-
-        # 3. Création de l'alerte
-        vinted_url = (
-            f"https://www.vinted.fr/catalog?search_start_type=item_page_isbn&search_text={isbn}&order=newest_first"
-            if isbn
-            else f"https://www.vinted.fr/catalog?search_text={urllib.parse.quote_plus(name)}&order=newest_first"
-        )
-
-        alert = await alert_repo.create(
-            user_id=db_user.id,
-            category_id=category.id,
-            name=name,
-            isbn=isbn,
-            include_keywords=includes,
-            exclude_keywords=excludes,
-            variants=variants,
-            max_item_price_cents=max_price,
-            accepted_conditions=conditions,
-            vinted_search_url=vinted_url,
-        )
-
-        # 4. Liaison alerte <-> livre
-        if book:
-            await book_repo.link_alert_to_book(alert.id, book.id, MatchConfidence.HIGH)
-
-        # 5. Préchauffage et enregistrement de la cote du marché
-        market_repo = _get_market_price_repo(db_session)
         best_offer = None
         hist_low = None
-        try:
-            provider = ChasseAuxLivresProvider()
-            offers = await provider.get_offers(isbn13=isbn, title=name)
-            if offers and book:
-                for off in offers:
-                    await market_repo.save_snapshot(book.id, off)
-                best_offer = ProviderRegistry.select_best_offer(offers)
-                if best_offer:
-                    hist_low = (
-                        best_offer.raw_payload.get("historical_low_1y_cents")
-                        if best_offer.raw_payload
-                        else None
-                    )
-                    await market_repo.update_or_create_cache(
-                        book_id=book.id,
-                        lowest_delivered_price_cents=best_offer.delivered_price_cents,
-                        best_provider_name=best_offer.provider_name,
-                        best_source_url=best_offer.source_url,
-                        confidence=best_offer.confidence,
-                        comparison_status=ComparisonStatus.AVAILABLE,
-                        cache_duration_hours=24,
-                        historical_low_1y_cents=hist_low,
-                    )
-        except Exception as exc:
-            logger.warning("Erreur Chasse-aux-livres lors de la création d'alerte : %s", exc)
+
+        if isbn:
+            # 1. One-Shot ou tome spécifique : Persistance définitive de l'ISBN en base
+            book = await book_repo.get_by_isbn13(isbn)
+            if not book:
+                book = await book_repo.create(
+                    title=name,
+                    normalized_title=normalize_text(name),
+                    isbn13=isbn,
+                    author=author,
+                    publisher=publisher,
+                )
+
+            # 2. Création de l'alerte liée à l'ISBN
+            vinted_url = f"https://www.vinted.fr/catalog?search_start_type=item_page_isbn&search_text={isbn}&order=newest_first"
+            alert = await alert_repo.create(
+                user_id=db_user.id,
+                category_id=category.id,
+                name=name,
+                isbn=isbn,
+                include_keywords=includes,
+                exclude_keywords=excludes,
+                variants=variants,
+                max_item_price_cents=max_price,
+                accepted_conditions=conditions,
+                vinted_search_url=vinted_url,
+            )
+
+            # 3. Liaison alerte <-> livre de référence
+            if book:
+                await book_repo.link_alert_to_book(alert.id, book.id, MatchConfidence.HIGH)
+
+            # 4. Préchauffage et enregistrement de la cote du marché EXCLUSIVEMENT par ISBN
+            market_repo = _get_market_price_repo(db_session)
+            try:
+                provider = ChasseAuxLivresProvider()
+                offers = await provider.get_offers(isbn13=isbn, title="")
+                if offers and book:
+                    for off in offers:
+                        await market_repo.save_snapshot(book.id, off)
+                    best_offer = ProviderRegistry.select_best_offer(offers)
+                    if best_offer:
+                        hist_low = (
+                            best_offer.raw_payload.get("historical_low_1y_cents")
+                            if best_offer.raw_payload
+                            else None
+                        )
+                        await market_repo.update_or_create_cache(
+                            book_id=book.id,
+                            lowest_delivered_price_cents=best_offer.delivered_price_cents,
+                            best_provider_name=best_offer.raw_payload.get("best_merchant")
+                            or best_offer.provider_name,
+                            best_source_url=best_offer.source_url,
+                            confidence=best_offer.confidence,
+                            comparison_status=ComparisonStatus.AVAILABLE,
+                            cache_duration_hours=24,
+                            historical_low_1y_cents=hist_low,
+                        )
+            except Exception as exc:
+                logger.warning("Erreur Chasse-aux-livres par ISBN lors de la création d'alerte : %s", exc)
+        else:
+            # Série multi-tomes : Création propre de l'alerte sans faux livre unique ni fausse cote
+            vinted_url = f"https://www.vinted.fr/catalog?search_text={urllib.parse.quote_plus(name)}&order=newest_first"
+            alert = await alert_repo.create(
+                user_id=db_user.id,
+                category_id=category.id,
+                name=name,
+                isbn=None,
+                include_keywords=includes,
+                exclude_keywords=excludes,
+                variants=variants,
+                max_item_price_cents=max_price,
+                accepted_conditions=conditions,
+                vinted_search_url=vinted_url,
+            )
 
         await db_session.commit()
         await state.clear()
 
         price_str = f"{max_price / 100:.2f} €".replace(".", ",") if max_price else "Aucun"
-        lowest_str = (
-            f"{best_offer.delivered_price_cents / 100:.2f} € ({best_offer.provider_name})".replace(
-                ".", ","
-            )
-            if best_offer and best_offer.delivered_price_cents
-            else "Recherche en cours"
-        )
-        hist_low_str = f"{hist_low / 100:.2f} €".replace(".", ",") if hist_low else "Non renseigné"
+        cond_str = ", ".join(conditions) if conditions else "Neuf avec étiquette, Neuf sans étiquette, Très bon état"
 
-        resp_text = (
-            "✅ <b>Alerte créée avec succès !</b>\n\n"
-            f"📚 <b>{html.escape(name)}</b>\n"
-            f"🔢 <b>ISBN :</b> <code>{isbn or 'N/A'}</code>\n"
-            f"🎯 <b>Prix max :</b> {price_str}\n"
-            f"📉 <b>Prix du marché :</b> {lowest_str}\n"
-            f"🏷️ <b>Plus bas constaté (1 an) :</b> {hist_low_str}\n\n"
+        lines = [
+            "✅ <b>Alerte créée avec succès !</b>\n",
+            f"📚 <b>{html.escape(name)}</b>",
+        ]
+        if isbn:
+            lines.append(f"🔢 <b>ISBN :</b> <code>{isbn}</code>")
+
+        lines.append(f"🎯 <b>Prix max :</b> {price_str}")
+        lines.append(f"🔑 <b>Inclus :</b> {', '.join(includes)}")
+        if variants:
+            lines.append(f"✨ <b>Variantes :</b> {', '.join(variants)}")
+        if excludes:
+            lines.append(f"🚫 <b>Exclus :</b> {', '.join(excludes)}")
+
+        lines.append(f"🏷 <b>États :</b> {cond_str}\n")
+
+        if best_offer and best_offer.delivered_price_cents:
+            lowest_str = f"{best_offer.delivered_price_cents / 100:.2f} € ({best_offer.provider_name})".replace(".", ",")
+            lines.append(f"📊 <b>Prix du marché :</b> {lowest_str}")
+            if hist_low:
+                hist_low_str = f"{hist_low / 100:.2f} €".replace(".", ",")
+                lines.append(f"🎯 <b>Plus bas constaté (1 an) :</b> {hist_low_str}")
+            lines.append("")
+
+        lines.append(
             "⚡ <i>Surveillance active 24h/24 sur Vinted. "
             "Vous recevrez une notification instantanée dès qu'une offre éligible apparaît.</i>"
         )
+        resp_text = "\n".join(lines)
     else:
         # Tech ou Vêtements (sans livre ni cote de livres)
         vinted_url = (
@@ -444,19 +582,30 @@ async def save_alert(
         price_str = f"{max_price / 100:.2f} €".replace(".", ",") if max_price else "Aucun"
         cond_str = ", ".join(conditions) if conditions else "Tous"
 
-        resp_text = (
-            "✅ <b>Alerte créée avec succès !</b>\n\n"
-            f"{cat_emoji} <b>{html.escape(name)}</b> ({cat_label})\n"
-            f"🎯 <b>Prix max :</b> {price_str}\n"
-            f"🔑 <b>Mots-clés requis :</b> {', '.join(includes)}\n"
-            f"🚫 <b>Exclusions :</b> {', '.join(excludes) if excludes else 'Aucune'}\n"
-            f"💎 <b>États acceptés :</b> {cond_str}\n\n"
+        lines = [
+            "✅ <b>Alerte créée avec succès !</b>\n",
+            f"{cat_emoji} <b>{html.escape(name)}</b> ({cat_label})",
+            f"🎯 <b>Prix max :</b> {price_str}",
+            f"🔑 <b>Inclus :</b> {', '.join(includes)}",
+        ]
+        if variants:
+            lines.append(f"✨ <b>Variantes :</b> {', '.join(variants)}")
+        if excludes:
+            lines.append(f"🚫 <b>Exclus :</b> {', '.join(excludes)}")
+        lines.append(f"🏷 <b>États :</b> {cond_str}\n")
+        lines.append(
             "⚡ <i>Surveillance active 24h/24 sur Vinted. "
             "Vous recevrez une notification instantanée dès qu'une offre éligible apparaît.</i>"
         )
+        resp_text = "\n".join(lines)
 
+    vinted_btn = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Voir sur Vinted", url=vinted_url)]
+        ]
+    )
     if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(resp_text)
+        await callback.message.edit_text(resp_text, reply_markup=vinted_btn)
 
 
 @router.message(Command("cancel", "annuler"), StateFilter("*"))
@@ -484,12 +633,16 @@ async def cancel_alert_creation(callback: CallbackQuery, state: FSMContext) -> N
         await callback.message.edit_text("❌ Création de l'alerte annulée.")
 
 
-@router.callback_query(F.data.in_(["alert_create_edit", "alert_create_edit_price"]))
+@router.callback_query(
+    F.data.in_(["alert_create_edit", "alert_create_edit_price", "al_create_edit:menu", "al_edit_step:price"])
+)
 async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext) -> None:
-    """Permet de modifier le prix max ou de recommencer la configuration."""
+    """Affiche le menu complet de modification des informations d'alerte."""
     await callback.answer()
     data = await state.get_data()
     name = data.get("name", "cet article")
+    category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
+    isbn = data.get("isbn")
     current_price = data.get("max_item_price_cents")
     current_price_str = (
         f"{current_price / 100:.2f} €".replace(".", ",") if current_price else "Aucun"
@@ -497,56 +650,252 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
 
     text = (
         f"✏️ <b>Modification de l'alerte « {html.escape(name)} »</b>\n\n"
-        f"🎯 <b>Prix max actuel :</b> {current_price_str}\n\n"
-        "Que souhaites-tu faire ?"
+        "Choisis l'information que tu souhaites modifier :"
     )
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="💶 Modifier le prix max", callback_data="al_edit_step:price"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔄 Changer de produit / Recommencer",
-                    callback_data="al_edit_step:restart",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="← Retour au récapitulatif", callback_data="al_edit_step:back"
-                )
-            ],
-        ]
-    )
+
+    buttons = [
+        [InlineKeyboardButton(text="📌 Nom / Titre", callback_data="al_create_edit:name")],
+    ]
+
+    # Pour les BD/Comics ou si un ISBN est présent
+    if category_slug == CategorySlug.BD_COMICS.value or isbn:
+        isbn_str = f" ({isbn})" if isbn else " (aucun)"
+        buttons.append([InlineKeyboardButton(text=f"🔢 ISBN{isbn_str}", callback_data="al_create_edit:isbn")])
+
+    buttons.extend([
+        [InlineKeyboardButton(text=f"🎯 Prix max ({current_price_str})", callback_data="al_create_edit:price")],
+        [InlineKeyboardButton(text="🔑 Mots-clés inclus", callback_data="al_create_edit:include_keywords")],
+        [InlineKeyboardButton(text="🚫 Mots-clés exclus", callback_data="al_create_edit:exclude_keywords")],
+        [InlineKeyboardButton(text="✨ Variantes", callback_data="al_create_edit:variants")],
+        [InlineKeyboardButton(text="🏷 États acceptés", callback_data="al_create_edit:conditions")],
+        [InlineKeyboardButton(text="🔄 Changer de produit / Recommencer", callback_data="al_create_edit:restart")],
+        [InlineKeyboardButton(text="← Retour au récapitulatif", callback_data="al_create_edit:back")],
+    ])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(text, reply_markup=keyboard)
 
 
-@router.callback_query(F.data == "al_edit_step:price")
 async def prompt_new_price(callback: CallbackQuery, state: FSMContext) -> None:
-    """Demande la saisie d'un nouveau montant."""
+    """Demande la saisie d'un nouveau montant (compatibilité)."""
+    await handle_create_edit_choice(callback, state)
+
+
+@router.callback_query(F.data.startswith("al_create_edit:"))
+async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) -> None:
+    """Affiche l'invite de saisie pour le champ sélectionné lors de la création."""
+    parts = callback.data.split(":")
+    field = parts[1]
+
+    if field == "back":
+        await back_to_recap(callback, state)
+        return
+    if field == "restart":
+        await restart_from_scratch(callback, state)
+        return
+    if field == "menu":
+        await edit_alert_creation_prompt(callback, state)
+        return
+    if field == "conditions":
+        await callback.answer()
+        data = await state.get_data()
+        selected = list(data.get("selected_conditions") or STANDARD_CONDITIONS)
+        text = (
+            "💎 <b>Choisis les états acceptés pour cette alerte :</b>\n\n"
+            "Coche ou décoche les états souhaités puis clique sur Confirmer :"
+        )
+        keyboard = get_conditions_toggle_keyboard(selected)
+        keyboard.inline_keyboard.append([
+            InlineKeyboardButton(text="← Retour au menu", callback_data="al_create_edit:menu")
+        ])
+        if callback.message and hasattr(callback.message, "edit_text"):
+            await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+
+    # Champs textuels
     await callback.answer()
-    await state.set_state(AlertCreationState.waiting_for_max_price)
-    text = (
-        "💶 <b>Entre le nouveau montant maximum pour cette alerte (en €) :</b>\n\n"
-        "<i>(ex: 15 ou 25)</i>"
+    data = await state.get_data()
+    await state.set_state(AlertCreationState.waiting_for_edit_field)
+    await state.update_data(current_edit_field=field)
+
+    field_labels = {
+        "name": ("Nom / Titre", data.get("name", ""), "Envoie le nouveau nom / titre :"),
+        "isbn": (
+            "ISBN",
+            data.get("isbn", "") or "",
+            "Envoie le nouvel ISBN (10 ou 13 chiffres, ou /skip pour retirer) :",
+        ),
+        "price": (
+            "Prix maximum (€)",
+            f"{data.get('max_item_price_cents', 0) / 100:.2f}".replace(".", ",")
+            if data.get("max_item_price_cents")
+            else "",
+            "Envoie le nouveau prix max en € (ex: 15 ou 25) :",
+        ),
+        "include_keywords": (
+            "Mots-clés inclus",
+            ", ".join(data.get("include_keywords", [])),
+            "Envoie les mots-clés séparés par des virgules :",
+        ),
+        "exclude_keywords": (
+            "Exclusions",
+            ", ".join(data.get("exclude_keywords", [])),
+            "Envoie les exclusions séparées par des virgules (ou /skip pour effacer) :",
+        ),
+        "variants": (
+            "Variantes",
+            ", ".join(data.get("variants", [])),
+            "Envoie les variantes séparées par des virgules (ou /skip pour effacer) :",
+        ),
+    }
+
+    title, current_val, hint = field_labels.get(
+        field, (field, "", "Envoie la nouvelle valeur :")
     )
+
+    if current_val:
+        text = (
+            f"🎯 <b>{title} actuel :</b> <i>(touche pour copier)</i>\n\n"
+            f"<code>{html.escape(current_val)}</code>\n\n"
+            f"<i>{hint}</i>"
+        )
+    else:
+        text = (
+            f"🎯 <b>{title} :</b> <i>(actuellement vide)</i>\n\n"
+            f"<i>{hint}</i>"
+        )
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="← Retour au récapitulatif", callback_data="al_edit_step:back"
-                )
-            ]
+            [InlineKeyboardButton(text="← Retour au menu", callback_data="al_create_edit:menu")],
+            [InlineKeyboardButton(text="← Retour au récapitulatif", callback_data="al_create_edit:back")],
         ]
     )
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(text, reply_markup=keyboard)
 
 
-@router.callback_query(F.data == "al_edit_step:back")
+@router.callback_query(F.data.startswith("cond_toggle:"))
+async def handle_creation_condition_toggle(callback: CallbackQuery, state: FSMContext) -> None:
+    """Bascule l'état d'une condition pendant la création d'alerte."""
+    parts = callback.data.split(":")
+    idx = int(parts[1])
+    target_cond = STANDARD_CONDITIONS[idx]
+    data = await state.get_data()
+    selected = list(data.get("selected_conditions") or STANDARD_CONDITIONS)
+    if target_cond in selected:
+        selected.remove(target_cond)
+    else:
+        selected.append(target_cond)
+    await state.update_data(selected_conditions=selected)
+    await callback.answer()
+    keyboard = get_conditions_toggle_keyboard(selected)
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="← Retour au menu", callback_data="al_create_edit:menu")
+    ])
+    if callback.message and hasattr(callback.message, "edit_reply_markup"):
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "cond_confirm")
+async def handle_creation_condition_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    """Confirme les conditions et retourne au récapitulatif."""
+    await callback.answer("États mis à jour !")
+    await back_to_recap(callback, state)
+
+
+@router.message(AlertCreationState.waiting_for_edit_field)
+async def process_creation_edit_input(message: Message, state: FSMContext) -> None:
+    """Traite la saisie textuelle pour le champ en cours de modification à la création."""
+    data = await state.get_data()
+    field = data.get("current_edit_field")
+    raw_text = (message.text or "").strip()
+
+    if field == "name":
+        if len(raw_text) < 2:
+            await message.answer("⚠️ Le nom doit comporter au moins 2 caractères. Réessaie :")
+            return
+        await state.update_data(name=raw_text)
+
+    elif field == "isbn":
+        if raw_text.lower() in ("/skip", "-", "aucun", "aucune", "clear"):
+            await state.update_data(isbn=None, is_series=True)
+        else:
+            clean_isbn = extract_clean_isbn(raw_text)
+            if not clean_isbn:
+                await message.answer(
+                    "⚠️ Format d'ISBN invalide (doit comporter 10 ou 13 chiffres). Réessaie (ou /skip) :"
+                )
+                return
+            await state.update_data(isbn=clean_isbn, is_series=False)
+            try:
+                from app.services.book_metadata_service import BookMetadataService
+                meta = await BookMetadataService().lookup_by_isbn(clean_isbn)
+                if meta:
+                    updates = {}
+                    if meta.author:
+                        updates["author"] = meta.author
+                    if meta.publisher:
+                        updates["publisher"] = meta.publisher
+                    if meta.title and (not data.get("name") or len(data.get("name")) < 3):
+                        updates["name"] = meta.title
+                    if updates:
+                        await state.update_data(**updates)
+            except Exception:
+                pass
+
+    elif field == "price":
+        try:
+            price_cents = parse_price_to_cents(raw_text)
+            await state.update_data(max_item_price_cents=price_cents)
+        except AlertServiceError as exc:
+            await message.answer(f"⚠️ {exc}\nMerci d'indiquer un montant valide (ex: 15 ou 25) :")
+            return
+
+    elif field == "include_keywords":
+        parsed = parse_comma_separated_list(raw_text)
+        if not parsed:
+            await message.answer("⚠️ Au moins un mot-clé requis. Réessaie :")
+            return
+        await state.update_data(include_keywords=parsed)
+
+    elif field == "exclude_keywords":
+        if raw_text.lower() in ("/skip", "-", "aucun", "aucune"):
+            await state.update_data(exclude_keywords=[])
+        else:
+            await state.update_data(exclude_keywords=parse_comma_separated_list(raw_text))
+
+    elif field == "variants":
+        if raw_text.lower() in ("/skip", "-", "aucun", "aucune"):
+            await state.update_data(variants=[])
+        else:
+            await state.update_data(variants=parse_comma_separated_list(raw_text))
+
+    # Réafficher le récapitulatif mis à jour
+    updated_data = await state.get_data()
+    await state.set_state(AlertCreationState.confirm_creation)
+
+    recap_text = format_semi_auto_recap(
+        title=updated_data.get("name", "Alerte"),
+        author=updated_data.get("author"),
+        publisher=updated_data.get("publisher"),
+        isbn=updated_data.get("isbn"),
+        max_price_cents=updated_data.get("max_item_price_cents"),
+        include_keywords=updated_data.get("include_keywords", []),
+        exclude_keywords=updated_data.get("exclude_keywords", []),
+        category_slug=updated_data.get("category_slug", CategorySlug.BD_COMICS.value),
+        conditions=updated_data.get("selected_conditions"),
+        variants=updated_data.get("variants"),
+        is_series=updated_data.get("is_series", False),
+    )
+    await message.answer(
+        f"✅ <b>Modification enregistrée !</b>\n\n{recap_text}",
+        reply_markup=get_alert_confirmation_keyboard(),
+    )
+
+
+@router.callback_query(F.data.in_(["al_edit_step:back", "al_create_edit:back"]))
 async def back_to_recap(callback: CallbackQuery, state: FSMContext) -> None:
     """Retourne directement au récapitulatif avec les boutons de confirmation."""
     await callback.answer()
@@ -563,12 +912,16 @@ async def back_to_recap(callback: CallbackQuery, state: FSMContext) -> None:
         exclude_keywords=data.get("exclude_keywords", []),
         category_slug=data.get("category_slug", CategorySlug.BD_COMICS.value),
         conditions=data.get("selected_conditions"),
+        variants=data.get("variants"),
+        is_series=data.get("is_series", False),
     )
     if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(recap_text, reply_markup=get_alert_confirmation_keyboard())
+        await callback.message.edit_text(
+            recap_text, reply_markup=get_alert_confirmation_keyboard()
+        )
 
 
-@router.callback_query(F.data == "al_edit_step:restart")
+@router.callback_query(F.data.in_(["al_edit_step:restart", "al_create_edit:restart"]))
 async def restart_from_scratch(
     callback: CallbackQuery,
     state: FSMContext,

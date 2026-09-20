@@ -35,6 +35,18 @@ CHASSE_BROWSER_HEADERS = {
 }
 
 
+def _build_ajax_headers(referer: str) -> dict[str, str]:
+    return {
+        **CHASSE_BROWSER_HEADERS,
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": referer,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+
+
 class ChasseAuxLivresProvider:
     """Connecteur vers le comparateur multi-boutiques Chasse-aux-livres.
 
@@ -158,11 +170,7 @@ class ChasseAuxLivresProvider:
                 data_hash = hash_match.group(1)
 
                 # Étape 2 : Récupérer les résultats agrégés via l'endpoint REST
-                ajax_headers = {
-                    "Accept": "application/json, text/javascript, */*; q=0.01",
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Referer": search_url,
-                }
+                ajax_headers = _build_ajax_headers(search_url)
                 rest_url = f"{self.BASE_URL}/rest/search-results?h={data_hash}&p=1&l=1&b=d"
                 resp2 = await client.get(rest_url, headers=ajax_headers, timeout=self.timeout_seconds)
                 if resp2.status_code != 200:
@@ -238,7 +246,7 @@ class ChasseAuxLivresProvider:
                 )
                 return None
 
-            resp_prod = await client.get(product_url)
+            resp_prod = await client.get(product_url, headers=CHASSE_BROWSER_HEADERS)
             if resp_prod.status_code != 200:
                 return None
 
@@ -254,11 +262,7 @@ class ChasseAuxLivresProvider:
             nbeng = int(nbeng_m.group(1))
             engines = "_".join(str(i) for i in range(min(nbeng, 32)))
 
-            ajax_headers = {
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": product_url,
-            }
+            ajax_headers = _build_ajax_headers(product_url)
             lookup_url = (
                 f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
                 f"&retry=0&duih=&lvs={lvs}&ui=&engines={engines}&f=false"

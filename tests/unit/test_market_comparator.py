@@ -65,8 +65,8 @@ def test_comparator_vinted_cheaper_than_market():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📉 Occasion : 22,00 €" in summary
-    assert "✅ Écart : -8,31 €" in summary
+    assert "📊 Prix du marché : 22,00 €" in summary
+    assert "✅ Écart : <b>-8,31 €</b>" in summary
 
 
 def test_comparator_vinted_very_good_deal_fire_badge():
@@ -76,8 +76,8 @@ def test_comparator_vinted_very_good_deal_fire_badge():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📉 Occasion : 30,00 €" in summary
-    assert "✅ Écart : -15,00 €" in summary
+    assert "📊 Prix du marché : 30,00 €" in summary
+    assert "✅ Écart : <b>-15,00 €</b>" in summary
 
 
 def test_comparator_vinted_more_expensive_than_market():
@@ -87,18 +87,18 @@ def test_comparator_vinted_more_expensive_than_market():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📉 Occasion : 20,00 €" in summary
-    assert "❌ Écart : +5,00 €" in summary
+    assert "📊 Prix du marché : 20,00 €" in summary
+    assert "⛔️ Écart : <b>+5,00 €</b>" in summary
 
 
 def test_comparator_small_difference_warning():
-    # Écart très faible (50 centimes) -> Vinted plus cher donc ❌
+    # Écart très faible (50 centimes) -> Vinted plus cher donc ⛔️
     book = create_book_with_cache(lowest_delivered_cents=2000)
     listing = create_listing(estimated_total_cents=2050)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "❌ Écart : +0,50 €" in summary
+    assert "⛔️ Écart : <b>+0,50 €</b>" in summary
 
 
 def test_comparator_market_unavailable():
@@ -106,7 +106,7 @@ def test_comparator_market_unavailable():
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
-    assert summary == "📉 Occasion : indisponible"
+    assert summary == "📊 Prix du marché : indisponible"
 
 
 def test_comparator_market_cache_expired():
@@ -114,13 +114,13 @@ def test_comparator_market_cache_expired():
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
-    assert summary == "📉 Occasion : indisponible"
+    assert summary == "📊 Prix du marché : indisponible"
 
 
 def test_comparator_no_book_or_cache():
     listing = create_listing(estimated_total_cents=1369)
     summary = MarketPriceService.get_comparison_summary(listing, book=None)
-    assert summary == "📉 Occasion : indisponible"
+    assert summary == "📊 Prix du marché : indisponible"
 
 
 def test_comparator_with_historical_low_1y():
@@ -129,14 +129,16 @@ def test_comparator_with_historical_low_1y():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📉 Occasion : 18,50 €" in summary
-    assert "✅ Écart : -4,81 €" in summary
+    assert "📊 Prix du marché : 22,00 €" in summary
+    assert "🎯 Plus bas constaté : 18,50 €" in summary
+    assert "✅ Écart : <b>-4,81 €</b>" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "💵 Offres : 18,50 €" in card
     assert "✅ Écart : -4,81 €" in card
     assert "🆕 Vinted : 13,69 €" in card
     assert "Derniere MAJ :" in card
+
 
 
 def test_comparator_historical_low_when_status_unavailable():
@@ -150,12 +152,13 @@ def test_comparator_historical_low_when_status_unavailable():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📉 Occasion : 18,50 €" in summary
-    assert "✅ Écart : -4,81 €" in summary
+    assert "📊 Prix du marché : Indisponible (occasion)" in summary
+    assert "🎯 Plus bas constaté : 18,50 €" in summary
+    assert "✅ Écart : <b>-4,81 €</b>" in summary
 
     # Vérifier que le panneau 'Prix du marché' ne renvoie plus 'Aucune offre d'occasion comparable'
     card = MarketPriceService.format_market_details_card(listing, book)
-    assert "📉 <b>Prix du marché</b>" in card
+    assert "📊 <b>Prix du marché</b>" in card
     assert "💵 Offres : 18,50 €" in card
     assert "✅ Écart : -4,81 €" in card
     assert "Cote d'occasion basée sur le plus bas historique 1 an" in card
@@ -174,7 +177,7 @@ def test_comparator_single_book_series_fallback():
         book=None,
         books_in_series=[book],
     )
-    assert "📉 <b>Prix du marché</b>" in card
+    assert "📊 <b>Prix du marché</b>" in card
     assert "💵 Offres : 15,48 €" in card
     assert "✅ Écart : -3,48 €" in card
 
@@ -187,8 +190,8 @@ def test_comparator_no_price_at_all_returns_unavailable():
     )
     listing = create_listing(estimated_total_cents=1200)
 
-    card = MarketPriceService.format_market_details_card(listing, book)
-    assert "Aucune offre d'occasion comparable n'a pu être trouvée" in card
+    summary = MarketPriceService.get_comparison_summary(listing, book)
+    assert summary == "📊 Prix du marché : indisponible"
 
 
 def test_comparator_excludes_brand_new_and_inferior_conditions():
@@ -212,11 +215,11 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
     listing = create_listing(estimated_total_cents=1209)
 
     card = MarketPriceService.format_market_details_card(listing, book)
-    assert "📉 <b>Prix du marché</b>" in card
+    assert "📊 <b>Prix du marché</b>" in card
     assert "🆕 Vinted : 12,09 €" in card
     # Le lowest_delivered doit s'aligner sur la meilleure offre TRÈS BON/COMME NEUF (Rakuten 8,69 € et non Momox 7,50 € Bon)
     assert "💵 Offres : 8,69 €" in card
-    assert "❌ Écart : +3,40 €" in card
+    assert "⛔️ Écart : +3,40 €" in card
 
     assert "<b>Comparatif par boutique :</b>" in card
     assert "• Rakuten : 8,69 € (Comme neuf)" in card

@@ -61,6 +61,6 @@ def format_price_summary(
 
     if total_cents is not None:
         total_euros = f"{total_cents / 100:.2f} €".replace(".", ",")
-        return f"💵 {item_euros} | {total_euros} (TTC)"
+        return f"💵 Prix : {item_euros} ({total_euros} TTC)"
 
-    return f"💵 {item_euros} | Total à confirmer"
+    return f"💵 Prix : {item_euros} (TTC à confirmer)"

@@ -1,14 +1,16 @@
 import html
 import logging
+from typing import Any
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
-from app.bot.keyboards.listings import get_listing_alert_keyboard
+from app.bot.keyboards.listings import build_vinted_checkout_url, get_listing_alert_keyboard
 from app.core.config import settings
 from app.core.constants import CategorySlug
 from app.core.tasks import safe_create_task
 from app.db.models.listing import Listing
+from app.services.ai.pipeline import ai_post_alert_pipeline
 from app.services.matcher_service import CONDITION_ALIASES
 from app.services.price_calculator import format_price_summary
 from app.services.vision_guard_service import VisionGuardService
@@ -44,11 +46,14 @@ def build_listing_caption(
 
     lines.extend([
         f"🆕 <b>{safe_title}</b>",
-        f"💎 {safe_condition}",
+        f"🏷 État : {safe_condition}",
         price_line,
     ])
 
-    if market_comparison_line and market_comparison_line != "📉 Occasion : indisponible":
+    if market_comparison_line and market_comparison_line not in (
+        "📉 Occasion : indisponible",
+        "📊 Prix du marché : indisponible",
+    ):
         lines.append("")
         lines.append(market_comparison_line)
 
@@ -67,6 +72,7 @@ async def send_listing_alert(
     market_comparison_line: str | None = None,
     alert_keywords: list[str] | None = None,
     is_bundle: bool = False,
+    alert: Any | None = None,
 ) -> bool:
     """Envoie l'alerte à l'utilisateur Telegram avec photo principale et clavier adapté."""
     caption = build_listing_caption(
@@ -75,7 +81,7 @@ async def send_listing_alert(
         alert_keywords=alert_keywords,
         is_bundle=is_bundle,
     )
-    checkout_url = f"{listing.url}#radar_autobuy=1"
+    checkout_url = build_vinted_checkout_url(listing.external_id)
     keyboard = get_listing_alert_keyboard(
         listing_id=listing.id,
         listing_url=listing.url,
@@ -107,8 +113,19 @@ async def send_listing_alert(
                 reply_markup=keyboard,
             )
 
-        # Vision Guard : Analyse asynchrone non-bloquante en arrière-plan (Tech, Gaming & Livres)
-        if sent_msg and listing.category_slug in (
+        # Pipeline IA Asynchrone (DeepSeek-V4.1-Flash : Price Glitch, État Caché, VisionGuard, Marge)
+        if sent_msg and settings.AI_ENABLED:
+            safe_create_task(
+                ai_post_alert_pipeline.enrich_alert(
+                    bot=bot,
+                    chat_id=chat_id,
+                    message_id=sent_msg.message_id,
+                    listing=listing,
+                    alert=alert,
+                ),
+                name=f"ai_enrich_{listing.id}",
+            )
+        elif sent_msg and listing.category_slug in (
             CategorySlug.TECH.value,
             CategorySlug.BD_COMICS.value,
             CategorySlug.GAMING.value,

@@ -132,3 +132,63 @@ async def test_notify_admins():
         assert bot.send_message.call_count == 2
         bot.send_message.assert_any_call(chat_id=123456, text="Test alert message", parse_mode="HTML")
         bot.send_message.assert_any_call(chat_id=789012, text="Test alert message", parse_mode="HTML")
+
+
+@pytest.mark.asyncio
+async def test_handle_status_ai_active():
+    """Vérifie l'affichage du statut IA actif dans /status ou /health."""
+    message = MagicMock(spec=Message)
+    message.answer = AsyncMock()
+
+    mock_db = MagicMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = []
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    mock_ai = {
+        "status": "active",
+        "model": "deepseek-flash",
+        "latency_ms": 115,
+        "message": "Opérationnel (115ms)",
+    }
+
+    with (
+        patch("app.bot.handlers.status.is_night_time", return_value=False),
+        patch("app.bot.handlers.status.get_poller_status", new_callable=AsyncMock, return_value=None),
+        patch("app.bot.handlers.status.deepseek_client.check_health", new_callable=AsyncMock, return_value=mock_ai),
+    ):
+        await handle_status(message, mock_db)
+
+        message.answer.assert_called_once()
+        text = message.answer.call_args[0][0]
+        assert "🤖 <b>Moteur IA (DeepSeek)</b> : 🟢 <b>Actif</b> (deepseek-flash · 115ms)" in text
+
+
+@pytest.mark.asyncio
+async def test_handle_status_ai_error():
+    """Vérifie l'affichage du statut IA en erreur dans /status ou /health."""
+    message = MagicMock(spec=Message)
+    message.answer = AsyncMock()
+
+    mock_db = MagicMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = []
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    mock_ai = {
+        "status": "error",
+        "model": "deepseek-flash",
+        "latency_ms": None,
+        "message": "Clé API invalide ou refusée",
+    }
+
+    with (
+        patch("app.bot.handlers.status.is_night_time", return_value=False),
+        patch("app.bot.handlers.status.get_poller_status", new_callable=AsyncMock, return_value=None),
+        patch("app.bot.handlers.status.deepseek_client.check_health", new_callable=AsyncMock, return_value=mock_ai),
+    ):
+        await handle_status(message, mock_db)
+
+        message.answer.assert_called_once()
+        text = message.answer.call_args[0][0]
+        assert "🤖 <b>Moteur IA (DeepSeek)</b> : 🔴 <b>Indisponible</b> (Clé API invalide ou refusée)" in text

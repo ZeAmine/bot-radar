@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.db.models.category import Category
+from app.services.ai.client import deepseek_client
 from app.tasks.vinted_poller import (
     get_night_mode_remaining_seconds,
     get_poller_status,
@@ -22,7 +23,7 @@ from app.tasks.vinted_poller import (
 router = Router(name="status_router")
 
 
-@router.message(Command("status"))
+@router.message(Command("status", "health"))
 async def handle_status(message: Message, db_session: Any) -> None:
     """Affiche l'état opérationnel en direct de Radar Bot."""
     try:
@@ -106,10 +107,21 @@ async def handle_status(message: Message, db_session: Any) -> None:
         else "Désactivé"
     )
 
+    ai_info = await deepseek_client.check_health()
+    if ai_info["status"] == "active":
+        ai_status = f"🟢 <b>Actif</b> ({ai_info['model']} · {ai_info.get('latency_ms', 0)}ms)"
+    elif ai_info["status"] == "disabled":
+        ai_status = "⏸️ <b>Désactivé</b>"
+    elif ai_info["status"] == "unconfigured":
+        ai_status = "⚪ <b>Non configuré</b> (clé API manquante)"
+    else:
+        ai_status = f"🔴 <b>Indisponible</b> ({ai_info['message']})"
+
     text = (
         "📡 <b>État du Radar Bot</b>\n\n"
         f"⏱ <b>Heure locale (Paris)</b> : {time_str}\n"
         f"🛡️ <b>Surveillance</b> : {poller_status}\n"
+        f"🤖 <b>Moteur IA (DeepSeek)</b> : {ai_status}\n"
         f"🌙 <b>Heures creuses (nuit)</b> : {night_hours_info}\n\n"
         f"📊 <b>Alertes actives ({total_active}) :</b>\n"
         f"{cat_summary}\n\n"

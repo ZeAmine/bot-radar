@@ -13,8 +13,14 @@ from aiogram.types import (
     Message,
 )
 
+from app.bot.keyboards.listings import (
+    get_dislike_confirmation_keyboard,
+    get_listing_alert_keyboard,
+)
+from app.db.models.bot_event import BotEvent
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
+from app.services.ai.modules.negotiation import negotiation_module
 from app.services.book_catalog_service import BookCatalogService
 from app.services.market_price_service import MarketPriceService
 from app.services.vinted_scraper import fetch_item_photos
@@ -123,6 +129,27 @@ async def handle_view_market_details(
                 listing_title=listing.title,
                 listing_description=listing.description,
             )
+            # Si aucun tome n'a pu être résolu depuis le texte, vérifier l'identification visuelle
+            if not book and books_in_series and listing.photos:
+                t_identified = (listing.raw_payload or {}).get("identified_tome")
+                if not t_identified and settings.AI_ENABLED:
+                    try:
+                        from app.services.ai.modules.vision_guard import vision_guard_module
+                        v_res = await vision_guard_module.analyze_listing_photos(listing, max_photos=1)
+                        if v_res and v_res.identified_tome:
+                            t_identified = v_res.identified_tome
+                            if isinstance(listing.raw_payload, dict):
+                                listing.raw_payload["identified_tome"] = t_identified
+                                await db_session.flush()
+                    except Exception as vision_err:
+                        logger.debug("Échec analyse visuelle pour market details: %s", vision_err)
+
+                if t_identified:
+                    import re
+                    for b in books_in_series:
+                        if re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_identified}\b", b.title, re.IGNORECASE):
+                            book = b
+                            break
         else:
             book = await book_repo.get_book_for_alert(alert.id)
 
@@ -220,3 +247,164 @@ async def handle_close_market_panel(callback: CallbackQuery) -> None:
     if isinstance(callback.message, Message):
         await callback.message.delete()
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("negotiate:"))
+async def handle_negotiate(
+    callback: CallbackQuery,
+    db_session: Any,
+) -> None:
+    """Génère une offre de négociation courtoise prête à copier en 1 tap."""
+    raw_id = callback.data.split(":", 1)[1] if callback.data else ""  # type: ignore
+    try:
+        listing_id = uuid.UUID(raw_id)
+    except ValueError:
+        await callback.answer("Annonce invalide.", show_alert=True)
+        return
+
+    listing_repo = ListingRepository(db_session)
+    listing = await listing_repo.get_by_id(listing_id)
+    if not listing:
+        await callback.answer("Annonce introuvable.", show_alert=True)
+        return
+
+    result = await negotiation_module.generate_offer(listing)
+    if not result:
+        await callback.answer(
+            "Impossible de calculer une offre pour cette annonce.", show_alert=True
+        )
+        return
+
+    text = negotiation_module.format_telegram_html(result)
+    close_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="← Fermer", callback_data="close_market_panel")]
+        ]
+    )
+
+    if isinstance(callback.message, Message):
+        await callback.message.reply(
+            text=text,
+            reply_markup=close_keyboard,
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("dislike:"))
+async def handle_dislike(
+    callback: CallbackQuery,
+    db_session: Any,
+) -> None:
+    """Affiche le clavier de confirmation avant d'enregistrer le faux positif."""
+    raw_id = callback.data.split(":", 1)[1] if callback.data else ""  # type: ignore
+    try:
+        listing_id = uuid.UUID(raw_id)
+    except ValueError:
+        await callback.answer("Annonce invalide.", show_alert=True)
+        return
+
+    listing_repo = ListingRepository(db_session)
+    listing = await listing_repo.get_by_id(listing_id)
+    if not listing:
+        await callback.answer("Annonce introuvable.", show_alert=True)
+        return
+
+    confirm_kb = get_dislike_confirmation_keyboard(
+        listing_id=listing.id,
+        listing_url=listing.url,
+        category_slug=listing.category_slug,
+        external_id=listing.external_id,
+    )
+    if isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_reply_markup(reply_markup=confirm_kb)
+
+    await callback.answer("Confirmer le faux positif ?")
+
+
+@router.callback_query(F.data.startswith("confirm_dislike:"))
+async def handle_confirm_dislike(
+    callback: CallbackQuery,
+    db_session: Any,
+) -> None:
+    """Enregistre définitivement le faux positif après confirmation."""
+    raw_id = callback.data.split(":", 1)[1] if callback.data else ""  # type: ignore
+    try:
+        listing_id = uuid.UUID(raw_id)
+    except ValueError:
+        await callback.answer("Annonce invalide.", show_alert=True)
+        return
+
+    listing_repo = ListingRepository(db_session)
+    listing = await listing_repo.get_by_id(listing_id)
+
+    # Journaliser l'événement de faux positif
+    event = BotEvent(
+        event_type="listing_disliked",
+        listing_id=listing_id,
+        metadata_={"chat_id": callback.from_user.id if callback.from_user else None},
+    )
+    db_session.add(event)
+    await db_session.commit()
+
+    if listing and isinstance(callback.message, Message):
+        updated_kb = get_listing_alert_keyboard(
+            listing_id=listing.id,
+            listing_url=listing.url,
+            category_slug=listing.category_slug,
+            external_id=listing.external_id,
+            is_disliked=True,
+        )
+        with contextlib.suppress(Exception):
+            await callback.message.edit_reply_markup(reply_markup=updated_kb)
+
+    await callback.answer(
+        "👎 Faux positif enregistré ! L'IA l'utilisera pour auto-nettoyer vos alertes.",
+        show_alert=True,
+    )
+
+
+@router.callback_query(F.data.startswith("cancel_dislike:"))
+async def handle_cancel_dislike(
+    callback: CallbackQuery,
+    db_session: Any,
+) -> None:
+    """Annule la demande de faux positif et restaure le clavier initial."""
+    raw_id = callback.data.split(":", 1)[1] if callback.data else ""  # type: ignore
+    try:
+        listing_id = uuid.UUID(raw_id)
+    except ValueError:
+        await callback.answer("Annonce invalide.", show_alert=True)
+        return
+
+    listing_repo = ListingRepository(db_session)
+    listing = await listing_repo.get_by_id(listing_id)
+
+    if listing and isinstance(callback.message, Message):
+        original_kb = get_listing_alert_keyboard(
+            listing_id=listing.id,
+            listing_url=listing.url,
+            category_slug=listing.category_slug,
+            external_id=listing.external_id,
+        )
+        with contextlib.suppress(Exception):
+            await callback.message.edit_reply_markup(reply_markup=original_kb)
+
+    await callback.answer("Annulé.")
+
+
+@router.callback_query(F.data.startswith("disliked:"))
+async def handle_already_disliked(callback: CallbackQuery) -> None:
+    """Informe que cette annonce a déjà été marquée comme faux positif."""
+    await callback.answer("Cette annonce a déjà été signalée comme faux positif.", show_alert=True)
+
+
+@router.callback_query(F.data == "bundle_dressing_disabled")
+async def handle_bundle_dressing_disabled(callback: CallbackQuery) -> None:
+    """Informe que le chasseur de lot dressing est temporairement désactivé."""
+    await callback.answer(
+        "🛍️ Le Chasseur de Lot Dressing est actuellement désactivé.\n"
+        "Cette fonctionnalité sera activée dans une prochaine mise à jour.",
+        show_alert=True,
+    )
+

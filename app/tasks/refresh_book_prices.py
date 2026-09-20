@@ -64,16 +64,21 @@ async def refresh_book_prices_task(
                     await market_repo.update_or_create_cache(
                         book_id=book.id,
                         lowest_delivered_price_cents=best_offer.delivered_price_cents,
-                        best_provider_name=best_offer.provider_name,
+                        best_provider_name=(
+                            best_offer.raw_payload.get("best_merchant")
+                            if best_offer.raw_payload
+                            else None
+                        )
+                        or best_offer.provider_name,
                         best_source_url=best_offer.source_url,
                         confidence=best_offer.confidence,
                         comparison_status=ComparisonStatus.AVAILABLE,
                         cache_duration_hours=24,
-                        historical_low_1y_cents=best_offer.raw_payload.get(
-                            "historical_low_1y_cents"
-                        )
-                        if best_offer.raw_payload
-                        else None,
+                        historical_low_1y_cents=(
+                            best_offer.raw_payload.get("historical_low_1y_cents")
+                            if best_offer.raw_payload
+                            else None
+                        ),
                     )
                     stats["available"] += 1
                 else:

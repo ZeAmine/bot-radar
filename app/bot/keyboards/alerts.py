@@ -27,17 +27,25 @@ def get_conditions_toggle_keyboard(selected_conditions: list[str]) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_alert_confirmation_keyboard() -> InlineKeyboardMarkup:
+def get_alert_confirmation_keyboard(show_variants_btn: bool = True) -> InlineKeyboardMarkup:
     """Retourne le clavier de validation finale de création d'alerte."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Créer l’alerte", callback_data="alert_create_confirm")],
+    rows = [
+        [InlineKeyboardButton(text="✅ Créer l’alerte", callback_data="alert_create_confirm")],
+        [
+            InlineKeyboardButton(text="✏️ Modifier", callback_data="alert_create_edit"),
+            InlineKeyboardButton(text="❌ Annuler", callback_data="alert_create_cancel"),
+        ],
+    ]
+    if show_variants_btn:
+        rows.append(
             [
-                InlineKeyboardButton(text="✏️ Modifier", callback_data="alert_create_edit"),
-                InlineKeyboardButton(text="❌ Annuler", callback_data="alert_create_cancel"),
-            ],
-        ]
-    )
+                InlineKeyboardButton(
+                    text="✨ Variantes & Exclusions IA",
+                    callback_data="alert_create_ai_variants",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_category_selection_keyboard() -> InlineKeyboardMarkup:
@@ -199,12 +207,68 @@ def get_alert_edit_fields_keyboard(
             ("États acceptés", "conditions"),
         ]
 
+    # Ajout des actions intelligentes IA
+    fields.append(("🔤 Suggérer variantes IA", "ai_variants"))
+    fields.append(("🧹 Auto-tuning exclusions IA", "ai_autotune"))
+
     buttons = [
         [InlineKeyboardButton(text=label, callback_data=f"ed_f:{alert_id}:{field}")]
         for label, field in fields
     ]
     buttons.append([InlineKeyboardButton(text="← Retour", callback_data=f"al_view:{alert_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+
+
+
+def get_edit_conditions_keyboard(
+    alert_id: uuid.UUID,
+    accepted_conditions: list[str] | None,
+) -> InlineKeyboardMarkup:
+    """Génère le clavier de modification interactive des états acceptés avec bascule."""
+    buttons: list[list[InlineKeyboardButton]] = []
+    is_all = accepted_conditions is None or len(accepted_conditions) == 0
+
+    for idx, cond in enumerate(STANDARD_CONDITIONS):
+        is_selected = is_all or (cond in accepted_conditions)
+        icon = "✅" if is_selected else "⬜"
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{icon} {cond}",
+                    callback_data=f"ed_c_tog:{alert_id}:{idx}",
+                )
+            ]
+        )
+
+    all_icon = "✅" if is_all else "⬜"
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text=f"{all_icon} 🌐 Tous les états",
+                callback_data=f"ed_c_all:{alert_id}",
+            )
+        ]
+    )
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="← Retour aux champs",
+                callback_data=f"al_edit:{alert_id}",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_cancel_edit_keyboard(alert_id: uuid.UUID) -> InlineKeyboardMarkup:
+    """Retourne un clavier avec bouton retour/annuler lors de la saisie d'une nouvelle valeur."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="← Annuler / Retour", callback_data=f"al_edit:{alert_id}")],
+        ]
+    )
 
 
 def get_delete_confirmation_keyboard(alert_id: uuid.UUID) -> InlineKeyboardMarkup:

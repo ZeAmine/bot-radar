@@ -1,4 +1,8 @@
-"""Configuration globale de l'application via Pydantic Settings."""
+"""Configuration globale de l'application via Pydantic Settings.
+
+Ce fichier définit le schéma et la validation des variables d'environnement.
+Toutes les valeurs réelles et secrètes sont chargées dynamiquement depuis le fichier .env.
+"""
 
 from typing import Annotated
 
@@ -16,7 +20,7 @@ def parse_allowed_user_ids(v: str | list[int] | None) -> list[int]:
 
 
 class Settings(BaseSettings):
-    """Paramètres applicatifs chargés depuis l'environnement ou .env."""
+    """Schéma des paramètres applicatifs chargés depuis le fichier .env."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -32,16 +36,15 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # Telegram Bot
-    TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ")
+    TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
     TELEGRAM_ALLOWED_USER_IDS: Annotated[list[int], BeforeValidator(parse_allowed_user_ids)] = []
-    TELEGRAM_WEBHOOK_SECRET: SecretStr = SecretStr("mock_secret")
-    TELEGRAM_WEBHOOK_URL: str = "https://localhost:8000/api/v1/telegram/webhook/"
+    TELEGRAM_WEBHOOK_SECRET: SecretStr = SecretStr("")
 
-    # API Tokens
-    INGEST_API_TOKEN: SecretStr = SecretStr("mock_ingest_token")
-    INTERNAL_API_TOKEN: SecretStr = SecretStr("mock_internal_token")
+    # API Tokens (Ingestion et communication interne)
+    INGEST_API_TOKEN: SecretStr = SecretStr("")
+    INTERNAL_API_TOKEN: SecretStr = SecretStr("")
 
-    # eBay Browse API
+    # eBay Browse API (Optionnel)
     EBAY_CLIENT_ID: str = ""
     EBAY_CLIENT_SECRET: SecretStr = SecretStr("")
     EBAY_ENV: str = "PRODUCTION"
@@ -51,7 +54,6 @@ class Settings(BaseSettings):
 
     # Surveillance Vinted en temps réel
     RADAR_API_URL: str = "http://127.0.0.1:8000"
-    PUBLIC_BASE_URL: str = "https://radar.aminezegmou.fr"
     VINTED_POLL_INTERVAL_SECONDS: int = 20
     VINTED_POLLER_ENABLED: bool = True
     VINTED_PROXY_URL: str | None = None
@@ -75,8 +77,21 @@ class Settings(BaseSettings):
         import random
         return random.choice(proxies)
 
-    # Observabilité
-    SENTRY_DSN: str | None = None
+    # Moteur IA & DeepSeek-V4.1-Flash
+    DEEPSEEK_API_KEY: SecretStr = SecretStr("")
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
+    DEEPSEEK_MODEL: str = "deepseek-flash"
+    AI_ENABLED: bool = True
+    AI_FEATURE_NATURAL_ADD: bool = True
+    AI_FEATURE_PRICE_GLITCH: bool = False
+    AI_FEATURE_HIDDEN_CONDITION: bool = True
+    AI_FEATURE_VISION_GUARD: bool = True
+    AI_FEATURE_PROFIT_SCORING: bool = True
+    AI_FEATURE_NEGOTIATION: bool = True
+    AI_FEATURE_BUNDLE_DECOMPOSITION: bool = True
+    AI_FEATURE_KEYWORD_VARIANTS: bool = True
+    AI_FEATURE_AUTO_TUNING: bool = True
+    AI_FEATURE_BUNDLE_HUNTER: bool = False
 
     @property
     def is_production(self) -> bool:

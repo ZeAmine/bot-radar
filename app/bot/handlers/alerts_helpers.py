@@ -93,6 +93,8 @@ def format_semi_auto_recap(
     exclude_keywords: list[str],
     category_slug: str = "bd_comics",
     conditions: list[str] | None = None,
+    variants: list[str] | None = None,
+    is_series: bool = False,
 ) -> str:
     """Formate le récapitulatif clair et sans bruit visuel avant confirmation."""
     price_str = f"{max_price_cents / 100:.2f} €".replace(".", ",") if max_price_cents else "Aucun"
@@ -103,6 +105,8 @@ def format_semi_auto_recap(
         f"{cat_emoji} <b>Récapitulatif de l'alerte ({cat_label})</b>\n",
         f"📌 <b>Nom :</b> {html.escape(title)}",
     ]
+    if is_series:
+        lines.append("🏷️ <b>Type :</b> Série multi-tomes (surveillance dynamique par tome)")
     if author:
         lines.append(f"✍️ <b>Auteur :</b> {html.escape(author)}")
     if publisher:
@@ -112,6 +116,8 @@ def format_semi_auto_recap(
 
     lines.append(f"🎯 <b>Prix max :</b> {price_str}")
     lines.append(f"🔑 <b>Inclus :</b> {', '.join(include_keywords)}")
+    if variants:
+        lines.append(f"✨ <b>Variantes :</b> {', '.join(variants)}")
     if exclude_keywords:
         lines.append(f"🚫 <b>Exclus :</b> {', '.join(exclude_keywords)}")
 

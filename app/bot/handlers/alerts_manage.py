@@ -18,11 +18,13 @@ from app.bot.handlers.alerts_view import show_alerts, view_single_alert
 from app.bot.keyboards.alerts import (
     get_alert_card_keyboard,
     get_alert_edit_fields_keyboard,
+    get_cancel_edit_keyboard,
     get_delete_confirmation_keyboard,
     get_edit_category_selection_keyboard,
+    get_edit_conditions_keyboard,
 )
 from app.bot.states.alert_creation import AlertEditState
-from app.core.constants import AlertStatus, CategorySlug
+from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
@@ -163,9 +165,12 @@ async def select_edit_field(
     callback: CallbackQuery,
     db_user: User,
     db_session: Any,
+    state: FSMContext | None = None,
 ) -> None:
     """Affiche les options de modification pour une alerte donnée."""
     await callback.answer()
+    if state:
+        await state.clear()
     alert_id = uuid.UUID(callback.data.split(":")[1])  # type: ignore
 
     alert_repo = _get_alert_repo(db_session)
@@ -185,36 +190,210 @@ async def select_edit_field(
         await callback.message.edit_text(text, reply_markup=keyboard)
 
 
+async def _show_conditions_menu(
+    target: CallbackQuery | Message,
+    alert: Any,
+) -> None:
+    """Affiche le menu de bascule des conditions acceptées."""
+    text = (
+        f"💎 <b>États acceptés pour « {html.escape(alert.name)} »</b>\n\n"
+        "Coche ou décoche les états autorisés pour cette alerte en cliquant sur les boutons :"
+    )
+    keyboard = get_edit_conditions_keyboard(alert.id, alert.accepted_conditions)
+    if hasattr(target, "message") and target.message and hasattr(target.message, "edit_text"):
+        await target.message.edit_text(text, reply_markup=keyboard)
+    elif hasattr(target, "answer"):
+        await target.answer(text, reply_markup=keyboard)
+
+
 @router.callback_query(F.data.startswith("ed_f:"))
 async def prompt_new_field_value(
     callback: CallbackQuery,
     state: FSMContext,
+    db_user: User,
+    db_session: Any,
 ) -> None:
-    """Demande la nouvelle valeur pour le champ sélectionné."""
+    """Affiche l'invite épurée avec bloc '1 Clic pour Copier' ou cases à cocher."""
     await callback.answer()
     parts = callback.data.split(":")  # type: ignore
-    alert_id = parts[1]
+    alert_id = uuid.UUID(parts[1])
     field = parts[2]
 
-    await state.set_state(AlertEditState.waiting_for_new_value)
-    await state.update_data(edit_alert_id=alert_id, edit_field=field)
+    alert_repo = _get_alert_repo(db_session)
+    alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
+    if not alert:
+        await callback.answer("Alerte introuvable.", show_alert=True)
+        return
 
-    prompts = {
-        "name": "Envoie le nouveau nom / titre :",
-        "isbn": "Envoie le nouvel ISBN-10 ou ISBN-13 (ex: 9782381961903) :",
-        "url": "Envoie le nouveau lien Vinted (HTTPS) :",
-        "include_keywords": "Envoie les nouveaux mots-clés inclus (séparés par des virgules) :",
-        "exclude_keywords": "Envoie les nouveaux mots-clés à exclure (ou /skip pour aucun) :",
-        "variants": "Envoie les nouvelles variantes (ou /skip pour aucune) :",
-        "max_price": "Envoie le nouveau prix maximum de l'article en euros (ex: 15) :",
-        "conditions": (
-            "Envoie les états acceptés séparés par des virgules\n"
-            "(ex: Neuf avec étiquette, Très bon état) :"
+    # 1. Conditions : cases à cocher interactives
+    if field == "conditions":
+        await state.clear()
+        await _show_conditions_menu(callback, alert)
+        return
+
+    # Actions intelligentes IA
+    if field == "ai_variants":
+        await state.clear()
+        await callback.answer("🤖 Recherche des variantes orthographiques...")
+        from app.bot.handlers.autotune import _pending_variants
+        from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+        variants = await keyword_variants_module.generate_variants(alert.name)
+        if not variants:
+            await callback.answer("Aucune variante spécifique trouvée.", show_alert=True)
+            return
+
+        _pending_variants[str(alert.id)] = variants
+        var_str = ", ".join(variants)
+        text = (
+            f"🔤 <b>Variantes suggérées par l'IA pour « {html.escape(alert.name)} » :</b>\n\n"
+            f"<code>{html.escape(var_str)}</code>\n\n"
+            "Souhaitez-vous ajouter ces variantes aux mots-clés de l'alerte ?"
+        )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ Ajouter à l'alerte",
+                        callback_data=f"ai_var_apply:{alert.id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="← Retour",
+                        callback_data=f"al_edit:{alert.id}",
+                    )
+                ],
+            ]
+        )
+        if callback.message and hasattr(callback.message, "edit_text"):
+            await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+
+    if field == "ai_autotune":
+        await state.clear()
+        from app.bot.handlers.autotune import process_autotune_for_alert
+
+        await process_autotune_for_alert(callback, alert, db_session)
+        return
+
+    # 2. Tous les autres champs : bloc <code> cliquable pour copier en 1 clic
+    await state.set_state(AlertEditState.waiting_for_new_value)
+    await state.update_data(edit_alert_id=str(alert.id), edit_field=field)
+
+    labels = {
+        "name": ("Nom / Titre", "Colle dans la zone de texte, modifie et envoie :"),
+        "isbn": ("ISBN", "Colle dans la zone de texte, modifie et envoie :"),
+        "url": ("Lien Vinted", "Colle dans la zone de texte, modifie et envoie :"),
+        "include_keywords": (
+            "Mots-clés requis",
+            "Colle dans la zone de texte, modifie et envoie :",
         ),
+        "exclude_keywords": (
+            "Exclusions",
+            "Colle dans la zone de texte, modifie et envoie (ou /skip pour tout effacer) :",
+        ),
+        "variants": (
+            "Variantes",
+            "Colle dans la zone de texte, modifie et envoie (ou /skip pour tout effacer) :",
+        ),
+        "max_price": ("Prix maximum (€)", "Colle dans la zone de texte, modifie et envoie :"),
     }
-    msg = prompts.get(field, "Envoie la nouvelle valeur :")
-    if callback.message and hasattr(callback.message, "answer"):
-        await callback.message.answer(msg)
+    title, prompt_hint = labels.get(field, (field, "Envoie la nouvelle valeur :"))
+
+    if field in ("exclude_keywords", "include_keywords", "variants"):
+        items = getattr(alert, field, []) or []
+        current_str = ", ".join(items)
+    elif field == "name":
+        current_str = alert.name
+    elif field == "isbn":
+        current_str = alert.isbn or ""
+    elif field == "url":
+        current_str = alert.vinted_search_url or ""
+    elif field == "max_price":
+        current_str = (
+            f"{alert.max_item_price_cents / 100:.2f}".rstrip("0").rstrip(".")
+            if alert.max_item_price_cents
+            else ""
+        )
+    else:
+        current_str = ""
+
+    if current_str:
+        text = (
+            f"🎯 <b>{title} actuels :</b> <i>(touche pour copier)</i>\n\n"
+            f"<code>{html.escape(current_str)}</code>\n\n"
+            f"<i>{prompt_hint}</i>"
+        )
+    else:
+        text = (
+            f"🎯 <b>{title} :</b> <i>(actuellement vide)</i>\n\n"
+            f"<i>{prompt_hint}</i>"
+        )
+
+    keyboard = get_cancel_edit_keyboard(alert.id)
+    if callback.message and hasattr(callback.message, "edit_text"):
+        await callback.message.edit_text(text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("ed_c_tog:"))
+async def handle_edit_condition_toggle(
+    callback: CallbackQuery,
+    db_user: User,
+    db_session: Any,
+) -> None:
+    """Bascule l'état d'une condition pour l'alerte."""
+    parts = callback.data.split(":")  # type: ignore
+    alert_id = uuid.UUID(parts[1])
+    idx = int(parts[2])
+
+    alert_repo = _get_alert_repo(db_session)
+    alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
+    if not alert:
+        await callback.answer("Alerte introuvable.", show_alert=True)
+        return
+
+    target_cond = STANDARD_CONDITIONS[idx]
+    if alert.accepted_conditions is None or len(alert.accepted_conditions) == 0:
+        current_conds = list(STANDARD_CONDITIONS)
+    else:
+        current_conds = list(alert.accepted_conditions)
+
+    if target_cond in current_conds:
+        current_conds.remove(target_cond)
+    else:
+        current_conds.append(target_cond)
+
+    if len(current_conds) == len(STANDARD_CONDITIONS) or len(current_conds) == 0:
+        alert.accepted_conditions = None
+    else:
+        alert.accepted_conditions = current_conds
+
+    await db_session.commit()
+    await callback.answer()
+    await _show_conditions_menu(callback, alert)
+
+
+@router.callback_query(F.data.startswith("ed_c_all:"))
+async def handle_edit_condition_all(
+    callback: CallbackQuery,
+    db_user: User,
+    db_session: Any,
+) -> None:
+    """Active tous les états pour l'alerte."""
+    parts = callback.data.split(":")  # type: ignore
+    alert_id = uuid.UUID(parts[1])
+
+    alert_repo = _get_alert_repo(db_session)
+    alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
+    if not alert:
+        await callback.answer("Alerte introuvable.", show_alert=True)
+        return
+
+    alert.accepted_conditions = None
+    await db_session.commit()
+    await callback.answer("🌐 Tous les états acceptés.")
+    await _show_conditions_menu(callback, alert)
 
 
 @router.message(AlertEditState.waiting_for_new_value)
@@ -224,11 +403,11 @@ async def save_edited_field_value(
     db_user: User,
     db_session: Any,
 ) -> None:
-    """Applique la modification du champ en base de données."""
+    """Applique la modification du champ en base de données et affiche l'alerte mise à jour."""
     data = await state.get_data()
     alert_id = uuid.UUID(data["edit_alert_id"])
     field = data["edit_field"]
-    text = (message.text or "").strip()
+    raw_text = (message.text or "").strip()
 
     alert_repo = _get_alert_repo(db_session)
     alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
@@ -238,45 +417,125 @@ async def save_edited_field_value(
         return
 
     try:
-        if field == "name":
-            if len(text) < 2:
+        if field in ("exclude_keywords", "include_keywords", "variants"):
+            if raw_text.lower() == "/skip" or raw_text in ("-", "aucun", "aucune"):
+                parsed = []
+            else:
+                parsed = parse_comma_separated_list(raw_text)
+
+            if field == "include_keywords" and not parsed:
+                raise AlertServiceError("Au moins un mot-clé requis pour surveiller l'alerte.")
+
+            setattr(alert, field, parsed)
+
+        elif field == "name":
+            if len(raw_text) < 2:
                 raise AlertServiceError("Le nom doit contenir au moins 2 caractères.")
-            alert.name = text
+            alert.name = raw_text
             if alert.category and alert.category.slug in (
                 CategorySlug.TECH.value,
                 CategorySlug.CLOTHES.value,
                 CategorySlug.GAMING.value,
             ):
-                alert.vinted_search_url = f"https://www.vinted.fr/catalog?search_text={urllib.parse.quote_plus(text)}&order=newest_first"
-        elif field == "isbn":
-            clean_isbn = extract_clean_isbn(text)
-            if not clean_isbn:
-                raise AlertServiceError(
-                    "Format d'ISBN invalide (doit comporter 10 ou 13 chiffres)."
+                alert.vinted_search_url = (
+                    f"https://www.vinted.fr/catalog?search_text="
+                    f"{urllib.parse.quote_plus(raw_text)}&order=newest_first"
                 )
-            alert.isbn = clean_isbn
-            if clean_isbn not in alert.include_keywords:
-                alert.include_keywords = [clean_isbn] + [
-                    kw for kw in alert.include_keywords if not kw.isdigit()
+        elif field == "isbn":
+            if raw_text.lower() in ("/skip", "-", "aucun", "aucune", "clear", "supprimer"):
+                alert.isbn = None
+                alert.vinted_search_url = (
+                    f"https://www.vinted.fr/catalog?search_text="
+                    f"{urllib.parse.quote_plus(alert.name)}&order=newest_first"
+                )
+            else:
+                clean_isbn = extract_clean_isbn(raw_text)
+                if not clean_isbn:
+                    raise AlertServiceError(
+                        "Format d'ISBN invalide (doit comporter 10 ou 13 chiffres)."
+                    )
+                alert.isbn = clean_isbn
+                # Nettoyer d'éventuels ISBN numériques résiduels dans les mots-clés
+                alert.include_keywords = [
+                    kw for kw in (alert.include_keywords or [])
+                    if not (kw.isdigit() and len(kw) >= 10)
                 ]
+                # Mettre à jour l'URL de recherche Vinted
+                alert.vinted_search_url = (
+                    f"https://www.vinted.fr/catalog?search_start_type=item_page_isbn&search_text={clean_isbn}&order=newest_first"
+                )
+
+                # Propagation globale en base : livre, liaison alerte-livre et cote de marché
+                from app.core.constants import ComparisonStatus, MatchConfidence
+                from app.db.models.alert_book import AlertBook
+                from app.db.repositories.book_repo import BookRepository
+                from app.db.repositories.market_price_repo import MarketPriceRepository
+                from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
+                from app.providers.registry import ProviderRegistry
+                from app.utils.text import normalize_text
+                from sqlalchemy import delete
+
+                book_repo = BookRepository(db_session)
+                market_repo = MarketPriceRepository(db_session)
+
+                book = await book_repo.get_by_isbn13(clean_isbn)
+                if not book:
+                    book = await book_repo.create(
+                        title=alert.name,
+                        normalized_title=normalize_text(alert.name),
+                        isbn13=clean_isbn,
+                    )
+
+                if book:
+                    # Détacher les anciens livres de l'alerte pour éviter les conflits d'ISBN
+                    await db_session.execute(
+                        delete(AlertBook).where(AlertBook.alert_id == alert.id)
+                    )
+                    await book_repo.link_alert_to_book(alert.id, book.id, MatchConfidence.HIGH)
+
+                    # Rafraîchir immédiatement la cote de marché pour ce nouvel ISBN
+                    try:
+                        provider = ChasseAuxLivresProvider(timeout_seconds=6.0)
+                        offers = await provider.get_offers(isbn13=clean_isbn, title="")
+                        if offers:
+                            for off in offers:
+                                await market_repo.save_snapshot(book.id, off)
+                            best = ProviderRegistry.select_best_offer(offers)
+                            if best:
+                                hist_low = (
+                                    best.raw_payload.get("historical_low_1y_cents")
+                                    if best.raw_payload
+                                    else None
+                                )
+                                merchant = (
+                                    best.raw_payload.get("best_merchant")
+                                    or best.provider_name
+                                )
+                                await market_repo.update_or_create_cache(
+                                    book_id=book.id,
+                                    lowest_delivered_price_cents=best.delivered_price_cents,
+                                    best_provider_name=merchant,
+                                    best_source_url=best.source_url,
+                                    confidence=best.confidence,
+                                    comparison_status=ComparisonStatus.AVAILABLE,
+                                    cache_duration_hours=24,
+                                    historical_low_1y_cents=hist_low,
+                                )
+                    except Exception as exc:
+                        logger.warning(
+                            "Échec de mise à jour de la cote pour le nouvel ISBN %s : %s",
+                            clean_isbn,
+                            exc,
+                        )
         elif field == "url":
-            parsed = validate_and_parse_vinted_url(text)
+            parsed = validate_and_parse_vinted_url(raw_text)
             alert.vinted_search_url = parsed["url"]
-        elif field == "include_keywords":
-            kw = parse_comma_separated_list(text)
-            if not kw:
-                raise AlertServiceError("Au moins un mot-clé est requis.")
-            alert.include_keywords = kw
-        elif field == "exclude_keywords":
-            alert.exclude_keywords = (
-                [] if text.lower() == "/skip" else parse_comma_separated_list(text)
-            )
-        elif field == "variants":
-            alert.variants = [] if text.lower() == "/skip" else parse_comma_separated_list(text)
         elif field == "max_price":
-            alert.max_item_price_cents = parse_price_to_cents(text)
+            alert.max_item_price_cents = parse_price_to_cents(raw_text)
         elif field == "conditions":
-            alert.accepted_conditions = parse_comma_separated_list(text) if text else None
+            alert.accepted_conditions = (
+                parse_comma_separated_list(raw_text) if raw_text else None
+            )
 
         await db_session.commit()
         await state.clear()
@@ -297,7 +556,7 @@ async def save_edited_field_value(
             ),
         )
     except AlertServiceError as exc:
-        await message.answer(f"⚠️ {exc}\nMerci de réessayer :")
+        await message.answer(f"⚠️ {exc}\nMerci de réessayer (ou /cancel pour annuler) :")
 
 
 @router.message(Command("pause"))

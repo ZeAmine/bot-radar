@@ -1,0 +1,8 @@
+Analyse l'annonce Vinted suivante :
+
+Titre : {title}
+Catégorie : {category}
+Prix : {price}
+État déclaré par le vendeur : {condition}
+Description :
+{description}

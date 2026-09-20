@@ -6,7 +6,6 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import sentry_sdk
 from fastapi import FastAPI, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
@@ -25,14 +24,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Gestion du cycle de vie de l'application (démarrage et extinction)."""
     # Initialisation du logging structuré
     setup_logging(settings.LOG_LEVEL)
-
-    # Initialisation facultative de Sentry
-    if settings.SENTRY_DSN:
-        sentry_sdk.init(
-            dsn=settings.SENTRY_DSN,
-            environment=settings.APP_ENV,
-            traces_sample_rate=1.0 if not settings.is_production else 0.1,
-        )
 
     # Configuration des commandes du menu Telegram
     from app.bot.bot_instance import bot, setup_bot_commands

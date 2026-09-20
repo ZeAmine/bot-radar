@@ -106,6 +106,7 @@ class IngestService:
                     market_comparison_line=market_comparison_line,
                     alert_keywords=alert_kws,
                     is_bundle=getattr(match_result, "is_bundle", False),
+                    alert=alert,
                 )
 
             # 6. Création de l'enregistrement listing_matches
@@ -165,15 +166,15 @@ class IngestService:
         return None
 
     async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> str | None:
-        """Résout le livre et le cache de prix de marché pour les BD & Comics."""
+        """Résout le livre et le cache de prix de marché pour les BD & Comics de manière stricte par ISBN."""
         book_repo = BookRepository(self.db)
         catalog_service = BookCatalogService(self.db)
 
-        resolved_book = None
+        book = None
         books_in_series = None
         tome_result = None
 
-        # Si l'alerte est une série multi-tomes (isbn is NULL)
+        # Cas 1 : L'alerte est une série multi-tomes (isbn is NULL)
         if not alert.isbn:
             resolved_book, books_in_series, tome_result = (
                 await book_repo.resolve_book_for_listing(
@@ -184,31 +185,58 @@ class IngestService:
                 )
             )
             book = resolved_book
-        else:
-            book = await book_repo.get_book_for_alert(alert.id)
 
-        target_isbn = alert.isbn or listing.isbn13 or (book.isbn13 if book else None)
-
-        # Si non lié, tenter l'identification par ISBN ou par titre
-        if not book and not books_in_series:
-            if target_isbn:
-                book = await book_repo.get_by_isbn13(target_isbn)
+            # Si aucun livre précis n'est encore lié pour ce tome dans cette série, tenter de résoudre l'ISBN exact
             if not book:
-                search_title = alert.name or listing.title
-                book, _ = await catalog_service.identify_book(
-                    isbn13=target_isbn,
-                    title=search_title,
-                )
-            if not book and alert.name:
-                book = await catalog_service.add_book(
-                    title=alert.name,
-                    isbn13=target_isbn,
-                )
+                discovered_isbn = listing.isbn13
+                if not discovered_isbn and not (tome_result and tome_result.is_lot and tome_result.lot_tomes):
+                    try:
+                        from app.services.book_metadata_service import BookMetadataService
+                        meta_service = BookMetadataService()
+                        meta = await meta_service.lookup_by_title_and_author(listing.title)
+                        if meta and meta.isbn13:
+                            discovered_isbn = meta.isbn13
+                    except Exception as meta_err:
+                        logger.debug("Échec résolution ISBN pour l'annonce '%s': %s", listing.title, meta_err)
 
-            if book:
-                await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
+                if discovered_isbn:
+                    # Persistance définitive du tome dans la base pour éviter les futurs appels
+                    book = await book_repo.get_by_isbn13(discovered_isbn)
+                    if not book:
+                        book = await catalog_service.add_book(
+                            title=listing.title,
+                            isbn13=discovered_isbn,
+                        )
+                    if book:
+                        await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
+        else:
+            # Cas 2 : L'alerte est un One-Shot ou possède un ISBN fixé
+            book = await book_repo.get_book_for_alert(alert.id)
+            if not book and alert.isbn:
+                book = await book_repo.get_by_isbn13(alert.isbn)
+                if not book:
+                    book = await catalog_service.add_book(
+                        title=alert.name,
+                        isbn13=alert.isbn,
+                    )
+                if book:
+                    await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
 
-        # Si le livre existe mais sans cache valide, interroger Chasse-aux-livres en direct
+        # Déterminer l'ISBN cible strict
+        target_isbn = (book.isbn13 if book else None) or alert.isbn or listing.isbn13
+
+        # RÈGLE D'OR : Sans ISBN-13 strict, NE PAS faire d'appel textuel aléatoire à Chasse-aux-livres !
+        if not target_isbn or len(target_isbn) < 10:
+            if books_in_series:
+                return MarketPriceService.get_comparison_summary(
+                    listing=listing,
+                    book=book,
+                    books_in_series=books_in_series,
+                    tome_result=tome_result,
+                )
+            return None
+
+        # Si le livre existe avec un ISBN strict mais sans cache valide, interroger Chasse-aux-livres UNIQUEMENT par ISBN
         if book:
             now_utc = datetime.now(UTC)
             cache = book.market_cache
@@ -224,17 +252,11 @@ class IngestService:
                     from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 
                     chasse_provider = ChasseAuxLivresProvider(timeout_seconds=6.0)
-                    if target_isbn:
-                        offers = await chasse_provider.get_offers(
-                            isbn13=target_isbn,
-                            title="",
-                        )
-                    else:
-                        offers = await chasse_provider.get_offers(
-                            isbn13=None,
-                            title=book.title,
-                            author=book.author,
-                        )
+                    # Interrogation EXCLUSIVEMENT par ISBN-13
+                    offers = await chasse_provider.get_offers(
+                        isbn13=target_isbn,
+                        title="",
+                    )
                     if offers:
                         market_repo = MarketPriceRepository(self.db)
                         best = offers[0]
@@ -247,7 +269,7 @@ class IngestService:
                         cache = await market_repo.update_or_create_cache(
                             book_id=book.id,
                             lowest_delivered_price_cents=best.delivered_price_cents,
-                            best_provider_name=best.provider_name,
+                            best_provider_name=best.raw_payload.get("best_merchant") or best.provider_name,
                             best_source_url=best.source_url,
                             confidence=best.confidence,
                             comparison_status=ComparisonStatus.AVAILABLE,
@@ -256,7 +278,7 @@ class IngestService:
                         )
                         book.market_cache = cache
                 except Exception as exc:
-                    logger.debug("Échec de l'interrogation en direct Chasse-aux-livres: %s", exc)
+                    logger.debug("Échec de l'interrogation Chasse-aux-livres par ISBN '%s': %s", target_isbn, exc)
 
         return MarketPriceService.get_comparison_summary(
             listing=listing,

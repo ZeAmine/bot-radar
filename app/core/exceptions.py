@@ -1,0 +1,79 @@
+"""Hiérarchie d'exceptions typées pour Radar Bot.
+
+Permet d'isoler les erreurs de domaine, de providers externes et de persistance
+sans jamais faire fuiter de secrets ni de détails techniques non gérés.
+"""
+
+
+class RadarBotError(Exception):
+    """Exception racine de l'application Radar Bot."""
+
+    def __init__(self, message: str, details: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.details = details or {}
+
+
+# --- Erreurs de Domaine (Métier pur) ---
+
+
+class DomainError(RadarBotError):
+    """Erreur survenue au niveau des règles de gestion métier."""
+
+
+class MatchingError(DomainError):
+    """Erreur lors de l'évaluation du matching déterministe."""
+
+
+class InvalidListingError(DomainError):
+    """Données d'annonce non conformes aux règles du domaine."""
+
+
+class InvalidAlertError(DomainError):
+    """Configuration d'alerte invalide ou incohérente."""
+
+
+# --- Erreurs de Fournisseurs / Adaptateurs Externes ---
+
+
+class ProviderError(RadarBotError):
+    """Erreur lors de l'interaction avec un service tiers (API, Scraping, LLM)."""
+
+
+class DeepSeekError(ProviderError):
+    """Erreur générique liée au service DeepSeek."""
+
+
+class DeepSeekTimeoutError(DeepSeekError):
+    """Le délai d'attente alloué à l'API DeepSeek a été dépassé."""
+
+
+class DeepSeekAPIError(DeepSeekError):
+    """L'API DeepSeek a renvoyé un code de statut HTTP d'erreur."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message, details={"status_code": status_code})
+        self.status_code = status_code
+
+
+class DeepSeekValidationError(DeepSeekError):
+    """La réponse de DeepSeek ne respecte pas le schéma Pydantic attendu."""
+
+
+class MarketPriceProviderError(ProviderError):
+    """Erreur lors de l'interrogation d'un comparateur de prix externe."""
+
+
+# --- Erreurs de Persistance / Repositories ---
+
+
+class RepositoryError(RadarBotError):
+    """Erreur survenue dans la couche d'accès aux données."""
+
+
+class EntityNotFoundError(RepositoryError):
+    """L'entité demandée n'existe pas en base de données."""
+
+
+class DuplicateEntityError(RepositoryError):
+    """L'entité existe déjà (conflit d'unicité)."""

@@ -42,11 +42,11 @@ def test_calculate_total_unknown_shipping_or_protection():
 def test_format_price_summary():
     # Total fourni explicitement : 9,00 € + frais = 13,69 € TTC
     summary_known = format_price_summary(item_price_cents=900, estimated_total_cents=1369)
-    assert summary_known == "💵 9,00 € | 13,69 € (TTC)"
+    assert summary_known == "💵 Prix : 9,00 € (13,69 € TTC)"
 
     # Total manquant : calcul automatique du prix TTC (15,00 € -> 19,33 € TTC)
     summary_auto_fallback = format_price_summary(item_price_cents=1500, estimated_total_cents=None)
-    assert summary_auto_fallback == "💵 15,00 € | 19,33 € (TTC)"
+    assert summary_auto_fallback == "💵 Prix : 15,00 € (19,33 € TTC)"
 
     # Total manquant sans fallback : repli sur mention d'attente
     summary_no_fallback = format_price_summary(
@@ -54,4 +54,4 @@ def test_format_price_summary():
         estimated_total_cents=None,
         fallback_to_default_fees=False,
     )
-    assert summary_no_fallback == "💵 15,00 € | Total à confirmer"
+    assert summary_no_fallback == "💵 Prix : 15,00 € (TTC à confirmer)"

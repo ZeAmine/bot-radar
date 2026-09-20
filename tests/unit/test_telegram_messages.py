@@ -2,7 +2,10 @@
 
 import uuid
 
-from app.bot.keyboards.listings import get_listing_alert_keyboard
+from app.bot.keyboards.listings import (
+    get_dislike_confirmation_keyboard,
+    get_listing_alert_keyboard,
+)
 from app.core.constants import CategorySlug
 from app.db.models.listing import Listing
 from app.services.telegram_service import build_listing_caption
@@ -36,14 +39,14 @@ def test_telegram_caption_bd_without_market_price():
     caption = build_listing_caption(listing, market_comparison_line=None)
 
     assert "🆕 <b>Blacksad — Intégrale</b>" in caption
-    assert "💎 Très bon état" in caption
-    assert "💵 9,00 € | 13,69 € (TTC)" in caption
+    assert "🏷 État : Très bon état" in caption
+    assert "💵 Prix : 9,00 € (13,69 € TTC)" in caption
     assert "Occasion :" not in caption
 
 
 def test_telegram_caption_bd_with_market_price_and_keywords():
     listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
-    comparison = "📉 Occasion : 22,00 € livré\n✅ Écart : -8,31 €"
+    comparison = "📊 Prix du marché : 22,00 € livré\n✅ Écart : -8,31 €"
     caption = build_listing_caption(
         listing,
         market_comparison_line=comparison,
@@ -51,9 +54,9 @@ def test_telegram_caption_bd_with_market_price_and_keywords():
     )
 
     assert "🆕 <b>Blacksad — Intégrale</b>" in caption
-    assert "💎 Très bon état" in caption
-    assert "💵 9,00 € | 13,69 € (TTC)" in caption
-    assert "📉 Occasion : 22,00 € livré" in caption
+    assert "🏷 État : Très bon état" in caption
+    assert "💵 Prix : 9,00 € (13,69 € TTC)" in caption
+    assert "📊 Prix du marché : 22,00 € livré" in caption
     assert "✅ Écart : -8,31 €" in caption
     assert "🔍 Mots-clés : blacksad, intégrale" in caption
 
@@ -68,8 +71,8 @@ def test_telegram_caption_clothes():
     caption = build_listing_caption(listing)
 
     assert "🆕 <b>Veste Carhartt Detroit</b>" in caption
-    assert "💎 Très bon état" in caption
-    assert "💵 45,00 € | 51,00 € (TTC)" in caption
+    assert "🏷 État : Très bon état" in caption
+    assert "💵 Prix : 45,00 € (51,00 € TTC)" in caption
     # Jamais de prix marché pour les vêtements
     assert "Occasion :" not in caption
 
@@ -85,37 +88,47 @@ def test_telegram_caption_tech():
     caption = build_listing_caption(listing)
 
     assert "🆕 <b>Logitech MX Master 3S</b>" in caption
-    assert "💎 Très bon état" in caption
-    assert "💵 60,00 € | 66,58 € (TTC)" in caption
+    assert "🏷 État : Très bon état" in caption
+    assert "💵 Prix : 60,00 € (66,58 € TTC)" in caption
     assert "Occasion :" not in caption
 
 
 def test_telegram_buttons_bd_comics():
     listing_id = uuid.uuid4()
-    url = "https://www.example.com/listing-bd"
+    url = "https://www.vinted.fr/items/123456-listing-bd"
     keyboard = get_listing_alert_keyboard(
         listing_id,
         url,
         category_slug=CategorySlug.BD_COMICS.value,
     )
 
-    # 2 lignes : photos/vinted, puis payer / prix du marché
+    # 4 lignes : photos/vinted, prix du marché / payer, dislike / négocier, puis dressing / lot
     rows = keyboard.inline_keyboard
-    assert len(rows) == 2
+    assert len(rows) == 4
     assert len(rows[0]) == 2
     assert len(rows[1]) == 2
+    assert len(rows[2]) == 2
+    assert len(rows[3]) == 1
 
-    assert rows[0][0].text == "🖼 Voir les photos"
+    assert rows[0][0].text == "🖼 Photos"
     assert rows[0][0].callback_data == f"photos:{listing_id}"
 
-    assert rows[0][1].text == "🔗 Voir Vinted"
+    assert rows[0][1].text == "🔗 Annonce"
     assert rows[0][1].url == url
 
-    assert rows[1][0].text == "🛍 Payer"
-    assert rows[1][0].url == f"{url}#radar_autobuy=1"
+    assert rows[1][0].text == "📊 Prix du marché"
+    assert rows[1][0].callback_data == f"market:{listing_id}"
 
-    assert rows[1][1].text == "📉 Prix du marché"
-    assert rows[1][1].callback_data == f"market:{listing_id}"
+    assert rows[1][1].text == "💳 Payer"
+    assert rows[1][1].url == "https://www.vinted.fr/transaction/buy/new?transaction[item_id]=123456"
+
+    assert rows[2][0].text == "👎 Faux positif"
+    assert rows[2][0].callback_data == f"dislike:{listing_id}"
+    assert rows[2][1].text == "💬 Négocier"
+    assert rows[2][1].callback_data == f"negotiate:{listing_id}"
+
+    assert rows[3][0].text == "🛍️ Dressing / Lot (bientôt)"
+    assert rows[3][0].callback_data == "bundle_dressing_disabled"
 
 
 def test_telegram_buttons_clothes_and_tech():
@@ -125,14 +138,69 @@ def test_telegram_buttons_clothes_and_tech():
     for cat in [CategorySlug.CLOTHES.value, CategorySlug.TECH.value]:
         keyboard = get_listing_alert_keyboard(listing_id, url, category_slug=cat)
         rows = keyboard.inline_keyboard
-        assert len(rows) == 2
+        assert len(rows) == 4
         assert len(rows[0]) == 2
         assert len(rows[1]) == 1
+        assert len(rows[2]) == 2
+        assert len(rows[3]) == 1
 
-        assert rows[0][0].text == "🖼 Voir les photos"
+        assert rows[0][0].text == "🖼 Photos"
         assert rows[0][0].callback_data == f"photos:{listing_id}"
-        assert rows[0][1].text == "🔗 Voir Vinted"
+        assert rows[0][1].text == "🔗 Annonce"
         assert rows[0][1].url == url
 
-        assert rows[1][0].text == "🛍 Payer"
-        assert rows[1][0].url == f"{url}#radar_autobuy=1"
+        assert rows[1][0].text == "💳 Payer"
+        assert rows[1][0].url == "https://www.vinted.fr/transaction/buy/new?transaction[item_id]=54321987"
+
+        assert rows[2][0].text == "👎 Faux positif"
+        assert rows[2][0].callback_data == f"dislike:{listing_id}"
+        assert rows[2][1].text == "💬 Négocier"
+        assert rows[2][1].callback_data == f"negotiate:{listing_id}"
+
+        assert rows[3][0].text == "🛍️ Dressing / Lot (bientôt)"
+        assert rows[3][0].callback_data == "bundle_dressing_disabled"
+
+
+def test_telegram_buttons_with_explicit_checkout_or_external_id():
+    listing_id = uuid.uuid4()
+    url = "https://www.vinted.fr/items/99999-item"
+
+    # Test avec checkout_url explicite
+    custom_checkout = "https://www.vinted.fr/transaction/buy/new?transaction[item_id]=custom123"
+    kb1 = get_listing_alert_keyboard(
+        listing_id,
+        url,
+        category_slug=CategorySlug.TECH.value,
+        checkout_url=custom_checkout,
+    )
+    assert kb1.inline_keyboard[1][0].url == custom_checkout
+
+    # Test avec external_id explicite
+    kb2 = get_listing_alert_keyboard(
+        listing_id,
+        url,
+        category_slug=CategorySlug.TECH.value,
+        external_id="88888",
+    )
+    assert (
+        kb2.inline_keyboard[1][0].url
+        == "https://www.vinted.fr/transaction/buy/new?transaction[item_id]=88888"
+    )
+
+
+def test_dislike_confirmation_keyboard():
+    listing_id = uuid.uuid4()
+    url = "https://www.vinted.fr/items/123456-listing-bd"
+    kb = get_dislike_confirmation_keyboard(
+        listing_id=listing_id,
+        listing_url=url,
+        category_slug=CategorySlug.BD_COMICS.value,
+    )
+    rows = kb.inline_keyboard
+    assert len(rows) == 3
+    # Ligne 3 = confirmation et annulation
+    assert rows[2][0].text == "⚠️ Confirmer ?"
+    assert rows[2][0].callback_data == f"confirm_dislike:{listing_id}"
+    assert rows[2][1].text == "❌ Annuler"
+    assert rows[2][1].callback_data == f"cancel_dislike:{listing_id}"
+

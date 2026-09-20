@@ -16,6 +16,7 @@ class AlertCreationState(StatesGroup):
     waiting_for_max_price = State()
     waiting_for_conditions = State()
     confirm_creation = State()
+    waiting_for_edit_field = State()
 
 
 class AlertEditState(StatesGroup):

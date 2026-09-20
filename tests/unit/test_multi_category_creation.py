@@ -321,19 +321,25 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     callback.message.edit_text.assert_called_once()
     prompt_text, kwargs = callback.message.edit_text.call_args[0][0], callback.message.edit_text.call_args[1]
     assert "Modification de l'alerte" in prompt_text
-    assert "10,00 €" in prompt_text
     kb = kwargs["reply_markup"]
+    assert "10,00 €" in str(kb.inline_keyboard)
     actions = [btn[0].callback_data for btn in kb.inline_keyboard]
-    assert "al_edit_step:price" in actions
-    assert "al_edit_step:restart" in actions
-    assert "al_edit_step:back" in actions
+    assert "al_create_edit:name" in actions
+    assert "al_create_edit:price" in actions
+    assert "al_create_edit:include_keywords" in actions
+    assert "al_create_edit:exclude_keywords" in actions
+    assert "al_create_edit:variants" in actions
+    assert "al_create_edit:conditions" in actions
+    assert "al_create_edit:restart" in actions
+    assert "al_create_edit:back" in actions
 
     # 2. Test de la sous-option modification de prix
     callback.answer.reset_mock()
     callback.message.edit_text.reset_mock()
+    callback.data = "al_create_edit:price"
     await prompt_new_price(callback, state)
-    state.set_state.assert_called_once_with(AlertCreationState.waiting_for_max_price)
-    assert "nouveau montant maximum" in callback.message.edit_text.call_args[0][0]
+    state.set_state.assert_called_once_with(AlertCreationState.waiting_for_edit_field)
+    assert "Prix maximum" in callback.message.edit_text.call_args[0][0]
 
     # 3. Test de la sous-option retour au récapitulatif
     callback.answer.reset_mock()

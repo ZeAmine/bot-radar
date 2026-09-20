@@ -51,7 +51,7 @@ def test_series_matching_specific_tome_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📉 Occasion (T2) : 18,50 €" in summary
+    assert "📊 Prix du marché (T2) : 18,50 €" in summary
     assert "-6,50 €" in summary
 
 
@@ -113,7 +113,8 @@ def test_series_matching_generic_range_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📉 Occasion : 15,00 € - 22,00 € (selon tome)" in summary
+    assert "📊 Prix du marché : 15,00 € - 22,00 € (selon tome)" in summary
+    assert "✅ Écart : <b>-0,50 € à -7,50 €</b>" in summary
 
 
 def test_series_matching_lot_card():
@@ -140,7 +141,7 @@ def test_series_matching_lot_card():
         books_in_series=books,
         tome_result=tome_res,
     )
-    assert "📉 <b>Prix du marché</b>" in card
+    assert "📊 <b>Prix du marché</b>" in card
     assert "💵 Lot (2 tomes) : ~34,50 €" in card
     assert "Cote par tome (Min sur 1 an) :" in card
     assert "• Tome 1 : 16,00 €" in card

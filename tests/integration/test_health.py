@@ -13,4 +13,6 @@ async def test_health_endpoint(async_client: AsyncClient):
     data = response.json()
     assert data["status"] == "ok"
     assert "environment" in data
+    assert "ai" in data
+    assert data["ai"]["status"] in ("active", "unconfigured", "disabled", "error")
     assert "X-Request-ID" in response.headers
