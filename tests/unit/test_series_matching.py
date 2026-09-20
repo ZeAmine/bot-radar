@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
@@ -196,3 +198,57 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     assert "🎯 Plus bas constaté (Lot) : ~42,30 €" in summary
     # Écart vs hist: 37.18 - 42.30 = -5.12 €
     assert "✅ Écart : <b>-5,12 €</b>" in summary
+
+
+@pytest.mark.parametrize(
+    ("lot_tomes", "item_total_cents", "expected_label", "expected_icon", "expected_diff"),
+    [
+        # Lot de 2 tomes consécutifs (T1 + T2 = 16.00 + 18.50 = 34.50 €)
+        ([1, 2], 2500, "📊 Prix du marché (Lot T1, T2) : ~34,50 €", "✅", "-9,50 €"),
+        # Lot de 2 tomes non-consécutifs (T1 + T3 = 16.00 + 20.00 = 36.00 €)
+        ([1, 3], 3000, "📊 Prix du marché (Lot T1, T3) : ~36,00 €", "✅", "-6,00 €"),
+        # Lot de 3 tomes (T1 + T2 + T3 = 54.50 €), prix Vinted supérieur (écart défavorable)
+        ([1, 2, 3], 6000, "📊 Prix du marché (Lot T1, T2, T3) : ~54,50 €", "⛔️", "+5,50 €"),
+        # Lot de 1 tome dans une liste de lot (T2 = 18.50 €)
+        ([2], 1500, "📊 Prix du marché (Lot T2) : ~18,50 €", "✅", "-3,50 €"),
+    ],
+)
+def test_series_matching_lot_variations_matrix(
+    lot_tomes: list[int],
+    item_total_cents: int,
+    expected_label: str,
+    expected_icon: str,
+    expected_diff: str,
+) -> None:
+    """Matrice générale vérifiant la cotation cumulée selon différentes combinaisons de tomes."""
+    books = [
+        _create_mock_book("Série Test — Tome 1", 1600),
+        _create_mock_book("Série Test — Tome 2", 1850),
+        _create_mock_book("Série Test — Tome 3", 2000),
+    ]
+    listing = Listing(
+        source_name="vinted",
+        external_id="test_lot",
+        url="https://vinted.fr",
+        title=f"Lot tomes {lot_tomes}",
+        normalized_title=f"lot tomes {lot_tomes}",
+        category_slug="bd_comics",
+        item_price_cents=item_total_cents - 200,
+        estimated_total_cents=item_total_cents,
+    )
+    tome_res = TomeMatchResult(
+        is_lot=True,
+        lot_tomes=lot_tomes,
+        lot_count=len(lot_tomes),
+        confidence="high",
+    )
+
+    summary = MarketPriceService.get_comparison_summary(
+        listing=listing,
+        book=None,
+        books_in_series=books,
+        tome_result=tome_res,
+    )
+    assert summary is not None
+    assert expected_label in summary
+    assert f"{expected_icon} Écart : <b>{expected_diff}</b>" in summary

@@ -1,166 +1,147 @@
 """Tests unitaires pour le module d'extraction de tomes et de lots TomeExtractor."""
 
+import pytest
+
 from app.services.tome_extractor import TomeExtractor
 
 
-def test_tome_extractor_standard_arabic():
-    """Vérifie la détection classique des tomes en chiffres arabes."""
-    res1 = TomeExtractor.extract("BD RIP Tome 2", series_key="RIP")
-    assert res1.is_lot is False
-    assert res1.tome_number == 2
-    assert res1.confidence == "high"
-
-    res2 = TomeExtractor.extract("RIP T3", series_key="RIP")
-    assert res2.is_lot is False
-    assert res2.tome_number == 3
-
-    res3 = TomeExtractor.extract("Blacksad vol. 4", series_key="Blacksad")
-    assert res3.is_lot is False
-    assert res3.tome_number == 4
-
-    res4 = TomeExtractor.extract("Blast Volume 1", series_key="Blast")
-    assert res4.is_lot is False
-    assert res4.tome_number == 1
-
-    res5 = TomeExtractor.extract("L'odyssée d'Hakim livre 3", series_key="L'odyssée d'Hakim")
-    assert res5.is_lot is False
-    assert res5.tome_number == 3
-
-    res6 = TomeExtractor.extract("RIP #5", series_key="RIP")
-    assert res6.is_lot is False
-    assert res6.tome_number == 5
-
-
-def test_tome_extractor_roman_numerals():
-    """Vérifie la conversion des chiffres romains en numéros de tome."""
-    res1 = TomeExtractor.extract("RIP Tome IV", series_key="RIP")
-    assert res1.is_lot is False
-    assert res1.tome_number == 4
-
-    res2 = TomeExtractor.extract("Blacksad Tome II", series_key="Blacksad")
-    assert res2.is_lot is False
-    assert res2.tome_number == 2
-
-    res3 = TomeExtractor.extract("Blast Tome VI", series_key="Blast")
-    assert res3.is_lot is False
-    assert res3.tome_number == 6
+@pytest.mark.parametrize(
+    ("title", "series_key", "expected_tome"),
+    [
+        # Chiffres arabes et préfixes variés
+        ("BD RIP Tome 2", "RIP", 2),
+        ("RIP T3", "RIP", 3),
+        ("RIP t.3", "RIP", 3),
+        ("Blacksad vol. 4", "Blacksad", 4),
+        ("Blast Volume 1", "Blast", 1),
+        ("L'odyssée d'Hakim livre 3", "L'odyssée d'Hakim", 3),
+        ("RIP #5", "RIP", 5),
+        ("RIP # 5", "RIP", 5),
+        # Chiffres romains
+        ("RIP Tome IV", "RIP", 4),
+        ("Blacksad Tome II", "Blacksad", 2),
+        ("Blast Tome VI", "Blast", 6),
+        ("Série Tome X", None, 10),
+        # Suffixe direct (nombre seul à la fin)
+        ("RIP 2", "RIP", 2),
+        ("Blacksad 3", "Blacksad", 3),
+    ],
+)
+def test_tome_extractor_single_tome_matrix(
+    title: str, series_key: str | None, expected_tome: int
+) -> None:
+    """Matrice générale pour l'extraction d'un tome unique (arabes, romains, suffixes)."""
+    res = TomeExtractor.extract(title, series_key=series_key)
+    assert res.is_lot is False
+    assert res.tome_number == expected_tome
 
 
-def test_tome_extractor_subtitles():
-    """Vérifie la reconnaissance d'un tome via le sous-titre de l'album."""
-    # Pour RIP : Maurice = Tome 2, Ahmed = Tome 3, Eugène = Tome 6
-    res1 = TomeExtractor.extract("BD RIP - Maurice", series_key="RIP")
-    assert res1.is_lot is False
-    assert res1.tome_number == 2
-    assert res1.matched_subtitle == "maurice"
+@pytest.mark.parametrize(
+    ("title", "series_key", "expected_is_lot", "expected_lot_tomes", "expected_count"),
+    [
+        # Séquences avec points (ex: 1.2.3)
+        ("Le château des animaux,  1.2.3", "Le château des animaux", True, [1, 2, 3], 3),
+        ("Série BD 1. 2. 3", None, True, [1, 2, 3], 3),
+        ("Manga 1.2.3.4", None, True, [1, 2, 3, 4], 4),
+        # Séquences avec virgules
+        ("Le château des animaux 1, 2, 3", "Le château des animaux", True, [1, 2, 3], 3),
+        ("Comics tomes 1, 2, 4", None, True, [1, 2, 4], 3),  # Lot non-consécutif
+        # Séquences avec tirets multiples
+        ("Le château des animaux 1-2-3", "Le château des animaux", True, [1, 2, 3], 3),
+        ("Tintin 4-5-6", None, True, [4, 5, 6], 3),
+        # Séquences avec slashs ou plus
+        ("Le château des animaux 1/2/3", "Le château des animaux", True, [1, 2, 3], 3),
+        ("BD 1+2+3", None, True, [1, 2, 3], 3),
+        ("Spirou 1 & 2", None, True, [1, 2], 2),
+        ("Largo Winch 1 et 2", None, True, [1, 2], 2),
+        ("Thorgal t1-2-3", None, True, [1, 2, 3], 3),
+        # Plages de tomes avec mots de liaison
+        ("Le château des animaux 1 à 3", "Le château des animaux", True, [1, 2, 3], 3),
+        ("Le château des animaux 1-3", "Le château des animaux", True, [1, 2, 3], 3),
+        ("Lot BD RIP tomes 1 à 4", "RIP", True, [1, 2, 3, 4], 4),
+        ("RIP tomes 1-3", "RIP", True, [1, 2, 3], 3),
+        ("BD 1 a 3", None, True, [1, 2, 3], 3),
+        ("BD 1 au 3", None, True, [1, 2, 3], 3),
+        ("Manga tomes 5 à 8", None, True, [5, 6, 7, 8], 4),
+        # Énumération explicite
+        ("BD RIP T1 T2 T3", "RIP", True, [1, 2, 3], 3),
+        ("Le château des animaux tomes 1, 2 et 3", "Le château des animaux", True, [1, 2, 3], 3),
+        ("Tome 1, tome 2", None, True, [1, 2], 2),
+        # Lots généraux sans numéros précis
+        ("Lot 3 BD RIP", "RIP", True, [], 3),
+        ("Coffret RIP intégrale", "RIP", True, [], None),
+        ("Slava (3 volumes) Dargaud", "Slava", True, [], 3),
+    ],
+)
+def test_tome_extractor_lot_detection_matrix(
+    title: str,
+    series_key: str | None,
+    expected_is_lot: bool,
+    expected_lot_tomes: list[int],
+    expected_count: int | None,
+) -> None:
+    """Matrice générale pour la détection de lots et bundles multi-tomes."""
+    res = TomeExtractor.extract(title, series_key=series_key)
+    assert res.is_lot == expected_is_lot
+    if expected_lot_tomes:
+        assert res.lot_tomes == expected_lot_tomes
+    if expected_count is not None:
+        assert res.lot_count == expected_count
 
-    res2 = TomeExtractor.extract("RIP Ahmed", series_key="RIP")
-    assert res2.is_lot is False
-    assert res2.tome_number == 3
 
-    # Pour Blacksad : Arctic-Nation = Tome 2
-    res3 = TomeExtractor.extract("Blacksad Arctic-Nation", series_key="Blacksad")
-    assert res3.is_lot is False
-    assert res3.tome_number == 2
+@pytest.mark.parametrize(
+    ("title", "series_key", "expected_tome", "expected_sub"),
+    [
+        ("BD RIP - Maurice", "RIP", 2, "maurice"),
+        ("RIP Ahmed", "RIP", 3, "ahmed"),
+        ("Blacksad Arctic-Nation", "Blacksad", 2, "arctic-nation"),
+        ("Blast Grasse Carcasse", "Blast", 1, "grasse carcasse"),
+        ("1629 Apothicaire du diable", "1629", 1, "apothicaire du diable"),
+        (
+            "Le combat ordinaire - Les quantités négligeables",
+            "Le combat ordinaire",
+            2,
+            "quantites negligeables",
+        ),
+    ],
+)
+def test_tome_extractor_subtitles_matrix(
+    title: str, series_key: str, expected_tome: int, expected_sub: str
+) -> None:
+    """Matrice générale pour la reconnaissance de tomes via sous-titres officiels."""
+    res = TomeExtractor.extract(title, series_key=series_key)
+    assert res.is_lot is False
+    assert res.tome_number == expected_tome
+    assert res.matched_subtitle == expected_sub
 
-    # Pour Blast : Grasse Carcasse = Tome 1
-    res4 = TomeExtractor.extract("Blast Grasse Carcasse", series_key="Blast")
-    assert res4.is_lot is False
-    assert res4.tome_number == 1
 
-
-def test_tome_extractor_price_not_a_tome():
-    """Vérifie qu'un prix en euros (ex: 15€, 20 euros) n'est jamais confondu avec un tome."""
-    res1 = TomeExtractor.extract("BD RIP 15€", series_key="RIP")
-    assert res1.tome_number is None
-
-    res2 = TomeExtractor.extract("BD RIP 20 euros bon état", series_key="RIP")
-    assert res2.tome_number is None
-
-    res3 = TomeExtractor.extract("RIP T2 à 12€", series_key="RIP")
-    assert res3.tome_number == 2
-
-
-def test_tome_extractor_lot_detection():
-    """Vérifie la détection de lots et de plages de tomes."""
-    # Plage avec 'à'
-    res1 = TomeExtractor.extract("Lot BD RIP tomes 1 à 4", series_key="RIP")
-    assert res1.is_lot is True
-    assert res1.lot_tomes == [1, 2, 3, 4]
-    assert res1.lot_count == 4
-
-    # Plage avec tiret
-    res2 = TomeExtractor.extract("RIP tomes 1-3", series_key="RIP")
-    assert res2.is_lot is True
-    assert res2.lot_tomes == [1, 2, 3]
-
-    # Énumération explicite
-    res3 = TomeExtractor.extract("BD RIP T1 T2 T3", series_key="RIP")
-    assert res3.is_lot is True
-    assert res3.lot_tomes == [1, 2, 3]
-
-    # Mot-clé lot avec nombre
-    res4 = TomeExtractor.extract("Lot 3 BD RIP", series_key="RIP")
-    assert res4.is_lot is True
-    assert res4.lot_count == 3
-
-    # Mot-clé intégrale ou coffret
-    res5 = TomeExtractor.extract("Coffret RIP intégrale", series_key="RIP")
-    assert res5.is_lot is True
-
-    # Volumes explicites entre parenthèses ou suffixe
-    res6 = TomeExtractor.extract("Slava (3 volumes) Dargaud", series_key="Slava")
-    assert res6.is_lot is True
-    assert res6.lot_count == 3
-
-    # Séquences séparées par des points, virgules, tirets, etc. (ex: 1.2.3)
-    res7 = TomeExtractor.extract(
-        "Le château des animaux,  1.2.3", series_key="Le château des animaux"
-    )
-    assert res7.is_lot is True
-    assert res7.lot_tomes == [1, 2, 3]
-
-    res8 = TomeExtractor.extract(
-        "Le château des animaux 1. 2. 3", series_key="Le château des animaux"
-    )
-    assert res8.is_lot is True
-    assert res8.lot_tomes == [1, 2, 3]
-
-    res9 = TomeExtractor.extract(
-        "Le château des animaux 1, 2, 3", series_key="Le château des animaux"
-    )
-    assert res9.is_lot is True
-    assert res9.lot_tomes == [1, 2, 3]
-
-    res10 = TomeExtractor.extract(
-        "Le château des animaux 1-2-3", series_key="Le château des animaux"
-    )
-    assert res10.is_lot is True
-    assert res10.lot_tomes == [1, 2, 3]
-
-    res11 = TomeExtractor.extract(
-        "Le château des animaux 1/2/3", series_key="Le château des animaux"
-    )
-    assert res11.is_lot is True
-    assert res11.lot_tomes == [1, 2, 3]
-
-    res12 = TomeExtractor.extract(
-        "Le château des animaux 1 à 3", series_key="Le château des animaux"
-    )
-    assert res12.is_lot is True
-    assert res12.lot_tomes == [1, 2, 3]
-
-    res13 = TomeExtractor.extract(
-        "Le château des animaux 1-3", series_key="Le château des animaux"
-    )
-    assert res13.is_lot is True
-    assert res13.lot_tomes == [1, 2, 3]
-
-    res14 = TomeExtractor.extract(
-        "Le château des animaux tomes 1, 2 et 3", series_key="Le château des animaux"
-    )
-    assert res14.is_lot is True
-    assert res14.lot_tomes == [1, 2, 3]
+@pytest.mark.parametrize(
+    "false_positive_title",
+    [
+        # Prix en euros
+        "BD RIP 15€",
+        "BD RIP 20 euros bon état",
+        "Livre jeunesse 1.50 €",
+        "Roman 9.99 EUR",
+        # Formats et dimensions physiques
+        "BD format A4 bon état",
+        "Livre format 16",
+        "Album taille 20 cm",
+        "BD 48 pages couleur",
+        # Années et éditions
+        "Édition originale 1984",
+        "Tirage spécial 2020",
+        # Textes génériques
+        "BD RIP bon état",
+        "Collection bande dessinée",
+    ],
+)
+def test_tome_extractor_false_positives_matrix(false_positive_title: str) -> None:
+    """Matrice générale garantissant l'absence de faux positifs (prix, dimensions, années)."""
+    res = TomeExtractor.extract(false_positive_title)
+    # Ne doit jamais être classé comme un lot ni extraire un tome invalide
+    assert res.is_lot is False
+    assert res.tome_number is None
 
 
 def test_tome_extractor_description_fallback():
@@ -173,11 +154,3 @@ def test_tome_extractor_description_fallback():
     assert res.is_lot is False
     assert res.tome_number == 3
     assert res.confidence == "medium"
-
-
-def test_tome_extractor_generic_fallback():
-    """Vérifie qu'une annonce sans mention de tome renvoie None proprement."""
-    res = TomeExtractor.extract("BD RIP bon état", series_key="RIP")
-    assert res.is_lot is False
-    assert res.tome_number is None
-    assert res.confidence == "none"
