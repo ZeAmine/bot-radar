@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from app.core.config import settings
+from app.core.constants import CategorySlug
 from app.db.models.listing import Listing
 from app.services.ai.modules.base import BasePostAlertModule
 from app.services.ai.schemas import ProfitScoringResult
@@ -23,21 +24,31 @@ class ProfitScoringModule(BasePostAlertModule):
     def is_enabled(self) -> bool:
         return bool(settings.AI_ENABLED and settings.AI_FEATURE_PROFIT_SCORING)
 
-    def build_prompt_chunk(self, listing: Listing, _alert: Any) -> tuple[str, str] | None:
+    def build_prompt_chunk(self, listing: Listing, alert: Any) -> tuple[str, str] | None:
         if not self.is_enabled or not listing.item_price_cents:
+            return None
+
+        # Exclure les livres / BDs / Mangas : Chasse-aux-Livres fournit déjà la cote réelle du marché
+        if listing.category_slug in (CategorySlug.BD_COMICS.value, "livres", "mangas"):
             return None
 
         total_cents = listing.estimated_total_cents or (listing.item_price_cents + 380)
         total_eur = total_cents / 100.0
+        alert_name = getattr(alert, "name", None)
+        alert_ctx = f" (recherche ciblée : '{alert_name}')" if alert_name else ""
 
         instruction = (
-            f"Évalue la rentabilité d'achat/revente pour '{listing.title}' "
-            f"au coût d'achat total (avec frais de port et protection) de {total_eur:.2f} €.\n"
-            f"Retourne sous la clé 'profit_scoring' un objet JSON avec :\n"
-            f"- 'estimated_resale_cents': int (prix de revente estimé en centimes)\n"
-            f"- 'net_profit_cents': int (marge nette estimée en centimes = revente - coût total)\n"
-            f"- 'pepite_score': float (note de rentabilité de 1.0 à 10.0)\n"
-            f"- 'verdict': string (conseil court, ex: 'Très bonne affaire pour revente')"
+            f"Évalue le potentiel d'achat-revente pour cet article d'occasion : '{listing.title}'{alert_ctx}.\n"
+            f"Catégorie : {listing.category_slug or 'Non spécifiée'}\n"
+            f"Coût d'achat total (frais de port et protection acheteur inclus) : {total_eur:.2f} €.\n"
+            f"État déclaré : {listing.condition or 'Non précisé'}.\n"
+            f"Description : '{listing.description or 'Aucune'}'\n\n"
+            "Analyse le marché de l'occasion en France (Vinted, Leboncoin, eBay) pour ce modèle exact et cet état.\n"
+            "Retourne sous la clé 'profit_scoring' un objet JSON avec :\n"
+            "- 'estimated_resale_cents': int (prix de revente réaliste en centimes)\n"
+            "- 'net_profit_cents': int (marge nette estimée en centimes = revente - coût total)\n"
+            "- 'pepite_score': float (note d'opportunité d'arbitrage de 1.0 à 10.0)\n"
+            "- 'verdict': string (phrase concise, ex: 'Très recherché, revente rapide avec +35€ de marge')"
         )
         return "profit_scoring", instruction
 

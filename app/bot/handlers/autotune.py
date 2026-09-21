@@ -8,8 +8,9 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.db.models.bot_event import BotEvent
 from app.db.models.listing import Listing
@@ -28,17 +29,39 @@ _pending_tuning: dict[str, list[str]] = {}
 _pending_variants: dict[str, list[str]] = {}
 
 
+async def get_alerts_with_dislikes(
+    user_id: uuid.UUID,
+    db_session: Any,
+) -> list[tuple[Alert, int]]:
+    """Récupère toutes les alertes actives de l'utilisateur ayant au moins un faux positif signalé."""
+    stmt = (
+        select(Alert, func.count(func.distinct(Listing.id)).label("dislike_count"))
+        .join(ListingMatch, ListingMatch.alert_id == Alert.id)
+        .join(Listing, Listing.id == ListingMatch.listing_id)
+        .join(BotEvent, BotEvent.listing_id == Listing.id)
+        .where(
+            Alert.user_id == user_id,
+            Alert.status != AlertStatus.DELETED,
+            BotEvent.event_type == "listing_disliked",
+        )
+        .group_by(Alert.id)
+        .order_by(func.count(func.distinct(Listing.id)).desc(), Alert.created_at.desc())
+    )
+    res = await db_session.execute(stmt)
+    return [(row[0], int(row[1])) for row in res.all()]
+
+
 async def get_disliked_titles_for_alert(alert_id: uuid.UUID, db_session: Any) -> list[str]:
     """Récupère les titres des annonces marquées comme faux positifs pour une alerte."""
     stmt = (
         select(Listing.title)
-        .join(ListingMatch, ListingMatch.listing_id == Listing.id)
+        .join(ListingMatch, ListingMatch.alert_id == alert_id)
         .join(BotEvent, BotEvent.listing_id == Listing.id)
         .where(
-            ListingMatch.alert_id == alert_id,
             BotEvent.event_type == "listing_disliked",
         )
-        .order_by(BotEvent.created_at.desc())
+        .group_by(Listing.id, Listing.title)
+        .order_by(func.max(BotEvent.created_at).desc())
         .limit(20)
     )
     res = await db_session.execute(stmt)
@@ -59,19 +82,14 @@ async def handle_autotune_command(
         )
         return
 
-    alert_repo = AlertRepository(db_session)
-    user_alerts = await alert_repo.list_by_user(db_user.id)
-    if not user_alerts:
-        await message.answer("Vous n'avez aucune alerte active. Utilisez /add pour en créer une.")
-        return
-
-    # Vérifier l'argument optionnel (nom d'alerte)
+    # Vérifier l'argument optionnel (nom d'alerte ou recherche)
     args = (message.text or "").strip().split(maxsplit=1)
     target_query = args[1].strip().lower() if len(args) > 1 else None
 
     # Si une alerte spécifique est ciblée
     if target_query:
-        matched_alerts = [a for a in user_alerts if target_query in a.name.lower()]
+        alert_repo = AlertRepository(db_session)
+        matched_alerts = await alert_repo.search_by_user(db_user.id, target_query)
         if not matched_alerts:
             await message.answer(
                 f"Aucune alerte trouvée correspondant à « {html.escape(target_query)} »."
@@ -81,12 +99,8 @@ async def handle_autotune_command(
         await process_autotune_for_alert(message, target_alert, db_session)
         return
 
-    # Recherche globale : trouver les alertes ayant des faux positifs signalés
-    alerts_with_dislikes: list[tuple[Alert, int]] = []
-    for alert in user_alerts:
-        disliked_titles = await get_disliked_titles_for_alert(alert.id, db_session)
-        if disliked_titles:
-            alerts_with_dislikes.append((alert, len(disliked_titles)))
+    # Recherche globale : trouver toutes les alertes de l'utilisateur avec des faux positifs
+    alerts_with_dislikes = await get_alerts_with_dislikes(db_user.id, db_session)
 
     if not alerts_with_dislikes:
         await message.answer(
@@ -110,7 +124,7 @@ async def handle_autotune_command(
     buttons = [
         [
             InlineKeyboardButton(
-                text=f"🎯 {alert.name} ({count} faux positifs)",
+                text=f"🎯 {alert.name} ({count} faux positif{'s' if count > 1 else ''})",
                 callback_data=f"ai_tune_select:{alert.id}",
             )
         ]

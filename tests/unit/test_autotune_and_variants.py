@@ -84,12 +84,7 @@ async def test_handle_autotune_no_dislikes():
     db_user = User(id=uuid.uuid4(), telegram_user_id=123456)
     db_session = MagicMock()
 
-    alert = Alert(id=uuid.uuid4(), name="One Piece", user_id=db_user.id)
-
-    with (
-        patch("app.bot.handlers.autotune.AlertRepository.list_by_user", new_callable=AsyncMock, return_value=[alert]),
-        patch("app.bot.handlers.autotune.get_disliked_titles_for_alert", new_callable=AsyncMock, return_value=[]),
-    ):
+    with patch("app.bot.handlers.autotune.get_alerts_with_dislikes", new_callable=AsyncMock, return_value=[]):
         await handle_autotune_command(message, db_user, db_session)
 
         message.answer.assert_called_once()
@@ -99,7 +94,7 @@ async def test_handle_autotune_no_dislikes():
 
 @pytest.mark.asyncio
 async def test_handle_autotune_with_dislikes():
-    """Vérifie la génération de suggestions d'exclusion par DeepSeek."""
+    """Vérifie la génération de suggestions d'exclusion par DeepSeek pour une seule alerte avec dislikes."""
     message = MagicMock(spec=Message)
     message.text = "/autotune"
     message.answer = AsyncMock()
@@ -117,7 +112,7 @@ async def test_handle_autotune_with_dislikes():
     disliked_titles = ["Figurine One Piece Luffy", "T-shirt One Piece taille M"]
 
     with (
-        patch("app.bot.handlers.autotune.AlertRepository.list_by_user", new_callable=AsyncMock, return_value=[alert]),
+        patch("app.bot.handlers.autotune.get_alerts_with_dislikes", new_callable=AsyncMock, return_value=[(alert, 2)]),
         patch("app.bot.handlers.autotune.get_disliked_titles_for_alert", new_callable=AsyncMock, return_value=disliked_titles),
         patch(
             "app.services.ai.modules.auto_tuning.auto_tuning_module.suggest_exclusions",
@@ -132,6 +127,64 @@ async def test_handle_autotune_with_dislikes():
         assert "Auto-Tuning : « One Piece »" in text
         assert "figurine, t-shirt" in text
         assert str(alert.id) in _pending_tuning
+
+
+@pytest.mark.asyncio
+async def test_handle_autotune_multiple_alerts_menu():
+    """Vérifie l'affichage du menu inline si plusieurs alertes ont des faux positifs."""
+    message = MagicMock(spec=Message)
+    message.text = "/autotune"
+    message.answer = AsyncMock()
+
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123456)
+    db_session = MagicMock()
+
+    alert1 = Alert(id=uuid.uuid4(), name="Watchmen", user_id=db_user.id)
+    alert2 = Alert(id=uuid.uuid4(), name="Persepolis", user_id=db_user.id)
+
+    with patch(
+        "app.bot.handlers.autotune.get_alerts_with_dislikes",
+        new_callable=AsyncMock,
+        return_value=[(alert1, 1), (alert2, 3)],
+    ):
+        await handle_autotune_command(message, db_user, db_session)
+
+        message.answer.assert_called_once()
+        text, kwargs = message.answer.call_args[0][0], message.answer.call_args[1]
+        assert "Sélectionnez l'alerte à analyser" in text
+        kb = kwargs["reply_markup"]
+        assert len(kb.inline_keyboard) == 3
+        assert "Watchmen (1 faux positif)" in kb.inline_keyboard[0][0].text
+        assert "Persepolis (3 faux positifs)" in kb.inline_keyboard[1][0].text
+
+
+@pytest.mark.asyncio
+async def test_handle_autotune_with_target_query():
+    """Vérifie le ciblage direct par argument (/autotune watchmen) sans limite de 10 alertes."""
+    message = MagicMock(spec=Message)
+    message.text = "/autotune watchmen"
+    message.answer = AsyncMock()
+
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123456)
+    db_session = MagicMock()
+
+    alert = Alert(id=uuid.uuid4(), name="Watchmen", user_id=db_user.id)
+
+    with (
+        patch("app.bot.handlers.autotune.AlertRepository.search_by_user", new_callable=AsyncMock, return_value=[alert]),
+        patch("app.bot.handlers.autotune.get_disliked_titles_for_alert", new_callable=AsyncMock, return_value=["Watchmen les gardiens 6 tomes"]),
+        patch(
+            "app.services.ai.modules.auto_tuning.auto_tuning_module.suggest_exclusions",
+            new_callable=AsyncMock,
+            return_value=(["gardiens"], "BD alternative"),
+        ),
+    ):
+        await handle_autotune_command(message, db_user, db_session)
+
+        message.answer.assert_called_once()
+        text = message.answer.call_args[0][0]
+        assert "Auto-Tuning : « Watchmen »" in text
+        assert "gardiens" in text
 
 
 @pytest.mark.asyncio

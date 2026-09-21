@@ -2,6 +2,7 @@
 
 import html
 import logging
+import re
 from typing import Any
 
 from app.core.config import settings
@@ -73,23 +74,34 @@ class BundleDecompositionModule(BasePostAlertModule):
             logger.warning("Erreur parsing BundleDecompositionResult: %s", exc)
             return None
 
+    @staticmethod
+    def extract_tomes(items: list[str]) -> list[int]:
+        """Extrait les numéros de tomes détectés par l'IA (ex: ['Blacksad tome 1', 'Blacksad tome 2'] -> [1, 2])."""
+        tomes: set[int] = set()
+        for item in items:
+            # 1. Plage de tomes (ex: "tomes 1 à 3", "1-3")
+            range_match = re.search(r"\b([0-9]{1,2})\s*(?:[aà\-]|\sau\s)\s*([0-9]{1,2})\b", item)
+            if range_match:
+                s, e = int(range_match.group(1)), int(range_match.group(2))
+                if 1 <= s < e <= 50 and (e - s) <= 15:
+                    tomes.update(range(s, e + 1))
+                    continue
+
+            # 2. Numéros individuels
+            nums = re.findall(r"\b(?:tome|t|vol|volume|n°|#)?\s*([0-9]{1,2})\b", item, re.IGNORECASE)
+            for n in nums:
+                val = int(n)
+                if 1 <= val <= 50:
+                    tomes.add(val)
+        return sorted(tomes)
+
     def format_telegram_html(self, result: BundleDecompositionResult | None) -> str | None:
-        if not result or not result.is_bundle or not result.items_detected:
-            return None
+        """Ne renvoie plus de message séparé.
 
-        items_formatted = "\n".join(
-            f"  • {html.escape(item)}" for item in result.items_detected[:8]
-        )
-        lines = [
-            "📦 <b>Composition du Lot :</b>",
-            items_formatted,
-        ]
-
-        if result.estimated_price_per_item_cents:
-            unit_eur = result.estimated_price_per_item_cents / 100.0
-            lines.append(f"💰 <i>Revient à environ <b>{unit_eur:.2f} €</b> par article/tome</i>")
-
-        return "\n".join(lines)
+        L'alerte principale est désormais directement mise à jour en place via
+        bot.edit_message_caption.
+        """
+        return None
 
 
 bundle_decomposition_module = BundleDecompositionModule()

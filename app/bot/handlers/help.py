@@ -18,7 +18,7 @@ HELP_TEXT = (
     "/categories — Afficher les catégories\n"
     "/stats — Voir les statistiques\n"
     "/autotune — Auto-tuning et suggestions d'exclusions IA (faux positifs)\n"
-    "/status (ou /health) — État du bot, du radar et de l'IA (DeepSeek)\n"
+    "/status — État du service, du radar et de l'IA (DeepSeek)\n"
     "/cancel — Annuler l'opération en cours\n"
     "/help — Afficher l’aide"
 )

@@ -29,7 +29,8 @@ def test_bundle_detector_various_titles():
     assert res_single.estimated_item_count is None
 
 
-def test_bundle_matching_price_tolerance():
+def test_bundle_matching_price_strict_threshold():
+    """Vérifie que le seuil de prix fixé par l'utilisateur est respecté strictement (pas de multiplicateur automatique)."""
     cat = Category(id=uuid.uuid4(), slug="tech", label="Électronique", emoji="💻")
     alert = Alert(
         id=uuid.uuid4(),
@@ -39,13 +40,12 @@ def test_bundle_matching_price_tolerance():
         include_keywords=["mario kart"],
         exclude_keywords=[],
         variants=[],
-        max_item_price_cents=3000,  # 30 € max pour 1 jeu
+        max_item_price_cents=3000,  # 30 € max fixé par l'utilisateur
         category=cat,
     )
 
-    # Cas 1 : Lot de 3 jeux à 50 € contenant Mario Kart
-    # (Sans tolérance de lot, 50€ > 30€ serait rejeté)
-    match_lot = evaluate_listing_against_alert(
+    # Cas 1 : Lot à 50 € dépassant le seuil max fixé par l'utilisateur (doit être rejeté)
+    match_lot_expensive = evaluate_listing_against_alert(
         alert=alert,
         listing_normalized_title="lot 3 jeux switch mario kart pokemon smash",
         listing_normalized_description="tres bon etat",
@@ -53,23 +53,23 @@ def test_bundle_matching_price_tolerance():
         listing_condition="tres bon etat",
         listing_item_price_cents=5000,  # 50 €
     )
-    assert match_lot.is_match is True
-    assert match_lot.is_bundle is True
+    assert match_lot_expensive.is_match is False
+    assert match_lot_expensive.price_matches is False
 
-    # Cas 2 : Article unitaire seul à 35 € (dépasse les 30 €, rejeté)
-    match_single_too_expensive = evaluate_listing_against_alert(
+    # Cas 2 : Lot respectant le prix max fixé par l'utilisateur (25 € <= 30 €)
+    match_lot_ok = evaluate_listing_against_alert(
         alert=alert,
-        listing_normalized_title="mario kart 8 deluxe switch",
-        listing_normalized_description="",
+        listing_normalized_title="lot 3 jeux switch mario kart pokemon smash",
+        listing_normalized_description="tres bon etat",
         listing_category_slug="tech",
         listing_condition="tres bon etat",
-        listing_item_price_cents=3500,  # 35 €
+        listing_item_price_cents=2500,  # 25 €
     )
-    assert match_single_too_expensive.is_match is False
-    assert match_single_too_expensive.is_bundle is False
+    assert match_lot_ok.is_match is True
 
 
-def test_bundle_matching_bd_comics():
+def test_bundle_matching_bd_comics_strict():
+    """Vérifie le respect strict du prix max pour les BDs."""
     cat = Category(id=uuid.uuid4(), slug="bd_comics", label="Livres", emoji="📚")
     alert = Alert(
         id=uuid.uuid4(),
@@ -80,11 +80,11 @@ def test_bundle_matching_bd_comics():
         exclude_keywords=[],
         variants=[],
         isbn="9782014001150",
-        max_item_price_cents=800,  # 8 € max par album
+        max_item_price_cents=800,  # 8 € max
         category=cat,
     )
 
-    # Lot de 5 BDs Astérix à 25 € (prix unitaire 5 € < 8 €)
+    # Lot de BDs Astérix à 25 € > 8 € (rejeté strictement)
     match_lot = evaluate_listing_against_alert(
         alert=alert,
         listing_normalized_title="lot 5 bd asterix en tres bon etat",
@@ -92,7 +92,8 @@ def test_bundle_matching_bd_comics():
         listing_category_slug="bd_comics",
         listing_condition="tres bon etat",
         listing_item_price_cents=2500,  # 25 €
-        listing_isbn13=None,  # Pas d'ISBN dans l'annonce du lot
+        listing_isbn13=None,
     )
-    assert match_lot.is_match is True
-    assert match_lot.is_bundle is True
+    assert match_lot.is_match is False
+    assert match_lot.price_matches is False
+

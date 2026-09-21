@@ -24,11 +24,17 @@ SERIES_SUBTITLES: dict[str, dict[str, int]] = {
     },
     "blacksad": {
         "quelque part entre les ombres": 1,
-        "arctic nation": 2,
         "arctic-nation": 2,
+        "arctic nation": 2,
         "ame rouge": 3,
         "enfer le silence": 4,
+        "l enfer le silence": 4,
         "amarillo": 5,
+        "alors tout tombe seconde partie": 7,
+        "alors tout tombe deuxieme partie": 7,
+        "alors tout tombe 2": 7,
+        "alors tout tombe premiere partie": 6,
+        "alors tout tombe 1": 6,
         "alors tout tombe": 6,
     },
     "le chateau des animaux": {
@@ -187,12 +193,21 @@ class TomeExtractor:
 
             if sub_map:
                 for sub, t_num in sub_map.items():
-                    if re.search(rf"\b{re.escape(sub)}\b", norm_title):
+                    words = [re.escape(w) for w in sub.split()]
+                    pattern = r"\b" + r"[\s,;:\-—]+".join(words) + r"\b"
+                    if re.search(pattern, norm_title):
                         return TomeMatchResult(
                             is_lot=False,
                             tome_number=t_num,
                             matched_subtitle=sub,
                             confidence="high",
+                        )
+                    if norm_desc and re.search(pattern, norm_desc):
+                        return TomeMatchResult(
+                            is_lot=False,
+                            tome_number=t_num,
+                            matched_subtitle=sub,
+                            confidence="medium",
                         )
 
             # 3.1 Détection du Tome 1 éponyme quand le 1er album porte le titre de la série
@@ -362,7 +377,21 @@ class TomeExtractor:
             if roman_str in ROMAN_NUMERALS:
                 return ROMAN_NUMERALS[roman_str]
 
-        # 4. Format suffixe direct : 'rip 2' ou 'blacksad 3' (si seul à la fin)
+        # 4. Format tirets/cadratins : '-6-', '- 6 -', '—6—' (très courant en BD)
+        m_hyphen = re.search(r"[-_—–]\s*([0-9]{1,2})\s*[-_—–]", text)
+        if m_hyphen:
+            num = int(m_hyphen.group(1))
+            if 1 <= num <= 50:
+                return num
+
+        # 5. Format parenthèses ou crochets isolés : '(6)', '[6]'
+        m_paren = re.search(r"(?:^|[\s])(?:\(|\[)\s*([0-9]{1,2})\s*(?:\)|\])(?:$|[\s])", text)
+        if m_paren:
+            num = int(m_paren.group(1))
+            if 1 <= num <= 50:
+                return num
+
+        # 6. Format suffixe direct : 'rip 2' ou 'blacksad 3' (si seul à la fin)
         m_end = re.search(r"\b([1-9]|1[0-9]|20)\s*$", text)
         if m_end:
             # Ne pas matcher si précédé d'un séparateur de séquence (ex: "1.2.3")

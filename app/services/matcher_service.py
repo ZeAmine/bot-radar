@@ -9,7 +9,6 @@ from app.core.constants import (
     AlertStatus,
 )
 from app.db.models.alert import Alert
-from app.services.bundle_detector import BundleDetector
 from app.utils.text import contains_keyword, normalize_text
 
 
@@ -198,31 +197,17 @@ def evaluate_listing_against_alert(
     if alert_cat_slug and alert_cat_slug != listing_category_slug:
         return MatchResult(is_match=False, reason="Catégorie différente")
 
-    # Détection de lot / pack avantageux
-    bundle_res = BundleDetector.detect(
-        listing_normalized_title, listing_normalized_description or ""
-    )
-    is_bundle = bundle_res.is_bundle
-
-    # 3. Vérification du prix maximum de l'article seul ou du lot
-    if alert.max_item_price_cents is not None:
-        if is_bundle:
-            multiplier = min(4, max(2, bundle_res.estimated_item_count or 2))
-            max_bundle_price = alert.max_item_price_cents * multiplier
-            if listing_item_price_cents > max_bundle_price:
-                return MatchResult(
-                    is_match=False,
-                    price_matches=False,
-                    reason=f"Prix du lot supérieur au seuil maximum ({max_bundle_price // 100} €)",
-                    is_bundle=True,
-                )
-        elif listing_item_price_cents > alert.max_item_price_cents:
-            return MatchResult(
-                is_match=False,
-                price_matches=False,
-                reason="Prix supérieur au seuil maximum",
-                is_bundle=False,
-            )
+    # 3. Vérification du prix maximum de l'article
+    if (
+        alert.max_item_price_cents is not None
+        and listing_item_price_cents > alert.max_item_price_cents
+    ):
+        return MatchResult(
+            is_match=False,
+            price_matches=False,
+            reason="Prix supérieur au seuil maximum",
+            is_bundle=False,
+        )
 
     # Concaténation du texte consultable de l'annonce
     searchable_text = listing_normalized_title
@@ -351,7 +336,6 @@ def evaluate_listing_against_alert(
                     if (
                         len(title_sig_words) >= 2
                         or (user_kws_match and len(norm_work_title) >= 6)
-                        or is_bundle
                     ):
                         # Titre distinctif ou Lot détecté
                         hybrid_matched = True
@@ -504,5 +488,5 @@ def evaluate_listing_against_alert(
         condition_matches=True,
         price_matches=True,
         reason="Match confirmé",
-        is_bundle=is_bundle,
+        is_bundle=False,
     )

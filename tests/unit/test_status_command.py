@@ -45,14 +45,14 @@ async def test_handle_status_day_active():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "État du Radar Bot" in text
-        assert "Surveillance Vinted active" in text
-        assert "scan il y a" in text
-        assert "00:00 à 07:00" in text
-        assert "Alertes actives (10)" in text
-        assert "📚 Livres : <b>5</b>" in text
-        assert "💻 Électronique : <b>3</b>" in text
-        assert "🎮 Jeux Vidéo : <b>2</b>" in text
+        assert "État du Service" in text
+        assert "🔍 <b>Scanner Vinted</b> : 🟢 <b>Active</b>" in text
+        assert "scan -" in text
+        assert "00:00 - 07:00" in text
+        assert "🎯 <b>Alertes actives (10) :</b>" in text
+        assert "   └  📚 Livres : <b>5</b>" in text
+        assert "   └  💻 Électronique : <b>3</b>" in text
+        assert "   └  🎮 Jeux Vidéo : <b>2</b>" in text
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_notify_admins():
 
 @pytest.mark.asyncio
 async def test_handle_status_ai_active():
-    """Vérifie l'affichage du statut IA actif dans /status ou /health."""
+    """Vérifie l'affichage du statut IA actif dans /status."""
     message = MagicMock(spec=Message)
     message.answer = AsyncMock()
 
@@ -161,12 +161,12 @@ async def test_handle_status_ai_active():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "🤖 <b>Moteur IA (DeepSeek)</b> : 🟢 <b>Actif</b> (deepseek-flash · 115ms)" in text
+        assert "🤖 <b>Moteur IA (DeepSeek)</b> : 🟢 <b>Actif</b> (latence : 115ms)" in text
 
 
 @pytest.mark.asyncio
 async def test_handle_status_ai_error():
-    """Vérifie l'affichage du statut IA en erreur dans /status ou /health."""
+    """Vérifie l'affichage du statut IA en erreur dans /status."""
     message = MagicMock(spec=Message)
     message.answer = AsyncMock()
 
@@ -192,3 +192,24 @@ async def test_handle_status_ai_error():
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
         assert "🤖 <b>Moteur IA (DeepSeek)</b> : 🔴 <b>Indisponible</b> (Clé API invalide ou refusée)" in text
+
+
+def test_health_command_removed():
+    """Vérifie que la commande /health a bien été retirée des commandes Telegram et de l'aide."""
+    from app.bot.bot_instance import BOT_COMMANDS
+    from app.bot.handlers.help import HELP_TEXT
+    from app.bot.handlers.status import router
+
+    command_names = [cmd.command for cmd in BOT_COMMANDS]
+    assert "health" not in command_names
+    assert "status" in command_names
+    assert "/health" not in HELP_TEXT
+    assert "/status" in HELP_TEXT
+
+    # Vérifie qu'aucun handler n'écoute sur Command("health")
+    for handler in router.message.handlers:
+        for filter_obj in handler.filters:
+            commands = getattr(filter_obj, "commands", None)
+            if commands:
+                assert "health" not in commands
+

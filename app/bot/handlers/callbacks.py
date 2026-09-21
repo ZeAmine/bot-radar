@@ -1,6 +1,7 @@
 """Handlers de callbacks inline pour les photos et détails de marché."""
 
 import contextlib
+import re
 import uuid
 from typing import Any
 
@@ -22,7 +23,7 @@ from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
 from app.services.ai.modules.negotiation import negotiation_module
 from app.services.book_catalog_service import BookCatalogService
-from app.services.market_price_service import MarketPriceService
+from app.services.market_price_service import MarketPriceService, clean_tome_display_title
 from app.services.vinted_scraper import fetch_item_photos
 
 router = Router(name="callbacks_router")
@@ -235,16 +236,86 @@ async def handle_view_market_details(
         books_in_series=books_in_series,
         tome_result=tome_result,
     )
-    back_keyboard = InlineKeyboardMarkup(
+    tome_buttons: list[list[InlineKeyboardButton]] = []
+    if not book and books_in_series and len(books_in_series) > 1:
+        current_row: list[InlineKeyboardButton] = []
+        for b in books_in_series:
+            t_label = clean_tome_display_title(b.title)
+            m = re.search(r"\b(?:tome|t|vol)\s*\.?\s*(\d+)\b", t_label, re.IGNORECASE)
+            btn_text = f"T{m.group(1)}" if m else t_label[:8]
+            current_row.append(
+                InlineKeyboardButton(
+                    text=btn_text,
+                    callback_data=f"market_tome:{listing.id}:{b.id}",
+                )
+            )
+            if len(current_row) == 5:
+                tome_buttons.append(current_row)
+                current_row = []
+        if current_row:
+            tome_buttons.append(current_row)
+
+    tome_buttons.append([InlineKeyboardButton(text="← Fermer", callback_data="close_market_panel")])
+    back_keyboard = InlineKeyboardMarkup(inline_keyboard=tome_buttons)
+
+    if isinstance(callback.message, Message):
+        if callback.data.startswith("market_details:") and "<b>Prix du marché</b>" in (callback.message.html_text or ""):
+            await callback.message.edit_text(
+                text=details_text,
+                reply_markup=back_keyboard,
+                disable_web_page_preview=True,
+            )
+        else:
+            await callback.message.reply(
+                text=details_text,
+                reply_markup=back_keyboard,
+                disable_web_page_preview=True,
+            )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("market_tome:"))
+async def handle_market_tome_select(callback: CallbackQuery, db_session: Any) -> None:
+    """Affiche la comparaison pour le tome sélectionné depuis le panneau de série."""
+    parts = callback.data.split(":")
+    listing_id = uuid.UUID(parts[1])
+    book_id = uuid.UUID(parts[2])
+
+    listing_repo = ListingRepository(db_session)
+    listing = await listing_repo.get_by_id(listing_id)
+    if not listing:
+        await callback.answer("Annonce introuvable.", show_alert=True)
+        return
+
+    book_repo = BookRepository(db_session)
+    book = await book_repo.get_by_id(book_id)
+    if not book:
+        await callback.answer("Livre introuvable.", show_alert=True)
+        return
+
+    details_text = MarketPriceService.format_market_details_card(
+        listing=listing,
+        book=book,
+        books_in_series=None,
+        tome_result=None,
+    )
+
+    keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← Fermer", callback_data="close_market_panel")]
+            [
+                InlineKeyboardButton(
+                    text="← Tous les tomes",
+                    callback_data=f"market_details:{listing.id}",
+                ),
+                InlineKeyboardButton(text="← Fermer", callback_data="close_market_panel"),
+            ]
         ]
     )
 
     if isinstance(callback.message, Message):
-        await callback.message.reply(
+        await callback.message.edit_text(
             text=details_text,
-            reply_markup=back_keyboard,
+            reply_markup=keyboard,
             disable_web_page_preview=True,
         )
     await callback.answer()

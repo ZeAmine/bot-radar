@@ -23,7 +23,6 @@ from app.schemas.listing import (
 from app.services.book_catalog_service import BookCatalogService
 from app.services.market_price_service import MarketPriceService
 from app.services.matcher_service import evaluate_listing_against_alert
-from app.services.tech_market_service import TechMarketService
 from app.services.telegram_service import send_listing_alert
 
 logger = logging.getLogger(__name__)
@@ -95,15 +94,6 @@ class IngestService:
             market_comparison_line = None
             if listing.category_slug == CategorySlug.BD_COMICS.value:
                 market_comparison_line = await self._resolve_bd_market_comparison(listing, alert)
-            elif listing.category_slug in (
-                CategorySlug.TECH.value,
-                CategorySlug.CLOTHES.value,
-                CategorySlug.GAMING.value,
-            ):
-                market_comparison_line = TechMarketService.get_comparison_summary(
-                    listing=listing,
-                    alert=alert,
-                )
 
             # 5. Envoi INSTANTANÉ de l'alerte Telegram (Priorité absolue, zéro attente réseau)
             notification_sent = False
@@ -116,7 +106,6 @@ class IngestService:
                     listing=listing,
                     market_comparison_line=market_comparison_line,
                     alert_keywords=alert_kws,
-                    is_bundle=getattr(match_result, "is_bundle", False),
                     alert=alert,
                 )
 

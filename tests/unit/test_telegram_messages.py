@@ -204,3 +204,18 @@ def test_dislike_confirmation_keyboard():
     assert rows[2][1].text == "❌ Annuler"
     assert rows[2][1].callback_data == f"cancel_dislike:{listing_id}"
 
+
+def test_disliked_button_text():
+    listing_id = uuid.uuid4()
+    url = "https://www.vinted.fr/items/123456-listing-bd"
+    kb = get_listing_alert_keyboard(
+        listing_id=listing_id,
+        listing_url=url,
+        category_slug=CategorySlug.BD_COMICS.value,
+        is_disliked=True,
+    )
+    # Ligne 3, bouton 1 : doit être '✅ Signalé'
+    assert kb.inline_keyboard[2][0].text == "✅ Signalé"
+    assert kb.inline_keyboard[2][0].callback_data == f"disliked:{listing_id}"
+
+

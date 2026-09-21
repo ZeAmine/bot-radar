@@ -56,7 +56,7 @@ def get_listing_alert_keyboard(
 
     dislike_btn = (
         InlineKeyboardButton(
-            text="✅ Signalé faux positif", callback_data=f"disliked:{listing_id}"
+            text="✅ Signalé", callback_data=f"disliked:{listing_id}"
         )
         if is_disliked
         else InlineKeyboardButton(

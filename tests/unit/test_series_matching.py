@@ -85,14 +85,14 @@ def test_series_matching_lot_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📉 Prix bas constaté (Lot T1, T2, T3) : ~54,50 €" in summary
+    assert "📉 Prix bas constaté [1, 2, 3] : ~54,50 €" in summary
     assert "Prix du marché" not in summary
     # Gain : 25.00 - 54.50 = -29.50 €
     assert "✅ Écart : <b>-29,50 €</b>" in summary
 
 
 def test_series_matching_generic_range_summary():
-    """Vérifie la fourchette de prix quand aucun tome n'est spécifié dans l'annonce."""
+    """Vérifie le repli quand aucun tome n'est spécifié dans l'annonce."""
     books = [
         _create_mock_book("RIP — Tome 1", 1500),
         _create_mock_book("RIP — Tome 2", 1850),
@@ -117,9 +117,8 @@ def test_series_matching_generic_range_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📉 Prix bas constaté : 15,00 € - 22,00 €" in summary
-    assert "Prix du marché" not in summary
-    assert "✅ Écart : <b>-0,50 € à -7,50 €</b>" in summary
+    assert "📉 Prix bas constaté :  —" in summary
+    assert "⚖️ Écart :  —" in summary
 
 
 def test_series_matching_lot_card():
@@ -200,7 +199,7 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     assert summary is not None
     assert "Prix du marché" not in summary
     # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
-    assert "📉 Prix bas constaté (Lot T1, T2, T3) : ~42,30 €" in summary
+    assert "📉 Prix bas constaté [1, 2, 3] : ~42,30 €" in summary
     # Écart vs prix bas: 37.18 - 42.30 = -5.12 €
     assert "✅ Écart : <b>-5,12 €</b>" in summary
 
@@ -209,13 +208,13 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     ("lot_tomes", "item_total_cents", "expected_label", "expected_icon", "expected_diff"),
     [
         # Lot de 2 tomes consécutifs (T1 + T2 = 16.00 + 18.50 = 34.50 €)
-        ([1, 2], 2500, "📉 Prix bas constaté (Lot T1, T2) : ~34,50 €", "✅", "-9,50 €"),
+        ([1, 2], 2500, "📉 Prix bas constaté [1, 2] : ~34,50 €", "✅", "-9,50 €"),
         # Lot de 2 tomes non-consécutifs (T1 + T3 = 16.00 + 20.00 = 36.00 €)
-        ([1, 3], 3000, "📉 Prix bas constaté (Lot T1, T3) : ~36,00 €", "✅", "-6,00 €"),
+        ([1, 3], 3000, "📉 Prix bas constaté [1, 3] : ~36,00 €", "✅", "-6,00 €"),
         # Lot de 3 tomes (T1 + T2 + T3 = 54.50 €), prix Vinted supérieur (écart défavorable)
-        ([1, 2, 3], 6000, "📉 Prix bas constaté (Lot T1, T2, T3) : ~54,50 €", "⛔️", "+5,50 €"),
+        ([1, 2, 3], 6000, "📉 Prix bas constaté [1, 2, 3] : ~54,50 €", "⛔️", "+5,50 €"),
         # Lot de 1 tome dans une liste de lot (T2 = 18.50 €)
-        ([2], 1500, "📉 Prix bas constaté (Lot T2) : ~18,50 €", "✅", "-3,50 €"),
+        ([2], 1500, "📉 Prix bas constaté [2] : ~18,50 €", "✅", "-3,50 €"),
     ],
 )
 def test_series_matching_lot_variations_matrix(
@@ -224,7 +223,7 @@ def test_series_matching_lot_variations_matrix(
     expected_label: str,
     expected_icon: str,
     expected_diff: str,
-) -> None:
+    ) -> None:
     """Matrice générale vérifiant la cotation cumulée selon différentes combinaisons de tomes."""
     books = [
         _create_mock_book("Série Test — Tome 1", 1600),
@@ -257,3 +256,105 @@ def test_series_matching_lot_variations_matrix(
     assert summary is not None
     assert expected_label in summary
     assert f"{expected_icon} Écart : <b>{expected_diff}</b>" in summary
+
+
+def test_series_matching_blacksad_generic():
+    """Vérifie le rendu quand aucun tome n'est spécifié."""
+    books = [
+        _create_mock_book("Blacksad — Tome 1 (Quelque part entre les ombres)", 470),
+        _create_mock_book("Blacksad — Tome 2 (Arctic-Nation)", 526),
+        _create_mock_book("Blacksad — Tome 3 (Âme Rouge)", 584),
+        _create_mock_book("Blacksad — Tome 4 (L'Enfer, le silence)", 670),
+        _create_mock_book("Blacksad — Tome 5 (Amarillo)", 319),
+        _create_mock_book("Blacksad — Tome 6 (Alors, tout tombe (Première partie))", 512),
+        _create_mock_book("Blacksad — Tome 7 (Alors, tout tombe (Seconde partie))", 1049),
+    ]
+    listing = Listing(
+        source_name="vinted",
+        external_id="10084814764",
+        url="https://vinted.fr/items/10084814764",
+        title="Blacksad",
+        normalized_title="blacksad",
+        category_slug="bd_comics",
+        item_price_cents=400,
+        estimated_total_cents=778,
+    )
+    tome_res = TomeExtractor.extract(
+        title=listing.title,
+        description="Exemplaire Blacksad en état Très bon état.",
+        series_key="Blacksad",
+    )
+    assert tome_res.tome_number is None
+
+    summary = MarketPriceService.get_comparison_summary(
+        listing=listing,
+        book=None,
+        books_in_series=books,
+        tome_result=tome_res,
+    )
+    assert summary is not None
+    assert "📉 Prix bas constaté :  —" in summary
+    assert "⚖️ Écart :  —" in summary
+
+
+def test_tome_extractor_subtitle_in_description():
+    """Vérifie que la présence du sous-titre dans la description permet de détecter le tome."""
+    tome_res = TomeExtractor.extract(
+        title="BD Blacksad",
+        description="Je vends le tome Quelque part entre les ombres en très bon état.",
+        series_key="Blacksad",
+    )
+    assert tome_res.tome_number == 1
+    assert tome_res.matched_subtitle == "quelque part entre les ombres"
+    assert tome_res.confidence == "medium"
+
+
+@pytest.mark.asyncio
+async def test_handle_market_tome_select():
+    """Vérifie la bascule interactive sur un tome précis dans le panneau de marché."""
+    import uuid
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from aiogram.types import CallbackQuery, Message
+    from app.bot.handlers.callbacks import handle_market_tome_select
+
+    listing_id = uuid.uuid4()
+    book_id = uuid.uuid4()
+
+    mock_listing = MagicMock()
+    mock_listing.id = listing_id
+    mock_listing.estimated_total_cents = 778
+    mock_listing.item_price_cents = 400
+
+    mock_book = _create_mock_book("Blacksad — Tome 1 (Quelque part entre les ombres)", 470)
+    mock_book.id = book_id
+
+    mock_callback = MagicMock(spec=CallbackQuery)
+    mock_callback.data = f"market_tome:{listing_id}:{book_id}"
+    mock_msg = MagicMock(spec=Message)
+    mock_msg.edit_text = AsyncMock()
+    mock_callback.message = mock_msg
+    mock_callback.answer = AsyncMock()
+
+    mock_session = AsyncMock()
+    with (
+        patch("app.bot.handlers.callbacks.ListingRepository") as mock_l_repo_cls,
+        patch("app.bot.handlers.callbacks.BookRepository") as mock_b_repo_cls,
+    ):
+        mock_l_repo = MagicMock()
+        mock_l_repo.get_by_id = AsyncMock(return_value=mock_listing)
+        mock_l_repo_cls.return_value = mock_l_repo
+
+        mock_b_repo = MagicMock()
+        mock_b_repo.get_by_id = AsyncMock(return_value=mock_book)
+        mock_b_repo_cls.return_value = mock_b_repo
+
+        await handle_market_tome_select(mock_callback, mock_session)
+
+        mock_msg.edit_text.assert_called_once()
+        text = mock_msg.edit_text.call_args[1]["text"]
+        assert "Tome 1 (Quelque part entre les ombres)" in text
+        assert "4,70 €" in text
+        keyboard = mock_msg.edit_text.call_args[1]["reply_markup"]
+        assert any(btn.callback_data == f"market_details:{listing_id}" for row in keyboard.inline_keyboard for btn in row)
+
+

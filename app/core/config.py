@@ -85,10 +85,10 @@ class Settings(BaseSettings):
     AI_FEATURE_NATURAL_ADD: bool = True
     AI_FEATURE_PRICE_GLITCH: bool = False
     AI_FEATURE_HIDDEN_CONDITION: bool = True
-    AI_FEATURE_VISION_GUARD: bool = True
+    AI_FEATURE_VISION_GUARD: bool = False
     AI_FEATURE_PROFIT_SCORING: bool = True
     AI_FEATURE_NEGOTIATION: bool = True
-    AI_FEATURE_BUNDLE_DECOMPOSITION: bool = True
+    AI_FEATURE_BUNDLE_DECOMPOSITION: bool = False
     AI_FEATURE_KEYWORD_VARIANTS: bool = True
     AI_FEATURE_AUTO_TUNING: bool = True
     AI_FEATURE_BUNDLE_HUNTER: bool = False

@@ -28,8 +28,7 @@ BOT_COMMANDS = [
     BotCommand(command="categories", description="Afficher les catégories"),
     BotCommand(command="stats", description="Voir les statistiques"),
     BotCommand(command="autotune", description="Auto-tuning et exclusions IA"),
-    BotCommand(command="status", description="État du bot et du radar"),
-    BotCommand(command="health", description="Santé du bot et de l'IA (DeepSeek)"),
+    BotCommand(command="status", description="État du service et du radar"),
     BotCommand(command="cancel", description="Annuler l'opération en cours"),
     BotCommand(command="help", description="Afficher l’aide"),
 ]

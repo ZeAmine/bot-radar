@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.config import settings
 from app.db.models.listing import Listing
 from app.services.ai.client import DeepSeekClient
 from app.services.ai.modules.bundle_decomposition import bundle_decomposition_module
@@ -182,8 +183,10 @@ def test_bundle_decomposition_module(sample_listing):
     assert result.estimated_price_per_item_cents == 833
 
     html = bundle_decomposition_module.format_telegram_html(result)
-    assert "Composition du Lot" in html
-    assert "8.33 €" in html
+    assert html is None
+
+    extracted_tomes = bundle_decomposition_module.extract_tomes(result.items_detected)
+    assert extracted_tomes == [1, 2, 3]
 
 
 def test_profit_scoring_module(sample_listing):
@@ -204,10 +207,25 @@ def test_profit_scoring_module(sample_listing):
     assert "Indice pépite : 8,5/10" in html
     assert "Excellente marge nette" in html
 
-    # Si pépite_score < 6.5, le message doit être silencieux
-    low_json = {"pepite_score": 5.0}
-    low_res = profit_scoring_module.parse_chunk_result(low_json, sample_listing, None)
-    assert profit_scoring_module.format_telegram_html(low_res) is None
+    # Vérifier l'exclusion des livres / BDs (gérés par Chasse-aux-Livres)
+    assert profit_scoring_module.build_prompt_chunk(sample_listing, None) is None
+
+    # Vérifier la génération de prompt dynamique pour produits non-livres (Tech, Gaming, etc.)
+    tech_listing = Listing(
+        id=uuid.uuid4(),
+        title="Nintendo Switch OLED Blanche complète",
+        category_slug="tech",
+        item_price_cents=18000,
+        estimated_total_cents=18500,
+        condition="Très bon état",
+        description="Vendue avec boîte d'origine et tous les accessoires.",
+    )
+    chunk = profit_scoring_module.build_prompt_chunk(tech_listing, None)
+    assert chunk is not None
+    assert chunk[0] == "profit_scoring"
+    assert "Nintendo Switch OLED" in chunk[1]
+    assert "185.00 €" in chunk[1]
+    assert "marché de l'occasion en France" in chunk[1]
 
 
 @pytest.mark.asyncio
@@ -235,7 +253,7 @@ def test_ai_registry():
     assert price_glitch_module.is_enabled is False
 
     active_posts = registry.get_active_post_alert_modules()
-    assert len(active_posts) >= 3
+    assert len(active_posts) >= 2
     assert "price_glitch" not in [m.name for m in active_posts]
 
     registry.unregister("hidden_condition")
@@ -265,7 +283,7 @@ async def test_vision_guard_multi_photos(sample_listing):
     )
 
     module = vision_guard_module
-    with patch.object(module, "client", mock_client):
+    with patch.object(module, "client", mock_client), patch.object(settings, "AI_FEATURE_VISION_GUARD", True):
         res = await module.analyze_listing_photos(sample_listing)
         assert res is not None
         assert res.has_visual_defects is True

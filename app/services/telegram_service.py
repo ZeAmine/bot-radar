@@ -22,7 +22,6 @@ def build_listing_caption(
     listing: Listing,
     market_comparison_line: str | None = None,
     alert_keywords: list[str] | None = None,
-    is_bundle: bool = False,
 ) -> str:
     """Construit la légende textuelle de l'alerte d'annonce selon le format demandé."""
     raw_condition = listing.condition or ""
@@ -39,16 +38,11 @@ def build_listing_caption(
     safe_title = html.escape(listing.title)
     safe_condition = html.escape(condition_text)
 
-    lines: list[str] = []
-    if is_bundle:
-        lines.append("📦 <b>DÉTECTION LOT AVANTAGEUX</b>")
-        lines.append("<i>Cet ensemble contient votre recherche parmi d'autres articles !</i>\n")
-
-    lines.extend([
+    lines: list[str] = [
         f"🆕 <b>{safe_title}</b>",
         f"🏷 État : {safe_condition}",
         price_line,
-    ])
+    ]
 
     if market_comparison_line and market_comparison_line not in (
         "📉 Occasion : indisponible",
@@ -71,7 +65,6 @@ async def send_listing_alert(
     listing: Listing,
     market_comparison_line: str | None = None,
     alert_keywords: list[str] | None = None,
-    is_bundle: bool = False,
     alert: Any | None = None,
 ) -> bool:
     """Envoie l'alerte à l'utilisateur Telegram avec photo principale et clavier adapté."""
@@ -79,7 +72,6 @@ async def send_listing_alert(
         listing,
         market_comparison_line=market_comparison_line,
         alert_keywords=alert_keywords,
-        is_bundle=is_bundle,
     )
     checkout_url = build_vinted_checkout_url(listing.external_id)
     keyboard = get_listing_alert_keyboard(

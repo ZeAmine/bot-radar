@@ -23,13 +23,15 @@ from app.tasks.vinted_poller import (
 router = Router(name="status_router")
 
 
-@router.message(Command("status", "health"))
+@router.message(Command("status"))
 async def handle_status(message: Message, db_session: Any) -> None:
     """Affiche l'état opérationnel en direct de Radar Bot."""
+    tz_label = settings.NIGHT_MODE_TIMEZONE or "Europe/Paris"
     try:
-        tz = ZoneInfo(settings.NIGHT_MODE_TIMEZONE)
+        tz = ZoneInfo(tz_label)
     except Exception:
         tz = ZoneInfo("Europe/Paris")
+        tz_label = "Europe/Paris"
     now = datetime.now(tz)
     time_str = now.strftime("%H:%M")
 
@@ -45,7 +47,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
             f"encore {hours_left}h{mins_left:02d})"
         )
     elif not settings.VINTED_POLLER_ENABLED:
-        poller_status = "⏸️ <b>Surveillance Vinted désactivée</b>"
+        poller_status = "⏸️ <b>Désactivé</b>"
     elif poller_data and poller_data.get("status") == "cooldown":
         cooldown_until = poller_data.get("cooldown_until") or 0
         rem_sec = max(0, int(cooldown_until - now.timestamp()))
@@ -60,8 +62,8 @@ async def handle_status(message: Message, db_session: Any) -> None:
             rem_s = rem_sec % 60
             poller_status = (
                 f"🟡 <b>En pause anti-blocage (palier #{consecutive})</b>\n"
-                f"  ⚠️ Motif : {reason}\n"
-                f"  ⏳ Reprise dans : <b>{rem_m} min {rem_s:02d}s</b> (à {resume_time})"
+                f"   └  ⚠️ Motif : {reason}\n"
+                f"   └  ⏳ Reprise dans : <b>{rem_m} min {rem_s:02d}s</b> (à {resume_time})"
             )
         else:
             poller_status = "🟡 <b>Fin de pause : reprise imminente du scan...</b>"
@@ -69,15 +71,15 @@ async def handle_status(message: Message, db_session: Any) -> None:
         last_poll = poller_data.get("last_poll_at", 0)
         elapsed = max(0, int(now.timestamp() - last_poll))
         if elapsed <= 120:
-            poller_status = f"🟢 <b>Surveillance Vinted active</b> (scan il y a {elapsed}s)"
+            poller_status = f"🟢 <b>Active</b> (scan -{elapsed}s)"
         else:
             elapsed_m = elapsed // 60
             elapsed_s = elapsed % 60
             poller_status = (
-                f"🟠 <b>Surveillance en retard</b> (dernier scan il y a {elapsed_m}m{elapsed_s:02d}s)"
+                f"🟠 <b>En retard</b> (scan -{elapsed_m}m{elapsed_s:02d}s)"
             )
     else:
-        poller_status = "🟢 <b>Surveillance Vinted active</b>"
+        poller_status = "🟢 <b>Active</b>"
 
     # Répartition des alertes actives par catégorie
     stmt = (
@@ -94,22 +96,23 @@ async def handle_status(message: Message, db_session: Any) -> None:
 
     cat_lines = []
     for _slug, label, emoji, count in cat_counts:
-        cat_lines.append(f"  • {emoji} {label} : <b>{count}</b>")
+        cat_lines.append(f"   └  {emoji} {label} : <b>{count}</b>")
 
     if not cat_lines:
-        cat_summary = "  <i>Aucune alerte active</i>"
+        cat_summary = "   └  <i>Aucune alerte active</i>"
     else:
         cat_summary = "\n".join(cat_lines)
 
     night_hours_info = (
-        f"{settings.NIGHT_MODE_START_HOUR:02d}:00 à {settings.NIGHT_MODE_END_HOUR:02d}:00"
+        f"{settings.NIGHT_MODE_START_HOUR:02d}:00 - {settings.NIGHT_MODE_END_HOUR:02d}:00"
         if settings.NIGHT_MODE_ENABLED
-        else "Désactivé"
+        else "Désactivée"
     )
 
     ai_info = await deepseek_client.check_health()
     if ai_info["status"] == "active":
-        ai_status = f"🟢 <b>Actif</b> ({ai_info['model']} · {ai_info.get('latency_ms', 0)}ms)"
+        latency = ai_info.get("latency_ms", 0)
+        ai_status = f"🟢 <b>Actif</b> (latence : {latency}ms)"
     elif ai_info["status"] == "disabled":
         ai_status = "⏸️ <b>Désactivé</b>"
     elif ai_info["status"] == "unconfigured":
@@ -118,12 +121,12 @@ async def handle_status(message: Message, db_session: Any) -> None:
         ai_status = f"🔴 <b>Indisponible</b> ({ai_info['message']})"
 
     text = (
-        "📡 <b>État du Radar Bot</b>\n\n"
-        f"⏱ <b>Heure locale (Paris)</b> : {time_str}\n"
-        f"🛡️ <b>Surveillance</b> : {poller_status}\n"
+        "📡  <b>État du Service</b>\n\n"
+        f"🕒 <b>Heure locale</b> : {time_str} ({tz_label})\n"
+        f"🔍 <b>Scanner Vinted</b> : {poller_status}\n"
         f"🤖 <b>Moteur IA (DeepSeek)</b> : {ai_status}\n"
-        f"🌙 <b>Heures creuses (nuit)</b> : {night_hours_info}\n\n"
-        f"📊 <b>Alertes actives ({total_active}) :</b>\n"
+        f"🌙 <b>Plage de veille</b> : {night_hours_info}\n\n"
+        f"🎯 <b>Alertes actives ({total_active}) :</b>\n"
         f"{cat_summary}\n\n"
         "💡 <i>Utilisez /list pour voir le détail ou /add pour en créer une.</i>"
     )

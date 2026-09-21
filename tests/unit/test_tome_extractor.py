@@ -154,3 +154,30 @@ def test_tome_extractor_description_fallback():
     assert res.is_lot is False
     assert res.tome_number == 3
     assert res.confidence == "medium"
+
+
+def test_tome_extractor_blacksad_hyphen_and_subtitles():
+    """Vérifie la détection du Tome 6 avec tirets et ponctuation et du Tome 7."""
+    res6 = TomeExtractor.extract(
+        title="Blacksad -6- Alors, tout tombe - Première partie - Edition originale",
+        series_key="Blacksad",
+    )
+    assert res6.is_lot is False
+    assert res6.tome_number == 6
+    assert res6.confidence == "high"
+
+    res7 = TomeExtractor.extract(
+        title="Blacksad Alors, tout tombe - Seconde partie",
+        series_key="Blacksad",
+    )
+    assert res7.is_lot is False
+    assert res7.tome_number == 7
+    assert res7.confidence == "high"
+
+    res_paren = TomeExtractor.extract(
+        title="Blacksad (6)",
+        series_key="Blacksad",
+    )
+    assert res_paren.is_lot is False
+    assert res_paren.tome_number == 6
+

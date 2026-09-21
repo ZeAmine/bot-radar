@@ -91,15 +91,22 @@ def normalize_secondhand_condition(cond: str | None) -> str:
     return "Très bon"
 
 
-def clean_tome_display_title(title: str) -> str:
-    """Supprime les sous-titres et noms superflus du tome (ex: parenthèses).
-
-    Exemples :
-    - 'Blast — Tome 1 (Grasse Carcasse)' -> 'Tome 1'
-    - 'RIP — Tome 2 (Maurice — Les mouches ne mentent pas)' -> 'Tome 2'
-    - 'Blacksad — Tome 6 (Alors, tout tombe (Première partie))' -> 'Tome 6'
-    - 'Blacksad — Intégrale' -> 'Intégrale'
+def clean_tome_display_title(title: str, include_subtitle: bool = False) -> str:
+    """Nettoie le titre du tome pour affichage.
+    
+    Si include_subtitle est True, conserve le sous-titre entre parenthèses s'il existe.
     """
+    if include_subtitle:
+        if "—" in title:
+            part = title.split("—")[-1].strip()
+            if part:
+                return part
+        if " - " in title:
+            part = title.split(" - ")[-1].strip()
+            if part:
+                return part
+        return title.strip()
+
     cleaned = re.sub(r"\s*\([^)]*\)", "", title).strip()
     while "(" in cleaned and ")" in cleaned:
         cleaned = re.sub(r"\s*\([^)]*\)", "", cleaned).strip()
@@ -167,107 +174,43 @@ class MarketPriceService:
 
                 return "\n".join(lines)
 
-        # 2. Cas d'un lot détecté
-        if tome_result and tome_result.is_lot and books_in_series:
-            target_books = books_in_series
-            if tome_result.lot_tomes:
-                matching = [
-                    b
-                    for b in books_in_series
-                    if any(
-                        re.search(rf"\b(?:tome|t|vol)\s*\.?\s*{t}\b", b.title, re.IGNORECASE)
-                        for t in tome_result.lot_tomes
-                    )
-                ]
-                if matching:
-                    target_books = matching
-
+        # 2. Cas d'un lot avec tomes identifiés (ex: [1, 2, 3])
+        if tome_result and tome_result.is_lot and tome_result.lot_tomes and books_in_series:
+            matching = [
+                b
+                for b in books_in_series
+                if any(
+                    re.search(rf"\b(?:tome|t|vol)\s*\.?\s*{t}\b", b.title, re.IGNORECASE)
+                    for t in tome_result.lot_tomes
+                )
+            ]
+            target_books = matching if matching else books_in_series
             hist_prices = [
                 b.market_cache.historical_low_1y_cents
                 for b in target_books
                 if b.market_cache and b.market_cache.historical_low_1y_cents is not None
             ]
-
             if hist_prices:
                 hist_cumulated = sum(hist_prices)
-                tomes_label = (
-                    f" (Lot T{', T'.join(str(t) for t in sorted(tome_result.lot_tomes))})"
-                    if tome_result.lot_tomes
-                    else f" (Lot {len(hist_prices)} tomes)"
-                )
-
+                tomes_label = f" [{', '.join(str(t) for t in sorted(tome_result.lot_tomes))}]"
                 lot_lines: list[str] = [
                     f"📉 Prix bas constaté{tomes_label} : ~{format_cents(hist_cumulated)}"
                 ]
-
                 if listing.estimated_total_cents is not None:
-                    vinted_total = listing.estimated_total_cents
-                    diff_cents = vinted_total - hist_cumulated
+                    diff_cents = listing.estimated_total_cents - hist_cumulated
                     diff_euros = format_cents(abs(diff_cents))
-                    if diff_cents <= 0:
-                        icon = "✅"
-                        diff_str = f"-{diff_euros}" if diff_cents < 0 else "0,00 €"
-                    else:
-                        icon = "⛔️"
-                        diff_str = f"+{diff_euros}"
+                    icon = "✅" if diff_cents <= 0 else "⛔️"
+                    diff_str = (
+                        f"-{diff_euros}"
+                        if diff_cents < 0
+                        else (f"+{diff_euros}" if diff_cents > 0 else "0,00 €")
+                    )
                     lot_lines.append(f"{icon} Écart : <b>{diff_str}</b>")
-
                 return "\n".join(lot_lines)
-            return None
 
-        # 3. Cas d'une série multi-tomes sans tome identifié
+        # 3. Non-reconnaissance du tome / tomes dans une série (aucune information suffisante)
         if books_in_series and len(books_in_series) > 1:
-            hist_prices = [
-                b.market_cache.historical_low_1y_cents
-                for b in books_in_series
-                if b.market_cache and b.market_cache.historical_low_1y_cents is not None
-            ]
-
-            if hist_prices:
-                series_lines: list[str] = []
-                h_min = min(hist_prices)
-                h_max = max(hist_prices)
-                if h_min == h_max:
-                    series_lines.append(f"📉 Prix bas constaté : {format_cents(h_min)}")
-                else:
-                    h_min_str = format_cents(h_min)
-                    h_max_str = format_cents(h_max)
-                    series_lines.append(f"📉 Prix bas constaté : {h_min_str} - {h_max_str}")
-
-                if listing.estimated_total_cents is not None:
-                    vinted_total = listing.estimated_total_cents
-                    diff_best = vinted_total - h_max
-                    diff_worst = vinted_total - h_min
-
-                    if diff_best == diff_worst:
-                        diff_cents = diff_best
-                        diff_euros = format_cents(abs(diff_cents))
-                        if diff_cents <= 0:
-                            icon = "✅"
-                            diff_str = f"-{diff_euros}" if diff_cents < 0 else "0,00 €"
-                        else:
-                            icon = "⛔️"
-                            diff_str = f"+{diff_euros}"
-                        series_lines.append(f"{icon} Écart : <b>{diff_str}</b>")
-                    else:
-                        def _fmt_diff(cents: int) -> str:
-                            if cents < 0:
-                                return f"-{format_cents(abs(cents))}"
-                            elif cents > 0:
-                                return f"+{format_cents(cents)}"
-                            return "0,00 €"
-
-                        if diff_worst <= 0:
-                            icon = "✅"
-                        elif diff_best >= 0:
-                            icon = "⛔️"
-                        else:
-                            icon = "⚖️"
-
-                        diff_str = f"{_fmt_diff(diff_worst)} à {_fmt_diff(diff_best)}"
-                        series_lines.append(f"{icon} Écart : <b>{diff_str}</b>")
-
-                return "\n".join(series_lines)
+            return "📉 Prix bas constaté :  —\n⚖️ Écart :  —"
 
         return None
 
@@ -341,7 +284,7 @@ class MarketPriceService:
                     "<b>Cote par tome (Min sur 1 an) :</b>",
                 ]
                 for b in target_series_books:
-                    t_name = clean_tome_display_title(b.title)
+                    t_name = clean_tome_display_title(b.title, include_subtitle=True)
                     ref = (
                         (
                             b.market_cache.historical_low_1y_cents
@@ -365,7 +308,7 @@ class MarketPriceService:
                     "<b>Cotes par tome (Min sur 1 an) :</b>",
                 ]
                 for b in books_in_series:
-                    t_name = clean_tome_display_title(b.title)
+                    t_name = clean_tome_display_title(b.title, include_subtitle=True)
                     ref = (
                         (
                             b.market_cache.historical_low_1y_cents
@@ -459,8 +402,10 @@ class MarketPriceService:
         # Priorité au prix du marché actuel en direct si disponible, sinon repli sur l'historique 1 an
         ref_price = lowest_delivered or cache.historical_low_1y_cents
 
+        t_name = clean_tome_display_title(book.title, include_subtitle=True) if book and book.title else ""
+        header = f"📊 <b>Prix du marché</b> — {t_name}\n" if t_name else "📊 <b>Prix du marché</b>\n"
         lines = [
-            "📊 <b>Prix du marché</b>\n",
+            header,
         ]
 
         if valid_used_partners:
