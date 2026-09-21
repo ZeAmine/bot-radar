@@ -1,6 +1,7 @@
 """Handlers de callbacks inline pour les photos et détails de marché."""
 
 import contextlib
+import logging
 import re
 import uuid
 from typing import Any
@@ -18,6 +19,7 @@ from app.bot.keyboards.listings import (
     get_dislike_confirmation_keyboard,
     get_listing_alert_keyboard,
 )
+from app.core.config import settings
 from app.db.models.bot_event import BotEvent
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
@@ -26,6 +28,7 @@ from app.services.book_catalog_service import BookCatalogService
 from app.services.market_price_service import MarketPriceService, clean_tome_display_title
 from app.services.vinted_scraper import fetch_item_photos
 
+logger = logging.getLogger(__name__)
 router = Router(name="callbacks_router")
 
 
@@ -155,7 +158,6 @@ async def handle_view_market_details(
                             logger.debug("Échec analyse visuelle pour market details: %s", vision_err)
 
                     if t_identified:
-                        import re
                         for b in books_in_series:
                             if re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_identified}\b", b.title, re.IGNORECASE):
                                 book = b

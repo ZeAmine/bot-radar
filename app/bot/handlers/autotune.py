@@ -18,7 +18,6 @@ from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.services.ai.modules.auto_tuning import auto_tuning_module
-from app.services.ai.modules.keyword_variants import keyword_variants_module
 
 logger = logging.getLogger(__name__)
 
@@ -339,14 +338,3 @@ async def handle_var_apply(
             f"✅ <b>Alerte « {html.escape(alert.name)} » mise à jour !</b>\n\n"
             f"🔤 Mots-clés inclus actifs : <code>{', '.join(current_includes)}</code>"
         )
-
-
-@router.callback_query(F.data.startswith("ai_var_cancel:"))
-async def handle_var_cancel(callback: CallbackQuery) -> None:
-    """Annule l'ajout de variantes."""
-    parts = (callback.data or "").split(":", 1)
-    if len(parts) > 1:
-        _pending_variants.pop(parts[1], None)
-    await callback.answer("Opération annulée.")
-    if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text("❌ Ajout des variantes annulé.")

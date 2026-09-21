@@ -110,13 +110,3 @@ class NegotiationResult(BaseModel):
     suggested_offer_cents: int = Field(description="Montant de l'offre en centimes")
     suggested_offer_euros: float = Field(description="Montant en euros")
     message: str = Field(description="Message prêt à être copié-collé sur Vinted")
-
-
-class EnrichedPostAlertResult(BaseModel):
-    """Résultat consolidé des enrichissements post-alerte."""
-
-    price_glitch: PriceGlitchResult | None = None
-    hidden_condition: HiddenConditionResult | None = None
-    bundle_decomposition: BundleDecompositionResult | None = None
-    profit_scoring: ProfitScoringResult | None = None
-    vision_guard: VisionGuardAnalysisResult | None = None

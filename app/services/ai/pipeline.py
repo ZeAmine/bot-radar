@@ -53,6 +53,7 @@ class AIPostAlertPipeline:
                     key, instruction = chunk
                     chunks[key] = instruction
 
+            data: dict[str, Any] | None = None
             if chunks and self.client.is_configured:
                 user_prompt = (
                     f"Article : '{listing.title}'\n"
@@ -112,8 +113,9 @@ class AIPostAlertPipeline:
                 elif vision_result.identified_tome and not detected_lot_tomes:
                     detected_single_tome = vision_result.identified_tome
 
-            # 4. Mise à jour en place de la légende de l'alerte d'origine si des tomes ont été identifiés
-            if (detected_lot_tomes or detected_single_tome) and alert and not getattr(alert, "isbn", None):
+            # 4. Mise à jour de la légende d'origine si des tomes ont été identifiés
+            tomes_found = bool(detected_lot_tomes or detected_single_tome)
+            if tomes_found and alert and not getattr(alert, "isbn", None):
                 try:
                     from app.bot.keyboards.listings import get_listing_alert_keyboard
                     from app.db.repositories.book_repo import BookRepository
@@ -151,7 +153,10 @@ class AIPostAlertPipeline:
                                     tome_result=t_res,
                                 )
                             else:
-                                t_res = TomeMatchResult(is_lot=False, tome_number=detected_single_tome)
+                                t_res = TomeMatchResult(
+                                    is_lot=False,
+                                    tome_number=detected_single_tome,
+                                )
                                 matched_book = next(
                                     (
                                         b
@@ -196,16 +201,19 @@ class AIPostAlertPipeline:
                                     reply_markup=keyboard,
                                 )
                                 logger.info(
-                                    "Légende d'alerte mise à jour en direct pour l'annonce %s (tomes: %s)",
+                                    "Légende d'alerte mise à jour pour l'annonce %s (tomes: %s)",
                                     listing.id,
                                     detected_lot_tomes or detected_single_tome,
                                 )
                 except TelegramAPIError as tg_err:
                     logger.debug("Mise à jour légende Telegram ignorée: %s", tg_err)
                 except Exception as upd_err:
-                    logger.warning("Erreur lors de la mise à jour de la légende d'alerte: %s", upd_err)
+                    logger.warning(
+                        "Erreur lors de la mise à jour de la légende d'alerte: %s",
+                        upd_err,
+                    )
 
-            # 5. Envoi de la note d'enrichissement si des alertes critiques existent (défauts physiques, arnaque)
+            # 5. Note d'enrichissement si des alertes critiques existent
             if lines_to_notify:
                 full_text = "\n\n".join(lines_to_notify)
                 await bot.send_message(

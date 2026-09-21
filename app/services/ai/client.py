@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.core.http_client import get_shared_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -71,31 +72,31 @@ class DeepSeekClient:
 
         start_time = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
-                resp = await client.get(endpoint, headers=headers)
-                elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            client = get_shared_http_client()
+            resp = await client.get(endpoint, headers=headers, timeout=4.0)
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
 
-                if resp.status_code == 200:
-                    result = {
-                        "status": "active",
-                        "model": self.model,
-                        "latency_ms": elapsed_ms,
-                        "message": f"Opérationnel ({elapsed_ms}ms)",
-                    }
-                elif resp.status_code in (401, 403):
-                    result = {
-                        "status": "error",
-                        "model": self.model,
-                        "latency_ms": elapsed_ms,
-                        "message": "Clé API invalide ou refusée",
-                    }
-                else:
-                    result = {
-                        "status": "error",
-                        "model": self.model,
-                        "latency_ms": elapsed_ms,
-                        "message": f"Erreur HTTP {resp.status_code}",
-                    }
+            if resp.status_code == 200:
+                result = {
+                    "status": "active",
+                    "model": self.model,
+                    "latency_ms": elapsed_ms,
+                    "message": f"Opérationnel ({elapsed_ms}ms)",
+                }
+            elif resp.status_code in (401, 403):
+                result = {
+                    "status": "error",
+                    "model": self.model,
+                    "latency_ms": elapsed_ms,
+                    "message": "Clé API invalide ou refusée",
+                }
+            else:
+                result = {
+                    "status": "error",
+                    "model": self.model,
+                    "latency_ms": elapsed_ms,
+                    "message": f"Erreur HTTP {resp.status_code}",
+                }
         except httpx.TimeoutException:
             result = {
                 "status": "error",
@@ -154,10 +155,15 @@ class DeepSeekClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(endpoint, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
+            client = get_shared_http_client()
+            response = await client.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
 
             choices = data.get("choices", [])
             if not choices:

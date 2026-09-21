@@ -1,6 +1,5 @@
 """Module IA pour la décomposition intelligente des lots et bundles (Use Case D bis)."""
 
-import html
 import logging
 import re
 from typing import Any

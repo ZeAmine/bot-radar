@@ -634,7 +634,7 @@ async def cancel_alert_creation(callback: CallbackQuery, state: FSMContext) -> N
 
 
 @router.callback_query(
-    F.data.in_(["alert_create_edit", "alert_create_edit_price", "al_create_edit:menu", "al_edit_step:price"])
+    F.data.in_(["alert_create_edit", "al_create_edit:menu"])
 )
 async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     """Affiche le menu complet de modification des informations d'alerte."""
@@ -895,7 +895,7 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
     )
 
 
-@router.callback_query(F.data.in_(["al_edit_step:back", "al_create_edit:back"]))
+@router.callback_query(F.data == "al_create_edit:back")
 async def back_to_recap(callback: CallbackQuery, state: FSMContext) -> None:
     """Retourne directement au récapitulatif avec les boutons de confirmation."""
     await callback.answer()
@@ -921,7 +921,7 @@ async def back_to_recap(callback: CallbackQuery, state: FSMContext) -> None:
         )
 
 
-@router.callback_query(F.data.in_(["al_edit_step:restart", "al_create_edit:restart"]))
+@router.callback_query(F.data == "al_create_edit:restart")
 async def restart_from_scratch(
     callback: CallbackQuery,
     state: FSMContext,

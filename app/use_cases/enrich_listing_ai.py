@@ -2,7 +2,6 @@
 
 import html
 import logging
-from typing import Any
 
 from aiogram import Bot
 
@@ -86,22 +85,4 @@ class AsyncEnrichListingUseCase:
                 exc,
             )
             return None
-
-    async def schedule_enrichment(
-        self,
-        listing: ListingEntity,
-        alert: Any,
-    ) -> None:
-        """Planifie l'analyse IA sémantique en tâche de fond si un destinataire est configuré."""
-        user_id = getattr(getattr(alert, "user", None), "telegram_user_id", None)
-        if not user_id:
-            return
-        import asyncio
-        asyncio.create_task(
-            self.execute(
-                chat_id=user_id,
-                message_id=0,
-                listing=listing,
-            )
-        )
 

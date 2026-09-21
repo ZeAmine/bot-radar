@@ -15,6 +15,7 @@ from app.services.ai.modules.negotiation import negotiation_module
 from app.services.ai.modules.price_glitch import price_glitch_module
 from app.services.ai.modules.profit_scoring import profit_scoring_module
 from app.services.ai.modules.vision_guard import vision_guard_module
+from app.services.ai.pipeline import AIPostAlertPipeline
 from app.services.ai.registry import AIRegistry
 
 
@@ -37,6 +38,34 @@ def sample_listing():
     )
 
 
+@pytest.mark.asyncio
+async def test_pipeline_skips_llm_when_client_unconfigured(sample_listing):
+    """Un client non configuré ne doit pas lever NameError ni appeler DeepSeek."""
+    client = MagicMock(spec=DeepSeekClient)
+    client.is_configured = False
+    client.generate_json = AsyncMock()
+    pipeline = AIPostAlertPipeline(client=client)
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    sample_listing.photos = []
+
+    with (
+        patch("app.services.ai.pipeline.asyncio.sleep", new_callable=AsyncMock),
+        patch("app.services.ai.pipeline.logger.exception") as log_exception,
+    ):
+        await pipeline.enrich_alert(
+            bot=bot,
+            chat_id=1,
+            message_id=10,
+            listing=sample_listing,
+            alert=MagicMock(isbn="9780000000000"),
+        )
+
+    log_exception.assert_not_called()
+    client.generate_json.assert_not_awaited()
+    bot.send_message.assert_not_awaited()
+
+
 def test_deepseek_client_unconfigured():
     """Un client sans clé API doit renvoyer False pour is_configured."""
     client = DeepSeekClient(api_key="")
@@ -45,7 +74,7 @@ def test_deepseek_client_unconfigured():
 
 def test_deepseek_clean_and_parse_json():
     """Vérifie le nettoyage des blocs markdown ```json ... ```."""
-    raw = "```json\n{\"test\": 123, \"valid\": true}\n```"
+    raw = '```json\n{"test": 123, "valid": true}\n```'
     parsed = DeepSeekClient._clean_and_parse_json(raw)
     assert parsed == {"test": 123, "valid": True}
 
@@ -283,7 +312,10 @@ async def test_vision_guard_multi_photos(sample_listing):
     )
 
     module = vision_guard_module
-    with patch.object(module, "client", mock_client), patch.object(settings, "AI_FEATURE_VISION_GUARD", True):
+    with (
+        patch.object(module, "client", mock_client),
+        patch.object(settings, "AI_FEATURE_VISION_GUARD", True),
+    ):
         res = await module.analyze_listing_photos(sample_listing)
         assert res is not None
         assert res.has_visual_defects is True

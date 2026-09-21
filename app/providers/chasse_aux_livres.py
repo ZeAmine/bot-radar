@@ -4,7 +4,6 @@ import asyncio
 import html
 import logging
 import re
-import unicodedata
 import urllib.parse
 
 import httpx
