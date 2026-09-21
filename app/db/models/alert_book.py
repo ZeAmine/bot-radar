@@ -29,6 +29,7 @@ class AlertBook(Base):
         Uuid(as_uuid=True),
         ForeignKey("books.id", ondelete="CASCADE"),
         primary_key=True,
+        index=True,
     )
     match_confidence: Mapped[MatchConfidence] = mapped_column(
         Enum(MatchConfidence, native_enum=False, length=20),

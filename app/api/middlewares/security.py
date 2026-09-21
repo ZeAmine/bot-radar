@@ -7,8 +7,8 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from app.api.dependencies import get_redis_pool
 from app.core.rate_limiter import SlidingWindowRateLimiter
+from app.core.redis import get_redis_pool
 
 logger = logging.getLogger("radar.security.middleware")
 

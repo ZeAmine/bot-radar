@@ -10,7 +10,6 @@ from app.bot.handlers.alerts import (
     edit_alert_creation_prompt,
     handle_category_selected,
     handle_query_input,
-    process_max_price_input,
     prompt_new_price,
     restart_from_scratch,
     save_alert,
@@ -18,14 +17,11 @@ from app.bot.handlers.alerts import (
 )
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
-    DEFAULT_CLOTHES_CONDITIONS,
-    DEFAULT_CLOTHES_EXCLUSIONS,
     DEFAULT_GAMING_CONDITIONS,
     DEFAULT_GAMING_EXCLUSIONS,
     DEFAULT_TECH_CONDITIONS,
     DEFAULT_TECH_EXCLUSIONS,
     AlertStatus,
-    CategorySlug,
 )
 from app.db.models.category import Category
 from app.db.models.user import User

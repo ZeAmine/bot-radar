@@ -30,6 +30,8 @@ def create_scheduler() -> AsyncIOScheduler:
                 id=f"refresh_prices_{hour:02d}_{minute:02d}",
                 name=f"Rafraîchissement des prix BD à {hour:02d}:{minute:02d}",
                 replace_existing=True,
+                max_instances=1,
+                coalesce=True,
             )
             logger.info(
                 "Job planifié : rafraîchissement BD à %02d:%02d Europe/Paris.", hour, minute
@@ -46,6 +48,8 @@ def create_scheduler() -> AsyncIOScheduler:
         id="cleanup_old_data_03_30",
         name="Nettoyage nocturne des annonces et snapshots obsolètes",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     logger.info("Job planifié : nettoyage nocturne des données à 03:30 Europe/Paris.")
 

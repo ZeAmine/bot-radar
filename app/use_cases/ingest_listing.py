@@ -1,25 +1,20 @@
 """Cas d'usage : Ingestion, matching déterministe et orchestration d'alerte."""
 
-import asyncio
 import logging
 import sys
-from datetime import UTC, datetime
+import uuid
 from typing import Any
 
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.bot_instance import bot as default_bot
-from app.core.constants import CategorySlug, ComparisonStatus
+from app.core.constants import CategorySlug
+from app.core.tasks import safe_create_task
 from app.db.models.bot_event import BotEvent
 from app.db.models.listing import Listing
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
-from app.db.repositories.market_price_repo import MarketPriceRepository
-from app.domain.entities.listing import ListingEntity
-from app.domain.enums import CategorySlug as DomainCategorySlug
-from app.domain.protocols.matching import ListingMatcherProtocol
-from app.domain.rules.matcher import DeterministicListingMatcher
 from app.schemas.listing import (
     ListingIngestPayload,
     ListingIngestResponse,
@@ -29,9 +24,30 @@ from app.services.book_catalog_service import BookCatalogService
 from app.services.market_price_service import MarketPriceService
 from app.services.matcher_service import evaluate_listing_against_alert
 from app.services.telegram_service import send_listing_alert
-from app.use_cases.enrich_listing_ai import AsyncEnrichListingUseCase
 
 logger = logging.getLogger("radar.use_cases.ingest_listing")
+
+
+async def _link_book_from_bnf(title: str, alert_id: uuid.UUID) -> None:
+    """Associe un ISBN BNF à l'alerte sans retarder l'envoi Telegram."""
+    from app.db.session import AsyncSessionLocal
+    from app.services.book_metadata_service import BookMetadataService
+
+    try:
+        meta = await BookMetadataService().lookup_by_title_and_author(title)
+        if not meta or not meta.isbn13:
+            return
+        async with AsyncSessionLocal() as session:
+            book_repo = BookRepository(session)
+            catalog = BookCatalogService(session)
+            book = await book_repo.get_by_isbn13(meta.isbn13)
+            if not book:
+                book = await catalog.add_book(title=title, isbn13=meta.isbn13)
+            if book:
+                await book_repo.link_alert_to_book(alert_id=alert_id, book_id=book.id)
+            await session.commit()
+    except Exception as exc:
+        logger.warning("Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc)
 
 
 def _get_send_listing_alert() -> Any:
@@ -48,13 +64,9 @@ class ProcessListingUseCase:
     def __init__(
         self,
         db: AsyncSession,
-        matcher: ListingMatcherProtocol | None = None,
-        ai_enricher: AsyncEnrichListingUseCase | None = None,
         bot: Bot | None = None,
     ) -> None:
         self.db = db
-        self.matcher = matcher or DeterministicListingMatcher()
-        self.ai_enricher = ai_enricher or AsyncEnrichListingUseCase(bot=bot)
         self.bot = bot or default_bot
         self.listing_repo = ListingRepository(db)
 
@@ -80,6 +92,9 @@ class ProcessListingUseCase:
         # 2. Recherche des alertes actives de la même catégorie
         active_alerts = await self.listing_repo.get_active_alerts_by_category(payload.category_slug)
         match_items: list[ListingMatchItem] = []
+        already_matched_ids: set[uuid.UUID] = set()
+        if active_alerts:
+            already_matched_ids = await self.listing_repo.matched_alert_ids(listing.id)
 
         for alert in active_alerts:
             match_result = evaluate_listing_against_alert(
@@ -97,14 +112,10 @@ class ProcessListingUseCase:
                 continue
 
             # 3. Empêcher les doublons de notification
-            already_notified = await self.listing_repo.is_already_matched(
-                alert_id=alert.id,
-                listing_id=listing.id,
-            )
-            if already_notified:
+            if alert.id in already_matched_ids:
                 continue
 
-            # 4. Résolution locale rapide du livre et comparaison de cotation (< 3ms, zéro appel réseau externe)
+            # 4. Comparaison locale. La BNF, si besoin, part en tâche de fond.
             market_comparison_line = None
             if listing.category_slug == CategorySlug.BD_COMICS.value:
                 market_comparison_line = await self._resolve_bd_market_comparison(listing, alert)
@@ -123,26 +134,8 @@ class ProcessListingUseCase:
                     alert=alert,
                 )
 
-                # 6. Lancement de l'analyse DeepSeek en TÂCHE DE FOND (asynchrone, non bloquante)
-                if notification_sent and self.ai_enricher:
-                    try:
-                        listing_entity = ListingEntity(
-                            id=listing.id,
-                            source_name=listing.source_name,
-                            external_id=listing.external_id,
-                            title=listing.title,
-                            normalized_title=listing.normalized_title,
-                            category_slug=DomainCategorySlug(listing.category_slug),
-                            item_price_cents=listing.item_price_cents,
-                            total_price_cents=listing.estimated_total_cents,
-                            condition=listing.condition,
-                            url=listing.url,
-                            photos=listing.photos,
-                            description=listing.description,
-                        )
-                        await self.ai_enricher.schedule_enrichment(listing_entity, alert)
-                    except Exception as ai_err:
-                        logger.warning("Échec déclenchement IA pour listing %s: %s", listing.id, ai_err)
+            # L'enrichissement DeepSeek part dans send_listing_alert, après l'envoi,
+            # avec le vrai message_id. Pas de second appel ici.
 
             # 7. Création de l'enregistrement listing_matches
             await self.listing_repo.create_match(
@@ -184,7 +177,7 @@ class ProcessListingUseCase:
         )
 
     async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> str | None:
-        """Résout le livre et calcule l'écart sur prix bas constaté (< 3ms, zéro appel réseau externe)."""
+        """Résout le livre en local. La recherche BNF part en tâche de fond."""
         book_repo = BookRepository(self.db)
         catalog_service = BookCatalogService(self.db)
 
@@ -207,15 +200,10 @@ class ProcessListingUseCase:
                 discovered_isbn = listing.isbn13
                 has_lot = bool(tome_result and tome_result.is_lot and tome_result.lot_tomes)
                 if not discovered_isbn and not has_lot:
-                    try:
-                        from app.services.book_metadata_service import BookMetadataService
-
-                        meta_service = BookMetadataService()
-                        meta = await meta_service.lookup_by_title_and_author(listing.title)
-                        if meta and meta.isbn13:
-                            discovered_isbn = meta.isbn13
-                    except Exception:
-                        pass
+                    safe_create_task(
+                        _link_book_from_bnf(listing.title, alert.id),
+                        name=f"bnf_link_{alert.id}",
+                    )
 
                 if discovered_isbn:
                     book = await book_repo.get_by_isbn13(discovered_isbn)

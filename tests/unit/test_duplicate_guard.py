@@ -6,14 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
-from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 
 
 @pytest.mark.asyncio
 async def test_find_existing_alert():
     """Vérifie que find_existing détecte une alerte existante par ISBN ou par titre."""
-    session = AsyncSessionMock = AsyncMock()
+    session = AsyncMock()
     repo = AlertRepository(session)
 
     user_id = uuid.uuid4()

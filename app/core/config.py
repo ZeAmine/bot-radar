@@ -91,11 +91,29 @@ class Settings(BaseSettings):
     AI_FEATURE_BUNDLE_DECOMPOSITION: bool = False
     AI_FEATURE_KEYWORD_VARIANTS: bool = True
     AI_FEATURE_AUTO_TUNING: bool = True
-    AI_FEATURE_BUNDLE_HUNTER: bool = False
 
     @property
     def is_production(self) -> bool:
         return self.APP_ENV.lower() == "production"
+
+
+def validate_production_secrets() -> None:
+    """Refuse de démarrer en production si un secret d'accès est vide."""
+    if not settings.is_production:
+        return
+    missing = [
+        name
+        for name in (
+            "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_WEBHOOK_SECRET",
+            "INGEST_API_TOKEN",
+            "INTERNAL_API_TOKEN",
+        )
+        if not getattr(settings, name).get_secret_value()
+    ]
+    if missing:
+        joined = ", ".join(missing)
+        raise RuntimeError(f"Secrets de production vides : {joined}")
 
 
 settings = Settings()

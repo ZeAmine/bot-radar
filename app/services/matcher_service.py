@@ -1,7 +1,6 @@
 """Moteur de matching robuste entre les annonces ingérées et les alertes actives."""
 
 import re
-import unicodedata
 
 from app.core.constants import (
     DEFAULT_GAMING_EXCLUSIONS,
@@ -176,6 +175,59 @@ FRANCHISE_PREFIXES: set[str] = {
 }
 
 
+def isbn_digits(value: str | None) -> str:
+    """Retient uniquement les chiffres et le X d'un ISBN."""
+    if not value:
+        return ""
+    return re.sub(r"[^\dX]", "", value.upper())
+
+
+def price_is_above_max(
+    max_item_price_cents: int | None,
+    listing_item_price_cents: int,
+) -> bool:
+    """True si un plafond est défini et que le prix article le dépasse."""
+    return max_item_price_cents is not None and listing_item_price_cents > max_item_price_cents
+
+
+def condition_is_accepted(
+    accepted_conditions: list[str] | None,
+    listing_condition: str | None,
+) -> bool:
+    """True si l'alerte n'a pas de filtre d'état, ou si l'état déclaré est dans la liste."""
+    if not accepted_conditions:
+        return True
+    if not listing_condition:
+        return False
+    resolved_cond = CONDITION_ALIASES.get(listing_condition.lower(), listing_condition)
+    norm_cond = normalize_text(resolved_cond)
+    return norm_cond in [normalize_text(c) for c in accepted_conditions]
+
+
+def first_matching_exclusion(text: str, exclusions: list[str]) -> str | None:
+    """Premier mot-clé d'exclusion présent dans le texte, sinon None."""
+    for raw_exclude in exclusions:
+        if contains_keyword(text, raw_exclude):
+            return raw_exclude
+    return None
+
+
+def default_exclusion_hit(
+    title: str,
+    exclusions: list[str],
+    include_keywords: list[str] | None,
+) -> str | None:
+    """Exclusion de catégorie sur le titre, ignorée si le mot-clé est explicitement requis."""
+    includes = include_keywords or []
+    for c_excl in exclusions:
+        if not contains_keyword(title, c_excl):
+            continue
+        if any(c_excl in kw.lower() for kw in includes):
+            continue
+        return c_excl
+    return None
+
+
 def evaluate_listing_against_alert(
     *,
     alert: Alert,
@@ -198,10 +250,7 @@ def evaluate_listing_against_alert(
         return MatchResult(is_match=False, reason="Catégorie différente")
 
     # 3. Vérification du prix maximum de l'article
-    if (
-        alert.max_item_price_cents is not None
-        and listing_item_price_cents > alert.max_item_price_cents
-    ):
+    if price_is_above_max(alert.max_item_price_cents, listing_item_price_cents):
         return MatchResult(
             is_match=False,
             price_matches=False,
@@ -218,16 +267,20 @@ def evaluate_listing_against_alert(
     # Si l'alerte est configurée avec un ISBN spécifique, la correspondance DOIT être exacte sur cet ISBN.
     hybrid_matched = False
     if getattr(alert, "isbn", None):
-        clean_alert_isbn = re.sub(r"[^\dX]", "", alert.isbn.upper())
+        clean_alert_isbn = isbn_digits(alert.isbn)
         isbn_matched = False
 
         if listing_isbn13:
-            clean_listing_isbn = re.sub(r"[^\dX]", "", listing_isbn13.upper())
+            clean_listing_isbn = isbn_digits(listing_isbn13)
             if clean_alert_isbn == clean_listing_isbn:
                 isbn_matched = True
 
         if not isbn_matched and clean_alert_isbn:
-            raw_text = f"{listing_normalized_title} {listing_normalized_description or ''} {listing_raw_url or ''}".upper()
+            raw_text = (
+                f"{listing_normalized_title} "
+                f"{listing_normalized_description or ''} "
+                f"{listing_raw_url or ''}"
+            ).upper()
             raw_clean = re.sub(r"[- ]", "", raw_text)
             if clean_alert_isbn in raw_clean:
                 isbn_matched = True
@@ -236,7 +289,7 @@ def evaluate_listing_against_alert(
             # Fallback hybride pour vendeurs occasionnels sans ISBN renseigné
             hybrid_matched = False
             if listing_category_slug == "bd_comics" and alert.name:
-                clean_alert_isbn = re.sub(r"[^\dX]", "", (alert.isbn or "").upper())
+                clean_alert_isbn = isbn_digits(alert.isbn)
 
                 # 1. Découpage du nom de l'alerte
                 clean_title = alert.name.split("—")[0].split(" - ")[0].strip()
@@ -298,7 +351,7 @@ def evaluate_listing_against_alert(
                 non_isbn_kws = [
                     kw
                     for kw in (alert.include_keywords or [])
-                    if re.sub(r"[^\dX]", "", kw.upper()) != clean_alert_isbn
+                    if isbn_digits(kw) != clean_alert_isbn
                 ]
                 if non_isbn_kws:
                     user_kws_match = all(
@@ -383,23 +436,25 @@ def evaluate_listing_against_alert(
         category_defaults = []
 
     expanded_defaults = expand_exclusions_multilingual(category_defaults)
-    for c_excl in expanded_defaults:
-        if contains_keyword(listing_normalized_title, c_excl):
-            is_explicit = any(c_excl in kw.lower() for kw in alert.include_keywords)
-            if not is_explicit:
-                return MatchResult(
-                    is_match=False,
-                    reason=f"Élément exclu automatiquement par défaut : '{c_excl}'",
-                )
+    default_hit = default_exclusion_hit(
+        listing_normalized_title,
+        expanded_defaults,
+        alert.include_keywords,
+    )
+    if default_hit:
+        return MatchResult(
+            is_match=False,
+            reason=f"Élément exclu automatiquement par défaut : '{default_hit}'",
+        )
 
     # Vérification des mots-clés exclus configurés par l'utilisateur (avec extension multilingue)
     expanded_user_excludes = expand_exclusions_multilingual(alert.exclude_keywords)
-    for raw_exclude in expanded_user_excludes:
-        if contains_keyword(searchable_text, raw_exclude):
-            return MatchResult(
-                is_match=False,
-                reason=f"Mot-clé exclu détecté : '{raw_exclude}'",
-            )
+    user_hit = first_matching_exclusion(searchable_text, expanded_user_excludes)
+    if user_hit:
+        return MatchResult(
+            is_match=False,
+            reason=f"Mot-clé exclu détecté : '{user_hit}'",
+        )
 
     # 5bis. Filtre qualité Jeux Vidéo : Rejet des éditions étrangères non-PAL-FR
     if listing_category_slug == "gaming":
@@ -424,8 +479,12 @@ def evaluate_listing_against_alert(
     isbn_textually_present = False
     clean_alert_isbn = ""
     if getattr(alert, "isbn", None):
-        clean_alert_isbn = re.sub(r"[^\dX]", "", alert.isbn.upper())
-        raw_text = f"{listing_normalized_title} {listing_normalized_description or ''} {listing_raw_url or ''}".upper()
+        clean_alert_isbn = isbn_digits(alert.isbn)
+        raw_text = (
+            f"{listing_normalized_title} "
+            f"{listing_normalized_description or ''} "
+            f"{listing_raw_url or ''}"
+        ).upper()
         raw_clean = re.sub(r"[- ]", "", raw_text)
         if clean_alert_isbn and clean_alert_isbn in raw_clean:
             isbn_textually_present = True
@@ -435,7 +494,7 @@ def evaluate_listing_against_alert(
     elif alert.include_keywords:
         all_includes_match = True
         for raw_kw in alert.include_keywords:
-            if clean_alert_isbn and re.sub(r"[^\dX]", "", raw_kw.upper()) == clean_alert_isbn:
+            if clean_alert_isbn and isbn_digits(raw_kw) == clean_alert_isbn:
                 if not hybrid_matched:
                     all_includes_match = False
                     break
@@ -463,18 +522,7 @@ def evaluate_listing_against_alert(
     matched_keywords_count = len(alert.include_keywords)
 
     # 6. Vérification de l'état si l'alerte a des conditions restreintes
-    condition_matches = True
-    if alert.accepted_conditions:
-        if not listing_condition:
-            condition_matches = False
-        else:
-            resolved_cond = CONDITION_ALIASES.get(listing_condition.lower(), listing_condition)
-            norm_cond = normalize_text(resolved_cond)
-            norm_accepted = [normalize_text(c) for c in alert.accepted_conditions]
-            if norm_cond not in norm_accepted:
-                condition_matches = False
-
-    if not condition_matches:
+    if not condition_is_accepted(alert.accepted_conditions, listing_condition):
         return MatchResult(
             is_match=False,
             condition_matches=False,

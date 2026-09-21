@@ -34,8 +34,12 @@ async def close_shared_http_client() -> None:
     """Ferme proprement le client HTTP partagé et libère tous les sockets ouverts."""
     global _shared_client
     if _shared_client is not None and not _shared_client.is_closed:
-        await _shared_client.aclose()
-        _shared_client = None
+        try:
+            await _shared_client.aclose()
+        except RuntimeError:
+            pass
+        finally:
+            _shared_client = None
         logger.info("Client HTTP partagé fermé avec succès.")
 
 

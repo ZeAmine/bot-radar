@@ -534,3 +534,38 @@ def test_matcher_tech_hardware_allows_spanish_listing():
     assert res.is_match is True
 
 
+def test_pure_predicates_price_condition_exclusion_isbn():
+    """Les prédicats extraits reproduisent les seuils utilisés par le matcher."""
+    from app.services.matcher_service import (
+        condition_is_accepted,
+        default_exclusion_hit,
+        first_matching_exclusion,
+        isbn_digits,
+        price_is_above_max,
+    )
+
+    assert price_is_above_max(1500, 1501) is True
+    assert price_is_above_max(1500, 1500) is False
+    assert price_is_above_max(None, 99999) is False
+
+    assert condition_is_accepted(None, "Bon état") is True
+    assert condition_is_accepted(["Très bon état"], None) is False
+    assert condition_is_accepted(["Très bon état"], "very_good") is True
+    assert condition_is_accepted(["Très bon état"], "Bon état") is False
+
+    assert first_matching_exclusion("poster original tintin", ["poster", "figurine"]) == "poster"
+    assert first_matching_exclusion("tintin au tibet", ["poster"]) is None
+
+    assert (
+        default_exclusion_hit("ex-libris tintin", ["ex-libris"], include_keywords=["tintin"])
+        == "ex-libris"
+    )
+    assert (
+        default_exclusion_hit("ex-libris tintin", ["ex-libris"], include_keywords=["ex-libris"])
+        is None
+    )
+
+    assert isbn_digits("978-2-205-07805-3") == "9782205078053"
+    assert isbn_digits(None) == ""
+
+

@@ -9,8 +9,8 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 from aiogram.types import User as TgUser
 
-from app.api.dependencies import get_redis_pool
 from app.core.rate_limiter import SlidingWindowRateLimiter
+from app.core.redis import get_redis_pool
 
 logger = logging.getLogger("radar.bot.throttling")
 

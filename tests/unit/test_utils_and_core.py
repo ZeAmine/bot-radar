@@ -1,17 +1,58 @@
 """Tests unitaires pour les utilitaires purs et composants d'infrastructure core."""
 
 import asyncio
+import json
+import logging
 
 import pytest
+from pydantic import SecretStr
 
+from app.core.config import settings, validate_production_secrets
 from app.core.http_client import (
     close_shared_http_client,
     get_shared_http_client,
     http_client_lifespan,
 )
+from app.core.logging import JSONFormatter
 from app.core.tasks import safe_create_task, wait_all_background_tasks
 from app.utils.isbn import extract_clean_isbn, isbn10_to_isbn13
 from app.utils.text import contains_keyword
+
+
+def test_json_formatter_redacts_secrets_in_message_and_extras():
+    """Les secrets dans le message et les extras ne sortent pas dans le JSON."""
+    formatter = JSONFormatter()
+    record = logging.LogRecord(
+        name="radar.test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="Authorization: Bearer super-secret-value token=%s",
+        args=("abc123token",),
+        exc_info=None,
+    )
+    record.bot_token = "123456:ABCDEF"
+    record.request_id = "req-1"
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["request_id"] == "req-1"
+    assert "super-secret-value" not in payload["message"]
+    assert "abc123token" not in payload["message"]
+    assert payload["bot_token"] == "[REDACTED]"
+    assert "[REDACTED]" in payload["message"]
+
+
+def test_production_startup_rejects_empty_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un démarrage production sans token d'accès s'arrête."""
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", SecretStr(""))
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", SecretStr("secret"))
+    monkeypatch.setattr(settings, "INGEST_API_TOKEN", SecretStr("ingest"))
+    monkeypatch.setattr(settings, "INTERNAL_API_TOKEN", SecretStr("internal"))
+
+    with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
+        validate_production_secrets()
 
 
 def test_utils_text_contains_keyword():
@@ -81,6 +122,7 @@ async def test_safe_create_task_handles_exceptions_and_cleanup():
 @pytest.mark.asyncio
 async def test_safe_create_task_with_exception():
     """Vérifie qu'une tâche avec exception est proprement nettoyée sans crasher."""
+
     async def failing_task():
         await asyncio.sleep(0.01)
         raise ValueError("Erreur intentionnelle de test")

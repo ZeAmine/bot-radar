@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from app.core.constants import ComparisonStatus
 from app.db.models.book import Book
 from app.db.models.listing import Listing
 

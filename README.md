@@ -16,7 +16,7 @@ Il surveille trois univers verticaux à forte valeur ajoutée :
 3. [Limites de conformité et éthique](#3-limites-de-conformité-et-éthique)
 4. [Prérequis techniques](#4-prérequis-techniques)
 5. [Création du bot avec BotFather](#5-création-du-bot-avec-botfather)
-6. [Comment obtenir son TELEGRAM_ALLOWED_USER_ID](#6-comment-obtenir-son-telegram_allowed_user_id)
+6. [Comment obtenir son identifiant Telegram](#6-comment-obtenir-son-identifiant-telegram)
 7. [Création des clés eBay Developer](#7-création-des-clés-ebay-developer)
 8. [Installation locale](#8-installation-locale)
 9. [Configuration des variables d'environnement (.env)](#9-configuration-des-variables-denvironnement-env)
@@ -112,7 +112,7 @@ Pour les bandes dessinées et comics, le bot compare en temps réel le coût de 
 
 ---
 
-## 6. Comment obtenir son TELEGRAM_ALLOWED_USER_ID
+## 6. Comment obtenir son identifiant Telegram
 
 Radar Bot est strictement privé : toute personne non listée reçoit un message de rejet `⛔ Ce bot est privé`.
 
@@ -131,7 +131,8 @@ Pour alimenter les comparaisons de prix du marché de la bande dessinée via l'A
 3. Récupérez :
    - Votre **Client ID (App ID)** -> `EBAY_CLIENT_ID`
    - Votre **Client Secret (Cert ID)** -> `EBAY_CLIENT_SECRET`
-4. Le bot gère automatiquement le cycle de vie du token OAuth2 `client_credentials` avec renouvellement automatique à expiration.
+4. `EBAY_ENV` vaut `PRODUCTION` ou `SANDBOX`. Le nom `EBAY_ENVIRONMENT` n'est pas lu.
+5. Le bot gère automatiquement le cycle de vie du token OAuth2 `client_credentials` avec renouvellement automatique à expiration.
 
 ---
 
@@ -166,37 +167,12 @@ Copiez le modèle d'environnement :
 cp .env.example .env
 ```
 
-Remplissez attentivement les variables :
-```ini
-# Application
-APP_ENV=production
-DEBUG=false
-LOG_LEVEL=INFO
+La liste complète des clés lues par l'application est dans [`.env.example`](.env.example). Elle correspond à `app/core/config.py`.
 
-# Base de données PostgreSQL
-DATABASE_URL=postgresql+asyncpg://radar_user:radar_password@postgres:5432/radar_db
-
-# Redis
-REDIS_URL=redis://redis:6379/0
-
-# Telegram Bot
-TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ
-TELEGRAM_WEBHOOK_URL=https://radar.mondomaine.fr/api/v1/telegram/webhook
-TELEGRAM_WEBHOOK_SECRET=un_secret_aleatoire_tres_robuste_et_long_32_chars
-TELEGRAM_ALLOWED_USER_IDS=123456789
-
-# Sécurité des APIs
-INGEST_API_TOKEN=token_d_ingestion_ultra_securise_a_fournir_au_script_fournisseur
-INTERNAL_API_TOKEN=token_interne_pour_administration_ou_cron
-
-# API eBay (Optionnel mais recommandé pour les BD)
-EBAY_CLIENT_ID=votre_app_id_ebay
-EBAY_CLIENT_SECRET=votre_cert_id_ebay
-EBAY_ENVIRONMENT=PRODUCTION
-
-# Planification du rafraîchissement BD (horaires Europe/Paris)
-PRICE_REFRESH_TIMES=07:00,19:00
-```
+- Le niveau de log se règle avec `LOG_LEVEL`.
+- eBay se configure avec `EBAY_ENV` (`PRODUCTION` ou `SANDBOX`).
+- L'URL du webhook se déclare auprès de Telegram. Elle se termine par `/api/v1/telegram/webhook/` suivi de `TELEGRAM_WEBHOOK_SECRET`.
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` et `DOMAIN_NAME` servent à Docker Compose.
 
 ---
 

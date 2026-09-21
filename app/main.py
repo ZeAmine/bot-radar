@@ -15,7 +15,7 @@ from app.api.middlewares.security import (
     SecurityHeadersMiddleware,
 )
 from app.api.routes import health, ingest, internal, telegram
-from app.core.config import settings
+from app.core.config import settings, validate_production_secrets
 from app.core.logging import setup_logging
 
 
@@ -34,11 +34,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from app.tasks.scheduler import scheduler
     from app.tasks.vinted_poller import run_vinted_poller
 
+    validate_production_secrets()
+
     stop_event = asyncio.Event()
     poller_task = None
+    scheduler.start()
 
     if settings.VINTED_POLLER_ENABLED:
-        scheduler.start()
         poller_task = safe_create_task(run_vinted_poller(stop_event))
 
     yield

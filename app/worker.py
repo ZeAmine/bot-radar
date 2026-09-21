@@ -17,7 +17,10 @@ logger = logging.getLogger("radar.worker")
 async def run_worker() -> None:
     """Initialise et maintient le planificateur de tâches et le poller Vinted en continu."""
     setup_logging(settings.LOG_LEVEL)
-    logger.info("Démarrage du worker autonome Radar Bot...")
+    logger.warning(
+        "Worker autonome démarré. Ne pas le lancer en même temps que l'API : "
+        "le processus FastAPI possède déjà le scheduler et le poller."
+    )
 
     scheduler.start()
     logger.info("Planificateur APScheduler démarré avec succès.")

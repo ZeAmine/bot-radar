@@ -172,15 +172,11 @@ def test_deterministic_matcher_adapter() -> None:
 
 @pytest.mark.asyncio
 async def test_process_listing_bd_resolves_local_market_comparison(mock_db: AsyncMock) -> None:
-    """Vérifie que l'ingestion résout le comparatif local BD et transmet la ligne d'écart sans erreur ListingEntity."""
+    """La ligne de cote locale est transmise à l'envoi Telegram."""
     mock_send_alert = AsyncMock(return_value=True)
 
     with patch("app.api.routes.ingest.send_listing_alert", mock_send_alert):
         use_case = ProcessListingUseCase(db=mock_db)
-
-        # Mock de l'enrichisseur IA
-        mock_enricher = AsyncMock()
-        use_case.ai_enricher = mock_enricher
 
         # Simuler le repo listing
         mock_listing = MagicMock()
@@ -200,7 +196,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         mock_repo = AsyncMock()
         mock_repo.get_by_source_and_external_id.return_value = None
         mock_repo.create_from_payload.return_value = mock_listing
-        mock_repo.is_already_matched.return_value = False
+        mock_repo.matched_alert_ids.return_value = set()
         mock_repo.create_match.return_value = MagicMock()
 
         from app.core.constants import AlertStatus
@@ -242,12 +238,43 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         # Vérifier que send_alert a reçu la ligne de marché épurée
         mock_send_alert.assert_awaited_once()
         _, kwargs = mock_send_alert.call_args
-        assert kwargs["market_comparison_line"] == "📉 Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
+        assert kwargs["market_comparison_line"] == (
+            "📉 Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
+        )
 
-        # Vérifier que l'enrichisseur IA a été appelé sans exception d'instanciation de ListingEntity
-        mock_enricher.schedule_enrichment.assert_awaited_once()
-        entity_arg = mock_enricher.schedule_enrichment.call_args[0][0]
-        assert entity_arg.total_price_cents == 1828
-        assert entity_arg.title == "Blacksad - Tome 6"
+        # L'enrichissement IA part dans send_listing_alert, pas dans un second use case.
+
+
+@pytest.mark.asyncio
+async def test_bd_resolution_schedules_bnf_without_awaiting_it(mock_db: AsyncMock) -> None:
+    """La recherche BNF ne bloque pas la comparaison locale."""
+    use_case = ProcessListingUseCase(db=mock_db)
+    listing = MagicMock(title="Blacksad", isbn13=None)
+    alert = MagicMock(id=uuid.uuid4(), isbn=None)
+
+    def _close_task(coro, **_kwargs):
+        coro.close()
+        return MagicMock()
+
+    with (
+        patch("app.use_cases.ingest_listing.BookRepository") as repo_cls,
+        patch("app.use_cases.ingest_listing.BookCatalogService"),
+        patch(
+            "app.use_cases.ingest_listing.MarketPriceService.get_comparison_summary",
+            return_value=None,
+        ),
+        patch(
+            "app.use_cases.ingest_listing.safe_create_task",
+            side_effect=_close_task,
+        ) as scheduled,
+    ):
+        repo_cls.return_value.resolve_book_for_listing = AsyncMock(
+            return_value=(None, None, None)
+        )
+        result = await use_case._resolve_bd_market_comparison(listing, alert)
+
+    assert result is None
+    scheduled.assert_called_once()
+    assert scheduled.call_args.kwargs["name"] == f"bnf_link_{alert.id}"
 
 

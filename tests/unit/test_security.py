@@ -1,6 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
-from aiogram.types import CallbackQuery, Message, User
+from aiogram.types import CallbackQuery, User
 from fastapi.testclient import TestClient
 import pytest
 

@@ -1,12 +1,11 @@
 """Tests unitaires pour le Mode Nuit (heures creuses) et le garde anti-blocage."""
 
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.core.config import Settings
 from app.tasks.vinted_poller import (
     get_night_mode_remaining_seconds,
     is_night_time,

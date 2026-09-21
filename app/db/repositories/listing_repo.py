@@ -97,18 +97,11 @@ class ListingRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def is_already_matched(
-        self,
-        alert_id: uuid.UUID,
-        listing_id: uuid.UUID,
-    ) -> bool:
-        """Vérifie si une annonce a déjà été associée/notifiée à cette alerte."""
-        stmt = select(ListingMatch).where(
-            ListingMatch.alert_id == alert_id,
-            ListingMatch.listing_id == listing_id,
-        )
+    async def matched_alert_ids(self, listing_id: uuid.UUID) -> set[uuid.UUID]:
+        """Identifiants d'alertes déjà associées à cette annonce."""
+        stmt = select(ListingMatch.alert_id).where(ListingMatch.listing_id == listing_id)
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none() is not None
+        return set(result.scalars().all())
 
     async def create_match(
         self,

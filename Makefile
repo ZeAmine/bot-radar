@@ -17,6 +17,7 @@ dev:
 	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 worker:
+	@echo "Ne pas lancer en même temps que l'API (radar_app / make dev) : le scheduler serait doublé."
 	python -m app.worker
 
 test:
