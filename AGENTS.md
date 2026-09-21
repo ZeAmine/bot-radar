@@ -107,10 +107,8 @@ Sans demande **explicite** de l’utilisateur :
 
 - [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py) — cookies Redis, Cloudflare, night mode.
 - [`scripts/vinted_autobuy.user.js`](scripts/vinted_autobuy.user.js)
-- [`scripts/archive/inspect_vinted_buy.py`](scripts/archive/inspect_vinted_buy.py)
-- [`scripts/archive/sync_vinted_session.py`](scripts/archive/sync_vinted_session.py)
+- [`scripts/sync_vinted_session.py`](scripts/sync_vinted_session.py)
 - Formules de `price_calculator.py` / comparaison marché (une offre sans port ≠ total « article seul »).
-- Suppression de scripts sous `scripts/archive/` : seulement une liste nommée par l’utilisateur.
 
 Les scripts ne sont importés par `app/` qu’à dessein. `python-dotenv` sert à `scripts/local_vinted_poller.py`, pas au runtime Docker.
 
@@ -167,5 +165,3 @@ Ne pas les traiter dans un correctif incident, sauf demande claire :
 - Unifier les trois usages Redis (pool app, FSM aiogram, rate limiter).
 - Validation Pydantic stricte des modules post-alerte (ils parsent encore en `.get()`).
 - Index secondaire `(source_name, received_at)` sur `listings` : seulement si une requête prod le justifie.
-
-Audit de référence : [docs/audits/radar_bot_audit_20260921.md](docs/audits/radar_bot_audit_20260921.md).
