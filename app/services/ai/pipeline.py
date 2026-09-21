@@ -87,144 +87,28 @@ class AIPostAlertPipeline:
                     if vision_html:
                         lines_to_notify.append(vision_html)
 
-                    # Si un tome précis ou un lot est détecté visuellement sur une alerte de série
+                    # Si un tome précis ou un lot est détecté visuellement sur une alerte de série,
+                    # enregistrer l'information en base pour le bouton [ 📊 Prix du marché ], sans altérer la légende Telegram.
                     is_visual_lot = vision_result.is_lot and len(vision_result.identified_tomes) > 1
                     has_visual_tome = bool(vision_result.identified_tome or is_visual_lot)
 
                     if has_visual_tome and alert and not getattr(alert, "isbn", None):
                         try:
-                            import re
-
-                            from app.bot.keyboards.listings import (
-                                build_vinted_checkout_url,
-                                get_listing_alert_keyboard,
-                            )
-                            from app.db.repositories.book_repo import BookRepository
+                            from app.db.repositories.listing_repo import ListingRepository
                             from app.db.session import AsyncSessionLocal
-                            from app.services.market_price_service import MarketPriceService
-                            from app.services.telegram_service import build_listing_caption
-                            from app.services.tome_extractor import TomeMatchResult
 
                             async with AsyncSessionLocal() as session:
-                                b_repo = BookRepository(session)
-                                series_books = await b_repo.get_all_books_for_alert(alert.id)
-                                tome_summary = None
-
-                                if is_visual_lot:
-                                    lot_tomes = sorted(set(vision_result.identified_tomes))
-                                    try:
-                                        from app.db.repositories.listing_repo import (
-                                            ListingRepository,
-                                        )
-
-                                        l_repo = ListingRepository(session)
-                                        db_listing = await l_repo.get_by_id(listing.id)
-                                        if db_listing and isinstance(db_listing.raw_payload, dict):
-                                            db_listing.raw_payload["is_lot"] = True
-                                            db_listing.raw_payload["lot_tomes"] = lot_tomes
-                                            await session.commit()
-                                    except Exception as db_err:
-                                        logger.debug(
-                                            "Échec enregistrement lot identifié dans listing: %s",
-                                            db_err,
-                                        )
-
-                                    tome_res = TomeMatchResult(
-                                        is_lot=True,
-                                        lot_tomes=lot_tomes,
-                                        confidence="high",
-                                    )
-                                    tome_summary = MarketPriceService.get_comparison_summary(
-                                        listing=listing,
-                                        book=None,
-                                        books_in_series=series_books,
-                                        tome_result=tome_res,
-                                    )
-                                else:
-                                    matched_book = None
-                                    if series_books:
-                                        t_num = vision_result.identified_tome
-                                        for b in series_books:
-                                            if re.search(
-                                                rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_num}\b",
-                                                b.title,
-                                                re.IGNORECASE,
-                                            ):
-                                                matched_book = b
-                                                break
-                                        if not matched_book and vision_result.identified_subtitle:
-                                            sub = vision_result.identified_subtitle.lower()
-                                            for b in series_books:
-                                                if sub in b.title.lower():
-                                                    matched_book = b
-                                                    break
-
-                                    if matched_book and matched_book.market_cache:
-                                        try:
-                                            from app.db.repositories.listing_repo import (
-                                                ListingRepository,
-                                            )
-
-                                            l_repo = ListingRepository(session)
-                                            db_listing = await l_repo.get_by_id(listing.id)
-                                            if db_listing and isinstance(
-                                                db_listing.raw_payload, dict
-                                            ):
-                                                db_listing.raw_payload["identified_tome"] = (
-                                                    vision_result.identified_tome
-                                                )
-                                                await session.commit()
-                                        except Exception as db_err:
-                                            logger.debug(
-                                                "Échec enregistrement tome dans listing: %s",
-                                                db_err,
-                                            )
-
-                                        tome_res = TomeMatchResult(
-                                            is_lot=False,
-                                            tome_number=vision_result.identified_tome,
-                                            confidence="high",
-                                        )
-                                        tome_summary = MarketPriceService.get_comparison_summary(
-                                            listing=listing,
-                                            book=matched_book,
-                                            tome_result=tome_res,
-                                        )
-
-                                if tome_summary:
-                                    new_caption = build_listing_caption(
-                                        listing=listing,
-                                        market_comparison_line=tome_summary,
-                                        alert_keywords=getattr(alert, "include_keywords", None),
-                                    )
-                                    checkout_url = build_vinted_checkout_url(listing.external_id)
-                                    keyboard = get_listing_alert_keyboard(
-                                        listing_id=listing.id,
-                                        listing_url=listing.url,
-                                        category_slug=listing.category_slug,
-                                        checkout_url=checkout_url,
-                                    )
-                                    import contextlib
-
-                                    try:
-                                        await bot.edit_message_caption(
-                                            chat_id=chat_id,
-                                            message_id=message_id,
-                                            caption=new_caption,
-                                            reply_markup=keyboard,
-                                        )
-                                    except TelegramAPIError:
-                                        with contextlib.suppress(TelegramAPIError):
-                                            await bot.edit_message_text(
-                                                chat_id=chat_id,
-                                                message_id=message_id,
-                                                text=new_caption,
-                                                reply_markup=keyboard,
-                                            )
-                        except Exception as edit_err:
-                            logger.debug(
-                                "Échec mise à jour de la cotation précise du tome/lot: %s", edit_err
-                            )
+                                l_repo = ListingRepository(session)
+                                db_listing = await l_repo.get_by_id(listing.id)
+                                if db_listing and isinstance(db_listing.raw_payload, dict):
+                                    if is_visual_lot:
+                                        db_listing.raw_payload["is_lot"] = True
+                                        db_listing.raw_payload["lot_tomes"] = sorted(set(vision_result.identified_tomes))
+                                    elif vision_result.identified_tome:
+                                        db_listing.raw_payload["identified_tome"] = vision_result.identified_tome
+                                    await session.commit()
+                        except Exception as db_err:
+                            logger.debug("Échec enregistrement tome/lot visuel dans listing: %s", db_err)
 
             # 3. Envoi de la note d'enrichissement si des éléments notables ont été trouvés
             if lines_to_notify:

@@ -132,20 +132,13 @@ class MarketPriceService:
         books_in_series: list[Book] | None = None,
         tome_result: "TomeMatchResult | None" = None,
     ) -> str | None:
-        """Génère la ligne de comparaison de prix pour la légende Telegram (zéro requête réseau)."""
-        now = datetime.now(UTC)
-
+        """Génère la ligne de comparaison épurée (Prix bas constaté + Écart) pour la légende Telegram."""
         # 1. Cas d'un livre précis résolu (tome unique ou one-shot)
         if book and book.market_cache:
             cache = book.market_cache
-            is_live_valid = (
-                cache.comparison_status == ComparisonStatus.AVAILABLE
-                and cache.lowest_delivered_price_cents is not None
-                and (cache.expires_at is None or cache.expires_at >= now)
-            )
             has_hist_low = cache.historical_low_1y_cents is not None
 
-            if is_live_valid or has_hist_low:
+            if has_hist_low and cache.historical_low_1y_cents is not None:
                 lines: list[str] = []
                 tome_suffix = (
                     f" (T{tome_result.tome_number})"
@@ -153,32 +146,14 @@ class MarketPriceService:
                     else ""
                 )
 
-                # Ligne 1 : Prix du marché actuel (Très bon état +)
-                if is_live_valid and cache.lowest_delivered_price_cents is not None:
-                    live_str = format_cents(cache.lowest_delivered_price_cents)
-                    p_name = cache.best_provider_name
-                    merchant_str = (
-                        f" ({p_name})" if p_name and p_name.lower() != "chasse_aux_livres" else ""
-                    )
-                    lines.append(f"📊 Prix du marché{tome_suffix} : {live_str}{merchant_str}")
-                else:
-                    lines.append(f"📊 Prix du marché{tome_suffix} : Indisponible (occasion)")
+                # Ligne 1 : Prix bas constaté sur 1 an
+                hist_str = format_cents(cache.historical_low_1y_cents)
+                lines.append(f"📉 Prix bas constaté{tome_suffix} : {hist_str}")
 
-                # Ligne 2 : Prix bas constaté sur 1 an
-                if has_hist_low and cache.historical_low_1y_cents is not None:
-                    hist_str = format_cents(cache.historical_low_1y_cents)
-                    lines.append(f"📉 Prix bas constaté{tome_suffix} : {hist_str}")
-
-                # Ligne 3 : Écart par rapport au marché (ou plus bas constaté si marché absent)
-                ref_price = (
-                    cache.lowest_delivered_price_cents
-                    if (is_live_valid and cache.lowest_delivered_price_cents is not None)
-                    else cache.historical_low_1y_cents
-                )
-
-                if listing.estimated_total_cents is not None and ref_price is not None:
+                # Ligne 2 : Écart par rapport au prix bas constaté
+                if listing.estimated_total_cents is not None:
                     vinted_total = listing.estimated_total_cents
-                    diff_cents = vinted_total - ref_price
+                    diff_cents = vinted_total - cache.historical_low_1y_cents
                     diff_euros = format_cents(abs(diff_cents))
 
                     if diff_cents <= 0:
@@ -190,8 +165,7 @@ class MarketPriceService:
 
                     lines.append(f"{icon} Écart : <b>{diff_str}</b>")
 
-                if lines:
-                    return "\n".join(lines)
+                return "\n".join(lines)
 
         # 2. Cas d'un lot détecté
         if tome_result and tome_result.is_lot and books_in_series:
@@ -208,70 +182,27 @@ class MarketPriceService:
                 if matching:
                     target_books = matching
 
-            ref_prices = [
-                (
-                    b.market_cache.lowest_delivered_price_cents
-                    if (
-                        b.market_cache.comparison_status == ComparisonStatus.AVAILABLE
-                        and b.market_cache.lowest_delivered_price_cents is not None
-                        and (b.market_cache.expires_at is None or b.market_cache.expires_at >= now)
-                    )
-                    else b.market_cache.historical_low_1y_cents
-                )
-                for b in target_books
-                if b.market_cache
-                and (
-                    (
-                        b.market_cache.comparison_status == ComparisonStatus.AVAILABLE
-                        and b.market_cache.lowest_delivered_price_cents is not None
-                    )
-                    or b.market_cache.historical_low_1y_cents is not None
-                )
-            ]
-
-            live_prices = [
-                b.market_cache.lowest_delivered_price_cents
-                for b in target_books
-                if b.market_cache
-                and b.market_cache.comparison_status == ComparisonStatus.AVAILABLE
-                and b.market_cache.lowest_delivered_price_cents is not None
-                and (b.market_cache.expires_at is None or b.market_cache.expires_at >= now)
-            ]
-
             hist_prices = [
                 b.market_cache.historical_low_1y_cents
                 for b in target_books
                 if b.market_cache and b.market_cache.historical_low_1y_cents is not None
             ]
 
-            if ref_prices:
-                cumulated_market = sum(ref_prices)
-                count_str = f"{len(ref_prices)} tomes"
+            if hist_prices:
+                hist_cumulated = sum(hist_prices)
                 tomes_label = (
                     f" (Lot T{', T'.join(str(t) for t in sorted(tome_result.lot_tomes))})"
                     if tome_result.lot_tomes
-                    else f" (Lot {count_str})"
+                    else f" (Lot {len(hist_prices)} tomes)"
                 )
 
-                lot_lines: list[str] = []
-
-                if live_prices:
-                    live_cumulated = sum(live_prices)
-                    lot_lines.append(
-                        f"📊 Prix du marché{tomes_label} : ~{format_cents(live_cumulated)}"
-                    )
-                else:
-                    lot_lines.append(f"📊 Prix du marché{tomes_label} : Indisponible (occasion)")
-
-                if hist_prices:
-                    hist_cumulated = sum(hist_prices)
-                    lot_lines.append(
-                        f"📉 Prix bas constaté (Lot) : ~{format_cents(hist_cumulated)}"
-                    )
+                lot_lines: list[str] = [
+                    f"📉 Prix bas constaté{tomes_label} : ~{format_cents(hist_cumulated)}"
+                ]
 
                 if listing.estimated_total_cents is not None:
                     vinted_total = listing.estimated_total_cents
-                    diff_cents = vinted_total - cumulated_market
+                    diff_cents = vinted_total - hist_cumulated
                     diff_euros = format_cents(abs(diff_cents))
                     if diff_cents <= 0:
                         icon = "✅"
@@ -282,47 +213,18 @@ class MarketPriceService:
                     lot_lines.append(f"{icon} Écart : <b>{diff_str}</b>")
 
                 return "\n".join(lot_lines)
-            return "📦 Lot détecté (plusieurs tomes)"
+            return None
 
         # 3. Cas d'une série multi-tomes sans tome identifié
         if books_in_series and len(books_in_series) > 1:
-            series_lines: list[str] = []
-            live_prices: list[int] = []
-            hist_prices: list[int] = []
-            ref_prices: list[int] = []
-
-            for b in books_in_series:
-                if not b.market_cache:
-                    continue
-                cache = b.market_cache
-                is_live_valid = (
-                    cache.comparison_status == ComparisonStatus.AVAILABLE
-                    and cache.lowest_delivered_price_cents is not None
-                    and (cache.expires_at is None or cache.expires_at >= now)
-                )
-                if is_live_valid and cache.lowest_delivered_price_cents is not None:
-                    live_prices.append(cache.lowest_delivered_price_cents)
-                    ref_prices.append(cache.lowest_delivered_price_cents)
-                elif cache.historical_low_1y_cents is not None:
-                    ref_prices.append(cache.historical_low_1y_cents)
-
-                if cache.historical_low_1y_cents is not None:
-                    hist_prices.append(cache.historical_low_1y_cents)
-
-            market_candidates = live_prices if live_prices else ref_prices
-            if market_candidates:
-                p_min = min(market_candidates)
-                p_max = max(market_candidates)
-                if p_min == p_max:
-                    series_lines.append(f"📊 Prix du marché : ~{format_cents(p_min)} (selon tome)")
-                else:
-                    p_min_str = format_cents(p_min)
-                    p_max_str = format_cents(p_max)
-                    series_lines.append(
-                        f"📊 Prix du marché : {p_min_str} - {p_max_str} (selon tome)"
-                    )
+            hist_prices = [
+                b.market_cache.historical_low_1y_cents
+                for b in books_in_series
+                if b.market_cache and b.market_cache.historical_low_1y_cents is not None
+            ]
 
             if hist_prices:
+                series_lines: list[str] = []
                 h_min = min(hist_prices)
                 h_max = max(hist_prices)
                 if h_min == h_max:
@@ -332,47 +234,42 @@ class MarketPriceService:
                     h_max_str = format_cents(h_max)
                     series_lines.append(f"📉 Prix bas constaté : {h_min_str} - {h_max_str}")
 
-            target_diff_prices = hist_prices if hist_prices else ref_prices
-            if listing.estimated_total_cents is not None and target_diff_prices:
-                vinted_total = listing.estimated_total_cents
-                diff_best = vinted_total - max(target_diff_prices)
-                diff_worst = vinted_total - min(target_diff_prices)
+                if listing.estimated_total_cents is not None:
+                    vinted_total = listing.estimated_total_cents
+                    diff_best = vinted_total - h_max
+                    diff_worst = vinted_total - h_min
 
-                if diff_best == diff_worst:
-                    diff_cents = diff_best
-                    diff_euros = format_cents(abs(diff_cents))
-                    if diff_cents <= 0:
-                        icon = "✅"
-                        diff_str = f"-{diff_euros}" if diff_cents < 0 else "0,00 €"
+                    if diff_best == diff_worst:
+                        diff_cents = diff_best
+                        diff_euros = format_cents(abs(diff_cents))
+                        if diff_cents <= 0:
+                            icon = "✅"
+                            diff_str = f"-{diff_euros}" if diff_cents < 0 else "0,00 €"
+                        else:
+                            icon = "⛔️"
+                            diff_str = f"+{diff_euros}"
+                        series_lines.append(f"{icon} Écart : <b>{diff_str}</b>")
                     else:
-                        icon = "⛔️"
-                        diff_str = f"+{diff_euros}"
-                    series_lines.append(f"{icon} Écart : <b>{diff_str}</b>")
-                else:
+                        def _fmt_diff(cents: int) -> str:
+                            if cents < 0:
+                                return f"-{format_cents(abs(cents))}"
+                            elif cents > 0:
+                                return f"+{format_cents(cents)}"
+                            return "0,00 €"
 
-                    def _fmt_diff(cents: int) -> str:
-                        if cents < 0:
-                            return f"-{format_cents(abs(cents))}"
-                        elif cents > 0:
-                            return f"+{format_cents(cents)}"
-                        return "0,00 €"
+                        if diff_worst <= 0:
+                            icon = "✅"
+                        elif diff_best >= 0:
+                            icon = "⛔️"
+                        else:
+                            icon = "⚖️"
 
-                    if diff_worst <= 0:
-                        icon = "✅"
                         diff_str = f"{_fmt_diff(diff_worst)} à {_fmt_diff(diff_best)}"
-                    elif diff_best >= 0:
-                        icon = "⛔️"
-                        diff_str = f"{_fmt_diff(diff_worst)} à {_fmt_diff(diff_best)}"
-                    else:
-                        icon = "⚖️"
-                        diff_str = f"{_fmt_diff(diff_worst)} à {_fmt_diff(diff_best)}"
+                        series_lines.append(f"{icon} Écart : <b>{diff_str}</b>")
 
-                    series_lines.append(f"{icon} Écart : <b>{diff_str}</b>")
-
-            if series_lines:
                 return "\n".join(series_lines)
 
-        return "📊 Prix du marché : indisponible"
+        return None
 
     @staticmethod
     def format_market_details_card(

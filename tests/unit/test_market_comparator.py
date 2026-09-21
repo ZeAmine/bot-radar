@@ -15,7 +15,7 @@ def create_book_with_cache(
     lowest_delivered_cents: int | None = 2200,
     status: ComparisonStatus = ComparisonStatus.AVAILABLE,
     expired: bool = False,
-    historical_low_1y_cents: int | None = None,
+    historical_low_1y_cents: int | None = 2200,
 ) -> Book:
     book = Book(
         id=uuid.uuid4(),
@@ -59,81 +59,86 @@ def create_listing(estimated_total_cents: int | None) -> Listing:
 
 
 def test_comparator_vinted_cheaper_than_market():
-    # Vinted total : 13,69 € (1369 cts), Marché : 22,00 € (2200 cts) -> Vinted -8,31 €
-    book = create_book_with_cache(lowest_delivered_cents=2200)
+    # Vinted total : 13,69 € (1369 cts), Prix bas constaté : 22,00 € (2200 cts) -> Vinted -8,31 €
+    book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=2200)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📊 Prix du marché : 22,00 €" in summary
+    assert "📉 Prix bas constaté : 22,00 €" in summary
+    assert "Prix du marché" not in summary
     assert "✅ Écart : <b>-8,31 €</b>" in summary
 
 
 def test_comparator_vinted_very_good_deal_fire_badge():
     # Économie importante (>= 10 €) -> Badge ✅
-    book = create_book_with_cache(lowest_delivered_cents=3000)
+    book = create_book_with_cache(lowest_delivered_cents=3000, historical_low_1y_cents=3000)
     listing = create_listing(estimated_total_cents=1500)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📊 Prix du marché : 30,00 €" in summary
+    assert "📉 Prix bas constaté : 30,00 €" in summary
+    assert "Prix du marché" not in summary
     assert "✅ Écart : <b>-15,00 €</b>" in summary
 
 
 def test_comparator_vinted_more_expensive_than_market():
-    # Vinted total : 25,00 € (2500 cts), Marché : 20,00 € (2000 cts) -> Vinted +5,00 €
-    book = create_book_with_cache(lowest_delivered_cents=2000)
+    # Vinted total : 25,00 € (2500 cts), Prix bas constaté : 20,00 € (2000 cts) -> Vinted +5,00 €
+    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
     listing = create_listing(estimated_total_cents=2500)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📊 Prix du marché : 20,00 €" in summary
+    assert "📉 Prix bas constaté : 20,00 €" in summary
+    assert "Prix du marché" not in summary
     assert "⛔️ Écart : <b>+5,00 €</b>" in summary
 
 
 def test_comparator_small_difference_warning():
     # Écart très faible (50 centimes) -> Vinted plus cher donc ⛔️
-    book = create_book_with_cache(lowest_delivered_cents=2000)
+    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
     listing = create_listing(estimated_total_cents=2050)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
+    assert "📉 Prix bas constaté : 20,00 €" in summary
+    assert "Prix du marché" not in summary
     assert "⛔️ Écart : <b>+0,50 €</b>" in summary
 
 
 def test_comparator_market_unavailable():
-    book = create_book_with_cache(status=ComparisonStatus.UNAVAILABLE)
+    book = create_book_with_cache(status=ComparisonStatus.UNAVAILABLE, historical_low_1y_cents=None)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
-    assert summary == "📊 Prix du marché : indisponible"
+    assert summary is None
 
 
 def test_comparator_market_cache_expired():
-    book = create_book_with_cache(expired=True)
+    book = create_book_with_cache(expired=True, historical_low_1y_cents=None)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
-    assert summary == "📊 Prix du marché : indisponible"
+    assert summary is None
 
 
 def test_comparator_no_book_or_cache():
     listing = create_listing(estimated_total_cents=1369)
     summary = MarketPriceService.get_comparison_summary(listing, book=None)
-    assert summary == "📊 Prix du marché : indisponible"
+    assert summary is None
 
 
 def test_comparator_with_historical_low_1y():
-    # Vinted total : 13,69 €, Marché actuel : 22,00 €, Plus bas historique : 18,50 €
-    # L'écart doit être calculé par rapport au marché actuel (22,00 € -> -8,31 €)
+    # Vinted total : 13,69 €, Plus bas historique : 18,50 €
+    # L'écart est calculé par rapport au prix bas constaté (13,69 - 18,50 = -4,81 €)
     book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=1850)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📊 Prix du marché : 22,00 €" in summary
+    assert "Prix du marché" not in summary
     assert "📉 Prix bas constaté : 18,50 €" in summary
-    assert "✅ Écart : <b>-8,31 €</b>" in summary
+    assert "✅ Écart : <b>-4,81 €</b>" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
     # Les lignes redondantes Vinted, Offres et Écart sont supprimées
@@ -144,15 +149,12 @@ def test_comparator_with_historical_low_1y():
 
 
 def test_comparator_no_historical_low_does_not_display_target_line():
-    """Vérifie que si aucun historique 1 an n'existe, la ligne '📉 Prix bas constaté' n'est pas affichée."""
+    """Vérifie que si aucun historique 1 an n'existe, le résumé renvoie None (pas de ligne parasite)."""
     book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=None)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
-    assert summary is not None
-    assert "📊 Prix du marché : 22,00 €" in summary
-    assert "Prix bas constaté" not in summary
-    assert "✅ Écart : <b>-8,31 €</b>" in summary
+    assert summary is None
 
 
 def test_comparator_market_details_card_excludes_amazon_de():
@@ -195,7 +197,7 @@ def test_comparator_historical_low_when_status_unavailable():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "📊 Prix du marché : Indisponible (occasion)" in summary
+    assert "Prix du marché" not in summary
     assert "📉 Prix bas constaté : 18,50 €" in summary
     assert "✅ Écart : <b>-4,81 €</b>" in summary
 
@@ -235,7 +237,7 @@ def test_comparator_no_price_at_all_returns_unavailable():
     listing = create_listing(estimated_total_cents=1200)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
-    assert summary == "📊 Prix du marché : indisponible"
+    assert summary is None
 
 
 def test_comparator_excludes_brand_new_and_inferior_conditions():

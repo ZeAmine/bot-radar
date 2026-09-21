@@ -130,26 +130,35 @@ async def handle_view_market_details(
                 listing_description=listing.description,
             )
             # Si aucun tome n'a pu être résolu depuis le texte, vérifier l'identification visuelle
-            if not book and books_in_series and listing.photos:
-                t_identified = (listing.raw_payload or {}).get("identified_tome")
-                if not t_identified and settings.AI_ENABLED:
-                    try:
-                        from app.services.ai.modules.vision_guard import vision_guard_module
-                        v_res = await vision_guard_module.analyze_listing_photos(listing, max_photos=1)
-                        if v_res and v_res.identified_tome:
-                            t_identified = v_res.identified_tome
-                            if isinstance(listing.raw_payload, dict):
-                                listing.raw_payload["identified_tome"] = t_identified
-                                await db_session.flush()
-                    except Exception as vision_err:
-                        logger.debug("Échec analyse visuelle pour market details: %s", vision_err)
+            if not book and books_in_series:
+                payload = listing.raw_payload or {}
+                if payload.get("is_lot") and payload.get("lot_tomes"):
+                    from app.services.tome_extractor import TomeMatchResult
+                    tome_result = TomeMatchResult(
+                        is_lot=True,
+                        lot_tomes=payload.get("lot_tomes"),
+                        confidence="high",
+                    )
+                elif listing.photos:
+                    t_identified = payload.get("identified_tome")
+                    if not t_identified and settings.AI_ENABLED:
+                        try:
+                            from app.services.ai.modules.vision_guard import vision_guard_module
+                            v_res = await vision_guard_module.analyze_listing_photos(listing, max_photos=1)
+                            if v_res and v_res.identified_tome:
+                                t_identified = v_res.identified_tome
+                                if isinstance(listing.raw_payload, dict):
+                                    listing.raw_payload["identified_tome"] = t_identified
+                                    await db_session.flush()
+                        except Exception as vision_err:
+                            logger.debug("Échec analyse visuelle pour market details: %s", vision_err)
 
-                if t_identified:
-                    import re
-                    for b in books_in_series:
-                        if re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_identified}\b", b.title, re.IGNORECASE):
-                            book = b
-                            break
+                    if t_identified:
+                        import re
+                        for b in books_in_series:
+                            if re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_identified}\b", b.title, re.IGNORECASE):
+                                book = b
+                                break
         else:
             book = await book_repo.get_book_for_alert(alert.id)
 

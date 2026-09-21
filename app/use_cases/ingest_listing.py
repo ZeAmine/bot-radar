@@ -105,9 +105,19 @@ class ProcessListingUseCase:
             if already_notified:
                 continue
 
-            # 4. Résolution locale rapide du livre et liaison à l'alerte (< 5ms, zéro appel réseau externe)
+            # 4. Résolution locale rapide du livre et comparaison de cotation (< 3ms, zéro appel réseau externe)
+            market_comparison_line = None
             if listing.category_slug == CategorySlug.BD_COMICS.value:
-                await self._link_bd_book(listing, alert)
+                market_comparison_line = await self._resolve_bd_market_comparison(listing, alert)
+            elif listing.category_slug in (
+                CategorySlug.TECH.value,
+                CategorySlug.CLOTHES.value,
+                CategorySlug.GAMING.value,
+            ):
+                market_comparison_line = TechMarketService.get_comparison_summary(
+                    listing=listing,
+                    alert=alert,
+                )
 
             # 5. Envoi INSTANTANÉ de l'alerte Telegram (Priorité absolue, sans blocage réseau)
             notification_sent = False
@@ -118,7 +128,7 @@ class ProcessListingUseCase:
                     bot=self.bot,
                     chat_id=alert.user.telegram_user_id,
                     listing=listing,
-                    market_comparison_line=None,
+                    market_comparison_line=market_comparison_line,
                     alert_keywords=alert_kws,
                     is_bundle=getattr(match_result, "is_bundle", False),
                     alert=alert,
@@ -135,7 +145,7 @@ class ProcessListingUseCase:
                             normalized_title=listing.normalized_title,
                             category_slug=DomainCategorySlug(listing.category_slug),
                             item_price_cents=listing.item_price_cents,
-                            estimated_total_cents=listing.estimated_total_cents,
+                            total_price_cents=listing.estimated_total_cents,
                             condition=listing.condition,
                             url=listing.url,
                             photos=listing.photos,
@@ -184,18 +194,23 @@ class ProcessListingUseCase:
             matches=match_items,
         )
 
-    async def _link_bd_book(self, listing: Listing, alert: Any) -> None:
-        """Résout le livre dans le catalogue local et le relie à l'alerte (pure requête SQL locale, < 5ms)."""
+    async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> str | None:
+        """Résout le livre et calcule l'écart sur prix bas constaté (< 3ms, zéro appel réseau externe)."""
         book_repo = BookRepository(self.db)
         catalog_service = BookCatalogService(self.db)
 
         book = None
+        books_in_series = None
+        tome_result = None
+
         if not alert.isbn:
-            resolved_book, _, tome_result = await book_repo.resolve_book_for_listing(
-                alert_id=alert.id,
-                alert_name=alert.name,
-                listing_title=listing.title,
-                listing_description=listing.description,
+            resolved_book, books_in_series, tome_result = (
+                await book_repo.resolve_book_for_listing(
+                    alert_id=alert.id,
+                    alert_name=alert.name,
+                    listing_title=listing.title,
+                    listing_description=listing.description,
+                )
             )
             book = resolved_book
 
@@ -233,3 +248,10 @@ class ProcessListingUseCase:
                     )
                 if book:
                     await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
+
+        return MarketPriceService.get_comparison_summary(
+            listing=listing,
+            book=book,
+            books_in_series=books_in_series,
+            tome_result=tome_result,
+        )

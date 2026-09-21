@@ -1,7 +1,7 @@
 """Tests unitaires pour ProcessListingUseCase et AsyncEnrichListingUseCase."""
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -168,4 +168,86 @@ def test_deterministic_matcher_adapter() -> None:
     match_res = matcher.evaluate(listing, alert_mock)
     assert match_res.is_match is True
     assert match_res.price_matches is True
+
+
+@pytest.mark.asyncio
+async def test_process_listing_bd_resolves_local_market_comparison(mock_db: AsyncMock) -> None:
+    """Vérifie que l'ingestion résout le comparatif local BD et transmet la ligne d'écart sans erreur ListingEntity."""
+    mock_send_alert = AsyncMock(return_value=True)
+
+    with patch("app.api.routes.ingest.send_listing_alert", mock_send_alert):
+        use_case = ProcessListingUseCase(db=mock_db)
+
+        # Mock de l'enrichisseur IA
+        mock_enricher = AsyncMock()
+        use_case.ai_enricher = mock_enricher
+
+        # Simuler le repo listing
+        mock_listing = MagicMock()
+        mock_listing.id = uuid.uuid4()
+        mock_listing.source_name = "vinted"
+        mock_listing.external_id = "test-123"
+        mock_listing.title = "Blacksad - Tome 6"
+        mock_listing.normalized_title = "blacksad tome 6"
+        mock_listing.category_slug = "bd_comics"
+        mock_listing.item_price_cents = 1400
+        mock_listing.estimated_total_cents = 1828
+        mock_listing.condition = "Très bon état"
+        mock_listing.description = "Tome 6 en parfait état"
+        mock_listing.url = "https://vinted.fr/item-123"
+        mock_listing.photos = ["https://img.vinted.fr/1.jpg"]
+
+        mock_repo = AsyncMock()
+        mock_repo.get_by_source_and_external_id.return_value = None
+        mock_repo.create_from_payload.return_value = mock_listing
+        mock_repo.is_already_matched.return_value = False
+        mock_repo.create_match.return_value = MagicMock()
+
+        from app.core.constants import AlertStatus
+
+        alert_mock = MagicMock()
+        alert_mock.id = uuid.uuid4()
+        alert_mock.name = "Blacksad"
+        alert_mock.status = AlertStatus.ACTIVE
+        alert_mock.category = MagicMock(slug="bd_comics")
+        alert_mock.isbn = None
+        alert_mock.include_keywords = ["blacksad"]
+        alert_mock.exclude_keywords = []
+        alert_mock.variants = []
+        alert_mock.max_item_price_cents = 2000
+        alert_mock.accepted_conditions = None
+        alert_mock.user = MagicMock(telegram_user_id=123456)
+
+        mock_repo.get_active_alerts_by_category.return_value = [alert_mock]
+        use_case.listing_repo = mock_repo
+
+        # Simuler _resolve_bd_market_comparison
+        use_case._resolve_bd_market_comparison = AsyncMock(
+            return_value="📉 Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
+        )
+
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-123",
+            url="https://vinted.fr/item-123",
+            title="Blacksad - Tome 6",
+            category_slug="bd_comics",
+            item_price_cents=1400,
+        )
+
+        resp = await use_case.execute(payload, raw_payload={})
+        assert resp.is_duplicate is False
+        assert len(resp.matches) == 1
+
+        # Vérifier que send_alert a reçu la ligne de marché épurée
+        mock_send_alert.assert_awaited_once()
+        _, kwargs = mock_send_alert.call_args
+        assert kwargs["market_comparison_line"] == "📉 Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
+
+        # Vérifier que l'enrichisseur IA a été appelé sans exception d'instanciation de ListingEntity
+        mock_enricher.schedule_enrichment.assert_awaited_once()
+        entity_arg = mock_enricher.schedule_enrichment.call_args[0][0]
+        assert entity_arg.total_price_cents == 1828
+        assert entity_arg.title == "Blacksad - Tome 6"
+
 

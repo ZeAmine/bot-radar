@@ -21,6 +21,7 @@ def _create_mock_book(title: str, price_cents: int) -> Book:
     )
     cache = BookMarketCache(
         lowest_delivered_price_cents=price_cents,
+        historical_low_1y_cents=price_cents,
         best_provider_name="chasse_aux_livres",
         best_source_url="https://example.com/chasse",
         comparison_status=ComparisonStatus.AVAILABLE,
@@ -52,8 +53,9 @@ def test_series_matching_specific_tome_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📊 Prix du marché (T2) : 18,50 €" in summary
-    assert "-6,50 €" in summary
+    assert "📉 Prix bas constaté (T2) : 18,50 €" in summary
+    assert "Prix du marché" not in summary
+    assert "✅ Écart : <b>-6,50 €</b>" in summary
 
 
 def test_series_matching_lot_summary():
@@ -83,9 +85,10 @@ def test_series_matching_lot_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📊 Prix du marché (Lot T1, T2, T3) : ~54,50 €" in summary
+    assert "📉 Prix bas constaté (Lot T1, T2, T3) : ~54,50 €" in summary
+    assert "Prix du marché" not in summary
     # Gain : 25.00 - 54.50 = -29.50 €
-    assert "-29,50 €" in summary
+    assert "✅ Écart : <b>-29,50 €</b>" in summary
 
 
 def test_series_matching_generic_range_summary():
@@ -114,7 +117,8 @@ def test_series_matching_generic_range_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📊 Prix du marché : 15,00 € - 22,00 € (selon tome)" in summary
+    assert "📉 Prix bas constaté : 15,00 € - 22,00 €" in summary
+    assert "Prix du marché" not in summary
     assert "✅ Écart : <b>-0,50 € à -7,50 €</b>" in summary
 
 
@@ -153,7 +157,7 @@ def test_series_matching_lot_card():
 
 
 def test_series_matching_chateau_des_animaux_lot_1_2_3():
-    """Vérifie le cas réel de 'Le château des animaux 1.2.3' avec historique et live."""
+    """Vérifie le cas réel de 'Le château des animaux 1.2.3' avec historique."""
     b1 = _create_mock_book("Le Château des animaux — Tome 1 (Miss Bengalore)", 1267)
     b1.market_cache.historical_low_1y_cents = 1267
 
@@ -194,25 +198,24 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
         tome_result=tome_res,
     )
     assert summary is not None
-    # Live: 12.67 + 15.48 + 22.23 = 50.38 €
-    assert "📊 Prix du marché (Lot T1, T2, T3) : ~50,38 €" in summary
+    assert "Prix du marché" not in summary
     # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
-    assert "📉 Prix bas constaté (Lot) : ~42,30 €" in summary
-    # Écart vs marché en direct: 37.18 - 50.38 = -13.20 €
-    assert "✅ Écart : <b>-13,20 €</b>" in summary
+    assert "📉 Prix bas constaté (Lot T1, T2, T3) : ~42,30 €" in summary
+    # Écart vs prix bas: 37.18 - 42.30 = -5.12 €
+    assert "✅ Écart : <b>-5,12 €</b>" in summary
 
 
 @pytest.mark.parametrize(
     ("lot_tomes", "item_total_cents", "expected_label", "expected_icon", "expected_diff"),
     [
         # Lot de 2 tomes consécutifs (T1 + T2 = 16.00 + 18.50 = 34.50 €)
-        ([1, 2], 2500, "📊 Prix du marché (Lot T1, T2) : ~34,50 €", "✅", "-9,50 €"),
+        ([1, 2], 2500, "📉 Prix bas constaté (Lot T1, T2) : ~34,50 €", "✅", "-9,50 €"),
         # Lot de 2 tomes non-consécutifs (T1 + T3 = 16.00 + 20.00 = 36.00 €)
-        ([1, 3], 3000, "📊 Prix du marché (Lot T1, T3) : ~36,00 €", "✅", "-6,00 €"),
+        ([1, 3], 3000, "📉 Prix bas constaté (Lot T1, T3) : ~36,00 €", "✅", "-6,00 €"),
         # Lot de 3 tomes (T1 + T2 + T3 = 54.50 €), prix Vinted supérieur (écart défavorable)
-        ([1, 2, 3], 6000, "📊 Prix du marché (Lot T1, T2, T3) : ~54,50 €", "⛔️", "+5,50 €"),
+        ([1, 2, 3], 6000, "📉 Prix bas constaté (Lot T1, T2, T3) : ~54,50 €", "⛔️", "+5,50 €"),
         # Lot de 1 tome dans une liste de lot (T2 = 18.50 €)
-        ([2], 1500, "📊 Prix du marché (Lot T2) : ~18,50 €", "✅", "-3,50 €"),
+        ([2], 1500, "📉 Prix bas constaté (Lot T2) : ~18,50 €", "✅", "-3,50 €"),
     ],
 )
 def test_series_matching_lot_variations_matrix(
