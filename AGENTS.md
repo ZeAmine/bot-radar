@@ -54,7 +54,7 @@ api / bot  →  use_cases  →  domain
 | `app/core` | Settings, logs, Redis, HTTP partagé, sécurité | Enums de présentation bot (labels, emojis) |
 | `app/utils` | Helpers purs (`text.py`, `isbn.py`) | I/O |
 
-Ne pas inventer une nouvelle couche. Ne pas déplacer `tome_extractor.py` ni fusionner les enums `app/core/constants.py` / `app/domain/enums.py` sans demande explicite (churn d’imports, aucun gain runtime).
+Ne pas inventer une nouvelle couche. Ne pas déplacer `tome_extractor.py`. Les enums (`AlertStatus`, `CategorySlug`, `ComparisonStatus`, `ItemCondition`, `MatchConfidence`) sont définis une seule fois dans `app/domain/enums.py` et réexportés par `app/core/constants.py`.
 
 ## Invariant n°1 — l’alerte Telegram d’abord
 
@@ -82,7 +82,7 @@ Conséquence assumée : la **première** alerte d’une BD inconnue peut partir 
 
 - `app/main.py` démarre **toujours** APScheduler. Le poller Vinted est optionnel (`VINTED_POLLER_ENABLED`).
 - Jobs : `max_instances=1`, `coalesce=True` (07:00, 19:00 Europe/Paris + cleanup 03:30).
-- **Ne jamais** lancer `python -m app.worker` (ou `make worker`) en même temps que `radar_app`. Le worker le logue en `WARNING`. Compose n’a pas de service worker.
+- Compose n’a pas de service worker et il n’existe pas de module `app.worker`. Tout tourne dans `radar_app`.
 - Pas de verrou Redis tant qu’il n’y a qu’un processus. Ne pas en ajouter « au cas où ».
 
 ## Invariant n°3 — secrets et logs
@@ -117,7 +117,7 @@ Conséquence assumée : la **première** alerte d’une BD inconnue peut partir 
 
 Sans demande **explicite** de l’utilisateur :
 
-- [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py) — cookies Redis, Cloudflare, night mode.
+- [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py) — cookies Redis, Cloudflare, night mode. Le parsing HTML/JSON vit dans [`app/services/vinted_parsing.py`](app/services/vinted_parsing.py) ; ne pas y remettre de réseau.
 - [`scripts/vinted_autobuy.user.js`](scripts/vinted_autobuy.user.js)
 - [`scripts/sync_vinted_session.py`](scripts/sync_vinted_session.py)
 - Formules de `price_calculator.py` / comparaison marché (une offre sans port ≠ total « article seul »).
@@ -178,10 +178,9 @@ Flags `AI_FEATURE_*` : un flag = un module vivant dans `app/services/ai/modules/
 
 Ne pas les traiter dans un correctif incident, sauf demande claire :
 
-- Extraire SQL/IA des handlers (`alerts_create.py`, `alerts_manage.py`, `callbacks.py`, `internal.py`).
+- Extraire le SQL restant des handlers (`alerts_manage.py`, `callbacks.py`, `internal.py`). La confirmation `/add` est dans `alerts_create_confirm.py` ; le SQL d'auto-tuning est dans `autotune_repo.py`.
 - Câbler `DeterministicListingMatcher` comme unique matcher (aujourd’hui le use case appelle le service ORM).
-- Fusionner les deux piles DeepSeek.
-- Fusionner les enums domaine / constants.
+- L'appel HTTP DeepSeek est unique (`DeepSeekClient.post_chat`). Le provider de tests garde sa validation Pydantic et son cache Redis ; ne pas le recâbler sur l'ingestion.
 - Unifier les trois usages Redis (pool app, FSM aiogram, rate limiter).
 - Validation Pydantic stricte des modules post-alerte (ils parsent encore en `.get()`).
 - Index secondaire `(source_name, received_at)` sur `listings` : seulement si une requête prod le justifie.

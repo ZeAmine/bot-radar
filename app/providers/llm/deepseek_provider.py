@@ -20,6 +20,7 @@ from app.core.redis import get_redis_client
 from app.domain.entities.analysis import ListingAnalysisResult
 from app.domain.enums import CategorySlug
 from app.domain.protocols.llm import LLMAnalysisProviderProtocol
+from app.services.ai.client import DeepSeekClient
 
 logger = logging.getLogger("radar.providers.deepseek")
 
@@ -131,29 +132,14 @@ class DeepSeekProvider(LLMAnalysisProviderProtocol):
         else:
             messages.append({"role": "user", "content": user_prompt})
 
-        payload = {
-            "model": settings.DEEPSEEK_MODEL,
-            "messages": messages,
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1,
-        }
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        endpoint = f"{settings.DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions"
-
-        # 3. Appel asynchrone via httpx
+        # 3. Appel unique via DeepSeekClient (même pile HTTP que le post-alerte)
         try:
-            response = await self.http_client.post(
-                endpoint,
-                json=payload,
-                headers=headers,
+            data = await DeepSeekClient(timeout_seconds=self._timeout).post_chat(
+                messages=messages,
+                temperature=0.1,
+                http_client=self.http_client,
                 timeout=self._timeout,
             )
-            response.raise_for_status()
-            data = response.json()
         except httpx.TimeoutException as exc:
             logger.warning(
                 "Timeout (%ss) dépassé lors de l'appel à DeepSeek pour '%s'",

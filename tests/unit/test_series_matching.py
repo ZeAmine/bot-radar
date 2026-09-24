@@ -500,6 +500,7 @@ async def test_resolve_book_for_listing_does_not_swallow_tome2_when_single_gener
     """Vérifie que si une alerte de série ne possède qu'un seul livre générique (sans numéro de tome),
     une annonce pour le Tome 2 renvoie book=None pour permettre la découverte BNF du Tome 2."""
     from unittest.mock import AsyncMock, MagicMock
+
     from app.db.repositories.book_repo import BookRepository
 
     mock_session = MagicMock()
@@ -530,6 +531,7 @@ async def test_resolve_book_for_listing_matches_existing_tome_number():
     """Vérifie que si le tome recherché existe parmi les livres catalogués (ex: 'L’arabe du futur 2'),
     il est immédiatement et correctement résolu."""
     from unittest.mock import AsyncMock, MagicMock
+
     from app.db.repositories.book_repo import BookRepository
 
     mock_session = MagicMock()
@@ -554,6 +556,7 @@ async def test_resolve_book_for_listing_matches_existing_tome_number():
 async def test_resolve_book_for_listing_one_shot_returns_single_book():
     """Vérifie qu'un vrai one-shot sans mention de tome continue d'être résolu sur l'unique livre."""
     from unittest.mock import AsyncMock, MagicMock
+
     from app.db.repositories.book_repo import BookRepository
 
     mock_session = MagicMock()

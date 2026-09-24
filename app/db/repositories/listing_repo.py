@@ -4,18 +4,22 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.constants import AlertStatus
+from app.core.constants import AlertStatus, CategorySlug
 from app.db.models.alert import Alert
+from app.db.models.alert_book import AlertBook
+from app.db.models.book import Book
 from app.db.models.category import Category
 from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.schemas.listing import ListingIngestPayload
-from app.services.matcher_service import normalize_text
 from app.services.price_calculator import calculate_estimated_total
+from app.utils.text import normalize_text
 
 
 class ListingRepository:
@@ -85,10 +89,17 @@ class ListingRepository:
         category_slug: str,
     ) -> list[Alert]:
         """Récupère toutes les alertes actives pour une catégorie donnée."""
+        load_options = [selectinload(Alert.category), selectinload(Alert.user)]
+        if category_slug == CategorySlug.BD_COMICS.value:
+            load_options.append(
+                selectinload(Alert.alert_books)
+                .selectinload(AlertBook.book)
+                .selectinload(Book.market_cache)
+            )
         stmt = (
             select(Alert)
             .join(Category, Alert.category_id == Category.id)
-            .options(selectinload(Alert.category), selectinload(Alert.user))
+            .options(*load_options)
             .where(
                 Category.slug == category_slug,
                 Alert.status == AlertStatus.ACTIVE,
@@ -99,9 +110,40 @@ class ListingRepository:
 
     async def matched_alert_ids(self, listing_id: uuid.UUID) -> set[uuid.UUID]:
         """Identifiants d'alertes déjà associées à cette annonce."""
-        stmt = select(ListingMatch.alert_id).where(ListingMatch.listing_id == listing_id)
+        notified, pending = await self.match_notification_state(listing_id)
+        return notified | pending
+
+    async def match_notification_state(
+        self,
+        listing_id: uuid.UUID,
+    ) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
+        """Sépare les matches déjà notifiés de ceux encore en attente d'envoi."""
+        stmt = select(ListingMatch.alert_id, ListingMatch.notified_at).where(
+            ListingMatch.listing_id == listing_id
+        )
         result = await self.session.execute(stmt)
-        return set(result.scalars().all())
+        notified: set[uuid.UUID] = set()
+        pending: set[uuid.UUID] = set()
+        for alert_id, notified_at in result.all():
+            if notified_at is not None:
+                notified.add(alert_id)
+            else:
+                pending.add(alert_id)
+        return notified, pending
+
+    async def mark_notified(self, pairs: list[tuple[uuid.UUID, uuid.UUID]]) -> None:
+        """Horodate les notifications Telegram déjà parties."""
+        now = datetime.now(UTC)
+        for alert_id, listing_id in pairs:
+            stmt = (
+                update(ListingMatch)
+                .where(
+                    ListingMatch.alert_id == alert_id,
+                    ListingMatch.listing_id == listing_id,
+                )
+                .values(notified_at=now)
+            )
+            await self.session.execute(stmt)
 
     async def create_match(
         self,
@@ -114,17 +156,32 @@ class ListingRepository:
     ) -> ListingMatch:
         """Enregistre une correspondance alerte-annonce."""
         now = datetime.now(UTC)
-        match = ListingMatch(
-            alert_id=alert_id,
-            listing_id=listing_id,
-            keyword_match_score=keyword_match_score,
-            condition_matches=condition_matches,
-            price_matches=price_matches,
-            notified_at=now if notified else None,
+        values = {
+            "id": uuid.uuid4(),
+            "alert_id": alert_id,
+            "listing_id": listing_id,
+            "keyword_match_score": keyword_match_score,
+            "condition_matches": condition_matches,
+            "price_matches": price_matches,
+            "notified_at": now if notified else None,
+            "created_at": now,
+        }
+        bind = self.session.get_bind()
+        dialect_insert = sqlite_insert if bind.dialect.name == "sqlite" else pg_insert
+        stmt = (
+            dialect_insert(ListingMatch)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["alert_id", "listing_id"])
         )
-        self.session.add(match)
+        await self.session.execute(stmt)
         await self.session.flush()
-        return match
+        found = await self.session.execute(
+            select(ListingMatch).where(
+                ListingMatch.alert_id == alert_id,
+                ListingMatch.listing_id == listing_id,
+            )
+        )
+        return found.scalar_one()
 
     async def get_alert_for_listing(self, listing_id: uuid.UUID) -> Alert | None:
         """Récupère l'alerte associée à cette annonce via la table listing_matches."""

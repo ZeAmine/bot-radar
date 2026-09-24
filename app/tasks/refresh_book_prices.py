@@ -123,7 +123,7 @@ async def refresh_book_prices_task(
                         best_provider_name=None,
                         best_source_url=None,
                         confidence=None,
-                        comparison_status=ComparisonStatus.OUT_OF_STOCK,
+                        comparison_status=ComparisonStatus.UNAVAILABLE,
                         cache_duration_hours=24,
                         historical_low_1y_cents=best_hist_low,
                     )
@@ -174,7 +174,7 @@ async def refresh_book_prices_task(
                             best_provider_name=None,
                             best_source_url=None,
                             confidence=None,
-                            comparison_status=ComparisonStatus.OUT_OF_STOCK,
+                            comparison_status=ComparisonStatus.UNAVAILABLE,
                             cache_duration_hours=24,
                             historical_low_1y_cents=best_hist_low,
                         )

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.constants import ComparisonStatus
 from app.domain.entities.analysis import ListingAnalysisResult, RealConditionAssessment
 from app.domain.entities.listing import ListingEntity
 from app.domain.enums import CategorySlug
@@ -99,6 +100,12 @@ async def test_async_enrich_listing_no_warning_when_safe(mock_bot: AsyncMock) ->
     mock_bot.send_message.assert_not_called()
 
 
+def test_comparison_status_has_no_out_of_stock() -> None:
+    """Le cache hors stock utilise UNAVAILABLE, pas un membre absent."""
+    assert ComparisonStatus.UNAVAILABLE.value == "unavailable"
+    assert not hasattr(ComparisonStatus, "OUT_OF_STOCK")
+
+
 @pytest.mark.asyncio
 async def test_process_listing_duplicate(mock_db: AsyncMock) -> None:
     """Vérifie qu'un doublon est détecté immédiatement sans notifier."""
@@ -118,6 +125,7 @@ async def test_process_listing_duplicate(mock_db: AsyncMock) -> None:
 
     mock_repo = AsyncMock()
     mock_repo.get_by_source_and_external_id.return_value = existing_mock
+    mock_repo.match_notification_state.return_value = (set(), set())
     mock_repo.get_active_alerts_by_category.return_value = []
     use_case.listing_repo = mock_repo
 
@@ -175,7 +183,21 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
     """La ligne de cote locale est transmise à l'envoi Telegram."""
     mock_send_alert = AsyncMock(return_value=True)
 
-    with patch("app.api.routes.ingest.send_listing_alert", mock_send_alert):
+    market_line = "📉 Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.use_cases.ingest_listing.comparison_line_from_loaded_books",
+            return_value=(market_line, True),
+        ),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal") as session_local,
+    ):
+        session_local.return_value.__aenter__.return_value = AsyncMock()
+        session_local.return_value.__aexit__.return_value = None
         use_case = ProcessListingUseCase(db=mock_db)
 
         # Simuler le repo listing
@@ -217,10 +239,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         mock_repo.get_active_alerts_by_category.return_value = [alert_mock]
         use_case.listing_repo = mock_repo
 
-        # Simuler _resolve_bd_market_comparison
-        use_case._resolve_bd_market_comparison = AsyncMock(
-            return_value="📉 Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
-        )
+        use_case.listing_repo.mark_notified = AsyncMock()
 
         payload = ListingIngestPayload(
             source_name="vinted",

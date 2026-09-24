@@ -34,10 +34,11 @@ Détecter les nouvelles annonces Vinted en temps réel et les injecter dans le p
 
 ### Fichiers clés
 - [`app/tasks/vinted_poller.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/vinted_poller.py) : Boucle de polling haute fréquence à cadence adaptative (12s en pointe, 15s standard sur VPS, 8s avec proxy résidentiel), dédoublonnage en mémoire (`seen_ids`), ordonnancement entrelacé (staggered interleaving) des catégories.
-- [`app/services/vinted_scraper.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/vinted_scraper.py) : Gestionnaire de session Vinted (`VintedSessionManager`), cookies persistés dans Redis, interrogation prioritaire de l'API interne JSON (`svc-catalogue/items`, 38 Ko) avec repli transparent sur le catalogue HTML, parsing des flux (`parse_vinted_catalog_json` et `parse_vinted_catalog_html`), extraction native de toutes les photos HD.
+- [`app/services/vinted_scraper.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/vinted_scraper.py) : Gestionnaire de session Vinted (`VintedSessionManager`), cookies persistés dans Redis, interrogation prioritaire de l'API interne JSON (`svc-catalogue/items`, 38 Ko) avec repli transparent sur le catalogue HTML.
+- [`app/services/vinted_parsing.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/vinted_parsing.py) : Parsing pur HTML/JSON (`parse_vinted_catalog_json`, `parse_vinted_catalog_html`) et extraction des photos HD. Aucun réseau.
 - [`app/api/routes/ingest_api.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/api/routes/ingest_api.py) : Endpoint interne sécurisé `POST /api/v1/ingest/listings`.
 - [`app/use_cases/ingest_listing.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/use_cases/ingest_listing.py) : Orchestration du flux : dédoublonnage BDD, persistance du listing, déclenchement du matching et alerte Telegram.
-- [`app/services/duplicate_guard.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/duplicate_guard.py) : Dédoublonnage atomique basé sur `(source_name, external_id)` avec verrouillage court Redis.
+- [`app/db/repositories/listing_repo.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/db/repositories/listing_repo.py) : Dédoublonnage par `(source_name, external_id)` et contrainte unique `listing_matches (alert_id, listing_id)`.
 
 ### Invariants et contraintes
 - **Zéro blocage Cloudflare & API First** : Le poller interroge le microservice interne `/svc-catalogue/items` avec les en-têtes web actuels (`Platform: web`, `X-Next-App: marketplace-web`), et bascule sur le scraping HTML si l'API interne fait défaut.
@@ -55,7 +56,7 @@ Comparer en quelques microsecondes en mémoire CPU chaque annonce entrante avec 
 ### Fichiers clés
 - [`app/services/matcher_service.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/matcher_service.py) : Évaluation multicritère :
   - `evaluate_listing_against_alert(...)` : vérification du prix max, catégorie, inclusion de mots-clés, variantes, exclusions et états.
-  - `get_matched_alert_ids_for_listing(...)` : matching groupé pour toutes les alertes actives en une seule requête SQL.
+  - `ListingRepository.matched_alert_ids(...)` : matches déjà notifiés pour une annonce, une seule requête SQL. Le matching lui-même est CPU (`evaluate_listing_against_alert`).
 - [`app/domain/rules/matcher.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/domain/rules/matcher.py) : Spécifications métier pures du matching (`DeterministicListingMatcher`).
 - [`app/utils/text.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/utils/text.py) : Normalisation Unicode avancée : passage en minuscules, décomposition NFKD (suppression des accents), remplacement des apostrophes typographiques et séparateurs.
 
@@ -77,9 +78,9 @@ Calculer instantanément la cote et l'écart de prix pour les bandes dessinées 
 - [`app/services/book_catalog_service.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/book_catalog_service.py) : Association d'une alerte à une série ou un livre précis.
 - [`app/services/book_metadata_service.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/book_metadata_service.py) : Enrichissement des métadonnées (ISBN-13 BNF).
 - [`app/providers/`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/providers/) : Clients HTTP pour les sources de marché :
-  - `ebay_provider.py` : eBay Browse API OAuth2 (recherche par ISBN / titre d'occasion livrée en France).
-  - `bnf_provider.py` : Recherche bibliographique officielle Bibliothèque Nationale de France.
-  - `momox_provider.py`, `chasse_aux_livres_provider.py`, etc.
+  - `ebay_browse.py` : eBay Browse API OAuth2 (recherche par ISBN / titre d'occasion livrée en France).
+  - BNF : `book_metadata_service.py`.
+  - `momox.py`, `chasse_aux_livres.py`, etc.
 - [`app/db/repositories/market_price_repo.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/db/repositories/market_price_repo.py) : Cache de prix (`market_prices`), persistance des snapshots et cotes.
 
 ### Invariants et contraintes
@@ -101,7 +102,8 @@ Interface utilisateur conversationnelle pour piloter les alertes, recevoir les n
 ### Fichiers clés
 - [`app/bot/bot_instance.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/bot_instance.py) : Initialisation du `Bot` aiogram 3 et du `Dispatcher`.
 - [`app/bot/middlewares/auth_middleware.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/middlewares/auth_middleware.py) : Contrôle d'accès strict par allowlist (`TELEGRAM_ALLOWED_USER_IDS`).
-- [`app/bot/handlers/alerts_create.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/alerts_create.py) : Flow conversationnel FSM `/add` (titre, catégorie, prix max, confirmation, suggestion IA).
+- [`app/bot/handlers/alerts_create.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/alerts_create.py) : Flow conversationnel FSM `/add` jusqu'au récapitulatif (titre, catégorie, prix max, suggestion IA).
+- [`app/bot/handlers/alerts_create_confirm.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/alerts_create_confirm.py) : Confirmation, annulation et édition du même flux, sur le routeur partagé `_alerts_router`.
 - [`app/bot/handlers/alerts_manage.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/alerts_manage.py) : Commandes `/show`, `/edit`, `/pause`, `/resume`, `/delete`.
 - [`app/bot/handlers/callbacks.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/callbacks.py) : Gestion des boutons inline :
   - `photos:{listing_id}` : Affichage de l'album HD extrait de Vinted.
@@ -205,12 +207,12 @@ Orchestrer le rafraîchissement périodique des cotes du marché et le nettoyage
 
 ### Fichiers clés
 - [`app/tasks/scheduler.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/scheduler.py) : Configuration APScheduler unifiée.
-- [`app/tasks/refresh_task.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/refresh_task.py) : Job exécuté à **07:00** et **19:00** (Europe/Paris) pour mettre à jour les prix du marché via les providers.
-- [`app/tasks/cleanup_task.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/cleanup_task.py) : Job nocturne à **03:30** purgeant les annonces obsolètes et les vieux snapshots.
+- [`app/tasks/refresh_book_prices.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/refresh_book_prices.py) : Job à **07:00** et **19:00**, plus un lot incrémental à **:15** et **:45** (Europe/Paris).
+- [`app/tasks/cleanup.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/cleanup.py) : Job nocturne à **03:30** purgeant les annonces obsolètes et les vieux snapshots.
 
 ### Invariants et contraintes
 - **Un seul scheduler (Invariant n°2)** : `app/main.py` démarre toujours APScheduler.
-- **Ne jamais lancer de worker séparé** : Compose ne possède pas de service worker. Ne jamais exécuter `python -m app.worker` simultanément sous peine de collision de tâches.
+- **Un seul processus** : Compose n'a pas de service worker. Le scheduler tourne dans `radar_app`.
 
 ---
 

@@ -564,6 +564,14 @@ def test_pure_predicates_price_condition_exclusion_isbn():
         default_exclusion_hit("ex-libris tintin", ["ex-libris"], include_keywords=["ex-libris"])
         is None
     )
+    assert (
+        default_exclusion_hit("rip tome 1 strip tease", ["rip"], include_keywords=["strip tease"])
+        == "rip"
+    )
+    assert (
+        default_exclusion_hit("titre tintin boite vide", ["boite vide"], include_keywords=None)
+        == "boite vide"
+    )
 
     assert isbn_digits("978-2-205-07805-3") == "9782205078053"
     assert isbn_digits(None) == ""

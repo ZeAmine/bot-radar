@@ -13,7 +13,7 @@ from app.core.constants import CategorySlug
 from app.core.tasks import safe_create_task
 from app.db.models.bot_event import BotEvent
 from app.db.models.listing import Listing
-from app.db.repositories.book_repo import BookRepository
+from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.repositories.listing_repo import ListingRepository
 from app.schemas.listing import (
     ListingIngestPayload,
@@ -53,7 +53,7 @@ async def _prefetch_book_market_cache(book_id: uuid.UUID, isbn13: str | None, ti
                 status_to_set = (
                     ComparisonStatus.AVAILABLE
                     if (best.delivered_price_cents > 0 and best.is_available)
-                    else ComparisonStatus.OUT_OF_STOCK
+                    else ComparisonStatus.UNAVAILABLE
                 )
                 lowest_price = (
                     best.delivered_price_cents if best.delivered_price_cents > 0 else None
@@ -138,6 +138,65 @@ async def _preload_listing_photos(listing_id: uuid.UUID, url: str) -> None:
         logger.debug("Échec du préchargement des photos pour %s : %s", listing_id, exc)
 
 
+def comparison_line_from_loaded_books(
+    listing: Listing,
+    alert: Any,
+) -> tuple[str | None, bool]:
+    """Cote synchrone depuis les livres déjà chargés. False si le catalogue est vide."""
+    links = getattr(alert, "alert_books", None)
+    books = []
+    if isinstance(links, list):
+        books = [link.book for link in links if getattr(link, "book", None) is not None]
+    if not books:
+        return None, False
+    book, series, tome_result = resolve_loaded_books(
+        alert_name=alert.name,
+        listing_title=listing.title,
+        listing_description=listing.description,
+        books=books,
+    )
+    line = MarketPriceService.get_comparison_summary(
+        listing=listing,
+        book=book,
+        books_in_series=series,
+        tome_result=tome_result,
+    )
+    return line, True
+
+
+async def _link_bd_catalog_background(
+    *,
+    alert_id: uuid.UUID,
+    alert_name: str,
+    alert_isbn: str | None,
+    listing_title: str,
+    listing_description: str | None,
+    listing_isbn13: str | None,
+) -> None:
+    """Lie le catalogue BD après l'alerte, dans une session dédiée."""
+    from app.db.session import AsyncSessionLocal
+
+    listing = type(
+        "ListingRef",
+        (),
+        {
+            "title": listing_title,
+            "description": listing_description,
+            "isbn13": listing_isbn13,
+            "category_slug": CategorySlug.BD_COMICS.value,
+            "item_price_cents": 0,
+            "estimated_total_cents": None,
+        },
+    )()
+    alert = type("AlertRef", (), {"id": alert_id, "name": alert_name, "isbn": alert_isbn})()
+    try:
+        async with AsyncSessionLocal() as session:
+            await ProcessListingUseCase(session)._resolve_bd_market_comparison(listing, alert)
+            await session.commit()
+    except Exception as exc:
+        logger.debug("Liaison catalogue BD différée ignorée pour %s : %s", alert_id, exc)
+
+
 def _get_send_listing_alert() -> Any:
     """Résout dynamiquement la fonction d'envoi d'alerte pour préserver les mocks de tests."""
     ingest_module = sys.modules.get("app.api.routes.ingest")
@@ -170,20 +229,18 @@ class ProcessListingUseCase:
             external_id=payload.external_id,
         )
 
+        notified_ids: set[uuid.UUID] = set()
+        pending_ids: set[uuid.UUID] = set()
         if existing_listing:
             listing = existing_listing
             is_duplicate = True
+            notified_ids, pending_ids = await self.listing_repo.match_notification_state(listing.id)
         else:
             listing = await self.listing_repo.create_from_payload(payload, raw_dict=raw_payload)
             is_duplicate = False
 
-        # 2. Recherche des alertes actives de la même catégorie
         active_alerts = await self.listing_repo.get_active_alerts_by_category(payload.category_slug)
-        match_items: list[ListingMatchItem] = []
-        already_matched_ids: set[uuid.UUID] = set()
-        if active_alerts:
-            already_matched_ids = await self.listing_repo.matched_alert_ids(listing.id)
-
+        pending_sends: list[tuple[Any, Any, str | None, bool]] = []
         for alert in active_alerts:
             match_result = evaluate_listing_against_alert(
                 alert=alert,
@@ -195,46 +252,80 @@ class ProcessListingUseCase:
                 listing_isbn13=listing.isbn13,
                 listing_raw_url=listing.url,
             )
-
-            if not match_result.is_match:
+            if not match_result.is_match or alert.id in notified_ids:
                 continue
-
-            # 3. Empêcher les doublons de notification
-            if alert.id in already_matched_ids:
-                continue
-
-            # 4. Comparaison locale. La BNF, si besoin, part en tâche de fond.
-            market_comparison_line = None
+            market_line = None
+            catalog_ready = False
             if listing.category_slug == CategorySlug.BD_COMICS.value:
-                market_comparison_line = await self._resolve_bd_market_comparison(listing, alert)
+                market_line, catalog_ready = comparison_line_from_loaded_books(listing, alert)
+                if not catalog_ready:
+                    market_line, catalog_ready = await self._comparison_from_catalog_isbn(
+                        listing, alert
+                    )
+            pending_sends.append((alert, match_result, market_line, catalog_ready))
 
-            # 5. Envoi INSTANTANÉ de l'alerte Telegram (Priorité absolue, sans blocage réseau)
-            notification_sent = False
-            if alert.user and alert.user.telegram_user_id:
-                alert_kws = alert.include_keywords or ([alert.name] if alert.name else None)
-                send_alert_fn = _get_send_listing_alert()
-                notification_sent = await send_alert_fn(
-                    bot=self.bot,
-                    chat_id=alert.user.telegram_user_id,
-                    listing=listing,
-                    market_comparison_line=market_comparison_line,
-                    alert_keywords=alert_kws,
-                    alert=alert,
-                )
+        if is_duplicate and not pending_sends and not pending_ids:
+            return ListingIngestResponse(
+                listing_id=listing.id,
+                is_duplicate=True,
+                estimated_total_cents=listing.estimated_total_cents,
+                matches=[],
+            )
 
-            # L'enrichissement DeepSeek part dans send_listing_alert, après l'envoi,
-            # avec le vrai message_id. Pas de second appel ici.
-
-            # 7. Création de l'enregistrement listing_matches
+        for alert, match_result, _line, _ready in pending_sends:
+            if alert.id in pending_ids:
+                continue
             await self.listing_repo.create_match(
                 alert_id=alert.id,
                 listing_id=listing.id,
                 keyword_match_score=match_result.keyword_match_score,
                 condition_matches=match_result.condition_matches,
                 price_matches=match_result.price_matches,
-                notified=notification_sent,
+                notified=False,
             )
 
+        event = BotEvent(
+            event_type="listing_ingested",
+            listing_id=listing.id,
+            metadata_={
+                "source_name": payload.source_name,
+                "external_id": payload.external_id,
+                "matches_count": len(pending_sends),
+                "is_duplicate": is_duplicate,
+            },
+        )
+        self.db.add(event)
+        await self.db.commit()
+
+        match_items: list[ListingMatchItem] = []
+        sent_pairs: list[tuple[uuid.UUID, uuid.UUID]] = []
+        send_alert_fn = _get_send_listing_alert()
+        for alert, _match_result, market_line, catalog_ready in pending_sends:
+            notification_sent = False
+            if alert.user and alert.user.telegram_user_id:
+                alert_kws = alert.include_keywords or ([alert.name] if alert.name else None)
+                notification_sent = await send_alert_fn(
+                    bot=self.bot,
+                    chat_id=alert.user.telegram_user_id,
+                    listing=listing,
+                    market_comparison_line=market_line,
+                    alert_keywords=alert_kws,
+                    alert=alert,
+                )
+            if notification_sent:
+                sent_pairs.append((alert.id, listing.id))
+            if listing.category_slug == CategorySlug.BD_COMICS.value and not catalog_ready:
+                safe_create_task(
+                    _link_bd_catalog_background(
+                        alert_id=alert.id,
+                        alert_name=alert.name,
+                        alert_isbn=getattr(alert, "isbn", None),
+                        listing_title=listing.title,
+                        listing_description=listing.description,
+                        listing_isbn13=listing.isbn13,
+                    ),
+                    name=f"bd_catalog_{alert.id}",
+                )
             match_items.append(
                 ListingMatchItem(
                     alert_id=alert.id,
@@ -243,19 +334,9 @@ class ProcessListingUseCase:
                 )
             )
 
-        # 8. Journalisation d'un événement d'ingestion
-        event = BotEvent(
-            event_type="listing_ingested",
-            listing_id=listing.id,
-            metadata_={
-                "source_name": payload.source_name,
-                "external_id": payload.external_id,
-                "matches_count": len(match_items),
-                "is_duplicate": is_duplicate,
-            },
-        )
-        self.db.add(event)
-        await self.db.commit()
+        if sent_pairs:
+            await self.listing_repo.mark_notified(sent_pairs)
+            await self.db.commit()
 
         # 9. Si une alerte a été notifiée, précharger la galerie complète en tâche de fond
         if (
@@ -274,6 +355,27 @@ class ProcessListingUseCase:
             estimated_total_cents=listing.estimated_total_cents,
             matches=match_items,
         )
+
+    async def _comparison_from_catalog_isbn(
+        self,
+        listing: Listing,
+        alert: Any,
+    ) -> tuple[str | None, bool]:
+        """Une lecture ISBN indexée si le livre est déjà au catalogue. Pas de BNF."""
+        isbn = listing.isbn13 or getattr(alert, "isbn", None)
+        if not isbn:
+            return None, False
+        book_repo = BookRepository(self.db)
+        book = await book_repo.get_by_isbn13(isbn)
+        if book is None:
+            return None, False
+        await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
+        line = MarketPriceService.get_comparison_summary(
+            listing=listing,
+            book=book,
+            books_in_series=[book],
+        )
+        return line, True
 
     async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> str | None:
         """Résout le livre en local. La recherche BNF part en tâche de fond."""

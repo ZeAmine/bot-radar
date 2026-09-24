@@ -220,12 +220,32 @@ async def load_active_custom_searches() -> list[tuple[str, str]]:
         return []
 
 
+_ingest_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_ingest_semaphore() -> asyncio.Semaphore:
+    global _ingest_semaphore
+    if _ingest_semaphore is None:
+        _ingest_semaphore = asyncio.Semaphore(3)
+    return _ingest_semaphore
+
+
+async def _ingest_scraped_item(item: Any, category_slug: str) -> int:
+    """Ingère une annonce dans le processus, sans HTTP localhost."""
+    from app.schemas.listing import ListingIngestPayload
+    from app.use_cases.ingest_listing import ProcessListingUseCase
+
+    payload_dict = to_ingest_payload(item, category_slug=category_slug)
+    payload = ListingIngestPayload.model_validate(payload_dict)
+    async with _get_ingest_semaphore(), AsyncSessionLocal() as session:
+        use_case = ProcessListingUseCase(session)
+        response = await use_case.execute(payload, raw_payload=payload_dict)
+        return len(response.matches)
+
+
 async def poll_vinted_once(
     seen_ids: set[str],
     vinted_client: httpx.AsyncClient,
-    api_client: httpx.AsyncClient,
-    api_url: str,
-    api_token: str,
     target_url: str = DEFAULT_GLOBAL_BD_URL,
     category_slug: str = "bd_comics",
 ) -> int:
@@ -247,40 +267,30 @@ async def poll_vinted_once(
         target_url[:60],
         category_slug,
     )
-    ingested_count = 0
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_token}",
-    }
-    endpoint = f"{api_url.rstrip('/')}/api/v1/ingest/listings"
-
     for item in new_items:
         seen_ids.add(item.external_id)
-        payload = to_ingest_payload(item, category_slug=category_slug)
 
-        try:
-            res = await api_client.post(endpoint, headers=headers, json=payload, timeout=12.0)
-            if res.status_code == 200:
-                data = res.json()
-                matches = data.get("matches", [])
-                if matches:
-                    logger.info(
-                        "🎯 MATCH VINTED ! Titre: '%s' (Prix: %.2f €) -> %d alertes notifiées !",
-                        item.title,
-                        item.item_price_cents / 100,
-                        len(matches),
-                    )
-                ingested_count += 1
-            else:
-                logger.warning("Échec ingestion HTTP %s: %s", res.status_code, res.text[:200])
-        except Exception as exc:
+    results = await asyncio.gather(
+        *(_ingest_scraped_item(item, category_slug) for item in new_items),
+        return_exceptions=True,
+    )
+    ingested_count = 0
+    for item, result in zip(new_items, results, strict=True):
+        if isinstance(result, Exception):
             logger.debug(
-                "Erreur lors de l'envoi de l'annonce %s vers l'API interne : %s",
+                "Erreur lors de l'ingestion de l'annonce %s : %s",
                 item.external_id,
-                exc,
+                result,
             )
-
+            continue
+        ingested_count += 1
+        if result:
+            logger.info(
+                "🎯 MATCH VINTED ! Titre: '%s' (Prix: %.2f €) -> %d alertes notifiées !",
+                item.title,
+                item.item_price_cents / 100,
+                result,
+            )
     return ingested_count
 
 
@@ -291,31 +301,22 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
         return
 
     logger.info(
-        "Démarrage du Vinted Poller haute fréquence (intervalle: %ds, API: %s)...",
+        "Démarrage du Vinted Poller haute fréquence (intervalle: %ds, ingest in-process)...",
         settings.VINTED_POLL_INTERVAL_SECONDS,
-        settings.RADAR_API_URL,
     )
 
     seen_ids = await load_initial_seen_ids()
     logger.info("Vinted poller initialisé avec %d IDs en mémoire.", len(seen_ids))
 
-    api_token = settings.INGEST_API_TOKEN.get_secret_value()
-    api_url = settings.RADAR_API_URL
     proxy_url = settings.get_vinted_proxy()
     if proxy_url:
         logger.info("Vinted poller configuré avec proxy actif.")
 
-    async with (
-        httpx.AsyncClient(
-            timeout=15.0,
-            follow_redirects=True,
-            proxy=proxy_url,
-        ) as vinted_client,
-        httpx.AsyncClient(
-            timeout=15.0,
-            follow_redirects=True,
-        ) as api_client,
-    ):
+    async with httpx.AsyncClient(
+        timeout=15.0,
+        follow_redirects=True,
+        proxy=proxy_url,
+    ) as vinted_client:
         consecutive_blocks = 0
         poll_cycle = 0
 
@@ -363,9 +364,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 count_bd = await poll_vinted_once(
                     seen_ids=seen_ids,
                     vinted_client=vinted_client,
-                    api_client=api_client,
-                    api_url=api_url,
-                    api_token=api_token,
                     target_url=DEFAULT_GLOBAL_BD_URL,
                     category_slug=CategorySlug.BD_COMICS.value,
                 )
@@ -380,9 +378,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     count_custom = await poll_vinted_once(
                         seen_ids=seen_ids,
                         vinted_client=vinted_client,
-                        api_client=api_client,
-                        api_url=api_url,
-                        api_token=api_token,
                         target_url=custom_url,
                         category_slug=custom_slug,
                     )

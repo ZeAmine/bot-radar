@@ -11,21 +11,23 @@ from aiogram import Router
 
 # Ré-export du flux de création
 from app.bot.handlers.alerts_create import (
-    back_to_recap,
-    cancel_alert_creation,
-    edit_alert_creation_prompt,
-    handle_cancel_command,
     handle_category_selected,
     handle_query_input,
     handle_update_existing_alert_price,
     process_max_price_input,
-    prompt_new_price,
-    restart_from_scratch,
     save_alert,
     start_add_alert,
 )
 from app.bot.handlers.alerts_create import (
     router as alerts_create_router,
+)
+from app.bot.handlers.alerts_create_confirm import (
+    back_to_recap,
+    cancel_alert_creation,
+    edit_alert_creation_prompt,
+    handle_cancel_command,
+    prompt_new_price,
+    restart_from_scratch,
 )
 
 # Ré-export des aides et formateurs

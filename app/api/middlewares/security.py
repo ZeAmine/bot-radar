@@ -104,6 +104,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         prefix, max_req, window_sec = matching_rule
         client_ip = self._get_client_ip(request)
+        if client_ip in {"127.0.0.1", "::1", "localhost"}:
+            return await call_next(request)
         rate_key = f"api:{prefix.strip('/').replace('/', '_')}:{client_ip}"
 
         is_allowed, remaining, retry_after = await self.limiter.check_rate_limit(

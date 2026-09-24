@@ -289,7 +289,7 @@ async def handle_view_market_details(
                 status_to_set = (
                     ComparisonStatus.AVAILABLE
                     if (best.delivered_price_cents > 0 and best.is_available)
-                    else ComparisonStatus.OUT_OF_STOCK
+                    else ComparisonStatus.UNAVAILABLE
                 )
                 lowest_price = best.delivered_price_cents if best.delivered_price_cents > 0 else None
 

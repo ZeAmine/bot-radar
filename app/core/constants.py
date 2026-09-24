@@ -1,13 +1,23 @@
-"""Constantes métier et énumérations du projet Radar Bot."""
+"""Constantes métier. Les enums vivent dans app.domain.enums."""
 
-from enum import StrEnum
+from app.domain.enums import (
+    AlertStatus,
+    CategorySlug,
+    ComparisonStatus,
+    ItemCondition,
+    MatchConfidence,
+)
 
-
-class CategorySlug(StrEnum):
-    BD_COMICS = "bd_comics"
-    CLOTHES = "clothes"
-    TECH = "tech"
-    GAMING = "gaming"
+__all__ = [
+    "AlertStatus",
+    "CategorySlug",
+    "ComparisonStatus",
+    "ItemCondition",
+    "MatchConfidence",
+    "CATEGORY_LABELS",
+    "CATEGORY_EMOJIS",
+    "STANDARD_CONDITIONS",
+]
 
 
 CATEGORY_LABELS = {
@@ -24,14 +34,8 @@ CATEGORY_EMOJIS = {
     CategorySlug.GAMING: "🎮",
 }
 
-# États standards d'articles d'occasion
-STANDARD_CONDITIONS = [
-    "Neuf avec étiquette",
-    "Neuf sans étiquette",
-    "Très bon état",
-    "Bon état",
-    "Satisfaisant",
-]
+# États standards d'articles d'occasion (une seule définition : ItemCondition)
+STANDARD_CONDITIONS = [condition.value for condition in ItemCondition]
 
 # États sélectionnés par défaut par catégorie
 DEFAULT_BD_CONDITIONS = [
@@ -105,19 +109,3 @@ DEFAULT_CLOTHES_EXCLUSIONS = [
 ]
 
 
-class AlertStatus(StrEnum):
-    ACTIVE = "active"
-    PAUSED = "paused"
-    DELETED = "deleted"
-
-
-class MatchConfidence(StrEnum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-
-
-class ComparisonStatus(StrEnum):
-    AVAILABLE = "available"
-    UNAVAILABLE = "unavailable"
-    STALE = "stale"

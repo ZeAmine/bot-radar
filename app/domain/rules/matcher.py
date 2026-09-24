@@ -40,6 +40,5 @@ class DeterministicListingMatcher(ListingMatcherProtocol):
             price_matches=legacy_result.price_matches,
             confidence=conf,
             reason=legacy_result.reason,
-            is_bundle=legacy_result.is_bundle,
         )
 

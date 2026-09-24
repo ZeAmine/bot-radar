@@ -346,16 +346,12 @@ async def test_fetch_vinted_page_fallback_to_html():
 
 
 @pytest.mark.asyncio
-async def test_poll_vinted_once_separates_vinted_and_api_clients():
-    """Vérifie la séparation de vinted_client (Vinted) et api_client (ingestion)."""
-    from unittest.mock import MagicMock
-
+async def test_poll_vinted_once_ingests_in_process():
+    """Le poller ingère dans le processus : Vinted seul, pas de POST localhost."""
     from app.services.vinted_scraper import ScrapedVintedItem
     from app.tasks.vinted_poller import poll_vinted_once
 
     mock_vinted_client = AsyncMock()
-    mock_api_client = AsyncMock()
-
     dummy_item = ScrapedVintedItem(
         external_id="v_999",
         url="https://vinted.fr/items/999",
@@ -364,36 +360,28 @@ async def test_poll_vinted_once_separates_vinted_and_api_clients():
         item_price_cents=1000,
         photo_url="https://images1.vinted.net/t.jpg",
     )
-
-    mock_post_resp = MagicMock()
-    mock_post_resp.status_code = 200
-    mock_post_resp.json.return_value = {"matches": []}
-    mock_api_client.post.return_value = mock_post_resp
-
-    seen_ids = set()
+    seen_ids: set[str] = set()
     expected_url = (
         "https://www.vinted.fr/catalog?search_text=&catalog[]=5425&status_ids[]=1"
         "&status_ids[]=2&status_ids[]=6&language_book_ids[]=6436"
         "&search_id=2946920741&order=newest_first"
     )
 
-    with patch("app.tasks.vinted_poller.fetch_vinted_page", new_callable=AsyncMock) as mock_fetch:
+    with (
+        patch("app.tasks.vinted_poller.fetch_vinted_page", new_callable=AsyncMock) as mock_fetch,
+        patch(
+            "app.tasks.vinted_poller._ingest_scraped_item",
+            new_callable=AsyncMock,
+            return_value=0,
+        ) as mock_ingest,
+    ):
         mock_fetch.return_value = [dummy_item]
+        count = await poll_vinted_once(seen_ids=seen_ids, vinted_client=mock_vinted_client)
 
-        count = await poll_vinted_once(
-            seen_ids=seen_ids,
-            vinted_client=mock_vinted_client,
-            api_client=mock_api_client,
-            api_url="http://app:8000",
-            api_token="test_token",
-        )
-
-        assert count == 1
-        assert "v_999" in seen_ids
-        mock_fetch.assert_called_once_with(expected_url, mock_vinted_client)
-        mock_api_client.post.assert_called_once()
-        args, _ = mock_api_client.post.call_args
-        assert args[0] == "http://app:8000/api/v1/ingest/listings"
-        mock_vinted_client.post.assert_not_called()
+    assert count == 1
+    assert "v_999" in seen_ids
+    mock_fetch.assert_called_once_with(expected_url, mock_vinted_client)
+    mock_ingest.assert_awaited_once()
+    mock_vinted_client.post.assert_not_called()
 
 

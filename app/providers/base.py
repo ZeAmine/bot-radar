@@ -20,6 +20,7 @@ class MarketOffer:
     confidence: MatchConfidence = MatchConfidence.HIGH
     is_available: bool = True
     is_comparable: bool = True
+    price_includes_shipping: bool = False
     raw_payload: dict[str, Any] | None = None
 
 

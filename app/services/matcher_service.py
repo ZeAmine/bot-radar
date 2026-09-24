@@ -21,14 +21,12 @@ class MatchResult:
         condition_matches: bool = True,
         price_matches: bool = True,
         reason: str = "",
-        is_bundle: bool = False,
     ) -> None:
         self.is_match = is_match
         self.keyword_match_score = keyword_match_score
         self.condition_matches = condition_matches
         self.price_matches = price_matches
         self.reason = reason
-        self.is_bundle = is_bundle
 
 
 DEFAULT_BD_GOODIES_EXCLUSIONS: list[str] = [
@@ -94,7 +92,7 @@ def expand_exclusions_multilingual(exclusions: list[str]) -> list[str]:
     for excl in exclusions:
         norm_excl = normalize_text(excl)
         for fr_key, foreign_list in MULTILINGUAL_EXCLUSION_MAPPING.items():
-            if fr_key == norm_excl or fr_key in norm_excl or norm_excl in fr_key:
+            if fr_key == norm_excl:
                 expanded.update(foreign_list)
     return list(expanded)
 
@@ -222,7 +220,7 @@ def default_exclusion_hit(
     for c_excl in exclusions:
         if not contains_keyword(title, c_excl):
             continue
-        if any(c_excl in kw.lower() for kw in includes):
+        if any(contains_keyword(kw, c_excl) for kw in includes):
             continue
         return c_excl
     return None
@@ -255,7 +253,6 @@ def evaluate_listing_against_alert(
             is_match=False,
             price_matches=False,
             reason="Prix supérieur au seuil maximum",
-            is_bundle=False,
         )
 
     # Concaténation du texte consultable de l'annonce
@@ -437,7 +434,7 @@ def evaluate_listing_against_alert(
 
     expanded_defaults = expand_exclusions_multilingual(category_defaults)
     default_hit = default_exclusion_hit(
-        listing_normalized_title,
+        searchable_text,
         expanded_defaults,
         alert.include_keywords,
     )
@@ -536,5 +533,4 @@ def evaluate_listing_against_alert(
         condition_matches=True,
         price_matches=True,
         reason="Match confirmé",
-        is_bundle=False,
     )

@@ -47,7 +47,12 @@ class NegotiationModule(BaseAIModule):
         if not self.is_enabled:
             return None
 
-        price_cents = listing.item_price_cents or 0
+        from app.services.price_calculator import calculate_estimated_total
+
+        price_cents = listing.estimated_total_cents or calculate_estimated_total(
+            listing.item_price_cents or 0,
+            fallback_defaults=True,
+        ) or 0
         if price_cents <= 0:
             return None
 

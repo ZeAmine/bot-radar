@@ -32,7 +32,12 @@ class ProfitScoringModule(BasePostAlertModule):
         if listing.category_slug in (CategorySlug.BD_COMICS.value, "livres", "mangas"):
             return None
 
-        total_cents = listing.estimated_total_cents or (listing.item_price_cents + 380)
+        from app.services.price_calculator import calculate_estimated_total
+
+        total_cents = listing.estimated_total_cents or calculate_estimated_total(
+            listing.item_price_cents or 0,
+            fallback_defaults=True,
+        )
         total_eur = total_cents / 100.0
         alert_name = getattr(alert, "name", None)
         alert_ctx = f" (recherche ciblée : '{alert_name}')" if alert_name else ""
@@ -58,9 +63,14 @@ class ProfitScoringModule(BasePostAlertModule):
         if not isinstance(raw_chunk, dict):
             return None
 
-        total_cents = listing.estimated_total_cents or (
-            (listing.item_price_cents + 380) if listing.item_price_cents else None
-        )
+        from app.services.price_calculator import calculate_estimated_total
+
+        total_cents = listing.estimated_total_cents
+        if total_cents is None and listing.item_price_cents:
+            total_cents = calculate_estimated_total(
+                listing.item_price_cents,
+                fallback_defaults=True,
+            )
 
         try:
             return ProfitScoringResult(

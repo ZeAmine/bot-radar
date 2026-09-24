@@ -20,6 +20,7 @@ from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 class BookRepository:
     """Gestion des opérations en base de données pour les livres et liaisons d'alertes."""
 
+    _BOOK_CACHE_LOAD = (selectinload(Book.market_cache),)
     _BOOK_EAGER_LOAD = (
         selectinload(Book.market_cache),
         selectinload(Book.snapshots),
@@ -42,7 +43,7 @@ class BookRepository:
         """Recherche un livre par son ISBN-13 exact."""
         stmt = (
             select(Book)
-            .options(*self._BOOK_EAGER_LOAD)
+            .options(*self._BOOK_CACHE_LOAD)
             .where(Book.isbn13 == isbn13.strip())
         )
         result = await self.session.execute(stmt)
@@ -147,9 +148,9 @@ class BookRepository:
             .where(
                 Category.slug == "bd_comics",
                 Alert.status == AlertStatus.ACTIVE,
-                (BookMarketCache.expires_at == None)
+                BookMarketCache.expires_at.is_(None)
                 | (BookMarketCache.expires_at <= now + timedelta(hours=2))
-                | (BookMarketCache.checked_at == None),
+                | BookMarketCache.checked_at.is_(None),
             )
             .group_by(Book.id, BookMarketCache.checked_at)
             .order_by(BookMarketCache.checked_at.asc().nulls_first())
@@ -185,7 +186,7 @@ class BookRepository:
         stmt = (
             select(Book)
             .join(AlertBook, Book.id == AlertBook.book_id)
-            .options(*self._BOOK_EAGER_LOAD)
+            .options(*self._BOOK_CACHE_LOAD)
             .where(AlertBook.alert_id == alert_id)
             .order_by(Book.title.asc())
         )
@@ -202,58 +203,69 @@ class BookRepository:
         """Résout le livre le plus approprié pour une annonce Vinted
         en détectant le tome ou le lot.
         """
-        tome_res = TomeExtractor.extract(
-            title=listing_title,
-            description=listing_description,
-            series_key=alert_name,
-        )
         books = await self.get_all_books_for_alert(alert_id)
-        if not books:
-            return None, [], tome_res
+        return resolve_loaded_books(
+            alert_name=alert_name,
+            listing_title=listing_title,
+            listing_description=listing_description,
+            books=books,
+        )
 
-        # 1. Si un lot est détecté
-        if tome_res.is_lot:
-            if tome_res.lot_tomes:
-                matching_lot = [
-                    b
-                    for b in books
-                    if any(
-                        TomeExtractor.extract(b.title, series_key=alert_name).tome_number == t
-                        or re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t}\b", b.title, re.IGNORECASE)
-                        for t in tome_res.lot_tomes
+
+def resolve_loaded_books(
+    *,
+    alert_name: str,
+    listing_title: str,
+    listing_description: str | None,
+    books: list[Book],
+) -> tuple[Book | None, list[Book], TomeMatchResult]:
+    """Choisit le tome en CPU à partir de livres déjà chargés (zéro SQL)."""
+    tome_res = TomeExtractor.extract(
+        title=listing_title,
+        description=listing_description,
+        series_key=alert_name,
+    )
+    if not books:
+        return None, [], tome_res
+
+    if tome_res.is_lot:
+        if tome_res.lot_tomes:
+            matching_lot = [
+                b
+                for b in books
+                if any(
+                    TomeExtractor.extract(b.title, series_key=alert_name).tome_number == t
+                    or re.search(
+                        rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t}\b",
+                        b.title,
+                        re.IGNORECASE,
                     )
-                ]
-                return None, matching_lot if matching_lot else books, tome_res
-            return None, books, tome_res
-
-        # 2. Si un numéro de tome précis est identifié dans l'annonce
-        if tome_res.tome_number is not None:
-            t_num = tome_res.tome_number
-            # A. Recherche heuristique via TomeExtractor sur le titre du livre catalogué
-            for b in books:
-                b_tome = TomeExtractor.extract(b.title, series_key=alert_name)
-                if b_tome.tome_number == t_num:
-                    return b, books, tome_res
-
-            # B. Recherche explicite par regex (ex: "RIP — Tome 2", "T2", "Vol 2")
-            for b in books:
-                if re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_num}\b", b.title, re.IGNORECASE):
-                    return b, books, tome_res
-
-            # C. Recherche par sous-titre si détecté (ex: "Maurice" dans le titre du livre)
-            if tome_res.matched_subtitle:
-                sub = tome_res.matched_subtitle.lower()
-                for b in books:
-                    if sub in b.title.lower():
-                        return b, books, tome_res
-
-            # Le tome demandé n'existe pas encore dans les livres catalogués pour cette alerte
-            return None, books, tome_res
-
-        # 3. Aucun tome précis ni lot détecté (ex: one-shot comme "Jimmy Corrigan")
-        # Si un seul livre est rattaché à l'alerte, on l'associe directement
-        if len(books) == 1:
-            return books[0], books, tome_res
-
-        # Plusieurs tomes en base et annonce sans tome précisé
+                    for t in tome_res.lot_tomes
+                )
+            ]
+            return None, matching_lot if matching_lot else books, tome_res
         return None, books, tome_res
+
+    if tome_res.tome_number is not None:
+        t_num = tome_res.tome_number
+        for b in books:
+            b_tome = TomeExtractor.extract(b.title, series_key=alert_name)
+            if b_tome.tome_number == t_num:
+                return b, books, tome_res
+
+        for b in books:
+            if re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_num}\b", b.title, re.IGNORECASE):
+                return b, books, tome_res
+
+        if tome_res.matched_subtitle:
+            sub = tome_res.matched_subtitle.lower()
+            for b in books:
+                if sub in b.title.lower():
+                    return b, books, tome_res
+
+        return None, books, tome_res
+
+    if len(books) == 1:
+        return books[0], books, tome_res
+
+    return None, books, tome_res

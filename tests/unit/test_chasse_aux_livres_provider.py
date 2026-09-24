@@ -95,7 +95,8 @@ async def test_chasse_aux_livres_success_by_title():
         assert offer.provider_name == "chasse_aux_livres"
         assert offer.delivered_price_cents == 1499
         assert offer.item_price_cents == 1499
-        assert offer.shipping_price_cents == 0
+        assert offer.shipping_price_cents is None
+        assert offer.price_includes_shipping is True
         assert "example.com/momox" in offer.source_url
         assert offer.confidence == MatchConfidence.HIGH
         assert offer.is_available is True

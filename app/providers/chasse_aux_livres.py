@@ -433,7 +433,7 @@ class ChasseAuxLivresProvider:
                         MarketOffer(
                             provider_name=self.name,
                             item_price_cents=0,
-                            shipping_price_cents=0,
+                            shipping_price_cents=None,
                             delivered_price_cents=0,
                             source_url=product_url,
                             currency="EUR",
@@ -460,8 +460,9 @@ class ChasseAuxLivresProvider:
                 MarketOffer(
                     provider_name=self.name,
                     item_price_cents=primary["total_cents"],
-                    shipping_price_cents=0,
+                    shipping_price_cents=None,
                     delivered_price_cents=primary["total_cents"],
+                    price_includes_shipping=True,
                     source_url=primary["url"],
                     currency="EUR",
                     item_condition=cond_str,

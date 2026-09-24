@@ -116,6 +116,38 @@ class DeepSeekClient:
         self._health_cache_time = now
         return result
 
+    async def post_chat(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        temperature: float,
+        http_client: httpx.AsyncClient,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """POST /chat/completions. Le client HTTP est injecté pour partager un seul appel."""
+        endpoint = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "response_format": {"type": "json_object"},
+            "temperature": temperature,
+        }
+        response = await http_client.post(
+            endpoint,
+            json=payload,
+            headers=headers,
+            timeout=self.timeout if timeout is None else timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            return {}
+        return data
+
     async def generate_json(
         self,
         system_prompt: str,
@@ -127,34 +159,18 @@ class DeepSeekClient:
             logger.debug("Appel DeepSeek ignoré : clé API non configurée ou IA désactivée.")
             return None
 
-        endpoint = f"{self.base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
         user_message: dict[str, Any] = {"role": "user", "content": user_prompt}
-
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                user_message,
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": temperature,
-        }
+        messages = [
+            {"role": "system", "content": system_prompt},
+            user_message,
+        ]
 
         try:
-            client = get_shared_http_client()
-            response = await client.post(
-                endpoint,
-                json=payload,
-                headers=headers,
-                timeout=self.timeout,
+            data = await self.post_chat(
+                messages=messages,
+                temperature=temperature,
+                http_client=get_shared_http_client(),
             )
-            response.raise_for_status()
-            data = response.json()
 
             choices = data.get("choices", [])
             if not choices:

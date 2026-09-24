@@ -178,7 +178,7 @@ La liste complète des clés lues par l'application est dans [`.env.example`](.e
 
 ## 10. Lancement avec Docker Compose
 
-Pour déployer la stack complète (API FastAPI, Worker APScheduler, PostgreSQL 16 et Redis 7) :
+Pour déployer la stack complète (API FastAPI + scheduler, PostgreSQL 16 et Redis 7) :
 
 ```bash
 # Construire et démarrer en arrière-plan
@@ -187,11 +187,8 @@ docker compose up --build -d
 # Vérifier l'état des conteneurs
 docker compose ps
 
-# Consulter les logs de l'application
+# Consulter les logs de l'application (API, scheduler et poller)
 docker compose logs -f app
-
-# Consulter les logs du worker de rafraîchissement des prix
-docker compose logs -f worker
 ```
 
 L'application écoute par défaut sur le port `8000`.

@@ -105,7 +105,7 @@ class ProviderRegistry:
             if o.is_comparable
             and o.is_available
             and o.delivered_price_cents > 0
-            and o.shipping_price_cents is not None
+            and (o.shipping_price_cents is not None or o.price_includes_shipping)
         ]
 
         if not comparable_offers:

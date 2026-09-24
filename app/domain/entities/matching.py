@@ -15,5 +15,4 @@ class MatchResult:
     price_matches: bool = True
     confidence: MatchConfidence = MatchConfidence.HIGH
     reason: str = ""
-    is_bundle: bool = False
     matched_keywords: list[str] = field(default_factory=list)
