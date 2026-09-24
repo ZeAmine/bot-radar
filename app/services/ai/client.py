@@ -120,7 +120,6 @@ class DeepSeekClient:
         self,
         system_prompt: str,
         user_prompt: str,
-        image_urls: list[str] | None = None,
         temperature: float = 0.2,
     ) -> dict[str, Any] | None:
         """Envoie une requête et retourne la réponse sous forme de dictionnaire JSON."""
@@ -134,15 +133,7 @@ class DeepSeekClient:
             "Content-Type": "application/json",
         }
 
-        # Construction du message utilisateur (texte pur ou multimodal)
-        if image_urls and len(image_urls) > 0:
-            content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
-            for url in image_urls[:5]:  # Limiter à 5 photos max
-                if url and url.startswith("http"):
-                    content.append({"type": "image_url", "image_url": {"url": url}})
-            user_message: dict[str, Any] = {"role": "user", "content": content}
-        else:
-            user_message = {"role": "user", "content": user_prompt}
+        user_message: dict[str, Any] = {"role": "user", "content": user_prompt}
 
         payload: dict[str, Any] = {
             "model": self.model,

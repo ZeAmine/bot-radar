@@ -66,3 +66,41 @@ async def test_refresh_book_prices_task_success():
             cache_duration_hours=24,
             historical_low_1y_cents=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_refresh_book_prices_task_incremental():
+    """Vérifie que le mode incrémental interroge uniquement le micro-lot prioritaire."""
+    mock_book = Book(
+        id=uuid.uuid4(),
+        title="1629",
+        normalized_title="1629",
+        isbn13="9782344045084",
+    )
+    mock_registry = MagicMock()
+    mock_registry.fetch_all_offers = AsyncMock(return_value=[])
+    mock_registry.select_best_offer = MagicMock(return_value=None)
+    mock_session = AsyncMock()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mock_book_repo = MagicMock()
+        mock_book_repo.get_books_needing_price_refresh = AsyncMock(return_value=[mock_book])
+        mock_book_repo.get_books_for_active_bd_alerts = AsyncMock(return_value=[])
+
+        mock_market_repo = MagicMock()
+        mock_market_repo.save_snapshot = AsyncMock()
+        mock_market_repo.update_or_create_cache = AsyncMock()
+
+        mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
+        mp.setattr(
+            "app.tasks.refresh_book_prices.MarketPriceRepository", lambda _s: mock_market_repo
+        )
+
+        stats = await refresh_book_prices_task(
+            registry=mock_registry, session=mock_session, incremental=True, batch_size=5
+        )
+
+        assert stats["processed"] == 1
+        mock_book_repo.get_books_needing_price_refresh.assert_called_once_with(limit=5)
+        mock_book_repo.get_books_for_active_bd_alerts.assert_not_called()
+

@@ -148,13 +148,15 @@ def test_comparator_with_historical_low_1y():
     assert "Derniere MAJ :" in card
 
 
-def test_comparator_no_historical_low_does_not_display_target_line():
-    """Vérifie que si aucun historique 1 an n'existe, le résumé renvoie None (pas de ligne parasite)."""
+def test_comparator_no_historical_low_falls_back_to_live_market_price():
+    """Vérifie que si aucun historique 1 an n'existe, le résumé se replie sur le prix du marché direct."""
     book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=None)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
-    assert summary is None
+    assert summary is not None
+    assert "📊 Prix du marché : 22,00 € (Ebay)" in summary
+    assert "✅ Écart : <b>-8,31 €</b>" in summary
 
 
 def test_comparator_market_details_card_excludes_amazon_de():

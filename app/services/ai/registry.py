@@ -4,14 +4,10 @@ import logging
 
 from app.services.ai.modules.auto_tuning import auto_tuning_module
 from app.services.ai.modules.base import BaseAIModule, BasePostAlertModule
-from app.services.ai.modules.bundle_decomposition import bundle_decomposition_module
-from app.services.ai.modules.hidden_condition import hidden_condition_module
 from app.services.ai.modules.keyword_variants import keyword_variants_module
 from app.services.ai.modules.natural_add import natural_add_module
 from app.services.ai.modules.negotiation import negotiation_module
-from app.services.ai.modules.price_glitch import price_glitch_module
 from app.services.ai.modules.profit_scoring import profit_scoring_module
-from app.services.ai.modules.vision_guard import vision_guard_module
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +21,7 @@ class AIRegistry:
 
         # Enregistrement des modules disponibles
         self.register(natural_add_module)
-        self.register(hidden_condition_module)
-        self.register(price_glitch_module)
-        self.register(bundle_decomposition_module)
         self.register(profit_scoring_module)
-        self.register(vision_guard_module)
         self.register(negotiation_module)
         self.register(keyword_variants_module)
         self.register(auto_tuning_module)

@@ -87,8 +87,8 @@ def _get_market_price_repo(session: Any) -> Any:
 async def start_add_alert(
     event: Message | CallbackQuery,
     state: FSMContext,
-    db_session: Any = None,
-    db_user: User | None = None,
+    _db_session: Any = None,
+    _db_user: User | None = None,
 ) -> None:
     """Point d'entrée unifié pour l'ajout d'alertes multi-catégories."""
     await state.clear()
@@ -101,7 +101,24 @@ async def start_add_alert(
             inline_query = parts[1].strip()
 
     if inline_query and natural_add_module.is_enabled:
-        # Tenter le parsing en langage naturel via DeepSeek-V4.1-Flash
+        # Feedback visuel immédiat : indicateur de frappe + message d'attente
+        if event.bot:
+            with contextlib.suppress(Exception):
+                await event.bot.send_chat_action(chat_id=event.chat.id, action="typing")
+
+        loading_text = (
+            "🪄 <b>Création d'alerte en langage naturel</b>\n\n"
+            "⏳ <i>DeepSeek analyse votre demande pour "
+            f"« <b>{html.escape(inline_query)}</b> »...</i>"
+        )
+        loading_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⏳ Recherche IA en cours...", callback_data="noop")]
+            ]
+        )
+        loading_msg = await event.answer(loading_text, reply_markup=loading_kb)
+
+        # Parsing en langage naturel via DeepSeek-V4.1-Flash
         parsed = await natural_add_module.parse_prompt(inline_query)
         if parsed:
             state_data = {
@@ -137,13 +154,25 @@ async def start_add_alert(
                 "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
             )
             keyboard = get_alert_confirmation_keyboard()
-            if isinstance(event, CallbackQuery):
-                await event.answer()
-                if event.message:
-                    await event.message.answer(prompt_text, reply_markup=keyboard)
-            else:
+            try:
+                await loading_msg.edit_text(prompt_text, reply_markup=keyboard)
+            except Exception:
                 await event.answer(prompt_text, reply_markup=keyboard)
             return
+
+        # Fallback si l'IA n'a pas pu structurer la demande : sélection de catégorie
+        await state.update_data(inline_query=inline_query)
+        prompt_text = (
+            f"🎯 <b>Ajout d'une alerte pour « {html.escape(inline_query)} »</b>\n\n"
+            "Choisis la catégorie de ce produit :"
+        )
+        await state.set_state(AlertCreationState.waiting_for_category)
+        keyboard = get_category_selection_keyboard()
+        try:
+            await loading_msg.edit_text(prompt_text, reply_markup=keyboard)
+        except Exception:
+            await event.answer(prompt_text, reply_markup=keyboard)
+        return
 
     if inline_query:
         await state.update_data(inline_query=inline_query)
@@ -343,14 +372,51 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
         return
 
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
-    await callback.answer("🤖 Recherche des variantes et exclusions IA...")
+    await callback.answer()
+
+    loading_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⏳ Recherche IA en cours...", callback_data="noop")]
+        ]
+    )
+    if callback.message and hasattr(callback.message, "edit_text"):
+        await callback.message.edit_text(
+            f"⏳ <b>Recherche des variantes et exclusions IA...</b>\n\n"
+            f"Analyse de « <b>{html.escape(name)}</b> » en cours.",
+            reply_markup=loading_kb,
+        )
+
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
     variants, new_exclusions = await keyword_variants_module.generate_variants_and_exclusions(
         name, category_slug=category_slug
     )
+
+    include_keywords = data.get("include_keywords") or [name]
+    max_price_cents = data.get("max_item_price_cents")
+    conditions = data.get("selected_conditions") or []
+
     if not variants and not new_exclusions:
-        await callback.answer("Aucune variante ou exclusion spécifique trouvée.", show_alert=True)
+        recap = format_semi_auto_recap(
+            title=name,
+            author=data.get("author"),
+            publisher=data.get("publisher"),
+            isbn=data.get("isbn"),
+            max_price_cents=max_price_cents,
+            include_keywords=include_keywords,
+            exclude_keywords=data.get("exclude_keywords"),
+            category_slug=category_slug,
+            conditions=conditions,
+            variants=data.get("variants"),
+        )
+        prompt_text = (
+            "ℹ️ <b>Aucune variante ou exclusion supplémentaire nécessaire.</b>\n\n"
+            f"{recap}\n\n"
+            "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
+        )
+        keyboard = get_alert_confirmation_keyboard(show_variants_btn=False)
+        if callback.message and hasattr(callback.message, "edit_text"):
+            await callback.message.edit_text(prompt_text, reply_markup=keyboard)
         return
 
     # Stocker les variantes dans 'variants' sans polluer 'include_keywords'
@@ -366,10 +432,6 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
             existing_exclusions.append(e)
 
     await state.update_data(variants=existing_variants, exclude_keywords=existing_exclusions)
-
-    include_keywords = data.get("include_keywords") or [name]
-    max_price_cents = data.get("max_item_price_cents")
-    conditions = data.get("selected_conditions") or []
 
     recap = format_semi_auto_recap(
         title=name,
@@ -503,7 +565,9 @@ async def save_alert(
                             historical_low_1y_cents=hist_low,
                         )
             except Exception as exc:
-                logger.warning("Erreur Chasse-aux-livres par ISBN lors de la création d'alerte : %s", exc)
+                logger.warning(
+                    "Erreur Chasse-aux-livres par ISBN lors de la création d'alerte : %s", exc
+                )
         else:
             # Série multi-tomes : Création propre de l'alerte sans faux livre unique ni fausse cote
             vinted_url = f"https://www.vinted.fr/catalog?search_text={urllib.parse.quote_plus(name)}&order=newest_first"
@@ -524,7 +588,8 @@ async def save_alert(
         await state.clear()
 
         price_str = f"{max_price / 100:.2f} €".replace(".", ",") if max_price else "Aucun"
-        cond_str = ", ".join(conditions) if conditions else "Neuf avec étiquette, Neuf sans étiquette, Très bon état"
+        default_conds = "Neuf avec étiquette, Neuf sans étiquette, Très bon état"
+        cond_str = ", ".join(conditions) if conditions else default_conds
 
         lines = [
             "✅ <b>Alerte créée avec succès !</b>\n",
@@ -543,7 +608,9 @@ async def save_alert(
         lines.append(f"🏷 <b>États :</b> {cond_str}\n")
 
         if best_offer and best_offer.delivered_price_cents:
-            lowest_str = f"{best_offer.delivered_price_cents / 100:.2f} € ({best_offer.provider_name})".replace(".", ",")
+            deliv_cents = best_offer.delivered_price_cents
+            prov = best_offer.provider_name
+            lowest_str = f"{deliv_cents / 100:.2f} € ({prov})".replace(".", ",")
             lines.append(f"📊 <b>Prix du marché :</b> {lowest_str}")
             if hist_low:
                 hist_low_str = f"{hist_low / 100:.2f} €".replace(".", ",")
@@ -660,16 +727,42 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
     # Pour les BD/Comics ou si un ISBN est présent
     if category_slug == CategorySlug.BD_COMICS.value or isbn:
         isbn_str = f" ({isbn})" if isbn else " (aucun)"
-        buttons.append([InlineKeyboardButton(text=f"🔢 ISBN{isbn_str}", callback_data="al_create_edit:isbn")])
+        buttons.append([
+            InlineKeyboardButton(text=f"🔢 ISBN{isbn_str}", callback_data="al_create_edit:isbn")
+        ])
 
     buttons.extend([
-        [InlineKeyboardButton(text=f"🎯 Prix max ({current_price_str})", callback_data="al_create_edit:price")],
-        [InlineKeyboardButton(text="🔑 Mots-clés inclus", callback_data="al_create_edit:include_keywords")],
-        [InlineKeyboardButton(text="🚫 Mots-clés exclus", callback_data="al_create_edit:exclude_keywords")],
+        [
+            InlineKeyboardButton(
+                text=f"🎯 Prix max ({current_price_str})", callback_data="al_create_edit:price"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🔑 Mots-clés inclus", callback_data="al_create_edit:include_keywords"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🚫 Mots-clés exclus", callback_data="al_create_edit:exclude_keywords"
+            )
+        ],
         [InlineKeyboardButton(text="✨ Variantes", callback_data="al_create_edit:variants")],
-        [InlineKeyboardButton(text="🏷 États acceptés", callback_data="al_create_edit:conditions")],
-        [InlineKeyboardButton(text="🔄 Changer de produit / Recommencer", callback_data="al_create_edit:restart")],
-        [InlineKeyboardButton(text="← Retour au récapitulatif", callback_data="al_create_edit:back")],
+        [
+            InlineKeyboardButton(
+                text="🏷 États acceptés", callback_data="al_create_edit:conditions"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🔄 Changer de produit / Recommencer", callback_data="al_create_edit:restart"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="← Retour au récapitulatif", callback_data="al_create_edit:back"
+            )
+        ],
     ])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -769,7 +862,11 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="← Retour au menu", callback_data="al_create_edit:menu")],
-            [InlineKeyboardButton(text="← Retour au récapitulatif", callback_data="al_create_edit:back")],
+            [
+                InlineKeyboardButton(
+                    text="← Retour au récapitulatif", callback_data="al_create_edit:back"
+                )
+            ],
         ]
     )
     if callback.message and hasattr(callback.message, "edit_text"):
@@ -825,7 +922,8 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
             clean_isbn = extract_clean_isbn(raw_text)
             if not clean_isbn:
                 await message.answer(
-                    "⚠️ Format d'ISBN invalide (doit comporter 10 ou 13 chiffres). Réessaie (ou /skip) :"
+                    "⚠️ Format d'ISBN invalide (doit comporter 10 ou 13 chiffres). "
+                    "Réessaie (ou /skip) :"
                 )
                 return
             await state.update_data(isbn=clean_isbn, is_series=False)

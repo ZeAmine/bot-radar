@@ -38,6 +38,8 @@ from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger(__name__)
 
+_active_variant_alerts: set[str] = set()
+
 router = Router(name="alerts_manage")
 
 
@@ -214,7 +216,6 @@ async def prompt_new_field_value(
     db_session: Any,
 ) -> None:
     """Affiche l'invite épurée avec bloc '1 Clic pour Copier' ou cases à cocher."""
-    await callback.answer()
     parts = callback.data.split(":")  # type: ignore
     alert_id = uuid.UUID(parts[1])
     field = parts[2]
@@ -227,6 +228,7 @@ async def prompt_new_field_value(
 
     # 1. Conditions : cases à cocher interactives
     if field == "conditions":
+        await callback.answer()
         await state.clear()
         await _show_conditions_menu(callback, alert)
         return
@@ -234,40 +236,131 @@ async def prompt_new_field_value(
     # Actions intelligentes IA
     if field == "ai_variants":
         await state.clear()
-        await callback.answer("🤖 Recherche des variantes orthographiques...")
-        from app.bot.handlers.autotune import _pending_variants
-        from app.services.ai.modules.keyword_variants import keyword_variants_module
-
-        variants = await keyword_variants_module.generate_variants(alert.name)
-        if not variants:
-            await callback.answer("Aucune variante spécifique trouvée.", show_alert=True)
+        alert_key = str(alert.id)
+        if alert_key in _active_variant_alerts:
+            await callback.answer("⏳ Recherche déjà en cours...", show_alert=True)
             return
 
-        _pending_variants[str(alert.id)] = variants
-        var_str = ", ".join(variants)
-        text = (
-            f"🔤 <b>Variantes suggérées par l'IA pour « {html.escape(alert.name)} » :</b>\n\n"
-            f"<code>{html.escape(var_str)}</code>\n\n"
-            "Souhaitez-vous ajouter ces variantes aux mots-clés de l'alerte ?"
-        )
-        keyboard = InlineKeyboardMarkup(
+        _active_variant_alerts.add(alert_key)
+        await callback.answer()
+
+        loading_keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="✅ Ajouter à l'alerte",
-                        callback_data=f"ai_var_apply:{alert.id}",
+                        text="⏳ Recherche en cours...",
+                        callback_data="noop",
                     )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="← Retour",
-                        callback_data=f"al_edit:{alert.id}",
-                    )
-                ],
+                ]
             ]
         )
         if callback.message and hasattr(callback.message, "edit_text"):
-            await callback.message.edit_text(text, reply_markup=keyboard)
+            await callback.message.edit_text(
+                f"⏳ <b>Recherche des variantes orthographiques IA...</b>\n\n"
+                f"Analyse de « <b>{html.escape(alert.name)}</b> » par DeepSeek en cours.",
+                reply_markup=loading_keyboard,
+            )
+
+        try:
+            from app.bot.handlers.autotune import _pending_variants
+            from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+            variants = await keyword_variants_module.generate_variants(alert.name)
+            current_variants = set(alert.variants or [])
+            existing_vars = {x.lower() for x in current_variants}
+            new_variants = [v for v in variants if v.lower() not in existing_vars]
+
+            if not variants:
+                empty_keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="← Retour à l'alerte",
+                                callback_data=f"al_edit:{alert.id}",
+                            )
+                        ]
+                    ]
+                )
+                if callback.message and hasattr(callback.message, "edit_text"):
+                    await callback.message.edit_text(
+                        f"ℹ️ <b>Aucune variante nécessaire</b>\n\n"
+                        f"L'IA n'a pas identifié de variantes orthographiques ou phonétiques "
+                        f"pertinentes pour « <b>{html.escape(alert.name)}</b> ».",
+                        reply_markup=empty_keyboard,
+                    )
+                return
+
+            if not new_variants:
+                existing_keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="← Retour à l'alerte",
+                                callback_data=f"al_edit:{alert.id}",
+                            )
+                        ]
+                    ]
+                )
+                var_str = ", ".join(variants)
+                if callback.message and hasattr(callback.message, "edit_text"):
+                    await callback.message.edit_text(
+                        f"💡 <b>Toutes les variantes sont déjà actives</b>\n\n"
+                        f"Variantes trouvées par l'IA :\n<code>{html.escape(var_str)}</code>\n\n"
+                        f"Elles sont déjà toutes enregistrées sur cette alerte.",
+                        reply_markup=existing_keyboard,
+                    )
+                return
+
+            _pending_variants[str(alert.id)] = new_variants
+            var_str = ", ".join(new_variants)
+            hint = "<i>Ces termes permettront de matcher les variantes orthographiques.</i>\n\n"
+            text = (
+                f"🔤 <b>Variantes suggérées par l'IA pour « {html.escape(alert.name)} » :</b>\n\n"
+                f"<code>{html.escape(var_str)}</code>\n\n"
+                f"{hint}"
+                f"Souhaitez-vous ajouter ces {len(new_variants)} variante(s) à l'alerte ?"
+            )
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="✅ Ajouter aux variantes",
+                            callback_data=f"ai_var_apply:{alert.id}",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="← Retour",
+                            callback_data=f"al_edit:{alert.id}",
+                        )
+                    ],
+                ]
+            )
+            if callback.message and hasattr(callback.message, "edit_text"):
+                await callback.message.edit_text(text, reply_markup=keyboard)
+        except Exception as err:
+            logger.error("Erreur lors de la suggestion de variantes pour %s: %s", alert.name, err)
+            err_keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="← Retour à l'alerte",
+                            callback_data=f"al_edit:{alert.id}",
+                        )
+                    ]
+                ]
+            )
+            if callback.message and hasattr(callback.message, "edit_text"):
+                err_msg = (
+                    f"⚠️ Erreur recherche des variantes pour « {html.escape(alert.name)} ».\n"
+                    "Veuillez réessayer dans un instant."
+                )
+                await callback.message.edit_text(
+                    err_msg,
+                    reply_markup=err_keyboard,
+                )
+        finally:
+            _active_variant_alerts.discard(alert_key)
         return
 
     if field == "ai_autotune":
@@ -278,6 +371,7 @@ async def prompt_new_field_value(
         return
 
     # 2. Tous les autres champs : bloc <code> cliquable pour copier en 1 clic
+    await callback.answer()
     await state.set_state(AlertEditState.waiting_for_new_value)
     await state.update_data(edit_alert_id=str(alert.id), edit_field=field)
 
@@ -461,11 +555,14 @@ async def save_edited_field_value(
                     if not (kw.isdigit() and len(kw) >= 10)
                 ]
                 # Mettre à jour l'URL de recherche Vinted
+                base_vinted = "https://www.vinted.fr/catalog?search_start_type=item_page_isbn"
                 alert.vinted_search_url = (
-                    f"https://www.vinted.fr/catalog?search_start_type=item_page_isbn&search_text={clean_isbn}&order=newest_first"
+                    f"{base_vinted}&search_text={clean_isbn}&order=newest_first"
                 )
 
                 # Propagation globale en base : livre, liaison alerte-livre et cote de marché
+                from sqlalchemy import delete
+
                 from app.core.constants import ComparisonStatus, MatchConfidence
                 from app.db.models.alert_book import AlertBook
                 from app.db.repositories.book_repo import BookRepository
@@ -473,7 +570,6 @@ async def save_edited_field_value(
                 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
                 from app.providers.registry import ProviderRegistry
                 from app.utils.text import normalize_text
-                from sqlalchemy import delete
 
                 book_repo = BookRepository(db_session)
                 market_repo = MarketPriceRepository(db_session)

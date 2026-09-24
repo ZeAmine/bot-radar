@@ -7,8 +7,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.tasks.vinted_poller import (
+    get_adaptive_poll_interval,
     get_night_mode_remaining_seconds,
     is_night_time,
+    is_peak_hours,
     run_vinted_poller,
 )
 
@@ -107,7 +109,11 @@ async def test_poller_night_mode_suspension():
     with (
         patch("app.tasks.vinted_poller.is_night_time", return_value=True),
         patch("app.tasks.vinted_poller.get_night_mode_remaining_seconds", return_value=120.0),
-        patch("app.tasks.vinted_poller.load_initial_seen_ids", new_callable=AsyncMock, return_value=set()),
+        patch(
+            "app.tasks.vinted_poller.load_initial_seen_ids",
+            new_callable=AsyncMock,
+            return_value=set(),
+        ),
         patch("app.tasks.vinted_poller.poll_vinted_once", new_callable=AsyncMock) as mock_poll,
         patch("app.tasks.vinted_poller.save_poller_status", new_callable=AsyncMock),
         patch("app.tasks.vinted_poller.vinted_session_manager.clear_session") as mock_clear,
@@ -122,3 +128,41 @@ async def test_poller_night_mode_suspension():
         # Arrêt
         stop_event.set()
         await task
+
+
+def test_is_peak_hours():
+    tz = ZoneInfo("Europe/Paris")
+    # 12:30 -> Heure de pointe (déjeuner)
+    assert is_peak_hours(datetime(2026, 9, 13, 12, 30, tzinfo=tz)) is True
+    # 20:00 -> Heure de pointe (soirée)
+    assert is_peak_hours(datetime(2026, 9, 13, 20, 0, tzinfo=tz)) is True
+    # 16:00 -> Heure standard
+    assert is_peak_hours(datetime(2026, 9, 13, 16, 0, tzinfo=tz)) is False
+    # 10:00 -> Heure standard
+    assert is_peak_hours(datetime(2026, 9, 13, 10, 0, tzinfo=tz)) is False
+
+
+def test_get_adaptive_poll_interval():
+    with (
+        patch("app.tasks.vinted_poller.settings.VINTED_POLL_INTERVAL_SECONDS", 15),
+        patch("app.tasks.vinted_poller.settings.VINTED_PROXY_URL", None),
+    ):
+        # VPS en heure de pointe : accélère à 12s
+        with patch("app.tasks.vinted_poller.is_peak_hours", return_value=True):
+            assert get_adaptive_poll_interval() == 12.0
+        # VPS en heure standard : 15s
+        with patch("app.tasks.vinted_poller.is_peak_hours", return_value=False):
+            assert get_adaptive_poll_interval() == 15.0
+
+    # Avec proxy résidentiel (Raspberry Pi)
+    with (
+        patch("app.tasks.vinted_poller.settings.VINTED_POLL_INTERVAL_SECONDS", 15),
+        patch("app.tasks.vinted_poller.settings.VINTED_PROXY_URL", "http://192.168.1.50:8888"),
+    ):
+        # Proxy en heure de pointe : 8s
+        with patch("app.tasks.vinted_poller.is_peak_hours", return_value=True):
+            assert get_adaptive_poll_interval() == 8.0
+        # Proxy en heure standard : 10s
+        with patch("app.tasks.vinted_poller.is_peak_hours", return_value=False):
+            assert get_adaptive_poll_interval() == 10.0
+

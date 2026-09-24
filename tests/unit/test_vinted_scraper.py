@@ -8,12 +8,15 @@ import pytest
 
 from app.services.vinted_scraper import (
     VintedSessionManager,
+    catalog_url_to_api_params,
     extract_all_catalog_photos,
     extract_item_page_photos,
     extract_photo_url,
+    fetch_vinted_page,
     get_jwt_exp,
     is_session_refresh_page,
     parse_vinted_catalog_html,
+    parse_vinted_catalog_json,
     parse_vinted_overlay_title,
     to_ingest_payload,
 )
@@ -202,5 +205,195 @@ def test_is_session_refresh_page_and_jwt_exp():
     token = f"{header}.{payload}.signature"
     exp = get_jwt_exp(token)
     assert exp == float(now + 3600)
+
+
+def test_catalog_url_to_api_params():
+    url = (
+        "https://www.vinted.fr/catalog?catalog[]=5425"
+        "&status_ids[]=1&status_ids[]=2&language_book_ids[]=6436"
+        "&search_id=12345&order=newest_first"
+    )
+    params = catalog_url_to_api_params(url)
+    assert params["attribute_ids[catalog]"] == "5425"
+    assert params["attribute_ids[status]"] == "1,2"
+    assert params["attribute_ids[language_book]"] == "6436"
+    assert params["order"] == "newest_first"
+    assert params["per_page"] == "24"
+
+    url_search = "https://www.vinted.fr/catalog?search_text=zelda+switch"
+    params_search = catalog_url_to_api_params(url_search)
+    assert params_search["search_text"] == "zelda switch"
+    assert params_search["order"] == "newest_first"
+
+
+def test_parse_vinted_catalog_json():
+    sample_json = {
+        "items": [
+            {
+                "id": 10113230090,
+                "title": "Les legendes marvel n°3 : 1966",
+                "price": {"amount": "4.00", "currency_code": "EUR"},
+                "item_box": {
+                    "second_line": "Neuf sans étiquette",
+                    "accessibility_label": "Marvel, État: Neuf sans étiquette, 4.00 €",
+                },
+                "url": "/items/10113230090-les-legendes-marvel",
+                "photo": {
+                    "url": "https://images1.vinted.net/t/01/f800/main.webp?s=123"
+                },
+                "photos": [
+                    {"url": "https://images1.vinted.net/t/01/f800/main.webp?s=123"},
+                    {"url": "https://images1.vinted.net/t/02/f800/extra1.webp?s=456"},
+                    {"url": "https://images1.vinted.net/t/03/f800/extra2.webp?s=789"},
+                ],
+            },
+            {
+                "id": 10113228948,
+                "title": "Manga",
+                "price": {"amount": "0.00"},  # Price 0 should be skipped
+            },
+        ]
+    }
+    items = parse_vinted_catalog_json(sample_json)
+    assert len(items) == 1
+
+    item = items[0]
+    assert item.external_id == "10113230090"
+    assert item.title == "Les legendes marvel n°3 : 1966"
+    assert item.item_price_cents == 400
+    assert item.condition == "Neuf sans étiquette"
+    assert item.url == "https://www.vinted.fr/items/10113230090-les-legendes-marvel"
+    assert item.photo_url == "https://images1.vinted.net/t/01/f800/main.webp?s=123"
+    assert len(item.extra_photos) == 2
+    assert "extra1.webp" in item.extra_photos[0]
+    assert "extra2.webp" in item.extra_photos[1]
+
+    # Test to_ingest_payload with extra photos
+    payload = to_ingest_payload(item)
+    assert payload["external_id"] == "10113230090"
+    assert payload["item_price_cents"] == 400
+    assert len(payload["photos"]) == 3
+    assert payload["photos"][0] == "https://images1.vinted.net/t/01/f800/main.webp?s=123"
+
+
+def test_vinted_session_manager_api_headers():
+    mgr = VintedSessionManager()
+    mgr.cookies = {"access_token_web": "fake-jwt", "anon_id": "anon-456"}
+    headers = mgr.get_api_headers()
+    assert headers["Accept"] == "application/json, text/plain, */*"
+    assert headers["Authorization"] == "Bearer fake-jwt"
+    assert headers["X-Anon-Id"] == "anon-456"
+    assert headers["Platform"] == "web"
+    assert headers["X-Next-App"] == "marketplace-web"
+
+
+@pytest.mark.asyncio
+async def test_fetch_vinted_page_api_success():
+    fake_client = AsyncMock()
+    fake_client.cookies = httpx.Cookies()
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "application/json"}
+    mock_resp.json = lambda: {
+        "items": [
+            {
+                "id": 12345,
+                "title": "BD Tintin",
+                "price": {"amount": "12.50"},
+                "item_box": {"second_line": "Très bon état"},
+                "url": "/items/12345-bd-tintin",
+            }
+        ]
+    }
+    mock_resp.text = '{"items": [{"id": 12345}]}'
+    fake_client.get.return_value = mock_resp
+
+    target = "app.services.vinted_scraper.vinted_session_manager.ensure_valid_session"
+    with patch(target, new_callable=AsyncMock):
+        items = await fetch_vinted_page(
+            "https://www.vinted.fr/catalog?search_text=tintin",
+            fake_client,
+        )
+    assert len(items) == 1
+    assert items[0].external_id == "12345"
+    assert items[0].title == "BD Tintin"
+    assert items[0].item_price_cents == 1250
+
+
+@pytest.mark.asyncio
+async def test_fetch_vinted_page_fallback_to_html():
+    fake_client = AsyncMock()
+    fake_client.cookies = httpx.Cookies()
+    # 1er appel (API): statut 500
+    api_resp = AsyncMock()
+    api_resp.status_code = 500
+    api_resp.headers = {"content-type": "text/html"}
+
+    # 2e appel (HTML fallback): statut 200 avec SAMPLE_HTML
+    html_resp = AsyncMock()
+    html_resp.status_code = 200
+    html_resp.headers = {"content-type": "text/html"}
+    html_resp.text = SAMPLE_HTML
+
+    fake_client.get.side_effect = [api_resp, html_resp]
+
+    target = "app.services.vinted_scraper.vinted_session_manager.ensure_valid_session"
+    with patch(target, new_callable=AsyncMock):
+        items = await fetch_vinted_page("https://www.vinted.fr/catalog", fake_client)
+    assert len(items) == 2
+    assert items[0].external_id == "9951815312"
+    assert items[0].title == "Bd RIP tome 1"
+
+
+@pytest.mark.asyncio
+async def test_poll_vinted_once_separates_vinted_and_api_clients():
+    """Vérifie la séparation de vinted_client (Vinted) et api_client (ingestion)."""
+    from unittest.mock import MagicMock
+
+    from app.services.vinted_scraper import ScrapedVintedItem
+    from app.tasks.vinted_poller import poll_vinted_once
+
+    mock_vinted_client = AsyncMock()
+    mock_api_client = AsyncMock()
+
+    dummy_item = ScrapedVintedItem(
+        external_id="v_999",
+        url="https://vinted.fr/items/999",
+        title="Tintin au Tibet",
+        condition="Très bon état",
+        item_price_cents=1000,
+        photo_url="https://images1.vinted.net/t.jpg",
+    )
+
+    mock_post_resp = MagicMock()
+    mock_post_resp.status_code = 200
+    mock_post_resp.json.return_value = {"matches": []}
+    mock_api_client.post.return_value = mock_post_resp
+
+    seen_ids = set()
+    expected_url = (
+        "https://www.vinted.fr/catalog?search_text=&catalog[]=5425&status_ids[]=1"
+        "&status_ids[]=2&status_ids[]=6&language_book_ids[]=6436"
+        "&search_id=2946920741&order=newest_first"
+    )
+
+    with patch("app.tasks.vinted_poller.fetch_vinted_page", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = [dummy_item]
+
+        count = await poll_vinted_once(
+            seen_ids=seen_ids,
+            vinted_client=mock_vinted_client,
+            api_client=mock_api_client,
+            api_url="http://app:8000",
+            api_token="test_token",
+        )
+
+        assert count == 1
+        assert "v_999" in seen_ids
+        mock_fetch.assert_called_once_with(expected_url, mock_vinted_client)
+        mock_api_client.post.assert_called_once()
+        args, _ = mock_api_client.post.call_args
+        assert args[0] == "http://app:8000/api/v1/ingest/listings"
+        mock_vinted_client.post.assert_not_called()
 
 

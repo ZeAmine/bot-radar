@@ -28,6 +28,54 @@ from app.services.telegram_service import send_listing_alert
 logger = logging.getLogger("radar.use_cases.ingest_listing")
 
 
+async def _prefetch_book_market_cache(book_id: uuid.UUID, isbn13: str | None, title: str) -> None:
+    """Préchauffe le cache de marché pour le livre nouvellement associé."""
+    from app.core.constants import ComparisonStatus
+    from app.db.repositories.market_price_repo import MarketPriceRepository
+    from app.db.session import AsyncSessionLocal
+    from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
+
+    try:
+        provider = ChasseAuxLivresProvider(timeout_seconds=8.0)
+        offers = await provider.get_offers(isbn13=isbn13, title=title)
+        if offers:
+            best = offers[0]
+            hist_lows = [
+                o.raw_payload.get("historical_low_1y_cents")
+                for o in offers
+                if o.raw_payload and o.raw_payload.get("historical_low_1y_cents") is not None
+            ]
+            best_hist = min(hist_lows) if hist_lows else None
+
+            async with AsyncSessionLocal() as session:
+                market_repo = MarketPriceRepository(session)
+                await market_repo.save_snapshot(book_id, best)
+                status_to_set = (
+                    ComparisonStatus.AVAILABLE
+                    if (best.delivered_price_cents > 0 and best.is_available)
+                    else ComparisonStatus.OUT_OF_STOCK
+                )
+                lowest_price = (
+                    best.delivered_price_cents if best.delivered_price_cents > 0 else None
+                )
+                await market_repo.update_or_create_cache(
+                    book_id=book_id,
+                    lowest_delivered_price_cents=lowest_price,
+                    best_provider_name=best.provider_name if lowest_price else None,
+                    best_source_url=best.source_url,
+                    confidence=best.confidence,
+                    comparison_status=status_to_set,
+                    cache_duration_hours=24,
+                    historical_low_1y_cents=best_hist,
+                )
+                await session.commit()
+                logger.info(
+                    "Cache de prix préchauffé en tâche de fond pour %s (%s).", book_id, title
+                )
+    except Exception as exc:
+        logger.debug("Échec du préchauffage du cache de prix pour %s : %s", book_id, exc)
+
+
 async def _link_book_from_bnf(title: str, alert_id: uuid.UUID) -> None:
     """Associe un ISBN BNF à l'alerte sans retarder l'envoi Telegram."""
     from app.db.session import AsyncSessionLocal
@@ -37,17 +85,57 @@ async def _link_book_from_bnf(title: str, alert_id: uuid.UUID) -> None:
         meta = await BookMetadataService().lookup_by_title_and_author(title)
         if not meta or not meta.isbn13:
             return
+        book_id_val: uuid.UUID | None = None
+        book_isbn_val: str | None = None
+        book_title_val: str = title
         async with AsyncSessionLocal() as session:
             book_repo = BookRepository(session)
             catalog = BookCatalogService(session)
             book = await book_repo.get_by_isbn13(meta.isbn13)
             if not book:
-                book = await catalog.add_book(title=title, isbn13=meta.isbn13)
+                book = await catalog.add_book(
+                    title=title,
+                    isbn13=meta.isbn13,
+                    author=meta.author,
+                    publisher=meta.publisher,
+                )
             if book:
                 await book_repo.link_alert_to_book(alert_id=alert_id, book_id=book.id)
+                book_id_val = book.id
+                book_isbn_val = book.isbn13
+                book_title_val = book.title
             await session.commit()
+
+        if book_id_val:
+            safe_create_task(
+                _prefetch_book_market_cache(book_id_val, book_isbn_val, book_title_val),
+                name=f"prefetch_market_{book_id_val}",
+            )
     except Exception as exc:
         logger.warning("Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc)
+
+
+async def _preload_listing_photos(listing_id: uuid.UUID, url: str) -> None:
+    """Précharge les photos HD en tâche de fond pour que le bouton [Photos] soit instantané."""
+    from app.db.session import AsyncSessionLocal
+    from app.services.vinted_scraper import fetch_item_photos
+
+    try:
+        photos = await fetch_item_photos(url)
+        if len(photos) > 1:
+            async with AsyncSessionLocal() as session:
+                listing_repo = ListingRepository(session)
+                db_listing = await listing_repo.get_by_id(listing_id)
+                if db_listing:
+                    db_listing.photos = photos
+                    await session.commit()
+                    logger.info(
+                        "Galerie photos HD préchargée en arrière-plan pour %s (%d photos).",
+                        listing_id,
+                        len(photos),
+                    )
+    except Exception as exc:
+        logger.debug("Échec du préchargement des photos pour %s : %s", listing_id, exc)
 
 
 def _get_send_listing_alert() -> Any:
@@ -168,6 +256,17 @@ class ProcessListingUseCase:
         )
         self.db.add(event)
         await self.db.commit()
+
+        # 9. Si une alerte a été notifiée, précharger la galerie complète en tâche de fond
+        if (
+            any(m.notification_sent for m in match_items)
+            and listing.url
+            and len(listing.photos or []) <= 1
+        ):
+            safe_create_task(
+                _preload_listing_photos(listing.id, listing.url),
+                name=f"preload_photos_{listing.id}",
+            )
 
         return ListingIngestResponse(
             listing_id=listing.id,

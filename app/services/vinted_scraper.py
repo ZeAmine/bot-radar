@@ -5,12 +5,14 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 from app.core.config import settings
+from app.core.http_client import get_shared_http_client
 from app.core.redis import get_redis_client
 from app.services.price_calculator import (
     DEFAULT_SHIPPING_CENTS,
@@ -18,6 +20,8 @@ from app.services.price_calculator import (
 )
 
 logger = logging.getLogger("radar.vinted_scraper")
+
+API_CATALOG_ENDPOINT = "https://api.vinted.fr/svc-catalogue/items"
 
 
 class VintedBlockError(Exception):
@@ -82,6 +86,7 @@ class ScrapedVintedItem:
     item_price_cents: int
     url: str
     photo_url: str | None
+    extra_photos: list[str] = field(default_factory=list)
 
 
 def parse_vinted_overlay_title(raw_title: str) -> tuple[str, str, int]:
@@ -235,6 +240,11 @@ async def fetch_item_photos(
             resp = await http_client.get(item_url, headers=headers, timeout=10.0)
             if resp.status_code == 200:
                 return extract_item_page_photos(resp.text)
+        elif not settings.get_vinted_proxy():
+            client = get_shared_http_client()
+            resp = await client.get(item_url, headers=headers, timeout=10.0)
+            if resp.status_code == 200:
+                return extract_item_page_photos(resp.text)
         else:
             async with httpx.AsyncClient(
                 timeout=10.0,
@@ -278,6 +288,113 @@ def parse_vinted_catalog_html(html_content: str) -> list[ScrapedVintedItem]:
                 item_price_cents=price_cents,
                 url=item_url,
                 photo_url=photo_url,
+            )
+        )
+
+    return items
+
+
+def catalog_url_to_api_params(catalog_url: str) -> dict[str, str]:
+    """Convertit une URL de catalogue ou de recherche Vinted en paramètres d'API /svc-catalogue."""
+    parsed = urlparse(catalog_url)
+    qs = parse_qs(parsed.query)
+    params: dict[str, str] = {}
+    for k, v in qs.items():
+        clean_k = k.replace("[]", "").strip()
+        val = ",".join(v).strip()
+        if not val:
+            continue
+        if clean_k in ("catalog", "catalog_ids"):
+            params["attribute_ids[catalog]"] = val
+        elif clean_k in ("status_ids", "status"):
+            params["attribute_ids[status]"] = val
+        elif clean_k in ("language_book_ids", "language_book"):
+            params["attribute_ids[language_book]"] = val
+        elif clean_k in ("brand_ids", "brand"):
+            params["attribute_ids[brand]"] = val
+        elif clean_k in ("size_ids", "size"):
+            params["attribute_ids[size]"] = val
+        elif clean_k in ("search_text", "order", "price_from", "price_to"):
+            params[clean_k] = v[0]
+
+    params.setdefault("order", "newest_first")
+    params.setdefault("per_page", "24")
+    return params
+
+
+def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
+    """Parse la réponse JSON structurée de l'API interne Vinted (/svc-catalogue/items)."""
+    items: list[ScrapedVintedItem] = []
+    raw_items = data.get("items") or []
+
+    for raw in raw_items:
+        item_id = str(raw.get("id") or "").strip()
+        title = html.unescape(str(raw.get("title") or "")).strip()
+        if not item_id or not title:
+            continue
+
+        # Extraction du prix en centimes
+        price_cents = 0
+        price_data = raw.get("price") or {}
+        price_amount = price_data.get("amount")
+        if price_amount is not None:
+            try:
+                price_cents = round(float(price_amount) * 100)
+            except (ValueError, TypeError):
+                price_cents = 0
+
+        if price_cents <= 0:
+            continue
+
+        # Extraction de l'état (condition)
+        item_box = raw.get("item_box") or {}
+        second_line = str(item_box.get("second_line") or "").strip()
+        condition = "Très bon état"
+        if second_line:
+            condition = second_line.split("·")[-1].strip() or "Très bon état"
+        elif "accessibility_label" in item_box:
+            acc_label = str(item_box.get("accessibility_label") or "")
+            if ", État: " in acc_label:
+                _, rest = acc_label.split(", État: ", 1)
+                condition = rest.split(",")[0].strip() or "Très bon état"
+
+        # URL de l'annonce
+        raw_url = str(raw.get("url") or "").strip()
+        if raw_url.startswith("http"):
+            item_url = raw_url
+        elif raw_url.startswith("/"):
+            item_url = f"https://www.vinted.fr{raw_url}"
+        else:
+            item_url = f"https://www.vinted.fr/items/{item_id}"
+
+        # Photo principale et photos supplémentaires HD
+        photo_url = None
+        extra_photos: list[str] = []
+        seen_photos: set[str] = set()
+
+        main_photo = raw.get("photo") or {}
+        if main_photo.get("url") and is_valid_item_photo_url(main_photo["url"]):
+            photo_url = main_photo["url"]
+            seen_photos.add(photo_url)
+
+        for p in raw.get("photos") or []:
+            p_url = p.get("url")
+            if p_url and is_valid_item_photo_url(p_url) and p_url not in seen_photos:
+                if not photo_url:
+                    photo_url = p_url
+                else:
+                    extra_photos.append(p_url)
+                seen_photos.add(p_url)
+
+        items.append(
+            ScrapedVintedItem(
+                external_id=item_id,
+                title=title,
+                condition=condition,
+                item_price_cents=price_cents,
+                url=item_url,
+                photo_url=photo_url,
+                extra_photos=extra_photos,
             )
         )
 
@@ -375,8 +492,12 @@ class VintedSessionManager:
                     timeout=10.0,
                 )
                 if resp.status_code == 200:
-                    for k, v in client.cookies.items():
-                        self.cookies[k] = v
+                    if hasattr(client.cookies, "jar"):
+                        for cookie in client.cookies.jar:
+                            self.cookies[cookie.name] = cookie.value
+                    else:
+                        for k, v in client.cookies.items():
+                            self.cookies[k] = v
                     self.last_refreshed = time.time()
                     await self._save_cookies_to_redis(self.cookies)
                     logger.info(
@@ -440,6 +561,25 @@ class VintedSessionManager:
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
+    def get_api_headers(self) -> dict[str, str]:
+        """Retourne les en-têtes adaptés pour l'API interne JSON (/svc-catalogue/items)."""
+        headers = {
+            **DEFAULT_VINTED_HEADERS,
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.vinted.fr",
+            "Referer": "https://www.vinted.fr/",
+            "Locale": "fr-FR",
+            "Platform": "web",
+            "X-Next-App": "marketplace-web",
+        }
+        token = self.cookies.get("access_token_web")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        anon_id = self.cookies.get("anon_id")
+        if anon_id:
+            headers["X-Anon-Id"] = anon_id
+        return headers
+
 
 vinted_session_manager = VintedSessionManager()
 
@@ -448,45 +588,106 @@ async def fetch_vinted_page(
     url: str,
     client: httpx.AsyncClient,
 ) -> list[ScrapedVintedItem]:
-    """Télécharge une page de catalogue Vinted et extrait les annonces."""
+    """Télécharge une page de catalogue Vinted et extrait les annonces.
+
+    Interroge en priorité l'API interne JSON (/svc-catalogue/items) ultra-rapide.
+    Si l'API interne retourne une réponse inattendue ou échoue, bascule automatiquement
+    et sans interruption sur le scraping du catalogue HTML classique.
+    """
     try:
         await vinted_session_manager.ensure_valid_session(client)
+
+        # 1. Tentative API Interne JSON (/svc-catalogue/items)
+        api_params = catalog_url_to_api_params(url)
+        api_headers = vinted_session_manager.get_api_headers()
+
+        response = await client.get(
+            API_CATALOG_ENDPOINT,
+            params=api_params,
+            headers=api_headers,
+        )
+
+        if response.status_code == 401:
+            logger.info("Vinted API 401, renouvellement de session en cours...")
+            if await vinted_session_manager.refresh_session(client):
+                api_headers = vinted_session_manager.get_api_headers()
+                response = await client.get(
+                    API_CATALOG_ENDPOINT,
+                    params=api_params,
+                    headers=api_headers,
+                )
+
+        if response.status_code == 200:
+            content_type = response.headers.get("content-type", "")
+            if "application/json" in content_type:
+                try:
+                    data = response.json()
+                    items = parse_vinted_catalog_json(data)
+                    if items or not is_session_refresh_page(response.text):
+                        return items
+                except Exception as parse_err:
+                    logger.debug("Erreur parsing JSON Vinted (%s), repli HTML: %s", url, parse_err)
+            else:
+                logger.debug("Réponse non-JSON reçue sur l'API Vinted, repli HTML...")
+
+        elif response.status_code == 429:
+            logger.warning("Vinted rate limit (429) sur l'API: %s", url)
+            raise VintedRateLimitError(429, f"Vinted rate limit (429) sur {url}")
+        elif response.status_code == 403:
+            logger.warning("Vinted blocage Cloudflare/DataDome (403) sur l'API: %s", url)
+            raise VintedBlockError(403, f"Vinted blocage Cloudflare (403) sur {url}")
+        else:
+            logger.debug(
+                "Vinted API statut %d pour %s, bascule vers catalogue HTML...",
+                response.status_code,
+                url,
+            )
+
+        # 2. Secours : Scraping du catalogue HTML classique
         headers = vinted_session_manager.get_auth_headers()
-        response = await client.get(url, headers=headers)
+        html_response = await client.get(url, headers=headers)
 
-        is_refresh_page = response.status_code == 200 and is_session_refresh_page(response.text)
+        is_refresh_page = (
+            html_response.status_code == 200
+            and is_session_refresh_page(html_response.text)
+        )
 
-        if response.status_code in (401, 403) or is_refresh_page:
+        if html_response.status_code in (401, 403) or is_refresh_page:
             reason = (
-                f"statut {response.status_code}"
-                if response.status_code != 200
+                f"statut {html_response.status_code}"
+                if html_response.status_code != 200
                 else "page d'attente 'Session refresh'"
             )
             logger.info(
-                "Vinted %s, tentative de renouvellement automatique de session...",
+                "Vinted HTML %s, tentative de renouvellement automatique de session...",
                 reason,
             )
             if await vinted_session_manager.refresh_session(client):
                 headers = vinted_session_manager.get_auth_headers()
-                response = await client.get(url, headers=headers)
+                html_response = await client.get(url, headers=headers)
 
-        if response.status_code == 200:
-            items = parse_vinted_catalog_html(response.text)
-            if not items and is_session_refresh_page(response.text):
+        if html_response.status_code == 200:
+            items = parse_vinted_catalog_html(html_response.text)
+            if not items and is_session_refresh_page(html_response.text):
                 logger.warning(
                     "Vinted catalogue non authentifié reçu, purge de session pour le prochain tour."
                 )
                 vinted_session_manager.clear_session()
             return items
-        if response.status_code == 429:
-            logger.warning("Vinted rate limit (429) sur l'URL: %s", url)
+        if html_response.status_code == 429:
+            logger.warning("Vinted rate limit (429) sur le catalogue HTML: %s", url)
             raise VintedRateLimitError(429, f"Vinted rate limit (429) sur {url}")
-        elif response.status_code == 403:
-            logger.warning("Vinted blocage Cloudflare/DataDome (403) sur: %s", url)
+        elif html_response.status_code == 403:
+            logger.warning("Vinted blocage Cloudflare (403) sur le catalogue HTML: %s", url)
             raise VintedBlockError(403, f"Vinted blocage Cloudflare (403) sur {url}")
         else:
-            logger.warning("Vinted statut HTTP inattendu %s pour: %s", response.status_code, url)
+            logger.warning(
+                "Vinted statut HTTP inattendu %s pour: %s",
+                html_response.status_code,
+                url,
+            )
         return []
+
     except (VintedBlockError, VintedRateLimitError):
         raise
     except Exception as exc:
@@ -504,6 +705,13 @@ def to_ingest_payload(
     protection_cents = calculate_buyer_protection_cents(item.item_price_cents)
     shipping_cents = DEFAULT_SHIPPING_CENTS
 
+    all_photos: list[str] = []
+    if item.photo_url:
+        all_photos.append(item.photo_url)
+    for p in getattr(item, "extra_photos", []):
+        if p and p not in all_photos:
+            all_photos.append(p)
+
     payload: dict[str, Any] = {
         "source_name": "vinted",
         "external_id": item.external_id,
@@ -517,7 +725,7 @@ def to_ingest_payload(
         "condition": item.condition,
         "seller_name": "vendeur_vinted",
         "seller_rating": 4.9,
-        "photos": [item.photo_url] if item.photo_url else [],
+        "photos": all_photos,
         "isbn13": isbn13,
     }
     return payload

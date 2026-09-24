@@ -2,6 +2,11 @@
 
 Ce fichier est la source de vérité pour tout assistant qui travaille sur le dépôt. Le lire avant de modifier du code, de déployer, ou de proposer une architecture.
 
+### Documentation de référence (Univers LLM)
+- [`AGENTS.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
+- [`subjects.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
+- [`memory.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-010, dette différée).
+
 ## Produit
 
 Radar Bot est un bot Telegram **privé** d’aide à la décision pour l’occasion (BD/comics, vêtements, tech, jeux vidéo).
@@ -11,6 +16,13 @@ Radar Bot est un bot Telegram **privé** d’aide à la décision pour l’occas
 - Il **n’achète pas**, n’ajoute pas au panier, n’envoie pas de message vendeur, n’automatise aucune action marketplace.
 
 Utilisateur unique / allowlist (`TELEGRAM_ALLOWED_USER_IDS`). Domaine public : `https://radar.aminezegmou.fr`.
+
+### Clavier d'alerte Telegram
+Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomique :
+- Ligne 1 : `[ 🖼 Photos ]` (Accès rapide aux photos HD) et `[ 🔗 Annonce ]` (Lien direct Vinted).
+- Ligne 2 (BD uniquement) : `[ 📊 Prix du marché ]` (Détails et cotes complètes de la série).
+- Ligne 3 (Ligne 2 si hors-BD) : `[ 👎 Faux positif ]` (Enregistrement du dislike pour l'auto-tuning) et `[ 💬 Négocier ]` (Coach IA).
+*(Note : Les anciens boutons factices « Payer » et « Dressing / Lot » ont été définitivement supprimés — voir ADR-007 et ADR-011).*
 
 ## Stack
 
@@ -152,7 +164,15 @@ Chemin **vivant** post-alerte : `app/services/ai/` (`DeepSeekClient` + `AIPostAl
 
 Chemin **tests / provider Pydantic + cache Redis** : `DeepSeekProvider` + `AsyncEnrichListingUseCase.execute`. Ne pas le recâbler sur l’ingestion. L’IA conseille, elle ne bloque jamais l’alerte.
 
-Flags `AI_FEATURE_*` : un flag = un module dans `app/services/ai/modules/` (sauf valeurs off par défaut encore enregistrées : `price_glitch`, `bundle_decomposition`, `vision_guard`). Ne pas réintroduire un flag sans module.
+Modules actifs (`app/services/ai/modules/`) :
+- `natural_add.py` (`AI_FEATURE_NATURAL_ADD=true`) : Création d'alertes en langage naturel (`/add`).
+- `profit_scoring.py` (`AI_FEATURE_PROFIT_SCORING=true`) : Estimation de rentabilité / indice pépite (tech, gaming, vêtements).
+- `negotiation.py` (`AI_FEATURE_NEGOTIATION=true`) : Coach de négociation et message d'offre vendeur (`💬 Négocier`).
+- `keyword_variants.py` (`AI_FEATURE_KEYWORD_VARIANTS=true`) : Suggestions de variantes orthographiques.
+- `auto_tuning.py` (`AI_FEATURE_AUTO_TUNING=true`) : Analyse des dislikes et suggestions d'exclusions (`/auto_tune`).
+*(Note : Les modules non pertinents `hidden_condition`, `vision_guard`, `bundle_decomposition`, `price_glitch`, ainsi que `bundle_detector` et le bouton dressing ont été définitivement supprimés — voir ADR-006, ADR-007, ADR-011).*
+
+Flags `AI_FEATURE_*` : un flag = un module vivant dans `app/services/ai/modules/` (strictement les 5 ci-dessus). Ne pas réintroduire un flag sans module.
 
 ## Dette volontairement reportée
 

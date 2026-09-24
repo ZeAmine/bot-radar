@@ -41,6 +41,20 @@ def create_scheduler() -> AsyncIOScheduler:
                 "Format d'horaire invalide pour PRICE_REFRESH_TIMES '%s': %s", time_str, exc
             )
 
+    # Job incrémental glissant toutes les 30 minutes : rafraîchit les 8 livres les plus anciens/expirés
+    # Évite tout pic de charge CPU/réseau et garantit une fraîcheur 24h/24 des cotes
+    scheduler.add_job(
+        refresh_book_prices_task,
+        trigger=CronTrigger(minute="15,45", timezone="Europe/Paris"),
+        id="refresh_prices_incremental",
+        name="Rafraîchissement glissant des prix BD (lots de 8)",
+        kwargs={"incremental": True, "batch_size": 8},
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Job planifié : rafraîchissement glissant BD toutes les 30 min (lots de 8).")
+
     # Job quotidien de nettoyage et purge des données obsolètes à 03:30 Europe/Paris
     scheduler.add_job(
         cleanup_old_data_task,

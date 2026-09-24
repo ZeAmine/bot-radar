@@ -47,3 +47,6 @@ htmlcov/
 # Docker & local db data
 postgres_data/
 redis_data/
+
+# Scratch & temporary development scripts
+scratch/

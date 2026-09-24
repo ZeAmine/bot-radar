@@ -16,11 +16,18 @@ def _normalize(text: str) -> str:
 SERIES_SUBTITLES: dict[str, dict[str, int]] = {
     "rip": {
         "derrick": 1,
+        "je ne survivrai pas a la mort": 1,
         "maurice": 2,
+        "les mouches ne mentent pas": 2,
+        "mouches ne mentent pas": 2,
         "ahmed": 3,
+        "pourrissant dans la neige": 3,
         "albert": 4,
+        "priere pour les vivants": 4,
         "fanette": 5,
+        "mauvaise graine": 5,
         "eugene": 6,
+        "toutes les bonnes choses ont une fin": 6,
     },
     "blacksad": {
         "quelque part entre les ombres": 1,
@@ -260,7 +267,11 @@ class TomeExtractor:
                 if len(parts) >= 2:
                     try:
                         nums = [int(p) for p in parts]
-                        if all(1 <= n <= 50 for n in nums):
+                        # Disambiguation: "2/8", "vol 2/8", "tome 1/5" est une fraction
+                        # (Tome X sur Y), PAS un lot
+                        if len(nums) == 2 and "/" in raw_seq:
+                            pass
+                        elif all(1 <= n <= 50 for n in nums):
                             is_decimal = (
                                 len(nums) == 2
                                 and any(sep in raw_seq for sep in [".", ","])
@@ -288,9 +299,9 @@ class TomeExtractor:
                     except ValueError:
                         pass
 
-            # B. Plage de tomes (ex: 'tomes 1 a 4', '1 a 3', '1 à 3', '1 au 3', '1-3', '1/3')
+            # B. Plage de tomes (ex: 'tomes 1 a 4', '1 a 3', '1 à 3', '1 au 3', '1-3')
             range_match = re.search(
-                r"(?:^|[\s,;:(])(?:tomes?|t\.?|vols?|volumes?)?\s*([0-9]{1,2})\s*(?:a|au|à|\-|et|\/)\s*(?:t\.?|tomes?)?\s*([0-9]{1,2})(?:$|[\s,;:!?)])(?!\s*(?:€|eur|euros?|ct|cts|%|cm|mm|kg|g|ans?|mois))",
+                r"(?:^|[\s,;:(])(?:tomes?|t\.?|vols?|volumes?)?\s*([0-9]{1,2})\s*(?:a|au|à|\-|et)\s*(?:t\.?|tomes?)?\s*([0-9]{1,2})(?:$|[\s,;:!?)])(?!\s*(?:€|eur|euros?|ct|cts|%|cm|mm|kg|g|ans?|mois))",
                 text,
             )
             if range_match:
@@ -350,6 +361,24 @@ class TomeExtractor:
     @classmethod
     def _detect_tome_number(cls, text: str) -> int | None:
         """Extrait un numéro de tome unitaire à partir d'un texte normalisé."""
+        # 0. Format fraction de tome (ex: 'vol 2/8', 'tome 1/5', 't2/8', 't. 2/8', 'rip 2/6')
+        m_frac = re.search(
+            r"(?:(?:\b(?:tomes?|t\.?|vols?|volumes?|livre)\s*\.?\s*)|\bt)([0-9]{1,2})\s*\/\s*([0-9]{1,2})\b",
+            text,
+        )
+        if m_frac:
+            num = int(m_frac.group(1))
+            total = int(m_frac.group(2))
+            if 1 <= num <= total <= 50:
+                return num
+
+        m_end_frac = re.search(r"\b([0-9]{1,2})\s*\/\s*([0-9]{1,2})\s*$", text)
+        if m_end_frac:
+            num = int(m_end_frac.group(1))
+            total = int(m_end_frac.group(2))
+            if 1 <= num < total <= 20:
+                return num
+
         # 1. Mot clé tome/volume : 'tome 3', 't3', 't.3', 'vol 3', 'livre 3'
         m = re.search(
             r"\b(?:tome|t|vol|volume|livre)\s*\.?\s*([0-9]{1,2})\b(?!\s*(?:€|eur|euros?|ct|cts|%))",

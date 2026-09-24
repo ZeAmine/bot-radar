@@ -16,6 +16,7 @@ import httpx
 
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
+from app.utils.isbn import isbn10_to_isbn13
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.book_metadata")
@@ -247,7 +248,8 @@ class BookMetadataService:
                             isbn13 = c_isbn
                             break
                         elif len(c_isbn) == 10 and not isbn13:
-                            isbn13 = c_isbn
+                            converted = isbn10_to_isbn13(c_isbn)
+                            isbn13 = converted or c_isbn
 
                 if not isbn13:
                     continue
@@ -266,6 +268,19 @@ class BookMetadataService:
                         if len(word) >= 3 and word in creators_norm:
                             ratio += 0.4
                     score += ratio
+
+                # Bonus pour les éditions francophones (BD et éditeurs de référence)
+                if isbn13.startswith("9782") or isbn13.startswith("2"):
+                    score += 0.5
+                if pub_name:
+                    norm_pub = normalize_text(pub_name)
+                    fr_publishers = {
+                        "delcourt", "dupuis", "dargaud", "glenat", "casterman",
+                        "lombard", "futuropolis", "soleil", "panini", "urban",
+                        "ankama", "paquet", "bamboo", "actes sud",
+                    }
+                    if any(fp in norm_pub for fp in fr_publishers):
+                        score += 0.6
 
                 meta = BookMetadata(
                     title=main_title,

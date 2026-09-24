@@ -77,6 +77,8 @@ async def get_book_market_price(
         "comparison_status": cache.comparison_status.value,
         "checked_at": cache.checked_at.isoformat() if cache.checked_at else None,
         "expires_at": cache.expires_at.isoformat() if cache.expires_at else None,
+        "historical_low_1y_cents": cache.historical_low_1y_cents,
+        "historical_low_at": cache.historical_low_at.isoformat() if cache.historical_low_at else None,
     }
 
 

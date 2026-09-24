@@ -227,8 +227,9 @@ async def test_ingest_bd_listing_with_market_comparison(
         mock_send_alert.assert_called_once()
         _, kwargs = mock_send_alert.call_args
         comparison_line = kwargs.get("market_comparison_line")
-        # L'alerte principale est expédiée instantanément sans blocage réseau
-        assert comparison_line is None
+        assert comparison_line is not None
+        assert "22,00 €" in comparison_line
+        assert "-8,31 €" in comparison_line
 
     # Vérifier que le livre est bien relié à l'alerte
     stmt_link = select(AlertBook).where(

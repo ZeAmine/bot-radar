@@ -5,16 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.config import settings
 from app.db.models.listing import Listing
 from app.services.ai.client import DeepSeekClient
-from app.services.ai.modules.bundle_decomposition import bundle_decomposition_module
-from app.services.ai.modules.hidden_condition import hidden_condition_module
 from app.services.ai.modules.natural_add import natural_add_module
 from app.services.ai.modules.negotiation import negotiation_module
-from app.services.ai.modules.price_glitch import price_glitch_module
 from app.services.ai.modules.profit_scoring import profit_scoring_module
-from app.services.ai.modules.vision_guard import vision_guard_module
 from app.services.ai.pipeline import AIPostAlertPipeline
 from app.services.ai.registry import AIRegistry
 
@@ -159,65 +154,6 @@ async def test_keyword_variants_module_variants_and_exclusions():
         assert "coffret vide" in exclusions
 
 
-def test_hidden_condition_module(sample_listing):
-    """Vérifie le parsing et le formatage des défauts cachés."""
-    chunk = hidden_condition_module.build_prompt_chunk(sample_listing, None)
-    assert chunk is not None
-    assert chunk[0] == "hidden_condition"
-
-    raw_json = {
-        "has_hidden_defects": True,
-        "real_condition_summary": "Tranche jaunie et accroc sur la coiffe",
-        "defects_found": ["tranche jaunie", "accroc coiffe"],
-        "severity": "moyen",
-    }
-    result = hidden_condition_module.parse_chunk_result(raw_json, sample_listing, None)
-    assert result.has_hidden_defects is True
-    assert "tranche jaunie" in result.defects_found
-
-    html = hidden_condition_module.format_telegram_html(result)
-    assert "Attention état réel" in html
-    assert "Tranche jaunie" in html
-
-
-def test_price_glitch_module(sample_listing):
-    """Vérifie le parsing et le formatage des anomalies de prix."""
-    raw_json = {
-        "is_glitch": True,
-        "estimated_market_value_cents": 6000,
-        "discount_percent": 60,
-        "reason": "Vendu 25€ au lieu de 60€ sur le marché",
-    }
-    result = price_glitch_module.parse_chunk_result(raw_json, sample_listing, None)
-    assert result.is_glitch is True
-    assert result.discount_percent == 60
-
-    html = price_glitch_module.format_telegram_html(result)
-    assert "ANOMALIE DE PRIX DÉTECTÉE" in html
-    assert "60.00 €" in html
-
-
-def test_bundle_decomposition_module(sample_listing):
-    """Vérifie la décomposition de lot et calcul du prix unitaire."""
-    raw_json = {
-        "is_bundle": True,
-        "items_detected": ["One Piece Tome 1", "One Piece Tome 2", "One Piece Tome 3"],
-        "target_item_present": True,
-        "summary": "Lot de 3 tomes",
-    }
-    result = bundle_decomposition_module.parse_chunk_result(raw_json, sample_listing, None)
-    assert result.is_bundle is True
-    assert len(result.items_detected) == 3
-    # 2500 cents // 3 items = 833 cents (~8.33 €)
-    assert result.estimated_price_per_item_cents == 833
-
-    html = bundle_decomposition_module.format_telegram_html(result)
-    assert html is None
-
-    extracted_tomes = bundle_decomposition_module.extract_tomes(result.items_detected)
-    assert extracted_tomes == [1, 2, 3]
-
-
 def test_profit_scoring_module(sample_listing):
     """Vérifie le calcul d'indice pépite et son seuil d'affichage."""
     raw_json = {
@@ -277,50 +213,13 @@ async def test_negotiation_module_fallback(sample_listing):
 def test_ai_registry():
     """Vérifie le registre et l'isolation des modules."""
     registry = AIRegistry()
-    assert registry.get_module("hidden_condition") is not None
-    assert registry.get_module("price_glitch") is not None
-    assert price_glitch_module.is_enabled is False
+    assert registry.get_module("profit_scoring") is not None
+    assert registry.get_module("natural_add") is not None
+    assert registry.get_module("negotiation") is not None
 
     active_posts = registry.get_active_post_alert_modules()
-    assert len(active_posts) >= 2
-    assert "price_glitch" not in [m.name for m in active_posts]
+    assert len(active_posts) >= 1
+    assert "profit_scoring" in [m.name for m in active_posts]
 
-    registry.unregister("hidden_condition")
-    assert registry.get_module("hidden_condition") is None
-
-
-@pytest.mark.asyncio
-async def test_vision_guard_multi_photos(sample_listing):
-    """Vérifie l'analyse multi-photos de VisionGuard."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
-            "has_visual_defects": True,
-            "is_suspicious": False,
-            "summary": "Accroc visible sur la tranche",
-            "inspections": [
-                {
-                    "photo_index": 2,
-                    "defects": ["accroc sur la tranche"],
-                    "spines_detected": [],
-                    "is_suspicious_or_empty": False,
-                    "confidence": 0.9,
-                }
-            ],
-        }
-    )
-
-    module = vision_guard_module
-    with (
-        patch.object(module, "client", mock_client),
-        patch.object(settings, "AI_FEATURE_VISION_GUARD", True),
-    ):
-        res = await module.analyze_listing_photos(sample_listing)
-        assert res is not None
-        assert res.has_visual_defects is True
-        assert len(res.inspections) == 1
-
-        html = module.format_telegram_html(res)
-        assert "Défauts visuels repérés" in html
-        assert "Photo 2" in html
+    registry.unregister("profit_scoring")
+    assert registry.get_module("profit_scoring") is None

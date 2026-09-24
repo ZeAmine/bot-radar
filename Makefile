@@ -1,9 +1,8 @@
-.PHONY: help dev worker test lint format migrate revision up down clean
+.PHONY: help dev test lint format migrate revision up down clean
 
 help:
 	@echo "Commandes disponibles pour Radar Bot :"
 	@echo "  make dev                 Lancer le serveur de développement FastAPI"
-	@echo "  make worker              Lancer le worker autonome de tâches de fond"
 	@echo "  make test                Lancer les tests unitaires et d'intégration"
 	@echo "  make lint                Vérifier le code avec Ruff et Mypy"
 	@echo "  make format              Formater le code avec Ruff"
@@ -15,10 +14,6 @@ help:
 
 dev:
 	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-worker:
-	@echo "Ne pas lancer en même temps que l'API (radar_app / make dev) : le scheduler serait doublé."
-	python -m app.worker
 
 test:
 	pytest -v

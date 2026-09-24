@@ -17,3 +17,9 @@ class AlertEditState(StatesGroup):
     """Machine à états pour la modification d'un champ d'une alerte (/edit)."""
 
     waiting_for_new_value = State()
+
+
+class AutoTuneState(StatesGroup):
+    """Machine à états pour la personnalisation manuelle des exclusions Auto-Tuning."""
+
+    waiting_for_custom_exclusions = State()

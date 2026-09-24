@@ -137,6 +137,47 @@ def get_night_mode_remaining_seconds(now: datetime | None = None) -> float:
     return max(0.0, (target - now).total_seconds())
 
 
+def is_peak_hours(now: datetime | None = None) -> bool:
+    """Vérifie si l'heure courante correspond aux heures de forte activité sur Vinted."""
+    try:
+        tz = ZoneInfo(settings.NIGHT_MODE_TIMEZONE)
+    except Exception:
+        tz = ZoneInfo("Europe/Paris")
+
+    if now is None:
+        now = datetime.now(tz)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    else:
+        now = now.astimezone(tz)
+
+    hour = now.hour
+    minute = now.minute
+    time_float = hour + minute / 60.0
+
+    # Heures de pointe Vinted : Déjeuner (11h30 - 14h00) et Soirée (18h00 - 22h30)
+    lunch_peak = 11.5 <= time_float <= 14.0
+    evening_peak = 18.0 <= time_float <= 22.5
+    return lunch_peak or evening_peak
+
+
+def get_adaptive_poll_interval() -> float:
+    """Calcule l'intervalle cible de scrutation selon le contexte réseau et horaire.
+
+    - Avec proxy résidentiel (Raspberry Pi à domicile) : haute cadence (8s en pointe, 10s standard).
+    - Sur IP VPS datacenter : cadence équilibrée (12s en pointe, 15s standard).
+    """
+    base = float(settings.VINTED_POLL_INTERVAL_SECONDS)
+    has_residential_proxy = bool(settings.get_vinted_proxy())
+
+    if has_residential_proxy:
+        return min(base, 8.0 if is_peak_hours() else 10.0)
+
+    if is_peak_hours():
+        return min(base, 12.0)
+    return max(base, 15.0)
+
+
 async def load_initial_seen_ids() -> FifoSet:
     """Charge les IDs d'annonces récemment enregistrées en base pour éviter les doublons."""
     try:
@@ -335,7 +376,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 if custom_searches and not stop_event.is_set():
                     # Interroger 1 recherche personnalisée par cycle en round-robin pour préserver l'IP
                     custom_url, custom_slug = custom_searches[poll_cycle % len(custom_searches)]
-                    await asyncio.sleep(random.uniform(1.2, 2.5))
+                    await asyncio.sleep(random.uniform(1.2, 2.0))
                     count_custom = await poll_vinted_once(
                         seen_ids=seen_ids,
                         vinted_client=vinted_client,
@@ -440,9 +481,10 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
             except Exception as exc:
                 logger.error("Erreur inattendue dans la boucle du Vinted Poller: %s", exc)
 
-            # Jitter naturel humain (+/- 4s)
-            jitter = random.uniform(-4.0, 5.0)
-            sleep_time = max(8.0, settings.VINTED_POLL_INTERVAL_SECONDS + jitter)
+            # Cadence adaptative (heures de pointe vs standard, VPS vs proxy résidentiel)
+            target_interval = get_adaptive_poll_interval()
+            jitter = random.uniform(-2.5, 3.5)
+            sleep_time = max(6.0, target_interval + jitter)
 
             # Micro-pause naturelle humaine (30-45s) tous les ~50 cycles pour briser la régularité d'un robot
             if poll_cycle % random.randint(45, 65) == 0:

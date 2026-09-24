@@ -8,6 +8,7 @@ import urllib.parse
 
 import httpx
 
+from app.core.config import settings
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
 from app.providers.base import MarketOffer
@@ -113,18 +114,29 @@ class ChasseAuxLivresProvider:
         author: str | None = None,
         edition: str | None = None,
     ) -> list[MarketOffer]:
-        """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique."""
+        """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
         _ = edition
-        query = ""
+        # 1. Tentative par ISBN si présent
         if isbn13 and len(isbn13.strip()) >= 10:
-            query = isbn13.strip()
-        elif title and len(title.strip()) > 0:
-            query = title.strip()
-            if author:
-                query = f"{query} {author.strip()}"
-        else:
-            return []
+            offers = await self._search_query(isbn13.strip(), expected_title=title)
+            if offers:
+                return offers
 
+        # 2. Repli par Titre (+ auteur éventuel)
+        if title and len(title.strip()) > 0:
+            t_query = title.strip()
+            if author:
+                t_query = f"{t_query} {author.strip()}"
+            return await self._search_query(t_query, expected_title=title)
+
+        return []
+
+    async def _search_query(
+        self,
+        query: str,
+        expected_title: str | None = None,
+    ) -> list[MarketOffer]:
+        """Exécute une recherche sur Chasse-aux-livres pour une requête donnée."""
         search_encoded = urllib.parse.quote_plus(query)
         search_url = f"{self.BASE_URL}/search?query={search_encoded}&catalog=fr"
 
@@ -185,7 +197,7 @@ class ChasseAuxLivresProvider:
 
                 # Récupération fine et vérifiée des offres partenaires d'occasion
                 deep_offers = await self._try_deep_lookup(
-                    client, d_html, query, expected_title=title
+                    client, d_html, query, expected_title=expected_title
                 )
                 if deep_offers:
                     return deep_offers
@@ -364,23 +376,16 @@ class ChasseAuxLivresProvider:
                     if best_used is None or tot < best_used["total_cents"]:
                         best_used = entry
 
-            # Zéro Neuf déguisé : Si aucune occasion n'est disponible sur le marché, on renvoie None
-            if not best_used:
-                return None
-
-            primary = best_used
-            cond_str = f"{primary['condition']} ({primary['merchant']})"
-
             # Extraction du minimum historique sur 1 an via l'API /rest/jcd de Chasse-aux-livres
             hist_low_1y_cents: int | None = None
             didh_m = re.search(r'data-didh=["\']([a-f0-9]+)["\']', p_html)
             if didh_m:
                 didh = didh_m.group(1)
-                ui = "HHA42EYUVBC"
-                duih = "HHA42EYUVBC.aee0de7aeaeff016cd3747d859d9811d4cc3c9c5"
+                duih_val = settings.CHASSE_AUX_LIVRES_DUIH or ""
+                ui_val = duih_val.split(".")[0] if "." in duih_val else duih_val
                 jcd_url = (
                     f"{self.BASE_URL}/rest/jcd?id={asin}&all=true&days=365"
-                    f"&ui={ui}&duih={duih}&didh={didh}"
+                    f"&ui={ui_val}&duih={duih_val}&didh={didh}"
                 )
                 try:
                     resp_jcd = await client.get(jcd_url, headers=ajax_headers, timeout=4.0)
@@ -419,6 +424,37 @@ class ChasseAuxLivresProvider:
                                 break
                 except Exception as jcd_exc:
                     logger.debug("Historique des prix Chasse-aux-livres indisponible: %s", jcd_exc)
+
+            # Zéro Neuf déguisé : Si aucune occasion n'est en stock,
+            # renvoyer l'historique seul ou None
+            if not best_used:
+                if hist_low_1y_cents:
+                    return [
+                        MarketOffer(
+                            provider_name=self.name,
+                            item_price_cents=0,
+                            shipping_price_cents=0,
+                            delivered_price_cents=0,
+                            source_url=product_url,
+                            currency="EUR",
+                            item_condition="Occasion indisponible",
+                            confidence=MatchConfidence.HIGH,
+                            is_available=False,
+                            is_comparable=True,
+                            raw_payload={
+                                "isbn13": found_isbn,
+                                "title": found_title,
+                                "query": query,
+                                "best_merchant": None,
+                                "partners": {},
+                                "historical_low_1y_cents": hist_low_1y_cents,
+                            },
+                        )
+                    ]
+                return None
+
+            primary = best_used
+            cond_str = f"{primary['condition']} ({primary['merchant']})"
 
             return [
                 MarketOffer(

@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from app.core.constants import AlertStatus, MatchConfidence
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
 from app.db.models.book import Book
+from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.category import Category
 from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 
@@ -131,6 +133,39 @@ class BookRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_books_needing_price_refresh(self, limit: int = 8) -> list[Book]:
+        """Charge un lot prioritaire de livres BD dont le cache est expiré, absent ou ancien.
+        Évite tout pic de charge en étalant les rafraîchissements en tâche de fond.
+        """
+        now = datetime.now(UTC)
+        subq = (
+            select(Book.id)
+            .join(AlertBook, Book.id == AlertBook.book_id)
+            .join(Alert, AlertBook.alert_id == Alert.id)
+            .join(Category, Alert.category_id == Category.id)
+            .outerjoin(BookMarketCache, Book.id == BookMarketCache.book_id)
+            .where(
+                Category.slug == "bd_comics",
+                Alert.status == AlertStatus.ACTIVE,
+                (BookMarketCache.expires_at == None)
+                | (BookMarketCache.expires_at <= now + timedelta(hours=2))
+                | (BookMarketCache.checked_at == None),
+            )
+            .group_by(Book.id, BookMarketCache.checked_at)
+            .order_by(BookMarketCache.checked_at.asc().nulls_first())
+            .limit(limit)
+        )
+        book_ids = list((await self.session.execute(subq)).scalars().all())
+        if not book_ids:
+            return []
+        stmt = (
+            select(Book)
+            .options(selectinload(Book.market_cache))
+            .where(Book.id.in_(book_ids))
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_book_for_alert(self, alert_id: uuid.UUID) -> Book | None:
         """Récupère le livre associé à une alerte avec son cache de marché préchargé."""
         books = await self.get_all_books_for_alert(alert_id)
@@ -176,38 +211,49 @@ class BookRepository:
         if not books:
             return None, [], tome_res
 
-        # Si un seul livre est rattaché (one-shot ou intégrale unique sans tomes)
-        if len(books) == 1 and not tome_res.is_lot:
-            return books[0], books, tome_res
-
-        # Si un lot est détecté
+        # 1. Si un lot est détecté
         if tome_res.is_lot:
             if tome_res.lot_tomes:
                 matching_lot = [
                     b
                     for b in books
                     if any(
-                        re.search(rf"\b(?:tome|t|vol)\s*\.?\s*{t}\b", b.title, re.IGNORECASE)
+                        TomeExtractor.extract(b.title, series_key=alert_name).tome_number == t
+                        or re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t}\b", b.title, re.IGNORECASE)
                         for t in tome_res.lot_tomes
                     )
                 ]
                 return None, matching_lot if matching_lot else books, tome_res
             return None, books, tome_res
 
-        # Si un numéro de tome précis est identifié
+        # 2. Si un numéro de tome précis est identifié dans l'annonce
         if tome_res.tome_number is not None:
             t_num = tome_res.tome_number
-            # 1. Recherche par numéro dans le titre du livre (ex: "RIP — Tome 2" ou "T2")
+            # A. Recherche heuristique via TomeExtractor sur le titre du livre catalogué
+            for b in books:
+                b_tome = TomeExtractor.extract(b.title, series_key=alert_name)
+                if b_tome.tome_number == t_num:
+                    return b, books, tome_res
+
+            # B. Recherche explicite par regex (ex: "RIP — Tome 2", "T2", "Vol 2")
             for b in books:
                 if re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_num}\b", b.title, re.IGNORECASE):
                     return b, books, tome_res
 
-            # 2. Recherche par sous-titre si détecté (ex: "Maurice" dans le titre du livre)
+            # C. Recherche par sous-titre si détecté (ex: "Maurice" dans le titre du livre)
             if tome_res.matched_subtitle:
                 sub = tome_res.matched_subtitle.lower()
                 for b in books:
                     if sub in b.title.lower():
                         return b, books, tome_res
 
-        # Aucun tome détecté ou tome non trouvé dans les livres enregistrés
+            # Le tome demandé n'existe pas encore dans les livres catalogués pour cette alerte
+            return None, books, tome_res
+
+        # 3. Aucun tome précis ni lot détecté (ex: one-shot comme "Jimmy Corrigan")
+        # Si un seul livre est rattaché à l'alerte, on l'associe directement
+        if len(books) == 1:
+            return books[0], books, tome_res
+
+        # Plusieurs tomes en base et annonce sans tome précisé
         return None, books, tome_res

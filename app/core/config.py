@@ -49,12 +49,15 @@ class Settings(BaseSettings):
     EBAY_CLIENT_SECRET: SecretStr = SecretStr("")
     EBAY_ENV: str = "PRODUCTION"
 
+    # Chasse-aux-livres (Session utilisateur pour historique 1 an /rest/jcd)
+    CHASSE_AUX_LIVRES_DUIH: str | None = None
+
     # Planification
     PRICE_REFRESH_TIMES: str = "07:00,19:00"
 
     # Surveillance Vinted en temps réel
     RADAR_API_URL: str = "http://127.0.0.1:8000"
-    VINTED_POLL_INTERVAL_SECONDS: int = 20
+    VINTED_POLL_INTERVAL_SECONDS: int = 15
     VINTED_POLLER_ENABLED: bool = True
     VINTED_PROXY_URL: str | None = None
 
@@ -83,12 +86,8 @@ class Settings(BaseSettings):
     DEEPSEEK_MODEL: str = "deepseek-flash"
     AI_ENABLED: bool = True
     AI_FEATURE_NATURAL_ADD: bool = True
-    AI_FEATURE_PRICE_GLITCH: bool = False
-    AI_FEATURE_HIDDEN_CONDITION: bool = True
-    AI_FEATURE_VISION_GUARD: bool = False
     AI_FEATURE_PROFIT_SCORING: bool = True
     AI_FEATURE_NEGOTIATION: bool = True
-    AI_FEATURE_BUNDLE_DECOMPOSITION: bool = False
     AI_FEATURE_KEYWORD_VARIANTS: bool = True
     AI_FEATURE_AUTO_TUNING: bool = True
 

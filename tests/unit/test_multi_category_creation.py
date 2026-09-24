@@ -1,9 +1,10 @@
 """Tests unitaires pour la création d'alertes multi-catégories (/add)."""
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from aiogram.types import Message
 
 from app.bot.handlers.alerts import (
     back_to_recap,
@@ -172,7 +173,7 @@ async def test_gaming_query_input_sets_defaults():
 
 @pytest.mark.asyncio
 async def test_tech_query_input_sets_defaults():
-    """Vérifie que la saisie d'un produit tech configure mots-clés, exclusions et conditions tech."""
+    """Vérifie que la saisie tech configure mots-clés, exclusions et conditions."""
     message = MagicMock()
     message.text = "Raspberry Pi 4"
     message.answer = AsyncMock()
@@ -292,7 +293,7 @@ async def test_save_alert_tech_creates_alert_without_books():
 
 @pytest.mark.asyncio
 async def test_edit_alert_creation_prompt_and_sub_options():
-    """Vérifie que cliquer sur Modifier présente le menu de modification et que ses sous-options fonctionnent."""
+    """Vérifie que le menu Modifier présente les options et que les sous-options marchent."""
     callback = MagicMock()
     callback.answer = AsyncMock()
     callback.message = MagicMock()
@@ -315,7 +316,8 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     await edit_alert_creation_prompt(callback, state)
     callback.answer.assert_called_once()
     callback.message.edit_text.assert_called_once()
-    prompt_text, kwargs = callback.message.edit_text.call_args[0][0], callback.message.edit_text.call_args[1]
+    call_args = callback.message.edit_text.call_args
+    prompt_text, kwargs = call_args[0][0], call_args[1]
     assert "Modification de l'alerte" in prompt_text
     kb = kwargs["reply_markup"]
     assert "10,00 €" in str(kb.inline_keyboard)
@@ -353,3 +355,164 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     state.clear.assert_called_once()
     state.set_state.assert_called_once_with(AlertCreationState.waiting_for_category)
     assert "Choisis la catégorie" in callback.message.edit_text.call_args[0][0]
+
+
+class MockMessage(MagicMock):
+    __class__ = Message
+
+
+@pytest.mark.asyncio
+async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
+    """Vérifie que /add <prompt> envoie le message d'attente puis l'édite avec le récap."""
+    from app.services.ai.schemas import NaturalAddResult
+
+    message = MockMessage()
+    message.text = "/add Asterix tome 1 10€"
+    message.chat.id = 12345
+    message.bot = MagicMock()
+    message.bot.send_chat_action = AsyncMock()
+
+    loading_message = MagicMock()
+    loading_message.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=loading_message)
+
+    state = AsyncMock()
+    state.clear = AsyncMock()
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    fake_result = NaturalAddResult(
+        name="Asterix tome 1",
+        category_slug="bd_comics",
+        is_series=False,
+        isbn13="9782012101333",
+        author="Goscinny & Uderzo",
+        publisher="Hachette",
+        include_keywords=["Asterix", "tome 1"],
+        exclude_keywords=["figurine"],
+        max_price_cents=1000,
+        conditions=["Très bon état"],
+        explanation="Astérix le Gaulois tome 1 max 10€",
+    )
+
+    with (
+        patch(
+            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
+            new_callable=PropertyMock,
+            return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
+            new_callable=AsyncMock,
+            return_value=fake_result,
+        ),
+    ):
+        await start_add_alert(message, state, db_session, db_user)
+
+    message.bot.send_chat_action.assert_awaited_once_with(chat_id=12345, action="typing")
+    message.answer.assert_awaited_once()
+    assert "DeepSeek analyse votre demande" in message.answer.call_args[0][0]
+
+    loading_message.edit_text.assert_awaited_once()
+    edited_text = loading_message.edit_text.call_args[0][0]
+    assert "Alerte configurée en langage naturel" in edited_text
+    assert "Asterix tome 1" in edited_text
+    state.set_state.assert_called_with(AlertCreationState.confirm_creation)
+
+
+@pytest.mark.asyncio
+async def test_start_add_alert_natural_add_fallback_on_parse_failure():
+    """Vérifie que si l'IA ne peut pas parser, le message d'attente bascule sur le sélecteur."""
+    message = MockMessage()
+    message.text = "/add requete incomprehensible"
+    message.chat.id = 12345
+    message.bot = MagicMock()
+    message.bot.send_chat_action = AsyncMock()
+
+    loading_message = MagicMock()
+    loading_message.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=loading_message)
+
+    state = AsyncMock()
+    state.clear = AsyncMock()
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    with (
+        patch(
+            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
+            new_callable=PropertyMock,
+            return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        await start_add_alert(message, state, db_session, db_user)
+
+    message.bot.send_chat_action.assert_awaited_once_with(chat_id=12345, action="typing")
+    message.answer.assert_awaited_once()
+    loading_message.edit_text.assert_awaited_once()
+    edited_text = loading_message.edit_text.call_args[0][0]
+    assert "Choisis la catégorie de ce produit" in edited_text
+    state.set_state.assert_called_with(AlertCreationState.waiting_for_category)
+
+
+@pytest.mark.asyncio
+async def test_handle_negotiate_shows_toast_and_typing_action():
+    """Vérifie que [ 💬 Négocier ] répond immédiatement par un toast et du typing."""
+    from app.bot.handlers.callbacks import handle_negotiate
+    from app.services.ai.schemas import NegotiationResult
+
+    listing_id = uuid.uuid4()
+    callback = MagicMock()
+    callback.data = f"negotiate:{listing_id}"
+    callback.answer = AsyncMock()
+    mock_msg = MockMessage()
+    mock_msg.chat = MagicMock()
+    mock_msg.chat.id = 12345
+    mock_msg.bot = MagicMock()
+    mock_msg.bot.send_chat_action = AsyncMock()
+    mock_msg.reply = AsyncMock()
+    callback.message = mock_msg
+
+    fake_listing = MagicMock()
+    fake_listing.id = listing_id
+    fake_listing.title = "BD Tintin"
+    fake_listing.item_price_cents = 2000
+
+    fake_offer = NegotiationResult(
+        suggested_offer_cents=1600,
+        suggested_offer_euros=16.0,
+        message="Bonjour, seriez-vous ouvert à 16€ ?",
+    )
+
+    db_session = AsyncMock()
+
+    with (
+        patch("app.bot.handlers.callbacks.ListingRepository") as mock_repo_cls,
+        patch(
+            "app.bot.handlers.callbacks.negotiation_module.generate_offer",
+            new_callable=AsyncMock,
+            return_value=fake_offer,
+        ),
+    ):
+        mock_repo = MagicMock()
+        mock_repo.get_by_id = AsyncMock(return_value=fake_listing)
+        mock_repo_cls.return_value = mock_repo
+
+        await handle_negotiate(callback, db_session)
+
+    callback.answer.assert_awaited_once_with("⏳ Coach IA : Analyse de l'offre en cours...")
+    callback.message.bot.send_chat_action.assert_awaited_once_with(chat_id=12345, action="typing")
+    callback.message.reply.assert_awaited_once()
+    reply_text = callback.message.reply.call_args[1]["text"]
+    assert "Offre suggérée" in reply_text

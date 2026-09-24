@@ -235,3 +235,20 @@ def test_providers_accept_custom_http_client():
 
     meta_service = BookMetadataService(http_client=dummy_client)
     assert meta_service.http_client is dummy_client
+
+
+def test_settings_get_vinted_proxy():
+    """Vérifie la résolution de proxy unique ou multiple."""
+    from app.core.config import Settings
+
+    # Aucun proxy
+    s1 = Settings(VINTED_PROXY_URL=None)
+    assert s1.get_vinted_proxy() is None
+
+    # Proxy unique
+    s2 = Settings(VINTED_PROXY_URL="http://user:pass@1.2.3.4:8080")
+    assert s2.get_vinted_proxy() == "http://user:pass@1.2.3.4:8080"
+
+    # Pool de proxys séparés par virgules
+    s3 = Settings(VINTED_PROXY_URL="http://proxy1:80, http://proxy2:80")
+    assert s3.get_vinted_proxy() in ["http://proxy1:80", "http://proxy2:80"]
