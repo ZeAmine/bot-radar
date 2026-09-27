@@ -193,44 +193,100 @@ class VintedSessionManager:
                 len(self.cookies),
             )
 
-    async def refresh_session(self, client: httpx.AsyncClient) -> bool:
-        """Visite la page d'accueil de Vinted pour récupérer des cookies et jetons frais."""
+    async def clear_session(self, client: httpx.AsyncClient | None = None) -> None:
+        """Purge atomique de la session : mémoire vive, cache Redis et jar client."""
+        async with self._lock:
+            self.cookies.clear()
+            self.last_refreshed = 0
+            self.last_attempt = 0
+            if client is not None and hasattr(client.cookies, "clear"):
+                client.cookies.clear()
+            try:
+                redis_client = get_redis_client()
+                await redis_client.delete(REDIS_SESSION_KEY)
+                logger.info("Session Vinted purgée avec succès (RAM + Redis + Jar client).")
+            except Exception as exc:
+                logger.debug("Erreur lors de la purge Redis de la session Vinted: %s", exc)
+
+    async def refresh_session(self, client: httpx.AsyncClient | None = None) -> bool:
+        """Obtient des cookies et jetons Vinted frais via une requête propre isolée."""
         now = time.time()
-        if now - self.last_attempt < 30:
+        if now - self.last_attempt < 15:
             return False
         async with self._lock:
             self.last_attempt = time.time()
             try:
-                resp = await client.get(
-                    "https://www.vinted.fr/",
-                    headers=DEFAULT_VINTED_HEADERS,
-                    follow_redirects=True,
-                    timeout=10.0,
-                )
-                if resp.status_code == 200:
-                    if hasattr(client.cookies, "jar"):
-                        for cookie in client.cookies.jar:
-                            self.cookies[cookie.name] = cookie.value
-                    else:
-                        for k, v in client.cookies.items():
-                            self.cookies[k] = v
-                    self.last_refreshed = time.time()
-                    await self._save_cookies_to_redis(self.cookies)
-                    logger.info(
-                        "Session Vinted rafraîchie avec succès (%d cookies actifs)",
-                        len(self.cookies),
+                # Si un client persistant est fourni, vider son jar anti-cookies périmés
+                if client is not None and hasattr(client.cookies, "clear"):
+                    client.cookies.clear()
+
+                if client is not None:
+                    resp = await client.get(
+                        "https://www.vinted.fr/",
+                        headers=DEFAULT_VINTED_HEADERS,
+                        follow_redirects=True,
+                        timeout=10.0,
                     )
-                    return True
+                    cookie_source = client.cookies
+                else:
+                    async with httpx.AsyncClient(
+                        timeout=10.0,
+                        follow_redirects=True,
+                        proxy=settings.get_vinted_proxy(),
+                    ) as mint_client:
+                        resp = await mint_client.get(
+                            "https://www.vinted.fr/",
+                            headers=DEFAULT_VINTED_HEADERS,
+                        )
+                        cookie_source = mint_client.cookies
+
+                if resp.status_code == 200:
+                    new_cookies: dict[str, str] = {}
+                    if hasattr(cookie_source, "jar"):
+                        for cookie in cookie_source.jar:
+                            new_cookies[cookie.name] = cookie.value
+                    elif hasattr(cookie_source, "items"):
+                        for k, v in cookie_source.items():
+                            new_cookies[k] = v
+                    elif isinstance(cookie_source, dict):
+                        new_cookies = dict(cookie_source)
+
+                    has_tokens = bool(
+                        new_cookies.get("access_token_web") or new_cookies.get("anon_id")
+                    )
+                    if has_tokens or new_cookies:
+                        self.cookies = new_cookies
+                        self.last_refreshed = time.time()
+                        await self._save_cookies_to_redis(self.cookies)
+
+                        if client is not None and hasattr(client.cookies, "set"):
+                            for k, v in self.cookies.items():
+                                client.cookies.set(k, v, domain=".vinted.fr")
+
+                        jwt_exp = get_jwt_exp(self.cookies.get("access_token_web", ""))
+                        exp_str = (
+                            f"dans {(jwt_exp - time.time()) / 3600:.1f}h"
+                            if jwt_exp
+                            else "non-JWT"
+                        )
+                        logger.info(
+                            "Session Vinted régénérée avec succès (%d cookies, exp %s).",
+                            len(self.cookies),
+                            exp_str,
+                        )
+                        return True
+                    else:
+                        logger.warning("Vinted a retourné 200 mais aucun cookie n'a été détecté.")
                 else:
                     logger.warning(
-                        "Échec du rafraîchissement de session Vinted (statut %d)", resp.status_code
+                        "Échec rafraîchissement Vinted (statut %d)", resp.status_code
                     )
             except Exception as exc:
                 logger.warning("Erreur lors du rafraîchissement de session Vinted: %s", exc)
             return False
 
     async def ensure_valid_session(self, client: httpx.AsyncClient, force: bool = False) -> None:
-        """Vérifie si la session doit être rafraîchie et injecte les en-têtes nécessaires."""
+        """Vérifie proactivement la session et anticipe l'expiration du token JWT."""
         # 1. Si pas de cookies en mémoire vive, tenter de restaurer depuis Redis
         if not self.cookies:
             redis_cookies = await self._load_cookies_from_redis()
@@ -238,36 +294,37 @@ class VintedSessionManager:
                 self.cookies = redis_cookies
                 self.last_refreshed = time.time()
 
-        # 2. Injecter les cookies connus dans le client HTTP
-        if hasattr(client.cookies, "set"):
-            for k, v in self.cookies.items():
-                client.cookies.set(k, v, domain=".vinted.fr")
-        elif isinstance(client.cookies, dict):
-            client.cookies.update(self.cookies)
-
         now = time.time()
         token = self.cookies.get("access_token_web")
-        token_expired = False
-        if token:
-            exp = get_jwt_exp(token)
-            if exp and exp <= now + 300:  # Expire dans moins de 5 min ou déjà expiré
-                token_expired = True
+        token_exp = get_jwt_exp(token) if token else None
+
+        # Rotation proactive : renouveler si le jeton expire dans moins de 30 minutes (1800s)
+        token_expiring_soon = False
+        if token_exp:
+            time_left = token_exp - now
+            if time_left <= 1800:
+                token_expiring_soon = True
+                logger.info(
+                    "Jeton Vinted proche expiration (reste %.0f min), rotation proactive...",
+                    max(0.0, time_left / 60),
+                )
 
         needs_refresh = (
             force
-            or token_expired
-            or (now - self.last_refreshed > self.refresh_interval)
+            or token_expiring_soon
             or not self.cookies
             or not token
+            or (now - self.last_refreshed > self.refresh_interval)
         )
-        if needs_refresh and (now - self.last_attempt > 30):
-            await self.refresh_session(client)
 
-    def clear_session(self) -> None:
-        """Vide les cookies en mémoire et réinitialise les horodatages."""
-        self.cookies.clear()
-        self.last_refreshed = 0
-        self.last_attempt = 0
+        if needs_refresh:
+            if now - self.last_attempt > 15:
+                await self.refresh_session(client)
+        else:
+            # Synchroniser les cookies connus dans le client s'ils n'y sont pas déjà
+            if hasattr(client.cookies, "set"):
+                for k, v in self.cookies.items():
+                    client.cookies.set(k, v, domain=".vinted.fr")
 
     def get_auth_headers(self) -> dict[str, str]:
         """Retourne les en-têtes adaptés incluant le Bearer token si présent."""
@@ -324,7 +381,8 @@ async def fetch_vinted_page(
         )
 
         if response.status_code == 401:
-            logger.info("Vinted API 401, renouvellement de session en cours...")
+            logger.warning("Vinted API 401: session expirée, auto-guérison immédiate...")
+            await vinted_session_manager.clear_session(client)
             if await vinted_session_manager.refresh_session(client):
                 api_headers = vinted_session_manager.get_api_headers()
                 response = await client.get(
@@ -374,10 +432,11 @@ async def fetch_vinted_page(
                 if html_response.status_code != 200
                 else "page d'attente 'Session refresh'"
             )
-            logger.info(
-                "Vinted HTML %s, tentative de renouvellement automatique de session...",
+            logger.warning(
+                "Vinted HTML %s: purge et renouvellement automatique de session...",
                 reason,
             )
+            await vinted_session_manager.clear_session(client)
             if await vinted_session_manager.refresh_session(client):
                 headers = vinted_session_manager.get_auth_headers()
                 html_response = await client.get(url, headers=headers)
@@ -388,7 +447,7 @@ async def fetch_vinted_page(
                 logger.warning(
                     "Vinted catalogue non authentifié reçu, purge de session pour le prochain tour."
                 )
-                vinted_session_manager.clear_session()
+                await vinted_session_manager.clear_session(client)
             return items
         if html_response.status_code == 429:
             logger.warning("Vinted rate limit (429) sur le catalogue HTML: %s", url)

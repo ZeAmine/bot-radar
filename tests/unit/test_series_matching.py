@@ -365,6 +365,62 @@ async def test_handle_market_tome_select():
         )
 
 
+@pytest.mark.asyncio
+async def test_handle_view_market_details_success():
+    """Vérifie l'ouverture normale du panneau de marché lors du clic sur le bouton d'alerte."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from aiogram.types import CallbackQuery, Message
+
+    from app.bot.handlers.callbacks import handle_view_market_details
+
+    listing_id = uuid.uuid4()
+    mock_listing = MagicMock(id=listing_id, estimated_total_cents=1200, title="Les Indes fourbes")
+    mock_book = _create_mock_book("Les Indes fourbes", 548)
+    mock_book.id = uuid.uuid4()
+
+    mock_msg = MagicMock(spec=Message)
+    mock_msg.reply = AsyncMock()
+    mock_msg.html_text = ""
+
+    mock_callback = MagicMock(spec=CallbackQuery)
+    mock_callback.data = f"market:{listing_id}"
+    mock_callback.message = mock_msg
+    mock_callback.answer = AsyncMock()
+
+    mock_session = AsyncMock()
+    with (
+        patch("app.bot.handlers.callbacks.ListingRepository") as mock_l_cls,
+        patch("app.bot.handlers.callbacks.BookRepository") as mock_b_cls,
+        patch("app.bot.handlers.callbacks.MarketPriceRepository") as mock_m_cls,
+    ):
+        mock_l = MagicMock()
+        mock_l.get_by_id = AsyncMock(return_value=mock_listing)
+        mock_l.get_alert_for_listing = AsyncMock(
+            return_value=MagicMock(isbn=None, name="Les Indes fourbes")
+        )
+        mock_l_cls.return_value = mock_l
+
+        mock_b = MagicMock()
+        mock_b.resolve_book_for_listing = AsyncMock(
+            return_value=(mock_book, [mock_book], None)
+        )
+        mock_b_cls.return_value = mock_b
+
+        mock_m = MagicMock()
+        mock_m.get_latest_snapshot = AsyncMock(return_value=None)
+        mock_m_cls.return_value = mock_m
+
+        await handle_view_market_details(mock_callback, mock_session)
+
+        mock_msg.reply.assert_called_once()
+        text = mock_msg.reply.call_args[1]["text"]
+        assert "📊 <b>Prix du marché</b>" in text
+        assert "5,48 €" in text
+        mock_callback.answer.assert_called_once()
+
+
+
 def test_rip_tome_titles_cleaning_no_stray_parenthesis():
     """Vérifie que les titres de la série RIP ne produisent aucune parenthèse orpheline."""
     from app.services.market_price_service import clean_tome_display_title
@@ -497,8 +553,9 @@ def test_market_details_card_series_tomes_formatting():
 
 @pytest.mark.asyncio
 async def test_resolve_book_for_listing_does_not_swallow_tome2_when_single_generic_book():
-    """Vérifie que si une alerte de série ne possède qu'un seul livre générique (sans numéro de tome),
-    une annonce pour le Tome 2 renvoie book=None pour permettre la découverte BNF du Tome 2."""
+    """Vérifie que si une alerte de série ne possède qu'un livre générique (sans n° de tome),
+    une annonce pour le Tome 2 renvoie book=None pour permettre la découverte BNF du Tome 2.
+    """
     from unittest.mock import AsyncMock, MagicMock
 
     from app.db.repositories.book_repo import BookRepository
@@ -528,8 +585,9 @@ async def test_resolve_book_for_listing_does_not_swallow_tome2_when_single_gener
 
 @pytest.mark.asyncio
 async def test_resolve_book_for_listing_matches_existing_tome_number():
-    """Vérifie que si le tome recherché existe parmi les livres catalogués (ex: 'L’arabe du futur 2'),
-    il est immédiatement et correctement résolu."""
+    """Vérifie que si le tome recherché existe parmi les livres catalogués,
+    il est immédiatement et correctement résolu.
+    """
     from unittest.mock import AsyncMock, MagicMock
 
     from app.db.repositories.book_repo import BookRepository
@@ -537,8 +595,18 @@ async def test_resolve_book_for_listing_matches_existing_tome_number():
     mock_session = MagicMock()
     repo = BookRepository(mock_session)
 
-    b1 = Book(id=uuid.uuid4(), title="L'Arabe du futur 1", normalized_title="l arabe du futur 1", language="fr")
-    b2 = Book(id=uuid.uuid4(), title="L’arabe du futur 2", normalized_title="l arabe du futur 2", language="fr")
+    b1 = Book(
+        id=uuid.uuid4(),
+        title="L'Arabe du futur 1",
+        normalized_title="l arabe du futur 1",
+        language="fr",
+    )
+    b2 = Book(
+        id=uuid.uuid4(),
+        title="L’arabe du futur 2",
+        normalized_title="l arabe du futur 2",
+        language="fr",
+    )
     repo.get_all_books_for_alert = AsyncMock(return_value=[b1, b2])
 
     resolved_book, books_in_series, tome_res = await repo.resolve_book_for_listing(
@@ -554,7 +622,7 @@ async def test_resolve_book_for_listing_matches_existing_tome_number():
 
 @pytest.mark.asyncio
 async def test_resolve_book_for_listing_one_shot_returns_single_book():
-    """Vérifie qu'un vrai one-shot sans mention de tome continue d'être résolu sur l'unique livre."""
+    """Vérifie qu'un one-shot sans mention de tome continue d'être résolu sur l'unique livre."""
     from unittest.mock import AsyncMock, MagicMock
 
     from app.db.repositories.book_repo import BookRepository
@@ -562,7 +630,12 @@ async def test_resolve_book_for_listing_one_shot_returns_single_book():
     mock_session = MagicMock()
     repo = BookRepository(mock_session)
 
-    one_shot = Book(id=uuid.uuid4(), title="Jimmy Corrigan", normalized_title="jimmy corrigan", language="fr")
+    one_shot = Book(
+        id=uuid.uuid4(),
+        title="Jimmy Corrigan",
+        normalized_title="jimmy corrigan",
+        language="fr",
+    )
     repo.get_all_books_for_alert = AsyncMock(return_value=[one_shot])
 
     resolved_book, books_in_series, tome_res = await repo.resolve_book_for_listing(

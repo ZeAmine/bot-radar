@@ -4,7 +4,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
 echo "============================================================"
-echo "📡 Démarrage du Radar Bot - Poller Résidentiel Mac"
+echo "📡 Démarrage du BotRadar - Poller Résidentiel Mac"
 echo "============================================================"
 
 if [ -f ".venv/bin/python" ]; then

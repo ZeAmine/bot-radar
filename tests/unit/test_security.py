@@ -51,7 +51,7 @@ def test_security_headers_middleware():
     assert response.headers.get("X-Frame-Options") == "DENY"
     assert "Strict-Transport-Security" in response.headers
     assert response.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
-    assert response.headers.get("Server") == "Radar-API"
+    assert response.headers.get("Server") == "BotRadar-API"
 
 
 def test_payload_size_limit_middleware():

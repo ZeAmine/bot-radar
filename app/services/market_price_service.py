@@ -2,7 +2,7 @@
 
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from app.core.constants import ComparisonStatus
@@ -302,6 +302,7 @@ class MarketPriceService:
         book: Book | None,
         books_in_series: list[Book] | None = None,
         tome_result: "TomeMatchResult | None" = None,
+        latest_snapshot: Any = None,
     ) -> str:
         """Génère le texte complet du panneau callback 'Prix du marché'."""
         # Résolution de repli : si book est None mais qu'un seul livre est présent dans la série
@@ -463,8 +464,15 @@ class MarketPriceService:
 
         # Détail des partenaires si disponible
         partners = None
-        if book:
+        if latest_snapshot and getattr(latest_snapshot, "raw_payload", None):
+            payload = latest_snapshot.raw_payload
+            if isinstance(payload, dict) and "partners" in payload:
+                partners = payload["partners"]
+
+        if not partners and book:
             snapshots = book.__dict__.get("snapshots")
+            if snapshots is None:
+                snapshots = getattr(book, "snapshots", None)
             if snapshots and isinstance(snapshots, list):
                 for snap in sorted(
                     snapshots, key=lambda s: s.checked_at or datetime.min, reverse=True
@@ -504,8 +512,16 @@ class MarketPriceService:
             "📊 <b>Prix du marché</b>\n",
         ]
 
+        if cache.historical_low_1y_cents:
+            lines.append(f"📉 Prix bas constaté : {format_cents(cache.historical_low_1y_cents)}")
+            if not valid_used_partners:
+                lines.append("<i>(Cote d'occasion basée sur le prix bas constaté 1 an)</i>")
+
         if valid_used_partners:
-            lines.append("<b>Comparatif par boutique :</b>")
+            if cache.historical_low_1y_cents:
+                lines.append("\n<b>Comparatif par boutique :</b>")
+            else:
+                lines.append("<b>Comparatif par boutique :</b>")
             sorted_partners = sorted(
                 valid_used_partners.items(),
                 key=lambda item: item[1].get("total_cents", 999999),
@@ -514,9 +530,10 @@ class MarketPriceService:
                 p_cents = p_data.get("total_cents", 0)
                 p_cond = normalize_secondhand_condition(p_data.get("condition"))
                 lines.append(f"• {p_name} : {format_cents(p_cents)} ({p_cond})")
-        elif cache.historical_low_1y_cents:
-            lines.append(f"📉 Prix bas constaté : {format_cents(cache.historical_low_1y_cents)}")
-            lines.append("<i>(Cote d'occasion basée sur le prix bas constaté 1 an)</i>")
+        elif not cache.historical_low_1y_cents:
+            lines.append(
+                "<i>(Aucune offre d'occasion comparable en stock chez nos partenaires.)</i>"
+            )
 
         if books_in_series and len(books_in_series) > 1:
             has_numbered_tomes = any(

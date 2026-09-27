@@ -1,4 +1,4 @@
-"""Services métier pour Radar Bot."""
+"""Services métier pour BotRadar."""
 
 from app.services.alert_service import (
     AlertServiceError,

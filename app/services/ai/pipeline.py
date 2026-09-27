@@ -14,7 +14,7 @@ from app.services.ai.registry import ai_registry
 logger = logging.getLogger(__name__)
 
 COMBINED_SYSTEM_PROMPT = (
-    "Tu es l'analyste expert de Radar Bot (achat-revente et alertes d'occasion).\n"
+    "Tu es l'analyste expert de BotRadar (achat-revente et alertes d'occasion).\n"
     "Tu reçois les détails d'une annonce Vinted qui vient d'être détectée.\n"
     "Analyse les aspects demandés selon les instructions et retourne un objet JSON "
     "structuré regroupant les clés requises."

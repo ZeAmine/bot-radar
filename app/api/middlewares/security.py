@@ -31,7 +31,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Politique de référent sécurisée
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         # Masquage de l'empreinte logicielle
-        response.headers["Server"] = "Radar-API"
+        response.headers["Server"] = "BotRadar-API"
         # Désactivation des fonctionnalités sensibles du navigateur
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
 

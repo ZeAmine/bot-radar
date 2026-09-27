@@ -1,7 +1,7 @@
-"""Script client autonome pour pousser des annonces vers l'API d'ingestion de Radar Bot.
+"""Script client autonome pour pousser des annonces vers l'API d'ingestion de BotRadar.
 
 Ce script sert de connecteur de référence pour tout scraper, flux RSS ou service tiers
-qui alimente Radar Bot en annonces de seconde main.
+qui alimente BotRadar en annonces de seconde main.
 """
 
 import argparse
@@ -25,7 +25,7 @@ def push_listing(
     listing_data: dict[str, Any],
     timeout: float = 10.0,
 ) -> dict[str, Any]:
-    """Envoie une annonce à l'endpoint d'ingestion de Radar Bot.
+    """Envoie une annonce à l'endpoint d'ingestion de BotRadar.
 
     Args:
         api_url: URL complète de l'endpoint (ex: http://localhost:8000/api/v1/ingest/listings)
@@ -65,7 +65,7 @@ def push_listing(
             )
             raise
         except httpx.RequestError as exc:
-            logger.error("Impossible de joindre le serveur Radar Bot à %s : %s", endpoint, exc)
+            logger.error("Impossible de joindre le serveur BotRadar à %s : %s", endpoint, exc)
             raise
 
 
@@ -102,11 +102,11 @@ def build_sample_listing(
 
 def main() -> None:
     """Point d'entrée CLI pour tester ou automatiser l'ingestion d'annonces."""
-    parser = argparse.ArgumentParser(description="Radar Bot - Producteur d'annonces")
+    parser = argparse.ArgumentParser(description="BotRadar - Producteur d'annonces")
     parser.add_argument(
         "--url",
-        default=os.getenv("RADAR_API_URL", "http://localhost:8000"),
-        help="URL de base de Radar Bot (défaut: http://localhost:8000)",
+        default=os.getenv("BOTRADAR_API_URL", os.getenv("RADAR_API_URL", "http://localhost:8000")),
+        help="URL de base de BotRadar (défaut: http://localhost:8000)",
     )
     parser.add_argument(
         "--token",

@@ -1,4 +1,4 @@
-"""Script utilitaire pour synchroniser et injecter des cookies de session Vinted vers Radar Bot."""
+"""Script utilitaire pour synchroniser et injecter des cookies de session Vinted vers BotRadar."""
 
 import argparse
 import json
@@ -50,7 +50,7 @@ def push_session_to_radar(
     internal_token: str,
     cookies: dict[str, str],
 ) -> bool:
-    """Pousse le dictionnaire de cookies vers l'endpoint interne de Radar Bot."""
+    """Pousse le dictionnaire de cookies vers l'endpoint interne de BotRadar."""
     endpoint = f"{api_url.rstrip('/')}/api/v1/internal/vinted/session"
     headers = {
         "Content-Type": "application/json",
@@ -60,20 +60,22 @@ def push_session_to_radar(
         try:
             resp = client.post(endpoint, headers=headers, json=cookies)
             if resp.status_code == 200:
-                logger.info("Session Vinted injectée avec succès dans Radar Bot: %s", resp.json())
+                logger.info("Session Vinted injectée avec succès dans BotRadar: %s", resp.json())
                 return True
             logger.error("Échec de l'injection (HTTP %s): %s", resp.status_code, resp.text[:200])
         except Exception as exc:
-            logger.error("Erreur de connexion à l'API Radar: %s", exc)
+            logger.error("Erreur de connexion à l'API BotRadar: %s", exc)
     return False
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Synchronise une session Vinted vers Radar Bot.")
+    parser = argparse.ArgumentParser(description="Synchronise une session Vinted vers BotRadar.")
     parser.add_argument(
         "--api-url",
-        default=os.environ.get("RADAR_API_URL", "https://radar.aminezegmou.fr"),
-        help="URL de base de l'API Radar",
+        default=os.environ.get(
+            "BOTRADAR_API_URL", os.environ.get("RADAR_API_URL", "https://radar.aminezegmou.fr")
+        ),
+        help="URL de base de l'API BotRadar",
     )
     parser.add_argument(
         "--token",

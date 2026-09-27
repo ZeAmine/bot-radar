@@ -23,6 +23,7 @@ from app.core.http_client import get_shared_http_client
 from app.db.models.bot_event import BotEvent
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
+from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.services.ai.modules.negotiation import negotiation_module
 from app.services.book_catalog_service import BookCatalogService
 from app.services.market_price_service import MarketPriceService, clean_tome_display_title
@@ -81,7 +82,9 @@ async def handle_view_photos(
             await db_session.commit()
 
     if len(photos) <= 1:
-        await callback.answer("ℹ️ Une seule photo est disponible pour cette annonce.", show_alert=True)
+        await callback.answer(
+            "ℹ️ Une seule photo est disponible pour cette annonce.", show_alert=True
+        )
         return
 
     await callback.answer()
@@ -170,6 +173,21 @@ async def handle_view_market_details(
     db_session: Any,
 ) -> None:
     """Affiche le panneau détaillé du prix du marché pour l'annonce BD sélectionnée."""
+    try:
+        await _show_market_details(callback, db_session)
+    except Exception as exc:
+        logger.error("Erreur lors de l'affichage des détails du marché: %s", exc, exc_info=True)
+        with contextlib.suppress(Exception):
+            await callback.answer(
+                "Impossible de charger les cotes du marché pour le moment.",
+                show_alert=True,
+            )
+
+
+async def _show_market_details(
+    callback: CallbackQuery,
+    db_session: Any,
+) -> None:
     listing_id = uuid.UUID(callback.data.split(":")[1])  # type: ignore
 
     listing_repo = ListingRepository(db_session)
@@ -257,7 +275,6 @@ async def handle_view_market_details(
     if (book and not has_valid_price) or (not book and not books_in_series):
         try:
             from app.core.constants import ComparisonStatus
-            from app.db.repositories.market_price_repo import MarketPriceRepository
             from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 
             provider = ChasseAuxLivresProvider(timeout_seconds=6.0)
@@ -291,7 +308,9 @@ async def handle_view_market_details(
                     if (best.delivered_price_cents > 0 and best.is_available)
                     else ComparisonStatus.UNAVAILABLE
                 )
-                lowest_price = best.delivered_price_cents if best.delivered_price_cents > 0 else None
+                lowest_price = (
+                    best.delivered_price_cents if best.delivered_price_cents > 0 else None
+                )
 
                 cache = await market_repo.update_or_create_cache(
                     book_id=book.id,
@@ -308,11 +327,26 @@ async def handle_view_market_details(
         except Exception:
             pass
 
+    target_book = book
+    if (
+        not target_book
+        and books_in_series
+        and len(books_in_series) == 1
+        and not (tome_result and tome_result.is_lot)
+    ):
+        target_book = books_in_series[0]
+
+    latest_snap = None
+    if target_book:
+        market_repo = MarketPriceRepository(db_session)
+        latest_snap = await market_repo.get_latest_snapshot(target_book.id)
+
     details_text = MarketPriceService.format_market_details_card(
         listing=listing,
-        book=book,
+        book=target_book,
         books_in_series=books_in_series,
         tome_result=tome_result,
+        latest_snapshot=latest_snap,
     )
     tome_buttons: list[list[InlineKeyboardButton]] = []
     if not book and books_in_series and len(books_in_series) > 1:
@@ -356,6 +390,18 @@ async def handle_view_market_details(
 @router.callback_query(F.data.startswith("market_tome:"))
 async def handle_market_tome_select(callback: CallbackQuery, db_session: Any) -> None:
     """Affiche la comparaison pour le tome sélectionné depuis le panneau de série."""
+    try:
+        await _select_market_tome(callback, db_session)
+    except Exception as exc:
+        logger.error("Erreur lors de la sélection du tome: %s", exc, exc_info=True)
+        with contextlib.suppress(Exception):
+            await callback.answer(
+                "Impossible de charger les cotes pour ce tome.",
+                show_alert=True,
+            )
+
+
+async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
     parts = callback.data.split(":")
     listing_id = uuid.UUID(parts[1])
     book_id = uuid.UUID(parts[2])
@@ -377,11 +423,17 @@ async def handle_market_tome_select(callback: CallbackQuery, db_session: Any) ->
     if alert:
         books_in_series = await book_repo.get_all_books_for_alert(alert.id)
 
+    latest_snap = None
+    if book:
+        market_repo = MarketPriceRepository(db_session)
+        latest_snap = await market_repo.get_latest_snapshot(book.id)
+
     details_text = MarketPriceService.format_market_details_card(
         listing=listing,
         book=book,
         books_in_series=books_in_series,
         tome_result=None,
+        latest_snapshot=latest_snap,
     )
 
     keyboard = InlineKeyboardMarkup(

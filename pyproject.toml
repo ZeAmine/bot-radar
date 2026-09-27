@@ -1,8 +1,8 @@
 [project]
-name = "radar-bot"
+name = "botradar"
 version = "0.1.0"
-description = "Radar Bot - Bot Telegram privé d'aide à la décision pour les bonnes affaires de seconde main"
-authors = [{ name = "Radar Bot Team" }]
+description = "BotRadar - Bot Telegram privé d'aide à la décision pour les bonnes affaires de seconde main"
+authors = [{ name = "BotRadar Team" }]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

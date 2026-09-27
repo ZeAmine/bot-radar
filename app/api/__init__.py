@@ -1,1 +1,1 @@
-"""API package for Radar Bot."""
+"""API package for BotRadar."""

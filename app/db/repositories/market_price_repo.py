@@ -42,6 +42,23 @@ class MarketPriceRepository:
         await self.session.flush()
         return snapshot
 
+    async def get_latest_snapshot(self, book_id: uuid.UUID) -> MarketPriceSnapshot | None:
+        """Récupère le snapshot le plus récent enregistré pour un livre."""
+        stmt = (
+            select(MarketPriceSnapshot)
+            .where(MarketPriceSnapshot.book_id == book_id)
+            .order_by(MarketPriceSnapshot.checked_at.desc())
+            .limit(1)
+        )
+        try:
+            result = await self.session.execute(stmt)
+            res = result.scalar_one_or_none()
+            if hasattr(res, "__await__"):
+                res = await res
+            return res if isinstance(res, MarketPriceSnapshot) else None
+        except Exception:
+            return None
+
     async def get_cache_by_book_id(self, book_id: uuid.UUID) -> BookMarketCache | None:
         """Récupère le cache de prix consolidé pour un livre."""
         stmt = select(BookMarketCache).where(BookMarketCache.book_id == book_id)
@@ -91,16 +108,19 @@ class MarketPriceRepository:
         # Calcul ou conservation du plus bas historique certifié sur 1 an
         computed_hist_low: int | None = historical_low_1y_cents
         if computed_hist_low is None:
-            # Si le fournisseur courant n'a pas renvoyé d'historique, préserver le cache ou chercher dans les snapshots certifiés
+            # Si le fournisseur courant n'a pas renvoyé d'historique, préserver le cache
+            # ou chercher dans les snapshots certifiés
             if cache and cache.historical_low_1y_cents is not None:
                 computed_hist_low = cache.historical_low_1y_cents
             else:
                 computed_hist_low = await self.get_historical_low_1y(book_id)
         elif cache and cache.historical_low_1y_cents is not None:
-            # Si le fournisseur et le cache ont tous deux un historique certifié, conserver le plus bas
+            # Si le fournisseur et le cache ont tous deux un historique certifié,
+            # conserver le plus bas
             computed_hist_low = min(cache.historical_low_1y_cents, computed_hist_low)
 
-        # Ne JAMAIS inventer un historique bas à partir du prix du jour (lowest_delivered_price_cents)
+        # Ne JAMAIS inventer un historique bas à partir du prix du jour
+        # (lowest_delivered_price_cents)
 
         if cache:
             cache.lowest_delivered_price_cents = lowest_delivered_price_cents

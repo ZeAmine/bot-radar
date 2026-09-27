@@ -1,4 +1,4 @@
-"""Dépôts de données pour Radar Bot."""
+"""Dépôts de données pour BotRadar."""
 
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository

@@ -14,7 +14,7 @@ router = Router(name="stats_router")
 
 @router.message(Command("stats"))
 async def handle_stats(message: Message, db_session: Any) -> None:
-    """Affiche les statistiques d'activité de Radar Bot sur 7 jours par défaut."""
+    """Affiche les statistiques d'activité de BotRadar sur 7 jours par défaut."""
     stats_service = StatisticsService(db_session)
     stats_text = await stats_service.get_formatted_stats(days=7)
     keyboard = get_stats_keyboard(current_days=7)

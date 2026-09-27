@@ -18,7 +18,7 @@ CATEGORY_NAMES: dict[str, str] = {
 
 
 class StatisticsService:
-    """Service de génération des rapports statistiques de Radar Bot."""
+    """Service de génération des rapports statistiques de BotRadar."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.repo = StatsRepository(session)
@@ -83,7 +83,7 @@ class StatisticsService:
         top_alerts_text = "\n".join(top_alerts_lines)
 
         return (
-            f"📊 <b>Statistiques Radar Bot ({days} derniers jours)</b>\n\n"
+            f"📊 <b>Statistiques BotRadar ({days} derniers jours)</b>\n\n"
             f"🔔 <b>Alertes actives :</b> {active_alerts}{cat_breakdown}\n"
             f"📥 <b>Annonces reçues :</b> {received_listings}\n"
             f"🎯 <b>Annonces matchées :</b> {matched_listings}{match_rate_str}\n"

@@ -1,4 +1,4 @@
-"""Handlers Telegram pour Radar Bot."""
+"""Handlers Telegram pour BotRadar."""
 
 from aiogram import Router
 

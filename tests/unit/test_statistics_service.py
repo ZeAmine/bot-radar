@@ -167,7 +167,7 @@ async def test_statistics_service_formatting(stats_session: AsyncSession):
     service = StatisticsService(stats_session)
     msg = await service.get_formatted_stats(days=7)
 
-    assert "Statistiques Radar Bot (7 derniers jours)" in msg
+    assert "Statistiques BotRadar (7 derniers jours)" in msg
     assert "Alertes actives :</b> 2 (📚 1 • 💻 1)" in msg
     assert "Annonces reçues :</b> 3" in msg
     assert "Annonces matchées :</b> 3 <i>(100.0%)</i>" in msg
@@ -194,6 +194,6 @@ async def test_statistics_formatting_empty_period():
     }
     msg = StatisticsService.format_stats_message(empty_data)
 
-    assert "Statistiques Radar Bot (30 derniers jours)" in msg
+    assert "Statistiques BotRadar (30 derniers jours)" in msg
     assert "<i>Aucune alerte déclenchée sur la période</i>" in msg
     assert "Aucune" in msg

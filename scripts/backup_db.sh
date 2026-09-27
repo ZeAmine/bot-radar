@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script de sauvegarde automatique de la base PostgreSQL Radar Bot
+# Script de sauvegarde automatique de la base PostgreSQL BotRadar
 # Usage : ./scripts/backup_db.sh
-# Crontab recommandée : 0 4 * * * /home/ubuntu/radar-bot/scripts/backup_db.sh >> /home/ubuntu/radar-bot/backups/backup.log 2>&1
+# Crontab recommandée : 0 4 * * * /home/ubuntu/bot-radar/scripts/backup_db.sh >> /home/ubuntu/bot-radar/backups/backup.log 2>&1
 # ==============================================================================
 
 set -euo pipefail

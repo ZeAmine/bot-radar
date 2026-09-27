@@ -1,1 +1,1 @@
-"""Keyboards Telegram pour Radar Bot."""
+"""Keyboards Telegram pour BotRadar."""

@@ -1,4 +1,4 @@
-"""Sous-système IA pour Radar Bot (DeepSeek-V4.1-Flash)."""
+"""Sous-système IA pour BotRadar (DeepSeek-V4.1-Flash)."""
 
 from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.pipeline import AIPostAlertPipeline, ai_post_alert_pipeline

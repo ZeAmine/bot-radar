@@ -116,7 +116,10 @@ async def test_poller_night_mode_suspension():
         ),
         patch("app.tasks.vinted_poller.poll_vinted_once", new_callable=AsyncMock) as mock_poll,
         patch("app.tasks.vinted_poller.save_poller_status", new_callable=AsyncMock),
-        patch("app.tasks.vinted_poller.vinted_session_manager.clear_session") as mock_clear,
+        patch(
+            "app.tasks.vinted_poller.vinted_session_manager.clear_session",
+            new_callable=AsyncMock,
+        ) as mock_clear,
     ):
         task = asyncio.create_task(run_vinted_poller(stop_event))
         await asyncio.sleep(0.1)

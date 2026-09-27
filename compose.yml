@@ -26,6 +26,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    networks:
+      - default
+      - web_gateway
 
   postgres:
     image: postgres:16-alpine
@@ -59,24 +62,11 @@ services:
       timeout: 5s
       retries: 5
 
-  caddy:
-    image: caddy:2-alpine
-    container_name: radar_caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      - DOMAIN_NAME=${DOMAIN_NAME}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - app
+networks:
+  default:
+  web_gateway:
+    external: true
 
 volumes:
   postgres_data:
   redis_data:
-  caddy_data:
-  caddy_config:

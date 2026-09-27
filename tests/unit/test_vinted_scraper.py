@@ -385,3 +385,104 @@ async def test_poll_vinted_once_ingests_in_process():
     mock_vinted_client.post.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_vinted_session_manager_proactive_jwt_refresh():
+    """Vérifie que la rotation proactive se déclenche quand le jeton expire dans < 30 minutes."""
+    mgr = VintedSessionManager()
+    now = int(time.time())
+
+    # Jeton expirant dans 10 minutes (600s < 1800s)
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode("utf-8").rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": now + 600}).encode("utf-8"))
+        .decode("utf-8")
+        .rstrip("=")
+    )
+    expiring_token = f"{header}.{payload}.signature"
+    mgr.cookies = {"access_token_web": expiring_token, "anon_id": "test-anon"}
+    mgr.last_refreshed = now
+
+    fake_client = AsyncMock()
+    fake_client.cookies = httpx.Cookies()
+
+    with patch.object(mgr, "refresh_session", new_callable=AsyncMock) as mock_refresh:
+        mock_refresh.return_value = True
+        await mgr.ensure_valid_session(fake_client)
+        mock_refresh.assert_awaited_once_with(fake_client)
+
+
+@pytest.mark.asyncio
+async def test_vinted_session_manager_atomic_clear_session():
+    """Vérifie que clear_session purge la RAM, le jar client et la clé Redis."""
+    mgr = VintedSessionManager()
+    mgr.cookies = {"access_token_web": "some-token", "anon_id": "anon-123"}
+    mgr.last_refreshed = time.time()
+
+    fake_client = AsyncMock()
+    fake_cookies = httpx.Cookies()
+    fake_cookies.set("access_token_web", "some-token", domain=".vinted.fr")
+    fake_client.cookies = fake_cookies
+
+    mock_redis = AsyncMock()
+    with patch("app.services.vinted_scraper.get_redis_client", return_value=mock_redis):
+        await mgr.clear_session(fake_client)
+
+    assert mgr.cookies == {}
+    assert mgr.last_refreshed == 0
+    assert len(fake_client.cookies) == 0
+    mock_redis.delete.assert_awaited_once_with("radar:vinted_session_cookies")
+
+
+@pytest.mark.asyncio
+async def test_fetch_vinted_page_401_self_healing_retry():
+    """Vérifie l'auto-guérison immédiate et le rejeu en cas de réponse API 401."""
+    fake_client = AsyncMock()
+    fake_client.cookies = httpx.Cookies()
+
+    # 1er appel API: 401
+    resp_401 = AsyncMock()
+    resp_401.status_code = 401
+
+    # 2e appel API (rejeu après refresh): 200 OK
+    resp_200 = AsyncMock()
+    resp_200.status_code = 200
+    resp_200.headers = {"content-type": "application/json"}
+    resp_200.json = lambda: {
+        "items": [
+            {
+                "id": 98765,
+                "title": "Astérix le Gaulois",
+                "price": {"amount": "8.00"},
+                "url": "/items/98765-asterix",
+            }
+        ]
+    }
+    resp_200.text = '{"items": [{"id": 98765}]}'
+
+    fake_client.get.side_effect = [resp_401, resp_200]
+
+    with (
+        patch(
+            "app.services.vinted_scraper.vinted_session_manager.ensure_valid_session",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.vinted_scraper.vinted_session_manager.clear_session",
+            new_callable=AsyncMock,
+        ) as mock_clear,
+        patch(
+            "app.services.vinted_scraper.vinted_session_manager.refresh_session",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_refresh,
+    ):
+        items = await fetch_vinted_page("https://www.vinted.fr/catalog?catalog[]=5425", fake_client)
+
+    assert len(items) == 1
+    assert items[0].external_id == "98765"
+    assert items[0].title == "Astérix le Gaulois"
+    mock_clear.assert_awaited_once_with(fake_client)
+    mock_refresh.assert_awaited_once_with(fake_client)
+    assert fake_client.get.call_count == 2
+
+

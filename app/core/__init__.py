@@ -1,1 +1,1 @@
-"""Core package for Radar Bot."""
+"""Core package for BotRadar."""

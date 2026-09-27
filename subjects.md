@@ -1,6 +1,6 @@
-# Radar Bot — Cartographie des sujets (`subjects.md`)
+# BotRadar — Cartographie des sujets (`subjects.md`)
 
-Ce document cartographie l'ensemble des domaines techniques et fonctionnels de **Radar Bot**.
+Ce document cartographie l'ensemble des domaines techniques et fonctionnels de **BotRadar**.
 Il sert de boussole aux modèles de langage (LLMs) et assistants de code pour situer immédiatement le rôle de chaque composant, les fichiers concernés, les règles spécifiques et le sens de circulation des données.
 
 ### Documentation de référence (Univers LLM)
@@ -240,19 +240,19 @@ Déployer et maintenir le bot en production sur le serveur Ubuntu dédié.
 ### Données d'infrastructure
 - **Hôte** : `ubuntu@88.96.56.44`
 - **Clé SSH** : `~/.ssh/ssh-key-2026-09-10.key`
-- **Répertoire** : `~/radar-bot/`
-- **Conteneurs Compose** : `radar_app` (FastAPI + bot + poller), `radar_db` (Postgres 16), `radar_redis` (Redis 7), `radar_caddy` (Reverse-proxy HTTPS automatique).
+- **Répertoire** : `~/bot-radar/`
+- **Conteneurs Compose** : `radar_app` (FastAPI + bot + poller), `radar_postgres` (Postgres 16), `radar_redis` (Redis 7), raccordés à la passerelle centralisée `caddy_gateway` via le réseau Docker externe partagé `web_gateway`.
 
 ### Procédure de synchronisation et redémarrage
 ```bash
 # 1. Synchronisation (sans écraser le .env distant)
 rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude '.git' --exclude '.env' \
   -e "ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no" \
-  ./ ubuntu@88.96.56.44:~/radar-bot/
+  ./ ubuntu@88.96.56.44:~/bot-radar/
 
 # 2. Redémarrage ou rebuild
 ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/radar-bot && docker compose restart app"
+  "cd ~/bot-radar && docker compose up -d --build app"
 
 # 3. Contrôle de santé
 ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \

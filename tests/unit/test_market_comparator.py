@@ -149,7 +149,7 @@ def test_comparator_with_historical_low_1y():
 
 
 def test_comparator_no_historical_low_falls_back_to_live_market_price():
-    """Vérifie que si aucun historique 1 an n'existe, le résumé se replie sur le prix du marché direct."""
+    """Vérifie que sans historique 1 an, le résumé se replie sur le prix du marché direct."""
     book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=None)
     listing = create_listing(estimated_total_cents=1369)
 
@@ -160,7 +160,7 @@ def test_comparator_no_historical_low_falls_back_to_live_market_price():
 
 
 def test_comparator_market_details_card_excludes_amazon_de():
-    """Vérifie que Amazon (De) est rigoureusement exclu de la carte de détails, même présent en raw_payload."""
+    """Vérifie que Amazon (De) est exclu de la carte de détails même en raw_payload."""
     book = create_book_with_cache(lowest_delivered_cents=2000)
     book.market_cache.raw_payload = {
         "partners": {
@@ -189,7 +189,7 @@ def test_comparator_market_details_card_excludes_amazon_de():
 
 
 def test_comparator_historical_low_when_status_unavailable():
-    # Même si l'offre en direct est indisponible aujourd'hui, le prix bas historique 1 an sert de référence
+    # Même si l'offre en direct est indisponible, le prix bas historique sert de référence
     book = create_book_with_cache(
         status=ComparisonStatus.UNAVAILABLE,
         lowest_delivered_cents=None,
@@ -243,21 +243,56 @@ def test_comparator_no_price_at_all_returns_unavailable():
 
 
 def test_comparator_excludes_brand_new_and_inferior_conditions():
-    """Vérifie l'exclusion des offres Neuf, Bon, Correct et le plafonnement aux 5 meilleures offres."""
+    """Vérifie l'exclusion des offres Neuf/inférieures et le plafonnement à 5 offres."""
     book = create_book_with_cache(lowest_delivered_cents=869)
     # Injecter des partenaires mélangés (Neuf, Bon, Correct, Très bon, Comme neuf)
     book.market_cache.raw_payload = {
         "partners": {
-            "Rakuten": {"merchant": "Rakuten", "is_used": True, "condition": "Comme neuf", "total_cents": 869},
-            "Fnac": {"merchant": "Fnac", "is_used": True, "condition": "Très bon", "total_cents": 899},
-            "Momox": {"merchant": "Momox", "is_used": True, "condition": "Bon", "total_cents": 750},  # Devrait être exclu car Bon
-            "Abebooks": {"merchant": "Abebooks", "is_used": True, "condition": "Correct", "total_cents": 700},  # Devrait être exclu car Correct
-            "Recyclivre": {"merchant": "Recyclivre", "is_used": True, "condition": "État moyen", "total_cents": 600},  # Devrait être exclu car Moyen
-            "Les Libraires": {"merchant": "Les Libraires", "is_used": False, "condition": "Neuf", "total_cents": 999},  # Exclu car Neuf
-            "Bd Fugue": {"merchant": "Bd Fugue", "is_used": True, "condition": "Très bon état", "total_cents": 950},
-            "Bal": {"merchant": "Bal", "is_used": True, "condition": "Tres bon", "total_cents": 980},
-            "Amazon": {"merchant": "Amazon", "is_used": True, "condition": "Comme neuf sous blister", "total_cents": 1050},
-            "Ebay": {"merchant": "Ebay", "is_used": True, "condition": "Très bon", "total_cents": 1200},  # 6e offre valide, devrait être tronquée
+            "Rakuten": {
+                "merchant": "Rakuten",
+                "is_used": True,
+                "condition": "Comme neuf",
+                "total_cents": 869,
+            },
+            "Fnac": {
+                "merchant": "Fnac", "is_used": True, "condition": "Très bon", "total_cents": 899
+            },
+            "Momox": {
+                "merchant": "Momox", "is_used": True, "condition": "Bon", "total_cents": 750
+            },
+            "Abebooks": {
+                "merchant": "Abebooks", "is_used": True, "condition": "Correct", "total_cents": 700
+            },
+            "Recyclivre": {
+                "merchant": "Recyclivre",
+                "is_used": True,
+                "condition": "État moyen",
+                "total_cents": 600,
+            },
+            "Les Libraires": {
+                "merchant": "Les Libraires",
+                "is_used": False,
+                "condition": "Neuf",
+                "total_cents": 999,
+            },
+            "Bd Fugue": {
+                "merchant": "Bd Fugue",
+                "is_used": True,
+                "condition": "Très bon état",
+                "total_cents": 950,
+            },
+            "Bal": {
+                "merchant": "Bal", "is_used": True, "condition": "Tres bon", "total_cents": 980
+            },
+            "Amazon": {
+                "merchant": "Amazon",
+                "is_used": True,
+                "condition": "Comme neuf sous blister",
+                "total_cents": 1050,
+            },
+            "Ebay": {
+                "merchant": "Ebay", "is_used": True, "condition": "Très bon", "total_cents": 1200
+            },
         }
     }
     listing = create_listing(estimated_total_cents=1209)
@@ -284,9 +319,61 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
     assert "Les Libraires" not in card
     assert "(Neuf)" not in card
 
-    # Vérifier la limite stricte de 5 offres (Ebay qui est la 6e offre valide ne doit pas être affichée)
+    # Limite stricte de 5 offres (Ebay qui est la 6e valide ne doit pas être affichée)
     assert "Ebay" not in card
 
     assert "Derniere MAJ :" in card
+
+
+def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_partners():
+    """Vérifie l'affichage combiné de la cote 1 an et du comparatif par boutique."""
+    from datetime import UTC, datetime
+
+    from app.db.models.market_price_snapshot import MarketPriceSnapshot
+
+    book = create_book_with_cache(
+        lowest_delivered_cents=2104,
+        historical_low_1y_cents=548,
+    )
+    snap = MarketPriceSnapshot(
+        book_id=book.id,
+        provider_name="chasse_aux_livres",
+        item_price_cents=2104,
+        shipping_price_cents=0,
+        delivered_price_cents=2104,
+        source_url="https://example.com/indes",
+        checked_at=datetime.now(UTC),
+        raw_payload={
+            "partners": {
+                "Momox": {
+                    "merchant": "Momox",
+                    "is_used": True,
+                    "condition": "Très bon",
+                    "total_cents": 2104,
+                    "url": "https://momox.fr/indes",
+                },
+                "Fnac": {
+                    "merchant": "Fnac",
+                    "is_used": True,
+                    "condition": "Très bon",
+                    "total_cents": 2715,
+                },
+            }
+        },
+    )
+    book.snapshots = [snap]
+    listing = create_listing(estimated_total_cents=1200)
+
+    card = MarketPriceService.format_market_details_card(listing, book)
+
+    # 1. Vérifier la présence de la cote 1 an
+    assert "📉 Prix bas constaté : 5,48 €" in card
+    # 2. Vérifier la présence du comparatif boutique
+    assert "<b>Comparatif par boutique :</b>" in card
+    assert "• Momox : 21,04 € (Très bon)" in card
+    assert "• Fnac : 27,15 € (Très bon)" in card
+    # 3. Vérifier le lien vers la meilleure offre
+    assert '<a href="https://momox.fr/indes">Consulter l\'offre</a>' in card
+
 
 

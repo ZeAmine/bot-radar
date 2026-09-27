@@ -9,7 +9,7 @@ from app.bot.keyboards.start import get_start_keyboard
 router = Router(name="start_router")
 
 START_TEXT = (
-    "👋 Bienvenue sur Radar Bot.\n\n"
+    "👋 Bienvenue sur BotRadar.\n\n"
     "Je centralise tes alertes de bonnes affaires.\n"
     "Je peux filtrer les annonces reçues, calculer leur total estimé et comparer "
     "les BD/Comics avec le meilleur prix occasion connu.\n\n"

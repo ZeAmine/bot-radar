@@ -16,7 +16,7 @@ CATEGORIES_TEXT = "📂 Catégories disponibles :\n\n📚 Livres\n💻 Électron
 
 @router.message(Command("categories"))
 async def handle_categories(message: Message, db_session: Any | None = None) -> None:
-    """Affiche les catégories actives prises en charge par Radar Bot."""
+    """Affiche les catégories actives prises en charge par BotRadar."""
     if db_session:
         try:
             repo = CategoryRepository(db_session)

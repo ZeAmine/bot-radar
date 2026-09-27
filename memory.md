@@ -1,6 +1,6 @@
-# Radar Bot — Mémoire du projet & Décisions architecturales (`memory.md`)
+# BotRadar — Mémoire du projet & Décisions architecturales (`memory.md`)
 
-Ce document consigne la mémoire vivante de **Radar Bot**, la genèse de ses choix d'architecture (ADRs), ses arbitrages passés et la liste explicite de sa dette technique acceptée.
+Ce document consigne la mémoire vivante de **BotRadar**, la genèse de ses choix d'architecture (ADRs), ses arbitrages passés et la liste explicite de sa dette technique acceptée.
 
 Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs pour comprendre le **pourquoi** derrière les contraintes strictes définies dans [`AGENTS.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/AGENTS.md) et la cartographie technique de [`subjects.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/subjects.md).
 
@@ -16,8 +16,8 @@ Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs po
 ### Le problème
 Sur les plateformes d'occasion (notamment Vinted), les excellentes affaires sur les bandes dessinées de collection, la tech ou les vêtements prisés disparaissent souvent en moins de **60 à 90 secondes**.
 
-### La réponse de Radar Bot
-Radar Bot est un assistant privé d'aide à la décision conçu pour maximiser la vitesse d'acquisition de l'acheteur ("snipe").
+### La réponse de BotRadar
+BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la vitesse d'acquisition de l'acheteur ("snipe").
 
 ```
 [ Ingestion Vinted ]
@@ -31,12 +31,12 @@ Radar Bot est un assistant privé d'aide à la décision conçu pour maximiser l
 [ IA DeepSeek / Liaison BNF ]
 ```
 
-### Ce que Radar Bot EST
+### Ce que BotRadar EST
 - Un détecteur ultra-rapide d'annonces ciblées.
 - Un comparateur de prix instantané par rapport au marché réel de l'occasion livrée.
 - Un copilote de négociation et d'évaluation de rentabilité (via IA post-alerte).
 
-### Ce que Radar Bot N'EST PAS (et ne sera jamais)
+### Ce que BotRadar N'EST PAS (et ne sera jamais)
 - **Pas de bot d'achat automatique** : aucune automatisation de checkout sur Vinted.
 - **Pas de bot d'interaction marketplace** : pas de message automatique envoyé au vendeur, pas d'ajout au panier via API ou scripts non autorisés sur les serveurs Vinted.
 - **Pas d'application multi-tenant ouverte au public** : mono-utilisateur avec allowlist stricte (`TELEGRAM_ALLOWED_USER_IDS`).
@@ -123,7 +123,7 @@ Radar Bot est un assistant privé d'aide à la décision conçu pour maximiser l
   - Suppression complète des 5 modules/services et de leurs 2 suites de tests associées (~550 lignes supprimées).
   - Épuration du clavier Telegram à 3 lignes pour les BD (`[ 🖼 Photos ]` `[ 🔗 Annonce ]`, `[ 📊 Prix du marché ]`, `[ 👎 Faux positif ]` `[ 💬 Négocier ]`) et 2 lignes pour les autres catégories.
   - Suppression des flags de configuration désactivés (`AI_FEATURE_VISION_GUARD`, `AI_FEATURE_BUNDLE_DECOMPOSITION`, `AI_FEATURE_PRICE_GLITCH`).
-- **Raison** : Focalisation stricte sur le rôle essentiel de Radar Bot : alerte immédiate, matching déterministe infaillible, zéro hallucination et zéro spam.
+- **Raison** : Focalisation stricte sur le rôle essentiel de BotRadar : alerte immédiate, matching déterministe infaillible, zéro hallucination et zéro spam.
 
 ### ADR-012 : Migration vers l'API interne JSON Vinted (`svc-catalogue`) & Cadence Adaptative
 - **Contexte** :
@@ -138,6 +138,19 @@ Radar Bot est un assistant privé d'aide à la décision conçu pour maximiser l
   - **Cadence Adaptative** : Intervalle de 12s en heures de pointe (11h30-14h00 et 18h00-22h30 Paris) et 15s en heures standard, avec passage automatique à 8s dès configuration d'un proxy résidentiel (Raspberry Pi Zero 2 W via `VINTED_PROXY_URL`).
   - **Ordonnancement Entrelacé (Staggered Interleaving)** : Les catégories hors-livres s'intercalent fluidement avec un espacement de 1,2s à 2,0s, évitant les pics concurrentiels sur une même IP.
 - **Raison** : Maximiser la vitesse de détection ("ultra-rapide") pour battre la concurrence tout en préservant l'IP et en garantissant zéro régression.
+
+### ADR-013 : Passerelle centralisée multi-bots (caddy_gateway) et harmonisation VPS ~/bot-radar/
+- **Contexte** :
+  - Le VPS héberge désormais plusieurs bots Telegram indépendants (`BotRadar` pour Vinted et `BotStream` pour le streaming de médias).
+  - L'ancien conteneur `radar_caddy` monopolisait les ports 80 et 443 de la machine hôte, empêchant l'exposition d'autres applications sans conflit.
+  - Le répertoire VPS `~/radar-bot/` créait une discordance visuelle avec `~/bot-stream/`.
+- **Décision** :
+  - **Passerelle centralisée** : Déploiement d'un service Caddy unique (`caddy_gateway` dans `~/gateway/`) écoutant sur les ports 80/443 de la machine hôte.
+  - **Réseau partagé `web_gateway`** : Création d'un réseau Docker externe reliant `caddy_gateway` à `radar_app:8000` et `botstream_app:8080`.
+  - **Épuration de `compose.yml`** : Suppression du conteneur `radar_caddy`, suppression de `Caddyfile` local devenu code mort, attachement de `app` au réseau `web_gateway`.
+  - **Harmonisation VPS `~/bot-radar/`** : Renommage du répertoire de projet sur le VPS vers `~/bot-radar/`, maintien d'un symlink `~/radar-bot -> ~/bot-radar` et mise à jour du crontab de backup automatique.
+  - **Zéro perte de données** : Duplication des volumes Docker vers `bot-radar_postgres_data` et `bot-radar_redis_data` avec snapshot SQL préalable.
+- **Raison** : Architecture serveur propre, modulaire et extensible permettant d'héberger plusieurs bots en parallèle sur un même VPS sans conflit de ports ni interruption de service.
 
 ---
 

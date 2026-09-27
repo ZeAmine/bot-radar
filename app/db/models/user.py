@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """Utilisateur Telegram autorisé à utiliser Radar Bot."""
+    """Utilisateur Telegram autorisé à utiliser BotRadar."""
 
     __tablename__ = "users"
 

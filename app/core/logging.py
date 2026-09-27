@@ -1,4 +1,4 @@
-"""Configuration des logs structurés JSON pour Radar Bot."""
+"""Configuration des logs structurés JSON pour BotRadar."""
 
 import json
 import logging

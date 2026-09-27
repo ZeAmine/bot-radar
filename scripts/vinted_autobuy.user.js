@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Radar Bot — Vinted Auto-Buy & Drop Sniper
+// @name         BotRadar — Vinted Auto-Buy & Drop Sniper
 // @namespace    https://radar.aminezegmou.fr/
 // @version      4.3
 // @description  Snipe automatique ultra-rapide sur Vinted : clique sur Acheter, sélectionne automatiquement Chronopost/Mondial Relay et vous laisse appuyer sur Payer
-// @author       Radar Bot
+// @author       BotRadar
 // @match        https://www.vinted.fr/items/*
 // @match        https://vinted.fr/items/*
 // @match        https://www.vinted.fr/checkout*
@@ -129,7 +129,7 @@
 
     function triggerBuyButtonClick(button) {
         console.log('[Radar AutoBuy] 🎯 Clic sur le bouton Acheter...', button);
-        updateBanner('🎯 [Radar Bot] Clic sur Acheter ! Redirection en cours...', 'success');
+        updateBanner('🎯 [BotRadar] Clic sur Acheter ! Redirection en cours...', 'success');
         playBeep(1200, 0.25);
         dispatchFullClick(button);
 
@@ -371,7 +371,7 @@
             if (diffMs <= 5000 && diffMs > 0 && !warned5s) {
                 warned5s = true;
                 playBeep(980, 0.35);
-                updateBanner('🚨 [Radar Bot] Drop dans 5 secondes ! Tenez-vous prêt !', 'warning');
+                updateBanner('🚨 [BotRadar] Drop dans 5 secondes ! Tenez-vous prêt !', 'warning');
             }
 
             if (diffMs <= 30) {
@@ -418,7 +418,7 @@
                 clearInterval(poller);
                 console.log(`[Radar Drop Sniper] 🎯 Drop détecté dans le DOM à ${new Date(detectedTarget).toLocaleString()}`);
                 armDropSniper(detectedTarget, itemId);
-                updateBanner('🎯 [Radar Bot] Vente programmée détectée — Sniper armé !', 'success');
+                updateBanner('🎯 [BotRadar] Vente programmée détectée — Sniper armé !', 'success');
                 return;
             }
 
@@ -469,14 +469,14 @@
     function handleCheckoutPage() {
         const isPending = sessionStorage.getItem(FLAG_KEY) === 'true';
 
-        // Ne s'active que si cet achat provient d'un snipe Radar Bot
+        // Ne s'active que si cet achat provient d'un snipe BotRadar
         if (!isPending) {
-            console.log('[Radar Checkout] Achat manuel détecté (pas de marqueur Radar Bot). Script en veille.');
+            console.log('[Radar Checkout] Achat manuel détecté (pas de marqueur BotRadar). Script en veille.');
             return;
         }
 
-        console.log('[Radar Checkout] 📦 Alerte Radar Bot détectée ! Prise en charge automatique du point de livraison...');
-        updateBanner('⚡ [Radar Bot] Recherche du point Chronopost / Mondial Relay...', 'info');
+        console.log('[Radar Checkout] 📦 Alerte BotRadar détectée ! Prise en charge automatique du point de livraison...');
+        updateBanner('⚡ [BotRadar] Recherche du point Chronopost / Mondial Relay...', 'info');
 
         const startTime = Date.now();
         let selectedTarget = null;
@@ -599,7 +599,7 @@
                     cardClickedTime = Date.now();
 
                     console.log(`[Radar Checkout] 📍 Clic sur le point relais (${best.carrier}) :`, best.card);
-                    updateBanner(`📍 [Radar Bot] ${best.carrier} sélectionné... En attente`, 'info');
+                    updateBanner(`📍 [BotRadar] ${best.carrier} sélectionné... En attente`, 'info');
 
                     dispatchFullClick(best.card);
 
@@ -630,7 +630,7 @@
                         
                         // Son de succès & notification claire : à vous d'appuyer sur Payer !
                         playSuccessChime();
-                        updateBanner(`✅ [Radar Bot] ${selectedCarrierName} validé ! À vous de cliquer sur "Payer" 💳`, 'success');
+                        updateBanner(`✅ [BotRadar] ${selectedCarrierName} validé ! À vous de cliquer sur "Payer" 💳`, 'success');
 
                         dispatchFullClick(btn);
 

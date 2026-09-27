@@ -11,7 +11,7 @@ from app.services.ai.schemas import NaturalAddResult
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """Tu es l'assistant de configuration de Radar Bot (bot d'alertes Vinted).
+SYSTEM_PROMPT = """Tu es l'assistant de configuration de BotRadar (bot d'alertes Vinted).
 L'utilisateur formule une recherche en langage naturel.
 Extrais les paramètres d'alerte sous un format JSON strict :
 - "name": Titre épuré et propre de l'objet/œuvre (ex: "L'Arabe du futur", "One Piece", "iPhone 13").

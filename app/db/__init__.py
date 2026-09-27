@@ -1,1 +1,1 @@
-"""Database package for Radar Bot."""
+"""Database package for BotRadar."""

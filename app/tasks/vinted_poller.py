@@ -343,7 +343,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     "wake_up_hour": settings.NIGHT_MODE_END_HOUR,
                     "message": f"Mode Nuit actif (veille jusqu'à {settings.NIGHT_MODE_END_HOUR:02d}:00)",
                 })
-                vinted_session_manager.clear_session()
+                await vinted_session_manager.clear_session(vinted_client)
                 # Pause cadencée par tranches de 60s max pour rester immédiatement réactif à stop_event
                 while is_night_time() and not stop_event.is_set():
                     sleep_chunk = min(60.0, max(5.0, get_night_mode_remaining_seconds()))
@@ -389,7 +389,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     safe_create_task(
                         notify_admins(
                             text=(
-                                "✅ <b>Radar Bot — Surveillance Vinted rétablie</b>\n\n"
+                                "✅ <b>BotRadar — Surveillance Vinted rétablie</b>\n\n"
                                 "🟢 La connexion à Vinted est de nouveau opérationnelle !\n"
                                 "Le scan des nouvelles annonces a repris normalement."
                             )
@@ -453,13 +453,13 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     "message": f"Pause de sécurité #{consecutive_blocks} ({cooldown_mins} min)",
                 })
 
-                vinted_session_manager.clear_session()
+                await vinted_session_manager.clear_session(vinted_client)
 
                 # Notification Telegram proactive
                 safe_create_task(
                     notify_admins(
                         text=(
-                            f"🛡️ <b>Alerte Radar Bot — Pause de sécurité</b>\n\n"
+                            f"🛡️ <b>Alerte BotRadar — Pause de sécurité</b>\n\n"
                             f"⚠️ <b>{reason_str}</b> détecté sur Vinted.\n"
                             f"Mise en pause de protection de l'IP : <b>Palier #{consecutive_blocks} ({cooldown_mins} min)</b>.\n\n"
                             f"⏱ <b>Reprise prévue à</b> : {resume_time_str}\n"

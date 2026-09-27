@@ -83,7 +83,7 @@ def create_app() -> FastAPI:
     openapi_url = None if settings.is_production else "/openapi.json"
 
     application = FastAPI(
-        title="Radar Bot API",
+        title=f"{settings.PROJECT_NAME} API",
         description="API d'ingestion et bot Telegram privé de détection des bonnes affaires.",
         version="0.1.0",
         lifespan=lifespan,

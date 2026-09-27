@@ -1,4 +1,4 @@
-"""Poller Vinted local haute fréquence relayant les annonces vers le serveur Radar Bot."""
+"""Poller Vinted local haute fréquence relayant les annonces vers le serveur BotRadar."""
 
 import asyncio
 import contextlib
@@ -33,7 +33,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("radar.local_poller")
 
-RADAR_API_URL = os.environ.get("RADAR_API_URL", "https://radar.aminezegmou.fr").rstrip("/")
+RADAR_API_URL = os.environ.get(
+    "BOTRADAR_API_URL", os.environ.get("RADAR_API_URL", "https://radar.aminezegmou.fr")
+).rstrip("/")
 INGEST_API_TOKEN = os.environ.get("INGEST_API_TOKEN", "your_secure_ingest_token")
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "your_secure_internal_token")
 POLL_INTERVAL_SECONDS = int(os.environ.get("VINTED_POLL_INTERVAL_SECONDS", "20"))

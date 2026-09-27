@@ -1,1 +1,1 @@
-"""Radar Bot application package."""
+"""BotRadar application package."""

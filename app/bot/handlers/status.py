@@ -25,7 +25,7 @@ router = Router(name="status_router")
 
 @router.message(Command("status"))
 async def handle_status(message: Message, db_session: Any) -> None:
-    """Affiche l'état opérationnel en direct de Radar Bot."""
+    """Affiche l'état opérationnel en direct de BotRadar."""
     tz_label = settings.NIGHT_MODE_TIMEZONE or "Europe/Paris"
     try:
         tz = ZoneInfo(tz_label)

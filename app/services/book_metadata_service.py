@@ -224,7 +224,7 @@ class BookMetadataService:
             resp = await client.get(
                 url,
                 timeout=self.timeout_seconds,
-                headers={"User-Agent": "RadarBot/1.0"},
+                headers={"User-Agent": "BotRadar/1.0"},
             )
             if resp.status_code != 200:
                 logger.warning("BNF SRU returned status %d", resp.status_code)

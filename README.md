@@ -1,6 +1,6 @@
-# Radar Bot 🛰️
+# BotRadar 🛰️
 
-Radar Bot est un bot Telegram privé, temps réel et hautement disponible, spécialisé dans la détection et l'aide à la décision pour les bonnes affaires d'articles de seconde main.
+BotRadar est un bot Telegram privé, temps réel et hautement disponible, spécialisé dans la détection et l'aide à la décision pour les bonnes affaires d'articles de seconde main.
 
 Il surveille trois univers verticaux à forte valeur ajoutée :
 - 📚 **BD & Comics** (avec comparaison automatique du prix du marché de l'occasion livrée)
@@ -11,7 +11,7 @@ Il surveille trois univers verticaux à forte valeur ajoutée :
 
 ## Sommaire
 
-1. [Présentation de Radar Bot](#1-présentation-de-radar-bot)
+1. [Présentation de BotRadar](#1-présentation-de-botradar)
 2. [Fonctionnalités de la V1](#2-fonctionnalités-de-la-v1)
 3. [Limites de conformité et éthique](#3-limites-de-conformité-et-éthique)
 4. [Prérequis techniques](#4-prérequis-techniques)
@@ -32,9 +32,9 @@ Il surveille trois univers verticaux à forte valeur ajoutée :
 
 ---
 
-## 1. Présentation de Radar Bot
+## 1. Présentation de BotRadar
 
-Radar Bot agit comme un assistant personnel d'achat d'occasion. Conçu pour fonctionner 24 h/24 en production, il reçoit des annonces via un endpoint d'ingestion sécurisé, applique des critères de filtrage stricts définis par l'utilisateur (mots-clés requis, mots-clés exclus, variantes, états acceptés, prix plafond), calcule le prix total estimé (prix de l'article + protection acheteur + frais de port) et délivre instantanément des notifications Telegram ergonomiques.
+BotRadar agit comme un assistant personnel d'achat d'occasion. Conçu pour fonctionner 24 h/24 en production, il reçoit des annonces via un endpoint d'ingestion sécurisé, applique des critères de filtrage stricts définis par l'utilisateur (mots-clés requis, mots-clés exclus, variantes, états acceptés, prix plafond), calcule le prix total estimé (prix de l'article + protection acheteur + frais de port) et délivre instantanément des notifications Telegram ergonomiques.
 
 Pour les bandes dessinées et comics, le bot compare en temps réel le coût de l'annonce avec le prix le plus bas du marché d'occasion livrée (eBay Browse API, Momox, Recyclivre, Gibert) grâce à un catalogue interne et un cache asynchrone rafraîchi quotidiennement.
 
@@ -69,7 +69,7 @@ Pour les bandes dessinées et comics, le bot compare en temps réel le coût de 
 > [!IMPORTANT]
 > **Conformité stricte : Zéro automatisation sur les marketplaces.**
 > 
-> Radar Bot est un outil passif d'aide à la décision :
+> BotRadar est un outil passif d'aide à la décision :
 > - **AUCUNE action automatisée sur Vinted ou toute autre marketplace** : pas d'achat automatisé (sniper), pas d'ajout au panier, pas de paiement, pas de mise en favori, pas d'envoi de messages aux vendeurs.
 > - **AUCUN scraping, crawling, reverse engineering ou contournement de protections** (pas de Selenium, Playwright, cookies de session ou headers usurpés).
 > - **Ingestion passive** : Le bot reçoit les données de manière standardisée via son API REST sécurisée (`POST /api/v1/ingest/listings`).
@@ -92,7 +92,7 @@ Pour les bandes dessinées et comics, le bot compare en temps réel le coût de 
 
 1. Ouvrez Telegram et cherchez le compte officiel [@BotFather](https://t.me/BotFather).
 2. Tapez `/newbot` et suivez les instructions :
-   - Choisissez un nom convivial (ex: `Mon Radar Bot`).
+   - Choisissez un nom convivial (ex: `Mon BotRadar`).
    - Choisissez un identifiant se terminant obligatoirement par `bot` (ex: `mon_radar_perso_bot`).
 3. BotFather vous remettra votre jeton d'accès d'API HTTP (`TELEGRAM_BOT_TOKEN`), sous la forme :
    `123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ`
@@ -114,7 +114,7 @@ Pour les bandes dessinées et comics, le bot compare en temps réel le coût de 
 
 ## 6. Comment obtenir son identifiant Telegram
 
-Radar Bot est strictement privé : toute personne non listée reçoit un message de rejet `⛔ Ce bot est privé`.
+BotRadar est strictement privé : toute personne non listée reçoit un message de rejet `⛔ Ce bot est privé`.
 
 Pour obtenir votre identifiant numérique unique Telegram :
 1. Dans Telegram, contactez le bot officiel [@userinfobot](https://t.me/userinfobot).
@@ -140,8 +140,8 @@ Pour alimenter les comparaisons de prix du marché de la bande dessinée via l'A
 
 ### Cloner le dépôt
 ```bash
-git clone https://github.com/votre-compte/radar-bot.git
-cd "radar-bot"
+git clone https://github.com/votre-compte/bot-radar.git
+cd "bot-radar"
 ```
 
 ### Initialiser l'environnement virtuel Python
@@ -172,7 +172,7 @@ La liste complète des clés lues par l'application est dans [`.env.example`](.e
 - Le niveau de log se règle avec `LOG_LEVEL`.
 - eBay se configure avec `EBAY_ENV` (`PRODUCTION` ou `SANDBOX`).
 - L'URL du webhook se déclare auprès de Telegram. Elle se termine par `/api/v1/telegram/webhook/` suivi de `TELEGRAM_WEBHOOK_SECRET`.
-- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` et `DOMAIN_NAME` servent à Docker Compose.
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` servent à Docker Compose.
 
 ---
 
@@ -217,7 +217,7 @@ alembic revision --autogenerate -m "description_des_changements"
 
 ## 12. Définition et activation du Webhook Telegram
 
-En production, Radar Bot fonctionne exclusivement en mode Webhook HTTPS (aucun polling permanent consommateur de ressources).
+En production, BotRadar fonctionne exclusivement en mode Webhook HTTPS (aucun polling permanent consommateur de ressources).
 
 ### Configuration automatique du Webhook
 Vous pouvez associer le webhook directement auprès des serveurs Telegram avec curl :
@@ -390,7 +390,7 @@ make format     # Formate automatiquement le code avec ruff
 - **Principe du moindre privilège** : L'image Docker s'exécute avec un utilisateur système non privilégié (`appuser:1001`).
 - **Secrets protégés** : Toutes les variables sensibles (`TELEGRAM_BOT_TOKEN`, `INGEST_API_TOKEN`, `INTERNAL_API_TOKEN`, etc.) sont encapsulées via le type `SecretStr` de Pydantic V2 pour empêcher toute fuite accidentelle dans les logs ou les traces d'erreurs.
 - **Isolation réseau** : La base PostgreSQL et l'instance Redis ne doivent jamais être exposées publiquement sur Internet.
-- **Pas de scraping** : En évitant tout scraping direct ou usurpation de sessions sur les marketplaces, Radar Bot préserve votre IP et évite tout bannissement ou violation de conditions d'utilisation.
+- **Pas de scraping** : En évitant tout scraping direct ou usurpation de sessions sur les marketplaces, BotRadar préserve votre IP et évite tout bannissement ou violation de conditions d'utilisation.
 
 ---
 

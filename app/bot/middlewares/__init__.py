@@ -1,4 +1,4 @@
-"""Middlewares aiogram pour Radar Bot."""
+"""Middlewares aiogram pour BotRadar."""
 
 from app.bot.middlewares.auth import AuthMiddleware
 

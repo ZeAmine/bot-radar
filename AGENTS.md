@@ -1,4 +1,4 @@
-# Radar Bot — instructions projet
+# BotRadar — instructions projet
 
 Ce fichier est la source de vérité pour tout assistant qui travaille sur le dépôt. Le lire avant de modifier du code, de déployer, ou de proposer une architecture.
 
@@ -9,7 +9,7 @@ Ce fichier est la source de vérité pour tout assistant qui travaille sur le d�
 
 ## Produit
 
-Radar Bot est un bot Telegram **privé** d’aide à la décision pour l’occasion (BD/comics, vêtements, tech, jeux vidéo).
+BotRadar est un bot Telegram **privé** d’aide à la décision pour l’occasion (BD/comics, vêtements, tech, jeux vidéo).
 
 - Il **détecte** des annonces Vinted et envoie une alerte Telegram instantanée.
 - Il **compare** les BD au marché d’occasion livrée (cache Postgres, refresh planifié).
@@ -28,7 +28,7 @@ Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomiqu
 
 - Python 3.12, FastAPI, aiogram 3, SQLAlchemy asyncio, Alembic, Redis, APScheduler, httpx, Pydantic v2.
 - Un seul processus de production : `uvicorn app.main:app` dans `radar_app` (API + webhook Telegram + scheduler + poller Vinted).
-- PostgreSQL 16, Redis 7, Caddy (HTTPS). Compose : [compose.yml](compose.yml).
+- PostgreSQL 16, Redis 7, passerelle centralisée `caddy_gateway` via réseau Docker `web_gateway` (HTTPS). Compose : [compose.yml](compose.yml).
 - Tests : pytest + pytest-asyncio. Lint : Ruff (ligne 100). Typage : mypy `strict` (erreurs historiques hors lots en cours, ne pas les « corriger » en masse).
 
 ## Architecture des couches
@@ -126,7 +126,7 @@ Les scripts ne sont importés par `app/` qu’à dessein. `python-dotenv` sert �
 
 ## Déploiement production
 
-Hôte : `ubuntu@88.96.56.44`. Clé : `~/.ssh/ssh-key-2026-09-10.key`. Répertoire : `~/radar-bot/`.
+Hôte : `ubuntu@88.96.56.44`. Clé : `~/.ssh/ssh-key-2026-09-10.key`. Répertoire : `~/bot-radar/`.
 
 Exécuter **soi-même** les commandes (réseau + clé SSH), ne pas demander à l’utilisateur de copier-coller.
 
@@ -135,21 +135,21 @@ Synchronisation (n’exclut pas `.env` distant : **ne pas** envoyer un `.env` lo
 ```bash
 rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude '.git' --exclude '.env' \
   -e "ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no" \
-  ./ ubuntu@88.96.56.44:~/radar-bot/
+  ./ ubuntu@88.96.56.44:~/bot-radar/
 ```
 
 Rebuild de l’app (obligatoire pour `alembic/` : non monté en volume ; `./app` est bind-mounté) :
 
 ```bash
 ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/radar-bot && docker compose up -d --build app"
+  "cd ~/bot-radar && docker compose up -d --build app"
 ```
 
 Migration **après** que le nouveau conteneur soit healthy :
 
 ```bash
 ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/radar-bot && docker compose exec -T app alembic upgrade head && docker compose exec -T app alembic current"
+  "cd ~/bot-radar && docker compose exec -T app alembic upgrade head && docker compose exec -T app alembic current"
 ```
 
 Contrôles : `radar_app` healthy, `https://radar.aminezegmou.fr/health` 200, pas de conteneur worker, pas de log `Secrets de production vides`, scheduler démarré. Ne pas dumper de tokens dans les logs collectés.

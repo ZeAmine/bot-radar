@@ -28,6 +28,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    PROJECT_NAME: str = "BotRadar"
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
 
@@ -57,6 +58,13 @@ class Settings(BaseSettings):
 
     # Surveillance Vinted en temps réel
     RADAR_API_URL: str = "http://127.0.0.1:8000"
+    BOTRADAR_API_URL: str | None = None
+
+    @property
+    def api_url(self) -> str:
+        """URL de l'API (supporte BOTRADAR_API_URL avec repli sur RADAR_API_URL)."""
+        return self.BOTRADAR_API_URL or self.RADAR_API_URL
+
     VINTED_POLL_INTERVAL_SECONDS: int = 15
     VINTED_POLLER_ENABLED: bool = True
     VINTED_PROXY_URL: str | None = None

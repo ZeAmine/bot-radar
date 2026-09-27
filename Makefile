@@ -1,7 +1,7 @@
 .PHONY: help dev test lint format migrate revision up down clean
 
 help:
-	@echo "Commandes disponibles pour Radar Bot :"
+	@echo "Commandes disponibles pour BotRadar :"
 	@echo "  make dev                 Lancer le serveur de développement FastAPI"
 	@echo "  make test                Lancer les tests unitaires et d'intégration"
 	@echo "  make lint                Vérifier le code avec Ruff et Mypy"

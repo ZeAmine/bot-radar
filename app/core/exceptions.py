@@ -1,12 +1,12 @@
-"""Hiérarchie d'exceptions typées pour Radar Bot.
+"""Hiérarchie d'exceptions typées pour BotRadar.
 
 Permet d'isoler les erreurs de domaine, de providers externes et de persistance
 sans jamais faire fuiter de secrets ni de détails techniques non gérés.
 """
 
 
-class RadarBotError(Exception):
-    """Exception racine de l'application Radar Bot."""
+class BotRadarError(Exception):
+    """Exception racine de l'application BotRadar."""
 
     def __init__(self, message: str, details: dict[str, object] | None = None) -> None:
         super().__init__(message)
@@ -14,10 +14,14 @@ class RadarBotError(Exception):
         self.details = details or {}
 
 
+# Alias de compatibilité
+RadarBotError = BotRadarError
+
+
 # --- Erreurs de Domaine (Métier pur) ---
 
 
-class DomainError(RadarBotError):
+class DomainError(BotRadarError):
     """Erreur survenue au niveau des règles de gestion métier."""
 
 
@@ -36,7 +40,7 @@ class InvalidAlertError(DomainError):
 # --- Erreurs de Fournisseurs / Adaptateurs Externes ---
 
 
-class ProviderError(RadarBotError):
+class ProviderError(BotRadarError):
     """Erreur lors de l'interaction avec un service tiers (API, Scraping, LLM)."""
 
 
@@ -67,7 +71,7 @@ class MarketPriceProviderError(ProviderError):
 # --- Erreurs de Persistance / Repositories ---
 
 
-class RepositoryError(RadarBotError):
+class RepositoryError(BotRadarError):
     """Erreur survenue dans la couche d'accès aux données."""
 
 

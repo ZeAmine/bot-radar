@@ -8,7 +8,7 @@ from app.services.ai.modules.base import BaseAIModule
 
 logger = logging.getLogger(__name__)
 
-TUNING_SYSTEM_PROMPT = """Tu es l'analyste de précision des alertes Radar Bot.
+TUNING_SYSTEM_PROMPT = """Tu es l'analyste de précision des alertes BotRadar.
 Tu reçois le mot-clé d'une alerte et une liste d'annonces marquées "faux positifs".
 
 Identifie les termes récurrents parasites et suggère 2 à 4 mots-clés d'exclusion.
