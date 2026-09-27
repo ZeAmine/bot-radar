@@ -21,4 +21,9 @@ jobs:
         run: ruff check .
 
       - name: Pytest
+        env:
+          TELEGRAM_BOT_TOKEN: "123456789:AAG_ci_test_dummy_token_abc123"
+          TELEGRAM_WEBHOOK_SECRET: "ci_webhook_secret_test"
+          INGEST_API_TOKEN: "ci_ingest_token_test"
+          INTERNAL_API_TOKEN: "ci_internal_token_test"
         run: pytest -v
