@@ -5,7 +5,7 @@ from app.domain.entities.listing import ListingEntity
 from app.domain.entities.matching import MatchResult
 from app.domain.enums import MatchConfidence
 from app.domain.protocols.matching import ListingMatcherProtocol
-from app.services.matcher_service import evaluate_listing_against_alert
+from app.domain.rules.listing_match import evaluate_listing_against_alert
 
 
 class DeterministicListingMatcher(ListingMatcherProtocol):

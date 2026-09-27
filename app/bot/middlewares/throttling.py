@@ -56,7 +56,8 @@ class ThrottlingMiddleware(BaseMiddleware):
             )
             if isinstance(event, CallbackQuery):
                 with contextlib.suppress(Exception):
-                    await event.answer("⏳ Doucement ! Merci de patienter un instant...", show_alert=False)
+                    await event.answer("⏳ Doucement ! Merci de patienter un instant...",
+                        show_alert=False)
             elif isinstance(event, Message):
                 with contextlib.suppress(Exception):
                     await event.answer("⏳ Envoi trop rapide. Merci de patienter un instant...")

@@ -3,38 +3,66 @@
 import logging
 import re
 
+from pydantic import ValidationError
+
 from app.core.config import settings
 from app.core.constants import STANDARD_CONDITIONS, CategorySlug
 from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.modules.base import BaseAIModule
-from app.services.ai.schemas import NaturalAddResult
+from app.services.ai.schemas import NaturalAddPayload, NaturalAddResult
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """Tu es l'assistant de configuration de BotRadar (bot d'alertes Vinted).
-L'utilisateur formule une recherche en langage naturel.
-Extrais les paramètres d'alerte sous un format JSON strict :
-- "name": Titre épuré et propre de l'objet/œuvre (ex: "L'Arabe du futur", "One Piece", "iPhone 13").
-  IMPORTANT : Ne JAMAIS inclure de prix (ex: "max 7€", "15€"), de mention d'état ou de filtre dans "name" !
-- "category_slug": Une seule valeur parmi ["bd_comics", "tech", "gaming", "clothes"].
-  * bd_comics: livres, mangas, BD, comics, romans.
-  * gaming: consoles, jeux vidéo, manettes.
-  * tech: smartphones, PC, électronique.
-  * clothes: vêtements, baskets.
-- "is_series": bool (true s'il s'agit d'une série multi-tomes sans numéro de tome précisé ex: "L'Arabe du futur", "One Piece", "Blacksad" ; false s'il s'agit d'un livre unique / one-shot ex: "Le Monde sans fin", "Sapiens" ou d'un tome spécifique ex: "L'Arabe du futur tome 2", "Daredevil Deluxe 1").
-- "isbn13": string ou null (si c'est un livre unique ou un tome spécifique, fournis son ISBN-13 officiel à 13 chiffres commençant par 978 ou 979 sans tirets ; null s'il s'agit d'une série globale ou si incertain).
-- "author": string ou null (nom de l'auteur principal si identifiable).
-- "publisher": string ou null (éditeur ou collection spécifique ex: "Dargaud", "Panini Comics", "Marvel Deluxe").
-- "include_keywords": Liste de mots-clés obligatoires pour la recherche (ex: ["L'Arabe du futur"]).
-  IMPORTANT : Ne jamais inclure de prix ou de filtre de prix dans les mots-clés !
-- "exclude_keywords": Liste de mots-clés à exclure pour bloquer les faux positifs.
-  IMPORTANT : Propose TOUJOURS 2 à 5 exclusions intelligentes spécifiquement adaptées à l'objet/livre et à sa catégorie (ex: pour "L'Arabe du futur" ou des BD/mangas: ["figurine", "coffret vide", "poster", "ex-libris", "tote bag"] ; pour "iPhone 13" ou tech: ["coque", "boite vide", "vitre", "pour pieces"] ; pour "Nintendo Switch" ou gaming: ["boite vide", "housse", "support", "stickers"]), en plus de celles éventuellement demandées par l'utilisateur.
-- "max_price_cents": Prix max en centimes (ex: 35€ -> 3500, 7€ -> 700, null si non spécifié).
-- "conditions": Liste des états parmi : ["Neuf avec étiquette", "Neuf sans étiquette",
-  "Très bon état", "Bon état", "Satisfaisant"]. Mettre null si non spécifié.
-- "explanation": Courte phrase expliquant ce qui a été compris.
-
-Réponds TOUJOURS avec un objet JSON valide contenant exactement ces champs."""
+SYSTEM_PROMPT = (
+    "Tu es l'assistant de configuration de BotRadar (bot d'alertes Vinted).\n"
+    "L'utilisateur formule une recherche en langage naturel.\n"
+    "Extrais les paramètres d'alerte sous un format JSON strict :\n"
+    '- "name": Titre épuré et propre de l\'objet/œuvre '
+    '(ex: "L\'Arabe du futur", "One Piece", "iPhone 13").\n'
+    '  IMPORTANT : Ne JAMAIS inclure de prix (ex: "max 7€", "15€"), '
+    'de mention d\'état ou de filtre dans "name" !\n'
+    '- "category_slug": Une seule valeur parmi '
+    '["bd_comics", "tech", "gaming", "clothes"].\n'
+    "  * bd_comics: livres, mangas, BD, comics, romans.\n"
+    "  * gaming: consoles, jeux vidéo, manettes.\n"
+    "  * tech: smartphones, PC, électronique.\n"
+    "  * clothes: vêtements, baskets.\n"
+    '- "is_series": bool (true s\'il s\'agit d\'une série multi-tomes sans '
+    'numéro de tome précisé ex: "L\'Arabe du futur", "One Piece", "Blacksad" ; '
+    'false s\'il s\'agit d\'un livre unique / one-shot ex: "Le Monde sans fin", '
+    '"Sapiens" ou d\'un tome spécifique ex: "L\'Arabe du futur tome 2", '
+    '"Daredevil Deluxe 1").\n'
+    '- "isbn13": string ou null (si c\'est un livre unique ou un tome '
+    "spécifique, fournis son ISBN-13 officiel à 13 chiffres commençant par "
+    "978 ou 979 sans tirets ; null s'il s'agit d'une série globale ou si "
+    "incertain).\n"
+    '- "author": string ou null (nom de l\'auteur principal si identifiable).\n'
+    '- "publisher": string ou null (éditeur ou collection spécifique '
+    'ex: "Dargaud", "Panini Comics", "Marvel Deluxe").\n'
+    '- "include_keywords": Liste de mots-clés obligatoires pour la recherche '
+    '(ex: ["L\'Arabe du futur"]).\n'
+    "  IMPORTANT : Ne jamais inclure de prix ou de filtre de prix dans "
+    "les mots-clés !\n"
+    '- "exclude_keywords": Liste de mots-clés à exclure pour bloquer '
+    "les faux positifs.\n"
+    "  IMPORTANT : Propose TOUJOURS 2 à 5 exclusions intelligentes "
+    "spécifiquement adaptées à l'objet/livre et à sa catégorie "
+    '(ex: pour "L\'Arabe du futur" ou des BD/mangas: ["figurine", '
+    '"coffret vide", "poster", "ex-libris", "tote bag"] ; pour "iPhone 13" '
+    'ou tech: ["coque", "boite vide", "vitre", "pour pieces"] ; pour '
+    '"Nintendo Switch" ou gaming: ["boite vide", "housse", "support", '
+    '"stickers"]), en plus de celles éventuellement demandées par '
+    "l'utilisateur.\n"
+    '- "max_price_cents": Prix max en centimes '
+    "(ex: 35€ -> 3500, 7€ -> 700, null si non spécifié).\n"
+    '- "conditions": Liste des états parmi : ["Neuf avec étiquette", '
+    '"Neuf sans étiquette", "Très bon état", "Bon état", "Satisfaisant"]. '
+    "Mettre null si non spécifié.\n"
+    '- "explanation": Courte phrase expliquant ce qui a été compris.\n'
+    "\n"
+    "Réponds TOUJOURS avec un objet JSON valide contenant exactement "
+    "ces champs."
+)
 
 
 class NaturalAddModule(BaseAIModule):
@@ -66,49 +94,51 @@ class NaturalAddModule(BaseAIModule):
             return None
 
         try:
-            category = data.get("category_slug", "bd_comics")
+            payload = NaturalAddPayload.model_validate(data)
+            category = payload.category_slug
             valid_cats = {c.value for c in CategorySlug}
             if category not in valid_cats:
                 category = "bd_comics"
 
             # Nettoyer et valider les états
-            raw_conditions = data.get("conditions")
+            raw_conditions = payload.conditions
             valid_conditions = None
             if isinstance(raw_conditions, list):
                 valid_conditions = [c for c in raw_conditions if c in STANDARD_CONDITIONS]
                 if not valid_conditions:
                     valid_conditions = None
 
-            PRICE_SUFFIX_REGEX = re.compile(
+            price_suffix_regex = re.compile(
                 r"\s*[-–—:]?\s*(?:(?:max|maximum|sous|moins\s+de|<|<=)\s*\d+(?:[.,]\d+)?(?:\s*(?:€|eur|euros))?|\d+(?:[.,]\d+)?\s*(?:€|eur|euros))\s*$",
                 re.IGNORECASE,
             )
 
-            raw_name = str(data.get("name", user_text[:40])).strip()
-            # Nettoyage de sécurité : retirer tout suffixe de prix ou de filtre résiduel (ex: "- max 7€", "max 7 €", "7€")
-            clean_name = PRICE_SUFFIX_REGEX.sub("", raw_name).strip() or raw_name
+            raw_name = str(payload.name or user_text[:40]).strip()
+            # Nettoyage de sécurité : retirer tout suffixe de prix ou de filtre résiduel (ex: "- max
+            # 7€", "max 7 €", "7€")
+            clean_name = price_suffix_regex.sub("", raw_name).strip() or raw_name
 
             # Nettoyer include_keywords pour retirer d'éventuels suffixes de prix
-            raw_includes = data.get("include_keywords") or [clean_name]
+            raw_includes = payload.include_keywords or [clean_name]
             clean_includes = []
             for k in raw_includes:
-                k_clean = PRICE_SUFFIX_REGEX.sub("", str(k).strip()).strip()
+                k_clean = price_suffix_regex.sub("", str(k).strip()).strip()
                 if k_clean and k_clean not in clean_includes:
                     clean_includes.append(k_clean)
 
             # Nettoyer exclude_keywords
             clean_excludes = [
-                str(k).strip() for k in data.get("exclude_keywords", []) if k and str(k).strip()
+                str(k).strip() for k in payload.exclude_keywords if k and str(k).strip()
             ]
 
-            is_series = bool(data.get("is_series", False))
-            raw_isbn = str(data.get("isbn13") or "").strip()
+            is_series = payload.is_series
+            raw_isbn = str(payload.isbn13 or "").strip()
             isbn13 = re.sub(r"[^0-9X]", "", raw_isbn.upper()) if raw_isbn else None
             if isbn13 and len(isbn13) not in (10, 13):
                 isbn13 = None
 
-            author = str(data.get("author")).strip() if data.get("author") else None
-            publisher = str(data.get("publisher")).strip() if data.get("publisher") else None
+            author = payload.author.strip() if payload.author else None
+            publisher = payload.publisher.strip() if payload.publisher else None
 
             # Si c'est un livre/BD (pas une série globale) et qu'aucun ISBN n'a été fourni par l'IA
             if category == "bd_comics" and not is_series and not isbn13:
@@ -132,11 +162,11 @@ class NaturalAddModule(BaseAIModule):
                 publisher=publisher,
                 include_keywords=clean_includes or [clean_name],
                 exclude_keywords=clean_excludes,
-                max_price_cents=data.get("max_price_cents"),
+                max_price_cents=payload.max_price_cents,
                 conditions=valid_conditions,
-                explanation=data.get("explanation"),
+                explanation=payload.explanation,
             )
-        except Exception as exc:
+        except (ValidationError, Exception) as exc:
             logger.warning("Erreur lors de la construction de NaturalAddResult: %s", exc)
             return None
 

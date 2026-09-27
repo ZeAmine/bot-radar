@@ -3,11 +3,13 @@
 import html
 import logging
 
+from pydantic import ValidationError
+
 from app.core.config import settings
 from app.db.models.listing import Listing
 from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.modules.base import BaseAIModule
-from app.services.ai.schemas import NegotiationResult
+from app.services.ai.schemas import NegotiationPayload, NegotiationResult
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +72,18 @@ class NegotiationModule(BaseAIModule):
                 user_prompt=user_prompt,
                 temperature=0.3,
             )
-            if data and data.get("suggested_offer_cents") and data.get("message"):
-                offer_cents = int(data["suggested_offer_cents"])
-                return NegotiationResult(
-                    suggested_offer_cents=offer_cents,
-                    suggested_offer_euros=offer_cents / 100.0,
-                    message=str(data["message"]).strip(),
-                )
+            if isinstance(data, dict):
+                try:
+                    payload = NegotiationPayload.model_validate(data)
+                except ValidationError:
+                    payload = None
+                if payload and payload.suggested_offer_cents and payload.message:
+                    offer_cents = int(payload.suggested_offer_cents)
+                    return NegotiationResult(
+                        suggested_offer_cents=offer_cents,
+                        suggested_offer_euros=offer_cents / 100.0,
+                        message=payload.message.strip(),
+                    )
 
         # Fallback algorithmique déterministe (si clé DeepSeek non configurée ou indisponible)
         price_eur = price_cents / 100.0

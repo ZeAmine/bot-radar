@@ -52,7 +52,8 @@ def validate_and_parse_vinted_url(url: str) -> dict[str, Any]:
         allowed_domains=("vinted.fr", "vinted.com"),
     )
     if not is_safe:
-        raise AlertServiceError("Le lien doit impérativement provenir de vinted.fr ou vinted.com en HTTPS.")
+        raise AlertServiceError(
+            "Le lien doit impérativement provenir de vinted.fr ou vinted.com en HTTPS.")
 
     try:
         parsed = urlparse(url_cleaned)

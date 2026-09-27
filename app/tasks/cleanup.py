@@ -13,7 +13,9 @@ from app.db.session import AsyncSessionLocal
 logger = logging.getLogger(__name__)
 
 
-async def cleanup_old_data_task(days_retention: int = 90, listings_retention_days: int = 14) -> None:
+async def cleanup_old_data_task(
+    days_retention: int = 90, listings_retention_days: int = 14
+) -> None:
     """Supprime les événements d'audit, snapshots et annonces sans match obsolètes."""
     threshold = datetime.now(UTC) - timedelta(days=days_retention)
     listings_threshold = datetime.now(UTC) - timedelta(days=listings_retention_days)
@@ -45,7 +47,8 @@ async def cleanup_old_data_task(days_retention: int = 90, listings_retention_day
             snapshots_count = getattr(res_snapshots, "rowcount", 0)
             listings_count = getattr(res_listings, "rowcount", 0)
             logger.info(
-                "Nettoyage effectué : %s événements, %s snapshots, %s annonces, %s alertes et %s livres orphelins supprimés.",
+                "Nettoyage effectué : %s événements, %s snapshots, %s annonces, "
+                "%s alertes et %s livres orphelins supprimés.",
                 events_count,
                 snapshots_count,
                 listings_count,

@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -90,6 +90,10 @@ class BookRepository:
         self.session.add(book)
         await self.session.flush()
         return book
+
+    async def clear_alert_books(self, alert_id: uuid.UUID) -> None:
+        """Retire toutes les liaisons livre d'une alerte avant d'en poser une nouvelle."""
+        await self.session.execute(delete(AlertBook).where(AlertBook.alert_id == alert_id))
 
     async def link_alert_to_book(
         self,

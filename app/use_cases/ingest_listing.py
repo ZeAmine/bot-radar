@@ -15,6 +15,7 @@ from app.db.models.bot_event import BotEvent
 from app.db.models.listing import Listing
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.repositories.listing_repo import ListingRepository
+from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import (
     ListingIngestPayload,
     ListingIngestResponse,
@@ -22,7 +23,6 @@ from app.schemas.listing import (
 )
 from app.services.book_catalog_service import BookCatalogService
 from app.services.market_price_service import MarketPriceService
-from app.services.matcher_service import evaluate_listing_against_alert
 from app.services.telegram_service import send_listing_alert
 
 logger = logging.getLogger("radar.use_cases.ingest_listing")
@@ -197,6 +197,14 @@ async def _link_bd_catalog_background(
         logger.debug("Liaison catalogue BD différée ignorée pour %s : %s", alert_id, exc)
 
 
+def _alert_has_telegram_chat(alert: Any) -> bool:
+    """Vrai si l'alerte a un destinataire Telegram à qui envoyer."""
+    user = getattr(alert, "user", None)
+    if user is None:
+        return False
+    return bool(getattr(user, "telegram_user_id", None))
+
+
 def _get_send_listing_alert() -> Any:
     """Résout dynamiquement la fonction d'envoi d'alerte pour préserver les mocks de tests."""
     ingest_module = sys.modules.get("app.api.routes.ingest")
@@ -275,6 +283,8 @@ class ProcessListingUseCase:
         for alert, match_result, _line, _ready in pending_sends:
             if alert.id in pending_ids:
                 continue
+            if not _alert_has_telegram_chat(alert):
+                continue
             await self.listing_repo.create_match(
                 alert_id=alert.id,
                 listing_id=listing.id,
@@ -298,11 +308,11 @@ class ProcessListingUseCase:
         await self.db.commit()
 
         match_items: list[ListingMatchItem] = []
-        sent_pairs: list[tuple[uuid.UUID, uuid.UUID]] = []
+        needs_retry = False
         send_alert_fn = _get_send_listing_alert()
         for alert, _match_result, market_line, catalog_ready in pending_sends:
             notification_sent = False
-            if alert.user and alert.user.telegram_user_id:
+            if _alert_has_telegram_chat(alert):
                 alert_kws = alert.include_keywords or ([alert.name] if alert.name else None)
                 notification_sent = await send_alert_fn(
                     bot=self.bot,
@@ -312,8 +322,11 @@ class ProcessListingUseCase:
                     alert_keywords=alert_kws,
                     alert=alert,
                 )
-            if notification_sent:
-                sent_pairs.append((alert.id, listing.id))
+                if notification_sent:
+                    await self.listing_repo.mark_notified([(alert.id, listing.id)])
+                    await self.db.commit()
+                else:
+                    needs_retry = True
             if listing.category_slug == CategorySlug.BD_COMICS.value and not catalog_ready:
                 safe_create_task(
                     _link_bd_catalog_background(
@@ -334,10 +347,6 @@ class ProcessListingUseCase:
                 )
             )
 
-        if sent_pairs:
-            await self.listing_repo.mark_notified(sent_pairs)
-            await self.db.commit()
-
         # 9. Si une alerte a été notifiée, précharger la galerie complète en tâche de fond
         if (
             any(m.notification_sent for m in match_items)
@@ -354,6 +363,7 @@ class ProcessListingUseCase:
             is_duplicate=is_duplicate,
             estimated_total_cents=listing.estimated_total_cents,
             matches=match_items,
+            needs_retry=needs_retry,
         )
 
     async def _comparison_from_catalog_isbn(

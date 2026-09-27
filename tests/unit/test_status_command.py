@@ -35,7 +35,8 @@ async def test_handle_status_day_active():
 
     with (
         patch("app.bot.handlers.status.is_night_time", return_value=False),
-        patch("app.bot.handlers.status.get_poller_status", new_callable=AsyncMock, return_value=mock_status_data),
+        patch("app.bot.handlers.status.get_poller_status",
+              new_callable=AsyncMock, return_value=mock_status_data),
         patch("app.bot.handlers.status.settings.VINTED_POLLER_ENABLED", True),
         patch("app.bot.handlers.status.settings.NIGHT_MODE_ENABLED", True),
         patch("app.bot.handlers.status.settings.NIGHT_MODE_START_HOUR", 0),
@@ -77,7 +78,8 @@ async def test_handle_status_cooldown():
 
     with (
         patch("app.bot.handlers.status.is_night_time", return_value=False),
-        patch("app.bot.handlers.status.get_poller_status", new_callable=AsyncMock, return_value=mock_status_data),
+        patch("app.bot.handlers.status.get_poller_status",
+              new_callable=AsyncMock, return_value=mock_status_data),
         patch("app.bot.handlers.status.settings.VINTED_POLLER_ENABLED", True),
         patch("app.bot.handlers.status.settings.NIGHT_MODE_ENABLED", True),
     ):
@@ -105,7 +107,8 @@ async def test_handle_status_night_mode():
     with (
         patch("app.bot.handlers.status.is_night_time", return_value=True),
         patch("app.bot.handlers.status.get_night_mode_remaining_seconds", return_value=7200.0),
-        patch("app.bot.handlers.status.get_poller_status", new_callable=AsyncMock, return_value=None),
+        patch("app.bot.handlers.status.get_poller_status",
+              new_callable=AsyncMock, return_value=None),
         patch("app.bot.handlers.status.settings.NIGHT_MODE_ENABLED", True),
         patch("app.bot.handlers.status.settings.NIGHT_MODE_START_HOUR", 0),
         patch("app.bot.handlers.status.settings.NIGHT_MODE_END_HOUR", 7),
@@ -126,12 +129,15 @@ async def test_notify_admins():
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    with patch("app.services.telegram_service.settings.TELEGRAM_ALLOWED_USER_IDS", [123456, 789012]):
+    with patch("app.services.telegram_service.settings.TELEGRAM_ALLOWED_USER_IDS", [123456,
+        789012]):
         await notify_admins("Test alert message", bot=bot)
 
         assert bot.send_message.call_count == 2
-        bot.send_message.assert_any_call(chat_id=123456, text="Test alert message", parse_mode="HTML")
-        bot.send_message.assert_any_call(chat_id=789012, text="Test alert message", parse_mode="HTML")
+        bot.send_message.assert_any_call(
+            chat_id=123456, text="Test alert message", parse_mode="HTML")
+        bot.send_message.assert_any_call(
+            chat_id=789012, text="Test alert message", parse_mode="HTML")
 
 
 @pytest.mark.asyncio
@@ -154,8 +160,10 @@ async def test_handle_status_ai_active():
 
     with (
         patch("app.bot.handlers.status.is_night_time", return_value=False),
-        patch("app.bot.handlers.status.get_poller_status", new_callable=AsyncMock, return_value=None),
-        patch("app.bot.handlers.status.deepseek_client.check_health", new_callable=AsyncMock, return_value=mock_ai),
+        patch("app.bot.handlers.status.get_poller_status",
+              new_callable=AsyncMock, return_value=None),
+        patch("app.bot.handlers.status.deepseek_client.check_health",
+              new_callable=AsyncMock, return_value=mock_ai),
     ):
         await handle_status(message, mock_db)
 
@@ -184,14 +192,20 @@ async def test_handle_status_ai_error():
 
     with (
         patch("app.bot.handlers.status.is_night_time", return_value=False),
-        patch("app.bot.handlers.status.get_poller_status", new_callable=AsyncMock, return_value=None),
-        patch("app.bot.handlers.status.deepseek_client.check_health", new_callable=AsyncMock, return_value=mock_ai),
+        patch("app.bot.handlers.status.get_poller_status",
+              new_callable=AsyncMock, return_value=None),
+        patch("app.bot.handlers.status.deepseek_client.check_health",
+              new_callable=AsyncMock, return_value=mock_ai),
     ):
         await handle_status(message, mock_db)
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "🤖 <b>Moteur IA (DeepSeek)</b> : 🔴 <b>Indisponible</b> (Clé API invalide ou refusée)" in text
+        assert (
+            "🤖 <b>Moteur IA (DeepSeek)</b> : 🔴 <b>Indisponible</b> "
+            "(Clé API invalide ou refusée)"
+            in text
+        )
 
 
 def test_health_command_removed():

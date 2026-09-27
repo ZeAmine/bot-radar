@@ -4,9 +4,9 @@ Ce document cartographie l'ensemble des domaines techniques et fonctionnels de *
 Il sert de boussole aux modèles de langage (LLMs) et assistants de code pour situer immédiatement le rôle de chaque composant, les fichiers concernés, les règles spécifiques et le sens de circulation des données.
 
 ### Documentation de référence (Univers LLM)
-- [`AGENTS.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
-- [`subjects.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-010, dette différée).
+- [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
+- [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-013, dette différée).
 
 ---
 
@@ -33,12 +33,12 @@ Il sert de boussole aux modèles de langage (LLMs) et assistants de code pour si
 Détecter les nouvelles annonces Vinted en temps réel et les injecter dans le pipeline interne sans bloquer le système.
 
 ### Fichiers clés
-- [`app/tasks/vinted_poller.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/vinted_poller.py) : Boucle de polling haute fréquence à cadence adaptative (12s en pointe, 15s standard sur VPS, 8s avec proxy résidentiel), dédoublonnage en mémoire (`seen_ids`), ordonnancement entrelacé (staggered interleaving) des catégories.
-- [`app/services/vinted_scraper.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/vinted_scraper.py) : Gestionnaire de session Vinted (`VintedSessionManager`), cookies persistés dans Redis, interrogation prioritaire de l'API interne JSON (`svc-catalogue/items`, 38 Ko) avec repli transparent sur le catalogue HTML.
-- [`app/services/vinted_parsing.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/vinted_parsing.py) : Parsing pur HTML/JSON (`parse_vinted_catalog_json`, `parse_vinted_catalog_html`) et extraction des photos HD. Aucun réseau.
-- [`app/api/routes/ingest_api.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/api/routes/ingest_api.py) : Endpoint interne sécurisé `POST /api/v1/ingest/listings`.
-- [`app/use_cases/ingest_listing.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/use_cases/ingest_listing.py) : Orchestration du flux : dédoublonnage BDD, persistance du listing, déclenchement du matching et alerte Telegram.
-- [`app/db/repositories/listing_repo.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/db/repositories/listing_repo.py) : Dédoublonnage par `(source_name, external_id)` et contrainte unique `listing_matches (alert_id, listing_id)`.
+- [`app/tasks/vinted_poller.py`](app/tasks/vinted_poller.py) : Boucle de polling haute fréquence à cadence adaptative (12s en pointe, 15s standard sur VPS, 8s avec proxy résidentiel), dédoublonnage en mémoire (`seen_ids`), ordonnancement entrelacé (staggered interleaving) des catégories.
+- [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py) : Gestionnaire de session Vinted (`VintedSessionManager`), cookies persistés dans Redis, interrogation prioritaire de l'API interne JSON (`svc-catalogue/items`, 38 Ko) avec repli transparent sur le catalogue HTML.
+- [`app/services/vinted_parsing.py`](app/services/vinted_parsing.py) : Parsing pur HTML/JSON (`parse_vinted_catalog_json`, `parse_vinted_catalog_html`) et extraction des photos HD. Aucun réseau.
+- [`app/api/routes/ingest.py`](app/api/routes/ingest.py) : Endpoint interne sécurisé `POST /api/v1/ingest/listings`.
+- [`app/use_cases/ingest_listing.py`](app/use_cases/ingest_listing.py) : Orchestration du flux : dédoublonnage BDD, persistance du listing, déclenchement du matching et alerte Telegram.
+- [`app/db/repositories/listing_repo.py`](app/db/repositories/listing_repo.py) : Dédoublonnage par `(source_name, external_id)` et contrainte unique `listing_matches (alert_id, listing_id)`.
 
 ### Invariants et contraintes
 - **Zéro blocage Cloudflare & API First** : Le poller interroge le microservice interne `/svc-catalogue/items` avec les en-têtes web actuels (`Platform: web`, `X-Next-App: marketplace-web`), et bascule sur le scraping HTML si l'API interne fait défaut.
@@ -54,11 +54,11 @@ Détecter les nouvelles annonces Vinted en temps réel et les injecter dans le p
 Comparer en quelques microsecondes en mémoire CPU chaque annonce entrante avec l'ensemble des alertes actives de l'utilisateur.
 
 ### Fichiers clés
-- [`app/services/matcher_service.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/matcher_service.py) : Évaluation multicritère :
+- [`app/services/matcher_service.py`](app/services/matcher_service.py) : Évaluation multicritère :
   - `evaluate_listing_against_alert(...)` : vérification du prix max, catégorie, inclusion de mots-clés, variantes, exclusions et états.
   - `ListingRepository.matched_alert_ids(...)` : matches déjà notifiés pour une annonce, une seule requête SQL. Le matching lui-même est CPU (`evaluate_listing_against_alert`).
-- [`app/domain/rules/matcher.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/domain/rules/matcher.py) : Spécifications métier pures du matching (`DeterministicListingMatcher`).
-- [`app/utils/text.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/utils/text.py) : Normalisation Unicode avancée : passage en minuscules, décomposition NFKD (suppression des accents), remplacement des apostrophes typographiques et séparateurs.
+- [`app/domain/rules/matcher.py`](app/domain/rules/matcher.py) : Spécifications métier pures du matching (`DeterministicListingMatcher`).
+- [`app/utils/text.py`](app/utils/text.py) : Normalisation Unicode avancée : passage en minuscules, décomposition NFKD (suppression des accents), remplacement des apostrophes typographiques et séparateurs.
 
 ### Invariants et contraintes
 - **CPU local strict** : Aucun appel HTTP, aucun modèle d'embedding ou vector search externe lors du matching.
@@ -73,18 +73,18 @@ Comparer en quelques microsecondes en mémoire CPU chaque annonce entrante avec 
 Calculer instantanément la cote et l'écart de prix pour les bandes dessinées et comics par rapport au marché de l'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres).
 
 ### Fichiers clés
-- [`app/services/market_price_service.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/market_price_service.py) : `get_comparison_summary(...)` synchrone, lisant exclusivement le cache local PostgreSQL.
-- [`app/services/tome_extractor.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/tome_extractor.py) : Extraction déterministe des numéros de tomes, intégrales et lots (regex ultra-rapides sans I/O).
-- [`app/services/book_catalog_service.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/book_catalog_service.py) : Association d'une alerte à une série ou un livre précis.
-- [`app/services/book_metadata_service.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/book_metadata_service.py) : Enrichissement des métadonnées (ISBN-13 BNF).
-- [`app/providers/`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/providers/) : Clients HTTP pour les sources de marché :
+- [`app/services/market_price_service.py`](app/services/market_price_service.py) : `get_comparison_summary(...)` synchrone, lisant exclusivement le cache local PostgreSQL.
+- [`app/services/tome_extractor.py`](app/services/tome_extractor.py) : Extraction déterministe des numéros de tomes, intégrales et lots (regex ultra-rapides sans I/O).
+- [`app/services/book_catalog_service.py`](app/services/book_catalog_service.py) : Association d'une alerte à une série ou un livre précis.
+- [`app/services/book_metadata_service.py`](app/services/book_metadata_service.py) : Enrichissement des métadonnées (ISBN-13 BNF).
+- [`app/providers/`](app/providers/) : Clients HTTP pour les sources de marché :
   - `ebay_browse.py` : eBay Browse API OAuth2 (recherche par ISBN / titre d'occasion livrée en France).
   - BNF : `book_metadata_service.py`.
   - `momox.py`, `chasse_aux_livres.py`, etc.
-- [`app/db/repositories/market_price_repo.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/db/repositories/market_price_repo.py) : Cache de prix (`market_prices`), persistance des snapshots et cotes.
+- [`app/db/repositories/market_price_repo.py`](app/db/repositories/market_price_repo.py) : Cache de prix (`book_market_cache`), persistance des snapshots (`market_price_snapshots`) et cotes.
 
 ### Invariants et contraintes
-- **Zéro HTTP sur le chemin de l'alerte** : `MarketPriceService.get_comparison_summary` lit uniquement la table locale `market_prices`. Les appels aux providers externes ne se font que lors du rafraîchissement planifié (07:00 et 19:00).
+- **Zéro HTTP sur le chemin de l'alerte** : `MarketPriceService.get_comparison_summary` lit uniquement la table locale `book_market_cache`. Le refresh complet interroge les providers à 07:00 et 19:00 ; un lot incrémental tourne à `:15` et `:45`.
 - **Format d'affichage** :
   ```text
   📉 Prix bas constaté : 12,50 €
@@ -100,17 +100,17 @@ Calculer instantanément la cote et l'écart de prix pour les bandes dessinées 
 Interface utilisateur conversationnelle pour piloter les alertes, recevoir les notifications, signaler les faux positifs et négocier.
 
 ### Fichiers clés
-- [`app/bot/bot_instance.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/bot_instance.py) : Initialisation du `Bot` aiogram 3 et du `Dispatcher`.
-- [`app/bot/middlewares/auth_middleware.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/middlewares/auth_middleware.py) : Contrôle d'accès strict par allowlist (`TELEGRAM_ALLOWED_USER_IDS`).
-- [`app/bot/handlers/alerts_create.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/alerts_create.py) : Flow conversationnel FSM `/add` jusqu'au récapitulatif (titre, catégorie, prix max, suggestion IA).
-- [`app/bot/handlers/alerts_create_confirm.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/alerts_create_confirm.py) : Confirmation, annulation et édition du même flux, sur le routeur partagé `_alerts_router`.
-- [`app/bot/handlers/alerts_manage.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/alerts_manage.py) : Commandes `/show`, `/edit`, `/pause`, `/resume`, `/delete`.
-- [`app/bot/handlers/callbacks.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/callbacks.py) : Gestion des boutons inline :
+- [`app/bot/bot_instance.py`](app/bot/bot_instance.py) : Initialisation du `Bot` aiogram 3 et du `Dispatcher`.
+- [`app/bot/middlewares/auth.py`](app/bot/middlewares/auth.py) : Contrôle d'accès strict par allowlist (`TELEGRAM_ALLOWED_USER_IDS`).
+- [`app/bot/handlers/alerts_create.py`](app/bot/handlers/alerts_create.py) : Flow conversationnel FSM `/add` jusqu'au récapitulatif (titre, catégorie, prix max, suggestion IA).
+- [`app/bot/handlers/alerts_create_confirm.py`](app/bot/handlers/alerts_create_confirm.py) : Confirmation, annulation et édition du même flux, sur le routeur partagé `_alerts_router`.
+- [`app/bot/handlers/alerts_manage.py`](app/bot/handlers/alerts_manage.py) : Commandes `/show`, `/edit`, `/pause`, `/resume`, `/delete`.
+- [`app/bot/handlers/callbacks.py`](app/bot/handlers/callbacks.py) : Gestion des boutons inline :
   - `photos:{listing_id}` : Affichage de l'album HD extrait de Vinted.
   - `market:{listing_id}` : Vue détaillée des offres du marché d'occasion.
   - `dislike:{listing_id}` : Signalement de faux positif avec confirmation.
   - `negotiate:{listing_id}` : Génération d'une proposition de message de négociation.
-- [`app/bot/keyboards/listings.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/keyboards/listings.py) : Clavier Telegram des annonces :
+- [`app/bot/keyboards/listings.py`](app/bot/keyboards/listings.py) : Clavier Telegram des annonces :
   - Ligne 1 : `[ 🖼 Photos ]` `[ 🔗 Annonce ]`
   - Ligne 2 : `[ 📊 Prix du marché ]` (uniquement si BD/Comics)
   - Ligne 3 (Ligne 2 si hors-BD) : `[ 👎 Faux positif ]` `[ 💬 Négocier ]`
@@ -124,14 +124,14 @@ Interface utilisateur conversationnelle pour piloter les alertes, recevoir les n
 Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur clique sur `[👎 Faux positif]`, DeepSeek analyse les motifs parasites récurrents et suggère des mots-clés d'exclusion ciblés pour assainir l'alerte.
 
 ### Fichiers clés
-- [`app/bot/handlers/autotune.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/autotune.py) :
+- [`app/bot/handlers/autotune.py`](app/bot/handlers/autotune.py) :
   - Commande `/autotune` : hub des alertes ayant des faux positifs non résolus.
   - `process_autotune_for_alert(...)` : exécution de l'analyse avec message de chargement transparent.
   - `handle_tune_edit(...)` : passage en mode personnalisation manuelle.
   - `handle_custom_exclusions_input(...)` : réception et parsing de la liste modifiée par l'utilisateur.
   - `handle_tune_apply(...)` : application des exclusions et purge des faux positifs résolus.
-- [`app/bot/states/alert_creation.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/states/alert_creation.py) : Machine à états `AutoTuneState` avec `waiting_for_custom_exclusions`.
-- [`app/services/ai/modules/auto_tuning.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/ai/modules/auto_tuning.py) : Module IA promptant DeepSeek avec l'historique des titres rejetés.
+- [`app/bot/states/alert_creation.py`](app/bot/states/alert_creation.py) : Machine à états `AutoTuneState` avec `waiting_for_custom_exclusions`.
+- [`app/services/ai/modules/auto_tuning.py`](app/services/ai/modules/auto_tuning.py) : Module IA promptant DeepSeek avec l'historique des titres rejetés.
 
 ### Invariants et contraintes
 - **Format copiable** : Les exclusions suggérées sont envoyées dans un bloc `<code>...</code>` pour faciliter la copie par simple tap sur Telegram.
@@ -147,9 +147,9 @@ Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur 
 Aider l'utilisateur lors de la création (`/add`) ou de l'édition (`/edit`) d'une alerte en générant automatiquement les fautes courantes, variantes d'écriture et exclusions standard.
 
 ### Fichiers clés
-- [`app/services/ai/modules/keyword_variants.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/ai/modules/keyword_variants.py) : Module générant variantes orthographiques (ex: *onepiece*, *one-piece*, *one piece*) et termes parasites (ex: *figurine*, *poster*, *t-shirt*).
-- [`app/bot/handlers/alerts_create.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/alerts_create.py) : Handler `handle_create_ai_variants` branché sur le bouton `[ ✨ Suggérer variantes IA ]`.
-- [`app/bot/handlers/alerts_manage.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/bot/handlers/alerts_manage.py) : Handler `handle_manage_ai_variants` pour enrichir une alerte existante.
+- [`app/services/ai/modules/keyword_variants.py`](app/services/ai/modules/keyword_variants.py) : Module générant variantes orthographiques (ex: *onepiece*, *one-piece*, *one piece*) et termes parasites (ex: *figurine*, *poster*, *t-shirt*).
+- [`app/bot/handlers/alerts_create.py`](app/bot/handlers/alerts_create.py) : Handler `handle_create_ai_variants` branché sur le bouton `[ ✨ Suggérer variantes IA ]`.
+- [`app/bot/handlers/alerts_manage.py`](app/bot/handlers/alerts_manage.py) : Handler `handle_manage_ai_variants` pour enrichir une alerte existante.
 
 ### Invariants et contraintes
 - **Transparence d'exécution** : Un clic sur le bouton affiche immédiatement un indicateur de chargement (`⏳ Recherche des variantes en cours...`) avec verrou anti-double clic pour éviter toute fuite d'appels API ou double facturation de tokens.
@@ -162,10 +162,10 @@ Aider l'utilisateur lors de la création (`/add`) ou de l'édition (`/edit`) d'u
 Enrichir asynchroniquement les alertes Telegram déjà délivrées pour fournir un conseil d'aide à la décision (analyse de lot, estimation de revente, négociation).
 
 ### Fichiers clés
-- [`app/services/ai/client.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/ai/client.py) : `DeepSeekClient` singleton s'appuyant sur le modèle `deepseek-flash` via l'API OpenAI compatible.
-- [`app/services/ai/pipeline.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/ai/pipeline.py) : `AIPostAlertPipeline.enrich_alert(...)` exécuté en arrière-plan (`safe_create_task`) avec le vrai `message_id` Telegram.
-- [`app/services/ai/registry.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/ai/registry.py) : `AIRegistry` centralisant l'activation des modules post-alerte.
-- [`app/services/ai/modules/`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/services/ai/modules/) :
+- [`app/services/ai/client.py`](app/services/ai/client.py) : `DeepSeekClient` singleton s'appuyant sur le modèle `deepseek-flash` via l'API OpenAI compatible.
+- [`app/services/ai/pipeline.py`](app/services/ai/pipeline.py) : `AIPostAlertPipeline.enrich_alert(...)` exécuté en arrière-plan (`safe_create_task`) avec le vrai `message_id` Telegram.
+- [`app/services/ai/registry.py`](app/services/ai/registry.py) : `AIRegistry` centralisant l'activation des modules post-alerte.
+- [`app/services/ai/modules/`](app/services/ai/modules/) :
   - `natural_add.py` : Extraction des critères depuis une phrase en langage naturel (`/add`).
   - `profit_scoring.py` : Évaluation du potentiel de revente et marge estimée.
   - `negotiation.py` : Proposition d'offre et message de négociation courtois.
@@ -185,15 +185,15 @@ Enrichir asynchroniquement les alertes Telegram déjà délivrées pour fournir 
 Persister les entités métier, les alertes, les annonces, le catalogue de livres, l'historique des prix et les événements utilisateurs.
 
 ### Fichiers clés
-- [`app/db/session.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/db/session.py) : Moteur async PostgreSQL (`AsyncSessionLocal`, pool `asyncpg`).
-- [`app/db/models/`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/db/models/) :
+- [`app/db/session.py`](app/db/session.py) : Moteur async PostgreSQL (`AsyncSessionLocal`, pool `asyncpg`).
+- [`app/db/models/`](app/db/models/) :
   - `alert.py` : Modèle `Alert` (nom, mots-clés, exclusions, variantes, prix max, conditions, statut).
   - `listing.py` : Modèle `Listing` (données de l'annonce, source, prix, photo, URL).
   - `book.py` : Modèle `Book` (catalogue BD : titre, série, tome, ISBN-13 BNF).
-  - `market_price.py` : Modèle `MarketPrice` (snapshots de cotes et prix du marché).
+  - `book_market_cache.py` : cache de cote (`book_market_cache`). `market_price_snapshot.py` : snapshots (`market_price_snapshots`).
   - `bot_event.py` : Modèle `BotEvent` (suivi des interactions : faux positifs `listing_disliked`, clics).
   - `user.py` : Modèle `User` (identifiant Telegram, configuration).
-- [`alembic/versions/`](file:///Users/aminezegmou/Projets/Radar%20Bot/alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0004_alert_books_book_id_index`.
+- [`alembic/versions/`](alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0004_alert_books_book_id_index`.
 
 ### Invariants et contraintes
 - **Sessions isolées en tâche de fond** : Ne jamais réutiliser la session HTTP/API dans une coroutine d'arrière-plan (`safe_create_task`). Toujours ouvrir un nouveau contexte : `async with AsyncSessionLocal() as session:`.
@@ -206,9 +206,9 @@ Persister les entités métier, les alertes, les annonces, le catalogue de livre
 Orchestrer le rafraîchissement périodique des cotes du marché et le nettoyage des annonces expirées.
 
 ### Fichiers clés
-- [`app/tasks/scheduler.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/scheduler.py) : Configuration APScheduler unifiée.
-- [`app/tasks/refresh_book_prices.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/refresh_book_prices.py) : Job à **07:00** et **19:00**, plus un lot incrémental à **:15** et **:45** (Europe/Paris).
-- [`app/tasks/cleanup.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/tasks/cleanup.py) : Job nocturne à **03:30** purgeant les annonces obsolètes et les vieux snapshots.
+- [`app/tasks/scheduler.py`](app/tasks/scheduler.py) : Configuration APScheduler unifiée.
+- [`app/tasks/refresh_book_prices.py`](app/tasks/refresh_book_prices.py) : Job à **07:00** et **19:00**, plus un lot incrémental à **:15** et **:45** (Europe/Paris).
+- [`app/tasks/cleanup.py`](app/tasks/cleanup.py) : Job nocturne à **03:30** purgeant les annonces obsolètes et les vieux snapshots.
 
 ### Invariants et contraintes
 - **Un seul scheduler (Invariant n°2)** : `app/main.py` démarre toujours APScheduler.
@@ -222,9 +222,9 @@ Orchestrer le rafraîchissement périodique des cotes du marché et le nettoyage
 Garantir la confidentialité absolue du bot privé, l'intégrité des webhooks et le masquage des secrets dans les logs.
 
 ### Fichiers clés
-- [`app/core/config.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/core/config.py) : Validation stricte des variables d'environnement (`SecretStr`).
-- [`app/core/security.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/core/security.py) : Validation sécurisée par `secrets.compare_digest`.
-- [`app/core/logging_config.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/app/core/logging_config.py) : `JSONFormatter` masquant automatiquement Bearer, jetons, mots de passe et clés `sk-`.
+- [`app/core/config.py`](app/core/config.py) : Validation stricte des variables d'environnement (`SecretStr`).
+- [`app/core/security.py`](app/core/security.py) : Validation sécurisée par `secrets.compare_digest`.
+- [`app/core/logging.py`](app/core/logging.py) : `JSONFormatter` masquant automatiquement Bearer, jetons, mots de passe et clés `sk-`.
 
 ### Invariants et contraintes
 - **Refus de démarrage en production** : Si `APP_ENV=production` et qu'un secret obligatoire (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `INGEST_API_TOKEN`, `INTERNAL_API_TOKEN`) est vide, `validate_production_secrets()` bloque le démarrage.
@@ -246,7 +246,7 @@ Déployer et maintenir le bot en production sur le serveur Ubuntu dédié.
 ### Procédure de synchronisation et redémarrage
 ```bash
 # 1. Synchronisation (sans écraser le .env distant)
-rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude '.git' --exclude '.env' \
+rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude '.git' --exclude '.env' --exclude 'vendor' \
   -e "ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no" \
   ./ ubuntu@88.96.56.44:~/bot-radar/
 
@@ -267,9 +267,9 @@ ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56
 Fournir des utilitaires pour synchroniser la session Vinted et faciliter le test en local.
 
 ### Fichiers clés
-- [`scripts/sync_vinted_session.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/scripts/sync_vinted_session.py) : Script pour pousser manuellement des cookies de session Vinted valides dans Redis (`radar:vinted_session_cookies`).
-- [`scripts/local_vinted_poller.py`](file:///Users/aminezegmou/Projets/Radar%20Bot/scripts/local_vinted_poller.py) : Poller Vinted autonome pour tester la détection en environnement de développement local.
-- [`scripts/vinted_autobuy.user.js`](file:///Users/aminezegmou/Projets/Radar%20Bot/scripts/vinted_autobuy.user.js) : Userscript navigateur (Tampermonkey/Violentmonkey) pour accélérer le choix du point de livraison sur Vinted lors de l'achat manuel.
+- [`scripts/sync_vinted_session.py`](scripts/sync_vinted_session.py) : Script pour pousser manuellement des cookies de session Vinted valides dans Redis (`radar:vinted_session_cookies`).
+- [`scripts/local_vinted_poller.py`](scripts/local_vinted_poller.py) : Poller Vinted autonome pour tester la détection en environnement de développement local.
+- [`scripts/vinted_autobuy.user.js`](scripts/vinted_autobuy.user.js) : Userscript navigateur (Tampermonkey/Violentmonkey) pour accélérer le choix du point de livraison sur Vinted lors de l'achat manuel.
 
 ### Invariants et contraintes
 - **Fichiers sensibles** : Ne pas modifier ni altérer ces scripts sans demande explicite de l'utilisateur.

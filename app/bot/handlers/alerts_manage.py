@@ -561,10 +561,7 @@ async def save_edited_field_value(
                 )
 
                 # Propagation globale en base : livre, liaison alerte-livre et cote de marché
-                from sqlalchemy import delete
-
                 from app.core.constants import ComparisonStatus, MatchConfidence
-                from app.db.models.alert_book import AlertBook
                 from app.db.repositories.book_repo import BookRepository
                 from app.db.repositories.market_price_repo import MarketPriceRepository
                 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
@@ -583,10 +580,7 @@ async def save_edited_field_value(
                     )
 
                 if book:
-                    # Détacher les anciens livres de l'alerte pour éviter les conflits d'ISBN
-                    await db_session.execute(
-                        delete(AlertBook).where(AlertBook.alert_id == alert.id)
-                    )
+                    await book_repo.clear_alert_books(alert.id)
                     await book_repo.link_alert_to_book(alert.id, book.id, MatchConfidence.HIGH)
 
                     # Rafraîchir immédiatement la cote de marché pour ce nouvel ISBN

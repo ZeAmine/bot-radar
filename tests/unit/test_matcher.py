@@ -296,6 +296,23 @@ def test_matcher_isbn_hybrid_fallback():
     )
     assert res_wrong_cat.is_match is False
 
+    # 4. Titre court : « Intégrale » accentué compte comme contexte BD
+    alert_rip = create_test_alert(
+        name="RIP",
+        include_keywords=["rip"],
+        max_price_cents=2000,
+    )
+    alert_rip.isbn = "9782205078961"
+    res_integrale = evaluate_listing_against_alert(
+        alert=alert_rip,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="rip",
+        listing_normalized_description="Intégrale",
+        listing_condition="Très bon état",
+        listing_item_price_cents=1200,
+    )
+    assert res_integrale.is_match is True
+
 
 def test_matcher_title_with_author_separator_matches_catalog_items():
     # 1. Alerte 1984 — Xavier Coste contre annonce "1984 en BD"
@@ -370,7 +387,8 @@ def test_matcher_title_with_author_separator_matches_catalog_items():
 
 
 def test_matcher_clean_title_with_author_keywords():
-    """Vérifie qu'une alerte avec un titre court épuré ('1984') matche grâce aux mots-clés de l'auteur dans include_keywords."""
+    """Vérifie qu'une alerte avec un titre court épuré ('1984') matche
+    grâce aux mots-clés de l'auteur dans include_keywords."""
     alert_1984 = create_test_alert(
         name="1984",
         include_keywords=["1984", "coste"],
@@ -417,7 +435,10 @@ def test_matcher_comic_franchise_prefix_not_false_positive():
         alert=alert_kraven,
         listing_category_slug="bd_comics",
         listing_normalized_title="spider man spider man n est plus",
-        listing_normalized_description="Exemplaire Spider-Man - Spider-Man n'est plus ! en état Très bon état.",
+        listing_normalized_description=(
+            "Exemplaire Spider-Man - Spider-Man n'est plus ! "
+            "en état Très bon état."
+        ),
         listing_condition="Très bon état",
         listing_item_price_cents=800,
     )
@@ -440,7 +461,8 @@ def test_matcher_comic_franchise_prefix_not_false_positive():
 
 
 def test_matcher_multilingual_exclusions_spanish_empty_box():
-    """Vérifie qu'une annonce espagnole avec 'caja vacia' est rejetée par l'exclusion 'boite vide'."""
+    """Vérifie qu'une annonce espagnole avec 'caja vacia'
+    est rejetée par l'exclusion 'boite vide'."""
     alert = create_test_alert(
         category_slug="gaming",
         include_keywords=["mario kart 8 deluxe"],
@@ -488,7 +510,7 @@ def test_matcher_gaming_rejection_foreign_spanish_game():
         alert=alert,
         listing_category_slug="gaming",
         listing_normalized_title="mario kart 8 deluxe switch juego",
-        listing_normalized_description="Juego en castellano como nuevo hago envios.",
+        listing_normalized_description="Juego en versión española como nuevo hago envios.",
         listing_condition="Très bon état",
         listing_item_price_cents=1500,
     )
@@ -527,7 +549,10 @@ def test_matcher_tech_hardware_allows_spanish_listing():
         alert=alert,
         listing_category_slug="tech",
         listing_normalized_title="raspberry pi 4 4gb",
-        listing_normalized_description="Placa raspberry pi 4 4gb ram como nuevo, funcionando perfectamente.",
+        listing_normalized_description=(
+            "Placa raspberry pi 4 4gb ram como nuevo, "
+            "funcionando perfectamente."
+        ),
         listing_condition="Très bon état",
         listing_item_price_cents=3500,
     )

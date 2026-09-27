@@ -76,7 +76,8 @@ class StatisticsService:
                     prefix = ""
                     name = item[0]
                     count = item[1]
-                top_alerts_lines.append(f"• {prefix}<b>{html.escape(str(name))}</b> : {count} alerte(s)")
+                top_alerts_lines.append(
+                    f"• {prefix}<b>{html.escape(str(name))}</b> : {count} alerte(s)")
         else:
             top_alerts_lines.append("• <i>Aucune alerte déclenchée sur la période</i>")
 

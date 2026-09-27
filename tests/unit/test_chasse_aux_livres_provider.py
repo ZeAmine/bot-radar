@@ -13,7 +13,8 @@ MOCK_SEARCH_PAGE_HTML = """
 <html lang="fr-FR">
 <head><title>Recherche</title></head>
 <body>
-<div id="hash-cont" data-ajax="true" data-hash="mockhash1234567890abcdef12345678" style="display: none"></div>
+<div id="hash-cont" data-ajax="true"
+data-hash="mockhash1234567890abcdef12345678" style="display: none"></div>
 </body>
 </html>
 """
@@ -22,7 +23,8 @@ MOCK_REST_JSON = {
     "b4": True,
     "clear": False,
     "d": """
-    <tr id="p1-0" data-indx=1000 data-relv=10000 data-pubd="20180914" data-lpric="1790" data-pag="112">
+    <tr id="p1-0" data-indx=1000 data-relv=10000
+    data-pubd="20180914" data-lpric="1790" data-pag="112">
       <td class="cover-column">
         <div class="cover-column-img">
           <div class="favoriteImg" data-id="B07B5VXYBF" data-sig="mock">
@@ -37,7 +39,8 @@ MOCK_REST_JSON = {
           <a href="/prix/B07B5VXYBF/rip-tome-1-julien-monier-9791095670568">Rip Tome 1</a>
         </div>
         <div class="subtitle">
-          <a href="/prix/B07B5VXYBF/rip-tome-1-julien-monier-9791095670568">Derrick - Je Ne Survivrai Pas</a>
+          <a href="/prix/B07B5VXYBF/rip-tome-1-julien-monier-9791095670568"
+          >Derrick - Je Ne Survivrai Pas</a>
         </div>
         <div class="book-details3">
           <div class="binding">ISBN&nbsp;: 9791095670568</div>
@@ -177,7 +180,8 @@ async def test_chasse_aux_livres_deep_lookup_success():
 
 @pytest.mark.asyncio
 async def test_chasse_aux_livres_title_mismatch_rejected():
-    """Vérifie qu'un résultat dont le titre est disjoint de la recherche est rejeté (ex: Ogrest pour Loba Loca)."""
+    """Vérifie qu'un résultat dont le titre est disjoint de la recherche
+    est rejeté (ex: Ogrest pour Loba Loca)."""
     provider = ChasseAuxLivresProvider()
 
     resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
@@ -194,7 +198,8 @@ async def test_chasse_aux_livres_title_mismatch_rejected():
 
 @pytest.mark.asyncio
 async def test_chasse_aux_livres_strict_used_filtering():
-    """Vérifie que si seules des offres neuves sont retournées, aucune offre d'occasion n'est inventée."""
+    """Vérifie que si seules des offres neuves sont retournées,
+    aucune offre d'occasion n'est inventée."""
     provider = ChasseAuxLivresProvider()
 
     resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
@@ -224,7 +229,8 @@ async def test_chasse_aux_livres_strict_used_filtering():
 
 @pytest.mark.asyncio
 async def test_chasse_aux_livres_excludes_amazon_de():
-    """Vérifie que les offres Amazon (De) sont strictement ignorées au profit des marchands francophones."""
+    """Vérifie que les offres Amazon (De) sont strictement ignorées
+    au profit des marchands francophones."""
     provider = ChasseAuxLivresProvider()
 
     resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
@@ -263,4 +269,18 @@ async def test_chasse_aux_livres_excludes_amazon_de():
         assert "Rakuten" in offer.item_condition
         assert "Amazon (De)" not in offer.item_condition
         assert "Amazon (De)" not in offer.raw_payload["partners"]
+
+
+def test_select_historical_low_ignores_looser_condition_tiers():
+    """Le plus bas 1 an ignore Bon état et l'occasion non qualifiée."""
+    from app.providers.chasse_aux_livres import select_historical_low_cents
+
+    assert select_historical_low_cents({"Bon état +": 4.5}) is None
+    assert select_historical_low_cents({"D'occasion": 3.0, "Meilleur prix": 2.5}) is None
+    assert (
+        select_historical_low_cents(
+            {"Bon état +": 3.0, "Très bon état +": 6.7, "Comme neuf +": 8.0}
+        )
+        == 670
+    )
 

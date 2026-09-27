@@ -54,7 +54,8 @@ async def test_delete_completely_cleans_alert_and_orphans():
 
 @pytest.mark.asyncio
 async def test_delete_completely_preserves_shared_book():
-    """Vérifie que delete_completely conserve le livre s'il est encore référencé par une autre alerte."""
+    """Vérifie que delete_completely conserve le livre
+    s'il est encore référencé par une autre alerte."""
     session = AsyncMock()
     repo = AlertRepository(session)
 

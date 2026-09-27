@@ -41,7 +41,8 @@ def create_scheduler() -> AsyncIOScheduler:
                 "Format d'horaire invalide pour PRICE_REFRESH_TIMES '%s': %s", time_str, exc
             )
 
-    # Job incrémental glissant toutes les 30 minutes : rafraîchit les 8 livres les plus anciens/expirés
+    # Job incrémental glissant toutes les 30 minutes : rafraîchit les 8 livres les plus
+    # anciens/expirés
     # Évite tout pic de charge CPU/réseau et garantit une fraîcheur 24h/24 des cotes
     scheduler.add_job(
         refresh_book_prices_task,

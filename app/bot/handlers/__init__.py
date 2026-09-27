@@ -19,4 +19,5 @@ def get_bot_router() -> Router:
     return main_router
 
 
-__all__ = ["get_bot_router", "start", "status", "help", "categories", "alerts", "callbacks", "stats", "autotune"]
+__all__ = ["get_bot_router", "start", "status", "help",
+    "categories", "alerts", "callbacks", "stats", "autotune"]

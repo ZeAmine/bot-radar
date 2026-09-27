@@ -1,8 +1,9 @@
 """Tests unitaires pour le garde anti-doublon des alertes."""
 
 import uuid
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.core.constants import AlertStatus
 from app.db.models.alert import Alert

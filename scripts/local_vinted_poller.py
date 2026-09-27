@@ -1,7 +1,6 @@
 """Poller Vinted local haute fréquence relayant les annonces vers le serveur BotRadar."""
 
 import asyncio
-import contextlib
 import logging
 import os
 import random
@@ -20,18 +19,27 @@ if env_path.exists():
 # Ajouter le répertoire racine au PYTHONPATH
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.services.vinted_scraper import (
-    DEFAULT_GLOBAL_BD_URL,
-    DEFAULT_VINTED_HEADERS,
-    fetch_vinted_page,
-    to_ingest_payload,
-)
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("radar.local_poller")
+
+
+def _vinted_scraper():
+    from app.services.vinted_scraper import (
+        DEFAULT_GLOBAL_BD_URL,
+        DEFAULT_VINTED_HEADERS,
+        fetch_vinted_page,
+        to_ingest_payload,
+    )
+
+    return (
+        DEFAULT_GLOBAL_BD_URL,
+        DEFAULT_VINTED_HEADERS,
+        fetch_vinted_page,
+        to_ingest_payload,
+    )
 
 RADAR_API_URL = os.environ.get(
     "BOTRADAR_API_URL", os.environ.get("RADAR_API_URL", "https://radar.aminezegmou.fr")
@@ -43,8 +51,11 @@ POLL_INTERVAL_SECONDS = int(os.environ.get("VINTED_POLL_INTERVAL_SECONDS", "20")
 
 async def sync_cookies_to_vps(client: httpx.AsyncClient) -> bool:
     """Récupère des cookies frais depuis l'IP résidentielle et les injecte dans le serveur Radar."""
+    _bd_url, default_headers, _fetch, _payload = _vinted_scraper()
     try:
-        resp = await client.get("https://www.vinted.fr/", headers=DEFAULT_VINTED_HEADERS, timeout=10.0)
+        resp = await client.get(
+            "https://www.vinted.fr/", headers=default_headers, timeout=10.0
+        )
         if resp.status_code == 200:
             cookies = dict(client.cookies)
             endpoint = f"{RADAR_API_URL}/api/v1/internal/vinted/session"
@@ -54,7 +65,10 @@ async def sync_cookies_to_vps(client: httpx.AsyncClient) -> bool:
             }
             res = await client.post(endpoint, headers=headers, json=cookies, timeout=10.0)
             if res.status_code == 200:
-                logger.info("🍪 Session Vinted résidentielle synchronisée avec succès sur le serveur !")
+                logger.info(
+                    "🍪 Session Vinted résidentielle synchronisée avec succès "
+                    "sur le serveur !"
+                )
                 return True
     except Exception as exc:
         logger.debug("Erreur lors de la synchronisation de session: %s", exc)
@@ -62,7 +76,8 @@ async def sync_cookies_to_vps(client: httpx.AsyncClient) -> bool:
 
 
 async def fetch_active_custom_searches(client: httpx.AsyncClient) -> list[tuple[str, str]]:
-    """Récupère les recherches personnalisées actives (Tech, Gaming, Vêtements) depuis l'API Radar."""
+    """Récupère les recherches personnalisées actives
+    (Tech, Gaming, Vêtements) depuis l'API Radar."""
     try:
         endpoint = f"{RADAR_API_URL}/api/v1/internal/alerts"
         headers = {"Authorization": f"Bearer {INTERNAL_API_TOKEN}"}
@@ -83,6 +98,7 @@ async def fetch_active_custom_searches(client: httpx.AsyncClient) -> list[tuple[
 
 async def run_local_poller() -> None:
     """Boucle principale du poller local relayant vers l'API de production."""
+    default_bd_url, _headers, fetch_vinted_page, to_ingest_payload = _vinted_scraper()
     logger.info("=" * 65)
     logger.info("🚀 Démarrage du Vinted Poller Local (Relais Résidentiel Haute Performance)")
     logger.info("📡 Destination : %s", RADAR_API_URL)
@@ -104,7 +120,7 @@ async def run_local_poller() -> None:
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         # Phase 1: Premier cycle pour initialiser les IDs déjà présents
         logger.info("Initialisation du cache des annonces récentes...")
-        initial_items = await fetch_vinted_page(DEFAULT_GLOBAL_BD_URL, client)
+        initial_items = await fetch_vinted_page(default_bd_url, client)
         for item in initial_items:
             seen_ids.add(item.external_id)
         logger.info("Cache initialisé avec %d annonces Vinted actives.", len(seen_ids))
@@ -131,22 +147,29 @@ async def run_local_poller() -> None:
 
             try:
                 # 1. Surveiller le flux Livres global
-                items = await fetch_vinted_page(DEFAULT_GLOBAL_BD_URL, client)
+                items = await fetch_vinted_page(default_bd_url, client)
                 if items:
                     new_items = [it for it in items if it.external_id not in seen_ids]
                     if new_items:
-                        logger.info("⚡ %d nouvelle(s) annonce(s) Livres détectée(s) !", len(new_items))
+                        logger.info("⚡ %d nouvelle(s) annonce(s) Livres détectée(s) !",
+                                    len(new_items))
                         for item in new_items:
                             seen_ids.add(item.external_id)
                             payload = to_ingest_payload(item, category_slug="bd_comics")
                             try:
-                                resp = await client.post(endpoint, headers=headers, json=payload, timeout=12.0)
+                                resp = await client.post(
+                                    endpoint,
+                                    headers=headers,
+                                    json=payload,
+                                    timeout=12.0,
+                                )
                                 if resp.status_code == 200:
                                     data = resp.json()
                                     matches = data.get("matches", [])
                                     if matches:
                                         logger.info(
-                                            "🎯 MATCH LIVRE CONFIRMÉ ! '%s' (%.2f €) -> %d alerte(s) envoyée(s) !",
+                                            "🎯 MATCH LIVRE CONFIRMÉ ! '%s' (%.2f €) "
+                                            "-> %d alerte(s) envoyée(s) !",
                                             item.title,
                                             item.item_price_cents / 100,
                                             len(matches),
@@ -172,13 +195,19 @@ async def run_local_poller() -> None:
                                 seen_ids.add(item.external_id)
                                 payload = to_ingest_payload(item, category_slug=custom_slug)
                                 try:
-                                    resp = await client.post(endpoint, headers=headers, json=payload, timeout=12.0)
+                                    resp = await client.post(
+                                        endpoint,
+                                        headers=headers,
+                                        json=payload,
+                                        timeout=12.0,
+                                    )
                                     if resp.status_code == 200:
                                         data = resp.json()
                                         matches = data.get("matches", [])
                                         if matches:
                                             logger.info(
-                                                "🎯 MATCH %s CONFIRMÉ ! '%s' (%.2f €) -> %d alerte(s) envoyée(s) !",
+                                                "🎯 MATCH %s CONFIRMÉ ! '%s' (%.2f €) "
+                                                "-> %d alerte(s) envoyée(s) !",
                                                 custom_slug.upper(),
                                                 item.title,
                                                 item.item_price_cents / 100,

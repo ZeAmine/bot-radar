@@ -6,12 +6,14 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.core.constants import CATEGORY_EMOJIS, CATEGORY_LABELS, CategorySlug
 from app.db.repositories.category_repo import CategoryRepository
 
 router = Router(name="categories_router")
 
-CATEGORIES_TEXT = "📂 Catégories disponibles :\n\n📚 Livres\n💻 Électronique\n🎮 Jeux Vidéo\n👕 Vêtements"
+CATEGORIES_TEXT = (
+    "📂 Catégories disponibles :\n\n"
+    "📚 Livres\n💻 Électronique\n🎮 Jeux Vidéo\n👕 Vêtements"
+)
 
 
 @router.message(Command("categories"))

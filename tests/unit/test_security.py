@@ -1,8 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from aiogram.types import CallbackQuery, User
 from fastapi.testclient import TestClient
-import pytest
 
 from app.api.middlewares.security import rate_limiter
 from app.bot.middlewares.throttling import ThrottlingMiddleware
@@ -64,7 +64,8 @@ def test_payload_size_limit_middleware():
 
     # Test payload de taille normale
     normal_headers = {"content-length": "20", "content-type": "application/json"}
-    response = client.post("/api/v1/ingest/listings", headers=normal_headers, content=b'{"test": 1}')
+    response = client.post("/api/v1/ingest/listings",
+                           headers=normal_headers, content=b'{"test": 1}')
     assert response.status_code != 413
 
 
@@ -96,12 +97,16 @@ async def test_sliding_window_rate_limiter():
     ok2, rem2, _ = await limiter.check_rate_limit(key, max_requests=3, window_seconds=10)
     ok3, rem3, _ = await limiter.check_rate_limit(key, max_requests=3, window_seconds=10)
 
-    assert ok1 is True and rem1 == 2
-    assert ok2 is True and rem2 == 1
-    assert ok3 is True and rem3 == 0
+    assert ok1 is True
+    assert rem1 == 2
+    assert ok2 is True
+    assert rem2 == 1
+    assert ok3 is True
+    assert rem3 == 0
 
     # 4e requête doit être bloquée
-    blocked, rem4, retry_after = await limiter.check_rate_limit(key, max_requests=3, window_seconds=10)
+    blocked, rem4, retry_after = await limiter.check_rate_limit(key, max_requests=3,
+        window_seconds=10)
     assert blocked is False
     assert rem4 == 0
     assert retry_after > 0

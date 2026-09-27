@@ -22,7 +22,8 @@ class EbayBrowseProvider:
 
     @classmethod
     def is_configured(cls) -> bool:
-        """Vérifie si les identifiants eBay sont réellement renseignés et valides (non placeholder)."""
+        """Vérifie si les identifiants eBay sont réellement renseignés
+        et valides (non placeholder)."""
         client_id = settings.EBAY_CLIENT_ID or ""
         client_secret = settings.EBAY_CLIENT_SECRET.get_secret_value() or ""
         if not client_id or not client_secret:
@@ -76,7 +77,8 @@ class EbayBrowseProvider:
             if response.status_code != 200:
                 self._auth_failed_until = now + 3600.0  # Suspend les requêtes eBay pendant 1h
                 logger.warning(
-                    "Échec d'authentification OAuth eBay (HTTP %s). Suspension temporaire d'eBay pendant 1 heure.",
+                    "Échec d'authentification OAuth eBay (HTTP %s). "
+                    "Suspension temporaire d'eBay pendant 1 heure.",
                     response.status_code,
                 )
                 return None

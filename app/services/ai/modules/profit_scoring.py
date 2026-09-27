@@ -4,11 +4,13 @@ import html
 import logging
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.core.config import settings
 from app.core.constants import CategorySlug
 from app.db.models.listing import Listing
 from app.services.ai.modules.base import BasePostAlertModule
-from app.services.ai.schemas import ProfitScoringResult
+from app.services.ai.schemas import ProfitScoringPayload, ProfitScoringResult
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,8 @@ class ProfitScoringModule(BasePostAlertModule):
         if not self.is_enabled or not listing.item_price_cents:
             return None
 
-        # Exclure les livres / BDs / Mangas : Chasse-aux-Livres fournit déjà la cote réelle du marché
+        # Exclure les livres / BDs / Mangas : Chasse-aux-Livres fournit déjà
+        # la cote réelle du marché
         if listing.category_slug in (CategorySlug.BD_COMICS.value, "livres", "mangas"):
             return None
 
@@ -43,17 +46,24 @@ class ProfitScoringModule(BasePostAlertModule):
         alert_ctx = f" (recherche ciblée : '{alert_name}')" if alert_name else ""
 
         instruction = (
-            f"Évalue le potentiel d'achat-revente pour cet article d'occasion : '{listing.title}'{alert_ctx}.\n"
+            "Évalue le potentiel d'achat-revente pour cet article "
+            f"d'occasion : '{listing.title}'{alert_ctx}.\n"
             f"Catégorie : {listing.category_slug or 'Non spécifiée'}\n"
-            f"Coût d'achat total (frais de port et protection acheteur inclus) : {total_eur:.2f} €.\n"
+            "Coût d'achat total (frais de port et protection acheteur "
+            f"inclus) : {total_eur:.2f} €.\n"
             f"État déclaré : {listing.condition or 'Non précisé'}.\n"
             f"Description : '{listing.description or 'Aucune'}'\n\n"
-            "Analyse le marché de l'occasion en France (Vinted, Leboncoin, eBay) pour ce modèle exact et cet état.\n"
+            "Analyse le marché de l'occasion en France "
+            "(Vinted, Leboncoin, eBay) pour ce modèle exact et cet état.\n"
             "Retourne sous la clé 'profit_scoring' un objet JSON avec :\n"
-            "- 'estimated_resale_cents': int (prix de revente réaliste en centimes)\n"
-            "- 'net_profit_cents': int (marge nette estimée en centimes = revente - coût total)\n"
-            "- 'pepite_score': float (note d'opportunité d'arbitrage de 1.0 à 10.0)\n"
-            "- 'verdict': string (phrase concise, ex: 'Très recherché, revente rapide avec +35€ de marge')"
+            "- 'estimated_resale_cents': int "
+            "(prix de revente réaliste en centimes)\n"
+            "- 'net_profit_cents': int "
+            "(marge nette estimée en centimes = revente - coût total)\n"
+            "- 'pepite_score': float "
+            "(note d'opportunité d'arbitrage de 1.0 à 10.0)\n"
+            "- 'verdict': string (phrase concise, ex: "
+            "'Très recherché, revente rapide avec +35€ de marge')"
         )
         return "profit_scoring", instruction
 
@@ -73,14 +83,15 @@ class ProfitScoringModule(BasePostAlertModule):
             )
 
         try:
+            chunk = ProfitScoringPayload.model_validate(raw_chunk)
             return ProfitScoringResult(
                 purchase_cost_cents=total_cents,
-                estimated_resale_cents=raw_chunk.get("estimated_resale_cents"),
-                net_profit_cents=raw_chunk.get("net_profit_cents"),
-                pepite_score=raw_chunk.get("pepite_score"),
-                verdict=raw_chunk.get("verdict"),
+                estimated_resale_cents=chunk.estimated_resale_cents,
+                net_profit_cents=chunk.net_profit_cents,
+                pepite_score=chunk.pepite_score,
+                verdict=chunk.verdict,
             )
-        except Exception as exc:
+        except (ValidationError, Exception) as exc:
             logger.warning("Erreur parsing ProfitScoringResult: %s", exc)
             return None
 

@@ -71,6 +71,7 @@ async def test_handle_categories():
 async def test_handle_show_with_query():
     """Vérifie que /show <query> filtre et affiche l'alerte ciblée."""
     import uuid
+
     from app.bot.handlers.alerts import show_alerts
     from app.core.constants import AlertStatus
     from app.db.models.alert import Alert
@@ -113,6 +114,7 @@ async def test_handle_show_with_query():
 async def test_handle_edit_command_shows_categories():
     """Vérifie que /edit affiche le sélecteur de catégorie avec les totaux."""
     import uuid
+
     from app.bot.handlers.alerts import handle_edit_command
     from app.db.models.category import Category
     from app.db.models.user import User
@@ -154,6 +156,7 @@ async def test_handle_edit_command_shows_categories():
 async def test_handle_select_edit_category():
     """Vérifie que cliquer sur une catégorie affiche la première alerte filtrée."""
     import uuid
+
     from app.bot.handlers.alerts import handle_select_edit_category
     from app.core.constants import AlertStatus
     from app.db.models.alert import Alert
@@ -193,14 +196,20 @@ async def test_handle_select_edit_category():
     assert "Raspberry Pi 4" in args[0]
     keyboard = kwargs["reply_markup"]
     assert any(btn.text == "📁 Catégories" for row in keyboard.inline_keyboard for btn in row)
-    assert any("al_list_cat:tech:0" in btn.callback_data for row in keyboard.inline_keyboard for btn in row)
+    assert any(
+        "al_list_cat:tech:0" in btn.callback_data
+        for row in keyboard.inline_keyboard
+        for btn in row
+    )
 
 
 @pytest.mark.asyncio
 async def test_handle_edit_category_menu():
     """Vérifie que cliquer sur le bouton Catégories réaffiche le menu de sélection."""
     import uuid
+
     from aiogram.types import CallbackQuery
+
     from app.bot.handlers.alerts import handle_edit_category_menu
     from app.db.models.category import Category
     from app.db.models.user import User
@@ -236,6 +245,7 @@ async def test_handle_edit_category_menu():
 async def test_paginate_alerts_with_category_slug():
     """Vérifie que la pagination préserve le slug de catégorie."""
     import uuid
+
     from app.bot.handlers.alerts import paginate_alerts
     from app.core.constants import AlertStatus
     from app.db.models.alert import Alert
@@ -327,6 +337,7 @@ async def test_handle_cancel_command_without_state():
 async def test_list_alerts_without_args_shows_category_menu():
     """Vérifie que /list sans argument affiche le sélecteur de catégorie avec les totaux."""
     import uuid
+
     from app.bot.handlers.alerts import list_alerts
     from app.db.models.category import Category
     from app.db.models.user import User
@@ -355,14 +366,23 @@ async def test_list_alerts_without_args_shows_category_menu():
     args, kwargs = message.answer.call_args
     assert "Choisissez une catégorie pour afficher vos alertes" in args[0]
     keyboard = kwargs["reply_markup"]
-    assert any("al_list_cat:tech:0" in btn.callback_data for row in keyboard.inline_keyboard for btn in row)
-    assert any("al_list_cat:all:0" in btn.callback_data for row in keyboard.inline_keyboard for btn in row)
+    assert any(
+        "al_list_cat:tech:0" in btn.callback_data
+        for row in keyboard.inline_keyboard
+        for btn in row
+    )
+    assert any(
+        "al_list_cat:all:0" in btn.callback_data
+        for row in keyboard.inline_keyboard
+        for btn in row
+    )
 
 
 @pytest.mark.asyncio
 async def test_list_alerts_with_arg_displays_category_directly():
     """Vérifie que /list tech affiche directement les alertes de la catégorie tech."""
     import uuid
+
     from app.bot.handlers.alerts import list_alerts
     from app.core.constants import AlertStatus
     from app.db.models.alert import Alert
@@ -407,7 +427,11 @@ async def test_list_alerts_with_arg_displays_category_directly():
     assert "Nintendo Switch Mario Kart" in args[0]
     assert "sans ISBN" not in args[0]
     keyboard = kwargs["reply_markup"]
-    assert any("al_list_cat_menu" in btn.callback_data for row in keyboard.inline_keyboard for btn in row)
+    assert any(
+        "al_list_cat_menu" in btn.callback_data
+        for row in keyboard.inline_keyboard
+        for btn in row
+    )
 
 
 

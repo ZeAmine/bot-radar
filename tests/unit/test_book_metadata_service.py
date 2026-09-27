@@ -1,7 +1,8 @@
 """Tests unitaires pour le service BookMetadataService (parsing, BNF SRU, recommandations)."""
 
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.services.book_metadata_service import (
     BookMetadata,

@@ -262,6 +262,76 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         )
 
         # L'enrichissement IA part dans send_listing_alert, pas dans un second use case.
+        use_case.listing_repo.mark_notified.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mark_notified_commits_before_the_next_send(mock_db: AsyncMock) -> None:
+    """La première alerte est horodatée même si l'envoi suivant lève."""
+    first = MagicMock()
+    first.id = uuid.uuid4()
+    first.name = "Blacksad"
+    first.include_keywords = ["blacksad"]
+    first.user = MagicMock(telegram_user_id=1)
+    second = MagicMock()
+    second.id = uuid.uuid4()
+    second.name = "Blacksad 2"
+    second.include_keywords = ["blacksad"]
+    second.user = MagicMock(telegram_user_id=2)
+
+    mock_listing = MagicMock()
+    mock_listing.id = uuid.uuid4()
+    mock_listing.category_slug = "tech"
+    mock_listing.normalized_title = "blacksad"
+    mock_listing.description = "tome"
+    mock_listing.condition = "Bon état"
+    mock_listing.item_price_cents = 1000
+    mock_listing.isbn13 = None
+    mock_listing.url = "https://vinted.fr/x"
+    mock_listing.estimated_total_cents = 1200
+    mock_listing.photos = ["https://img.example/a.jpg", "https://img.example/b.jpg"]
+    mock_listing.title = "Blacksad"
+
+    mock_repo = AsyncMock()
+    mock_repo.get_by_source_and_external_id.return_value = None
+    mock_repo.create_from_payload.return_value = mock_listing
+    mock_repo.get_active_alerts_by_category.return_value = [first, second]
+    mock_repo.create_match.return_value = MagicMock()
+    mock_repo.mark_notified = AsyncMock()
+
+    send_calls = {"n": 0}
+
+    async def _send(**_kwargs: object) -> bool:
+        send_calls["n"] += 1
+        if send_calls["n"] == 2:
+            raise RuntimeError("telegram down")
+        return True
+
+    use_case = ProcessListingUseCase(db=mock_db)
+    use_case.listing_repo = mock_repo
+    payload = ListingIngestPayload(
+        source_name="vinted",
+        external_id="two-alerts",
+        url="https://vinted.fr/x",
+        title="Blacksad",
+        category_slug="tech",
+        item_price_cents=1000,
+    )
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", side_effect=_send),
+        patch(
+            "app.use_cases.ingest_listing.evaluate_listing_against_alert",
+            return_value=MagicMock(
+                is_match=True,
+                keyword_match_score=1,
+                condition_matches=True,
+                price_matches=True,
+            ),
+        ),pytest.raises(RuntimeError, match="telegram down")
+    ):
+        await use_case.execute(payload, raw_payload={})
+
+    mock_repo.mark_notified.assert_awaited_once_with([(first.id, mock_listing.id)])
 
 
 @pytest.mark.asyncio

@@ -80,6 +80,17 @@ class AlertRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_not_deleted(self) -> list[Alert]:
+        """Alertes encore présentes, plus récentes d'abord."""
+        stmt = (
+            select(Alert)
+            .options(*self._ALERT_EAGER_LOAD)
+            .where(Alert.status != AlertStatus.DELETED)
+            .order_by(Alert.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_by_user(
         self,
         user_id: uuid.UUID,

@@ -47,8 +47,8 @@ def format_price_summary(
     """Formate la ligne d'affichage du prix pour Telegram.
 
     Exemples :
-    - "💵 15,00 € | 19,33 € (TTC)"
-    - "💵 15,00 € | Total à confirmer" (si total inconnu et fallback désactivé)
+    - "💵 Prix : 15,00 € (19,33 € TTC)"
+    - "💵 Prix : 15,00 € (TTC à confirmer)" (si total inconnu et fallback désactivé)
     """
     item_euros = f"{item_price_cents / 100:.2f} €".replace(".", ",")
     total_cents = estimated_total_cents

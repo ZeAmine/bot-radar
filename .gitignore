@@ -31,7 +31,12 @@ wheels/
 # IDEs
 .idea/
 .vscode/
-.cursor/
+.cursor/*
+!.cursor/skills/
+!.cursor/skills/**
+.agent/*
+!.agent/skills/
+!.agent/skills/**
 *.swp
 *.swo
 .DS_Store

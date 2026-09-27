@@ -20,7 +20,7 @@ from app.bot.keyboards.listings import (
     get_listing_alert_keyboard,
 )
 from app.core.http_client import get_shared_http_client
-from app.db.models.bot_event import BotEvent
+from app.db.repositories.autotune_repo import record_listing_dislike
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
@@ -559,14 +559,12 @@ async def handle_confirm_dislike(
     listing = await listing_repo.get_by_id(listing_id)
     alert = await listing_repo.get_alert_for_listing(listing_id)
 
-    # Journaliser l'événement de faux positif
-    event = BotEvent(
-        event_type="listing_disliked",
+    await record_listing_dislike(
+        db_session,
         listing_id=listing_id,
         alert_id=alert.id if alert else None,
-        metadata_={"chat_id": callback.from_user.id if callback.from_user else None},
+        chat_id=callback.from_user.id if callback.from_user else None,
     )
-    db_session.add(event)
     await db_session.commit()
 
     if listing and isinstance(callback.message, Message):

@@ -14,6 +14,7 @@ from app.bot.handlers import get_bot_router
 from app.bot.middlewares.auth import AuthMiddleware
 from app.bot.middlewares.throttling import ThrottlingMiddleware
 from app.core.config import settings
+from app.core.redis import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def create_storage() -> BaseStorage:
     """Crée le stockage FSM (Redis par défaut, MemoryStorage en fallback)."""
     try:
         if settings.REDIS_URL:
-            return RedisStorage.from_url(settings.REDIS_URL)
+            return RedisStorage(redis=get_redis_client())
     except Exception as exc:
         logger.warning(
             "Impossible d'initialiser RedisStorage pour FSM, utilisation de MemoryStorage: %s",

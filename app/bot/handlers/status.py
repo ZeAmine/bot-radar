@@ -7,12 +7,9 @@ from zoneinfo import ZoneInfo
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
-from sqlalchemy import func, select
 
 from app.core.config import settings
-from app.core.constants import AlertStatus
-from app.db.models.alert import Alert
-from app.db.models.category import Category
+from app.db.repositories.stats_repo import StatsRepository
 from app.services.ai.client import deepseek_client
 from app.tasks.vinted_poller import (
     get_night_mode_remaining_seconds,
@@ -81,16 +78,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
     else:
         poller_status = "🟢 <b>Active</b>"
 
-    # Répartition des alertes actives par catégorie
-    stmt = (
-        select(Category.slug, Category.label, Category.emoji, func.count(Alert.id))
-        .join(Alert, Alert.category_id == Category.id)
-        .where(Alert.status == AlertStatus.ACTIVE, Alert.deleted_at.is_(None))
-        .group_by(Category.slug, Category.label, Category.emoji)
-        .order_by(func.count(Alert.id).desc())
-    )
-    result = await db_session.execute(stmt)
-    cat_counts = result.all()
+    cat_counts = await StatsRepository(db_session).count_active_alerts_by_category()
 
     total_active = sum(row[3] for row in cat_counts)
 
@@ -98,10 +86,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
     for _slug, label, emoji, count in cat_counts:
         cat_lines.append(f"   └  {emoji} {label} : <b>{count}</b>")
 
-    if not cat_lines:
-        cat_summary = "   └  <i>Aucune alerte active</i>"
-    else:
-        cat_summary = "\n".join(cat_lines)
+    cat_summary = "   └  <i>Aucune alerte active</i>" if not cat_lines else "\n".join(cat_lines)
 
     night_hours_info = (
         f"{settings.NIGHT_MODE_START_HOUR:02d}:00 - {settings.NIGHT_MODE_END_HOUR:02d}:00"

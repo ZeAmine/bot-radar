@@ -66,14 +66,20 @@ def test_format_alert_card():
     assert "Inclus : blacksad, intégrale" in card
     assert "Exclus : tome 1" in card
     assert "Statut : 🟢 Active" in card
-    assert 'Lien : <a href="https://www.vinted.fr/catalog?search_text=blacksad">Consulter la recherche</a>' in card
+    assert (
+        'Lien : <a href="https://www.vinted.fr/catalog?search_text=blacksad">'
+        "Consulter la recherche</a>"
+        in card
+    )
 
 
 def test_format_alerts_list_text():
     from app.bot.handlers.alerts import format_alerts_list_text
 
-    cat_books = Category(id=uuid.uuid4(), slug="bd_comics", label="Livres", emoji="📚", is_active=True)
-    cat_tech = Category(id=uuid.uuid4(), slug="tech", label="Électronique", emoji="💻", is_active=True)
+    cat_books = Category(id=uuid.uuid4(), slug="bd_comics",
+                         label="Livres", emoji="📚", is_active=True)
+    cat_tech = Category(id=uuid.uuid4(), slug="tech",
+                        label="Électronique", emoji="💻", is_active=True)
 
     alert_book = Alert(
         id=uuid.uuid4(),

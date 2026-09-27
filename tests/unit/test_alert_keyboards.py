@@ -116,7 +116,8 @@ def test_get_alert_card_keyboard():
 def test_get_alert_edit_fields_keyboard():
     alert_id = uuid.uuid4()
 
-    # BD & Comics : Titre, ISBN, Prix max, Mots-clés, Exclusions, Variantes, États + Retour (8 boutons)
+    # BD & Comics : Titre, ISBN, Prix max, Mots-clés, Exclusions, Variantes, États + Retour (8
+    # boutons)
     kb_bd = get_alert_edit_fields_keyboard(alert_id, category_slug="bd_comics")
     buttons_bd = kb_bd.inline_keyboard
     callbacks_bd = [b[0].callback_data for b in buttons_bd]
@@ -148,7 +149,8 @@ def test_get_alert_edit_fields_keyboard():
     # Vêtements : Nom du vêtement, PAS de variantes, PAS d'URL
     kb_clothes = get_alert_edit_fields_keyboard(alert_id, category_slug="clothes")
     assert kb_clothes.inline_keyboard[0][0].text == "Nom du vêtement"
-    assert f"ed_f:{alert_id}:variants" not in [b[0].callback_data for b in kb_clothes.inline_keyboard]
+    assert f"ed_f:{alert_id}:variants" not in [
+        b[0].callback_data for b in kb_clothes.inline_keyboard]
 
 
 def test_get_delete_confirmation_keyboard():
@@ -161,6 +163,7 @@ def test_get_delete_confirmation_keyboard():
 
 def test_get_list_category_selection_keyboard():
     from unittest.mock import MagicMock
+
     from app.bot.keyboards.alerts import get_list_category_selection_keyboard
 
     mock_cats = [
@@ -185,13 +188,16 @@ def test_get_list_category_selection_keyboard():
 
 def test_get_alerts_list_keyboard():
     from unittest.mock import MagicMock
+
     from app.bot.keyboards.alerts import get_alerts_list_keyboard
 
     mock_alerts = [MagicMock(id=uuid.uuid4()) for _ in range(7)]
-    keyboard = get_alerts_list_keyboard(mock_alerts, current_page=0, total_pages=3, category_slug="tech")
+    keyboard = get_alerts_list_keyboard(
+        mock_alerts, current_page=0, total_pages=3, category_slug="tech")
     rows = keyboard.inline_keyboard
 
-    # 5 boutons sur row 0, 2 sur row 1, 1 bouton nav 'Suivant ➡️' sur row 2, 1 row d'actions sur row 3
+    # 5 boutons sur row 0, 2 sur row 1, 1 bouton nav 'Suivant ➡️' sur row 2, 1 row d'actions sur row
+    # 3
     assert len(rows) == 4
     assert len(rows[0]) == 5
     assert len(rows[1]) == 2

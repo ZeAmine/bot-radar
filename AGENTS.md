@@ -3,9 +3,32 @@
 Ce fichier est la source de vérité pour tout assistant qui travaille sur le dépôt. Le lire avant de modifier du code, de déployer, ou de proposer une architecture.
 
 ### Documentation de référence (Univers LLM)
-- [`AGENTS.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
-- [`subjects.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-010, dette différée).
+- [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
+- [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-013, dette différée).
+
+## Méthode de travail
+
+Hiérarchie, dans cet ordre :
+
+1. Ce fichier (`AGENTS.md`) est la loi produit.
+2. Les skills Superpowers dans [`vendor/superpowers/skills/`](vendor/superpowers/skills/) décrivent la méthode (spécifier, tester, revoir).
+3. Le défaut de l’IDE vient en dernier.
+
+Avant d’agir sur une feature ou un correctif, lire [`vendor/superpowers/skills/using-superpowers/SKILL.md`](vendor/superpowers/skills/using-superpowers/SKILL.md). Cursor les découvre via [`.cursor/skills/`](.cursor/skills/). Antigravity via [`.agent/skills/`](.agent/skills/) et [`GEMINI.md`](GEMINI.md).
+
+Ne pas installer Agent OS, ECC, BMad, GSD ni Spec Kit dans ce dépôt : leurs workflows se chevauchent. Une curiosité se fait sur un clone jetable, pas ici. Ne pas remplacer cette constitution par le `AGENTS.md` du dépôt Superpowers.
+
+Mise à jour du submodule : seulement quand un commit est choisi. Pas d’upgrade automatique dans un correctif.
+
+## Définition de terminé
+
+Un changement est terminé seulement si :
+
+- `pytest` est vert et `ruff check .` est vert. La CI (`.github/workflows/ci.yml`) bloque la pull request si l’un échoue. Pas de liste d’exceptions Ruff.
+- Aucun secret n’est loggé.
+- Aucun appel réseau (BNF, places de marché, DeepSeek) n’est ajouté avant l’envoi de l’alerte.
+- Revue humaine si le diff touche [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py), les formules de prix ou de comparaison marché, ou le chemin ingestion → matching → Telegram.
 
 ## Produit
 
@@ -133,7 +156,7 @@ Exécuter **soi-même** les commandes (réseau + clé SSH), ne pas demander à l
 Synchronisation (n’exclut pas `.env` distant : **ne pas** envoyer un `.env` local par accident ; le rsync ci-dessous ne cible pas `.env` s’il est absent du filtre, mais un `.env` local **écraserait** la prod s’il est présent — vérifier avant) :
 
 ```bash
-rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude '.git' --exclude '.env' \
+rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude '.git' --exclude '.env' --exclude 'vendor' \
   -e "ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no" \
   ./ ubuntu@88.96.56.44:~/bot-radar/
 ```
@@ -174,13 +197,12 @@ Modules actifs (`app/services/ai/modules/`) :
 
 Flags `AI_FEATURE_*` : un flag = un module vivant dans `app/services/ai/modules/` (strictement les 5 ci-dessus). Ne pas réintroduire un flag sans module.
 
-## Dette volontairement reportée
+## Architecture déjà tranchée
 
-Ne pas les traiter dans un correctif incident, sauf demande claire :
-
-- Extraire le SQL restant des handlers (`alerts_manage.py`, `callbacks.py`, `internal.py`). La confirmation `/add` est dans `alerts_create_confirm.py` ; le SQL d'auto-tuning est dans `autotune_repo.py`.
-- Câbler `DeterministicListingMatcher` comme unique matcher (aujourd’hui le use case appelle le service ORM).
-- L'appel HTTP DeepSeek est unique (`DeepSeekClient.post_chat`). Le provider de tests garde sa validation Pydantic et son cache Redis ; ne pas le recâbler sur l'ingestion.
-- Unifier les trois usages Redis (pool app, FSM aiogram, rate limiter).
-- Validation Pydantic stricte des modules post-alerte (ils parsent encore en `.get()`).
-- Index secondaire `(source_name, received_at)` sur `listings` : seulement si une requête prod le justifie.
+- Les enums vivent dans `app/domain/enums.py` et sont réexportés par `app/core/constants.py`. Pas une seconde définition.
+- Pas d’index `(source_name, received_at)` : le doublon d’annonce est `(source_name, external_id)`, les stats filtrent `received_at` seul.
+- Un seul POST DeepSeek : `DeepSeekClient.post_chat`. `DeepSeekProvider` ajoute la validation Pydantic et le cache Redis pour les tests. Il ne revient pas sur l’ingestion.
+- Les règles de matching vivent dans `app/domain/rules/listing_match.py`. `matcher_service` ne fait que réexporter. `DeterministicListingMatcher` appelle cette fonction.
+- Le JSON des cinq modules IA est validé par un modèle Pydantic à champs optionnels. Un champ absent prend le défaut.
+- Le SQL des handlers est dans les repositories (`stats_repo`, `alert_repo`, `book_repo`, `autotune_repo`).
+- Le FSM Telegram et le rate limiter utilisent le client Redis de `app.core.redis`.

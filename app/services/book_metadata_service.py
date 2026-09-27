@@ -70,7 +70,8 @@ def parse_query_title_and_author(query: str) -> tuple[str, str | None]:
 
 
 def clean_bnf_title(raw_title: str) -> str:
-    """Nettoie le titre brut retourné par la BNF (suppression des mentions d'auteur/sous-titres longs)."""
+    """Nettoie le titre brut retourné par la BNF
+    (suppression des mentions d'auteur/sous-titres longs)."""
     t = raw_title.strip()
     if " / " in t:
         t = t.split(" / ")[0].strip()
@@ -96,7 +97,9 @@ def clean_bnf_publisher(raw_publisher: str) -> str:
     return re.sub(r"\(.*?\)", "", raw_publisher).strip()
 
 
-def generate_recommended_keywords(title: str, author: str | None = None) -> tuple[list[str], list[str], list[str]]:
+def generate_recommended_keywords(
+    title: str, _author: str | None = None
+) -> tuple[list[str], list[str], list[str]]:
     """Génère des mots-clés d'inclusion, d'exclusion et de variantes adaptés à l'œuvre."""
     norm_title = normalize_text(title)
     includes: list[str] = []
@@ -184,7 +187,8 @@ class BookMetadataService:
         title_cand, author_cand = parse_query_title_and_author(user_input)
 
         # Nettoyage pour la requête CQL
-        clean_title_q = re.sub(r"[^a-zA-Z0-9\sàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ-]", " ", title_cand).strip()
+        clean_title_q = re.sub(
+            r"[^a-zA-Z0-9\sàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ-]", " ", title_cand).strip()
         if not clean_title_q:
             clean_title_q = title_cand
 
@@ -207,7 +211,9 @@ class BookMetadataService:
 
         return None
 
-    async def _query_bnf_sru(self, cql_query: str, author_hint: str | None = None) -> list[BookMetadata]:
+    async def _query_bnf_sru(
+        self, cql_query: str, author_hint: str | None = None
+    ) -> list[BookMetadata]:
         """Interroge l'API SRU de la BNF et trie les résultats par pertinence."""
         params = {
             "version": "1.2",
@@ -232,10 +238,14 @@ class BookMetadataService:
 
             root = ET.fromstring(resp.content)
             for record in root.findall(".//{http://www.loc.gov/zing/srw/}recordData"):
-                titles = [t.text for t in record.findall(".//{http://purl.org/dc/elements/1.1/}title") if t.text]
-                creators = [c.text for c in record.findall(".//{http://purl.org/dc/elements/1.1/}creator") if c.text]
-                identifiers = [i.text for i in record.findall(".//{http://purl.org/dc/elements/1.1/}identifier") if i.text]
-                publishers = [p.text for p in record.findall(".//{http://purl.org/dc/elements/1.1/}publisher") if p.text]
+                titles = [t.text for t in record.findall(
+                    ".//{http://purl.org/dc/elements/1.1/}title") if t.text]
+                creators = [c.text for c in record.findall(
+                    ".//{http://purl.org/dc/elements/1.1/}creator") if c.text]
+                identifiers = [i.text for i in record.findall(
+                    ".//{http://purl.org/dc/elements/1.1/}identifier") if i.text]
+                publishers = [p.text for p in record.findall(
+                    ".//{http://purl.org/dc/elements/1.1/}publisher") if p.text]
 
                 if not titles:
                     continue

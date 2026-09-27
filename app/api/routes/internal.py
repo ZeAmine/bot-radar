@@ -3,13 +3,10 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import get_db, require_internal_token
-from app.core.constants import AlertStatus
-from app.db.models.alert import Alert
+from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.services.vinted_scraper import vinted_session_manager
 
@@ -25,14 +22,7 @@ async def list_internal_alerts(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """Retourne la liste des alertes sans secret."""
-    stmt = (
-        select(Alert)
-        .options(selectinload(Alert.category))
-        .where(Alert.status != AlertStatus.DELETED)
-        .order_by(Alert.created_at.desc())
-    )
-    result = await db.execute(stmt)
-    alerts = result.scalars().all()
+    alerts = await AlertRepository(db).list_not_deleted()
 
     return [
         {
@@ -78,7 +68,11 @@ async def get_book_market_price(
         "checked_at": cache.checked_at.isoformat() if cache.checked_at else None,
         "expires_at": cache.expires_at.isoformat() if cache.expires_at else None,
         "historical_low_1y_cents": cache.historical_low_1y_cents,
-        "historical_low_at": cache.historical_low_at.isoformat() if cache.historical_low_at else None,
+        "historical_low_at": (
+            cache.historical_low_at.isoformat()
+            if cache.historical_low_at
+            else None
+        ),
     }
 
 

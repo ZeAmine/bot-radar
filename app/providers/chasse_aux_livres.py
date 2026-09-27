@@ -17,13 +17,33 @@ from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.providers.chasse_aux_livres")
 
+_HISTORICAL_LOW_LABELS = (
+    "Très bon état +",
+    "Comme neuf +",
+)
+
+
+def select_historical_low_cents(series_by_label: dict[str, float]) -> int | None:
+    """Choisit le plus bas 1 an au même palier que les offres live.
+
+    Seuls « Très bon état + » et « Comme neuf + » comptent. Un plus bas
+    « Bon état + » ou « D'occasion » est ignoré.
+    """
+    for label in _HISTORICAL_LOW_LABELS:
+        if label in series_by_label:
+            return round(series_by_label[label] * 100)
+    return None
+
 CHASSE_BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/128.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
     "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
     "Sec-Ch-Ua": '"Google Chrome";v="128", "Chromium";v="128", "Not.A/Brand";v="24"',
     "Sec-Ch-Ua-Mobile": "?0",
@@ -80,10 +100,13 @@ class ChasseAuxLivresProvider:
 
         exp_nospace = exp_norm.replace(" ", "")
         fnd_nospace = fnd_norm.replace(" ", "")
-        if exp_nospace and fnd_nospace and (exp_nospace in fnd_nospace or fnd_nospace in exp_nospace):
+        if exp_nospace and fnd_nospace and (
+            exp_nospace in fnd_nospace or fnd_nospace in exp_nospace
+        ):
             return True
 
-        # Cas des œuvres adaptées ou collections éditeur (ex: Gou Tanabe Lovecraft, Daredevil L'Homme sans peur)
+        # Cas des œuvres adaptées ou collections éditeur
+# (ex: Gou Tanabe Lovecraft, Daredevil L'Homme sans peur)
         collection_equivalents = {
             "montagnes hallucinees": {"lovecraft", "tanabe"},
             "appel de cthulhu": {"lovecraft", "tanabe"},
@@ -155,7 +178,8 @@ class ChasseAuxLivresProvider:
                     if attempt < max_retries:
                         wait_time = 2.0 * (attempt + 1)
                         logger.warning(
-                            "Chasse-aux-livres anti-bot/rate-limit pour '%s' (tentative %d/%d). Pause %.1fs...",
+                            "Chasse-aux-livres anti-bot/rate-limit pour '%s' "
+                            "(tentative %d/%d). Pause %.1fs...",
                             query,
                             attempt + 1,
                             max_retries + 1,
@@ -183,7 +207,9 @@ class ChasseAuxLivresProvider:
                 # Étape 2 : Récupérer les résultats agrégés via l'endpoint REST
                 ajax_headers = _build_ajax_headers(search_url)
                 rest_url = f"{self.BASE_URL}/rest/search-results?h={data_hash}&p=1&l=1&b=d"
-                resp2 = await client.get(rest_url, headers=ajax_headers, timeout=self.timeout_seconds)
+                resp2 = await client.get(
+                    rest_url, headers=ajax_headers, timeout=self.timeout_seconds
+                )
                 if resp2.status_code != 200:
                     logger.debug(
                         "Chasse-aux-livres returned HTTP %d on search-results", resp2.status_code
@@ -220,7 +246,8 @@ class ChasseAuxLivresProvider:
         query: str,
         expected_title: str | None = None,
     ) -> list[MarketOffer] | None:
-        """Tente une extraction détaillée des offres par boutique (eBay, Momox, Rakuten, Fnac, etc.)."""
+        """Tente une extraction détaillée des offres par boutique
+        (eBay, Momox, Rakuten, Fnac, etc.)."""
         try:
             url_match = re.search(r'href=["\'](/prix/[^"\']+)["\']', d_html)
             if not url_match:
@@ -231,9 +258,11 @@ class ChasseAuxLivresProvider:
             # Extraction ISBN et Titre depuis d_html
             isbn_match = re.search(r"ISBN&nbsp;:\s*(\d{10,13})", d_html)
             found_isbn = isbn_match.group(1) if isbn_match else None
-            title_match = re.search(r'class=["\']title["\'][^>]*>\s*<a[^>]*>([^<]+)</a>', d_html, re.DOTALL)
+            title_match = re.search(
+                r'class=["\']title["\'][^>]*>\s*<a[^>]*>([^<]+)</a>', d_html, re.DOTALL)
             if not title_match:
-                title_match = re.search(r'<a[^>]+href=["\']/prix/[^"\']+["\'][^>]+title=["\']([^"\']+)["\']', d_html)
+                title_match = re.search(
+                    r'<a[^>]+href=["\']/prix/[^"\']+["\'][^>]+title=["\']([^"\']+)["\']', d_html)
             
             found_title = html.unescape(title_match.group(1).strip()) if title_match else None
             slug_m = re.search(r'/prix/[^/]+/([^/]+)', product_path)
@@ -243,13 +272,15 @@ class ChasseAuxLivresProvider:
                 found_title = slug_title or query
 
             # Contrôle strict de cohérence du titre (rejet si hors sujet, ex: Ogrest pour Loba Loca)
-            # On vérifie contre le titre affiché et contre le slug URL qui contient les sous-titres et collections complètes
+            # On vérifie contre le titre affiché et contre le slug URL qui
+            # contient les sous-titres et collections complètes
             is_coherent = self.is_title_coherent(expected_title, found_title) or (
                 bool(slug_title) and self.is_title_coherent(expected_title, slug_title)
             )
             if expected_title and not is_coherent:
                 logger.warning(
-                    "Rejet Chasse-aux-livres pour '%s' : le titre retourné '%s' (slug: '%s', ISBN: %s) est incohérent.",
+                    "Rejet Chasse-aux-livres pour '%s' : le titre retourné '%s' "
+                    "(slug: '%s', ISBN: %s) est incohérent.",
                     expected_title,
                     found_title,
                     slug_title,
@@ -355,7 +386,8 @@ class ChasseAuxLivresProvider:
                     if is_brand_new:
                         continue
 
-                    # Filtrage STRICT état : uniquement Très bon et Comme neuf (rejet Bon, Correct, etc.)
+                    # Filtrage STRICT état : uniquement Très bon et Comme neuf
+                    # (rejet Bon, Correct, etc.)
                     if not is_very_good_or_better(sub_cond):
                         continue
 
@@ -411,17 +443,7 @@ class ChasseAuxLivresProvider:
                                 if pts:
                                     series_by_label[label] = min(pts)
 
-                        priority_order = (
-                            "Très bon état +",
-                            "Comme neuf +",
-                            "D'occasion",
-                            "Meilleur prix",
-                            "Bon état +",
-                        )
-                        for pref in priority_order:
-                            if pref in series_by_label:
-                                hist_low_1y_cents = round(series_by_label[pref] * 100)
-                                break
+                        hist_low_1y_cents = select_historical_low_cents(series_by_label)
                 except Exception as jcd_exc:
                     logger.debug("Historique des prix Chasse-aux-livres indisponible: %s", jcd_exc)
 

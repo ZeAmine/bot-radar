@@ -73,3 +73,4 @@ class ListingIngestResponse(BaseModel):
     is_duplicate: bool
     estimated_total_cents: int | None
     matches: list[ListingMatchItem]
+    needs_retry: bool = False

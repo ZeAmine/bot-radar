@@ -2,12 +2,12 @@
 
 Ce document consigne la mémoire vivante de **BotRadar**, la genèse de ses choix d'architecture (ADRs), ses arbitrages passés et la liste explicite de sa dette technique acceptée.
 
-Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs pour comprendre le **pourquoi** derrière les contraintes strictes définies dans [`AGENTS.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/AGENTS.md) et la cartographie technique de [`subjects.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/subjects.md).
+Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs pour comprendre le **pourquoi** derrière les contraintes strictes définies dans [`AGENTS.md`](AGENTS.md) et la cartographie technique de [`subjects.md`](subjects.md).
 
 ### Documentation de référence (Univers LLM)
-- [`AGENTS.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
-- [`subjects.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](file:///Users/aminezegmou/Projets/Radar%20Bot/memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-010, dette différée).
+- [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
+- [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-013, dette différée).
 
 ---
 
@@ -71,7 +71,7 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 
 ### ADR-004 : Cache local de cote BD avec rafraîchissement bi-quotidien
 - **Contexte** : Comparer le prix d'une BD à eBay, Momox, Gibert, Recyclivre, etc.
-- **Décision** : La consultation pendant l'alerte lit **exclusivement** la table `market_prices`. Les fournisseurs externes sont interrogés uniquement à 07:00 et 19:00 par des jobs planifiés.
+- **Décision** : La consultation pendant l'alerte lit **exclusivement** la table `book_market_cache`. Le refresh complet interroge les fournisseurs à 07:00 et 19:00 ; un lot incrémental tourne à `:15` et `:45`.
 - **Raison** : Protection contre les rate limits des API marchandes et zéro latence réseau lors de l'alerte.
 
 ### ADR-005 : Rôle purement consultatif de l'IA (DeepSeek)
@@ -91,14 +91,14 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 - **Décision** : Bouton et callbacks associés (`pay_alert:*`) intégralement supprimés.
 - **Raison** :
   - Vinted requiert une authentification dans l'application native ou le navigateur pour finaliser le panier ; un lien de checkout direct expirait fréquemment ou provoquait des erreurs 403.
-  - L'utilisateur utilise systématiquement le bouton principal `[ 🔗 Voir l'annonce ]`, qui ouvre l'application Vinted avec ses sessions et moyens de paiement pré-enregistrés.
+  - L'utilisateur utilise systématiquement le bouton principal `[ 🔗 Annonce ]`, qui ouvre l'application Vinted avec ses sessions et moyens de paiement pré-enregistrés.
   - Allègement visuel du clavier Telegram (passage à 3 lignes pour les BD, 2 pour le reste).
 
 ### ADR-008 : Auto-Tuning conversationnel & Purge des faux positifs
-- **Contexte** : Lorsqu'un utilisateur cliquait sur `[ 👎 Pas intéressé ]`, l'annonce était enregistrée dans `alert_dislikes`. Cependant, après avoir accepté les exclusions recommandées par l'IA via `/auto-tune`, les faux positifs continuaient d'apparaître dans la liste d'auto-tuning. De plus, l'utilisateur ne pouvait pas ajuster les mots-clés suggérés.
+- **Contexte** : Lorsqu'un utilisateur cliquait sur `[ 👎 Faux positif ]`, l'annonce était enregistrée comme `BotEvent` `listing_disliked`. Cependant, après avoir accepté les exclusions recommandées par l'IA via `/auto-tune`, les faux positifs continuaient d'apparaître dans la liste d'auto-tuning. De plus, l'utilisateur ne pouvait pas ajuster les mots-clés suggérés.
 - **Décision** :
   1. Introduction d'une machine à états FSM (`AutoTuneState.waiting_for_custom_exclusions`) permettant à l'utilisateur de copier la suggestion, de la modifier manuellement dans Telegram, et de la soumettre.
-  2. Purge atomique des entrées `alert_dislikes` pour l'alerte dès confirmation des exclusions (qu'elles soient appliquées telles quelles ou personnalisées).
+  2. Purge atomique des événements `listing_disliked` de l'alerte dès confirmation des exclusions (qu'elles soient appliquées telles quelles ou personnalisées).
 - **Raison** : Clôture propre de la boucle de feedback utilisateur : un problème corrigé ne doit plus polluer l'interface.
 
 ### ADR-009 : Isolation stricte des sessions de base de données en arrière-plan
@@ -154,19 +154,17 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 
 ---
 
-## 3. Registre de Dette Technique Volontairement Différée
+## 3. Décisions qui ne sont pas de la dette
 
-Les points suivants sont des éléments de dette connus, assumés et **volontairement non traités**. Sauf demande expresse de l'utilisateur, les assistants ne doivent **pas** tenter de les refactoriser :
+Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit autre chose.
 
-| Composant | Dette identifiée | Raison du maintien | Risque en cas de modification |
-| --- | --- | --- | --- |
-| Handlers Telegram (`alerts_create.py`, `alerts_manage.py`, etc.) | Présence de requêtes SQL ORM directes et d'appels IA dans les contrôleurs aiogram (~900 lignes). | Le code est stable, testé et fonctionne sans régression depuis des mois. | Risque élevé de casser des workflows FSM complexes ou les claviers inline. |
-| Matcher ORM vs Déterministe | `IngestListingUseCase` appelle encore `get_matched_alert_ids_for_listing` (service ORM) plutôt que `DeterministicListingMatcher` pur. | Le service ORM applique déjà les règles déterministes tout en résolvant les IDs en base de manière optimisée. | Churn architectural important sans gain de performance mesurable. |
-| Deux clients DeepSeek | Coexistence de `DeepSeekClient` (léger, utilisé post-alerte) et `DeepSeekProvider` (utilisé avec Pydantic/Redis). | Chaque client répond à un usage spécifique (streaming/édition rapide vs validation stricte). | Risque de casser les tests unitaires mockés sur l'un des deux providers. |
-| Enums doubles | `app/core/constants.py` vs `app/domain/enums.py`. | Préservé pour compatibilité des imports historiques. | Churn massif de commits sur des dizaines de fichiers pour zéro gain fonctionnel. |
-| Trois accès Redis | Pool global `get_redis_pool`, stockage FSM aiogram et rate limiter. | Chaque bibliothèque gère son propre cycle de vie de connexion de manière autonome. | Instabilité potentielle du pool ou de la sérialisation des états de session Telegram. |
-| Parsing IA en `.get()` | Les modules d'IA post-alerte utilisent `.get("cle")` avec fallbacks plutôt qu'une validation Pydantic stricte. | Résilience accrue aux variations de format JSON retournées par DeepSeek. | Une validation Pydantic stricte provoquerait des rejets d'analyse si le LLM omet un champ mineur. |
-| Index composite sur `listings` | Absence d'index `(source_name, received_at)`. | Le volume actuel de listings sur la rétention courte (7-30 jours) n'entraîne aucun ralentissement. | Ajout prématuré d'index inutile à ce stade. |
+- **Enums.** Une seule définition dans `app/domain/enums.py`, réexportée par `app/core/constants.py`.
+- **Index `(source_name, received_at)`.** Aucune requête ne l'utilise. Le doublon est `(source_name, external_id)`.
+- **DeepSeek.** Un seul POST, `DeepSeekClient.post_chat`. Le provider ajoute Pydantic et le cache Redis, hors ingestion.
+- **Matching.** Les règles sont dans `app/domain/rules/listing_match.py`. L'ingest appelle `evaluate_listing_against_alert`. Il n'y a pas de second algorithme ORM.
+- **JSON IA.** Chaque module valide un modèle Pydantic dont les champs manquants prennent un défaut.
+- **SQL.** Les lectures encore dans les handlers sont passées aux repositories (`stats_repo`, `alert_repo`, `book_repo`, `autotune_repo`).
+- **Redis.** Le rate limiter et le FSM Telegram partagent le client de `app.core.redis`.
 
 ---
 

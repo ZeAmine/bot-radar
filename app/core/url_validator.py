@@ -28,8 +28,10 @@ def is_safe_external_url(
     Args:
         url: L'URL à tester.
         allowed_schemes: Schémas autorisés (défaut: http, https).
-        allowed_domains: Tuple optionnel de suffixes de domaines autorisés (ex: ('vinted.fr', 'vinted.com')).
-        check_dns: Si True, résout le nom de domaine pour vérifier qu'il ne pointe pas vers une IP privée.
+        allowed_domains: Tuple optionnel de suffixes de domaines autorisés
+            (ex: ('vinted.fr', 'vinted.com')).
+        check_dns: Si True, résout le nom de domaine pour vérifier qu'il ne
+            pointe pas vers une IP privée.
 
     Returns:
         tuple (is_safe: bool, reason: str | None)
@@ -51,7 +53,11 @@ def is_safe_external_url(
 
     hostname_lower = hostname.lower()
 
-    if hostname_lower in FORBIDDEN_HOSTS or hostname_lower.endswith(".local") or hostname_lower.endswith(".internal"):
+    if (
+        hostname_lower in FORBIDDEN_HOSTS
+        or hostname_lower.endswith(".local")
+        or hostname_lower.endswith(".internal")
+    ):
         return False, f"Hôte interdit: {hostname}"
 
     try:
@@ -74,8 +80,17 @@ def is_safe_external_url(
                 sockaddr = item[4]
                 ip_str = sockaddr[0]
                 ip = ipaddress.ip_address(ip_str)
-                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-                    return False, f"Le domaine {hostname} résout vers une IP privée interdite ({ip_str})"
+                if (
+                    ip.is_private
+                    or ip.is_loopback
+                    or ip.is_link_local
+                    or ip.is_reserved
+                    or ip.is_multicast
+                ):
+                    return False, (
+                        f"Le domaine {hostname} résout vers une IP privée "
+                        f"interdite ({ip_str})"
+                    )
         except (socket.gaierror, socket.herror, Exception) as dns_exc:
             return False, f"Échec de résolution DNS pour {hostname}: {dns_exc}"
 

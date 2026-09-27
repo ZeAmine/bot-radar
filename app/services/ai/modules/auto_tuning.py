@@ -2,9 +2,12 @@
 
 import logging
 
+from pydantic import ValidationError
+
 from app.core.config import settings
 from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.modules.base import BaseAIModule
+from app.services.ai.schemas import AutoTuningPayload
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +56,17 @@ class AutoTuningModule(BaseAIModule):
             user_prompt=user_prompt,
             temperature=0.2,
         )
-        if not data or not isinstance(data.get("suggested_exclusions"), list):
+        if not isinstance(data, dict):
+            return [], None
+        try:
+            payload = AutoTuningPayload.model_validate(data)
+        except ValidationError:
+            return [], None
+        if not payload.suggested_exclusions:
             return [], None
 
-        exclusions = [str(e).strip().lower() for e in data["suggested_exclusions"] if e]
-        explanation = data.get("explanation")
-        return exclusions, explanation
+        exclusions = [str(e).strip().lower() for e in payload.suggested_exclusions if e]
+        return exclusions, payload.explanation
 
 
 auto_tuning_module = AutoTuningModule()

@@ -35,13 +35,16 @@ DEFAULT_VINTED_HEADERS = {
 
 def fetch_fresh_cookies() -> dict[str, str]:
     """Récupère des cookies et jetons d'authentification Vinted frais."""
-    with httpx.Client(timeout=10.0, follow_redirects=True, headers=DEFAULT_VINTED_HEADERS) as client:
+    with httpx.Client(timeout=10.0, follow_redirects=True,
+        headers=DEFAULT_VINTED_HEADERS) as client:
         resp = client.get("https://www.vinted.fr/")
         if resp.status_code != 200:
-            logger.error("Échec de la récupération des cookies Vinted (statut: %s)", resp.status_code)
+            logger.error("Échec de la récupération des cookies Vinted (statut: %s)",
+                resp.status_code)
             return {}
         cookies = dict(client.cookies)
-        logger.info("Récupération réussie de %d cookies Vinted (anon_id: %s)", len(cookies), bool(cookies.get("anon_id")))
+        logger.info("Récupération réussie de %d cookies Vinted (anon_id: %s)",
+                    len(cookies), bool(cookies.get("anon_id")))
         return cookies
 
 

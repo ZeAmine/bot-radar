@@ -53,6 +53,24 @@ async def get_disliked_titles_for_alert(alert_id: uuid.UUID, db_session: Any) ->
     return titles
 
 
+async def record_listing_dislike(
+    db_session: Any,
+    *,
+    listing_id: uuid.UUID,
+    alert_id: uuid.UUID | None,
+    chat_id: int | None,
+) -> None:
+    """Journalise un faux positif confirmé."""
+    db_session.add(
+        BotEvent(
+            event_type="listing_disliked",
+            listing_id=listing_id,
+            alert_id=alert_id,
+            metadata_={"chat_id": chat_id},
+        )
+    )
+
+
 async def clear_dislikes_for_alert(alert_id: uuid.UUID, db_session: Any) -> int:
     """Supprime les faux positifs d'une alerte après application des exclusions."""
     listing_ids_subquery = (

@@ -1,6 +1,14 @@
 """Schémas Pydantic pour le sous-système IA (DeepSeek-V4.1-Flash)."""
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class _LoosePayload(BaseModel):
+    """JSON LLM : champs absents prennent le défaut, le surplus est ignoré."""
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class NaturalAddResult(BaseModel):
@@ -34,6 +42,52 @@ class ProfitScoringResult(BaseModel):
     net_profit_cents: int | None = Field(default=None, description="Bénéfice net estimé")
     pepite_score: float | None = Field(default=None, description="Indice pépite de 1.0 à 10.0")
     verdict: str | None = Field(default=None, description="Conseil d'achat rapide")
+
+
+class NaturalAddPayload(_LoosePayload):
+    """Réponse brute de /add avant nettoyage."""
+
+    category_slug: str = "bd_comics"
+    conditions: list[Any] | None = None
+    name: str | None = None
+    include_keywords: list[Any] | None = None
+    exclude_keywords: list[Any] = Field(default_factory=list)
+    is_series: bool = False
+    isbn13: str | None = None
+    author: str | None = None
+    publisher: str | None = None
+    max_price_cents: int | None = None
+    explanation: str | None = None
+
+
+class ProfitScoringPayload(_LoosePayload):
+    """Portion JSON du scoring de rentabilité."""
+
+    estimated_resale_cents: int | None = None
+    net_profit_cents: int | None = None
+    pepite_score: float | None = None
+    verdict: str | None = None
+
+
+class NegotiationPayload(_LoosePayload):
+    """Portion JSON du coach de négociation."""
+
+    suggested_offer_cents: int | None = None
+    message: str | None = None
+
+
+class KeywordVariantsPayload(_LoosePayload):
+    """Variantes et exclusions suggérées."""
+
+    variants: list[Any] = Field(default_factory=list)
+    exclusions: list[Any] = Field(default_factory=list)
+
+
+class AutoTuningPayload(_LoosePayload):
+    """Exclusions suggérées après des faux positifs."""
+
+    suggested_exclusions: list[Any] = Field(default_factory=list)
+    explanation: str | None = None
 
 
 class NegotiationResult(BaseModel):

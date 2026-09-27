@@ -43,7 +43,8 @@ async def test_update_or_create_cache_never_uses_live_price_as_historical_low():
 
 @pytest.mark.asyncio
 async def test_update_or_create_cache_preserves_existing_certified_historical_low():
-    """Vérifie qu'un historique bas certifié préexistant (6,70 €) n'est pas écrasé par un prix en direct plus élevé."""
+    """Vérifie qu'un historique bas certifié préexistant (6,70 €)
+    n'est pas écrasé par un prix en direct plus élevé."""
     session = AsyncMock()
     repo = MarketPriceRepository(session)
 

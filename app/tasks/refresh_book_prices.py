@@ -58,7 +58,11 @@ async def refresh_book_prices_task(
         logger.debug("Aucun livre BD à rafraîchir pour cette passe.")
         return stats
 
-    mode_label = f"incrémental ({len(books)} livres)" if incremental else f"complet ({len(books)} livres)"
+    mode_label = (
+        f"incrémental ({len(books)} livres)"
+        if incremental
+        else f"complet ({len(books)} livres)"
+    )
     logger.info("Début du rafraîchissement des prix BD en mode %s.", mode_label)
 
     # 2. Traitement unitaire avec isolation stricte des sessions par livre
@@ -182,7 +186,8 @@ async def refresh_book_prices_task(
                     else:
                         # Aucune offre trouvée lors de cet appel
                         # RÈGLE DE RÉSILIENCE : Si un prix valide existe déjà en cache, le préserver
-                        # pour éviter de priver l'utilisateur de prix suite à un timeout réseau temporaire
+                        # pour éviter de priver l'utilisateur de prix suite
+                        # à un timeout réseau temporaire
                         if (
                             existing_cache
                             and existing_cache.lowest_delivered_price_cents is not None
@@ -224,7 +229,8 @@ async def refresh_book_prices_task(
             stats["errors"] += 1
 
     logger.info(
-        "Rafraîchissement BD terminé (%s) : %d traités, %d avec prix, %d indisponibles, %d erreurs.",
+        "Rafraîchissement BD terminé (%s) : %d traités, %d avec prix, "
+        "%d indisponibles, %d erreurs.",
         mode_label,
         stats["processed"],
         stats["available"],

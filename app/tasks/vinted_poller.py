@@ -8,6 +8,7 @@ import random
 import time
 from collections import deque
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -230,7 +231,15 @@ def _get_ingest_semaphore() -> asyncio.Semaphore:
     return _ingest_semaphore
 
 
-async def _ingest_scraped_item(item: Any, category_slug: str) -> int:
+@dataclass(frozen=True)
+class ScrapedIngestResult:
+    """Résultat d'une ingestion lancée par le poller."""
+
+    notified_count: int
+    needs_retry: bool
+
+
+async def _ingest_scraped_item(item: Any, category_slug: str) -> ScrapedIngestResult:
     """Ingère une annonce dans le processus, sans HTTP localhost."""
     from app.schemas.listing import ListingIngestPayload
     from app.use_cases.ingest_listing import ProcessListingUseCase
@@ -240,7 +249,11 @@ async def _ingest_scraped_item(item: Any, category_slug: str) -> int:
     async with _get_ingest_semaphore(), AsyncSessionLocal() as session:
         use_case = ProcessListingUseCase(session)
         response = await use_case.execute(payload, raw_payload=payload_dict)
-        return len(response.matches)
+        notified_count = sum(1 for match in response.matches if match.notification_sent)
+        return ScrapedIngestResult(
+            notified_count=notified_count,
+            needs_retry=response.needs_retry,
+        )
 
 
 async def poll_vinted_once(
@@ -277,19 +290,22 @@ async def poll_vinted_once(
     ingested_count = 0
     for item, result in zip(new_items, results, strict=True):
         if isinstance(result, Exception):
-            logger.debug(
+            seen_ids.discard(item.external_id)
+            logger.warning(
                 "Erreur lors de l'ingestion de l'annonce %s : %s",
                 item.external_id,
                 result,
             )
             continue
+        if result.needs_retry:
+            seen_ids.discard(item.external_id)
         ingested_count += 1
-        if result:
+        if result.notified_count:
             logger.info(
-                "🎯 MATCH VINTED ! Titre: '%s' (Prix: %.2f €) -> %d alertes notifiées !",
+                "MATCH VINTED ! Titre: '%s' (Prix: %.2f €) -> %d alertes notifiées !",
                 item.title,
                 item.item_price_cents / 100,
-                result,
+                result.notified_count,
             )
     return ingested_count
 
@@ -321,13 +337,15 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
         poll_cycle = 0
 
         while not stop_event.is_set():
-            # 0. Vérification du Mode Nuit (suspension nocturne pour préserver l'IP et éviter les bans)
+            # 0. Vérification du Mode Nuit (suspension nocturne pour préserver l'IP et éviter les
+            # bans)
             if is_night_time():
                 remaining = get_night_mode_remaining_seconds()
                 hours_left = int(remaining // 3600)
                 mins_left = int((remaining % 3600) // 60)
                 logger.info(
-                    "🌙 MODE NUIT ACTIF (%02d:00 - %02d:00 %s) : Suspension de la surveillance Vinted "
+                    "🌙 MODE NUIT ACTIF (%02d:00 - %02d:00 %s) : Suspension de la surveillance"
+                        "Vinted "
                     "pendant encore %dh%02dm pour préserver l'IP et respecter le calme nocturne.",
                     settings.NIGHT_MODE_START_HOUR,
                     settings.NIGHT_MODE_END_HOUR,
@@ -341,10 +359,14 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     "cooldown_until": None,
                     "last_poll_at": time.time(),
                     "wake_up_hour": settings.NIGHT_MODE_END_HOUR,
-                    "message": f"Mode Nuit actif (veille jusqu'à {settings.NIGHT_MODE_END_HOUR:02d}:00)",
+                    "message": (
+                        "Mode Nuit actif (veille jusqu'à "
+                        f"{settings.NIGHT_MODE_END_HOUR:02d}:00)"
+                    ),
                 })
                 await vinted_session_manager.clear_session(vinted_client)
-                # Pause cadencée par tranches de 60s max pour rester immédiatement réactif à stop_event
+                # Pause cadencée par tranches de 60s max pour rester immédiatement réactif à
+                # stop_event
                 while is_night_time() and not stop_event.is_set():
                     sleep_chunk = min(60.0, max(5.0, get_night_mode_remaining_seconds()))
                     with contextlib.suppress(TimeoutError):
@@ -353,7 +375,10 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 if stop_event.is_set():
                     break
 
-                logger.info("☀️ FIN DU MODE NUIT : Reprise de la surveillance Vinted haute performance.")
+                logger.info(
+                    "☀️ FIN DU MODE NUIT : Reprise de la surveillance Vinted "
+                    "haute performance."
+                )
                 consecutive_blocks = 0
                 await asyncio.sleep(random.uniform(2.0, 5.0))
                 continue
@@ -369,10 +394,12 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 )
 
                 count_custom = 0
-                # 2. Surveiller les recherches actives hors-livres (Électronique, Vêtements, Jeux Vidéo)
+                # 2. Surveiller les recherches actives hors-livres (Électronique, Vêtements, Jeux
+                # Vidéo)
                 custom_searches = await load_active_custom_searches()
                 if custom_searches and not stop_event.is_set():
-                    # Interroger 1 recherche personnalisée par cycle en round-robin pour préserver l'IP
+                    # Interroger 1 recherche personnalisée par cycle en round-robin pour préserver
+                    # l'IP
                     custom_url, custom_slug = custom_searches[poll_cycle % len(custom_searches)]
                     await asyncio.sleep(random.uniform(1.2, 2.0))
                     count_custom = await poll_vinted_once(
@@ -384,7 +411,8 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
 
                 # Si une alerte de blocage avait eu lieu et qu'on réussit, réinitialiser et avertir
                 if consecutive_blocks > 0:
-                    logger.info("🛡️ Garde anti-blocage : Connexion Vinted rétablie avec succès (IP propre).")
+                    logger.info(
+                        "🛡️ Garde anti-blocage : Connexion Vinted rétablie avec succès (IP propre).")
                     consecutive_blocks = 0
                     safe_create_task(
                         notify_admins(
@@ -416,7 +444,8 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
 
             except (VintedBlockError, VintedRateLimitError) as block_exc:
                 consecutive_blocks += 1
-                # Progression adaptée pour Cloudflare : 3m (180s), 7m (420s), 15m (900s), 30m (1800s), max 60m (3600s)
+                # Progression adaptée pour Cloudflare : 3m (180s), 7m (420s), 15m (900s), 30m
+                # (1800s), max 60m (3600s)
                 cooldown_map = {1: 180, 2: 420, 3: 900, 4: 1800}
                 cooldown = cooldown_map.get(consecutive_blocks, 3600)
                 cooldown_until = time.time() + cooldown
@@ -461,9 +490,12 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                         text=(
                             f"🛡️ <b>Alerte BotRadar — Pause de sécurité</b>\n\n"
                             f"⚠️ <b>{reason_str}</b> détecté sur Vinted.\n"
-                            f"Mise en pause de protection de l'IP : <b>Palier #{consecutive_blocks} ({cooldown_mins} min)</b>.\n\n"
+                            "Mise en pause de protection de l'IP : "
+                            f"<b>Palier #{consecutive_blocks} "
+                            f"({cooldown_mins} min)</b>.\n\n"
                             f"⏱ <b>Reprise prévue à</b> : {resume_time_str}\n"
-                            f"<i>Le bot tentera automatiquement de se reconnecter à l'heure indiquée.</i>"
+                            "<i>Le bot tentera automatiquement de se "
+                            "reconnecter à l'heure indiquée.</i>"
                         )
                     ),
                     name="notify_vinted_blocked",
@@ -481,7 +513,8 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
             jitter = random.uniform(-2.5, 3.5)
             sleep_time = max(6.0, target_interval + jitter)
 
-            # Micro-pause naturelle humaine (30-45s) tous les ~50 cycles pour briser la régularité d'un robot
+            # Micro-pause naturelle humaine (30-45s) tous les ~50 cycles pour briser la régularité
+            # d'un robot
             if poll_cycle % random.randint(45, 65) == 0:
                 micro_pause = random.uniform(30.0, 45.0)
                 logger.debug("🛡️ Micro-pause naturelle de %.1fs...", micro_pause)

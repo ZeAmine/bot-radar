@@ -349,7 +349,7 @@ async def test_fetch_vinted_page_fallback_to_html():
 async def test_poll_vinted_once_ingests_in_process():
     """Le poller ingère dans le processus : Vinted seul, pas de POST localhost."""
     from app.services.vinted_scraper import ScrapedVintedItem
-    from app.tasks.vinted_poller import poll_vinted_once
+    from app.tasks.vinted_poller import ScrapedIngestResult, poll_vinted_once
 
     mock_vinted_client = AsyncMock()
     dummy_item = ScrapedVintedItem(
@@ -372,7 +372,7 @@ async def test_poll_vinted_once_ingests_in_process():
         patch(
             "app.tasks.vinted_poller._ingest_scraped_item",
             new_callable=AsyncMock,
-            return_value=0,
+            return_value=ScrapedIngestResult(notified_count=0, needs_retry=False),
         ) as mock_ingest,
     ):
         mock_fetch.return_value = [dummy_item]
@@ -383,6 +383,72 @@ async def test_poll_vinted_once_ingests_in_process():
     mock_fetch.assert_called_once_with(expected_url, mock_vinted_client)
     mock_ingest.assert_awaited_once()
     mock_vinted_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poll_vinted_once_retries_when_ingest_raises():
+    """Une exception d'ingestion retire l'id pour le cycle suivant."""
+    from app.services.vinted_scraper import ScrapedVintedItem
+    from app.tasks.vinted_poller import poll_vinted_once
+
+    dummy_item = ScrapedVintedItem(
+        external_id="v_fail",
+        url="https://vinted.fr/items/1",
+        title="Tintin",
+        condition="Très bon état",
+        item_price_cents=1000,
+        photo_url=None,
+    )
+    seen_ids: set[str] = set()
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            return_value=[dummy_item],
+        ),
+        patch(
+            "app.tasks.vinted_poller._ingest_scraped_item",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db"),
+        ),
+    ):
+        count = await poll_vinted_once(seen_ids=seen_ids, vinted_client=AsyncMock())
+
+    assert count == 0
+    assert "v_fail" not in seen_ids
+
+
+@pytest.mark.asyncio
+async def test_poll_vinted_once_retries_when_notification_pending():
+    """Un envoi Telegram manqué retire l'id pour rejouer l'ingest."""
+    from app.services.vinted_scraper import ScrapedVintedItem
+    from app.tasks.vinted_poller import ScrapedIngestResult, poll_vinted_once
+
+    dummy_item = ScrapedVintedItem(
+        external_id="v_retry",
+        url="https://vinted.fr/items/2",
+        title="Tintin",
+        condition="Très bon état",
+        item_price_cents=1000,
+        photo_url=None,
+    )
+    seen_ids: set[str] = set()
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            return_value=[dummy_item],
+        ),
+        patch(
+            "app.tasks.vinted_poller._ingest_scraped_item",
+            new_callable=AsyncMock,
+            return_value=ScrapedIngestResult(notified_count=0, needs_retry=True),
+        ),
+    ):
+        count = await poll_vinted_once(seen_ids=seen_ids, vinted_client=AsyncMock())
+
+    assert count == 1
+    assert "v_retry" not in seen_ids
 
 
 @pytest.mark.asyncio

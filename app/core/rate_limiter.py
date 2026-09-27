@@ -14,7 +14,8 @@ class SlidingWindowRateLimiter:
     """Limiteur de débit à fenêtre glissante ultra-rapide.
 
     Utilise Redis (ZSET) si disponible pour une synchronisation multi-processus / multi-workers,
-    avec repli automatique et transparent en mémoire locale si Redis est temporairement inaccessible.
+    avec repli automatique et transparent en mémoire locale si Redis est
+    temporairement inaccessible.
     """
 
     def __init__(

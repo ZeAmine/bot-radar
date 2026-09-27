@@ -39,7 +39,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Rejette immédiatement les requêtes dont la taille dépasse la limite autorisée (Anti-OOM / Anti-DDoS)."""
+    """Rejette immédiatement les requêtes dont la taille dépasse la limite
+    autorisée (Anti-OOM / Anti-DDoS)."""
 
     def __init__(self, app: Callable, max_bytes: int = 524_288) -> None:  # 512 Ko par défaut
         super().__init__(app)
@@ -52,13 +53,18 @@ class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
                 content_length = int(content_length_header)
                 if content_length > self.max_bytes:
                     logger.warning(
-                        "Requête rejetée : taille du payload (%d octets) supérieure à la limite (%d octets).",
+                        "Requête rejetée : taille du payload (%d octets) "
+                        "supérieure à la limite (%d octets).",
                         content_length,
                         self.max_bytes,
                     )
                     return JSONResponse(
                         status_code=413,
-                        content={"detail": f"Payload trop volumineux (limite: {self.max_bytes // 1024} Ko)."},
+                        content={
+                            "detail": (
+                                f"Payload trop volumineux "
+                                f"(limite: {self.max_bytes // 1024} Ko)."
+                            )},
                     )
             except ValueError:
                 pass

@@ -20,6 +20,17 @@ class StatsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def count_active_alerts_by_category(self) -> list[tuple[Any, ...]]:
+        """Compte les alertes actives par catégorie."""
+        stmt = (
+            select(Category.slug, Category.label, Category.emoji, func.count(Alert.id))
+            .join(Alert, Alert.category_id == Category.id)
+            .where(Alert.status == AlertStatus.ACTIVE, Alert.deleted_at.is_(None))
+            .group_by(Category.slug, Category.label, Category.emoji)
+            .order_by(func.count(Alert.id).desc())
+        )
+        return list((await self.session.execute(stmt)).all())
+
     async def get_period_stats(self, days: int) -> dict[str, Any]:
         """Calcule les métriques d'activité sur les `days` derniers jours."""
         now = datetime.now(UTC)
@@ -32,14 +43,7 @@ class StatsRepository:
         )
         active_alerts_count = (await self.session.execute(stmt_active_alerts)).scalar_one() or 0
 
-        stmt_cat_alerts = (
-            select(Category.slug, Category.label, Category.emoji, func.count(Alert.id))
-            .join(Alert, Alert.category_id == Category.id)
-            .where(Alert.status == AlertStatus.ACTIVE, Alert.deleted_at.is_(None))
-            .group_by(Category.slug, Category.label, Category.emoji)
-            .order_by(func.count(Alert.id).desc())
-        )
-        cat_alerts_rows = (await self.session.execute(stmt_cat_alerts)).all()
+        cat_alerts_rows = await self.count_active_alerts_by_category()
         category_alerts = [
             {"slug": r[0], "label": r[1], "emoji": r[2], "count": r[3]}
             for r in cat_alerts_rows
