@@ -602,3 +602,55 @@ def test_pure_predicates_price_condition_exclusion_isbn():
     assert isbn_digits(None) == ""
 
 
+def test_deterministic_listing_matcher_with_alert_entity():
+    """Vérifie que DeterministicListingMatcher fonctionne avec une AlertEntity
+    sans AttributeError.
+    """
+    from app.domain.entities.alert import AlertEntity
+    from app.domain.entities.listing import ListingEntity
+    from app.domain.enums import AlertStatus, CategorySlug, ItemCondition
+    from app.domain.rules.matcher import DeterministicListingMatcher
+
+    alert = AlertEntity(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        category_slug=CategorySlug.BD_COMICS,
+        name="Tintin",
+        include_keywords=["tintin"],
+        exclude_keywords=[],
+        variants=[],
+        max_item_price_cents=2000,
+        accepted_conditions=[ItemCondition.VERY_GOOD],
+        status=AlertStatus.ACTIVE,
+    )
+    listing = ListingEntity(
+        id=uuid.uuid4(),
+        source_name="vinted",
+        external_id="12345",
+        url="https://vinted.fr/items/12345",
+        title="Tintin au Tibet",
+        category_slug=CategorySlug.BD_COMICS,
+        item_price_cents=1000,
+        condition=ItemCondition.VERY_GOOD,
+        normalized_title="tintin au tibet",
+    )
+    matcher = DeterministicListingMatcher()
+    result = matcher.evaluate(listing, alert)
+    assert result.is_match is True
+
+
+def test_matcher_with_none_include_keywords():
+    """Vérifie que evaluate_listing_against_alert ne plante pas si include_keywords est None."""
+    alert = create_test_alert(name="Tintin")
+    alert.include_keywords = None
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="tintin au tibet",
+        listing_normalized_description="",
+        listing_condition="Très bon état",
+        listing_item_price_cents=1000,
+    )
+    assert res.is_match is True
+
+

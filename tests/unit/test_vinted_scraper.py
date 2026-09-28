@@ -552,3 +552,62 @@ async def test_fetch_vinted_page_401_self_healing_retry():
     assert fake_client.get.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_poll_vinted_once_handles_cancelled_error():
+    """Une tâche annulée (CancelledError) ne fait pas crasher la boucle
+    et retire l'id de seen_ids.
+    """
+    import asyncio
+
+    from app.services.vinted_scraper import ScrapedVintedItem
+    from app.tasks.vinted_poller import poll_vinted_once
+
+    dummy_item = ScrapedVintedItem(
+        external_id="v_cancel",
+        url="https://vinted.fr/items/3",
+        title="Tintin",
+        condition="Très bon état",
+        item_price_cents=1000,
+        photo_url=None,
+    )
+    seen_ids: set[str] = set()
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            return_value=[dummy_item],
+        ),
+        patch(
+            "app.tasks.vinted_poller._ingest_scraped_item",
+            new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError(),
+        ),
+    ):
+        count = await poll_vinted_once(seen_ids=seen_ids, vinted_client=AsyncMock())
+
+    assert count == 0
+    assert "v_cancel" not in seen_ids
+
+
+def test_fifo_set_discard_and_remove_synchronization():
+    """Vérifie que discard() et remove() sur FifoSet maintiennent _order synchronisé."""
+    from app.tasks.vinted_poller import FifoSet
+
+    fset = FifoSet(["a", "b", "c"], max_size=5, trim_size=2)
+    assert len(fset) == 3
+    assert list(fset._order) == ["a", "b", "c"]
+
+    fset.discard("b")
+    assert "b" not in fset
+    assert list(fset._order) == ["a", "c"]
+
+    fset.remove("a")
+    assert "a" not in fset
+    assert list(fset._order) == ["c"]
+
+    # discard d'un élément absent ne lève rien
+    fset.discard("unknown")
+    assert list(fset._order) == ["c"]
+
+
+

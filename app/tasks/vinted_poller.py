@@ -62,6 +62,17 @@ class FifoSet(set):
             if len(self) > self.max_size:
                 self.trim()
 
+    def discard(self, item: str) -> None:
+        if item in self:
+            super().discard(item)
+            with contextlib.suppress(ValueError):
+                self._order.remove(item)
+
+    def remove(self, item: str) -> None:
+        super().remove(item)
+        with contextlib.suppress(ValueError):
+            self._order.remove(item)
+
     def trim(self) -> None:
         """Purge les identifiants les plus anciens jusqu'à trim_size."""
         while len(self._order) > self.trim_size:
@@ -289,13 +300,14 @@ async def poll_vinted_once(
     )
     ingested_count = 0
     for item, result in zip(new_items, results, strict=True):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             seen_ids.discard(item.external_id)
-            logger.warning(
-                "Erreur lors de l'ingestion de l'annonce %s : %s",
-                item.external_id,
-                result,
-            )
+            if not isinstance(result, asyncio.CancelledError):
+                logger.warning(
+                    "Erreur lors de l'ingestion de l'annonce %s : %s",
+                    item.external_id,
+                    result,
+                )
             continue
         if result.needs_retry:
             seen_ids.discard(item.external_id)

@@ -51,7 +51,7 @@ class NaturalAddPayload(_LoosePayload):
     conditions: list[Any] | None = None
     name: str | None = None
     include_keywords: list[Any] | None = None
-    exclude_keywords: list[Any] = Field(default_factory=list)
+    exclude_keywords: list[Any] | None = None
     is_series: bool = False
     isbn13: str | None = None
     author: str | None = None
@@ -79,14 +79,14 @@ class NegotiationPayload(_LoosePayload):
 class KeywordVariantsPayload(_LoosePayload):
     """Variantes et exclusions suggérées."""
 
-    variants: list[Any] = Field(default_factory=list)
-    exclusions: list[Any] = Field(default_factory=list)
+    variants: list[Any] | None = None
+    exclusions: list[Any] | None = None
 
 
 class AutoTuningPayload(_LoosePayload):
     """Exclusions suggérées après des faux positifs."""
 
-    suggested_exclusions: list[Any] = Field(default_factory=list)
+    suggested_exclusions: list[Any] | None = None
     explanation: str | None = None
 
 

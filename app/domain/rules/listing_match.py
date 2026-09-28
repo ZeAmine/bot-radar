@@ -244,7 +244,13 @@ def evaluate_listing_against_alert(
         return MatchResult(is_match=False, reason="Alerte non active")
 
     # 2. Vérification de la catégorie
-    alert_cat_slug = alert.category.slug if alert.category else None
+    alert_cat_slug: str | None = None
+    if hasattr(alert, "category") and alert.category:
+        alert_cat_slug = alert.category.slug
+    elif hasattr(alert, "category_slug") and alert.category_slug:
+        cat_val = alert.category_slug
+        alert_cat_slug = cat_val.value if hasattr(cat_val, "value") else str(cat_val)
+
     if alert_cat_slug and alert_cat_slug != listing_category_slug:
         return MatchResult(is_match=False, reason="Catégorie différente")
 
@@ -525,7 +531,7 @@ def evaluate_listing_against_alert(
                 reason="Mots-clés requis non trouvés",
             )
 
-    matched_keywords_count = len(alert.include_keywords)
+    matched_keywords_count = len(alert.include_keywords or [])
 
     # 6. Vérification de l'état si l'alerte a des conditions restreintes
     if not condition_is_accepted(alert.accepted_conditions, listing_condition):

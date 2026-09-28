@@ -223,3 +223,36 @@ def test_ai_registry():
 
     registry.unregister("profit_scoring")
     assert registry.get_module("profit_scoring") is None
+
+
+def test_ai_payload_schemas_accept_null_lists():
+    """Vérifie que les schémas IA acceptent null pour les listes sans lever ValidationError."""
+    from app.services.ai.schemas import (
+        AutoTuningPayload,
+        KeywordVariantsPayload,
+        NaturalAddPayload,
+    )
+
+    p1 = NaturalAddPayload.model_validate({
+        "name": "Tintin",
+        "category_slug": "bd_comics",
+        "exclude_keywords": None,
+        "include_keywords": None,
+        "conditions": None,
+    })
+    assert p1.exclude_keywords is None
+    assert p1.name == "Tintin"
+
+    p2 = KeywordVariantsPayload.model_validate({
+        "variants": None,
+        "exclusions": None,
+    })
+    assert p2.variants is None
+    assert p2.exclusions is None
+
+    p3 = AutoTuningPayload.model_validate({
+        "suggested_exclusions": None,
+        "explanation": "test",
+    })
+    assert p3.suggested_exclusions is None
+

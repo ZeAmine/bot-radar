@@ -24,7 +24,7 @@ async def handle_categories(message: Message, db_session: Any | None = None) -> 
             repo = CategoryRepository(db_session)
             active_cats = await repo.get_all_active()
             if active_cats:
-                lines = [f"{c.icon or '📦'} {c.label}" for c in active_cats]
+                lines = [f"{c.emoji or '📦'} {c.label}" for c in active_cats]
                 text = "📂 Catégories disponibles :\n\n" + "\n".join(lines)
                 await message.answer(text)
                 return

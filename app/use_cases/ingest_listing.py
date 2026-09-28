@@ -294,13 +294,16 @@ class ProcessListingUseCase:
                 notified=False,
             )
 
+        actionable_matches_count = sum(
+            1 for alert, _, _, _ in pending_sends if _alert_has_telegram_chat(alert)
+        )
         event = BotEvent(
             event_type="listing_ingested",
             listing_id=listing.id,
             metadata_={
                 "source_name": payload.source_name,
                 "external_id": payload.external_id,
-                "matches_count": len(pending_sends),
+                "matches_count": actionable_matches_count,
                 "is_duplicate": is_duplicate,
             },
         )

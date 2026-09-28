@@ -1,6 +1,6 @@
 """Tests unitaires pour les handlers du Bot Telegram (/start, /help, /categories)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -65,6 +65,36 @@ async def test_handle_categories():
     assert "📚 Livres" in CATEGORIES_TEXT
     assert "👕 Vêtements" in CATEGORIES_TEXT
     assert "💻 Électronique" in CATEGORIES_TEXT
+
+
+@pytest.mark.asyncio
+async def test_handle_categories_dynamic_with_emoji():
+    """Vérifie que /categories utilise c.emoji et les données de la base
+    quand db_session est fournie.
+    """
+    message = MagicMock()
+    message.answer = AsyncMock()
+    mock_db = AsyncMock()
+
+    cat1 = MagicMock()
+    cat1.emoji = "📚"
+    cat1.label = "Bandes Dessinées"
+    cat2 = MagicMock()
+    cat2.emoji = "💻"
+    cat2.label = "Informatique"
+
+    with patch("app.bot.handlers.categories.CategoryRepository") as mock_repo_cls:
+        mock_repo = MagicMock()
+        mock_repo.get_all_active = AsyncMock(return_value=[cat1, cat2])
+        mock_repo_cls.return_value = mock_repo
+
+        await handle_categories(message, db_session=mock_db)
+
+        message.answer.assert_called_once()
+        text = message.answer.call_args[0][0]
+        assert "📚 Bandes Dessinées" in text
+        assert "💻 Informatique" in text
+
 
 
 @pytest.mark.asyncio
