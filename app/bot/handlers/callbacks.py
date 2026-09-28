@@ -582,6 +582,15 @@ async def handle_confirm_dislike(
         show_alert=True,
     )
 
+    if alert and callback.from_user and callback.bot:
+        from app.tasks.proactive_autotune import schedule_proactive_autotune_check
+
+        schedule_proactive_autotune_check(
+            alert_id=alert.id,
+            bot=callback.bot,
+            chat_id=callback.from_user.id,
+        )
+
 
 @router.callback_query(F.data.startswith("cancel_dislike:"))
 async def handle_cancel_dislike(

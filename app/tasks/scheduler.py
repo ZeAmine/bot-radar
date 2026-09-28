@@ -7,6 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import settings
 from app.tasks.cleanup import cleanup_old_data_task
+from app.tasks.proactive_autotune import run_proactive_autotune_scan
 from app.tasks.refresh_book_prices import refresh_book_prices_task
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,18 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     logger.info("Job planifié : nettoyage nocturne des données à 03:30 Europe/Paris.")
+
+    # Job d'Auto-Tuning proactif des alertes toutes les 4 heures en journée
+    scheduler.add_job(
+        run_proactive_autotune_scan,
+        trigger=CronTrigger(hour="10,14,18,22", minute=0, timezone="Europe/Paris"),
+        id="proactive_autotune_scan",
+        name="Auto-Tuning proactif des alertes (exclusions IA)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Job planifié : Auto-Tuning proactif à 10h, 14h, 18h et 22h Europe/Paris.")
 
     return scheduler
 

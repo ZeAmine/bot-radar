@@ -20,14 +20,21 @@ from app.db.repositories.autotune_repo import (
     get_alerts_with_dislikes,
     get_disliked_titles_for_alert,
 )
-from app.services.ai.modules.auto_tuning import auto_tuning_module
+from app.services.ai.modules.auto_tuning import (
+    _pending_tuning as _pending_tuning,
+)
+from app.services.ai.modules.auto_tuning import (
+    auto_tuning_module,
+    get_pending_tuning,
+    pop_pending_tuning,
+    save_pending_tuning,
+)
 
 logger = logging.getLogger(__name__)
 
 router = Router(name="autotune_router")
 
 # Cache mémoire court pour les suggestions en attente de confirmation (évite dépassement 64B)
-_pending_tuning: dict[str, list[str]] = {}
 _pending_variants: dict[str, list[str]] = {}
 _active_tuning_alerts: set[str] = set()
 
@@ -242,7 +249,7 @@ async def process_autotune_for_alert(
             return
 
         # Mettre en cache pour la confirmation
-        _pending_tuning[str(alert.id)] = new_exclusions
+        await save_pending_tuning(alert.id, new_exclusions)
 
         excl_str = ", ".join(new_exclusions)
         exp_text = f"\n💡 <i>{html.escape(explanation)}</i>\n" if explanation else ""
@@ -339,7 +346,7 @@ async def handle_tune_apply(
     except ValueError:
         return
 
-    exclusions = _pending_tuning.pop(str(alert_id), [])
+    exclusions = await pop_pending_tuning(alert_id)
     if not exclusions:
         await callback.answer("Les suggestions ont expiré. Relancez /autotune.", show_alert=True)
         return
@@ -413,7 +420,7 @@ async def handle_tune_edit(
         await callback.answer("Alerte introuvable.", show_alert=True)
         return
 
-    current_suggestions = _pending_tuning.get(str(alert.id), [])
+    current_suggestions = await get_pending_tuning(alert.id)
     if not current_suggestions:
         await callback.answer("Les suggestions ont expiré. Relancez /autotune.", show_alert=True)
         return
@@ -473,7 +480,7 @@ async def handle_tune_back_to_suggestion(
         await callback.answer("Alerte introuvable.", show_alert=True)
         return
 
-    suggestions = _pending_tuning.get(str(alert.id), [])
+    suggestions = await get_pending_tuning(alert.id)
     if not suggestions:
         await callback.answer("Les suggestions ont expiré.", show_alert=True)
         await show_autotune_hub(callback, db_user.id, db_session)
@@ -527,7 +534,8 @@ async def handle_custom_exclusions_input(
         alert_id_str = data.get("tuning_alert_id")
         await state.clear()
         if alert_id_str:
-            _pending_tuning.pop(alert_id_str, None)
+            with contextlib.suppress(ValueError):
+                await pop_pending_tuning(uuid.UUID(alert_id_str))
         await message.answer("❌ Modification annulée. Tapez /autotune pour recommencer.")
         return
 
@@ -547,7 +555,7 @@ async def handle_custom_exclusions_input(
         )
         return
 
-    _pending_tuning[alert_id_str] = parsed
+    await save_pending_tuning(uuid.UUID(alert_id_str), parsed)
     await state.clear()
 
     alert_repo = AlertRepository(db_session)
@@ -599,7 +607,8 @@ async def handle_tune_cancel(
     parts = (callback.data or "").split(":", 1)
     alert_id = parts[1] if len(parts) > 1 else None
     if alert_id:
-        _pending_tuning.pop(alert_id, None)
+        with contextlib.suppress(ValueError):
+            await pop_pending_tuning(uuid.UUID(alert_id))
     await callback.answer("Opération annulée.")
 
     if not alert_id:
@@ -626,6 +635,25 @@ async def handle_tune_cancel(
             "<i>Les faux positifs sont conservés pour une analyse ultérieure.</i>",
             reply_markup=back_kb,
         )
+
+
+@router.callback_query(F.data.startswith("ai_tune_dismiss:"))
+async def handle_tune_dismiss(
+    callback: CallbackQuery,
+) -> None:
+    """Ignore la suggestion proactive d'auto-tuning."""
+    parts = (callback.data or "").split(":", 1)
+    if len(parts) > 1 and parts[1]:
+        with contextlib.suppress(ValueError):
+            await pop_pending_tuning(uuid.UUID(parts[1]))
+    await callback.answer("Suggestion ignorée.")
+    if callback.message and hasattr(callback.message, "edit_text"):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(
+                "ℹ️ <b>Suggestion d'Auto-Tuning ignorée.</b>\n\n"
+                "<i>Vous pourrez relancer une analyse à tout moment avec /autotune.</i>",
+                reply_markup=None,
+            )
 
 
 @router.callback_query(F.data == "ai_tune_hub")

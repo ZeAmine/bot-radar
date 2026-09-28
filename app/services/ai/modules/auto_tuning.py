@@ -1,15 +1,20 @@
-"""Module IA pour le nettoyage automatique des faux positifs et auto-tuning (Use Case G)."""
-
+import contextlib
+import json
 import logging
+import uuid
 
 from pydantic import ValidationError
 
 from app.core.config import settings
+from app.core.redis import get_redis_client
 from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import AutoTuningPayload
 
 logger = logging.getLogger(__name__)
+
+# Cache mémoire pour les suggestions en attente
+_pending_tuning: dict[str, list[str]] = {}
 
 TUNING_SYSTEM_PROMPT = """Tu es l'analyste de précision des alertes BotRadar.
 Tu reçois le mot-clé d'une alerte et une liste d'annonces marquées "faux positifs".
@@ -70,3 +75,59 @@ class AutoTuningModule(BaseAIModule):
 
 
 auto_tuning_module = AutoTuningModule()
+
+
+async def save_pending_tuning(alert_id: uuid.UUID, exclusions: list[str]) -> None:
+    """Enregistre les exclusions suggérées en mémoire et dans Redis avec un TTL de 24h."""
+    alert_key = str(alert_id)
+    _pending_tuning[alert_key] = exclusions
+    with contextlib.suppress(Exception):
+        client = get_redis_client()
+        await client.set(f"autotune:pending:{alert_key}", json.dumps(exclusions), ex=86400)
+
+
+async def get_pending_tuning(alert_id: uuid.UUID) -> list[str]:
+    """Récupère les exclusions suggérées depuis la mémoire ou Redis."""
+    alert_key = str(alert_id)
+    if alert_key in _pending_tuning:
+        return _pending_tuning[alert_key]
+    with contextlib.suppress(Exception):
+        client = get_redis_client()
+        raw = await client.get(f"autotune:pending:{alert_key}")
+        if raw:
+            items = json.loads(raw)
+            if isinstance(items, list):
+                _pending_tuning[alert_key] = items
+                return items
+    return []
+
+
+async def pop_pending_tuning(alert_id: uuid.UUID) -> list[str]:
+    """Extrait et supprime les exclusions suggérées (mémoire et Redis)."""
+    alert_key = str(alert_id)
+    exclusions = _pending_tuning.pop(alert_key, [])
+    with contextlib.suppress(Exception):
+        client = get_redis_client()
+        raw = await client.get(f"autotune:pending:{alert_key}")
+        if raw and not exclusions:
+            items = json.loads(raw)
+            if isinstance(items, list):
+                exclusions = items
+        await client.delete(f"autotune:pending:{alert_key}")
+    return exclusions
+
+
+async def is_autotune_on_cooldown(alert_id: uuid.UUID) -> bool:
+    """Vérifie si une proposition proactive récente a déjà été émise pour cette alerte."""
+    with contextlib.suppress(Exception):
+        client = get_redis_client()
+        return bool(await client.exists(f"autotune:cooldown:{alert_id}"))
+    return False
+
+
+async def set_autotune_cooldown(alert_id: uuid.UUID, ttl_seconds: int = 86400) -> None:
+    """Active un temps de refroidissement pour éviter de spammer l'utilisateur (défaut: 24h)."""
+    with contextlib.suppress(Exception):
+        client = get_redis_client()
+        await client.set(f"autotune:cooldown:{alert_id}", "1", ex=ttl_seconds)
+

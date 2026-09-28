@@ -10,6 +10,7 @@ from app.db.models.alert import Alert
 from app.db.models.bot_event import BotEvent
 from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
+from app.db.models.user import User
 
 
 async def get_alerts_with_dislikes(
@@ -84,3 +85,43 @@ async def clear_dislikes_for_alert(alert_id: uuid.UUID, db_session: Any) -> int:
     )
     res = await db_session.execute(stmt)
     return res.rowcount or 0
+
+
+async def get_dislike_count_for_alert(alert_id: uuid.UUID, db_session: Any) -> int:
+    """Retourne le nombre de faux positifs distincts enregistrés pour une alerte."""
+    stmt = (
+        select(func.count(func.distinct(Listing.id)))
+        .join(ListingMatch, ListingMatch.listing_id == Listing.id)
+        .join(BotEvent, BotEvent.listing_id == Listing.id)
+        .where(
+            ListingMatch.alert_id == alert_id,
+            BotEvent.event_type == "listing_disliked",
+        )
+    )
+    res = await db_session.execute(stmt)
+    return int(res.scalar() or 0)
+
+
+async def get_all_alerts_with_dislike_threshold(
+    min_dislikes: int,
+    db_session: Any,
+) -> list[tuple[Alert, User, int]]:
+    """Retourne toutes les alertes actives ayant au moins min_dislikes faux positifs."""
+    stmt = (
+        select(Alert, User, func.count(func.distinct(Listing.id)).label("dislike_count"))
+        .join(User, User.id == Alert.user_id)
+        .join(ListingMatch, ListingMatch.alert_id == Alert.id)
+        .join(Listing, Listing.id == ListingMatch.listing_id)
+        .join(BotEvent, BotEvent.listing_id == Listing.id)
+        .where(
+            Alert.status != AlertStatus.DELETED,
+            User.is_allowed.is_(True),
+            BotEvent.event_type == "listing_disliked",
+        )
+        .group_by(Alert.id, User.id)
+        .having(func.count(func.distinct(Listing.id)) >= min_dislikes)
+        .order_by(func.count(func.distinct(Listing.id)).desc())
+    )
+    res = await db_session.execute(stmt)
+    return [(row[0], row[1], int(row[2])) for row in res.all()]
+
