@@ -112,13 +112,17 @@ async def test_handle_create_ai_variants_reports_engine_decision_when_nothing_fo
     ):
         await handle_create_ai_variants(callback, state)
 
-    state.update_data.assert_not_called()
+    state.update_data.assert_called_once()
+    stored = state.update_data.call_args.kwargs
+    assert "n'a trouvé aucune variante ni exclusion pertinente" in stored["keyword_note"]
+    # Un avis du moteur ne se confond pas avec une panne.
+    assert "pas répondu" not in stored["keyword_note"]
+    callback.answer.assert_awaited_once()
     assert callback.message.edit_text.call_count == 2
     last_text = callback.message.edit_text.call_args[0][0]
-    assert "Aucune modification" in last_text
+    # La carte ne s'habille pas d'un en-tête de cas particulier : elle porte la note.
+    assert last_text.startswith("🔢") or last_text.startswith("📌")
     assert "n'a trouvé aucune variante ni exclusion pertinente" in last_text
-    # Un avis du moteur ne se confond pas avec une panne.
-    assert "pas répondu à temps" not in last_text
 
 
 @pytest.mark.asyncio
@@ -147,10 +151,11 @@ async def test_handle_create_ai_variants_reports_silence_when_engine_failed():
     ):
         await handle_create_ai_variants(callback, state)
 
-    state.update_data.assert_not_called()
+    stored = state.update_data.call_args.kwargs
+    assert "L'IA n'a pas répondu à temps" in stored["keyword_note"]
     last_text = callback.message.edit_text.call_args[0][0]
-    assert "Aucune modification" in last_text
-    assert "l'IA n'a pas répondu" in last_text
+    assert "L'IA n'a pas répondu à temps" in last_text
+    assert "Aucune modification" not in last_text
 
 
 @pytest.mark.asyncio

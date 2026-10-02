@@ -57,7 +57,7 @@ Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomiqu
 - Python 3.12, FastAPI, aiogram 3, SQLAlchemy asyncio, Alembic, Redis, APScheduler, httpx, Pydantic v2.
 - Un seul processus de production : `uvicorn app.main:app` dans `radar_app` (API + webhook Telegram + scheduler + poller Vinted).
 - PostgreSQL 16, Redis 7, passerelle centralisée `caddy_gateway` via réseau Docker `web_gateway` (HTTPS). Compose : [compose.yml](compose.yml).
-- Tests : pytest + pytest-asyncio (489 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
+- Tests : pytest + pytest-asyncio (501 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
 
 ## Architecture des couches
 
@@ -163,7 +163,17 @@ Hôte : `ubuntu@88.96.56.44`. Clé : `~/.ssh/ssh-key-2026-09-10.key`. Répertoir
 
 Exécuter **soi-même** les commandes (réseau + clé SSH), ne pas demander à l’utilisateur de copier-coller.
 
-Un push ne déploie rien : `~/bot-radar` n’est pas un dépôt git, c’est une cible `rsync` (`--exclude .git`). Les deux dérives qui ont déjà survécu à des pushes verts — code jamais envoyé, `APP_ENV` resté à `development` — sont invisibles depuis le dépôt local. D’où le contrôle, avant et après :
+Un push ne déploie rien : `~/bot-radar` n’est pas un dépôt git, c’est une cible `rsync` (`--exclude .git`). Les deux dérives qui ont déjà survécu à des pushes verts — code jamais envoyé, `APP_ENV` resté à `development` — sont invisibles depuis le dépôt local.
+
+**La procédure complète est une commande :**
+
+```bash
+make deploy           # pré-vol → synchronisation → rebuild → migration → vérification
+```
+
+Elle s’arrête au premier échec et n’essaie pas l’étape suivante : la première qui échoue n’est jamais rattrapée par les suivantes. La migration n’est jouée qu’une fois le conteneur sain — migrer pendant le redémarrage viserait l’image précédente et laisserait le schéma en retard d’une version sur le code, sans que rien ne le signale. `make deploy DEPLOY_ARGS=--dry-run` relit l’ordre sans rien exécuter. Les étapes restent accessibles séparément (`make preflight`, `make verify-deploy`) pour reprendre un déploiement interrompu.
+
+Le détail de chaque étape, quand on les joue à la main :
 
 ```bash
 make preflight        # APP_ENV, secrets, un seul scheduler, migration en tête, écart de code
@@ -204,7 +214,7 @@ Ne pas committer ni pousser sauf demande. Ne pas `--force` git.
 gh api -X DELETE repos/ZeAmine/bot-radar/branches/main/protection
 ```
 
-La remettre ensuite :
+La remettre ensuite — ce corps reproduit l’état mesuré sur l’API, pas l’intention :
 
 ```bash
 gh api -X PUT repos/ZeAmine/bot-radar/branches/main/protection --input - <<'JSON'
@@ -218,10 +228,16 @@ gh api -X PUT repos/ZeAmine/bot-radar/branches/main/protection --input - <<'JSON
   "allow_deletions": false,
   "required_conversation_resolution": false,
   "lock_branch": false,
-  "allow_fork_syncing": true
+  "allow_fork_syncing": false
 }
 JSON
 ```
+
+Ce que l’API accepte, vérifié par aller-retour `PUT` puis `GET` :
+
+- `required_pull_request_reviews: null` et `restrictions: null` sont acceptés et disparaissent de la réponse : aucune revue exigée, aucune restriction.
+- `allow_fork_syncing` **était documenté à `true` alors que GitHub le laisse à `false`**. Le `PUT` ne signale pas l’écart — il répond `200` — et seul le `GET` ultérieur révèle que la valeur n’a pas pris. Le corps ci-dessus porte donc `false`, la valeur réellement appliquée.
+- `block_creations` et `required_signatures` apparaissent dans le `GET` mais ne se règlent pas par ce `PUT` : ne pas les ajouter au corps, ils seraient ignorés de la même façon.
 
 Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
 

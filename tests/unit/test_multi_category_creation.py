@@ -26,6 +26,7 @@ from app.core.constants import (
     DEFAULT_TECH_EXCLUSIONS,
     AlertStatus,
 )
+from app.db.models.alert import Alert
 from app.db.models.category import Category
 from app.db.models.user import User
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
@@ -414,12 +415,18 @@ async def _drain(holder: list[tuple[Any, str | None]]) -> None:
 
 
 @contextlib.contextmanager
-def _natural_add_patches(parsed, outcome):
-    """Frontières du `/add` naturel : parsing, variantes, et tâche de fond retenue.
+def _natural_add_patches(parsed, outcome, existing_alert=None):
+    """Frontières du `/add` naturel : parsing, variantes, dépôt, tâche de fond.
+
+    Le dépôt est simulé par son dépôt d'alertes : c'est la frontière que le jalon
+    consulte pour savoir si l'ouvrage est déjà surveillé. `existing_alert` permet de
+    rejouer le cas du doublon.
 
     Rend la liste des tâches pour que le test puisse déclencher lui-même la recherche.
     """
     tasks: list[tuple[Any, str | None]] = []
+    alert_repo = MagicMock()
+    alert_repo.find_existing = AsyncMock(return_value=existing_alert)
     with (
         patch(
             "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
@@ -437,6 +444,7 @@ def _natural_add_patches(parsed, outcome):
             new_callable=AsyncMock,
             return_value=outcome,
         ),
+        patch("app.bot.handlers.alerts.AlertRepository", return_value=alert_repo),
         patch("app.bot.handlers.alerts_create.safe_create_task", new=_defer_task(tasks)),
     ):
         yield tasks
@@ -494,14 +502,85 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     assert "🔎 <b>Asterix tome 1</b> identifié" in milestone
 
     edited_text = loading_message.edit_text.call_args[0][0]
-    # Le récap porte l'en-tête du langage naturel, qui décrit ce chemin et lui seul.
-    assert edited_text.startswith("🪄 <b>Alerte configurée en langage naturel !</b>")
+    # Le récap est la carte du brouillon, quel que soit le chemin qui y mène :
+    # aucun en-tête de parcours ne le précède.
+    assert not edited_text.startswith("🪄")
+    assert edited_text.startswith("🔢")
     assert "🔢 <b>ISBN :</b> <code>9782012101333</code>" in edited_text
     assert "📌 <b>Titre :</b> Asterix tome 1" in edited_text
     assert "🎯 <b>Prix max :</b> 10,00 €" in edited_text
     assert state.state is AlertCreationState.confirm_creation
     # Le moteur n'a pas répondu : le récap le dit plutôt que de laisser croire à un avis.
     assert "L'IA n'a pas répondu à temps" in edited_text
+    # Aucune alerte existante : rien à signaler.
+    milestone = loading_message.edit_text.await_args_list[0][0][0]
+    assert "Déjà surveillé" not in milestone
+
+
+@pytest.mark.asyncio
+async def test_start_add_alert_natural_add_flags_a_book_already_watched():
+    """Le jalon dit que l'ouvrage est déjà surveillé — sans bloquer la création.
+
+    Le chemin manuel interrompt sur un doublon. Ici l'analyse a déjà coûté un appel
+    au moteur : on prévient, on n'interrompt pas. L'utilisateur peut vouloir une
+    seconde alerte sur un autre prix, ou pour une autre édition.
+    """
+    from app.services.ai.schemas import NaturalAddResult
+
+    message = MockMessage()
+    message.text = "/add asterix le gaulois"
+    message.chat.id = 12345
+    message.bot = MagicMock()
+    message.bot.send_chat_action = AsyncMock()
+
+    loading_message = MagicMock()
+    loading_message.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=loading_message)
+
+    state = DraftState()
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    already = Alert(
+        id=uuid.uuid4(),
+        name="Astérix le Gaulois",
+        user_id=db_user.id,
+        isbn="9782012101333",
+        max_item_price_cents=1500,
+        status=AlertStatus.ACTIVE,
+    )
+    fake_result = NaturalAddResult(
+        name="Astérix le Gaulois",
+        category_slug="bd_comics",
+        isbn13="9782012101333",
+        include_keywords=["Astérix le Gaulois"],
+        max_price_cents=2000,
+    )
+
+    with _natural_add_patches(
+        fake_result,
+        KeywordVariantsOutcome(answered=True),
+        existing_alert=already,
+    ) as tasks:
+        await start_add_alert(message, state, AsyncMock(), db_user)
+
+        milestone = loading_message.edit_text.await_args[0][0]
+        assert "📚 <b>Déjà surveillé</b>" in milestone
+        assert "Astérix le Gaulois" in milestone
+        assert "<code>9782012101333</code>" in milestone
+        assert "max 15,00 €" in milestone
+        assert "🟢 active" in milestone
+        # Aucun bouton : prévenir ne transforme pas le jalon en écran de décision.
+        milestone_kb = loading_message.edit_text.await_args[1]["reply_markup"]
+        assert [
+            button.callback_data
+            for row in milestone_kb.inline_keyboard
+            for button in row
+        ] == ["noop"]
+
+        await _drain(tasks)
+
+    # La création reste proposée : l'utilisateur décide, l'écran ne l'en empêche pas.
+    recap = loading_message.edit_text.call_args[0][0]
+    assert "Confirmer la création de cette alerte ?" in recap
 
 
 @pytest.mark.asyncio
@@ -550,6 +629,8 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
     )
     keywords_mock = AsyncMock(return_value=outcome)
     tasks: list = []
+    alert_repo = MagicMock()
+    alert_repo.find_existing = AsyncMock(return_value=None)
 
     with (
         patch(
@@ -567,6 +648,7 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
             ".generate_variants_and_exclusions",
             new=keywords_mock,
         ),
+        patch("app.bot.handlers.alerts.AlertRepository", return_value=alert_repo),
         patch("app.bot.handlers.alerts_create.safe_create_task", new=_defer_task(tasks)),
     ):
         await start_add_alert(message, state, AsyncMock(), User(id=uuid.uuid4()))

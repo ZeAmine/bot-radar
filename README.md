@@ -1,7 +1,7 @@
 # BotRadar 🛰️
 
 [![CI](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-489%20passed-success?style=flat&logo=pytest)](https://docs.pytest.org/)
+[![Tests](https://img.shields.io/badge/Tests-501%20passed-success?style=flat&logo=pytest)](https://docs.pytest.org/)
 [![Linter](https://img.shields.io/badge/Linter-Ruff%20strict-black?style=flat&logo=ruff)](https://astral.sh/ruff)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=flat&logo=python)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
@@ -248,7 +248,7 @@ Le poller Vinted intégré ([`app/tasks/vinted_poller.py`](app/tasks/vinted_poll
 Le projet est outillé avec un pipeline d'Intégration Continue via GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) qui s'exécute à chaque push et pull request :
 
 - **Ruff** : Linting strict conforme aux règles modernes Python 3.12 (longueur de ligne max 100 caractères, imports ordonnés, conventions PEP).
-- **Pytest & Pytest-Asyncio** : Suite complète de **489 tests automatisés** couvrant l'ingestion, le matching déterministe, le FSM Telegram, le cache de cotes, le poller Vinted et le sous-système IA, dont **3 benchmarks de performance** (`make bench`) qui vérifient l'invariant de l'alerte < 500 ms (chemin ingestion → matching → Telegram, ré-ingestion de doublon, matching CPU).
+- **Pytest & Pytest-Asyncio** : Suite complète de **501 tests automatisés** couvrant l'ingestion, le matching déterministe, le FSM Telegram, le cache de cotes, le poller Vinted et le sous-système IA, dont **3 benchmarks de performance** (`make bench`) qui vérifient l'invariant de l'alerte < 500 ms (chemin ingestion → matching → Telegram, ré-ingestion de doublon, matching CPU).
 - **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml`, **zéro erreur** sur les 134 fichiers de `app/`, vérifié en CI (`mypy app` bloque la pull request).
 
 Pour exécuter les vérifications localement :
@@ -257,7 +257,7 @@ Pour exécuter les vérifications localement :
 # Vérification du style et du linting
 .venv/bin/ruff check .
 
-# Exécution de la suite complète de tests (489 tests)
+# Exécution de la suite complète de tests (501 tests)
 .venv/bin/pytest -v
 
 # Benchmark du chemin d'alerte (invariant < 500 ms)
@@ -366,12 +366,13 @@ Le [`Makefile`](Makefile) regroupe les actions récurrentes d'exploitation et de
 ```bash
 make help                 # Affiche l'inventaire des commandes disponibles
 make dev                  # Démarre l'application locale avec rechargement à chaud
-make test                 # Exécute la suite complète de 489 tests pytest
+make test                 # Exécute la suite complète de 501 tests pytest
 make bench                # Benchmark du chemin d'alerte (invariant 500 ms)
 make lint                 # Contrôle la conformité du code avec Ruff et Mypy
 make check-history        # Rejoue Ruff et Pytest sur chaque commit de la branche
 make preflight            # Vérifie l'état du VPS avant une synchronisation
 make verify-deploy        # Revérifie le VPS après une synchronisation
+make deploy               # Déploiement complet, enchaîné, arrêt au premier échec
 make format               # Corrige et formate automatiquement le code avec Ruff
 make migrate              # Applique les révisions de base de données Alembic
 make revision message="..." # Génère une nouvelle migration automatique
@@ -409,6 +410,16 @@ alembic revision --autogenerate -m "nom_de_la_migration"
 - **Domaine public** : `https://radar.aminezegmou.fr`.
 
 ### Procédure de déploiement
+
+La procédure complète tient en une commande :
+
+```bash
+make deploy   # pré-vol → synchronisation → rebuild → migration → vérification
+```
+
+Elle s'arrête au premier échec et n'essaie pas l'étape suivante. La migration n'est jouée qu'une fois le conteneur sain : migrer pendant un redémarrage viserait l'image précédente et laisserait le schéma en retard d'une version sur le code, sans que rien ne le signale. Pour relire l'ordre sans rien exécuter : `make deploy DEPLOY_ARGS=--dry-run`.
+
+Les étapes ci-dessous restent accessibles séparément, pour reprendre un déploiement interrompu.
 
 1. **Contrôle de l'état du VPS** : un push ne déploie rien, le serveur étant une cible `rsync` et non un clone git. Cette commande échoue si `APP_ENV` n'est pas en production, si un secret est vide, si un second scheduler est apparu, si la base n'est pas en tête de migration, ou si le code servi diffère du dépôt.
    ```bash

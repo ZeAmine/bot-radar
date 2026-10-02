@@ -11,8 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
     _resolve_edition_choices,
-    creation_keyboard,
-    recap_from_state,
+    build_creation_recap,
 )
 from app.bot.keyboards.alerts import (
     get_category_selection_keyboard,
@@ -92,10 +91,8 @@ async def select_alert_creation_edition(
     await callback.answer("✅ Édition mise à jour")
 
     if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(
-            recap_from_state(updated_data),
-            reply_markup=creation_keyboard(updated_data),
-        )
+        recap_text, keyboard = build_creation_recap(updated_data)
+        await callback.message.edit_text(recap_text, reply_markup=keyboard)
 
 
 @router.callback_query(
@@ -385,10 +382,8 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
     # Réafficher le récapitulatif mis à jour
     updated_data = await state.get_data()
     await state.set_state(AlertCreationState.confirm_creation)
-    await message.answer(
-        f"✅ <b>Modification enregistrée !</b>\n\n{recap_from_state(updated_data)}",
-        reply_markup=creation_keyboard(updated_data),
-    )
+    recap_text, keyboard = build_creation_recap(updated_data)
+    await message.answer(recap_text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "al_create_edit:back")
@@ -398,11 +393,9 @@ async def back_to_recap(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     await state.set_state(AlertCreationState.confirm_creation)
 
-    recap_text = recap_from_state(data)
+    recap_text, keyboard = build_creation_recap(data)
     if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(
-            recap_text, reply_markup=creation_keyboard(data)
-        )
+        await callback.message.edit_text(recap_text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "al_create_edit:restart")

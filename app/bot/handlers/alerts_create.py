@@ -15,10 +15,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
-    creation_keyboard,
+    build_creation_recap,
     process_bd_query_lookup,
     process_tech_or_clothes_query,
-    recap_from_state,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
 from app.bot.states.alert_creation import AlertCreationState
@@ -29,6 +28,7 @@ from app.core.constants import (
     DEFAULT_CLOTHES_CONDITIONS,
     DEFAULT_GAMING_CONDITIONS,
     DEFAULT_TECH_CONDITIONS,
+    AlertStatus,
     CategorySlug,
     ComparisonStatus,
     MatchConfidence,
@@ -60,6 +60,49 @@ def _get_alert_repo(session: Any) -> Any:
     import app.bot.handlers.alerts as alerts_mod
 
     return getattr(alerts_mod, "AlertRepository", AlertRepository)(session)
+
+
+async def _already_watched_note(
+    db_session: Any,
+    db_user: User | None,
+    *,
+    name: str,
+    isbn: str | None,
+) -> str | None:
+    """L'ouvrage est-il déjà surveillé ? Une ligne d'information, jamais un blocage.
+
+    Le chemin manuel interrompt la création sur un doublon (`process_bd_query_lookup`).
+    Ici le brouillon est déjà constitué : interrompre reviendrait à jeter une analyse
+    coûteuse, et l'utilisateur peut vouloir une seconde alerte sur un autre prix. Il
+    est donc prévenu avant de valider, et le choix lui reste.
+
+    Une base injoignable ne doit pas faire échouer le `/add` : le jalon perd une ligne,
+    tout le reste du flux reste intact.
+    """
+    if db_session is None or db_user is None:
+        return None
+    try:
+        existing = await _get_alert_repo(db_session).find_existing(
+            db_user.id, isbn=isbn, title=name
+        )
+    except Exception as exc:
+        logger.warning("Vérification anti-doublon impossible pour « %s » : %s", name, exc)
+        return None
+    if not existing:
+        return None
+
+    status = "🟢 active" if existing.status == AlertStatus.ACTIVE else "⏸️ en pause"
+    price = (
+        f"{existing.max_item_price_cents / 100:.2f} €".replace(".", ",")
+        if existing.max_item_price_cents
+        else "aucun"
+    )
+    known_isbn = existing.isbn or isbn
+    isbn_part = f" · <code>{html.escape(known_isbn)}</code>" if known_isbn else ""
+    return (
+        f"📚 <b>Déjà surveillé</b> · « {html.escape(existing.name)} »"
+        f"{isbn_part} · max {price} · {status}"
+    )
 
 
 def _merge_keywords(*groups: list[str] | None) -> list[str]:
@@ -188,23 +231,20 @@ async def _search_keywords_in_background(
         "exclude_keywords": _merge_keywords(
             snapshot.get("exclude_keywords"), outcome.exclusions
         ),
+        # La note et l'état de la recherche voyagent avec le brouillon : changer
+        # d'édition ou de prix plus tard ne doit pas les perdre au re-rendu.
+        "keyword_note": _keyword_note(outcome),
+        "keywords_finalized": True,
     }
     await state.update_data(
-        variants=updated["variants"], exclude_keywords=updated["exclude_keywords"]
+        variants=updated["variants"],
+        exclude_keywords=updated["exclude_keywords"],
+        keyword_note=updated["keyword_note"],
+        keywords_finalized=True,
     )
 
-    recap = (
-        "🪄 <b>Alerte configurée en langage naturel !</b>\n\n"
-        f"{recap_from_state(updated, keyword_note=_keyword_note(outcome))}"
-    )
-    # Les variantes sont déjà posées : le bouton qui les recalculerait n'apporterait
-    # rien et ferait douter de l'automatisme.
-    await _finalize_loading_message(
-        loading_msg,
-        event,
-        recap,
-        creation_keyboard(updated, show_variants_btn=False),
-    )
+    recap, keyboard = build_creation_recap(updated)
+    await _finalize_loading_message(loading_msg, event, recap, keyboard)
 
 
 def _get_category_repo(session: Any) -> Any:
@@ -232,8 +272,8 @@ def _get_market_price_repo(session: Any) -> Any:
 async def start_add_alert(
     event: Message | CallbackQuery,
     state: FSMContext,
-    _db_session: Any = None,
-    _db_user: User | None = None,
+    db_session: Any = None,
+    db_user: User | None = None,
 ) -> None:
     """Point d'entrée unifié pour l'ajout d'alertes multi-catégories."""
     await state.clear()
@@ -299,6 +339,16 @@ async def start_add_alert(
             step_text = f"🔎 <b>{html.escape(parsed.name)}</b> identifié"
             if found_details:
                 step_text += f"\n\n<i>{found_details}</i>"
+
+            # L'ouvrage peut déjà être surveillé : on le dit avant même que la
+            # recherche de variantes ne finisse, pour que l'utilisateur décide en
+            # connaissance de cause plutôt qu'au moment de valider.
+            already_watched = await _already_watched_note(
+                db_session, db_user, name=parsed.name, isbn=parsed.isbn13
+            )
+            if already_watched:
+                step_text += f"\n\n{already_watched}"
+
             step_text += (
                 "\n\n⏳ <i>Recherche des variantes de frappe et des exclusions "
                 "propres à ce produit...</i>"
@@ -517,10 +567,8 @@ async def process_max_price_input(
     await state.set_state(AlertCreationState.confirm_creation)
 
     updated_data = {**data, "max_item_price_cents": price_cents}
-    await message.answer(
-        recap_from_state(updated_data),
-        reply_markup=creation_keyboard(updated_data),
-    )
+    recap_text, keyboard = build_creation_recap(updated_data)
+    await message.answer(recap_text, reply_markup=keyboard)
 
 
 @router.callback_query(AlertCreationState.confirm_creation, F.data == "alert_create_ai_variants")
@@ -533,6 +581,9 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
         return
 
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
+    # Réponse immédiate : le spinner du bouton est levé avant l'appel. Répondre
+    # après le moteur dépasserait la fenêtre de Telegram, qui renverrait « query is
+    # too old » et rejouerait l'update. Le verdict de la recherche est dans la carte.
     await callback.answer()
 
     loading_kb = InlineKeyboardMarkup(
@@ -555,44 +606,28 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     outcome = await keyword_variants_module.generate_variants_and_exclusions(
         name, category_slug=category_slug, context=book_context
     )
-    variants, new_exclusions = outcome.variants, outcome.exclusions
 
-    if outcome.is_empty:
-        # Le moteur a tranché pour « rien » ou n'a pas répondu : dans les deux cas
-        # le récap porte la raison, sinon l'utilisateur croirait à un avis.
-        reason = (
-            "l'IA n'a trouvé aucune variante ni exclusion pertinente."
-            if outcome.answered
-            else "l'IA n'a pas répondu, l'alerte reste sans variante ni exclusion."
-        )
-        prompt_text = (
-            f"ℹ️ <b>Aucune modification.</b>\n\n<i>{reason}</i>\n\n{recap_from_state(data)}"
-        )
-        keyboard = creation_keyboard(data, show_variants_btn=False)
-        if callback.message and hasattr(callback.message, "edit_text"):
-            await callback.message.edit_text(prompt_text, reply_markup=keyboard)
-        return
-
-    # Stocker les variantes dans 'variants' sans polluer 'include_keywords'
-    existing_variants = _merge_keywords(data.get("variants"), variants)
-
-    # Fusionner les exclusions sans doublons
-    existing_exclusions = _merge_keywords(data.get("exclude_keywords"), new_exclusions)
-
-    await state.update_data(variants=existing_variants, exclude_keywords=existing_exclusions)
-
+    # « Rien de pertinent » et « personne n'a répondu » sont deux réponses : la note
+    # les dit, et le brouillon la conserve pour les rendus suivants.
     updated_draft = {
         **data,
-        "variants": existing_variants,
-        "exclude_keywords": existing_exclusions,
+        "variants": _merge_keywords(data.get("variants"), outcome.variants),
+        "exclude_keywords": _merge_keywords(
+            data.get("exclude_keywords"), outcome.exclusions
+        ),
+        "keyword_note": _keyword_note(outcome),
+        "keywords_finalized": True,
     }
-    prompt_text = (
-        "🪄 <b>Alerte mise à jour avec les optimisations IA !</b>\n\n"
-        f"{recap_from_state(updated_draft)}"
+    await state.update_data(
+        variants=updated_draft["variants"],
+        exclude_keywords=updated_draft["exclude_keywords"],
+        keyword_note=updated_draft["keyword_note"],
+        keywords_finalized=True,
     )
-    keyboard = creation_keyboard(updated_draft, show_variants_btn=False)
+
+    recap, keyboard = build_creation_recap(updated_draft)
     if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(prompt_text, reply_markup=keyboard)
+        await callback.message.edit_text(recap, reply_markup=keyboard)
 
 
 @router.callback_query(AlertCreationState.confirm_creation, F.data == "alert_create_confirm")

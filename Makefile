@@ -1,5 +1,5 @@
 .PHONY: help dev test lint bench check-history format migrate revision up down clean \
-        preflight verify-deploy
+        preflight verify-deploy deploy
 
 # Les outils viennent du venv du dépôt quand il existe, sinon du PATH. `make` doit
 # fonctionner sans `source .venv/bin/activate` : en local le venv est là, en CI il
@@ -26,6 +26,7 @@ help:
 	@echo "  make check-history       Rejouer Ruff, Mypy et Pytest sur chaque commit"
 	@echo "  make preflight           Vérifier le VPS avant une synchronisation"
 	@echo "  make verify-deploy       Revérifier le VPS après une synchronisation"
+	@echo "  make deploy              Déployer enchaîné (pré-vol → synchro → build → migration → contrôle)"
 	@echo "  make format              Formater le code avec Ruff"
 	@echo "  make migrate             Appliquer les migrations Alembic"
 	@echo "  make revision message=\"...\" Créer une nouvelle migration"
@@ -60,6 +61,12 @@ preflight:
 
 verify-deploy:
 	$(PYTHON) scripts/preflight_deploy.py --post-sync
+
+# La procédure complète, dans l'ordre, en s'arrêtant au premier échec. Les étapes
+# individuelles restent disponibles : un déploiement interrompu se reprend à la main.
+# Usage : make deploy | DEPLOY_ARGS=--dry-run
+deploy:
+	$(PYTHON) scripts/deploy.py $(if $(DEPLOY_ARGS),$(DEPLOY_ARGS),)
 
 format:
 	$(RUFF) format .

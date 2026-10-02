@@ -273,7 +273,7 @@ def format_edition_line(
     ]
 
 
-def recap_from_state(data: dict[str, Any], keyword_note: str | None = None) -> str:
+def recap_from_state(data: dict[str, Any]) -> str:
     """Construit le récap de création à partir du brouillon FSM (rendu unique)."""
     return format_semi_auto_recap(
         title=data.get("name", "Alerte"),
@@ -288,21 +288,37 @@ def recap_from_state(data: dict[str, Any], keyword_note: str | None = None) -> s
         is_series=data.get("is_series", False),
         isbn_note=data.get("isbn_note"),
         edition_alternatives=data.get("edition_alternatives"),
-        keyword_note=keyword_note,
+        # La note accompagne le brouillon plutôt que l'appel : changer d'édition ou
+        # modifier un prix re-rend la carte, et l'explication doit survivre au rendu.
+        keyword_note=data.get("keyword_note"),
     )
 
 
-def creation_keyboard(
-    data: dict[str, Any],
-    show_variants_btn: bool = True,
-) -> InlineKeyboardMarkup:
-    """Clavier du récap : éditions numérotées puis validation."""
+def creation_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
+    """Clavier du récap : éditions numérotées puis validation.
+
+    « ✨ Variantes & Exclusions IA » n'apparaît que tant que la recherche
+    automatique n'a pas été menée. Une fois les mots-clés posés, le bouton ne
+    pourrait rien ajouter que le brouillon ne contienne déjà, et il douterait de
+    l'automatisme. L'état du brouillon décide donc, pas le chemin qui affiche.
+    """
     alternatives = data.get("edition_alternatives")
     return get_alert_confirmation_keyboard(
-        show_variants_btn=show_variants_btn,
+        show_variants_btn=not data.get("keywords_finalized"),
         edition_alternatives=alternatives,
         edition_labels=build_edition_labels(alternatives),
     )
+
+
+def build_creation_recap(data: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
+    """`(texte, clavier)` du récap de création : une seule mise en forme, tout chemin.
+
+    Cliquer une édition, corriger un prix, changer un mot-clé ou attendre la
+    recherche de variantes ne change que les données de `data`. Le rendu reste
+    identique : aucun de ces gestes ne peut produire une carte différente de celle
+    qu'il vient de remplacer, ni laisser un en-tête de chemin concurrence.
+    """
+    return recap_from_state(data), creation_keyboard(data)
 
 
 def format_alerts_list_text(
@@ -487,10 +503,8 @@ async def process_bd_query_lookup(
         await state.update_data(max_item_price_cents=inline_price_cents)
         await state.set_state(AlertCreationState.confirm_creation)
         draft = await state.get_data()
-        await status_msg.edit_text(
-            recap_from_state({**draft, "max_item_price_cents": inline_price_cents}),
-            reply_markup=creation_keyboard(draft),
-        )
+        recap_text, keyboard = build_creation_recap(draft)
+        await status_msg.edit_text(recap_text, reply_markup=keyboard)
         return
 
     # Demander le prix max
@@ -650,8 +664,7 @@ async def process_tech_or_clothes_query(
         await state.update_data(max_item_price_cents=inline_price_cents)
         await state.set_state(AlertCreationState.confirm_creation)
         draft = await state.get_data()
-        recap_text = recap_from_state({**draft, "max_item_price_cents": inline_price_cents})
-        keyboard = creation_keyboard(draft)
+        recap_text, keyboard = build_creation_recap(draft)
         if (
             isinstance(event, CallbackQuery)
             and event.message

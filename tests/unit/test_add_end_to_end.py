@@ -23,6 +23,7 @@ from app.bot.handlers.alerts_create_confirm import (
     process_creation_edit_input,
     select_alert_creation_edition,
 )
+from app.bot.handlers.alerts_helpers import build_creation_recap
 from app.core.constants import ComparisonStatus
 from app.db.models.user import User
 from app.providers.base import MarketOffer
@@ -542,7 +543,10 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
         ] == ["🔍 Variantes & exclusions en cours..."]
 
         recap = _recap_text(loading_message)
-        assert recap.startswith("🪄 <b>Alerte configurée en langage naturel !</b>")
+        # La carte est celle du brouillon, sans en-tête de parcours : c'est ce qui
+        # permet de la ré-afficher à l'identique après un changement d'édition.
+        assert not recap.startswith("🪄")
+        assert recap.startswith("🔢 <b>ISBN :</b> <code>9782369903086</code>")
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -637,6 +641,76 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
         confirmation = confirm_message.edit_text.call_args[0][0]
         assert "✨ <b>Variantes :</b> couleurdeschoses" in confirmation
         assert "🚫 <b>Exclus :</b> keeping two" in confirmation
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_recap_is_the_same_card_whatever_the_route():
+    """Changer d'édition ré-affiche la même carte, pas une autre variante de carte.
+
+    C'est l'invariant demandé : la carte a une mise en forme, unique, et seuls ses
+    contenus changent. Le test ne compare donc pas deux rendus « ressemblants » : il
+    exige que chaque geste publie exactement `build_creation_recap(état)`, sans
+    en-tête de parcours autour.
+    """
+    resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
+    bnf = _fake_bnf(resolution)
+    client = _fake_deepseek(_deepseek_payload())
+    repos = _repositories(BNF_EDITION.isbn13)
+
+    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    state = DraftState()
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    patches = _patched(repos, bnf, client)
+    for entered in patches:
+        entered.start()
+    try:
+        await start_add_alert(message, state, db_session, db_user)
+        await _drain(repos["tasks"])
+
+        recap = _recap_text(loading_message)
+        assert recap == build_creation_recap(state.data)[0]
+
+        # L'utilisateur bascule sur l'autre édition.
+        switch_message = MagicMock(spec=Message)
+        switch_message.edit_text = AsyncMock()
+        switch_callback = MagicMock()
+        switch_callback.data = "al_create_edition:1"
+        switch_callback.message = switch_message
+        switch_callback.answer = AsyncMock()
+
+        await select_alert_creation_edition(switch_callback, state)
+
+        switch_recap = switch_message.edit_text.call_args[0][0]
+        assert switch_recap == build_creation_recap(state.data)[0]
+
+        # Le contenu a bien changé — c'est l'édition suivie qui diffère.
+        assert switch_recap != recap
+        assert "<code>9782369904151</code>" in switch_recap
+        assert "📖 <b>Édition suivie :</b> Editions çà et là · 224 p. · 19 cm" in switch_recap
+
+        # Et rien d'autre : même structure, aucun bandeau, même pied de confirmation.
+        for text in (recap, switch_recap):
+            assert text.startswith("🔢 <b>ISBN :</b>")
+            assert text.endswith(
+                "\n\nConfirmer la création de cette alerte ?\n\n"
+                "<i>Clique sur « Créer l'alerte » pour valider "
+                "ou « Modifier » pour ajuster.</i>"
+            )
+            for banner in ("🪄", "✅ <b>Modification enregistrée", "ℹ️ <b>Aucune modification"):
+                assert banner not in text
+
+        # Le clavier suit l'état, lui aussi : mêmes boutons, dans le même ordre.
+        recap_kb = loading_message.edit_text.call_args[1]["reply_markup"]
+        switch_kb = switch_message.edit_text.call_args[1]["reply_markup"]
+        assert recap_kb == switch_kb
+
+        # La note de la recherche de variantes survit au changement d'édition.
+        assert "Confirmer la création de cette alerte ?" in switch_recap
     finally:
         for entered in reversed(patches):
             entered.stop()
