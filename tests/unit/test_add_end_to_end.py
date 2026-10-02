@@ -167,6 +167,7 @@ def _repositories(isbn13: str) -> dict:
 
     alert_repo = MagicMock()
     alert_repo.create = AsyncMock(return_value=alert)
+    alert_repo.find_existing = AsyncMock(return_value=None)
 
     category_repo = MagicMock()
     category_repo.get_by_id = AsyncMock()

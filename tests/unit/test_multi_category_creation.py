@@ -518,13 +518,14 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
 
 
 @pytest.mark.asyncio
-async def test_start_add_alert_natural_add_flags_a_book_already_watched():
-    """Le jalon dit que l'ouvrage est déjà surveillé — sans bloquer la création.
+async def test_start_add_alert_natural_add_interrupts_when_already_watched():
+    """Un livre déjà surveillé interrompt immédiatement la création (binaire : pas de doublon).
 
-    Le chemin manuel interrompt sur un doublon. Ici l'analyse a déjà coûté un appel
-    au moteur : on prévient, on n'interrompt pas. L'utilisateur peut vouloir une
-    seconde alerte sur un autre prix, ou pour une autre édition.
+    L'écran propose de mettre à jour le prix ou de conserver l'existante,
+    et ne lance aucune recherche de variantes ni récapitulatif de création.
     """
+    from unittest.mock import PropertyMock
+
     from app.services.ai.schemas import NaturalAddResult
 
     message = MockMessage()
@@ -555,32 +556,100 @@ async def test_start_add_alert_natural_add_flags_a_book_already_watched():
         max_price_cents=2000,
     )
 
-    with _natural_add_patches(
-        fake_result,
-        KeywordVariantsOutcome(answered=True),
-        existing_alert=already,
-    ) as tasks:
+    alert_repo = MagicMock()
+    # 1ère vérification brute (avant IA) ne trouve rien, 2ème vérification après parsing IA trouve
+    alert_repo.find_existing = AsyncMock(side_effect=[None, already])
+
+    with (
+        patch(
+            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
+            new_callable=PropertyMock,
+            return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
+            new_callable=AsyncMock,
+            return_value=fake_result,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.keyword_variants_module.generate_variants_and_exclusions",
+            new_callable=AsyncMock,
+        ) as variants_mock,
+        patch("app.bot.handlers.alerts.AlertRepository", return_value=alert_repo),
+    ):
         await start_add_alert(message, state, AsyncMock(), db_user)
 
-        milestone = loading_message.edit_text.await_args[0][0]
-        assert "📚 <b>Déjà surveillé</b>" in milestone
-        assert "Astérix le Gaulois" in milestone
-        assert "<code>9782012101333</code>" in milestone
-        assert "max 15,00 €" in milestone
-        assert "🟢 active" in milestone
-        # Aucun bouton : prévenir ne transforme pas le jalon en écran de décision.
-        milestone_kb = loading_message.edit_text.await_args[1]["reply_markup"]
-        assert [
-            button.callback_data
-            for row in milestone_kb.inline_keyboard
-            for button in row
-        ] == ["noop"]
+        # Aucune recherche de variantes n'est lancée en arrière-plan
+        variants_mock.assert_not_called()
 
-        await _drain(tasks)
+        # Le message édite le message d'attente pour afficher l'alerte existante et la mise à jour
+        edited_text = loading_message.edit_text.call_args[0][0]
+        assert "Cette BD est déjà surveillée dans tes alertes" in edited_text
+        assert "Astérix le Gaulois" in edited_text
+        assert "9782012101333" in edited_text
+        assert "15,00 €" in edited_text
+        assert "20,00 €" in edited_text
 
-    # La création reste proposée : l'utilisateur décide, l'écran ne l'en empêche pas.
-    recap = loading_message.edit_text.call_args[0][0]
-    assert "Confirmer la création de cette alerte ?" in recap
+        # Clavier avec mise à jour et conservation
+        kb = loading_message.edit_text.call_args[1]["reply_markup"]
+        callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+        assert f"upd_alert_price:{already.id}:2000" in callbacks
+        assert "alert_create_cancel" in callbacks
+
+        # Le récapitulatif de création n'est jamais proposé
+        assert "Confirmer la création de cette alerte ?" not in edited_text
+        assert state.state is not AlertCreationState.confirm_creation
+
+
+@pytest.mark.asyncio
+async def test_start_add_alert_pre_check_avoids_ia_when_already_watched():
+    """Une requête contenant un titre ou ISBN déjà en base évite tout appel IA."""
+    from unittest.mock import PropertyMock
+
+    message = MockMessage()
+    message.text = "/add Astérix le Gaulois"
+    message.chat.id = 12345
+    message.bot = MagicMock()
+    message.bot.send_chat_action = AsyncMock()
+    message.answer = AsyncMock()
+
+    state = DraftState()
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    already = Alert(
+        id=uuid.uuid4(),
+        name="Astérix le Gaulois",
+        user_id=db_user.id,
+        isbn="9782012101333",
+        max_item_price_cents=1500,
+        status=AlertStatus.ACTIVE,
+    )
+
+    alert_repo = MagicMock()
+    alert_repo.find_existing = AsyncMock(return_value=already)
+
+    parse_mock = AsyncMock()
+    with (
+        patch(
+            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
+            new_callable=PropertyMock,
+            return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
+            new=parse_mock,
+        ),
+        patch("app.bot.handlers.alerts.AlertRepository", return_value=alert_repo),
+    ):
+        await start_add_alert(message, state, AsyncMock(), db_user)
+
+        # L'IA n'est jamais appelée
+        parse_mock.assert_not_called()
+
+        # Le message répond directement avec l'alerte existante
+        message.answer.assert_called_once()
+        text = message.answer.call_args[0][0]
+        assert "Cette BD est déjà surveillée dans tes alertes" in text
+        assert "Astérix le Gaulois" in text
 
 
 @pytest.mark.asyncio
@@ -818,6 +887,8 @@ async def test_start_add_alert_natural_add_fallback_on_parse_failure():
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
+    mock_alert_repo = MagicMock()
+    mock_alert_repo.find_existing = AsyncMock(return_value=None)
     with (
         patch(
             "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
@@ -829,6 +900,7 @@ async def test_start_add_alert_natural_add_fallback_on_parse_failure():
             new_callable=AsyncMock,
             return_value=None,
         ),
+        patch("app.bot.handlers.alerts.AlertRepository", return_value=mock_alert_repo),
     ):
         await start_add_alert(message, state, db_session, db_user)
 

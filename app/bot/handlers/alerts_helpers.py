@@ -32,6 +32,7 @@ from app.services.book_metadata_service import (
     BookMetadataService,
     format_edition_fragments,
 )
+from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger(__name__)
 
@@ -376,6 +377,124 @@ async def _resolve_edition_choices(
     return build_edition_choices(resolution)
 
 
+async def render_existing_alert_response(
+    event: Message | CallbackQuery,
+    state: FSMContext,
+    existing: Alert,
+    *,
+    new_price_cents: int | None = None,
+    target_msg: Any = None,
+) -> None:
+    """Affiche une alerte déjà surveillée et propose de mettre à jour son prix ou d'annuler.
+
+    Arrêt net et binaire : aucune alerte concurrente n'est créée, aucune recherche de variantes
+    n'est déclenchée, et le récapitulatif de confirmation de création n'est jamais affiché.
+    """
+    status_emoji = "🟢" if existing.status == AlertStatus.ACTIVE else "⏸️"
+    status_text = "Active" if existing.status == AlertStatus.ACTIVE else "En pause"
+    price_str = (
+        f"{existing.max_item_price_cents / 100:.2f} €".replace(".", ",")
+        if existing.max_item_price_cents
+        else "Aucun"
+    )
+
+    category_slug = (
+        existing.category.slug
+        if getattr(existing, "category", None) and existing.category
+        else None
+    )
+    if existing.isbn or category_slug == CategorySlug.BD_COMICS.value:
+        cat_emoji = "📚"
+        item_label = "Cette BD"
+    else:
+        cat_slug_enum = (
+            CategorySlug(category_slug)
+            if category_slug in {c.value for c in CategorySlug}
+            else None
+        )
+        cat_emoji = CATEGORY_EMOJIS.get(cat_slug_enum, "🎯") if cat_slug_enum else "🎯"
+        cat_text = CATEGORY_LABELS.get(cat_slug_enum, "Produit") if cat_slug_enum else "Produit"
+        item_label = f"Ce produit ({cat_text})"
+
+    isbn_line = (
+        f"🔢 <b>ISBN :</b> <code>{html.escape(existing.isbn)}</code>\n"
+        if existing.isbn
+        else ""
+    )
+
+    # Cas 1 : Un nouveau prix différent du prix actuel a été spécifié
+    if new_price_cents is not None and new_price_cents != existing.max_item_price_cents:
+        new_price_str = f"{new_price_cents / 100:.2f} €".replace(".", ",")
+        await state.update_data(
+            existing_alert_id=str(existing.id),
+            new_max_price_cents=new_price_cents,
+        )
+        agreement = "e" if item_label.startswith("Cette") else ""
+        warn_text = (
+            f"⚠️ <b>{item_label} est déjà surveillé{agreement} dans tes alertes !</b>\n\n"
+            f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
+            f"{isbn_line}"
+            f"🎯 <b>Prix max actuel :</b> {price_str}\n"
+            f"{status_emoji} <b>Statut :</b> {status_text}\n\n"
+            f"💡 <i>Tu as indiqué un prix de <b>{new_price_str}</b>.</i>\n"
+            "Souhaites-tu mettre à jour le prix max de cette alerte existante ?"
+        )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"🔄 Mettre à jour à {new_price_str}",
+                        callback_data=f"upd_alert_price:{existing.id}:{new_price_cents}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="❌ Conserver l'existante",
+                        callback_data="alert_create_cancel",
+                    )
+                ],
+            ]
+        )
+    else:
+        # Cas 2 : Pas de prix spécifié ou prix identique
+        await state.update_data(existing_alert_id=str(existing.id))
+        await state.set_state(AlertCreationState.waiting_for_max_price)
+        agreement = "e" if item_label.startswith("Cette") else ""
+        warn_text = (
+            f"⚠️ <b>{item_label} est déjà surveillé{agreement} dans tes alertes !</b>\n\n"
+            f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
+            f"{isbn_line}"
+            f"🎯 <b>Prix max actuel :</b> {price_str}\n"
+            f"{status_emoji} <b>Statut :</b> {status_text}\n\n"
+            "ℹ️ <i>Cette alerte est déjà surveillée en continu 24h/24.</i>\n\n"
+            "💶 <b>Pour modifier son prix max, entre un nouveau montant "
+            "(ou clique sur Conserver sans modification) :</b>"
+        )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="❌ Conserver sans modification",
+                        callback_data="alert_create_cancel",
+                    )
+                ]
+            ]
+        )
+
+    edit_msg: Any = target_msg
+    if edit_msg is None and isinstance(event, CallbackQuery) and event.message:
+        edit_msg = event.message
+
+    if edit_msg and hasattr(edit_msg, "edit_text"):
+        await edit_msg.edit_text(warn_text, reply_markup=keyboard)
+    elif isinstance(event, CallbackQuery):
+        await event.answer()
+        if event.message:
+            await event.message.answer(warn_text, reply_markup=keyboard)
+    else:
+        await event.answer(warn_text, reply_markup=keyboard)
+
+
 async def process_bd_query_lookup(
     event: Message | CallbackQuery,
     state: FSMContext,
@@ -391,6 +510,22 @@ async def process_bd_query_lookup(
     # Vérifier si un prix inline était fourni en fin de saisie (ex: "titre 50" ou "978... 25")
     clean_query, inline_price_cents = extract_inline_price_and_clean_query(query_str)
 
+    # GARDE ANTI-DOUBLON LOCAL IMMÉDIAT (zéro appel BNF si déjà surveillé en base)
+    if db_user:
+        alert_repo = _get_alert_repo(db_session)
+        isbn_candidate = extract_clean_isbn(clean_query)
+        existing = await alert_repo.find_existing(
+            db_user.id, isbn=isbn_candidate, title=clean_query
+        )
+        if existing:
+            await render_existing_alert_response(
+                event,
+                state,
+                existing,
+                new_price_cents=inline_price_cents,
+            )
+            return
+
     status_msg = await target_msg.answer("🔍 Recherche automatique de l'œuvre...")
 
     service = BookMetadataService()
@@ -404,78 +539,18 @@ async def process_bd_query_lookup(
         await state.set_state(AlertCreationState.waiting_for_query)
         return
 
-    # GARDE ANTI-DOUBLON : Vérifier si l'article est déjà dans les alertes de l'utilisateur
+    # GARDE ANTI-DOUBLON APRÈS RÉSOLUTION BNF
     if db_user:
         alert_repo = _get_alert_repo(db_session)
         existing = await alert_repo.find_existing(db_user.id, isbn=meta.isbn13, title=meta.title)
         if existing:
-            status_emoji = "🟢" if existing.status == AlertStatus.ACTIVE else "⏸️"
-            status_text = "Active" if existing.status == AlertStatus.ACTIVE else "En pause"
-            price_str = (
-                f"{existing.max_item_price_cents / 100:.2f} €".replace(".", ",")
-                if existing.max_item_price_cents
-                else "Aucun"
+            await render_existing_alert_response(
+                event,
+                state,
+                existing,
+                new_price_cents=inline_price_cents,
+                target_msg=status_msg,
             )
-
-            # Cas 1 : L'utilisateur avait déjà spécifié un prix en ligne (ex: /add deathbringer 40)
-            if inline_price_cents is not None:
-                new_price_str = f"{inline_price_cents / 100:.2f} €".replace(".", ",")
-                await state.update_data(
-                    existing_alert_id=str(existing.id),
-                    new_max_price_cents=inline_price_cents,
-                )
-                warn_text = (
-                    "⚠️ <b>Cette BD est déjà surveillée dans tes alertes !</b>\n\n"
-                    f"📚 <b>{html.escape(existing.name)}</b>\n"
-                    f"🔢 <b>ISBN :</b> <code>{existing.isbn or meta.isbn13 or 'N/A'}</code>\n"
-                    f"🎯 <b>Prix max actuel :</b> {price_str}\n"
-                    f"{status_emoji} <b>Statut :</b> {status_text}\n\n"
-                    f"💡 <i>Tu as indiqué un prix de <b>{new_price_str}</b>.</i>\n"
-                    "Souhaites-tu mettre à jour le prix max de cette alerte existante ?"
-                )
-                keyboard = InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text=f"🔄 Mettre à jour à {new_price_str}",
-                                callback_data=f"upd_alert_price:{existing.id}:{inline_price_cents}",
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="❌ Conserver l'existante",
-                                callback_data="alert_create_cancel",
-                            )
-                        ],
-                    ]
-                )
-                await status_msg.edit_text(warn_text, reply_markup=keyboard)
-                return
-
-            # Cas 2 : Pas de prix spécifié (ex: /add deathbringer)
-            await state.update_data(existing_alert_id=str(existing.id))
-            await state.set_state(AlertCreationState.waiting_for_max_price)
-            warn_text = (
-                "⚠️ <b>Cette BD est déjà surveillée dans tes alertes !</b>\n\n"
-                f"📚 <b>{html.escape(existing.name)}</b>\n"
-                f"🔢 <b>ISBN :</b> <code>{existing.isbn or meta.isbn13 or 'N/A'}</code>\n"
-                f"🎯 <b>Prix max actuel :</b> {price_str}\n"
-                f"{status_emoji} <b>Statut :</b> {status_text}\n\n"
-                "ℹ️ <i>Cette œuvre est déjà surveillée en continu 24h/24.</i>\n\n"
-                "💶 <b>Pour modifier son prix max, entre un nouveau montant "
-                "(ou clique sur Annuler) :</b>"
-            )
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="❌ Conserver sans modification",
-                            callback_data="alert_create_cancel",
-                        )
-                    ]
-                ]
-            )
-            await status_msg.edit_text(warn_text, reply_markup=keyboard)
             return
 
     # Catégorie BD & Comics par défaut
@@ -547,84 +622,12 @@ async def process_tech_or_clothes_query(
         alert_repo = _get_alert_repo(db_session)
         existing = await alert_repo.find_existing(db_user.id, title=clean_query)
         if existing:
-            status_emoji = "🟢" if existing.status == AlertStatus.ACTIVE else "⏸️"
-            status_text = "Active" if existing.status == AlertStatus.ACTIVE else "En pause"
-            price_str = (
-                f"{existing.max_item_price_cents / 100:.2f} €".replace(".", ",")
-                if existing.max_item_price_cents
-                else "Aucun"
+            await render_existing_alert_response(
+                event,
+                state,
+                existing,
+                new_price_cents=inline_price_cents,
             )
-
-            # Cas 1 : L'utilisateur a spécifié un nouveau prix inline
-            if inline_price_cents is not None:
-                new_price_str = f"{inline_price_cents / 100:.2f} €".replace(".", ",")
-                await state.update_data(
-                    existing_alert_id=str(existing.id),
-                    new_max_price_cents=inline_price_cents,
-                )
-                warn_text = (
-                    f"⚠️ <b>Ce produit ({cat_label}) est déjà surveillé dans tes alertes !</b>\n\n"
-                    f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
-                    f"🎯 <b>Prix max actuel :</b> {price_str}\n"
-                    f"{status_emoji} <b>Statut :</b> {status_text}\n\n"
-                    f"💡 <i>Tu as indiqué un prix de <b>{new_price_str}</b>.</i>\n"
-                    "Souhaites-tu mettre à jour le prix max de cette alerte existante ?"
-                )
-                keyboard = InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text=f"🔄 Mettre à jour à {new_price_str}",
-                                callback_data=f"upd_alert_price:{existing.id}:{inline_price_cents}",
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="❌ Conserver l'existante",
-                                callback_data="alert_create_cancel",
-                            )
-                        ],
-                    ]
-                )
-                if (
-                    isinstance(event, CallbackQuery)
-                    and event.message
-                    and hasattr(event.message, "edit_text")
-                ):
-                    await event.message.edit_text(warn_text, reply_markup=keyboard)
-                else:
-                    await target_msg.answer(warn_text, reply_markup=keyboard)
-                return
-
-            # Cas 2 : Pas de prix inline spécifié
-            await state.update_data(existing_alert_id=str(existing.id))
-            await state.set_state(AlertCreationState.waiting_for_max_price)
-            warn_text = (
-                f"⚠️ <b>Ce produit ({cat_label}) est déjà surveillé dans tes alertes !</b>\n\n"
-                f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n\n"
-                f"🎯 <b>Prix max actuel :</b> {price_str}\n"
-                f"{status_emoji} <b>Statut :</b> {status_text}\n\n"
-                "💶 <b>Pour modifier son prix max, entre un nouveau montant "
-                "(ou clique sur Annuler) :</b>"
-            )
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="❌ Conserver sans modification",
-                            callback_data="alert_create_cancel",
-                        )
-                    ]
-                ]
-            )
-            if (
-                isinstance(event, CallbackQuery)
-                and event.message
-                and hasattr(event.message, "edit_text")
-            ):
-                await event.message.edit_text(warn_text, reply_markup=keyboard)
-            else:
-                await target_msg.answer(warn_text, reply_markup=keyboard)
             return
 
     # Catégorie en base

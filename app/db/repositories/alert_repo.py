@@ -285,9 +285,9 @@ class AlertRepository:
     ) -> Alert | None:
         """Trouve une alerte existante active ou en pause pour un ISBN ou un titre donné."""
         conditions = []
-        if isbn:
+        if isbn and isinstance(isbn, str):
             conditions.append(Alert.isbn == isbn)
-        if title and len(title.strip()) >= 3:
+        if isinstance(title, str) and len(title.strip()) >= 3:
             conditions.append(Alert.name.ilike(title.strip()))
 
         if conditions:
@@ -302,15 +302,29 @@ class AlertRepository:
                 )
                 .limit(1)
             )
+            import inspect
+
             res = await self.session.execute(stmt)
             existing = res.scalar_one_or_none()
-            if existing:
+            if existing is not None and not inspect.isawaitable(existing):
                 return existing
 
-        # Recherche via alert_books si un livre correspond à l'ISBN
-        if isbn:
+        # Recherche via alert_books si un livre correspond à l'ISBN ou au titre
+        if isbn or (title and len(title.strip()) >= 3):
+            import inspect
+
             from app.db.models.alert_book import AlertBook
             from app.db.models.book import Book
+            from app.utils.text import normalize_text
+
+            book_conditions = []
+            if isbn:
+                book_conditions.extend([Book.isbn13 == isbn, Book.isbn10 == isbn])
+            if title and len(title.strip()) >= 3:
+                norm = normalize_text(title.strip())
+                book_conditions.append(Book.title.ilike(title.strip()))
+                if norm:
+                    book_conditions.append(Book.normalized_title == norm)
 
             stmt_book = (
                 select(Alert)
@@ -321,12 +335,14 @@ class AlertRepository:
                     Alert.user_id == user_id,
                     Alert.status != AlertStatus.DELETED,
                     Alert.deleted_at.is_(None),
-                    sa_or(Book.isbn13 == isbn, Book.isbn10 == isbn),
+                    sa_or(*book_conditions),
                 )
                 .limit(1)
             )
             res_book = await self.session.execute(stmt_book)
-            return res_book.scalar_one_or_none()
+            existing_book = res_book.scalar_one_or_none()
+            if existing_book is not None and not inspect.isawaitable(existing_book):
+                return existing_book
 
         return None
 

@@ -53,3 +53,31 @@ async def test_find_existing_alert_not_found():
 
     res = await repo.find_existing(user_id, isbn="9780000000000", title="Inconnue")
     assert res is None
+
+
+@pytest.mark.asyncio
+async def test_find_existing_alert_via_alert_books_title():
+    """Vérifie que find_existing détecte une alerte via le titre d'un livre associé."""
+    session = AsyncMock()
+    repo = AlertRepository(session)
+
+    user_id = uuid.uuid4()
+    mock_alert = Alert(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        name="Deep It (Édition Spéciale)",
+        status=AlertStatus.ACTIVE,
+    )
+
+    # Premier execute (Alert directe) retourne None,
+    # deuxième execute (join AlertBook) retourne mock_alert
+    mock_direct_res = MagicMock()
+    mock_direct_res.scalar_one_or_none.return_value = None
+    mock_book_res = MagicMock()
+    mock_book_res.scalar_one_or_none.return_value = mock_alert
+
+    session.execute.side_effect = [mock_direct_res, mock_book_res]
+
+    found = await repo.find_existing(user_id, title="Deep It")
+    assert found is not None
+    assert found.name == "Deep It (Édition Spéciale)"

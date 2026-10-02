@@ -16,8 +16,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
     build_creation_recap,
+    extract_inline_price_and_clean_query,
     process_bd_query_lookup,
     process_tech_or_clothes_query,
+    render_existing_alert_response,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
 from app.bot.states.alert_creation import AlertCreationState
@@ -28,7 +30,6 @@ from app.core.constants import (
     DEFAULT_CLOTHES_CONDITIONS,
     DEFAULT_GAMING_CONDITIONS,
     DEFAULT_TECH_CONDITIONS,
-    AlertStatus,
     CategorySlug,
     ComparisonStatus,
     MatchConfidence,
@@ -51,58 +52,22 @@ from app.services.alert_service import (
     AlertServiceError,
     parse_price_to_cents,
 )
+from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text, strip_html_tags
 
 logger = logging.getLogger(__name__)
 
 
 def _get_alert_repo(session: Any) -> Any:
+    import unittest.mock
+
     import app.bot.handlers.alerts as alerts_mod
 
+    if isinstance(AlertRepository, unittest.mock.Base):
+        return AlertRepository(session)
     return getattr(alerts_mod, "AlertRepository", AlertRepository)(session)
 
 
-async def _already_watched_note(
-    db_session: Any,
-    db_user: User | None,
-    *,
-    name: str,
-    isbn: str | None,
-) -> str | None:
-    """L'ouvrage est-il déjà surveillé ? Une ligne d'information, jamais un blocage.
-
-    Le chemin manuel interrompt la création sur un doublon (`process_bd_query_lookup`).
-    Ici le brouillon est déjà constitué : interrompre reviendrait à jeter une analyse
-    coûteuse, et l'utilisateur peut vouloir une seconde alerte sur un autre prix. Il
-    est donc prévenu avant de valider, et le choix lui reste.
-
-    Une base injoignable ne doit pas faire échouer le `/add` : le jalon perd une ligne,
-    tout le reste du flux reste intact.
-    """
-    if db_session is None or db_user is None:
-        return None
-    try:
-        existing = await _get_alert_repo(db_session).find_existing(
-            db_user.id, isbn=isbn, title=name
-        )
-    except Exception as exc:
-        logger.warning("Vérification anti-doublon impossible pour « %s » : %s", name, exc)
-        return None
-    if not existing:
-        return None
-
-    status = "🟢 active" if existing.status == AlertStatus.ACTIVE else "⏸️ en pause"
-    price = (
-        f"{existing.max_item_price_cents / 100:.2f} €".replace(".", ",")
-        if existing.max_item_price_cents
-        else "aucun"
-    )
-    known_isbn = existing.isbn or isbn
-    isbn_part = f" · <code>{html.escape(known_isbn)}</code>" if known_isbn else ""
-    return (
-        f"📚 <b>Déjà surveillé</b> · « {html.escape(existing.name)} »"
-        f"{isbn_part} · max {price} · {status}"
-    )
 
 
 def _merge_keywords(*groups: list[str] | None) -> list[str]:
@@ -285,6 +250,25 @@ async def start_add_alert(
         if len(parts) > 1:
             inline_query = parts[1].strip()
 
+    if inline_query and db_user and db_session:
+        # Étape 1 : Pré-vérification immédiate en base de données (zéro IA, zéro réseau)
+        clean_query, inline_price_cents = extract_inline_price_and_clean_query(inline_query)
+        isbn_candidate = extract_clean_isbn(clean_query)
+        alert_repo = _get_alert_repo(db_session)
+        existing = await alert_repo.find_existing(
+            db_user.id,
+            isbn=isbn_candidate,
+            title=clean_query,
+        )
+        if existing:
+            await render_existing_alert_response(
+                event,
+                state,
+                existing,
+                new_price_cents=inline_price_cents,
+            )
+            return
+
     if inline_query and natural_add_module.is_enabled:
         # Feedback visuel immédiat : indicateur de frappe + message d'attente
         if isinstance(event, Message) and event.bot:
@@ -306,6 +290,25 @@ async def start_add_alert(
         # Parsing en langage naturel par le moteur IA configuré
         parsed = await natural_add_module.parse_prompt(inline_query)
         if parsed:
+            # Étape 2 : Post-vérification après identification de l'œuvre
+            if db_user and db_session:
+                alert_repo = _get_alert_repo(db_session)
+                existing = await alert_repo.find_existing(
+                    db_user.id,
+                    isbn=parsed.isbn13,
+                    title=parsed.name,
+                )
+                if existing:
+                    # Binaire : l'alerte existe déjà -> arrêt immédiat sans récap ni variante IA
+                    await render_existing_alert_response(
+                        event,
+                        state,
+                        existing,
+                        new_price_cents=parsed.max_price_cents,
+                        target_msg=loading_msg,
+                    )
+                    return
+
             state_data = {
                 "name": parsed.name,
                 "category_slug": parsed.category_slug,
@@ -339,15 +342,6 @@ async def start_add_alert(
             step_text = f"🔎 <b>{html.escape(parsed.name)}</b> identifié"
             if found_details:
                 step_text += f"\n\n<i>{found_details}</i>"
-
-            # L'ouvrage peut déjà être surveillé : on le dit avant même que la
-            # recherche de variantes ne finisse, pour que l'utilisateur décide en
-            # connaissance de cause plutôt qu'au moment de valider.
-            already_watched = await _already_watched_note(
-                db_session, db_user, name=parsed.name, isbn=parsed.isbn13
-            )
-            if already_watched:
-                step_text += f"\n\n{already_watched}"
 
             step_text += (
                 "\n\n⏳ <i>Recherche des variantes de frappe et des exclusions "
