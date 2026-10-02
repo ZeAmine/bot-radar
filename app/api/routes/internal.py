@@ -99,7 +99,7 @@ async def get_vinted_session_status() -> dict[str, Any]:
     """Retourne l'état actuel de la session Vinted sans exposer les jetons sensibles."""
     cookies = vinted_session_manager.cookies
     if not cookies:
-        cookies = await vinted_session_manager._load_cookies_from_redis()
+        cookies = await vinted_session_manager.load_cookies_from_redis()
     return {
         "active_cookies_count": len(cookies),
         "cookie_names": list(cookies.keys()),

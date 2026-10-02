@@ -265,7 +265,7 @@ class AlertRepository:
         stmt = self._apply_category_filter(stmt, category_slug)
 
         result = await self.session.execute(stmt)
-        matched = list(result.scalars().all())
+        matched: list[Alert] = list(result.scalars().all())
         if matched:
             return matched
 

@@ -10,6 +10,7 @@ Ce module regroupe les sous-modules spécialisés :
 from aiogram import Router
 
 # Ré-export du flux de création
+from app.bot.handlers._alerts_router import router as alerts_create_router
 from app.bot.handlers.alerts_create import (
     handle_category_selected,
     handle_query_input,
@@ -17,9 +18,6 @@ from app.bot.handlers.alerts_create import (
     process_max_price_input,
     save_alert,
     start_add_alert,
-)
-from app.bot.handlers.alerts_create import (
-    router as alerts_create_router,
 )
 from app.bot.handlers.alerts_create_confirm import (
     back_to_recap,

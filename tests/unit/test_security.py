@@ -87,6 +87,45 @@ def test_rate_limit_middleware():
     assert res_blocked.headers.get("X-RateLimit-Remaining") == "0"
 
 
+def test_rate_limit_not_bypassed_by_spoofed_x_forwarded_for():
+    """Un premier hop forgé ne doit pas créer une nouvelle clé de rate limit.
+
+    Derrière la passerelle, l'IP réelle est le dernier élément de X-Forwarded-For.
+    Faire varier le premier élément ne doit donc pas contourner la limite.
+    """
+    client = TestClient(app)
+    rate_limiter.reset_for_test()
+
+    for i in range(30):
+        res = client.get(
+            "/api/v1/internal/refresh-prices",
+            headers={"X-Forwarded-For": f"10.9.9.{i}, 203.0.113.99"},
+        )
+        assert res.status_code != 429
+
+    res_blocked = client.get(
+        "/api/v1/internal/refresh-prices",
+        headers={"X-Forwarded-For": "10.9.9.250, 203.0.113.99"},
+    )
+    assert res_blocked.status_code == 429
+
+
+def test_get_client_ip_uses_last_forwarded_hop():
+    """L'IP cliente est le dernier hop posé par le proxy de confiance."""
+    from starlette.requests import Request
+
+    from app.api.middlewares.security import RateLimitMiddleware
+
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(b"x-forwarded-for", b"198.51.100.7, 203.0.113.42")],
+            "client": ("10.0.0.1", 4321),
+        }
+    )
+    assert RateLimitMiddleware._get_client_ip(request) == "203.0.113.42"
+
+
 @pytest.mark.asyncio
 async def test_sliding_window_rate_limiter():
     limiter = SlidingWindowRateLimiter()

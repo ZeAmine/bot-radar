@@ -39,7 +39,7 @@ logger = logging.getLogger("radar.vinted_poller")
 VINTED_POLLER_STATUS_KEY = "radar:vinted_poller_status"
 
 
-class FifoSet(set):
+class FifoSet(set[str]):
     """Ensemble d'identifiants avec purge FIFO déterministe par ordre d'insertion."""
 
     def __init__(
@@ -62,7 +62,7 @@ class FifoSet(set):
             if len(self) > self.max_size:
                 self.trim()
 
-    def discard(self, item: str) -> None:
+    def discard(self, item: str) -> None:  # type: ignore[override]
         if item in self:
             super().discard(item)
             with contextlib.suppress(ValueError):
@@ -95,7 +95,8 @@ async def get_poller_status() -> dict[str, Any] | None:
         client = get_redis_client()
         raw = await client.get(VINTED_POLLER_STATUS_KEY)
         if raw:
-            return json.loads(raw)
+            data: dict[str, Any] = json.loads(raw)
+            return data
     except Exception as exc:
         logger.debug("Impossible de lire l'état du poller depuis Redis: %s", exc)
     return None
@@ -333,7 +334,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
         settings.VINTED_POLL_INTERVAL_SECONDS,
     )
 
-    seen_ids = await load_initial_seen_ids()
+    seen_ids: FifoSet = await load_initial_seen_ids()
     logger.info("Vinted poller initialisé avec %d IDs en mémoire.", len(seen_ids))
 
     proxy_url = settings.get_vinted_proxy()
@@ -356,9 +357,9 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 hours_left = int(remaining // 3600)
                 mins_left = int((remaining % 3600) // 60)
                 logger.info(
-                    "🌙 MODE NUIT ACTIF (%02d:00 - %02d:00 %s) : Suspension de la surveillance"
-                        "Vinted "
-                    "pendant encore %dh%02dm pour préserver l'IP et respecter le calme nocturne.",
+                    "🌙 MODE NUIT ACTIF (%02d:00 - %02d:00 %s) : Suspension de la surveillance "
+                    "Vinted pendant encore %dh%02dm pour préserver l'IP et respecter le calme "
+                    "nocturne.",
                     settings.NIGHT_MODE_START_HOUR,
                     settings.NIGHT_MODE_END_HOUR,
                     settings.NIGHT_MODE_TIMEZONE,
@@ -448,11 +449,8 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 })
 
                 # Si trop d'IDs en mémoire, purger les plus anciens
-                if len(seen_ids) > 15000:
-                    if hasattr(seen_ids, "trim"):
-                        seen_ids.trim()
-                    else:
-                        seen_ids = set(list(seen_ids)[-8000:])
+                if len(seen_ids) > seen_ids.max_size:
+                    seen_ids.trim()
 
             except (VintedBlockError, VintedRateLimitError) as block_exc:
                 consecutive_blocks += 1

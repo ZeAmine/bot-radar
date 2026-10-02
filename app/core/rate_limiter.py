@@ -26,13 +26,19 @@ class SlidingWindowRateLimiter:
         # Repli mémoire : dict de deque de timestamps (float)
         self._memory_store: dict[str, deque[float]] = defaultdict(deque)
         self._last_cleanup: float = time.time()
+        # Client Redis partagé, construit paresseusement une seule fois par instance
+        self._redis_client: aioredis.Redis | None = None
 
     def _get_redis_client(self) -> aioredis.Redis | None:
+        """Retourne le client Redis de l'instance (pool de connexions partagé)."""
+        if self._redis_client is not None:
+            return self._redis_client
         if self._redis_pool_factory:
             try:
                 pool = self._redis_pool_factory()
                 if pool:
-                    return aioredis.Redis(connection_pool=pool)
+                    self._redis_client = aioredis.Redis(connection_pool=pool)
+                    return self._redis_client
             except Exception as exc:
                 logger.warning("Échec d'obtention de connexion Redis pour rate-limiter: %s", exc)
         return None
@@ -87,7 +93,7 @@ class SlidingWindowRateLimiter:
                 # Trop de requêtes : récupérer le plus ancien élément pour calculer retry_after
                 oldest = await client.zrange(redis_key, 0, 0, withscores=True)
                 if oldest:
-                    oldest_time = oldest[0][1]
+                    oldest_time = float(oldest[0][1])
                     retry_after = max(1, int(window_seconds - (now - oldest_time)))
                 else:
                     retry_after = window_seconds
@@ -95,8 +101,6 @@ class SlidingWindowRateLimiter:
                 return False, 0, retry_after
             except Exception as exc:
                 logger.debug("Repli sur rate-limiter mémoire suite erreur Redis: %s", exc)
-            finally:
-                await client.aclose()
 
         # 2. Repli en mémoire locale
         self._cleanup_memory_if_needed(now)

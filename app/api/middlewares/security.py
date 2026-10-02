@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
@@ -42,7 +43,7 @@ class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
     """Rejette immédiatement les requêtes dont la taille dépasse la limite
     autorisée (Anti-OOM / Anti-DDoS)."""
 
-    def __init__(self, app: Callable, max_bytes: int = 524_288) -> None:  # 512 Ko par défaut
+    def __init__(self, app: Callable[..., Any], max_bytes: int = 524_288) -> None:  # 512 Ko
         super().__init__(app)
         self.max_bytes = max_bytes
 
@@ -82,15 +83,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ("/api/v1/telegram/webhook", 120, 60), # Webhook Telegram (120 req/min)
     ]
 
-    def __init__(self, app: Callable, limiter: SlidingWindowRateLimiter | None = None) -> None:
+    def __init__(
+        self, app: Callable[..., Any], limiter: SlidingWindowRateLimiter | None = None
+    ) -> None:
         super().__init__(app)
         self.limiter = limiter or rate_limiter
 
     @staticmethod
     def _get_client_ip(request: Request) -> str:
+        """Résout l'IP cliente en faisant confiance au dernier hop du proxy.
+
+        La passerelle (Caddy) *ajoute* l'IP réelle en fin de `X-Forwarded-For`.
+        Prendre le premier élément laisserait un client forger un en-tête unique par
+        requête et contourner entièrement le rate limiting. On retient donc la
+        dernière IP non vide, posée par notre proxy de confiance, avec repli sur
+        l'adresse de la socket pour les connexions directes.
+        """
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
-            return forwarded.split(",")[0].strip()
+            hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+            if hops:
+                return hops[-1]
         if request.client and request.client.host:
             return request.client.host
         return "unknown"

@@ -108,11 +108,6 @@ class ListingRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def matched_alert_ids(self, listing_id: uuid.UUID) -> set[uuid.UUID]:
-        """Identifiants d'alertes déjà associées à cette annonce."""
-        notified, pending = await self.match_notification_state(listing_id)
-        return notified | pending
-
     async def match_notification_state(
         self,
         listing_id: uuid.UUID,

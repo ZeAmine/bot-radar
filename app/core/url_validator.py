@@ -91,7 +91,7 @@ def is_safe_external_url(
                         f"Le domaine {hostname} résout vers une IP privée "
                         f"interdite ({ip_str})"
                     )
-        except (socket.gaierror, socket.herror, Exception) as dns_exc:
+        except (OSError, ValueError) as dns_exc:
             return False, f"Échec de résolution DNS pour {hostname}: {dns_exc}"
 
     return True, None

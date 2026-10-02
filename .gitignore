@@ -55,3 +55,6 @@ redis_data/
 
 # Scratch & temporary development scripts
 scratch/
+
+# Artefacts de l'IDE Freebuff (identifiant de projet local)
+.freebuff/
