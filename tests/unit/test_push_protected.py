@@ -21,6 +21,7 @@ from push_protected import (  # noqa: E402
     REFUSED,
     UNVERIFIED,
     GhProtection,
+    api_error,
     check_local,
     diff_states,
     push_window,
@@ -72,14 +73,14 @@ class _FakeClient:
         self.calls.append("state")
         return (0, self.state_value) if self.state_value is not None else (1, None)
 
-    def remove(self) -> int:
+    def remove(self):
         self.calls.append("remove")
-        return 0
+        return 0, ""
 
-    def restore(self, payload) -> int:
+    def restore(self, payload):
         self.calls.append("restore")
         self.restored_payload = payload
-        return self.restore_code
+        return self.restore_code, "422 : schéma refusé" if self.restore_code else ""
 
 
 def test_successful_window_deletes_pushes_and_restores_in_that_order():
@@ -115,11 +116,18 @@ def test_protection_is_restored_when_the_push_raises():
     assert "restore" in client.calls
 
 
-def test_a_failed_restore_is_reported_rather_than_hidden():
-    """Un PUT en échec s'affiche bruyamment : c'est le seul cas à reprendre à la main."""
+def test_a_failed_restore_names_the_reason(capsys):
+    """Un PUT en échec s'affiche bruyamment, raison de l'API comprise.
+
+    Le message d'un `422` est ce qui distingue un corps mal formé d'un réseau en
+    panne : sans lui, la branche était nue et rien ne l'expliquait.
+    """
     client = _FakeClient(restore_code=1)
 
     assert push_window(client, lambda: 0) == UNVERIFIED
+    out = capsys.readouterr().out
+    assert "422 : schéma refusé" in out
+    assert "nue" in out
 
 
 def test_a_restored_state_that_differs_is_reported(capsys):
@@ -167,14 +175,24 @@ def test_payload_keeps_the_status_check_and_drops_the_urls():
     """Le PUT ne supporte pas les URL du GET : elles feraient échouer la restauration."""
     payload = restore_payload(CAPTURED)
 
-    assert payload["required_status_checks"] == {
-        "strict": False,
-        "contexts": ["check"],
-        "checks": [{"context": "check", "app_id": 15368}],
-    }
-    assert payload["enforce_admins"] == {"enabled": True}
-    assert payload["allow_force_pushes"] == {"enabled": False}
+    assert payload["required_status_checks"] == {"strict": False, "contexts": ["check"]}
+    assert payload["enforce_admins"] is True
+    assert payload["allow_force_pushes"] is False
     assert "url" not in json.dumps(payload)
+
+
+def test_payload_uses_the_shape_the_api_accepts():
+    """Deux `422` ont appris la forme : booléens nus, et `checks` hors du PUT.
+
+    GitHub refuse `{"enabled": false}` là où il attend `false`, et refuse `checks`
+    dès que `contexts` est présent. Le check est donc rejoué par son nom de
+    contexte : le `GET` suivant retrouve le même `app_id`.
+    """
+    payload = restore_payload(CAPTURED)
+
+    assert "enabled" not in json.dumps(payload)
+    assert set(payload["required_status_checks"]) == {"strict", "contexts"}
+    assert payload["allow_force_pushes"] is False
 
 
 def test_payload_round_trips_to_an_identical_state():
@@ -189,15 +207,22 @@ def test_diff_names_the_setting_that_drifted():
     after = _copy(CAPTURED)
     after["enforce_admins"] = {"enabled": False}
 
-    assert diff_states(CAPTURED, after) == [
-        "enforce_admins : attendu {'enabled': True}, obtenu {'enabled': False}"
-    ]
+    assert diff_states(CAPTURED, after) == ["enforce_admins : attendu True, obtenu False"]
 
 
 def test_unrestorable_ignores_a_disabled_signature_requirement():
     """Un réglage présent mais désactivé se restaite très bien."""
     assert unrestorable(CAPTURED) == []
     assert unrestorable({}) == []
+
+
+def test_a_status_check_without_a_context_cannot_be_replayed():
+    """Un check épinglé à une application n'a pas de nom à renvoyer : on refuse."""
+    pinned = _copy(CAPTURED)
+    pinned["required_status_checks"]["contexts"] = []
+
+    assert unrestorable(pinned) == ["required_status_checks sans contexte"]
+    assert push_window(_FakeClient(state=pinned), lambda: 0) == REFUSED
 
 
 def test_local_check_refuses_a_dirty_tree(monkeypatch):
@@ -224,6 +249,19 @@ def test_local_check_passes_on_a_clean_tree(monkeypatch):
     monkeypatch.setattr(push_protected, "run", fake_run)
 
     assert check_local() == (OK, "")
+
+
+def test_api_error_reads_the_message_github_refuses_with():
+    """Le `message` de l'API nomme le champ fautif : c'est la seule piste au `422`."""
+    body = json.dumps({"message": "Invalid request.\nNo subschema in anyOf matched."})
+
+    assert api_error(body, "") == "Invalid request."
+
+
+def test_api_error_falls_back_to_the_last_line_of_stderr():
+    """Sans corps JSON, la dernière ligne de `gh` reste la meilleure cause connue."""
+    assert api_error("", "gh: Invalid request.\n") == "gh: Invalid request."
+    assert api_error("", "") == "raison inconnue"
 
 
 def test_client_hits_the_branch_protection_endpoint():

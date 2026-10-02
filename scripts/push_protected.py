@@ -3,14 +3,24 @@
 
 `main` exige le status check `check`, et la CI ne peut pas tourner sur un commit qui
 n'existe pas encore sur GitHub. Le push direct est donc refusé, et la procédure
-documentée dans AGENTS.md consisted in six commandes `gh api` à recopier — dont
+documentée dans AGENTS.md consistait en six commandes `gh api` à recopier — dont
 deux (`DELETE` puis `PUT`) qui laissent la branche nue si l'une d'elles échoue.
 
-Ce script fait la même chose en un geste, avec une propriété que la procédure
-manuelle n'offre pas : la restauration est dans un `finally`. Un push rejeté, une
-exception ou un Ctrl-C rendent la protection exactement dans l'état où le script
-l'a trouvée. Ce qu'aucun `finally` ne couvre est un `SIGKILL` ; la fenêtre est
-donc courte, et l'état restauré est relu après coup pour le prouver.
+Ce script fait la même chose en un geste, avec deux propriétés que la procédure
+manuelle n'offre pas :
+
+- la restauration est dans un `finally` : un push rejeté, une exception ou un
+  Ctrl-C rendent la protection exactement dans l'état où le script l'a trouvée ;
+- l'état relu après le `PUT` est comparé à l'état capturé, parce que le `PUT`
+  répond `200` même quand une valeur n'a pas pris (`allow_fork_syncing`).
+
+Ce que le `PUT` refuse, et que le script a appris à ses dépens sur un `422` :
+chaque drapeau est un **booléen nu** (`"allow_force_pushes": false`, jamais
+`{"enabled": false}`), et `contexts` et `checks` sont **exclusifs** dans
+`required_status_checks` — un check épinglé à une application se rejoue par son
+nom de contexte, pas par son `app_id`. Le message d'erreur de l'API est donc
+affiché tel quel : c'est la seule chose qui distingue une dérive de schéma d'un
+réseau en panne.
 
 Usage :
     python scripts/push_protected.py                    # pousse sur main
@@ -21,7 +31,7 @@ Codes de retour :
     0  poussé, protection restaurée à l'identique
     1  refus avant toute action (arbre sale, gh absent, état non restaurable)
     2  le push a échoué, la protection a été restaurée
-    3  la restauration n'a pas pu être vérifiée : à reprendre à la main
+    3  la restauration a échoué ou diffère : la branche est à reprendre à la main
 """
 
 from __future__ import annotations
@@ -33,7 +43,6 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -53,8 +62,9 @@ DEFAULT_BRANCH = "main"
 # script : il est refusé avant toute suppression, pas restauré à moitié.
 UNSETTABLE_FIELDS = ("block_creations", "required_signatures")
 
-# Réglages que le PUT accepte sous forme d'objet `{"enabled": bool}`.
+# Réglages que le PUT accepte sous forme de booléen nu.
 BOOLEAN_SETTINGS = (
+    "enforce_admins",
     "required_linear_history",
     "allow_force_pushes",
     "allow_deletions",
@@ -63,6 +73,10 @@ BOOLEAN_SETTINGS = (
     "allow_fork_syncing",
 )
 
+# L'API rend un `message` de plusieurs lignes, verbeux et sans interest pour
+# l'affichage : on garde la première phrase, qui nomme la cause.
+MAX_ERROR_CHARS = 160
+
 OK, REFUSED, PUSH_FAILED, UNVERIFIED = 0, 1, 2, 3
 
 
@@ -70,7 +84,7 @@ def run(argv: list[str], stdin: str | None = None) -> tuple[int, str, str]:
     """Exécute une commande et rend ses trois issues.
 
     La sortie d'erreur compte autant que la standard : `git push` écrit son compte
-    rendu sur stderr, et `gh auth status` se plaint sur cette sortie.
+    rendu sur stderr, et `gh` signale un refus de l'API dessus.
     """
     try:
         proc = subprocess.run(argv, input=stdin, capture_output=True, text=True)
@@ -79,48 +93,81 @@ def run(argv: list[str], stdin: str | None = None) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def _enabled(node: Any) -> bool:
-    return isinstance(node, dict) and node.get("enabled") is True
+def api_error(out: str, err: str) -> str:
+    """La cause d'un refus d'API, en une ligne.
+
+    Sans elle, un `PUT` rejeté se lisait « la protection n'a pas été remise » : le
+    message de l'API, lui, nomme le champ fautif. C'est la différence entre
+    chercher et savoir.
+    """
+    try:
+        body = json.loads(out)
+    except json.JSONDecodeError:
+        body = None
+    if isinstance(body, dict) and body.get("message"):
+        return str(body["message"]).splitlines()[0][:MAX_ERROR_CHARS]
+    for stream in (err, out):
+        lines = [line for line in stream.splitlines() if line.strip()]
+        if lines:
+            return lines[-1][:MAX_ERROR_CHARS]
+    return "raison inconnue"
+
+
+def _flag(state: dict[str, Any], name: str, default: bool = False) -> bool:
+    """Un drapeau du `GET`, lu dans son objet `{"enabled": …}`.
+
+    Absent du `GET`, le drapeau prend `default` : c'est le cas de `enforce_admins`,
+    où la règle du dépôt (le propriétaire n'échappe pas à la protection) est plus
+    sûre que l'absence du champ.
+    """
+    node = state.get(name)
+    if node is None:
+        return default
+    if isinstance(node, dict):
+        return node.get("enabled") is True
+    return bool(node)
 
 
 def unrestorable(state: dict[str, Any]) -> list[str]:
     """Réglages capturés que ce script ne sait pas remettre en place."""
-    return [name for name in UNSETTABLE_FIELDS if _enabled(state.get(name))]
+    blocked = [name for name in UNSETTABLE_FIELDS if _flag(state, name)]
+    status = state.get("required_status_checks")
+    if isinstance(status, dict) and not (status.get("contexts") or []):
+        # Un check épinglé à une application sans nom de contexte ne se rejoue
+        # pas : le PUT refuse `checks` dès que `contexts` est présent.
+        blocked.append("required_status_checks sans contexte")
+    return blocked
 
 
 def restore_payload(state: dict[str, Any]) -> dict[str, Any]:
-    """Le corps du `PUT` qui remet l'état capturé, sans les URL du `GET`.
+    """Le corps du `PUT` qui remet l'état capturé, dans la forme que l'API accepte.
 
-    Le GET répond des URL de sous-ressources (`url`, `contexts_url`) : les renvoyer
-    dans le PUT le fait échouer. On ne garde que ce que l'endpoint accepte.
+    Deux pièges, tous deux répondus par un `422` muet sur le contexte :
 
-    `enforce_admins` absent du GET vaut « actif » : c'est la règle du dépôt
-    (le propriétaire n'échappe pas à la protection), pas un défaut à corriger en
-    silence si GitHub cessait de renvoyer le champ.
+    - le `GET` répond des URL de sous-ressources (`url`, `contexts_url`) : les
+      renvoyer fait échouer le PUT ;
+    - les drapeaux sont des booléens nus, et `contexts` exclut `checks` (dont
+      l'`app_id` est refusé). On rejoue donc le check par son nom de contexte :
+      le `GET` suivant retrouve le même `app_id`, GitHub le redérivant.
+
+    `enforce_admins` absent du GET vaut « actif » : c'est la règle du dépôt, pas
+    un défaut à corriger en silence si GitHub cessait de renvoyer le champ.
     """
     payload: dict[str, Any] = {
         "required_status_checks": None,
         "required_pull_request_reviews": None,
         "restrictions": None,
-        "enforce_admins": {
-            "enabled": True
-            if state.get("enforce_admins") is None
-            else _enabled(state["enforce_admins"])
-        },
     }
 
     status = state.get("required_status_checks")
     if isinstance(status, dict):
-        checks: dict[str, Any] = {
+        payload["required_status_checks"] = {
             "strict": bool(status.get("strict", False)),
             "contexts": list(status.get("contexts") or []),
         }
-        if status.get("checks"):
-            checks["checks"] = list(status["checks"])
-        payload["required_status_checks"] = checks
 
     for name in BOOLEAN_SETTINGS:
-        payload[name] = {"enabled": _enabled(state.get(name))}
+        payload[name] = _flag(state, name, default=(name == "enforce_admins"))
     return payload
 
 
@@ -139,12 +186,12 @@ def diff_states(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
     ]
 
 
-@dataclass
 class GhProtection:
     """L'API de protection de branche, telle que `gh` l'expose."""
 
-    repo: str = DEFAULT_REPO
-    branch: str = DEFAULT_BRANCH
+    def __init__(self, repo: str = DEFAULT_REPO, branch: str = DEFAULT_BRANCH) -> None:
+        self.repo = repo
+        self.branch = branch
 
     @property
     def path(self) -> str:
@@ -161,14 +208,44 @@ class GhProtection:
             return 1, None
         return 0, parsed
 
-    def remove(self) -> int:
-        return run(["gh", "api", "-X", "DELETE", self.path])[0]
+    def remove(self) -> tuple[int, str]:
+        code, out, err = run(["gh", "api", "-X", "DELETE", self.path])
+        return code, "" if code == 0 else api_error(out, err)
 
-    def restore(self, payload: dict[str, Any]) -> int:
-        return run(
+    def restore(self, payload: dict[str, Any]) -> tuple[int, str]:
+        code, out, err = run(
             ["gh", "api", "-X", "PUT", self.path, "--input", "-"],
             stdin=json.dumps(payload),
-        )[0]
+        )
+        return code, "" if code == 0 else api_error(out, err)
+
+
+def restore_and_verify(client: Any, state: dict[str, Any], started: float) -> int:
+    """Remet la protection en place, relit l'état, et rend le verdict.
+
+    Le `PUT` répond 200 même quand une valeur n'a pas pris (`allow_fork_syncing`) :
+    la seule preuve est le `GET` qui suit, comparé à l'état capturé.
+    """
+    elapsed = time.monotonic() - started
+    code, reason = client.restore(restore_payload(state))
+    if code != 0:
+        print(
+            f"{RED}ALERTE{RESET} la protection n'a pas été remise après {elapsed:.1f}s — "
+            f"{reason}\n  {DIM}La branche est nue. Rejoue le corps du PUT de "
+            f"`make push PUSH_ARGS=--dry-run`, puis rejoue `make verify-deploy`.{RESET}"
+        )
+        return UNVERIFIED
+    print(f"{GREEN}Protection restaurée{RESET} {DIM}en {elapsed:.1f}s.{RESET}")
+
+    final_code, final_state = client.state()
+    if final_code != 0 or final_state is None:
+        print(f"{RED}ALERTE{RESET} l'état restauré est illisible : à vérifier à la main.")
+        return UNVERIFIED
+
+    divergences = diff_states(state, final_state)
+    for divergence in divergences:
+        print(f"{RED}ÉCART{RESET} {divergence}")
+    return UNVERIFIED if divergences else OK
 
 
 def push_window(
@@ -203,8 +280,12 @@ def push_window(
         return OK
 
     started = time.monotonic()
-    if client.remove() != 0:
-        print(f"{RED}Échec{RESET} la protection n'a pas pu être levée : rien n'a été poussé.")
+    code, reason = client.remove()
+    if code != 0:
+        print(
+            f"{RED}Échec{RESET} la protection n'a pas pu être levée ({reason}) : "
+            f"rien n'a été poussé."
+        )
         return REFUSED
 
     print(f"{YELLOW}Protection levée{RESET} {DIM}pousser maintenant.{RESET}")
@@ -226,34 +307,8 @@ def push_window(
     return OK
 
 
-def restore_and_verify(client: Any, state: dict[str, Any], started: float) -> int:
-    """Remet la protection en place, relit l'état, et rend le verdict.
-
-    Le `PUT` répond 200 même quand une valeur n'a pas pris (`allow_fork_syncing`) :
-    la seule preuve est le `GET` qui suit, comparé à l'état capturé.
-    """
-    elapsed = time.monotonic() - started
-    if client.restore(restore_payload(state)) != 0:
-        print(
-            f"{RED}ALERTE{RESET} la protection n'a pas été remise ({elapsed:.1f}s de fenêtre) "
-            f"— rejoue le PUT affiché par --dry-run."
-        )
-        return UNVERIFIED
-    print(f"{GREEN}Protection restaurée{RESET} {DIM}en {elapsed:.1f}s.{RESET}")
-
-    final_code, final_state = client.state()
-    if final_code != 0 or final_state is None:
-        print(f"{RED}ALERTE{RESET} l'état restauré est illisible : à vérifier à la main.")
-        return UNVERIFIED
-
-    divergences = diff_states(state, final_state)
-    for divergence in divergences:
-        print(f"{RED}ÉCART{RESET} {divergence}")
-    return UNVERIFIED if divergences else OK
-
-
-def check_local(report_gh: bool = True) -> tuple[int, str]:
-    """L'arbre est propre, la branche est la bonne, `gh` répond : trois préconditions.
+def check_local() -> tuple[int, str]:
+    """L'arbre est propre et `gh` répond : deux préconditions.
 
     Pousser un arbre sale laisserait le code déployé différent de GitHub, et le
     pré-vol de `make deploy` le refuse ensuite : mieux vaut l'apprendre ici.
@@ -264,10 +319,8 @@ def check_local(report_gh: bool = True) -> tuple[int, str]:
     if out.strip():
         return REFUSED, f"{len(out.splitlines())} fichier(s) non commité(s)"
 
-    if report_gh:
-        code, _, _ = run(["gh", "auth", "status"])
-        if code != 0:
-            return REFUSED, "`gh` absent ou non authentifié"
+    if run(["gh", "auth", "status"])[0] != 0:
+        return REFUSED, "`gh` absent ou non authentifié"
     return OK, ""
 
 
