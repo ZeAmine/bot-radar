@@ -416,10 +416,16 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     message.answer.assert_awaited_once()
     assert "L'IA analyse votre demande" in message.answer.call_args[0][0]
 
-    loading_message.edit_text.assert_awaited_once()
+    # Le message d'attente progresse en deux fois : le jalon « ouvrage trouvé », puis
+    # le récap. Le seul `answer` reste le message d'attente initial.
+    assert loading_message.edit_text.await_count == 2
+    milestone = loading_message.edit_text.await_args_list[0][0][0]
+    assert "🔎 <b>Asterix tome 1</b> identifié" in milestone
+
     edited_text = loading_message.edit_text.call_args[0][0]
-    # Le récap remplace le message d'attente, sans bannière redondante au-dessus.
-    assert edited_text.startswith("🔢 <b>ISBN :</b>")
+    # Le récap porte l'en-tête du langage naturel, qui décrit ce chemin et lui seul.
+    assert edited_text.startswith("🪄 <b>Alerte configurée en langage naturel !</b>")
+    assert "🔢 <b>ISBN :</b> <code>9782012101333</code>" in edited_text
     assert "📌 <b>Titre :</b> Asterix tome 1" in edited_text
     assert "🎯 <b>Prix max :</b> 10,00 €" in edited_text
     state.set_state.assert_called_with(AlertCreationState.confirm_creation)

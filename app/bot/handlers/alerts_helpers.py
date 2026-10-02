@@ -154,6 +154,15 @@ def format_semi_auto_recap(
     edition_lines = format_edition_line(edition_alternatives, isbn)
     if edition_lines:
         lines.extend(["", *edition_lines])
+
+    # Le pied de confirmation est porté par la carte elle-même : tous les chemins qui
+    # aboutissent ici finissent sur le même clavier, donc une seule formulation, et
+    # aucune ne peut la laisser de côté.
+    lines.extend(["", "Confirmer la création de cette alerte ?"])
+    lines.append(
+        "\n<i>Clique sur « Créer l'alerte » pour valider "
+        "ou « Modifier » pour ajuster.</i>"
+    )
     return "\n".join(lines)
 
 

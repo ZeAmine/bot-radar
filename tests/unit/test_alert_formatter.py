@@ -181,6 +181,22 @@ def test_recap_escapes_isbn_note_alongside_keywords():
     assert "non confirmé &lt;b&gt;BNF&lt;/b&gt;" in recap
 
 
+def test_recap_always_closes_on_the_confirmation_it_expects():
+    """Le pied de confirmation appartient à la carte, pas à un point d'appel.
+
+    Tous les chemins qui affichent ce récap finissent sur le même clavier. Quand le
+    pied vivait chez l'appelant, `/add` en langage naturel l'affichait et le récap
+    manuel l'avait perdu : la question à poser se trouvait deux fois, et seulement
+    à un endroit. Ici elle est écrite une fois, donc présente partout.
+    """
+    recap = _recap()
+
+    assert recap.rstrip().endswith(
+        "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
+    )
+    assert recap.count("Confirmer la création de cette alerte ?") == 1
+
+
 def test_strip_html_tags_produces_readable_plain_text():
     """Le repli anti-boucle rend un texte lisible, entités décodées."""
     plain = strip_html_tags("🎯 <b>Nom :</b> PS5 &amp; Switch<br>prix 12 €")

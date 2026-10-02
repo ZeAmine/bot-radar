@@ -57,7 +57,7 @@ Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomiqu
 - Python 3.12, FastAPI, aiogram 3, SQLAlchemy asyncio, Alembic, Redis, APScheduler, httpx, Pydantic v2.
 - Un seul processus de production : `uvicorn app.main:app` dans `radar_app` (API + webhook Telegram + scheduler + poller Vinted).
 - PostgreSQL 16, Redis 7, passerelle centralisée `caddy_gateway` via réseau Docker `web_gateway` (HTTPS). Compose : [compose.yml](compose.yml).
-- Tests : pytest + pytest-asyncio (469 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
+- Tests : pytest + pytest-asyncio (484 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
 
 ## Architecture des couches
 
@@ -163,10 +163,17 @@ Hôte : `ubuntu@88.96.56.44`. Clé : `~/.ssh/ssh-key-2026-09-10.key`. Répertoir
 
 Exécuter **soi-même** les commandes (réseau + clé SSH), ne pas demander à l’utilisateur de copier-coller.
 
+Un push ne déploie rien : `~/bot-radar` n’est pas un dépôt git, c’est une cible `rsync` (`--exclude .git`). Les deux dérives qui ont déjà survécu à des pushes verts — code jamais envoyé, `APP_ENV` resté à `development` — sont invisibles depuis le dépôt local. D’où le contrôle, avant et après :
+
+```bash
+make preflight        # APP_ENV, secrets, un seul scheduler, migration en tête, écart de code
+```
+
 Synchronisation (n’exclut pas `.env` distant : **ne pas** envoyer un `.env` local par accident ; le rsync ci-dessous ne cible pas `.env` s’il est absent du filtre, mais un `.env` local **écraserait** la prod s’il est présent — vérifier avant) :
 
 ```bash
-rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude '.git' --exclude '.env' --exclude 'vendor' \
+rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+  --exclude '.mypy_cache' --exclude '.ruff_cache' --exclude '.git' --exclude '.env' --exclude 'vendor' \
   -e "ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no" \
   ./ ubuntu@88.96.56.44:~/bot-radar/
 ```
@@ -186,6 +193,8 @@ ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56
 ```
 
 Contrôles : `radar_app` healthy, `https://radar.aminezegmou.fr/health` 200, pas de conteneur worker, pas de log `Secrets de production vides`, scheduler démarré. Ne pas dumper de tokens dans les logs collectés.
+
+Puis `make verify-deploy` : les mêmes contrôles, mais cette fois un écart de code est fatal. Un déploiement n’est terminé que lorsqu’il passe.
 
 Ne pas committer ni pousser sauf demande. Ne pas `--force` git.
 

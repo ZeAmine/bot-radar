@@ -464,3 +464,88 @@ async def test_add_end_to_end_typed_isbn_beats_model_proposal():
     finally:
         for entered in reversed(patches):
             entered.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_natural_add_shows_the_book_found_before_looking_for_variants():
+    """`/add` progresse en deux temps : l'ouvrage trouvé, puis les variantes.
+
+    Le message d'attente est mis à jour sur place : l'utilisateur voit l'étape en
+    cours au lieu d'un silence entre la recherche et le récap.
+    """
+    resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
+    bnf = _fake_bnf(resolution)
+    client = _fake_deepseek(_deepseek_payload())
+    repos = _repositories(BNF_EDITION.isbn13)
+
+    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    state = DraftState()
+
+    patches = _patched(repos, bnf, client)
+    for entered in patches:
+        entered.start()
+    try:
+        await start_add_alert(message, state, AsyncMock(), User(
+            id=uuid.uuid4(), telegram_user_id=123
+        ))
+
+        # Deux éditions successives : le jalon, puis le récap final.
+        assert loading_message.edit_text.await_count == 2
+        milestone = loading_message.edit_text.await_args_list[0][0][0]
+        assert "🔎 <b>La couleur des choses</b> identifié" in milestone
+        assert "<i>Martin Panchaud · Çà et là</i>" in milestone
+        assert "Recherche des variantes de frappe et des exclusions" in milestone
+
+        milestone_kb = loading_message.edit_text.await_args_list[0][1]["reply_markup"]
+        assert [
+            button.text for row in milestone_kb.inline_keyboard for button in row
+        ] == ["🔍 Variantes & exclusions en cours..."]
+
+        recap = _recap_text(loading_message)
+        assert recap.startswith("🪄 <b>Alerte configurée en langage naturel !</b>")
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_natural_add_applies_variants_without_asking_for_a_click():
+    """Les variantes trouvées sont déjà dans le récap : aucun bouton ne les relance.
+
+    Le recalcul manuel a disparu du clavier parce qu'il ne peut plus rien apporter
+    que le brouillon ne contienne déjà, et qu'il douterait de l'automatisme.
+    """
+    resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
+    bnf = _fake_bnf(resolution)
+    client = _fake_deepseek(_deepseek_payload())
+    repos = _repositories(BNF_EDITION.isbn13)
+
+    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    state = DraftState()
+
+    patches = _patched(repos, bnf, client)
+    for entered in patches:
+        entered.start()
+    try:
+        await start_add_alert(message, state, AsyncMock(), User(
+            id=uuid.uuid4(), telegram_user_id=123
+        ))
+
+        recap = _recap_text(loading_message)
+        assert "✨ <b>Variantes :</b> couleurdeschoses" in recap
+        assert "🚫 <b>Exclus :</b> keeping two" in recap
+        assert "Confirmer la création de cette alerte ?" in recap
+        assert (
+            "<i>Clique sur « Créer l'alerte » pour valider "
+            "ou « Modifier » pour ajuster.</i>" in recap
+        )
+
+        keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
+        assert [
+            button.callback_data
+            for row in keyboard.inline_keyboard
+            for button in row
+        ].count("alert_create_ai_variants") == 0
+    finally:
+        for entered in reversed(patches):
+            entered.stop()

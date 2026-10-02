@@ -99,6 +99,26 @@ async def _finalize_loading_message(
         await event.answer(strip_html_tags(text), reply_markup=keyboard, parse_mode=None)
 
 
+async def _show_step(
+    loading_msg: Message | bool,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+) -> None:
+    """Fait avancer le jalon affiché, sans jamais rien bloquer.
+
+    Contrairement à `_finalize_loading_message`, un échec est silencieux : un jalon
+    est une information de confort, pas un résultat. On n'envoie surtout pas de second
+    message de repli — l'utilisateur verrait deux messages au lieu d'un qui progresse.
+    """
+    edit_text = getattr(loading_msg, "edit_text", None)
+    if not callable(edit_text):
+        return
+    try:
+        await edit_text(text, reply_markup=keyboard)
+    except Exception as exc:
+        logger.debug("Jalon non affiché : %s", exc)
+
+
 def _get_category_repo(session: Any) -> Any:
     import app.bot.handlers.alerts as alerts_mod
 
@@ -158,6 +178,33 @@ async def start_add_alert(
         # Parsing en langage naturel par le moteur IA configuré
         parsed = await natural_add_module.parse_prompt(inline_query)
         if parsed:
+            # Jalon : le produit est identifié, on enchaîne sur les variantes. Le
+            # message d'attente avance sur place plutôt que d'en ajouter un second.
+            found_details = " · ".join(
+                html.escape(bit) for bit in (parsed.author, parsed.publisher) if bit
+            )
+            step_text = f"🔎 <b>{html.escape(parsed.name)}</b> identifié"
+            if found_details:
+                step_text += f"\n\n<i>{found_details}</i>"
+            step_text += (
+                "\n\n⏳ <i>Recherche des variantes de frappe et des exclusions "
+                "propres à ce produit...</i>"
+            )
+            await _show_step(
+                loading_msg,
+                step_text,
+                InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="🔍 Variantes & exclusions en cours...",
+                                callback_data="noop",
+                            )
+                        ]
+                    ]
+                ),
+            )
+
             # Mots-clés ancrés sur la fiche réelle de l'ouvrage (BNF quand elle existe)
             ai_variants, ai_exclusions = (
                 await keyword_variants_module.generate_variants_and_exclusions(
@@ -193,9 +240,19 @@ async def start_add_alert(
             await state.update_data(data=state_data)
             await state.set_state(AlertCreationState.confirm_creation)
 
-            recap = recap_from_state(state_data)
+            # L'en-tête « langage naturel » n'a de sens que sur ce chemin : le récap
+            # manuel ne l'a pas mérité. Il reste ici, une seule fois.
+            recap = (
+                "🪄 <b>Alerte configurée en langage naturel !</b>\n\n"
+                f"{recap_from_state(state_data)}"
+            )
+            # Les variantes sont déjà appliquées ci-dessus : le bouton qui les
+            # recalculerait n'apporterait rien et ferait douter de l'automatisme.
             await _finalize_loading_message(
-                loading_msg, event, recap, creation_keyboard(state_data)
+                loading_msg,
+                event,
+                recap,
+                creation_keyboard(state_data, show_variants_btn=False),
             )
             return
 
