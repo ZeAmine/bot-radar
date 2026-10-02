@@ -185,6 +185,34 @@ Contrôles : `radar_app` healthy, `https://radar.aminezegmou.fr/health` 200, pas
 
 Ne pas committer ni pousser sauf demande. Ne pas `--force` git.
 
+**Protection de `main`** (actrice, à ne pas défaire) : le status check `check` est obligatoire et `enforce_admins` est actif, donc **le force-push est refusé, y compris par le propriétaire**. Pas de PR exigée : le dépôt est à un seul contributeur. Pour lever ponctuellement la protection :
+
+```bash
+gh api -X DELETE repos/ZeAmine/bot-radar/branches/main/protection
+```
+
+La remettre ensuite :
+
+```bash
+gh api -X PUT repos/ZeAmine/bot-radar/branches/main/protection --input - <<'JSON'
+{
+  "required_status_checks": { "strict": false, "contexts": ["check"] },
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "required_linear_history": false,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": false,
+  "lock_branch": false,
+  "allow_fork_syncing": true
+}
+JSON
+```
+
+Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
+
+
 Révision Alembic actuelle attendue : `0004_alert_books_book_id_index` (`ix_alert_books_book_id`). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
 
 ## IA
