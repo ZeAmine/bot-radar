@@ -208,7 +208,18 @@ Puis `make verify-deploy` : les mêmes contrôles, mais cette fois un écart de 
 
 Ne pas committer ni pousser sauf demande. Ne pas `--force` git.
 
-**Protection de `main`** (actrice, à ne pas défaire) : le status check `check` est obligatoire et `enforce_admins` est actif, donc **le force-push est refusé, y compris par le propriétaire**. Pas de PR exigée : le dépôt est à un seul contributeur. Pour lever ponctuellement la protection :
+**Protection de `main`** (actrice, à ne pas défaire) : le status check `check` est obligatoire et `enforce_admins` est actif, donc **le force-push est refusé, y compris par le propriétaire**. Pas de PR exigée : le dépôt est à un seul contributeur.
+
+Cette obligation rend le push direct impossible, et pas par prudence : la CI ne peut pas jouer le role `check` sur un commit qui n’existe pas encore sur GitHub. Lever la protection, pousser, la remettre est donc le seul chemin, en un geste :
+
+```bash
+make push                # lève la protection, pousse, la restaure
+make push PUSH_ARGS=--dry-run   # relit le plan et le corps du PUT
+```
+
+`scripts/push_protected.py` fait ce que la procédure manuelle ne garantissait pas : l’état lu par `GET` est celui qu’il renvoie par `PUT`, et la restauration est dans un `finally` — un push rejeté, une exception ou un `Ctrl-C` rendent la branche exactement comme le script l’a trouvée. Il refuse en amont ce qu’il ne saurait pas remettre (`required_signatures`, `block_creations` : absents du `PUT`), et sort en `3` si l’état relu diffère de l’état capturé. Codes : `0` poussé et restauré, `1` refus, `2` push refusé mais protection restaurée, `3` restauration non vérifiée.
+
+L’équivalent manuel, pour le cas où le script refuse ou que l’API change. Lever :
 
 ```bash
 gh api -X DELETE repos/ZeAmine/bot-radar/branches/main/protection
