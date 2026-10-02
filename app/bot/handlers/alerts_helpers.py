@@ -87,6 +87,17 @@ def extract_inline_price_and_clean_query(query_str: str) -> tuple[str, int | Non
     return clean_query, None
 
 
+def _join_escaped(values: list[str]) -> str:
+    """Joint des fragments issus du moteur IA en échappant chacun.
+
+    Mots-clés, variantes et états sont produits par le modèle : un `<b>` ou un `&`
+    glissé dans l'un d'eux fait rejeter tout le récap par Telegram, qui répond
+    « can't parse entities ». L'utilisateur reste alors bloqué sur
+    « Recherche IA en cours » parce que Telegram rejoue l'update.
+    """
+    return ", ".join(html.escape(str(value)) for value in values)
+
+
 def format_semi_auto_recap(
     title: str,
     author: str | None,
@@ -134,14 +145,14 @@ def format_semi_auto_recap(
     lines.extend(format_edition_lines(edition_alternatives, isbn))
 
     lines.append(f"🎯 <b>Prix max :</b> {price_str}")
-    lines.append(f"🔑 <b>Inclus :</b> {', '.join(include_keywords)}")
+    lines.append(f"🔑 <b>Inclus :</b> {_join_escaped(include_keywords)}")
     if variants:
-        lines.append(f"✨ <b>Variantes :</b> {', '.join(variants)}")
+        lines.append(f"✨ <b>Variantes :</b> {_join_escaped(variants)}")
     if exclude_keywords:
-        lines.append(f"🚫 <b>Exclus :</b> {', '.join(exclude_keywords)}")
+        lines.append(f"🚫 <b>Exclus :</b> {_join_escaped(exclude_keywords)}")
 
     cond_display = (
-        ", ".join(conditions)
+        _join_escaped(conditions)
         if conditions
         else "Neuf avec étiquette, Neuf sans étiquette, Très bon état"
     )

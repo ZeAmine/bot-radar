@@ -3,9 +3,11 @@
 import uuid
 
 from app.bot.formatter import format_alert_card, format_alert_recap, format_cents_to_euros
+from app.bot.handlers.alerts_helpers import format_semi_auto_recap
 from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.db.models.category import Category
+from app.utils.text import strip_html_tags
 
 
 def test_format_cents_to_euros():
@@ -116,3 +118,74 @@ def test_format_alerts_list_text():
     assert "<b>2.</b> 🟢 💻 <b>Switch Mario Kart 8</b>" in text
     assert "↳ Max : 30,00 €" in text
     assert "sans ISBN" not in text
+
+
+def _recap(**overrides):
+    """Récap minimal, avec des valeurs neutres sauf celles fournies."""
+    payload = {
+        "title": "La couleur des choses",
+        "author": "Martin Panchaud",
+        "publisher": "Çà et là",
+        "isbn": None,
+        "max_price_cents": 1200,
+        "include_keywords": ["La couleur des choses"],
+        "exclude_keywords": ["figurine"],
+        "category_slug": "bd_comics",
+        "conditions": None,
+        "variants": None,
+        "is_series": False,
+        "isbn_note": None,
+        "edition_alternatives": None,
+    }
+    payload.update(overrides)
+    return format_semi_auto_recap(**payload)
+
+
+def test_recap_escapes_model_output():
+    """Un mot-clé balisé par le modèle ne doit jamais casser le HTML du récap.
+
+    Telegram répond sinon « can't parse entities » et rejoue l'update : l'utilisateur
+    reste bloqué sur « Recherche IA en cours ».
+    """
+    recap = _recap(
+        include_keywords=["<b>Tomes</b>", "PS5 & Switch"],
+        exclude_keywords=["<i>figurine</i>"],
+        variants=["<code>couleurdeschoses</code>"],
+    )
+
+    assert "<b>Tomes</b>" not in recap
+    assert "<i>figurine</i>" not in recap
+    assert "<code>couleurdeschoses</code>" not in recap
+    assert "&lt;b&gt;Tomes&lt;/b&gt;" in recap
+    assert "PS5 &amp; Switch" in recap
+    assert "&lt;i&gt;figurine&lt;/i&gt;" in recap
+    assert "&lt;code&gt;couleurdeschoses&lt;/code&gt;" in recap
+    # Les balises du récap lui-même restent intactes.
+    assert "<b>Inclus :</b>" in recap
+    assert "<b>Exclus :</b>" in recap
+
+
+def test_recap_escapes_model_conditions():
+    """Les états acceptés viennent aussi du modèle : ils sont échappés."""
+    recap = _recap(conditions=["Neuf & scellé", "Très bon <état>"])
+
+    assert "Neuf &amp; scellé" in recap
+    assert "Très bon &lt;état&gt;" in recap
+    assert "<état>" not in recap
+
+
+def test_recap_escapes_isbn_note_alongside_keywords():
+    """Le chemin sans ISBN vérifié signale la provenance : rien ne doit être nu."""
+    recap = _recap(include_keywords=["<b>ASTON</b>"], isbn_note="non confirmé <b>BNF</b>")
+
+    assert "<b>ASTON</b>" not in recap
+    assert "non confirmé &lt;b&gt;BNF&lt;/b&gt;" in recap
+
+
+def test_strip_html_tags_produces_readable_plain_text():
+    """Le repli anti-boucle rend un texte lisible, entités décodées."""
+    plain = strip_html_tags("🎯 <b>Nom :</b> PS5 &amp; Switch<br>prix 12 €")
+
+    assert plain == "🎯 Nom : PS5 & Switchprix 12 €"
+    assert "<" not in plain
+    assert "&amp;" not in plain

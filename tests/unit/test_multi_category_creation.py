@@ -4,7 +4,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.bot.handlers.alerts import (
     back_to_recap,
@@ -746,3 +746,59 @@ async def test_select_alert_creation_edition_rejects_out_of_range_index():
     state.update_data.assert_not_called()
     callback.answer.assert_awaited_once_with("Édition inconnue.", show_alert=True)
 
+
+@pytest.mark.asyncio
+async def test_finalize_loading_message_falls_back_to_plain_text():
+    """Un refus de formatage Telegram ne doit pas remonter au webhook.
+
+    Un handler qui lève vaut « update non traité » pour Telegram, qui rejoue alors le
+    même update : l'utilisateur voit « Recherche IA en cours » en boucle.
+    """
+    from aiogram.exceptions import TelegramBadRequest
+
+    from app.bot.handlers.alerts_create import _finalize_loading_message
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    # Dans l'incident, l'édition du message d'attente échoue puis l'envoi aussi :
+    # c'est ce second échec qui faisait remonter l'exception au webhook.
+    loading_msg = AsyncMock()
+    loading_msg.edit_text = AsyncMock(side_effect=TelegramBadRequest(
+        method=None, message="message is not modified"
+    ))
+
+    event = AsyncMock()
+    event.answer = AsyncMock(
+        side_effect=[
+            TelegramBadRequest(method=None, message="can't parse entities"),
+            None,
+        ]
+    )
+
+    await _finalize_loading_message(
+        loading_msg,
+        event,
+        "🎯 <b>Récapitulatif</b>\n📌 <b>Nom :</b> ASTON & PS5",
+        keyboard,
+    )
+
+    assert event.answer.await_count == 2
+    final_call = event.answer.await_args_list[1]
+    assert "<b>" not in final_call.args[0]
+    assert "&amp;" in final_call.args[0] or "&" in final_call.args[0]
+    assert final_call.kwargs["parse_mode"] is None
+
+
+@pytest.mark.asyncio
+async def test_finalize_loading_message_does_not_swallow_other_errors():
+    """Un échec réseau reste une panne : il doit remonter, pas être masqué en texte brut."""
+    from app.bot.handlers.alerts_create import _finalize_loading_message
+
+    loading_msg = AsyncMock()
+    loading_msg.edit_text = AsyncMock(side_effect=RuntimeError("non éditable"))
+    event = AsyncMock()
+    event.answer = AsyncMock(side_effect=ConnectionError("réseau indisponible"))
+
+    with pytest.raises(ConnectionError):
+        await _finalize_loading_message(
+            loading_msg, event, "texte", InlineKeyboardMarkup(inline_keyboard=[])
+        )

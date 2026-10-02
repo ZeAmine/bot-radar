@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from aiogram import F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -46,7 +47,7 @@ from app.services.alert_service import (
     AlertServiceError,
     parse_price_to_cents,
 )
-from app.utils.text import normalize_text
+from app.utils.text import normalize_text, strip_html_tags
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,16 @@ async def _finalize_loading_message(
             return
     except Exception:
         pass
-    await event.answer(text, reply_markup=keyboard)
+
+    try:
+        await event.answer(text, reply_markup=keyboard)
+    except TelegramBadRequest as exc:
+        # Un handler qui lève vaut « update non traité » pour Telegram, qui rejoue
+        # alors le même update : l'utilisateur voit « Recherche IA en cours » en
+        # boucle. Un refus de formatage HTML est un défaut de rendu, pas une panne :
+        # on le journalise et on renvoie le récap sans balisage.
+        logger.warning("Réponse Telegram refusée (%s), renvoi du récap en texte brut.", exc)
+        await event.answer(strip_html_tags(text), reply_markup=keyboard, parse_mode=None)
 
 
 def _get_category_repo(session: Any) -> Any:

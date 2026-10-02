@@ -1,5 +1,6 @@
 """Utilitaires purs de normalisation et de manipulation textuelle."""
 
+import html as html_lib
 import re
 import unicodedata
 
@@ -47,3 +48,12 @@ def contains_keyword(text: str | None, keyword: str | None) -> bool:
     words = norm_kw.split()
     pattern = r"\b" + r"\s+".join(re.escape(w) for w in words) + r"\b"
     return bool(re.search(pattern, norm_text))
+
+
+def strip_html_tags(text: str) -> str:
+    """Retire les balises d'un message Telegram et rend les entités HTML lisibles.
+
+    Sert de repli quand Telegram refuse un message : l'utilisateur reçoit le texte
+    brut plutôt que de rester bloqué sur un message d'attente.
+    """
+    return html_lib.unescape(re.sub(r"<[^>]+>", "", text))
