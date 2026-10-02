@@ -108,10 +108,7 @@ async def test_ingest_valid_listing_and_duplicate(authenticated_client: AsyncCli
         "condition": "Très bon état",
         "seller_name": "vendeur-test",
         "seller_rating": 4.9,
-        "photos": [
-            "https://cdn.example.com/photo-1.jpg",
-            "https://cdn.example.com/photo-2.jpg",
-        ],
+        "photos": ["https://cdn.example.com/cover.jpg"],
         "isbn13": "9782205078054",
     }
 

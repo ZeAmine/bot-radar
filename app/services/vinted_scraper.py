@@ -8,7 +8,6 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
-from app.core.http_client import get_shared_http_client
 from app.core.redis import get_redis_client
 from app.services.price_calculator import (
     DEFAULT_SHIPPING_CENTS,
@@ -17,8 +16,7 @@ from app.services.price_calculator import (
 from app.services.vinted_parsing import (
     ScrapedVintedItem,
     catalog_url_to_api_params,
-    extract_all_catalog_photos,
-    extract_item_page_photos,
+    extract_catalog_cover_urls,
     extract_photo_url,
     parse_vinted_catalog_html,
     parse_vinted_catalog_json,
@@ -28,8 +26,7 @@ from app.services.vinted_parsing import (
 __all__ = [
     "ScrapedVintedItem",
     "catalog_url_to_api_params",
-    "extract_all_catalog_photos",
-    "extract_item_page_photos",
+    "extract_catalog_cover_urls",
     "extract_photo_url",
     "parse_vinted_catalog_html",
     "parse_vinted_catalog_json",
@@ -37,37 +34,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger("radar.vinted_scraper")
-
-
-async def fetch_item_photos(
-    item_url: str,
-    http_client: httpx.AsyncClient | None = None,
-) -> list[str]:
-    """Récupère toutes les photos haute résolution d'une annonce depuis sa page détaillée."""
-    headers = DEFAULT_VINTED_HEADERS
-    try:
-        if http_client:
-            resp = await http_client.get(item_url, headers=headers, timeout=10.0)
-            if resp.status_code == 200:
-                return extract_item_page_photos(resp.text)
-        elif not settings.get_vinted_proxy():
-            client = get_shared_http_client()
-            resp = await client.get(item_url, headers=headers, timeout=10.0)
-            if resp.status_code == 200:
-                return extract_item_page_photos(resp.text)
-        else:
-            async with httpx.AsyncClient(
-                timeout=10.0,
-                follow_redirects=True,
-                proxy=settings.get_vinted_proxy(),
-            ) as client:
-                resp = await client.get(item_url, headers=headers)
-                if resp.status_code == 200:
-                    return extract_item_page_photos(resp.text)
-    except Exception as exc:
-        logger.warning("Impossible de récupérer les photos de l'annonce %s : %s", item_url, exc)
-    return []
-
 
 API_CATALOG_ENDPOINT = "https://api.vinted.fr/svc-catalogue/items"
 
@@ -155,7 +121,7 @@ class VintedSessionManager:
         self.cookies: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
-    async def _load_cookies_from_redis(self) -> dict[str, str]:
+    async def load_cookies_from_redis(self) -> dict[str, str]:
         """Tente de restaurer les cookies Vinted persistés dans Redis."""
         try:
             client = get_redis_client()
@@ -244,7 +210,7 @@ class VintedSessionManager:
                     new_cookies: dict[str, str] = {}
                     if hasattr(cookie_source, "jar"):
                         for cookie in cookie_source.jar:
-                            new_cookies[cookie.name] = cookie.value
+                            new_cookies[cookie.name] = cookie.value or ""
                     elif hasattr(cookie_source, "items"):
                         for k, v in cookie_source.items():
                             new_cookies[k] = v
@@ -289,7 +255,7 @@ class VintedSessionManager:
         """Vérifie proactivement la session et anticipe l'expiration du token JWT."""
         # 1. Si pas de cookies en mémoire vive, tenter de restaurer depuis Redis
         if not self.cookies:
-            redis_cookies = await self._load_cookies_from_redis()
+            redis_cookies = await self.load_cookies_from_redis()
             if redis_cookies:
                 self.cookies = redis_cookies
                 self.last_refreshed = time.time()
@@ -480,13 +446,6 @@ def to_ingest_payload(
     protection_cents = calculate_buyer_protection_cents(item.item_price_cents)
     shipping_cents = DEFAULT_SHIPPING_CENTS
 
-    all_photos: list[str] = []
-    if item.photo_url:
-        all_photos.append(item.photo_url)
-    for p in getattr(item, "extra_photos", []):
-        if p and p not in all_photos:
-            all_photos.append(p)
-
     payload: dict[str, Any] = {
         "source_name": "vinted",
         "external_id": item.external_id,
@@ -500,7 +459,7 @@ def to_ingest_payload(
         "condition": item.condition,
         "seller_name": "vendeur_vinted",
         "seller_rating": 4.9,
-        "photos": all_photos,
+        "photos": [item.photo_url] if item.photo_url else [],
         "isbn13": isbn13,
     }
     return payload

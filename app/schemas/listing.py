@@ -27,7 +27,7 @@ class ListingIngestPayload(BaseModel):
     seller_name: str | None = Field(default=None, max_length=255)
     seller_rating: Decimal | None = Field(default=None, ge=0, le=5)
 
-    photos: list[str] = Field(default_factory=list, max_length=10)
+    photos: list[str] = Field(default_factory=list, max_length=1)
     isbn13: str | None = Field(default=None, max_length=13)
     published_at: datetime | None = Field(default=None)
 
@@ -50,11 +50,12 @@ class ListingIngestPayload(BaseModel):
     @field_validator("photos")
     @classmethod
     def validate_photos(cls, v: list[str]) -> list[str]:
-        if len(v) > 10:
-            raise ValueError("Le nombre de photos ne peut pas dépasser 10.")
+        """Seule la photo de couverture de l'alerte Telegram est conservée."""
+        if len(v) > 1:
+            raise ValueError("Une seule photo (couverture) est acceptée.")
         for p in v:
             if not p.strip().lower().startswith("https://"):
-                raise ValueError("Chaque photo doit être une URL HTTPS valide.")
+                raise ValueError("La photo doit être une URL HTTPS valide.")
         return v
 
 

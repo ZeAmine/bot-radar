@@ -16,14 +16,11 @@ def get_listing_alert_keyboard(
     """Génère les boutons d'action d'une alerte d'annonce.
 
     Règles :
-    - Ligne 1 : [🖼 Photos] et [🔗 Annonce]
+    - Ligne 1 : [🔗 Annonce]
     - Ligne 2 : [📊 Prix du marché] (si BD/Comics)
     - Ligne 3 (Ligne 2 si hors-BD) : [👎 Faux positif] (ou [✅ Signalé]) et [💬 Négocier]
     """
-    row1 = [
-        InlineKeyboardButton(text="🖼 Photos", callback_data=f"photos:{listing_id}"),
-        InlineKeyboardButton(text="🔗 Annonce", url=listing_url),
-    ]
+    row1 = [InlineKeyboardButton(text="🔗 Annonce", url=listing_url)]
 
     dislike_btn = (
         InlineKeyboardButton(
@@ -60,10 +57,7 @@ def get_dislike_confirmation_keyboard(
     category_slug: str,
 ) -> InlineKeyboardMarkup:
     """Clavier demandant confirmation avant d'enregistrer un faux positif."""
-    row1 = [
-        InlineKeyboardButton(text="🖼 Photos", callback_data=f"photos:{listing_id}"),
-        InlineKeyboardButton(text="🔗 Annonce", url=listing_url),
-    ]
+    row1 = [InlineKeyboardButton(text="🔗 Annonce", url=listing_url)]
 
     row_confirm = [
         InlineKeyboardButton(

@@ -9,8 +9,7 @@ import pytest
 from app.services.vinted_scraper import (
     VintedSessionManager,
     catalog_url_to_api_params,
-    extract_all_catalog_photos,
-    extract_item_page_photos,
+    extract_catalog_cover_urls,
     extract_photo_url,
     fetch_vinted_page,
     get_jwt_exp,
@@ -91,43 +90,16 @@ def test_to_ingest_payload():
     assert len(payload["photos"]) == 1
 
 
-def test_extract_all_catalog_photos_modern_html():
+def test_extract_catalog_cover_urls_modern_html():
     sample = (
         '<img src="https://images1.vinted.net/t/01/310x430/aaa.webp" '
         'data-testid="product-item-id-111--image--img" />\n'
         '<img data-testid="product-item-id-222--image--img" '
         'src="https://images1.vinted.net/t/02/310x430/bbb.webp" />'
     )
-    photos = extract_all_catalog_photos(sample)
+    photos = extract_catalog_cover_urls(sample)
     assert photos.get("111") == "https://images1.vinted.net/t/01/310x430/aaa.webp"
     assert photos.get("222") == "https://images1.vinted.net/t/02/310x430/bbb.webp"
-
-
-def test_extract_item_page_photos():
-    sample = """
-    <script>
-      "photos": ["https:\\/\\/images1.vinted.net\\/t\\/01\\/f800\\/abc12345.webp?s=123",
-                 "https:\\/\\/images1.vinted.net\\/t\\/01\\/f800\\/abc12345.webp?s=456",
-                 "https:\\/\\/images1.vinted.net\\/t\\/02\\/f800\\/def67890.webp?s=789"]
-    </script>
-    """
-    photos = extract_item_page_photos(sample)
-    assert len(photos) == 2
-    assert "abc12345.webp" in photos[0]
-    assert "def67890.webp" in photos[1]
-
-
-def test_extract_item_page_photos_excludes_seller_avatar():
-    sample = """
-    "photos":[{"height":1600,"is_main":true,"thumbnails":[{"url":"https://images1.vinted.net/t/01/f800/item1111.webp?s=1"}]},
-              {"height":1600,"is_main":false,"thumbnails":[{"url":"https://images1.vinted.net/t/02/f800/item2222.webp?s=2"}]}],
-    "user":{"id":123,"photo":{"height":0,"thumbnails":[{"url":"https://images1.vinted.net/t/03/f800/avatar99.webp?s=3"}]}}
-    """
-    photos = extract_item_page_photos(sample)
-    assert len(photos) == 2
-    assert "item1111.webp" in photos[0]
-    assert "item2222.webp" in photos[1]
-    assert not any("avatar99.webp" in p for p in photos)
 
 
 def test_avatar_filtering_excludes_seller_profile_pictures():
@@ -171,7 +143,7 @@ async def test_vinted_session_manager_load_from_redis():
     fake_client = AsyncMock()
     fake_client.cookies = httpx.Cookies()
 
-    with patch.object(mgr, "_load_cookies_from_redis", new_callable=AsyncMock) as mock_load:
+    with patch.object(mgr, "load_cookies_from_redis", new_callable=AsyncMock) as mock_load:
         mock_load.return_value = {
             "anon_id": "cached-redis-id",
             "access_token_web": "cached-token",
@@ -264,16 +236,12 @@ def test_parse_vinted_catalog_json():
     assert item.condition == "Neuf sans étiquette"
     assert item.url == "https://www.vinted.fr/items/10113230090-les-legendes-marvel"
     assert item.photo_url == "https://images1.vinted.net/t/01/f800/main.webp?s=123"
-    assert len(item.extra_photos) == 2
-    assert "extra1.webp" in item.extra_photos[0]
-    assert "extra2.webp" in item.extra_photos[1]
 
-    # Test to_ingest_payload with extra photos
+    # Le payload d'ingestion ne transporte que la couverture
     payload = to_ingest_payload(item)
     assert payload["external_id"] == "10113230090"
     assert payload["item_price_cents"] == 400
-    assert len(payload["photos"]) == 3
-    assert payload["photos"][0] == "https://images1.vinted.net/t/01/f800/main.webp?s=123"
+    assert payload["photos"] == ["https://images1.vinted.net/t/01/f800/main.webp?s=123"]
 
 
 def test_vinted_session_manager_api_headers():
@@ -610,4 +578,27 @@ def test_fifo_set_discard_and_remove_synchronization():
     assert list(fset._order) == ["c"]
 
 
-
+def test_parse_vinted_catalog_json_uses_single_cover():
+    """svc-catalogue actuel ne renvoie souvent qu'une cover dans photos[]."""
+    sample_json = {
+        "items": [
+            {
+                "id": 10197607580,
+                "title": "Blast 1",
+                "price": {"amount": "8.00", "currency_code": "EUR"},
+                "item_box": {"second_line": "Très bon état"},
+                "url": "/items/10197607580-blast-1",
+                "photo": {
+                    "url": "https://images1.vinted.net/t/05_01b88/f800/cover.webp?s=1",
+                },
+                "photos": [
+                    {"url": "https://images1.vinted.net/t/05_01b88/f800/cover.webp?s=1"},
+                ],
+            }
+        ]
+    }
+    items = parse_vinted_catalog_json(sample_json)
+    assert len(items) == 1
+    assert items[0].photo_url == "https://images1.vinted.net/t/05_01b88/f800/cover.webp?s=1"
+    payload = to_ingest_payload(items[0])
+    assert payload["photos"] == ["https://images1.vinted.net/t/05_01b88/f800/cover.webp?s=1"]

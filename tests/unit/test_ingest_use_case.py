@@ -218,7 +218,6 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         mock_repo = AsyncMock()
         mock_repo.get_by_source_and_external_id.return_value = None
         mock_repo.create_from_payload.return_value = mock_listing
-        mock_repo.matched_alert_ids.return_value = set()
         mock_repo.create_match.return_value = MagicMock()
 
         from app.core.constants import AlertStatus
@@ -289,7 +288,7 @@ async def test_mark_notified_commits_before_the_next_send(mock_db: AsyncMock) ->
     mock_listing.isbn13 = None
     mock_listing.url = "https://vinted.fr/x"
     mock_listing.estimated_total_cents = 1200
-    mock_listing.photos = ["https://img.example/a.jpg", "https://img.example/b.jpg"]
+    mock_listing.photos = ["https://img.example/a.jpg"]
     mock_listing.title = "Blacksad"
 
     mock_repo = AsyncMock()

@@ -1,4 +1,3 @@
-import asyncio
 import contextlib
 import logging
 import re
@@ -7,11 +6,9 @@ from typing import Any
 
 from aiogram import F, Router
 from aiogram.types import (
-    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputMediaPhoto,
     Message,
 )
 
@@ -19,7 +16,6 @@ from app.bot.keyboards.listings import (
     get_dislike_confirmation_keyboard,
     get_listing_alert_keyboard,
 )
-from app.core.http_client import get_shared_http_client
 from app.db.repositories.autotune_repo import record_listing_dislike
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
@@ -27,144 +23,9 @@ from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.services.ai.modules.negotiation import negotiation_module
 from app.services.book_catalog_service import BookCatalogService
 from app.services.market_price_service import MarketPriceService, clean_tome_display_title
-from app.services.vinted_scraper import fetch_item_photos
 
 logger = logging.getLogger(__name__)
 router = Router(name="callbacks_router")
-
-
-async def _build_media_group_buffers(photo_urls: list[str]) -> list[InputMediaPhoto]:
-    """Télécharge les photos en parallèle pour les uploader directement sur Telegram.
-
-    Évite l'erreur 'WEBPAGE_CURL_FAILED' causée par le blocage des serveurs Telegram par Cloudflare.
-    """
-    client = get_shared_http_client()
-    media_items: list[InputMediaPhoto] = []
-
-    async def _fetch_one(idx: int, url: str) -> tuple[int, bytes | None]:
-        try:
-            r = await client.get(url, timeout=6.0)
-            if r.status_code == 200:
-                return idx, r.content
-        except Exception as err:
-            logger.debug("Échec téléchargement photo %s : %s", url, err)
-        return idx, None
-
-    results = await asyncio.gather(*[_fetch_one(i, u) for i, u in enumerate(photo_urls[:10], 1)])
-    for idx, content in sorted(results, key=lambda x: x[0]):
-        if content:
-            buf = BufferedInputFile(file=content, filename=f"photo_{idx}.webp")
-            media_items.append(InputMediaPhoto(media=buf))
-
-    return media_items
-
-
-@router.callback_query(F.data.startswith("photos:"))
-async def handle_view_photos(
-    callback: CallbackQuery,
-    db_session: Any,
-) -> None:
-    """Envoie l'album photo de l'annonce si plusieurs photos sont disponibles."""
-    listing_id = uuid.UUID(callback.data.split(":")[1])  # type: ignore
-
-    listing_repo = ListingRepository(db_session)
-    listing = await listing_repo.get_by_id(listing_id)
-    if not listing:
-        await callback.answer("Annonce introuvable.", show_alert=True)
-        return
-
-    photos = listing.photos or []
-    if len(photos) <= 1 and listing.url:
-        fetched = await fetch_item_photos(listing.url)
-        if len(fetched) > 1:
-            photos = fetched
-            listing.photos = photos
-            await db_session.commit()
-
-    if len(photos) <= 1:
-        await callback.answer(
-            "ℹ️ Une seule photo est disponible pour cette annonce.", show_alert=True
-        )
-        return
-
-    await callback.answer()
-
-    # Envoi de l'album avec upload binaire direct (insensible à WEBPAGE_CURL_FAILED)
-    if callback.bot and callback.from_user:
-        close_inline = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="← Fermer",
-                        callback_data="close_album:",
-                    )
-                ]
-            ]
-        )
-        try:
-            media_group = await _build_media_group_buffers(photos[:10])
-            if not media_group:
-                if isinstance(callback.message, Message):
-                    await callback.message.reply(
-                        "ℹ️ Impossible de charger les photos pour le moment.",
-                        reply_markup=close_inline,
-                    )
-                return
-
-            if len(media_group) == 1:
-                sent_msg = await callback.bot.send_photo(
-                    chat_id=callback.from_user.id,
-                    photo=media_group[0].media,
-                )
-                sent_messages = [sent_msg]
-            else:
-                sent_messages = await callback.bot.send_media_group(
-                    chat_id=callback.from_user.id,
-                    media=media_group,
-                )
-
-            msg_ids = ",".join(str(m.message_id) for m in sent_messages)
-            close_keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="← Fermer",
-                            callback_data=f"close_album:{msg_ids}",
-                        )
-                    ]
-                ]
-            )
-            await callback.bot.send_message(
-                chat_id=callback.from_user.id,
-                text=f"📸 <i>{len(sent_messages)} photos affichées</i>",
-                reply_markup=close_keyboard,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Erreur lors de l'envoi de la galerie photos pour %s : %s", listing_id, exc
-            )
-            if isinstance(callback.message, Message):
-                await callback.message.reply(
-                    "⚠️ Impossible d'afficher l'album photo pour le moment.",
-                    reply_markup=close_inline,
-                )
-
-
-@router.callback_query(F.data.startswith("close_album:"))
-async def handle_close_album(callback: CallbackQuery) -> None:
-    """Supprime l'album photo envoyé et son bouton de fermeture."""
-    raw_ids = callback.data.split(":", 1)[1] if callback.data else ""  # type: ignore
-    msg_ids = [int(i) for i in raw_ids.split(",") if i.isdigit()]
-
-    if callback.bot and callback.message:
-        chat_id = callback.message.chat.id
-        for mid in msg_ids:
-            with contextlib.suppress(Exception):
-                await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
-        with contextlib.suppress(Exception):
-            await callback.message.delete()
-
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("market:"))
@@ -188,7 +49,11 @@ async def _show_market_details(
     callback: CallbackQuery,
     db_session: Any,
 ) -> None:
-    listing_id = uuid.UUID(callback.data.split(":")[1])  # type: ignore
+    try:
+        listing_id = uuid.UUID((callback.data or "").split(":", 1)[1])
+    except (IndexError, ValueError):
+        await callback.answer("Annonce invalide.", show_alert=True)
+        return
 
     listing_repo = ListingRepository(db_session)
     listing = await listing_repo.get_by_id(listing_id)
@@ -212,21 +77,19 @@ async def _show_market_details(
             # Si aucun tome n'a pu être résolu depuis le texte, vérifier l'identification visuelle
             if not book and books_in_series:
                 payload = listing.raw_payload or {}
-                if payload.get("is_lot") and payload.get("lot_tomes"):
+                raw_lot = payload.get("lot_tomes")
+                lot_tomes = (
+                    [int(t) for t in raw_lot if str(t).lstrip("-").isdigit()]
+                    if isinstance(raw_lot, list)
+                    else []
+                )
+                if payload.get("is_lot") and lot_tomes:
                     from app.services.tome_extractor import TomeMatchResult
                     tome_result = TomeMatchResult(
                         is_lot=True,
-                        lot_tomes=payload.get("lot_tomes"),
+                        lot_tomes=lot_tomes,
                         confidence="high",
                     )
-                elif listing.photos:
-                    t_identified = payload.get("identified_tome")
-                    if t_identified:
-                        for b in books_in_series:
-                            pat = rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_identified}\b"
-                            if re.search(pat, b.title, re.IGNORECASE):
-                                book = b
-                                break
         else:
             book = await book_repo.get_book_for_alert(alert.id)
 
@@ -324,8 +187,12 @@ async def _show_market_details(
                 )
                 book.market_cache = cache
                 await db_session.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Rafraîchissement direct du marché ignoré pour l'annonce %s : %s",
+                listing_id,
+                exc,
+            )
 
     target_book = book
     if (
@@ -372,7 +239,7 @@ async def _show_market_details(
 
     if isinstance(callback.message, Message):
         is_market_view = "<b>Prix du marché</b>" in (callback.message.html_text or "")
-        if callback.data.startswith("market_details:") and is_market_view:
+        if (callback.data or "").startswith("market_details:") and is_market_view:
             await callback.message.edit_text(
                 text=details_text,
                 reply_markup=back_keyboard,
@@ -402,9 +269,13 @@ async def handle_market_tome_select(callback: CallbackQuery, db_session: Any) ->
 
 
 async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
-    parts = callback.data.split(":")
-    listing_id = uuid.UUID(parts[1])
-    book_id = uuid.UUID(parts[2])
+    parts = (callback.data or "").split(":")
+    try:
+        listing_id = uuid.UUID(parts[1])
+        book_id = uuid.UUID(parts[2])
+    except (IndexError, ValueError):
+        await callback.answer("Annonce invalide.", show_alert=True)
+        return
 
     listing_repo = ListingRepository(db_session)
     listing = await listing_repo.get_by_id(listing_id)
@@ -471,7 +342,7 @@ async def handle_negotiate(
     db_session: Any,
 ) -> None:
     """Génère une offre de négociation courtoise prête à copier en 1 tap."""
-    raw_id = callback.data.split(":", 1)[1] if callback.data else ""  # type: ignore
+    raw_id = callback.data.split(":", 1)[1] if callback.data else ""
     try:
         listing_id = uuid.UUID(raw_id)
     except ValueError:
@@ -517,7 +388,7 @@ async def handle_dislike(
     db_session: Any,
 ) -> None:
     """Affiche le clavier de confirmation avant d'enregistrer le faux positif."""
-    raw_id = callback.data.split(":", 1)[1] if callback.data else ""  # type: ignore
+    raw_id = callback.data.split(":", 1)[1] if callback.data else ""
     try:
         listing_id = uuid.UUID(raw_id)
     except ValueError:
@@ -548,7 +419,7 @@ async def handle_confirm_dislike(
     db_session: Any,
 ) -> None:
     """Enregistre définitivement le faux positif après confirmation."""
-    raw_id = callback.data.split(":", 1)[1] if callback.data else ""  # type: ignore
+    raw_id = callback.data.split(":", 1)[1] if callback.data else ""
     try:
         listing_id = uuid.UUID(raw_id)
     except ValueError:
@@ -598,7 +469,7 @@ async def handle_cancel_dislike(
     db_session: Any,
 ) -> None:
     """Annule la demande de faux positif et restaure le clavier initial."""
-    raw_id = callback.data.split(":", 1)[1] if callback.data else ""  # type: ignore
+    raw_id = callback.data.split(":", 1)[1] if callback.data else ""
     try:
         listing_id = uuid.UUID(raw_id)
     except ValueError:

@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class RealConditionAssessment(StrEnum):
-    """Estimation de l'état réel après analyse du texte et des photos."""
+    """Estimation de l'état réel déclarée dans l'annonce."""
 
     EXCELLENT = "excellent"
     VERY_GOOD = "very_good"
@@ -21,7 +21,7 @@ class ListingAnalysisResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     real_condition: RealConditionAssessment = Field(
-        description="État physique réel déduit de la description et des photos"
+        description="État physique réel déduit de la description de l'annonce"
     )
     is_lot_incomplete: bool = Field(
         default=False,

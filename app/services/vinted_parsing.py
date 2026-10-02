@@ -2,7 +2,7 @@
 
 import html
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -21,7 +21,6 @@ class ScrapedVintedItem:
     item_price_cents: int
     url: str
     photo_url: str | None
-    extra_photos: list[str] = field(default_factory=list)
 
 
 def parse_vinted_overlay_title(raw_title: str) -> tuple[str, str, int]:
@@ -79,8 +78,8 @@ def is_valid_item_photo_url(url: str | None) -> bool:
     return not any(kw in lower for kw in avatar_keywords)
 
 
-def extract_all_catalog_photos(html_content: str) -> dict[str, str]:
-    """Extrait en une passe toutes les photos associées aux annonces du catalogue."""
+def extract_catalog_cover_urls(html_content: str) -> dict[str, str]:
+    """Extrait en une passe la photo de couverture de chaque annonce du catalogue."""
     images: dict[str, str] = {}
     for m in re.finditer(
         r'<img[^>]+src=["\']([^"\']+)["\'][^>]*data-testid=["\']product-item-id-(\d+)--image--img["\']',
@@ -126,49 +125,11 @@ def extract_photo_url(html_content: str, item_id: str) -> str | None:
             if is_valid_item_photo_url(candidate_url):
                 return candidate_url
     return None
-
-
-def extract_item_page_photos(html_content: str) -> list[str]:
-    """Extrait toutes les photos HD réelles d'une annonce Vinted sans avatar vendeur."""
-    norm = html_content.replace(r"\"", '"').replace(r"\/", "/")
-    found = re.findall(r'https:(?:[\\/])+images1\.vinted\.net[^\s"\'<>]+', norm)
-    cleaned: list[str] = []
-    seen: set[str] = set()
-
-    for u in found:
-        norm_url = re.sub(r"^https:[\\/]+", "https://", u).rstrip("\\")
-        if "/f800/" not in norm_url or not is_valid_item_photo_url(norm_url):
-            continue
-
-        # Identifier le hash ou nom de fichier de l'image
-        m = re.search(r"/f800/([^/?#.]+)\.", norm_url)
-        if not m:
-            continue
-        img_hash = m.group(1)
-
-        if img_hash in seen:
-            continue
-
-        # Vérifier dans le HTML source si cette image est un avatar (height:0, user.photo)
-        idx = norm.find(img_hash)
-        if idx != -1:
-            preceding = norm[max(0, idx - 250) : idx]
-            if '"height":0' in preceding or '"height": 0' in preceding:
-                continue
-            if '"photo":{' in preceding or '"photo": {' in preceding:
-                continue
-
-        seen.add(img_hash)
-        cleaned.append(norm_url)
-
-    return cleaned
-
-
 def parse_vinted_catalog_html(html_content: str) -> list[ScrapedVintedItem]:
     """Extrait toutes les annonces visibles sur une page de catalogue Vinted."""
     items: list[ScrapedVintedItem] = []
     seen_in_page: set[str] = set()
-    catalog_photos = extract_all_catalog_photos(html_content)
+    catalog_photos = extract_catalog_cover_urls(html_content)
 
     for match in OVERLAY_LINK_REGEX.finditer(html_content):
         item_id = match.group(1)
@@ -272,24 +233,18 @@ def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
         else:
             item_url = f"https://www.vinted.fr/items/{item_id}"
 
-        # Photo principale et photos supplémentaires HD
+        # Photo de couverture affichée dans l'alerte Telegram
         photo_url = None
-        extra_photos: list[str] = []
-        seen_photos: set[str] = set()
 
         main_photo = raw.get("photo") or {}
         if main_photo.get("url") and is_valid_item_photo_url(main_photo["url"]):
             photo_url = main_photo["url"]
-            seen_photos.add(photo_url)
-
-        for p in raw.get("photos") or []:
-            p_url = p.get("url")
-            if p_url and is_valid_item_photo_url(p_url) and p_url not in seen_photos:
-                if not photo_url:
+        else:
+            for p in raw.get("photos") or []:
+                p_url = p.get("url")
+                if p_url and is_valid_item_photo_url(p_url):
                     photo_url = p_url
-                else:
-                    extra_photos.append(p_url)
-                seen_photos.add(p_url)
+                    break
 
         items.append(
             ScrapedVintedItem(
@@ -299,7 +254,6 @@ def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
                 item_price_cents=price_cents,
                 url=item_url,
                 photo_url=photo_url,
-                extra_photos=extra_photos,
             )
         )
 

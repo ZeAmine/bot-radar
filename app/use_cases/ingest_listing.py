@@ -115,29 +115,6 @@ async def _link_book_from_bnf(title: str, alert_id: uuid.UUID) -> None:
         logger.warning("Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc)
 
 
-async def _preload_listing_photos(listing_id: uuid.UUID, url: str) -> None:
-    """Précharge les photos HD en tâche de fond pour que le bouton [Photos] soit instantané."""
-    from app.db.session import AsyncSessionLocal
-    from app.services.vinted_scraper import fetch_item_photos
-
-    try:
-        photos = await fetch_item_photos(url)
-        if len(photos) > 1:
-            async with AsyncSessionLocal() as session:
-                listing_repo = ListingRepository(session)
-                db_listing = await listing_repo.get_by_id(listing_id)
-                if db_listing:
-                    db_listing.photos = photos
-                    await session.commit()
-                    logger.info(
-                        "Galerie photos HD préchargée en arrière-plan pour %s (%d photos).",
-                        listing_id,
-                        len(photos),
-                    )
-    except Exception as exc:
-        logger.debug("Échec du préchargement des photos pour %s : %s", listing_id, exc)
-
-
 def comparison_line_from_loaded_books(
     listing: Listing,
     alert: Any,
@@ -348,17 +325,6 @@ class ProcessListingUseCase:
                     alert_name=alert.name,
                     notification_sent=notification_sent,
                 )
-            )
-
-        # 9. Si une alerte a été notifiée, précharger la galerie complète en tâche de fond
-        if (
-            any(m.notification_sent for m in match_items)
-            and listing.url
-            and len(listing.photos or []) <= 1
-        ):
-            safe_create_task(
-                _preload_listing_photos(listing.id, listing.url),
-                name=f"preload_photos_{listing.id}",
             )
 
         return ListingIngestResponse(

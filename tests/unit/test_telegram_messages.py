@@ -102,18 +102,15 @@ def test_telegram_buttons_bd_comics():
         category_slug=CategorySlug.BD_COMICS.value,
     )
 
-    # 3 lignes : photos/vinted, prix du marché, dislike / négocier
+    # 3 lignes : annonce, prix du marché, dislike / négocier
     rows = keyboard.inline_keyboard
     assert len(rows) == 3
-    assert len(rows[0]) == 2
+    assert len(rows[0]) == 1
     assert len(rows[1]) == 1
     assert len(rows[2]) == 2
 
-    assert rows[0][0].text == "🖼 Photos"
-    assert rows[0][0].callback_data == f"photos:{listing_id}"
-
-    assert rows[0][1].text == "🔗 Annonce"
-    assert rows[0][1].url == url
+    assert rows[0][0].text == "🔗 Annonce"
+    assert rows[0][0].url == url
 
     assert rows[1][0].text == "📊 Prix du marché"
     assert rows[1][0].callback_data == f"market:{listing_id}"
@@ -136,15 +133,13 @@ def test_telegram_buttons_clothes_and_tech():
     for cat in [CategorySlug.CLOTHES.value, CategorySlug.TECH.value]:
         keyboard = get_listing_alert_keyboard(listing_id, url, category_slug=cat)
         rows = keyboard.inline_keyboard
-        # 2 lignes : photos/vinted, dislike / négocier
+        # 2 lignes : annonce, dislike / négocier
         assert len(rows) == 2
-        assert len(rows[0]) == 2
+        assert len(rows[0]) == 1
         assert len(rows[1]) == 2
 
-        assert rows[0][0].text == "🖼 Photos"
-        assert rows[0][0].callback_data == f"photos:{listing_id}"
-        assert rows[0][1].text == "🔗 Annonce"
-        assert rows[0][1].url == url
+        assert rows[0][0].text == "🔗 Annonce"
+        assert rows[0][0].url == url
 
         assert rows[1][0].text == "👎 Faux positif"
         assert rows[1][0].callback_data == f"dislike:{listing_id}"
@@ -183,8 +178,7 @@ def test_dislike_confirmation_keyboard():
     )
     rows = kb.inline_keyboard
     assert len(rows) == 3
-    assert rows[0][0].text == "🖼 Photos"
-    assert rows[0][1].text == "🔗 Annonce"
+    assert rows[0][0].text == "🔗 Annonce"
     assert rows[1][0].text == "📊 Prix du marché"
     # Ligne 3 = confirmation et annulation
     assert rows[2][0].text == "⚠️ Confirmer ?"
