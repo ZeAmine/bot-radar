@@ -1,9 +1,10 @@
-.PHONY: help dev test lint format migrate revision up down clean
+.PHONY: help dev test lint bench format migrate revision up down clean
 
 help:
 	@echo "Commandes disponibles pour BotRadar :"
 	@echo "  make dev                 Lancer le serveur de développement FastAPI"
 	@echo "  make test                Lancer les tests unitaires et d'intégration"
+	@echo "  make bench               Benchmark du chemin d'alerte (invariant 500 ms)"
 	@echo "  make lint                Vérifier le code avec Ruff et Mypy"
 	@echo "  make format              Formater le code avec Ruff"
 	@echo "  make migrate             Appliquer les migrations Alembic"
@@ -17,6 +18,9 @@ dev:
 
 test:
 	pytest -v
+
+bench:
+	pytest tests/performance -v -s
 
 lint:
 	ruff check .
