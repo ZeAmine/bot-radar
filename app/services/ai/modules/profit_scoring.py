@@ -37,9 +37,13 @@ class ProfitScoringModule(BasePostAlertModule):
 
         from app.services.price_calculator import calculate_estimated_total
 
-        total_cents = listing.estimated_total_cents or calculate_estimated_total(
-            listing.item_price_cents or 0,
-            fallback_defaults=True,
+        total_cents = (
+            listing.estimated_total_cents
+            or calculate_estimated_total(
+                listing.item_price_cents or 0,
+                fallback_defaults=True,
+            )
+            or 0
         )
         total_eur = total_cents / 100.0
         alert_name = getattr(alert, "name", None)

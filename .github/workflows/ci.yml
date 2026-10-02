@@ -20,6 +20,9 @@ jobs:
       - name: Ruff
         run: ruff check .
 
+      - name: Mypy
+        run: mypy app
+
       - name: Pytest
         env:
           TELEGRAM_BOT_TOKEN: "123456789:AAG_ci_test_dummy_token_abc123"

@@ -117,8 +117,8 @@ def test_series_matching_generic_range_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📉 Prix bas constaté :  —" in summary
-    assert "⚖️ Écart :  —" in summary
+    assert summary == "ℹ️ Série détectée : tome non identifié, cote indisponible."
+    assert "Écart" not in summary
 
 
 def test_series_matching_lot_card():
@@ -293,8 +293,8 @@ def test_series_matching_blacksad_generic():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📉 Prix bas constaté :  —" in summary
-    assert "⚖️ Écart :  —" in summary
+    assert summary == "ℹ️ Série détectée : tome non identifié, cote indisponible."
+    assert "Écart" not in summary
 
 
 def test_tome_extractor_subtitle_in_description():

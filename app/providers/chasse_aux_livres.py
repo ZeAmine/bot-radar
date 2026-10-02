@@ -5,17 +5,46 @@ import html
 import logging
 import re
 import urllib.parse
+from typing import Any
 
 import httpx
 
 from app.core.config import settings
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
-from app.providers.base import MarketOffer
-from app.services.market_price_service import is_merchant_excluded, is_very_good_or_better
+from app.domain.rules.market_offer import (
+    is_brand_new_partner,
+    is_merchant_excluded,
+    is_very_good_or_better,
+)
+from app.providers.base import MarketOffer, normalize_search_isbn
+from app.services.book_metadata_service import title_similarity
+from app.services.market_price_service import extract_tome_number_from_title
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.providers.chasse_aux_livres")
+
+# Similarité minimale entre le titre attendu et celui renvoyé par l'agrégateur.
+TITLE_COHERENCE_MIN = 0.72
+
+# Vocabulaire générique d'édition, sans valeur discriminante pour identifier une œuvre.
+_TITLE_STOP_WORDS = frozenset({
+    "tome",
+    "tomes",
+    "volume",
+    "integrale",
+    "edition",
+    "livre",
+    "bd",
+    "des",
+    "les",
+    "une",
+    "par",
+    "pour",
+    "dans",
+    "avec",
+    "sur",
+})
 
 _HISTORICAL_LOW_LABELS = (
     "Très bon état +",
@@ -86,48 +115,43 @@ class ChasseAuxLivresProvider:
         self.http_client = http_client
 
     @staticmethod
-    def is_title_coherent(expected: str, found: str) -> bool:
-        """Vérifie si le titre retourné par Chasse-aux-livres est cohérent avec le titre attendu."""
+    def _significant_words(title: str) -> set[str]:
+        """Mots porteurs du titre, hors vocabulaire générique d'édition."""
+        return {
+            word
+            for word in normalize_text(title).split()
+            if len(word) >= 3 and word not in _TITLE_STOP_WORDS
+        }
+
+    @staticmethod
+    def is_title_coherent(expected: str | None, found: str | None) -> bool:
+        """Vérifie que l'ouvrage renvoyé par Chasse-aux-livres est bien l'œuvre attendue.
+
+        Trois garde-fous : refus immédiat si les deux titres désignent deux tomes
+        différents, puis similarité du titre, puis identité du noyau d'œuvre (un
+        sous-titre peut manquer d'un côté). Un titre sans mot significatif
+        exploitable est rejeté : mieux vaut une cote absente qu'une cote attribuée
+        à un autre ouvrage.
+        """
         if not expected or not found:
             return True
 
-        exp_norm = normalize_text(expected)
-        fnd_norm = normalize_text(found)
+        # Un tome différent est un refus immédiat : la similarité des titres de la
+        # même série est trop élevée pour distinguer deux volumes.
+        expected_tome = extract_tome_number_from_title(expected)
+        found_tome = extract_tome_number_from_title(found)
+        if expected_tome is not None and found_tome is not None and expected_tome != found_tome:
+            return False
 
-        # Inclusion directe (ex: "do a powerbomb" vs "do a power bomb")
-        if exp_norm in fnd_norm or fnd_norm in exp_norm:
+        if title_similarity(expected, found) >= TITLE_COHERENCE_MIN:
             return True
 
-        exp_nospace = exp_norm.replace(" ", "")
-        fnd_nospace = fnd_norm.replace(" ", "")
-        if exp_nospace and fnd_nospace and (
-            exp_nospace in fnd_nospace or fnd_nospace in exp_nospace
-        ):
-            return True
-
-        # Cas des œuvres adaptées ou collections éditeur
-# (ex: Gou Tanabe Lovecraft, Daredevil L'Homme sans peur)
-        collection_equivalents = {
-            "montagnes hallucinees": {"lovecraft", "tanabe"},
-            "appel de cthulhu": {"lovecraft", "tanabe"},
-            "homme sans peur": {"daredevil"},
-        }
-        for trigger, equivs in collection_equivalents.items():
-            if trigger in exp_norm and any(eq in fnd_norm for eq in equivs):
-                return True
-
-        stop_words = {
-            "tome", "volume", "integrale", "edition", "livre", "bd",
-            "des", "les", "une", "par", "pour", "dans", "avec", "sur",
-        }
-        exp_words = {w for w in exp_norm.split() if len(w) >= 3 and w not in stop_words}
-        fnd_words = {w for w in fnd_norm.split() if len(w) >= 3 and w not in stop_words}
-
+        exp_words = ChasseAuxLivresProvider._significant_words(expected)
+        fnd_words = ChasseAuxLivresProvider._significant_words(found)
         if not exp_words or not fnd_words:
-            return True
+            return False
 
-        common = exp_words & fnd_words
-        return len(common) > 0
+        return exp_words <= fnd_words or fnd_words <= exp_words
 
     async def get_offers(
         self,
@@ -139,9 +163,11 @@ class ChasseAuxLivresProvider:
     ) -> list[MarketOffer]:
         """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
         _ = edition
-        # 1. Tentative par ISBN si présent
-        if isbn13 and len(isbn13.strip()) >= 10:
-            offers = await self._search_query(isbn13.strip(), expected_title=title)
+        # 1. Tentative par ISBN : uniquement si le code passe sa clé de contrôle,
+        # sinon la recherche renverrait l'ouvrage d'un autre livre.
+        clean_isbn = normalize_search_isbn(isbn13)
+        if clean_isbn:
+            offers = await self._search_query(clean_isbn, expected_title=title)
             if offers:
                 return offers
 
@@ -257,7 +283,7 @@ class ChasseAuxLivresProvider:
 
             # Extraction ISBN et Titre depuis d_html
             isbn_match = re.search(r"ISBN&nbsp;:\s*(\d{10,13})", d_html)
-            found_isbn = isbn_match.group(1) if isbn_match else None
+            found_isbn = normalize_search_isbn(isbn_match.group(1)) if isbn_match else None
             title_match = re.search(
                 r'class=["\']title["\'][^>]*>\s*<a[^>]*>([^<]+)</a>', d_html, re.DOTALL)
             if not title_match:
@@ -335,11 +361,11 @@ class ChasseAuxLivresProvider:
                                     raw_offers[k] = v
                                 elif isinstance(v, list) and isinstance(raw_offers[k], list):
                                     raw_offers[k].extend(v)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Second passage lookup retry=1 ignoré : %s", exc)
 
-            partners: dict[str, dict] = {}
-            best_used: dict | None = None
+            partners: dict[str, dict[str, Any]] = {}
+            best_used: dict[str, Any] | None = None
 
             for _, off_list in raw_offers.items():
                 if not isinstance(off_list, list):
@@ -373,17 +399,7 @@ class ChasseAuxLivresProvider:
                         continue
 
                     # Filtrage STRICT occasion : exclusion absolue du Neuf
-                    cond_clean = str(sub_cond).strip().lower()
-                    is_brand_new = (
-                        not is_used
-                        or cond_clean in ("neuf", "new")
-                        or (
-                            (cond_clean.startswith("neuf ") or cond_clean.endswith(" neuf"))
-                            and "comme" not in cond_clean
-                            and "like" not in cond_clean
-                        )
-                    )
-                    if is_brand_new:
+                    if is_brand_new_partner({"is_used": is_used, "condition": sub_cond}):
                         continue
 
                     # Filtrage STRICT état : uniquement Très bon et Comme neuf

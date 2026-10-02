@@ -284,3 +284,40 @@ def test_select_historical_low_ignores_looser_condition_tiers():
         == 670
     )
 
+
+@pytest.mark.asyncio
+async def test_chasse_aux_livres_invalid_isbn_falls_back_to_title():
+    """Un ISBN dont la clé de contrôle est fausse ne doit pas être utilisé pour la recherche."""
+    provider = ChasseAuxLivresProvider()
+
+    resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+    resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
+    resp_prod = httpx.Response(200, text=MOCK_PROD_HTML)
+    resp_lookup = httpx.Response(200, json=MOCK_LOOKUP_JSON)
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [resp_search, resp_rest, resp_prod, resp_lookup]
+        offers = await provider.get_offers(isbn13="9782365770000", title="Rip Tome 1")
+
+    assert len(offers) == 1
+    query_used = mock_get.call_args_list[0].args[0]
+    assert "9782365770000" not in query_used
+
+
+def test_is_title_coherent_rejects_unrelated_work_and_other_tome():
+    """Un seul mot commun ne suffit plus à valider un titre."""
+    is_coherent = ChasseAuxLivresProvider.is_title_coherent
+
+    # Correspondances legitimes
+    assert is_coherent("Rip Tome 1", "Rip Tome 1") is True
+    assert is_coherent("Blacksad", "Blacksad Tome 5 Amarillo") is True
+    assert is_coherent(
+        "Gou Tanabe Lovecraft - Montagnes hallucinées", "Les Montagnes hallucinées"
+    ) is True
+
+    # Rejets
+    assert is_coherent("Mutafukaz Loba Loca", "Rip Tome 1") is False
+    assert is_coherent("Blacksad Tome 1", "Blacksad Tome 2") is False
+    assert is_coherent("Le prophète", "Iznogoud") is False
+    assert is_coherent("Le prophète", None) is True
+

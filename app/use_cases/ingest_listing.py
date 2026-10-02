@@ -33,6 +33,7 @@ async def _prefetch_book_market_cache(book_id: uuid.UUID, isbn13: str | None, ti
     from app.core.constants import ComparisonStatus
     from app.db.repositories.market_price_repo import MarketPriceRepository
     from app.db.session import AsyncSessionLocal
+    from app.providers.base import extract_best_historical_low
     from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 
     try:
@@ -40,12 +41,7 @@ async def _prefetch_book_market_cache(book_id: uuid.UUID, isbn13: str | None, ti
         offers = await provider.get_offers(isbn13=isbn13, title=title)
         if offers:
             best = offers[0]
-            hist_lows = [
-                o.raw_payload.get("historical_low_1y_cents")
-                for o in offers
-                if o.raw_payload and o.raw_payload.get("historical_low_1y_cents") is not None
-            ]
-            best_hist = min(hist_lows) if hist_lows else None
+            best_hist = extract_best_historical_low(offers)
 
             async with AsyncSessionLocal() as session:
                 market_repo = MarketPriceRepository(session)

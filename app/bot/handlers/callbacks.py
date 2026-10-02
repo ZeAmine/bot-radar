@@ -20,6 +20,7 @@ from app.db.repositories.autotune_repo import record_listing_dislike
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
+from app.providers.base import extract_best_historical_low
 from app.services.ai.modules.negotiation import negotiation_module
 from app.services.book_catalog_service import BookCatalogService
 from app.services.market_price_service import MarketPriceService, clean_tome_display_title
@@ -146,12 +147,7 @@ async def _show_market_details(
 
             if offers:
                 best = offers[0]
-                hist_lows = [
-                    o.raw_payload.get("historical_low_1y_cents")
-                    for o in offers
-                    if o.raw_payload and o.raw_payload.get("historical_low_1y_cents") is not None
-                ]
-                best_hist = min(hist_lows) if hist_lows else None
+                best_hist = extract_best_historical_low(offers)
 
                 catalog_service = BookCatalogService(db_session)
                 if not book:

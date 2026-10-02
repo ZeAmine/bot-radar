@@ -8,6 +8,7 @@ from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
 from app.services.market_price_service import MarketPriceService
+from app.services.tome_extractor import TomeMatchResult
 
 
 def create_book_with_cache(
@@ -376,4 +377,78 @@ def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_
     assert '<a href="https://momox.fr/indes">Consulter l\'offre</a>' in card
 
 
+def test_summary_and_card_share_the_same_reference_price():
+    """Le résumé d'alerte et le panneau détaillé doivent citer la même référence.
+
+    Régression : le panneau écrasait la cote 1 an par le prix du jour, si bien que
+    les deux écrans affichaient deux références différentes pour le même livre.
+    """
+    book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=548)
+    listing = create_listing(estimated_total_cents=1200)
+
+    summary = MarketPriceService.get_comparison_summary(listing, book)
+    card = MarketPriceService.format_market_details_card(listing, book)
+
+    assert summary is not None
+    assert "📉 Prix bas constaté : 5,48 €" in summary
+    assert "📉 Prix bas constaté : 5,48 €" in card
+    assert "📊 Prix du marché : 22,00 €" not in card
+
+
+def test_summary_uses_vinted_total_including_shipping():
+    """L'écart compare le total Vinted (port inclus), pas le prix de l'article seul."""
+    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    # Prix article 1 500 cts, total estimé 2 400 cts (protection + port)
+    listing = create_listing(estimated_total_cents=None)
+    listing.item_price_cents = 1500
+
+    summary = MarketPriceService.get_comparison_summary(listing, book)
+    assert summary is not None
+    # 1 500 + 75 (5 % arrondi) + 70 + 288 (port) = 1 933 cts -> 1 933 - 2 000
+    assert "✅ Écart : <b>-0,67 €</b>" in summary
+
+
+def test_lot_summary_reports_partial_tome_matching():
+    """Un lot dont un tome n'a pas de cote ne doit pas cumuler les tomes non appariées."""
+    books = [
+        create_book_with_cache(lowest_delivered_cents=1600, historical_low_1y_cents=1600),
+        create_book_with_cache(lowest_delivered_cents=1850, historical_low_1y_cents=1850),
+    ]
+    books[0].title = "RIP — Tome 1"
+    books[1].title = "RIP — Tome 2"
+    tome3 = create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None)
+    tome3.title = "RIP — Tome 3"
+    books.append(tome3)
+
+    listing = create_listing(estimated_total_cents=2500)
+    tome_res = TomeMatchResult(is_lot=True, lot_tomes=[1, 2, 3], lot_count=3, confidence="high")
+
+    summary = MarketPriceService.get_comparison_summary(
+        listing=listing, book=None, books_in_series=books, tome_result=tome_res
+    )
+    assert summary is not None
+    # Seul T1 + T2 sont cumulés (34,50 €) et l'appariement partiel est annoncé
+    assert "📉 Prix bas constaté (Lot, 2/3 tomes) : ~34,50 €" in summary
+    assert "✅ Écart : <b>-9,50 €</b>" in summary
+
+
+def test_details_card_rejects_unsafe_offer_link():
+    """Une URL non publique ou porteuse de HTML brut ne doit jamais être rendue cliquable."""
+    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    book.market_cache.best_source_url = "javascript:alert(1)"
+    listing = create_listing(estimated_total_cents=1200)
+
+    card = MarketPriceService.format_market_details_card(listing, book)
+    assert "Lien :" not in card
+
+
+def test_details_card_escapes_offer_link():
+    """L'URL de l'offre est échappée pour ne pas casser le HTML Telegram."""
+    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    book.market_cache.best_source_url = "https://recyclivre.com/livre?a=1&b=2"
+    listing = create_listing(estimated_total_cents=1200)
+
+    card = MarketPriceService.format_market_details_card(listing, book)
+    assert "https://recyclivre.com/livre?a=1&amp;b=2" in card
+    assert "?a=1&b=2" not in card
 

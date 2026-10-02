@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,14 +51,8 @@ class MarketPriceRepository:
             .order_by(MarketPriceSnapshot.checked_at.desc())
             .limit(1)
         )
-        try:
-            result = await self.session.execute(stmt)
-            res = result.scalar_one_or_none()
-            if hasattr(res, "__await__"):
-                res = await res
-            return res if isinstance(res, MarketPriceSnapshot) else None
-        except Exception:
-            return None
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def get_cache_by_book_id(self, book_id: uuid.UUID) -> BookMarketCache | None:
         """Récupère le cache de prix consolidé pour un livre."""
@@ -76,11 +71,11 @@ class MarketPriceRepository:
             MarketPriceSnapshot.is_comparable.is_(True),
         )
         result = await self.session.execute(stmt)
-        payloads = result.scalars().all()
-        hist_lows = [
-            p.get("historical_low_1y_cents")
+        payloads: list[Any] = list(result.scalars().all())
+        hist_lows: list[int] = [
+            int(p["historical_low_1y_cents"])
             for p in payloads
-            if p and isinstance(p, dict) and p.get("historical_low_1y_cents") is not None
+            if isinstance(p, dict) and p.get("historical_low_1y_cents") is not None
         ]
         return min(hist_lows) if hist_lows else None
 

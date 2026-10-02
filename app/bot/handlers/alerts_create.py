@@ -37,6 +37,7 @@ from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.category_repo import CategoryRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
+from app.providers.base import extract_best_historical_low
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 from app.providers.registry import ProviderRegistry
 from app.services.ai.modules.keyword_variants import keyword_variants_module
@@ -545,11 +546,7 @@ async def save_alert(
                         await market_repo.save_snapshot(book.id, off)
                     best_offer = ProviderRegistry.select_best_offer(offers)
                     if best_offer:
-                        hist_low = (
-                            best_offer.raw_payload.get("historical_low_1y_cents")
-                            if best_offer.raw_payload
-                            else None
-                        )
+                        hist_low = extract_best_historical_low([best_offer])
                         merchant = (
                             best_offer.raw_payload.get("best_merchant")
                             if best_offer.raw_payload

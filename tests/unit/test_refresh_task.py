@@ -42,6 +42,7 @@ async def test_refresh_book_prices_task_success():
 
         mock_market_repo = MagicMock()
         mock_market_repo.save_snapshot = AsyncMock()
+        mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         mock_market_repo.update_or_create_cache = AsyncMock()
 
         mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
@@ -89,6 +90,7 @@ async def test_refresh_book_prices_task_incremental():
 
         mock_market_repo = MagicMock()
         mock_market_repo.save_snapshot = AsyncMock()
+        mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         mock_market_repo.update_or_create_cache = AsyncMock()
 
         mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
@@ -103,4 +105,80 @@ async def test_refresh_book_prices_task_incremental():
         assert stats["processed"] == 1
         mock_book_repo.get_books_needing_price_refresh.assert_called_once_with(limit=5)
         mock_book_repo.get_books_for_active_bd_alerts.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_refresh_keeps_existing_price_when_provider_is_silent():
+    """Un silence réseau ne doit pas effacer un prix déjà connu et encore frais."""
+    mock_book = Book(
+        id=uuid.uuid4(),
+        title="Blacksad",
+        normalized_title="blacksad",
+        isbn13="9782344045084",
+    )
+    mock_registry = MagicMock()
+    mock_registry.fetch_all_offers = AsyncMock(return_value=[])
+    mock_registry.select_best_offer = MagicMock(return_value=None)
+
+    existing_cache = MagicMock()
+    existing_cache.lowest_delivered_price_cents = 470
+    existing_cache.comparison_status = ComparisonStatus.AVAILABLE
+
+    with pytest.MonkeyPatch.context() as mp:
+        mock_book_repo = MagicMock()
+        mock_book_repo.get_books_for_active_bd_alerts = AsyncMock(return_value=[mock_book])
+
+        mock_market_repo = MagicMock()
+        mock_market_repo.save_snapshot = AsyncMock()
+        mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
+        mock_market_repo.update_or_create_cache = AsyncMock()
+
+        mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
+        mp.setattr(
+            "app.tasks.refresh_book_prices.MarketPriceRepository", lambda _s: mock_market_repo
+        )
+
+        stats = await refresh_book_prices_task(
+            registry=mock_registry, session=AsyncMock(), concurrency=1
+        )
+
+    assert stats["processed"] == 1
+    assert stats["available"] == 1
+    assert stats["unavailable"] == 0
+    mock_market_repo.update_or_create_cache.assert_not_called()
+    assert existing_cache.checked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_processes_several_books_in_one_wave():
+    """Une vague traite tous ses livres, y compris ceux qui lèvent une exception."""
+    books = [
+        Book(id=uuid.uuid4(), title=f"Livre {index}", normalized_title=f"livre {index}")
+        for index in range(3)
+    ]
+    mock_registry = MagicMock()
+    mock_registry.fetch_all_offers = AsyncMock(side_effect=[[], RuntimeError("timeout"), []])
+    mock_registry.select_best_offer = MagicMock(return_value=None)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mock_book_repo = MagicMock()
+        mock_book_repo.get_books_for_active_bd_alerts = AsyncMock(return_value=books)
+
+        mock_market_repo = MagicMock()
+        mock_market_repo.save_snapshot = AsyncMock()
+        mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
+        mock_market_repo.update_or_create_cache = AsyncMock()
+
+        mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
+        mp.setattr(
+            "app.tasks.refresh_book_prices.MarketPriceRepository", lambda _s: mock_market_repo
+        )
+
+        stats = await refresh_book_prices_task(
+            registry=mock_registry, session=AsyncMock(), concurrency=3
+        )
+
+    assert stats["processed"] == 3
+    assert stats["errors"] == 1
+    assert stats["unavailable"] == 2
 

@@ -598,6 +598,7 @@ async def save_edited_field_value(
                 from app.core.constants import ComparisonStatus, MatchConfidence
                 from app.db.repositories.book_repo import BookRepository
                 from app.db.repositories.market_price_repo import MarketPriceRepository
+                from app.providers.base import extract_best_historical_low
                 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
                 from app.providers.registry import ProviderRegistry
                 from app.utils.text import normalize_text
@@ -626,15 +627,12 @@ async def save_edited_field_value(
                                 await market_repo.save_snapshot(book.id, off)
                             best = ProviderRegistry.select_best_offer(offers)
                             if best:
-                                hist_low = (
-                                    best.raw_payload.get("historical_low_1y_cents")
-                                    if best.raw_payload
-                                    else None
-                                )
+                                hist_low = extract_best_historical_low([best])
                                 merchant = (
                                     best.raw_payload.get("best_merchant")
-                                    or best.provider_name
-                                )
+                                    if best.raw_payload
+                                    else None
+                                ) or best.provider_name
                                 await market_repo.update_or_create_cache(
                                     book_id=book.id,
                                     lowest_delivered_price_cents=best.delivered_price_cents,
@@ -652,8 +650,8 @@ async def save_edited_field_value(
                             exc,
                         )
         elif field == "url":
-            parsed = validate_and_parse_vinted_url(raw_text)
-            alert.vinted_search_url = parsed["url"]
+            parsed_url = validate_and_parse_vinted_url(raw_text)
+            alert.vinted_search_url = parsed_url["url"]
         elif field == "max_price":
             alert.max_item_price_cents = parse_price_to_cents(raw_text)
         elif field == "conditions":
