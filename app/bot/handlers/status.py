@@ -11,11 +11,7 @@ from aiogram.types import Message
 from app.core.config import settings
 from app.db.repositories.stats_repo import StatsRepository
 from app.providers.llm.registry import llm_client
-from app.tasks.vinted_poller import (
-    get_night_mode_remaining_seconds,
-    get_poller_status,
-    is_night_time,
-)
+from app.tasks.vinted_poller import get_poller_status, is_night_time
 
 router = Router(name="status_router")
 
@@ -36,13 +32,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
     poller_data = await get_poller_status()
 
     if night_active:
-        remaining = get_night_mode_remaining_seconds(now)
-        hours_left = int(remaining // 3600)
-        mins_left = int((remaining % 3600) // 60)
-        poller_status = (
-            f"🌙 <b>Mode Nuit actif</b> (veille jusqu'à {settings.NIGHT_MODE_END_HOUR:02d}:00, "
-            f"encore {hours_left}h{mins_left:02d})"
-        )
+        poller_status = "<b>Mode nuit</b>"
     elif not settings.VINTED_POLLER_ENABLED:
         poller_status = "⏸️ <b>Désactivé</b>"
     elif poller_data and poller_data.get("status") == "cooldown":
@@ -96,7 +86,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
 
     ai_info = await llm_client.check_health()
     if ai_info.status == "active":
-        ai_status = f"🟢 <b>Actif</b> (latence : {ai_info.latency_ms or 0}ms)"
+        ai_status = "🟢 <b>Actif</b>"
     elif ai_info.status == "disabled":
         ai_status = "⏸️ <b>Désactivé</b>"
     elif ai_info.status == "unconfigured":
@@ -108,7 +98,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
         "📡  <b>État du Service</b>\n\n"
         f"🕒 <b>Heure locale</b> : {time_str} ({tz_label})\n"
         f"🔍 <b>Scanner Vinted</b> : {poller_status}\n"
-        f"🤖 <b>Moteur IA ({llm_client.vendor} · {ai_info.model})</b> : {ai_status}\n"
+        f"🤖 <b>Moteur IA ({ai_info.model})</b> : {ai_status}\n"
         f"🌙 <b>Plage de veille</b> : {night_hours_info}\n\n"
         f"🎯 <b>Alertes actives ({total_active}) :</b>\n"
         f"{cat_summary}\n\n"

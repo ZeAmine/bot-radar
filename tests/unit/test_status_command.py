@@ -8,7 +8,6 @@ from aiogram.types import Message
 
 from app.bot.handlers.status import handle_status
 from app.providers.llm.base import LLMHealth
-from app.providers.llm.registry import llm_client
 from app.services.telegram_service import notify_admins
 
 
@@ -108,7 +107,6 @@ async def test_handle_status_night_mode():
 
     with (
         patch("app.bot.handlers.status.is_night_time", return_value=True),
-        patch("app.bot.handlers.status.get_night_mode_remaining_seconds", return_value=7200.0),
         patch("app.bot.handlers.status.get_poller_status",
               new_callable=AsyncMock, return_value=None),
         patch("app.bot.handlers.status.settings.NIGHT_MODE_ENABLED", True),
@@ -119,9 +117,7 @@ async def test_handle_status_night_mode():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "Mode Nuit actif" in text
-        assert "veille jusqu'à 07:00" in text
-        assert "encore 2h00" in text
+        assert "🔍 <b>Scanner Vinted</b> : <b>Mode nuit</b>" in text
         assert "Aucune alerte active" in text
 
 
@@ -171,8 +167,9 @@ async def test_handle_status_ai_active():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        label = f"{llm_client.vendor} · un-modele-choisi"
-        assert f"🤖 <b>Moteur IA ({label})</b> : 🟢 <b>Actif</b> (latence : 115ms)" in text
+        assert "🤖 <b>Moteur IA (un-modele-choisi)</b> : 🟢 <b>Actif</b>" in text
+        assert "latence" not in text
+        assert "115ms" not in text
 
 
 @pytest.mark.asyncio
@@ -204,9 +201,8 @@ async def test_handle_status_ai_error():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        label = f"{llm_client.vendor} · un-modele-choisi"
         assert (
-            f"🤖 <b>Moteur IA ({label})</b> : 🔴 <b>Indisponible</b> "
+            "🤖 <b>Moteur IA (un-modele-choisi)</b> : 🔴 <b>Indisponible</b> "
             "(Clé API invalide ou refusée)"
             in text
         )
