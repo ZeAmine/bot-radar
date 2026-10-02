@@ -2,10 +2,13 @@
 
 Ce fichier est la source de vérité pour tout assistant qui travaille sur le dépôt. Le lire avant de modifier du code, de déployer, ou de proposer une architecture.
 
+**Dépôt distant** : `git@github.com:ZeAmine/bot-radar.git` (branche `main`, dépôt privé).
+Le nom a changé : les références historiques à `ZeAmine/radar-bot` sont périmées.
+
 ### Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-013, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-017, dette différée).
 
 ## Méthode de travail
 
@@ -25,7 +28,7 @@ Mise à jour du submodule : seulement quand un commit est choisi. Pas d’upgrad
 
 Un changement est terminé seulement si :
 
-- `pytest` est vert et `ruff check .` est vert. La CI (`.github/workflows/ci.yml`) bloque la pull request si l’un échoue. Pas de liste d’exceptions Ruff.
+- `pytest` est vert, `ruff check .` est vert et `mypy app` est vert (zéro erreur). La CI (`.github/workflows/ci.yml`) bloque la pull request si l’un échoue. Pas de liste d’exceptions Ruff ni de `# type: ignore` sans justification locale.
 - Aucun secret n’est loggé.
 - Aucun appel réseau (BNF, places de marché, DeepSeek) n’est ajouté avant l’envoi de l’alerte.
 - Revue humaine si le diff touche [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py), les formules de prix ou de comparaison marché, ou le chemin ingestion → matching → Telegram.
@@ -42,7 +45,7 @@ Utilisateur unique / allowlist (`TELEGRAM_ALLOWED_USER_IDS`). Domaine public : `
 
 ### Clavier d'alerte Telegram
 Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomique :
-- Ligne 1 : `[ 🖼 Photos ]` (Accès rapide aux photos HD) et `[ 🔗 Annonce ]` (Lien direct Vinted).
+- Ligne 1 : `[ 🔗 Annonce ]` (Lien direct Vinted).
 - Ligne 2 (BD uniquement) : `[ 📊 Prix du marché ]` (Détails et cotes complètes de la série).
 - Ligne 3 (Ligne 2 si hors-BD) : `[ 👎 Faux positif ]` (Enregistrement du dislike pour l'auto-tuning) et `[ 💬 Négocier ]` (Coach IA).
 *(Note : Les anciens boutons factices « Payer » et « Dressing / Lot » ont été définitivement supprimés — voir ADR-007 et ADR-011).*
@@ -52,7 +55,7 @@ Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomiqu
 - Python 3.12, FastAPI, aiogram 3, SQLAlchemy asyncio, Alembic, Redis, APScheduler, httpx, Pydantic v2.
 - Un seul processus de production : `uvicorn app.main:app` dans `radar_app` (API + webhook Telegram + scheduler + poller Vinted).
 - PostgreSQL 16, Redis 7, passerelle centralisée `caddy_gateway` via réseau Docker `web_gateway` (HTTPS). Compose : [compose.yml](compose.yml).
-- Tests : pytest + pytest-asyncio. Lint : Ruff (ligne 100). Typage : mypy `strict` (erreurs historiques hors lots en cours, ne pas les « corriger » en masse).
+- Tests : pytest + pytest-asyncio (429 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
 
 ## Architecture des couches
 
@@ -84,8 +87,8 @@ Ne pas inventer une nouvelle couche. Ne pas déplacer `tome_extractor.py`. Les e
 Toute modification du chemin ingestion → matching → Telegram doit respecter cet ordre :
 
 1. Dédoublonner l’annonce (`source_name` + `external_id`).
-2. Matcher en CPU local (`evaluate_listing_against_alert`). Une requête groupée `matched_alert_ids` par annonce, pas un `SELECT` par alerte.
-3. Cote BD : **cache local uniquement**. `MarketPriceService.get_comparison_summary` est synchrone, zéro HTTP.
+2. Matcher en CPU local (`evaluate_listing_against_alert`). Une requête groupée de l'état de notification par annonce (`match_notification_state`), pas un `SELECT` par alerte.
+3. Cote BD : **cache local uniquement**. `MarketPriceService.get_comparison_summary` est synchrone, zéro HTTP. Référence unique : le prix le plus bas constaté sur 1 an, sinon le prix du marché du jour (ADR-016).
 4. `send_listing_alert` — priorité absolue.
 5. Ensuite seulement, en `safe_create_task` :
    - enrichissement DeepSeek dans `telegram_service.py` avec le **vrai** `message_id` ;
@@ -97,7 +100,7 @@ Interdit sur ce chemin :
 - Relancer `AsyncEnrichListingUseCase.schedule_enrichment` (supprimé : il partait avec `message_id=0`).
 - Un second client HTTP DeepSeek « pour voir ».
 - `time.sleep` dans `app/`.
-- Calculs lourds ou regex globaux « optimisés » sans benchmark reproductible.
+- Calculs lourds ou regex globaux « optimisés » sans benchmark reproductible (`make bench` / `tests/performance/`).
 
 Conséquence assumée : la **première** alerte d’une BD inconnue peut partir sans ligne de cote. L’ISBN BNF sert aux suivantes.
 
@@ -128,6 +131,7 @@ Conséquence assumée : la **première** alerte d’une BD inconnue peut partir 
 6. Redis : pool `app.core.redis.get_redis_pool`. Ne pas réintroduire l’import depuis `app.api.dependencies`.
 7. Ne pas élargir le périmètre d’un correctif (pas de refactor opportuniste des handlers 900 lignes).
 8. Après une modification : Ruff sur les fichiers touchés, puis les tests concernés. Suite complète avant un déploiement.
+9. Toute cote de marché passe par les règles pures de [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : occasion, état au moins « Très bon », marchand non exclu. Ne pas réintroduire un filtre d'état local à un fournisseur ou dans un handler.
 
 ## Tests
 
@@ -144,6 +148,7 @@ Sans demande **explicite** de l’utilisateur :
 - [`scripts/vinted_autobuy.user.js`](scripts/vinted_autobuy.user.js)
 - [`scripts/sync_vinted_session.py`](scripts/sync_vinted_session.py)
 - Formules de `price_calculator.py` / comparaison marché (une offre sans port ≠ total « article seul »).
+- [`app/providers/chasse_aux_livres.py`](app/providers/chasse_aux_livres.py) — cookies et anti-bot. Son filtrage d'occasion et sa validation de titre s'appuient désormais sur [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) et `title_similarity` (ADR-016) : ne pas y réintroduire de dictionnaire d'œuvres figé.
 
 Les scripts ne sont importés par `app/` qu’à dessein. `python-dotenv` sert à `scripts/local_vinted_poller.py`, pas au runtime Docker.
 
@@ -196,6 +201,8 @@ Modules actifs (`app/services/ai/modules/`) :
 *(Note : Les modules non pertinents `hidden_condition`, `vision_guard`, `bundle_decomposition`, `price_glitch`, ainsi que `bundle_detector` et le bouton dressing ont été définitivement supprimés — voir ADR-006, ADR-007, ADR-011).*
 
 Flags `AI_FEATURE_*` : un flag = un module vivant dans `app/services/ai/modules/` (strictement les 5 ci-dessus). Ne pas réintroduire un flag sans module.
+
+**Autorité ISBN (ADR-014)** : `app/services/book_metadata_service.py` est la seule autorité ISBN du projet. Un ISBN venant du modèle, d'une saisie utilisateur ou d'une URL n'est persisté qu'après confirmation d'une notice BNF dont le titre correspond à l'œuvre demandée (`verify_isbn`). OpenLibrary n'est qu'un repli (`MEDIUM`, jamais en override d'une contradiction BNF) et sa provenance est affichée dans le récap. Les **éditions concurrentes** d'une même œuvre (`BookResolution.editions()`) sont listées dans le récap avec un clavier de bascule (`al_create_edition:*`) : l'ISBN conditionne le matching, l'URL de recherche Vinted et la cote de marché, donc l'utilisateur le choisit avant la création (ADR-017). Un ISBN faux n'est pas anodin : il contraint le matching, l'URL Vinted et la cote marché. Aucun prompt ne doit proposer de liste de faux positifs toute faite : les mots-clés se raisonnent sur la fiche réelle de l'ouvrage (`BookContext`).
 
 ## Architecture déjà tranchée
 

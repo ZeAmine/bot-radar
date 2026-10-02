@@ -35,14 +35,14 @@ Détecter les nouvelles annonces Vinted en temps réel et les injecter dans le p
 ### Fichiers clés
 - [`app/tasks/vinted_poller.py`](app/tasks/vinted_poller.py) : Boucle de polling haute fréquence à cadence adaptative (12s en pointe, 15s standard sur VPS, 8s avec proxy résidentiel), dédoublonnage en mémoire (`seen_ids`), ordonnancement entrelacé (staggered interleaving) des catégories.
 - [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py) : Gestionnaire de session Vinted (`VintedSessionManager`), cookies persistés dans Redis, interrogation prioritaire de l'API interne JSON (`svc-catalogue/items`, 38 Ko) avec repli transparent sur le catalogue HTML.
-- [`app/services/vinted_parsing.py`](app/services/vinted_parsing.py) : Parsing pur HTML/JSON (`parse_vinted_catalog_json`, `parse_vinted_catalog_html`) et extraction des photos HD. Aucun réseau.
+- [`app/services/vinted_parsing.py`](app/services/vinted_parsing.py) : Parsing pur HTML/JSON (`parse_vinted_catalog_json`, `parse_vinted_catalog_html`) et extraction de la photo de couverture. Aucun réseau.
 - [`app/api/routes/ingest.py`](app/api/routes/ingest.py) : Endpoint interne sécurisé `POST /api/v1/ingest/listings`.
 - [`app/use_cases/ingest_listing.py`](app/use_cases/ingest_listing.py) : Orchestration du flux : dédoublonnage BDD, persistance du listing, déclenchement du matching et alerte Telegram.
 - [`app/db/repositories/listing_repo.py`](app/db/repositories/listing_repo.py) : Dédoublonnage par `(source_name, external_id)` et contrainte unique `listing_matches (alert_id, listing_id)`.
 
 ### Invariants et contraintes
 - **Zéro blocage Cloudflare & API First** : Le poller interroge le microservice interne `/svc-catalogue/items` avec les en-têtes web actuels (`Platform: web`, `X-Next-App: marketplace-web`), et bascule sur le scraping HTML si l'API interne fait défaut.
-- **Photos instantanées** : La liste complète des photos HD est extraite dès le catalogue, rendant l'ouverture de l'album Telegram immédiate (plus besoin de visiter la page de l'annonce).
+- **Image de couverture** : La photo de couverture est extraite dès le catalogue et affichée directement dans l'alerte Telegram, sans requête Vinted supplémentaire.
 - **Frais acheteur** : Calcul automatique des frais de protection (`calculate_buyer_protection_cents` : 0.70 € + 5%) et frais de port forfaitaires (2.88 €).
 - `to_ingest_payload` génère une description synthétique pour le matching car la description vendeur détaillée n'est pas présente sur le flux catalogue.
 
@@ -73,10 +73,11 @@ Comparer en quelques microsecondes en mémoire CPU chaque annonce entrante avec 
 Calculer instantanément la cote et l'écart de prix pour les bandes dessinées et comics par rapport au marché de l'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres).
 
 ### Fichiers clés
-- [`app/services/market_price_service.py`](app/services/market_price_service.py) : `get_comparison_summary(...)` synchrone, lisant exclusivement le cache local PostgreSQL.
+- [`app/services/market_price_service.py`](app/services/market_price_service.py) : `get_comparison_summary(...)` et `format_market_details_card(...)` synchrones, lisant exclusivement le cache local PostgreSQL. `reference_price(cache)` fixe la règle de référence ; `_vinted_total_cents`, `_select_secondhand_partners` et `_series_books_lines` sont les helpers partagés (ADR-016).
+- [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : règles pures de classification d'une offre (`condition_tier`, `is_merchant_excluded`, `is_comparable_secondhand_offer`). Source unique du filtre d'occasion, partagée par le registre de fournisseurs, Chasse-aux-livres et l'affichage (ADR-016).
 - [`app/services/tome_extractor.py`](app/services/tome_extractor.py) : Extraction déterministe des numéros de tomes, intégrales et lots (regex ultra-rapides sans I/O).
 - [`app/services/book_catalog_service.py`](app/services/book_catalog_service.py) : Association d'une alerte à une série ou un livre précis.
-- [`app/services/book_metadata_service.py`](app/services/book_metadata_service.py) : Enrichissement des métadonnées (ISBN-13 BNF).
+- [`app/services/book_metadata_service.py`](app/services/book_metadata_service.py) : **Autorité ISBN** du projet — BNF en source primaire, OpenLibrary en repli (`_openlibrary_works`, confiance `MEDIUM`, jamais en override). `resolve_for_alert(titre, auteur)` (notice de référence + éditions alternatives), `verify_isbn(isbn, titre)` (confirme le couple ISBN ↔ œuvre), `title_similarity` / `same_author` (ADR-014), `BookResolution.editions()` (éditions concurrentes, ADR-017), `format_edition_details` (condensation d'une notice BNF en « 2022 · 224 p. · 24 cm »).
 - [`app/providers/`](app/providers/) : Clients HTTP pour les sources de marché :
   - `ebay_browse.py` : eBay Browse API OAuth2 (recherche par ISBN / titre d'occasion livrée en France).
   - BNF : `book_metadata_service.py`.
@@ -84,12 +85,15 @@ Calculer instantanément la cote et l'écart de prix pour les bandes dessinées 
 - [`app/db/repositories/market_price_repo.py`](app/db/repositories/market_price_repo.py) : Cache de prix (`book_market_cache`), persistance des snapshots (`market_price_snapshots`) et cotes.
 
 ### Invariants et contraintes
+- **Choix de l'édition avant création** : le récap `/add` liste les éditions concurrentes de l'œuvre et le clavier `al_create_edition:*` permet de changer d'ISBN sans refaire la commande. Le rendu passe par `recap_from_state(draft)` et `creation_keyboard(draft)` : un seul chemin, éductions comprises.
 - **Zéro HTTP sur le chemin de l'alerte** : `MarketPriceService.get_comparison_summary` lit uniquement la table locale `book_market_cache`. Le refresh complet interroge les providers à 07:00 et 19:00 ; un lot incrémental tourne à `:15` et `:45`.
+- **Référence de prix (ADR-016)** : le **prix le plus bas constaté sur 1 an** prime toujours ; le prix du marché du jour n'est qu'un repli. L'écart compare le **total Vinted, frais de port inclus**, à cette référence. Le résumé d'alerte et le panneau détaillé citent la même référence.
 - **Format d'affichage** :
   ```text
   📉 Prix bas constaté : 12,50 €
-  ⚖️ Écart : -3,50 € (-28%)
+  ✅ Écart : -3,50 €
   ```
+- **Zéro faux positif de cotation** : une offre neuve ou en état déclaré inférieur à « Très bon » n'entre jamais dans une cote ; un ISBN invalide n'est jamais utilisé pour interroger un fournisseur ; un lot n'est cumulé que sur les tomes appariés, la couverture étant annoncée (ex: `Lot, 2/3 tomes`).
 - **Tome concerné en gras** : Dans les listes d'autres tomes d'une série, le tome ciblé est mis en évidence en gras. Les tomes sans cote disponible sont masqués.
 
 ---
@@ -106,12 +110,11 @@ Interface utilisateur conversationnelle pour piloter les alertes, recevoir les n
 - [`app/bot/handlers/alerts_create_confirm.py`](app/bot/handlers/alerts_create_confirm.py) : Confirmation, annulation et édition du même flux, sur le routeur partagé `_alerts_router`.
 - [`app/bot/handlers/alerts_manage.py`](app/bot/handlers/alerts_manage.py) : Commandes `/show`, `/edit`, `/pause`, `/resume`, `/delete`.
 - [`app/bot/handlers/callbacks.py`](app/bot/handlers/callbacks.py) : Gestion des boutons inline :
-  - `photos:{listing_id}` : Affichage de l'album HD extrait de Vinted.
   - `market:{listing_id}` : Vue détaillée des offres du marché d'occasion.
   - `dislike:{listing_id}` : Signalement de faux positif avec confirmation.
   - `negotiate:{listing_id}` : Génération d'une proposition de message de négociation.
 - [`app/bot/keyboards/listings.py`](app/bot/keyboards/listings.py) : Clavier Telegram des annonces :
-  - Ligne 1 : `[ 🖼 Photos ]` `[ 🔗 Annonce ]`
+  - Ligne 1 : `[ 🔗 Annonce ]`
   - Ligne 2 : `[ 📊 Prix du marché ]` (uniquement si BD/Comics)
   - Ligne 3 (Ligne 2 si hors-BD) : `[ 👎 Faux positif ]` `[ 💬 Négocier ]`
   *(Note : Les boutons factices « Payer » et « Dressing / Lot » ont été définitivement supprimés).*
@@ -147,7 +150,7 @@ Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur 
 Aider l'utilisateur lors de la création (`/add`) ou de l'édition (`/edit`) d'une alerte en générant automatiquement les fautes courantes, variantes d'écriture et exclusions standard.
 
 ### Fichiers clés
-- [`app/services/ai/modules/keyword_variants.py`](app/services/ai/modules/keyword_variants.py) : Module générant variantes orthographiques (ex: *onepiece*, *one-piece*, *one piece*) et termes parasites (ex: *figurine*, *poster*, *t-shirt*).
+- [`app/services/ai/modules/keyword_variants.py`](app/services/ai/modules/keyword_variants.py) : Module générant variantes orthographiques (ex: *onepiece*, *one-piece*, *one piece*) et faux positifs **ancrés sur la fiche réelle** de l'ouvrage (`BookContext` : auteur, éditeur, année, format, ISBN). Aucune liste de goodies toute faite dans le prompt (ADR-014).
 - [`app/bot/handlers/alerts_create.py`](app/bot/handlers/alerts_create.py) : Handler `handle_create_ai_variants` branché sur le bouton `[ ✨ Suggérer variantes IA ]`.
 - [`app/bot/handlers/alerts_manage.py`](app/bot/handlers/alerts_manage.py) : Handler `handle_manage_ai_variants` pour enrichir une alerte existante.
 
@@ -166,7 +169,7 @@ Enrichir asynchroniquement les alertes Telegram déjà délivrées pour fournir 
 - [`app/services/ai/pipeline.py`](app/services/ai/pipeline.py) : `AIPostAlertPipeline.enrich_alert(...)` exécuté en arrière-plan (`safe_create_task`) avec le vrai `message_id` Telegram.
 - [`app/services/ai/registry.py`](app/services/ai/registry.py) : `AIRegistry` centralisant l'activation des modules post-alerte.
 - [`app/services/ai/modules/`](app/services/ai/modules/) :
-  - `natural_add.py` : Extraction des critères depuis une phrase en langage naturel (`/add`).
+  - `natural_add.py` : Extraction des critères depuis une phrase en langage naturel (`/add`). L'ISBN proposé n'est qu'un candidat : il n'est retenu que s'il est confirmé par la BNF pour l'œuvre demandée (ADR-014).
   - `profit_scoring.py` : Évaluation du potentiel de revente et marge estimée.
   - `negotiation.py` : Proposition d'offre et message de négociation courtois.
   - `auto_tuning.py` : Suggestions d'exclusions sur faux positifs.
@@ -188,7 +191,7 @@ Persister les entités métier, les alertes, les annonces, le catalogue de livre
 - [`app/db/session.py`](app/db/session.py) : Moteur async PostgreSQL (`AsyncSessionLocal`, pool `asyncpg`).
 - [`app/db/models/`](app/db/models/) :
   - `alert.py` : Modèle `Alert` (nom, mots-clés, exclusions, variantes, prix max, conditions, statut).
-  - `listing.py` : Modèle `Listing` (données de l'annonce, source, prix, photo, URL).
+  - `listing.py` : Modèle `Listing` (données de l'annonce, source, prix, URL).
   - `book.py` : Modèle `Book` (catalogue BD : titre, série, tome, ISBN-13 BNF).
   - `book_market_cache.py` : cache de cote (`book_market_cache`). `market_price_snapshot.py` : snapshots (`market_price_snapshots`).
   - `bot_event.py` : Modèle `BotEvent` (suivi des interactions : faux positifs `listing_disliked`, clics).

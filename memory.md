@@ -114,30 +114,30 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 
 ### ADR-011 : Purge des use cases parasites et modules IA inadaptés
 - **Contexte** : Le projet contenait plusieurs fonctionnalités expérimentales ou désactivées :
-  - Un module d'inspection multi-photos (`VisionGuardModule`) incompatible avec l'API textuelle de DeepSeek et redondant avec l'inspection humaine.
+  - Un module d'inspection visuelle (`VisionGuardModule`) incompatible avec l'API textuelle de DeepSeek et redondant avec l'inspection humaine.
   - Un faux service de vision (`VisionGuardService`) qui envoyait un second message d'alerte alarmiste 0,5s après l'alerte pour des mots-clés qui doivent être bloqués au matching CPU.
   - Un module de décomposition de lots (`BundleDecompositionModule`) et un service orphelin (`BundleDetector`), alors que `tome_extractor.py` gère déjà les tomes et lots de façon déterministe en CPU.
   - Un module de détection d'anomalie de prix (`PriceGlitchModule`) qui poussait l'IA à halluciner des cotes sans données de marché réelles.
   - Un bouton factice `[ 🛍️ Dressing / Lot (bientôt) ]` sur l'ensemble des alertes Telegram.
 - **Décision** :
   - Suppression complète des 5 modules/services et de leurs 2 suites de tests associées (~550 lignes supprimées).
-  - Épuration du clavier Telegram à 3 lignes pour les BD (`[ 🖼 Photos ]` `[ 🔗 Annonce ]`, `[ 📊 Prix du marché ]`, `[ 👎 Faux positif ]` `[ 💬 Négocier ]`) et 2 lignes pour les autres catégories.
+  - Épuration du clavier Telegram à 3 lignes pour les BD (`[ 🔗 Annonce ]`, `[ 📊 Prix du marché ]`, `[ 👎 Faux positif ]` `[ 💬 Négocier ]`) et 2 lignes pour les autres catégories.
   - Suppression des flags de configuration désactivés (`AI_FEATURE_VISION_GUARD`, `AI_FEATURE_BUNDLE_DECOMPOSITION`, `AI_FEATURE_PRICE_GLITCH`).
 - **Raison** : Focalisation stricte sur le rôle essentiel de BotRadar : alerte immédiate, matching déterministe infaillible, zéro hallucination et zéro spam.
 
 ### ADR-012 : Migration vers l'API interne JSON Vinted (`svc-catalogue`) & Cadence Adaptative
 - **Contexte** :
   - Le scraper Vinted téléchargeait les pages de catalogue HTML (`/catalog`) pesant ~7,25 Mo par requête, entraînant une latence réseau de ~2 000 ms et une consommation de bande passante excessive.
-  - Le bouton Telegram `[ 🖼 Photos ]` nécessitait une requête HTTP supplémentaire vers Vinted pour extraire la galerie, retardant l'affichage des images.
+  - Chaque visite de page d'annonce coûtait une requête HTTP supplémentaire, y compris pour des informations déjà présentes dans le catalogue.
   - L'intervalle de scrutation fixe (20s) méritait d'être optimisé sans risque de bannissement IP Cloudflare.
 - **Décision** :
   - **API Interne First** : Interrogation directe de l'endpoint microservice Vinted Web `https://api.vinted.fr/svc-catalogue/items` avec les en-têtes web actuels (`Platform: web`, `X-Next-App: marketplace-web`, `X-Anon-Id`).
   - **Payload divisé par 190** : Passage de 7,25 Mo à ~38 Ko par appel, réduisant la latence à ~200 ms.
-  - **Galerie multi-photos native** : Toutes les photos HD sont extraites dès le scan et stockées dans `listing.photos`. L'ouverture de l'album via `[ 🖼 Photos ]` devient 100 % instantanée (zéro requête Vinted requise).
   - **Résilience absolue (Fallback HTML)** : Si l'API interne retourne une réponse non standard, le scraper bascule automatiquement et de manière transparente sur le catalogue HTML historique.
   - **Cadence Adaptative** : Intervalle de 12s en heures de pointe (11h30-14h00 et 18h00-22h30 Paris) et 15s en heures standard, avec passage automatique à 8s dès configuration d'un proxy résidentiel (Raspberry Pi Zero 2 W via `VINTED_PROXY_URL`).
   - **Ordonnancement Entrelacé (Staggered Interleaving)** : Les catégories hors-livres s'intercalent fluidement avec un espacement de 1,2s à 2,0s, évitant les pics concurrentiels sur une même IP.
 - **Raison** : Maximiser la vitesse de détection ("ultra-rapide") pour battre la concurrence tout en préservant l'IP et en garantissant zéro régression.
+- **Mise à jour (2026-09-30)** : `svc-catalogue/items` ne renvoie plus qu'une image de couverture dans `photos[]` (souvent length 1). Le scan n'expose donc plus l'information d'images multiples : seule la couverture est conservée (ADR-015).
 
 ### ADR-013 : Passerelle centralisée multi-bots (caddy_gateway) et harmonisation VPS ~/bot-radar/
 - **Contexte** :
@@ -151,6 +151,60 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
   - **Harmonisation VPS `~/bot-radar/`** : Renommage du répertoire de projet sur le VPS vers `~/bot-radar/`, maintien d'un symlink `~/radar-bot -> ~/bot-radar` et mise à jour du crontab de backup automatique.
   - **Zéro perte de données** : Duplication des volumes Docker vers `bot-radar_postgres_data` et `bot-radar_redis_data` avec snapshot SQL préalable.
 - **Raison** : Architecture serveur propre, modulaire et extensible permettant d'héberger plusieurs bots en parallèle sur un même VPS sans conflit de ports ni interruption de service.
+
+### ADR-014 : La BNF est la seule autorité ISBN (« l'IA propose, la BNF dispose »)
+- **Contexte** : `/add la couleur des choses. Max 12 €` proposait l'ISBN `9782369903062` pour l'ouvrage « La couleur des choses » de Martin Panchaud. Cet ISBN est **réel et valide** : il appartient à « Keeping two » de Jordan Crane, même éditeur (Çà et là), même année. DeepSeek n'a pas inventé des chiffres, il a recombiné un préfixe d'éditeur plausible. Un contrôle de clé de contrôle ne l'attrape pas.
+  - **Impact** : un ISBN faux n'est pas bénin. Il devient une contrainte de matching **stricte** (`listing_match.py`), l'URL de recherche Vinted (`search_start_type=item_page_isbn`) et la clé de cote marché. L'alerte ne peut alors plus jamais matcher, et sa ligne de prix compare deux livres différents.
+- **Décision** :
+  - `extract_clean_isbn` valide désormais la clé de contrôle (ISBN-10 mod 11, ISBN-13 pondérée 1/3) et renvoie `None` sur un code mal saisi. Filet anti-typo sur `/addisbn`, `/edit` et les URLs.
+  - `BookMetadataService` gagne trois entrées : `resolve_for_alert(titre, auteur)` (notice de référence + éditions alternatives), `verify_isbn(isbn, titre)` (confirme le **couple** ISBN ↔ œuvre) et `title_similarity` / `same_author`.
+  - `natural_add` ne décide plus de l'ISBN : il propose des candidats (ISBN saisi par l'utilisateur, puis ISBN du modèle) et n'en retient un que s'il est confirmé par la BNF pour l'œuvre demandée. Sinon l'alerte part sur le titre avec un avertissement visible dans le récap.
+  - Le prompt de `natural_add` n'interdit plus de proposer un ISBN mais exige la recopie de celui écrit par l'utilisateur ; il ne liste plus d'exclusions figées.
+  - Le prompt de `keyword_variants` est ancré sur la fiche réelle (`BookContext` : auteur, éditeur, année, format, ISBN) et interdit les listes de goodies génériques. Le même appel sert au récap de `/add` et au bouton `[ ✨ Variantes & Exclusions IA ]`.
+  - `/edit` refuse un ISBN que la BNF rattache à un autre ouvrage, en nommant le vrai titre. Une panne réseau ne bloque jamais la saisie (absence de preuve = pas de refus).
+  - **Règle de sélection d'édition** : similarité de titre (poids 3) + concordance d'auteur + bonus « notice datée ». Une notice sans date est un doublon d'édition : elle sert d'alternative, jamais de référence. Une alternative doit partager le titre **et** l'auteur, sinon « De la couleur des choses » (Casabianca) serait proposé comme édition de « La couleur des choses » (Panchaud).
+  - **Repli OpenLibrary (autorité secondaire)** : quand la BNF ne renvoie aucune notice exploitable, l'API Search d'OpenLibrary est interrogée (`_openlibrary_works`). Trois règles encadrent ces données :
+    - `source="openlibrary"` et `confidence=MEDIUM` ; le récap affiche « ℹ️ Source OpenLibrary (repli BNF) » pour que l'utilisateur puisse exiger la BNF.
+    - **Jamais en override** : si la BNF connaît l'ISBN mais que le titre ne correspond pas, c'est une preuve de contradiction — OpenLibrary n'est pas consulté et ne peut pas réinstaller ce code.
+    - **Sélection d'ISBN dans un document agrégé** : OpenLibrary regroupe toutes les éditions d'une œuvre (y compris les traductions) dans un seul document. On retient le code demandé, puis un ISBN-13, puis une édition francophone (`9782`/`979`). Les autres ISBN francophones du document deviennent les éditions alternatives.
+  - **Limite assumée** : OpenLibrary ne connaît pas les ouvrages absents de son index (ex: une première édition française introuvable). Dans ce cas l'alerte part sur le titre, avec l'avertissement habituel.
+- **Raison** : Le matching doit rester déterministe et sans hallucination. Une donnée d'identité fausse est le seul type d'erreur qui contamine silencieusement tout le chemin aval (alerte, cote, négociation).
+- **Conséquence assumée** : `/add` effectue deux appels DeepSeek (parsing puis mots-clés) et une résolution bibliographique, uniquement en phase de création — jamais avant une alerte (invariant n°1 intact). Un livre absent de la BNF **et** d'OpenLibrary est surveillé par titre au lieu d'être ignoré. Le repli s'applique aussi à `_link_book_from_bnf`, tâche de fond post-alerte : l'alerte est déjà partie, l'invariant n°1 n'est pas concerné.
+
+### ADR-016 : Un seul filtre d'occasion, une seule référence de prix
+- **Contexte** : audit du chemin « cote de marché ». Quatre défauts produisaient des cotes fausses ou trompeuses.
+  1. `extract_best_historical_low` faisait `int(raw)` sans garde : une valeur nulle ou non numérique faisait échouer le refresh d'un livre entier.
+  2. Le registre (`ProviderRegistry.select_best_offer`) ne filtrait ni l'état ni le Neuf : une offre Recyclivre en « Bon état » pouvait battre une offre Chasse-aux-livres en « Très bon » et devenir la cote.
+  3. `ChasseAuxLivresProvider.is_title_coherent` acceptait **un seul mot commun** (`len(common) > 0`), contenait un dictionnaire d'œuvres figé (`montagnes hallucinees`, `appel de cthulhu`, `homme sans peur`) et renvoyait `True` par défaut quand il n'avait rien à comparer.
+  4. Le résumé d'alerte et le panneau détaillé ne citaient pas la même référence : le résumé comparait au prix le plus bas 1 an, le panneau écrasait cette valeur par le prix du jour. Le lot cumulait les cotes de tomes non appariés.
+- **Décision** :
+  - **`app/domain/rules/market_offer.py`** : règles pures de classification d'une offre (`condition_tier`, `is_very_good_or_better`, `is_acceptable_secondhand_condition`, `is_brand_new_partner`, `is_merchant_excluded`, `is_comparable_secondhand_offer`). Un état non qualifié (« Occasion ») reste acceptable ; un état déclaré et inférieur à « Très bon » est refusé. Une seule définition, partagée par le registre, le fournisseur et l'affichage.
+  - **Référence unique** : `reference_price(cache)` renvoie le prix le plus bas constaté sur 1 an s'il existe, sinon le prix du marché du jour. L'écart compare le total Vinted **frais de port inclus** (`_vinted_total_cents`) à cette référence, dans le résumé comme dans le panneau.
+  - **Titre** : `is_title_coherent` s'appuie sur `title_similarity` (seuil 0,72), refuse deux tomes différents et exige un noyau d'œuvre identique ; plus de dictionnaire figé, plus de `True` par défaut.
+  - **ISBN** : `normalize_search_isbn` valide la clé de contrôle dans le registre avant tout appel réseau ; un ISBN invalide fait basculer la recherche sur le titre au lieu de coter l'ouvrage d'un autre livre.
+  - **Lot** : seuls les tomes appariés sont cumulés, la couverture réelle est annoncée (`Lot, 2/3 tomes`).
+  - **Refresh** : vagues concurrentes bornées (4), pause anti-rate-limit une fois par vague au lieu d'une fois par livre, plafond de durée de passe, persistance dédupliquée en une fonction pure (`BookPricingResult`).
+- **Raison** : une cote fausse fait perdre de l'argent ou fait manquer une vraie bonne affaire. Mieux vaut une cote absente qu'une cote attribuée au mauvais ouvrage, au mauvais tome ou au mauvais état.
+- **Conséquence assumée** : le provider est plus strict sur les titres ; une correspondance auparavant acceptée au premier mot commun est désormais refusée, ce qui peut laisser certains livres sans cote.
+
+### ADR-017 : Choisir son édition dans le récap, avant de créer l'alerte
+- **Contexte** : ADR-014 a rendu la BNF seule autorité ISBN, mais le choix de l'édition restait invisible. `resolve_for_alert` renvoyait bien des éditions alternatives, mais elles n'étaient réduites qu'à une ligne de texte dans l'ISBN (`isbn_note`). L'utilisateur ne pouvait corriger un ISBN qu'en annulant et en recommençant `/add`. Or l'ISBN engage tout : recherche Vinted (`search_start_type=item_page_isbn`), contrainte de matching stricte et clé de cote de marché. Deux éditions du même album (Initiale parue en 2022, réédition de 2018) donnent deux marchés différents.
+- **Décision** :
+  - `BookResolution.editions()` est l'unique source des éditions concurrentes : `EditionAlternative` (ISBN, éditeur, année, format), édition de référence en tête, doublons supprimés. `natural_add` l'expose dans `NaturalAddResult.edition_alternatives` ; la saisie manuelle appelle `resolve_for_alert` une fois de plus.
+  - `format_semi_auto_recap` affiche un bloc « 🔀 Éditions concurrentes » avec l'édition retenue marquée ✅ ; `get_alert_confirmation_keyboard` place un bouton par édition **avant** le bouton de création (`al_create_edition:{index}`).
+  - `select_alert_creation_edition` bascule l'ISBN, l'éditeur, et force `is_series=False` puis rend le récap à jour. Un ISBN saisi à la main dans le menu ✏️ réaligne la liste.
+  - Nettoyage au passage : les six appels dupliqués à `format_semi_auto_recap` sont remplacés par `recap_from_state(draft)` / `creation_keyboard(draft)`, et `format_edition_hint` (module IA) fusionne dans `format_edition_details` (service de métadonnées).
+- **Raison** : l'ISBN est une décision, pas une formality. Montrer les alternatives au moment du récap — où l'annulation est encore gratuite — coûte une requête BNF de plus et supprime le seul cas où l'utilisateur créait une alerte sur la mauvaise édition.
+- **Conséquence assumée** : une requête SRU BNF supplémentaire par création d'alerte BD (chemin utilisateur, hors chemin d'alerte). Un échec réseau fait simplement disparaître le bloc, sans jamais bloquer la création.
+
+### ADR-015 : Suppression de l'album d'images (l'alerte garde sa couverture)
+- **Contexte** : L'album d'images coûtait une requête Vinted authentifiée par annonce (page `/items/{id}`) au clic, plus un préchargement systématique en tâche de fond après chaque alerte notifiée. Le scan `svc-catalogue` ne fournissant de toute façon qu'une couverture, ce coût réseau ne rapportait presque rien.
+- **Décision** : suppression complète de la fonctionnalité — bouton, handler de callback, suppression de l'album, préchargement, fonction de récupération réseau, extraction associée, champ de galerie dans le parsing, et toute mention documentaire.
+  - Clavier d'alerte : ligne 1 réduite à `[ 🔗 Annonce ]` ; 3 lignes pour les BD, 2 pour les autres catégories.
+  - Le parsing ne conserve que la photo de couverture ; le payload d'ingestion et le schéma API n'acceptent qu'une image.
+  - Une branche de code morte conditionnée par la présence d'images (`raw_payload["identified_tome"]`, clé jamais écrite) a été supprimée au passage.
+- **Raison** : une fonctionnalité qui coûte une requête réseau par alerte pour un contenu presque toujours indisponible est du code mort de production. La couverture reste : c'est elle qui donne l'information au moment de la décision d'achat.
+- **Conséquence assumée** : l'utilisateur doit ouvrir l'annonce Vinted pour voir d'éventuelles autres images.
 
 ---
 
