@@ -4,10 +4,10 @@ Ce document consigne la mémoire vivante de **BotRadar**, la genèse de ses choi
 
 Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs pour comprendre le **pourquoi** derrière les contraintes strictes définies dans [`AGENTS.md`](AGENTS.md) et la cartographie technique de [`subjects.md`](subjects.md).
 
-### Documentation de référence (Univers LLM)
+## Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-013, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-018, dette différée).
 
 ---
 
@@ -28,7 +28,7 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
         ↓ (~1ms)
 [ ⚡ ALERTE TELEGRAM INSTANTANÉE ]  <-- Objectif prioritaire : < 500ms
         ↓ (Arrière-plan / non bloquant)
-[ IA DeepSeek / Liaison BNF ]
+[ MOTEUR IA / Liaison BNF ]
 ```
 
 ### Ce que BotRadar EST
@@ -59,7 +59,7 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 - **Décision** : La notification Telegram est envoyée **immédiatement** après matching local CPU et consultation du cache PostgreSQL local.
 - **Raison** : Le temps est le facteur le plus critique.
 - **Conséquence** :
-  - Tout appel externe (BNF, eBay, DeepSeek) est interdit avant `send_listing_alert`.
+  - Tout appel externe (BNF, eBay, moteur IA) est interdit avant `send_listing_alert`.
   - L'enrichissement IA se fait en tâche de fond (`safe_create_task`) et vient modifier ou commenter le message Telegram avec son vrai `message_id`.
   - Si un livre est inconnu en base, sa première alerte part sans cote : le fetch BNF d'arrière-plan enrichira la base pour les alertes suivantes.
 
@@ -169,7 +169,16 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
     - **Sélection d'ISBN dans un document agrégé** : OpenLibrary regroupe toutes les éditions d'une œuvre (y compris les traductions) dans un seul document. On retient le code demandé, puis un ISBN-13, puis une édition francophone (`9782`/`979`). Les autres ISBN francophones du document deviennent les éditions alternatives.
   - **Limite assumée** : OpenLibrary ne connaît pas les ouvrages absents de son index (ex: une première édition française introuvable). Dans ce cas l'alerte part sur le titre, avec l'avertissement habituel.
 - **Raison** : Le matching doit rester déterministe et sans hallucination. Une donnée d'identité fausse est le seul type d'erreur qui contamine silencieusement tout le chemin aval (alerte, cote, négociation).
-- **Conséquence assumée** : `/add` effectue deux appels DeepSeek (parsing puis mots-clés) et une résolution bibliographique, uniquement en phase de création — jamais avant une alerte (invariant n°1 intact). Un livre absent de la BNF **et** d'OpenLibrary est surveillé par titre au lieu d'être ignoré. Le repli s'applique aussi à `_link_book_from_bnf`, tâche de fond post-alerte : l'alerte est déjà partie, l'invariant n°1 n'est pas concerné.
+- **Conséquence assumée** : `/add` effectue deux appels au moteur IA (parsing puis mots-clés) et une résolution bibliographique, uniquement en phase de création — jamais avant une alerte (invariant n°1 intact). Un livre absent de la BNF **et** d'OpenLibrary est surveillé par titre au lieu d'être ignoré. Le repli s'applique aussi à `_link_book_from_bnf`, tâche de fond post-alerte : l'alerte est déjà partie, l'invariant n°1 n'est pas concerné.
+
+### ADR-015 : Suppression de l'album d'images (l'alerte garde sa couverture)
+- **Contexte** : L'album d'images coûtait une requête Vinted authentifiée par annonce (page `/items/{id}`) au clic, plus un préchargement systématique en tâche de fond après chaque alerte notifiée. Le scan `svc-catalogue` ne fournissant de toute façon qu'une couverture, ce coût réseau ne rapportait presque rien.
+- **Décision** : suppression complète de la fonctionnalité — bouton, handler de callback, suppression de l'album, préchargement, fonction de récupération réseau, extraction associée, champ de galerie dans le parsing, et toute mention documentaire.
+  - Clavier d'alerte : ligne 1 réduite à `[ 🔗 Annonce ]` ; 3 lignes pour les BD, 2 pour les autres catégories.
+  - Le parsing ne conserve que la photo de couverture ; le payload d'ingestion et le schéma API n'acceptent qu'une image.
+  - Une branche de code morte conditionnée par la présence d'images (`raw_payload["identified_tome"]`, clé jamais écrite) a été supprimée au passage.
+- **Raison** : une fonctionnalité qui coûte une requête réseau par alerte pour un contenu presque toujours indisponible est du code mort de production. La couverture reste : c'est elle qui donne l'information au moment de la décision d'achat.
+- **Conséquence assumée** : l'utilisateur doit ouvrir l'annonce Vinted pour voir d'éventuelles autres images.
 
 ### ADR-016 : Un seul filtre d'occasion, une seule référence de prix
 - **Contexte** : audit du chemin « cote de marché ». Quatre défauts produisaient des cotes fausses ou trompeuses.
@@ -197,17 +206,7 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 - **Raison** : l'ISBN est une décision, pas une formality. Montrer les alternatives au moment du récap — où l'annulation est encore gratuite — coûte une requête BNF de plus et supprime le seul cas où l'utilisateur créait une alerte sur la mauvaise édition.
 - **Conséquence assumée** : une requête SRU BNF supplémentaire par création d'alerte BD (chemin utilisateur, hors chemin d'alerte). Un échec réseau fait simplement disparaître le bloc, sans jamais bloquer la création.
 
-### ADR-015 : Suppression de l'album d'images (l'alerte garde sa couverture)
-- **Contexte** : L'album d'images coûtait une requête Vinted authentifiée par annonce (page `/items/{id}`) au clic, plus un préchargement systématique en tâche de fond après chaque alerte notifiée. Le scan `svc-catalogue` ne fournissant de toute façon qu'une couverture, ce coût réseau ne rapportait presque rien.
-- **Décision** : suppression complète de la fonctionnalité — bouton, handler de callback, suppression de l'album, préchargement, fonction de récupération réseau, extraction associée, champ de galerie dans le parsing, et toute mention documentaire.
-  - Clavier d'alerte : ligne 1 réduite à `[ 🔗 Annonce ]` ; 3 lignes pour les BD, 2 pour les autres catégories.
-  - Le parsing ne conserve que la photo de couverture ; le payload d'ingestion et le schéma API n'acceptent qu'une image.
-  - Une branche de code morte conditionnée par la présence d'images (`raw_payload["identified_tome"]`, clé jamais écrite) a été supprimée au passage.
-- **Raison** : une fonctionnalité qui coûte une requête réseau par alerte pour un contenu presque toujours indisponible est du code mort de production. La couverture reste : c'est elle qui donne l'information au moment de la décision d'achat.
-- **Conséquence assumée** : l'utilisateur doit ouvrir l'annonce Vinted pour voir d'éventuelles autres images.
----
-
-## ADR-018 : Le fournisseur IA est un adaptateur, jamais une dépendance
+### ADR-018 : Le fournisseur IA est un adaptateur, jamais une dépendance
 
 ### Statut
 Accepté et mis en œuvre.
@@ -252,8 +251,11 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
 
 ## 4. Règles d'or pour tout Agent LLM
 
-1. **Priorité absolue à la vitesse d'alerte** : Ne jamais insérer un appel réseau (`await httpx`, `await client...`) entre la réception d'une annonce et l'envoi du message Telegram.
-2. **Respect strict du processus unique** : Ne jamais ajouter de service worker ou de deuxième scheduler. Tout se passe dans `radar_app`.
-3. **Zéro régression sur la suite de tests** : La commande `./.venv/bin/pytest` doit toujours réussir à 100% (458 tests actifs), et chaque commit doit passer seul — `make check-history`.
-4. **Pas de code orphelin ni de flags morts** : Chaque setting de `app/core/config.py` doit correspondre à une feature vivante et documentée.
-5. **Déploiement autonome** : L'assistant exécute lui-même les commandes de déploiement SSH/rsync et les vérifications d'intégrité après chaque intervention validée par l'utilisateur.
+Les invariants n°1 (alerte Telegram d'abord) et n°2 (un seul scheduler) ne sont pas répétés ici :
+ils sont définis une seule fois, avec leurs critères de vérification, dans l'invariant
+correspondant d'`AGENTS.md`. Ce qui suit n'est pas une copie de la constitution.
+
+1. **Un seul endroit par règle** : une règle dure vit dans `AGENTS.md` ; un ADR la justifie, un sujet la cartographie. Ne pas la redéclarer ailleurs sous une forme plus lâche.
+2. **Zéro régression sur la suite de tests** : `./.venv/bin/pytest` doit réussir à 100 % (compteur courant : voir le badge du README), et chaque commit doit passer seul — `make check-history`.
+3. **Pas de code orphelin ni de flags morts** : chaque setting de `app/core/config.py` doit correspondre à une feature vivante et documentée.
+4. **Déploiement autonome, une fois validé** : après une intervention validée par l'utilisateur, exécuter soi-même les commandes SSH/rsync et les vérifications d'intégrité, sans lui demander de copier-coller. Jamais spontanément, et jamais pour une opération destructive non demandée.

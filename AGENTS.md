@@ -20,6 +20,8 @@ Hiérarchie, dans cet ordre :
 
 Avant d’agir sur une feature ou un correctif, lire [`vendor/superpowers/skills/using-superpowers/SKILL.md`](vendor/superpowers/skills/using-superpowers/SKILL.md). Cursor les découvre via [`.cursor/skills/`](.cursor/skills/). Antigravity via [`.agent/skills/`](.agent/skills/) et [`GEMINI.md`](GEMINI.md).
 
+Un outil qui n’a pas de table de correspondance de harness applique `SKILL.md` tel quel : seules ses commandes et exemples nommant d’autres outils sont à ignorer. Une skill qui suggère d’omettre son propre workflow « par overkill » ne prime pas sur les invariants ci-dessous.
+
 Ne pas installer Agent OS, ECC, BMad, GSD ni Spec Kit dans ce dépôt : leurs workflows se chevauchent. Une curiosité se fait sur un clone jetable, pas ici. Ne pas remplacer cette constitution par le `AGENTS.md` du dépôt Superpowers.
 
 Mise à jour du submodule : seulement quand un commit est choisi. Pas d’upgrade automatique dans un correctif.
@@ -97,7 +99,9 @@ Toute modification du chemin ingestion → matching → Telegram doit respecter 
 Interdit sur ce chemin :
 
 - `await` vers BNF, eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres ou le moteur IA **avant** l’envoi.
-- Relancer `AsyncEnrichListingUseCase.schedule_enrichment` (supprimé : il partait avec `message_id=0`).
+- Relancer `AsyncEnrichListingUseCase.schedule_enrichment` : cette méthode a été supprimée
+  (elle partait avec `message_id=0` et perdait l’enrichissement). Ne pas la réintroduire ;
+  l’enrichissement passe par `telegram_service.py` avec le vrai `message_id`.
 - Un second client HTTP vers le moteur IA « pour voir ». Un seul POST, dans `BaseLLMClient.complete`.
 - `time.sleep` dans `app/`.
 - Calculs lourds ou regex globaux « optimisés » sans benchmark reproductible (`make bench` / `tests/performance/`).
@@ -132,7 +136,7 @@ Conséquence assumée : la **première** alerte d’une BD inconnue peut partir 
 7. Ne pas élargir le périmètre d’un correctif (pas de refactor opportuniste des handlers 900 lignes).
 8. Après une modification : Ruff sur les fichiers touchés, puis les tests concernés. Suite complète avant un déploiement.
 9. **Historique vert** : chaque commit passe `ruff` et `pytest` sur son propre arbre. Un refactor ne dépend jamais d’un commit futur ; un découpage qui produit un commit rouge est un mauvais découpage. `make check-history` rejoue la série (base = `$CHECK_HISTORY_BASE`, sinon dernier tag `v*`, sinon `HEAD~5`) et la CI rejoue la même chose à chaque tag. `mypy` n’est pas dans le lot par défaut : c’est un objectif de bout de branche, pas un contrat de commit.
-9. Toute cote de marché passe par les règles pures de [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : occasion, état au moins « Très bon », marchand non exclu. Ne pas réintroduire un filtre d'état local à un fournisseur ou dans un handler.
+10. Toute cote de marché passe par les règles pures de [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : occasion, état au moins « Très bon », marchand non exclu. Ne pas réintroduire un filtre d'état local à un fournisseur ou dans un handler.
 
 ## Tests
 

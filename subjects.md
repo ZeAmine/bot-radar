@@ -124,7 +124,7 @@ Interface utilisateur conversationnelle pour piloter les alertes, recevoir les n
 ## Sujet 5 — Auto-Tuning & Apprentissage Proactif (Dislikes)
 
 ### Rôle
-Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur clique sur `[👎 Faux positif]`, DeepSeek analyse les motifs parasites récurrents et suggère des mots-clés d'exclusion ciblés pour assainir l'alerte.
+Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur clique sur `[👎 Faux positif]`, le moteur IA analyse les motifs parasites récurrents et suggère des mots-clés d'exclusion ciblés pour assainir l'alerte.
 
 ### Fichiers clés
 - [`app/bot/handlers/autotune.py`](app/bot/handlers/autotune.py) :
