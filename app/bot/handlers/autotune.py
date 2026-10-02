@@ -169,7 +169,7 @@ async def process_autotune_for_alert(
     loading_text = (
         f"🧹 <b>Auto-Tuning : « {html.escape(alert.name)} »</b>\n\n"
         "⏳ <b>Analyse IA en cours...</b>\n"
-        "<i>Recherche des faux positifs et analyse par DeepSeek, veuillez patienter...</i>"
+        "<i>Recherche des faux positifs et analyse par l'IA, veuillez patienter...</i>"
     )
     loading_kb = InlineKeyboardMarkup(
         inline_keyboard=[

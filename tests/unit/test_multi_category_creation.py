@@ -414,7 +414,7 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
 
     message.bot.send_chat_action.assert_awaited_once_with(chat_id=12345, action="typing")
     message.answer.assert_awaited_once()
-    assert "DeepSeek analyse votre demande" in message.answer.call_args[0][0]
+    assert "L'IA analyse votre demande" in message.answer.call_args[0][0]
 
     loading_message.edit_text.assert_awaited_once()
     edited_text = loading_message.edit_text.call_args[0][0]

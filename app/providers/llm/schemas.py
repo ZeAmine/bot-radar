@@ -1,4 +1,4 @@
-"""Schémas Pydantic pour le fournisseur LLM DeepSeek."""
+"""Schémas Pydantic partagés de l'analyse d'annonce."""
 
 from app.domain.entities.analysis import (
     ListingAnalysisResult,

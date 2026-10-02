@@ -1,10 +1,37 @@
-"""Package fournisseur LLM."""
+"""Fournisseurs de moteur IA.
 
-from app.providers.llm.deepseek_provider import DeepSeekProvider
-from app.providers.llm.schemas import ListingAnalysisResult, RealConditionAssessment
+Ce package est la seule frontière du projet qui connaît un fournisseur. Le reste de
+l'application parle au client construit par `registry.py` et n'a pas à changer quand
+le modèle change.
+"""
+
+from app.domain.entities.analysis import ListingAnalysisResult, RealConditionAssessment
+from app.providers.llm.base import (
+    STATUS_ACTIVE,
+    STATUS_DISABLED,
+    STATUS_ERROR,
+    STATUS_UNCONFIGURED,
+    BaseLLMClient,
+    LLMClient,
+    LLMHealth,
+    clean_and_parse_json,
+)
+from app.providers.llm.listing_analysis import ListingAnalysisProvider
+from app.providers.llm.registry import LLM_ADAPTERS, build_llm_client, llm_client
 
 __all__ = [
-    "DeepSeekProvider",
+    "STATUS_ACTIVE",
+    "STATUS_DISABLED",
+    "STATUS_ERROR",
+    "STATUS_UNCONFIGURED",
+    "LLM_ADAPTERS",
+    "BaseLLMClient",
+    "LLMClient",
+    "LLMHealth",
+    "ListingAnalysisProvider",
     "ListingAnalysisResult",
     "RealConditionAssessment",
+    "build_llm_client",
+    "clean_and_parse_json",
+    "llm_client",
 ]

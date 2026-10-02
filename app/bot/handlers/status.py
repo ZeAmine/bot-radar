@@ -10,7 +10,7 @@ from aiogram.types import Message
 
 from app.core.config import settings
 from app.db.repositories.stats_repo import StatsRepository
-from app.services.ai.client import deepseek_client
+from app.providers.llm.registry import llm_client
 from app.tasks.vinted_poller import (
     get_night_mode_remaining_seconds,
     get_poller_status,
@@ -94,22 +94,21 @@ async def handle_status(message: Message, db_session: Any) -> None:
         else "Désactivée"
     )
 
-    ai_info = await deepseek_client.check_health()
-    if ai_info["status"] == "active":
-        latency = ai_info.get("latency_ms", 0)
-        ai_status = f"🟢 <b>Actif</b> (latence : {latency}ms)"
-    elif ai_info["status"] == "disabled":
+    ai_info = await llm_client.check_health()
+    if ai_info.status == "active":
+        ai_status = f"🟢 <b>Actif</b> (latence : {ai_info.latency_ms or 0}ms)"
+    elif ai_info.status == "disabled":
         ai_status = "⏸️ <b>Désactivé</b>"
-    elif ai_info["status"] == "unconfigured":
+    elif ai_info.status == "unconfigured":
         ai_status = "⚪ <b>Non configuré</b> (clé API manquante)"
     else:
-        ai_status = f"🔴 <b>Indisponible</b> ({ai_info['message']})"
+        ai_status = f"🔴 <b>Indisponible</b> ({ai_info.message})"
 
     text = (
         "📡  <b>État du Service</b>\n\n"
         f"🕒 <b>Heure locale</b> : {time_str} ({tz_label})\n"
         f"🔍 <b>Scanner Vinted</b> : {poller_status}\n"
-        f"🤖 <b>Moteur IA (DeepSeek)</b> : {ai_status}\n"
+        f"🤖 <b>Moteur IA ({llm_client.vendor} · {ai_info.model})</b> : {ai_status}\n"
         f"🌙 <b>Plage de veille</b> : {night_hours_info}\n\n"
         f"🎯 <b>Alertes actives ({total_active}) :</b>\n"
         f"{cat_summary}\n\n"

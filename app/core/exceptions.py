@@ -44,24 +44,24 @@ class ProviderError(BotRadarError):
     """Erreur lors de l'interaction avec un service tiers (API, Scraping, LLM)."""
 
 
-class DeepSeekError(ProviderError):
-    """Erreur générique liée au service DeepSeek."""
+class LLMError(ProviderError):
+    """Erreur générique liée au moteur IA, quel qu'en soit le fournisseur."""
 
 
-class DeepSeekTimeoutError(DeepSeekError):
-    """Le délai d'attente alloué à l'API DeepSeek a été dépassé."""
+class LLMTimeoutError(LLMError):
+    """Le délai d'attente alloué au moteur IA a été dépassé."""
 
 
-class DeepSeekAPIError(DeepSeekError):
-    """L'API DeepSeek a renvoyé un code de statut HTTP d'erreur."""
+class LLMAPIError(LLMError):
+    """Le moteur IA a renvoyé un code de statut HTTP d'erreur."""
 
     def __init__(self, message: str, status_code: int | None = None) -> None:
         super().__init__(message, details={"status_code": status_code})
         self.status_code = status_code
 
 
-class DeepSeekValidationError(DeepSeekError):
-    """La réponse de DeepSeek ne respecte pas le schéma Pydantic attendu."""
+class LLMValidationError(LLMError):
+    """La réponse du moteur IA ne respecte pas le schéma Pydantic attendu."""
 
 
 class MarketPriceProviderError(ProviderError):

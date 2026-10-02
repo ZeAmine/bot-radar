@@ -101,7 +101,7 @@ async def send_listing_alert(
                 reply_markup=keyboard,
             )
 
-        # Pipeline IA Asynchrone (DeepSeek post-alerte)
+        # Pipeline IA asynchrone, post-alerte et non bloquant
         if sent_msg and settings.AI_ENABLED:
             safe_create_task(
                 ai_post_alert_pipeline.enrich_alert(

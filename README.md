@@ -1,7 +1,7 @@
 # BotRadar 🛰️
 
 [![CI](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-429%20passed-success?style=flat&logo=pytest)](https://docs.pytest.org/)
+[![Tests](https://img.shields.io/badge/Tests-458%20passed-success?style=flat&logo=pytest)](https://docs.pytest.org/)
 [![Linter](https://img.shields.io/badge/Linter-Ruff%20strict-black?style=flat&logo=ruff)](https://astral.sh/ruff)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=flat&logo=python)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
@@ -9,7 +9,7 @@
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0%20Async-D71F00?style=flat&logo=sqlalchemy)](https://www.sqlalchemy.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat&logo=postgresql)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis)](https://redis.io/)
-[![DeepSeek](https://img.shields.io/badge/AI-DeepSeek--V4.1--Flash-blueviolet?style=flat)](https://www.deepseek.com/)
+[![IA](https://img.shields.io/badge/IA-moteur--interchangeable-blueviolet?style=flat)](app/providers/llm/)
 [![Architecture](https://img.shields.io/badge/Architecture-Single--Process%20Monolith-blue?style=flat)](AGENTS.md)
 
 **BotRadar** est un bot Telegram **privé**, temps réel et hautement disponible, conçu comme un assistant d'aide à la décision pour l'achat de produits de seconde main.
@@ -28,7 +28,7 @@ Il surveille quatre univers à forte valeur ajoutée :
 2. [Architecture Technique & Invariants](#2-architecture-technique--invariants)
 3. [Clavier & Expérience Telegram](#3-clavier--expérience-telegram)
 4. [Moteur de Matching Déterministe CPU](#4-moteur-de-matching-déterministe-cpu)
-5. [Sous-système IA DeepSeek-V4.1-Flash](#5-sous-système-ia-deepseek-v41-flash)
+5. [Sous-système IA à moteur interchangeable](#5-sous-système-ia--moteur-interchangeable)
 6. [Cote BD & Comparateur de Marché](#6-cote-bd--comparateur-de-marché)
 7. [Poller Vinted & Détection Haute Fréquence](#7-poller-vinted--détection-haute-fréquence)
 8. [Intégration Continue (CI) & Qualité de Code](#8-intégration-continue-ci--qualité-de-code)
@@ -80,7 +80,7 @@ BotRadar est articulé autour d'un **monolithe asynchrone à processus unique** 
 │          │                       ├────────► [ ⚡ ALERTE TELEGRAM < 500ms ]  │
 │          │                       │                │                         │
 │          │                       ▼                ▼ (safe_create_task)      │
-│          │                  Cote BD Locale    IA DeepSeek / BNF             │
+│          │                  Cote BD Locale      Moteur IA / BNF              │
 │          │                  (0 HTTP avant)    (Post-alerte asynchrone)      │
 │          │                       ▼                ▼                         │
 │  ┌───────────────────────────────┴───────────────────────────────┐          │
@@ -102,8 +102,8 @@ BotRadar est articulé autour d'un **monolithe asynchrone à processus unique** 
    - Matching en mémoire CPU locale (`evaluate_listing_against_alert`).
    - Cote BD : **cache local PostgreSQL uniquement** (`MarketPriceService.get_comparison_summary` est synchrone, zéro requête HTTP).
    - Envoi immédiat du message Telegram (`send_listing_alert`).
-   - **En tâche de fond différée uniquement (`safe_create_task`)** : enrichissement IA DeepSeek avec le vrai `message_id` et association ISBN BNF dans une session BDD distincte (ADR-009).
-   - *Interdiction absolue de bloquer l'alerte par un appel réseau externe (BNF, eBay, DeepSeek).*
+   - **En tâche de fond différée uniquement (`safe_create_task`)** : enrichissement IA avec le vrai `message_id` et association ISBN BNF dans une session BDD distincte (ADR-009).
+   - *Interdiction absolue de bloquer l'alerte par un appel réseau externe (BNF, eBay, moteur IA).*
 
 2. **Invariant n°2 — Un seul processus et un seul scheduler (ADR-001)** :
    - Aucun conteneur worker séparé (`radar_app` pilote l'API, les webhooks, APScheduler et le poller Vinted).
@@ -133,7 +133,7 @@ Chaque notification d'opportunité reçue sur Telegram intègre un clavier inlin
 - **`[ 🔗 Annonce ]`** : Ouvre directement la page de l'article dans l'application Vinted avec les moyens de paiement et sessions de l'utilisateur.
 - **`[ 📊 Prix du marché ]`** *(BD uniquement)* : Consulte le détail des offres d'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres) et l'écart de prix.
 - **`[ 👎 Faux positif ]`** : Enregistre le rejet de l'annonce pour alimenter le moteur d'apprentissage `/autotune`. Se transforme en `[ ✅ Signalé ]`.
-- **`[ 💬 Négocier ]`** : Déclenche le coach IA DeepSeek pour obtenir une estimation d'offre pertinente et un message de négociation pré-rédigé courtois prêt à copier.
+- **`[ 💬 Négocier ]`** : Déclenche le coach IA pour obtenir une estimation d'offre pertinente et un message de négociation pré-rédigé courtois prêt à copier.
 
 > **Note d'arbitrage (ADR-007 & ADR-011)** : Les anciens boutons factices `[ 💳 Payer ]` et `[ 🛍️ Dressing / Lot ]` ont été définitivement supprimés pour éliminer les erreurs de session et alléger l'interface.
 
@@ -152,7 +152,7 @@ Chaque notification d'opportunité reçue sur Telegram intègre un clavier inlin
 | `/categories` | Liste des univers surveillés (`bd_comics`, `tech`, `gaming`, `clothes`) |
 | `/stats` | Statistiques complètes d'activité sur 7 ou 30 jours |
 | `/autotune` | Hub d'auto-tuning : analyse des faux positifs et suggestions d'exclusions IA (alias : `/tune`) |
-| `/status` | Diagnostic de santé du service, du poller Vinted et de l'IA DeepSeek |
+| `/status` | Diagnostic de santé du service, du poller Vinted et du moteur IA (fournisseur et modèle) |
 | `/cancel` | Annulation immédiate de l'opération ou du dialogue FSM en cours (alias : `/annuler`) |
 | `/help` | Affichage du guide d'utilisation interactif |
 
@@ -173,9 +173,31 @@ Le moteur de matching ([`app/domain/rules/listing_match.py`](app/domain/rules/li
 
 ---
 
-## 5. Sous-système IA DeepSeek-V4.1-Flash
+## 5. Sous-système IA — moteur interchangeable
 
-L'intelligence artificielle repose sur le modèle `deepseek-flash` via l'API OpenAI compatible. Elle intervient de manière **purement asynchrone post-alerte** et ne bloque jamais la vitesse d'envoi.
+L'IA intervient de manière **purement asynchrone post-alerte** et ne bloque jamais la vitesse d'envoi.
+
+### Changer de modèle ne demande que quatre variables d'environnement
+
+Le fournisseur n'est connu que dans [`app/providers/llm/`](app/providers/llm/). Tout le reste du projet parle au contrat `LLMClient` et ignore le moteur :
+
+```bash
+# .env — c'est tout.
+AI_PROVIDER=openai-compatible   # ou anthropic
+AI_BASE_URL=https://api.deepseek.com/v1
+AI_MODEL=deepseek-flash
+AI_API_KEY=sk-…
+```
+
+- **Groq, Mistral, OpenRouter, Together, Ollama, LM Studio** : compatible OpenAI, donc `AI_PROVIDER` reste `openai-compatible` et seules les trois dernières lignes changent.
+- **Anthropic** (ou tout fournisseur au dialecte différent) : `AI_PROVIDER=anthropic` avec son adaptateur dédié dans [`anthropic.py`](app/providers/llm/anthropic.py).
+- Un nouveau fournisseur non compatible OpenAI demande **un seul fichier** : une classe qui traduit vers son filaire, enregistrée dans [`registry.py`](app/providers/llm/registry.py). Ni handler, ni use case, ni test n'a besoin de changer.
+
+[`tests/unit/test_llm_contract.py`](tests/unit/test_llm_contract.py) rejoue le même contrat sur **chaque** adaptateur enregistré — repli, forme de santé, cache court, transmission des images — donc la bascule est vérifiée, pas supposée.
+
+### Cinq modules de conseil
+
+Cinq modules vivants et spécialisés sont actifs ([`app/services/ai/modules/`](app/services/ai/modules/)) :
 
 Cinq modules vivants et spécialisés sont actifs ([`app/services/ai/modules/`](app/services/ai/modules/)) :
 
@@ -226,7 +248,7 @@ Le poller Vinted intégré ([`app/tasks/vinted_poller.py`](app/tasks/vinted_poll
 Le projet est outillé avec un pipeline d'Intégration Continue via GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) qui s'exécute à chaque push et pull request :
 
 - **Ruff** : Linting strict conforme aux règles modernes Python 3.12 (longueur de ligne max 100 caractères, imports ordonnés, conventions PEP).
-- **Pytest & Pytest-Asyncio** : Suite complète de **429 tests automatisés** couvrant l'ingestion, le matching déterministe, le FSM Telegram, le cache de cotes, le poller Vinted et le sous-système IA, dont **3 benchmarks de performance** (`make bench`) qui vérifient l'invariant de l'alerte < 500 ms (chemin ingestion → matching → Telegram, ré-ingestion de doublon, matching CPU).
+- **Pytest & Pytest-Asyncio** : Suite complète de **458 tests automatisés** couvrant l'ingestion, le matching déterministe, le FSM Telegram, le cache de cotes, le poller Vinted et le sous-système IA, dont **3 benchmarks de performance** (`make bench`) qui vérifient l'invariant de l'alerte < 500 ms (chemin ingestion → matching → Telegram, ré-ingestion de doublon, matching CPU).
 - **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml`, **zéro erreur** sur les 134 fichiers de `app/`, vérifié en CI (`mypy app` bloque la pull request).
 
 Pour exécuter les vérifications localement :
@@ -235,7 +257,7 @@ Pour exécuter les vérifications localement :
 # Vérification du style et du linting
 .venv/bin/ruff check .
 
-# Exécution de la suite complète de tests (429 tests)
+# Exécution de la suite complète de tests (458 tests)
 .venv/bin/pytest -v
 
 # Benchmark du chemin d'alerte (invariant < 500 ms)
@@ -312,9 +334,11 @@ Toutes les variables sont déclarées et typées dans [`app/core/config.py`](app
 | `INTERNAL_API_TOKEN` | Jeton d'authentification Bearer | **Oui** | Secret d'accès aux déclenchements internes `/api/v1/internal/...`. |
 | `RADAR_API_URL` | URL HTTP (défaut : `http://127.0.0.1:8000`) | Non | URL locale de l'API utilisée pour les flux internes de détection. |
 | `BOTRADAR_API_URL` | URL HTTP | Non | Alias optionnel prioritaire sur `RADAR_API_URL`. |
-| `DEEPSEEK_API_KEY` | Chaîne `sk-...` | Non | Clé API pour le moteur IA DeepSeek-V4.1-Flash. |
-| `DEEPSEEK_BASE_URL` | URL HTTP | Non | Base URL DeepSeek (défaut : `https://api.deepseek.com/v1`). |
-| `DEEPSEEK_MODEL` | Nom du modèle | Non | Modèle utilisé (défaut : `deepseek-flash`). |
+| `AI_PROVIDER` | `openai-compatible` / `anthropic` | Non | Adaptateur de moteur IA (défaut : `openai-compatible`). |
+| `AI_API_KEY` | Chaîne `sk-...` | Non | Clé API du moteur IA, quel qu'en soit le fournisseur. |
+| `AI_BASE_URL` | URL HTTP | Non | Base URL du fournisseur (défaut : `https://api.deepseek.com/v1`). |
+| `AI_MODEL` | Nom du modèle | Non | Modèle utilisé (défaut : `deepseek-flash`). |
+| `AI_TIMEOUT_SECONDS` | Durée en secondes | Non | Délai d'attente d'un appel au moteur (défaut : `12.0`). |
 | `AI_ENABLED` | `true` / `false` | Non | Active ou désactive l'ensemble du sous-système IA. |
 | `AI_FEATURE_*` | `true` / `false` | Non | Activation unitaire des 5 modules (`NATURAL_ADD`, `PROFIT_SCORING`, `NEGOTIATION`, `KEYWORD_VARIANTS`, `AUTO_TUNING`). |
 | `EBAY_CLIENT_ID` / `_SECRET` | Chaînes OAuth2 | Non | Identifiants eBay Developer pour la consultation des cotes BD. |
@@ -342,9 +366,10 @@ Le [`Makefile`](Makefile) regroupe les actions récurrentes d'exploitation et de
 ```bash
 make help                 # Affiche l'inventaire des commandes disponibles
 make dev                  # Démarre l'application locale avec rechargement à chaud
-make test                 # Exécute la suite complète de 429 tests pytest
+make test                 # Exécute la suite complète de 458 tests pytest
 make bench                # Benchmark du chemin d'alerte (invariant 500 ms)
 make lint                 # Contrôle la conformité du code avec Ruff et Mypy
+make check-history        # Rejoue Ruff et Pytest sur chaque commit de la branche
 make format               # Corrige et formate automatiquement le code avec Ruff
 make migrate              # Applique les révisions de base de données Alembic
 make revision message="..." # Génère une nouvelle migration automatique

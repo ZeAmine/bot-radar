@@ -135,7 +135,7 @@ async def start_add_alert(
 
         loading_text = (
             "🪄 <b>Création d'alerte en langage naturel</b>\n\n"
-            "⏳ <i>DeepSeek analyse votre demande pour "
+            "⏳ <i>L'IA analyse votre demande pour "
             f"« <b>{html.escape(inline_query)}</b> »...</i>"
         )
         loading_kb = InlineKeyboardMarkup(
@@ -145,7 +145,7 @@ async def start_add_alert(
         )
         loading_msg = await event.answer(loading_text, reply_markup=loading_kb)
 
-        # Parsing en langage naturel via DeepSeek-V4.1-Flash
+        # Parsing en langage naturel par le moteur IA configuré
         parsed = await natural_add_module.parse_prompt(inline_query)
         if parsed:
             # Mots-clés ancrés sur la fiche réelle de l'ouvrage (BNF quand elle existe)

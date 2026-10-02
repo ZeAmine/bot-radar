@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.constants import STANDARD_CONDITIONS, CategorySlug
-from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import BookContext, NaturalAddPayload, NaturalAddResult
 from app.services.book_metadata_service import (
@@ -85,8 +84,6 @@ class NaturalAddModule(BaseAIModule):
     seule autorité bibliographique du projet.
     """
 
-    def __init__(self, client: DeepSeekClient | None = None) -> None:
-        self.client = client or deepseek_client
 
     @property
     def name(self) -> str:

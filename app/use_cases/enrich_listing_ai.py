@@ -1,4 +1,4 @@
-"""Cas d'usage : Enrichissement asynchrone d'une annonce via DeepSeek (post-alerte)."""
+"""Cas d'usage : Enrichissement asynchrone d'une annonce via le moteur IA (post-alerte)."""
 
 import html
 import logging
@@ -9,7 +9,7 @@ from app.bot.bot_instance import bot as default_bot
 from app.domain.entities.analysis import ListingAnalysisResult
 from app.domain.entities.listing import ListingEntity
 from app.domain.protocols.llm import LLMAnalysisProviderProtocol
-from app.providers.llm.deepseek_provider import DeepSeekProvider
+from app.providers.llm.listing_analysis import ListingAnalysisProvider
 
 logger = logging.getLogger("radar.use_cases.enrich_listing_ai")
 
@@ -22,7 +22,7 @@ class AsyncEnrichListingUseCase:
         llm_provider: LLMAnalysisProviderProtocol | None = None,
         bot: Bot | None = None,
     ) -> None:
-        self._llm = llm_provider or DeepSeekProvider()
+        self._llm = llm_provider or ListingAnalysisProvider()
         self._bot = bot or default_bot
 
     async def execute(
@@ -31,7 +31,7 @@ class AsyncEnrichListingUseCase:
         message_id: int,
         listing: ListingEntity,
     ) -> ListingAnalysisResult | None:
-        """Exécute l'analyse DeepSeek et notifie en cas de risque détecté."""
+        """Exécute l'analyse sémantique et notifie en cas de risque détecté."""
         try:
             analysis = await self._llm.analyze_listing(
                 title=listing.title,

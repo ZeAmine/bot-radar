@@ -4,10 +4,17 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from app.db.models.listing import Listing
+from app.providers.llm.base import LLMClient
+from app.providers.llm.registry import llm_client
 
 
 class BaseAIModule(ABC):
     """Interface abstraite que chaque use case IA doit implémenter."""
+
+    def __init__(self, client: LLMClient | None = None) -> None:
+        # Attribut d'instance volontaire : un test remplace le moteur par simple
+        # assignation, et aucun module ne connaît le fournisseur.
+        self.client: LLMClient = client or llm_client
 
     @property
     @abstractmethod
@@ -35,7 +42,7 @@ class BasePostAlertModule(BaseAIModule):
 
     @abstractmethod
     def parse_chunk_result(self, raw_chunk: Any, listing: Listing, alert: Any) -> Any:
-        """Parse la portion de JSON retournée par DeepSeek en objet de résultat typé."""
+        """Parse la portion de JSON retournée par le moteur en objet de résultat typé."""
         ...
 
     @abstractmethod

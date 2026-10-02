@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.redis import get_redis_client
-from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import AutoTuningPayload
 
@@ -32,8 +31,6 @@ Retourne STRICTEMENT un objet JSON :
 class AutoTuningModule(BaseAIModule):
     """Analyse les faux positifs signalés et propose des exclusions pertinentes."""
 
-    def __init__(self, client: DeepSeekClient | None = None) -> None:
-        self.client = client or deepseek_client
 
     @property
     def name(self) -> str:

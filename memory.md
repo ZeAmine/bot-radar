@@ -205,6 +205,34 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
   - Une branche de code morte conditionnée par la présence d'images (`raw_payload["identified_tome"]`, clé jamais écrite) a été supprimée au passage.
 - **Raison** : une fonctionnalité qui coûte une requête réseau par alerte pour un contenu presque toujours indisponible est du code mort de production. La couverture reste : c'est elle qui donne l'information au moment de la décision d'achat.
 - **Conséquence assumée** : l'utilisateur doit ouvrir l'annonce Vinted pour voir d'éventuelles autres images.
+---
+
+## ADR-018 : Le fournisseur IA est un adaptateur, jamais une dépendance
+
+### Statut
+Accepté et mis en œuvre.
+
+### Contexte
+Le moteur IA était cousu au projet par dix points : les noms de variables `DEEPSEEK_*`, le singleton `deepseek_client` importé par huit fichiers, le format de requête et de réponse OpenAI, la sonde `GET /models`, quatre exceptions nommées `DeepSeek*` dans un fichier partagé, un préfixe de cache Redis, quatre textes utilisateur, les messages de log, et quatre fichiers de tests nommant le fournisseur. Changer de modèle — le cas le plus probable, un modèle moins cher ou plus récent sort — demandait onze fichiers et cassait quatre tests.
+
+Deux défauts ne se seraient pas manifestoés avant la bascule : la clé de cache d'analyse ne contenait pas le modèle (`radar:deepseek:analysis:{digest}`), donc le nouveau modèle n'aurait jamais été consulté et l'ancien résultat aurait été servi en silence pendant sept jours ; et `app/providers/llm/deepseek_provider.py` importait `app/services/ai/client.py`, c'est-à-dire un provider HTTP dépendant d'un service.
+
+### Décision
+`app/providers/llm/` devient la seule frontière qui connaît un fournisseur (invariant n°4 de `AGENTS.md`).
+
+- `base.py` porte le contrat `LLMClient` et la classe `BaseLLMClient`, qui concentre la sémantique commune : activation, client HTTP partagé, absorption des erreurs, repli `None`, sonde de santé en cache 30 secondes. Un adaptateur n'écrit que cinq méthodes de traduction filaire.
+- Deux adaptateurs sont livrés : `openai_compatible` (DeepSeek, Groq, Mistral, OpenRouter, Ollama, LM Studio) et `anthropic`, dont l'API Messages ne partage rien avec le dialecte OpenAI. Le second existe pour prouver la frontière : s'il passe le contrat sans qu'une ligne au-dessus change, la couture est au bon endroit.
+- `registry.py` fait la bascule par `AI_PROVIDER`, et lève sur un fournisseur inconnu : une faute de frappe doit se voir au démarrage, pas éteindre l'IA sans rien dire.
+- Variables neutres `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_TIMEOUT_SECONDS`, sans shim de compatibilité : le `.env` de production a été renommé sur place, la valeur de la clé n'a jamais été affichée.
+- `ListingAnalysisProvider` (ex `DeepSeekProvider`) est conservé et rendu neutre ; sa clé de cache porte désormais fournisseur, modèle et version de prompt.
+- Les exceptions `DeepSeek*` deviennent `LLM*` dans `app/core/exceptions.py`.
+- `tests/unit/test_llm_contract.py` rejoue le même contrat sur chaque adaptateur enregistré, transmission des images comprise : la promesse « une variable d'environnement » est vérifiée, pas supposée.
+
+### Raison
+Le projet envoie déjà des alertes en quelques dizaines de millisecondes ; l'IA est censée suivre le marché, pas le freiner. Un modèle qu'on veut remplacer en cinq minutes ne doit pas demander une journée, ni risquer de casser un handler de négociation.
+
+### Conséquence assumée
+Un fournisseur au dialecte inconnu demande un fichier dans `app/providers/llm/` et une ligne dans `LLM_ADAPTERS`. C'est le coût du contrat. Chaque adaptateur ajouté augmente la surface du contrat de test : c'est le prix à payer pour savoir que l'adaptateur fonctionne avant de le brancher en production.
 
 ---
 
@@ -214,7 +242,7 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
 
 - **Enums.** Une seule définition dans `app/domain/enums.py`, réexportée par `app/core/constants.py`.
 - **Index `(source_name, received_at)`.** Aucune requête ne l'utilise. Le doublon est `(source_name, external_id)`.
-- **DeepSeek.** Un seul POST, `DeepSeekClient.post_chat`. Le provider ajoute Pydantic et le cache Redis, hors ingestion.
+- **Moteur IA.** Un seul POST, `BaseLLMClient.complete`. `ListingAnalysisProvider` ajoute Pydantic et le cache Redis, hors ingestion. Le fournisseur est un adaptateur (ADR-018), pas une dépendance.
 - **Matching.** Les règles sont dans `app/domain/rules/listing_match.py`. L'ingest appelle `evaluate_listing_against_alert`. Il n'y a pas de second algorithme ORM.
 - **JSON IA.** Chaque module valide un modèle Pydantic dont les champs manquants prennent un défaut.
 - **SQL.** Les lectures encore dans les handlers sont passées aux repositories (`stats_repo`, `alert_repo`, `book_repo`, `autotune_repo`).
@@ -226,6 +254,6 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
 
 1. **Priorité absolue à la vitesse d'alerte** : Ne jamais insérer un appel réseau (`await httpx`, `await client...`) entre la réception d'une annonce et l'envoi du message Telegram.
 2. **Respect strict du processus unique** : Ne jamais ajouter de service worker ou de deuxième scheduler. Tout se passe dans `radar_app`.
-3. **Zéro régression sur la suite de tests** : La commande `./.venv/bin/pytest` doit toujours réussir à 100% (320+ tests actifs).
+3. **Zéro régression sur la suite de tests** : La commande `./.venv/bin/pytest` doit toujours réussir à 100% (458 tests actifs), et chaque commit doit passer seul — `make check-history`.
 4. **Pas de code orphelin ni de flags morts** : Chaque setting de `app/core/config.py` doit correspondre à une feature vivante et documentée.
 5. **Déploiement autonome** : L'assistant exécute lui-même les commandes de déploiement SSH/rsync et les vérifications d'intégrité après chaque intervention validée par l'utilisateur.

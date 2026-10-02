@@ -257,7 +257,7 @@ async def prompt_new_field_value(
         if callback.message and hasattr(callback.message, "edit_text"):
             await callback.message.edit_text(
                 f"⏳ <b>Recherche des variantes orthographiques IA...</b>\n\n"
-                f"Analyse de « <b>{html.escape(alert.name)}</b> » par DeepSeek en cours.",
+                f"Analyse de « <b>{html.escape(alert.name)}</b> » par l'IA en cours.",
                 reply_markup=loading_keyboard,
             )
 

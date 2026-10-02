@@ -8,7 +8,7 @@ Le nom a changé : les références historiques à `ZeAmine/radar-bot` sont pér
 ### Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-017, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-018, dette différée).
 
 ## Méthode de travail
 
@@ -55,7 +55,7 @@ Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomiqu
 - Python 3.12, FastAPI, aiogram 3, SQLAlchemy asyncio, Alembic, Redis, APScheduler, httpx, Pydantic v2.
 - Un seul processus de production : `uvicorn app.main:app` dans `radar_app` (API + webhook Telegram + scheduler + poller Vinted).
 - PostgreSQL 16, Redis 7, passerelle centralisée `caddy_gateway` via réseau Docker `web_gateway` (HTTPS). Compose : [compose.yml](compose.yml).
-- Tests : pytest + pytest-asyncio (429 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
+- Tests : pytest + pytest-asyncio (458 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
 
 ## Architecture des couches
 
@@ -96,9 +96,9 @@ Toute modification du chemin ingestion → matching → Telegram doit respecter 
 
 Interdit sur ce chemin :
 
-- `await` vers BNF, eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres, DeepSeek **avant** l’envoi.
+- `await` vers BNF, eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres ou le moteur IA **avant** l’envoi.
 - Relancer `AsyncEnrichListingUseCase.schedule_enrichment` (supprimé : il partait avec `message_id=0`).
-- Un second client HTTP DeepSeek « pour voir ».
+- Un second client HTTP vers le moteur IA « pour voir ». Un seul POST, dans `BaseLLMClient.complete`.
 - `time.sleep` dans `app/`.
 - Calculs lourds ou regex globaux « optimisés » sans benchmark reproductible (`make bench` / `tests/performance/`).
 
@@ -212,14 +212,30 @@ JSON
 
 Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
 
-
 Révision Alembic actuelle attendue : `0004_alert_books_book_id_index` (`ix_alert_books_book_id`). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
 
 ## IA
 
-Chemin **vivant** post-alerte : `app/services/ai/` (`DeepSeekClient` + `AIPostAlertPipeline.enrich_alert`). `data = None` avant l’appel si le client n’est pas configuré.
+**Invariant n°4 — le fournisseur IA est un adaptateur, jamais une dépendance (ADR-018).**
 
-Chemin **tests / provider Pydantic + cache Redis** : `DeepSeekProvider` + `AsyncEnrichListingUseCase.execute`. Ne pas le recâbler sur l’ingestion. L’IA conseille, elle ne bloque jamais l’alerte.
+`app/providers/llm/` est la **seule** frontière qui connaît un fournisseur. Tout le reste du projet parle au contrat `LLMClient` :
+
+- `base.py` : le contrat (`vendor`, `model`, `is_configured`, `complete`, `generate_json`, `check_health`) et `BaseLLMClient`, qui porte la sémantique commune — activation, client HTTP partagé, absorption des erreurs, repli `None`, sonde de santé en cache 30 s. Un adaptateur écrit cinq méthodes de traduction, pas une seconde implémentation du client.
+- `openai_compatible.py` : DeepSeek, Groq, Mistral, OpenRouter, Ollama, LM Studio. `anthropic.py` : API Messages, dont le dialecte ne partage rien avec OpenAI.
+- `registry.py` : `AI_PROVIDER` choisit l’adaptateur. Un fournisseur inconnu lève au démarrage : une faute de frappe doit se voir, pas éteindre l’IA en silence.
+- Variables neutres : `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_TIMEOUT_SECONDS`. Les noms historiques `DEEPSEEK_*` ont disparu, sans shim de compatibilité.
+- `tests/unit/test_llm_contract.py` rejoue le même contrat sur **chaque** adaptateur enregistré. Un nouvel adaptateur y passe sans modification : ne pas affaiblir ce test pour faire passer un adaptateur.
+
+Interdits :
+
+- Nommer un fournisseur (ou `AI_MODEL`) hors de `app/providers/llm/` et de la configuration : ni dans une signature, ni dans un texte utilisateur, ni dans un log, ni dans un nom de test.
+- Écrire un `httpx` dans un module IA : tout passe par `BaseLLMClient.complete`.
+- Dupliquer une logique d’erreur ou de santé dans un adaptateur : elle est dans la classe de base.
+- La clé de cache d’analyse doit inclure fournisseur, modèle et version de prompt (`ListingAnalysisProvider.compute_cache_key`), sinon un changement de modèle continuerait de servir l’ancien résultat en silence pendant 7 jours.
+
+Chemin **vivant** post-alerte : `app/services/ai/` (`AIPostAlertPipeline.enrich_alert`) alimenté par `llm_client`. `data = None` avant l’appel si le client n’est pas configuré.
+
+Chemin **tests / provider Pydantic + cache Redis** : `ListingAnalysisProvider` + `AsyncEnrichListingUseCase.execute`. Ne pas le recâbler sur l’ingestion. L’IA conseille, elle ne bloque jamais l’alerte.
 
 Modules actifs (`app/services/ai/modules/`) :
 - `natural_add.py` (`AI_FEATURE_NATURAL_ADD=true`) : Création d'alertes en langage naturel (`/add`).
@@ -237,7 +253,8 @@ Flags `AI_FEATURE_*` : un flag = un module vivant dans `app/services/ai/modules/
 
 - Les enums vivent dans `app/domain/enums.py` et sont réexportés par `app/core/constants.py`. Pas une seconde définition.
 - Pas d’index `(source_name, received_at)` : le doublon d’annonce est `(source_name, external_id)`, les stats filtrent `received_at` seul.
-- Un seul POST DeepSeek : `DeepSeekClient.post_chat`. `DeepSeekProvider` ajoute la validation Pydantic et le cache Redis pour les tests. Il ne revient pas sur l’ingestion.
+- Un seul POST moteur IA : `BaseLLMClient.complete`, une fois implémenté. `ListingAnalysisProvider` ajoute la validation Pydantic et le cache Redis pour les tests. Il ne revient pas sur l’ingestion.
+- Les modules IA reçoivent leur client par `BaseAIModule(client=...)`, jamais par import du singleton dans un handler.
 - Les règles de matching vivent dans `app/domain/rules/listing_match.py`. `matcher_service` ne fait que réexporter. `DeterministicListingMatcher` appelle cette fonction.
 - Le JSON des cinq modules IA est validé par un modèle Pydantic à champs optionnels. Un champ absent prend le défaut.
 - Le SQL des handlers est dans les repositories (`stats_repo`, `alert_repo`, `book_repo`, `autotune_repo`).

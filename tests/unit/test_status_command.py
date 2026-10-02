@@ -7,6 +7,8 @@ import pytest
 from aiogram.types import Message
 
 from app.bot.handlers.status import handle_status
+from app.providers.llm.base import LLMHealth
+from app.providers.llm.registry import llm_client
 from app.services.telegram_service import notify_admins
 
 
@@ -151,25 +153,26 @@ async def test_handle_status_ai_active():
     mock_result.all.return_value = []
     mock_db.execute = AsyncMock(return_value=mock_result)
 
-    mock_ai = {
-        "status": "active",
-        "model": "deepseek-flash",
-        "latency_ms": 115,
-        "message": "Opérationnel (115ms)",
-    }
+    mock_ai = LLMHealth(
+        status="active",
+        model="un-modele-choisi",
+        latency_ms=115,
+        message="Opérationnel (115ms)",
+    )
 
     with (
         patch("app.bot.handlers.status.is_night_time", return_value=False),
         patch("app.bot.handlers.status.get_poller_status",
               new_callable=AsyncMock, return_value=None),
-        patch("app.bot.handlers.status.deepseek_client.check_health",
+        patch("app.bot.handlers.status.llm_client.check_health",
               new_callable=AsyncMock, return_value=mock_ai),
     ):
         await handle_status(message, mock_db)
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "🤖 <b>Moteur IA (DeepSeek)</b> : 🟢 <b>Actif</b> (latence : 115ms)" in text
+        label = f"{llm_client.vendor} · un-modele-choisi"
+        assert f"🤖 <b>Moteur IA ({label})</b> : 🟢 <b>Actif</b> (latence : 115ms)" in text
 
 
 @pytest.mark.asyncio
@@ -183,26 +186,27 @@ async def test_handle_status_ai_error():
     mock_result.all.return_value = []
     mock_db.execute = AsyncMock(return_value=mock_result)
 
-    mock_ai = {
-        "status": "error",
-        "model": "deepseek-flash",
-        "latency_ms": None,
-        "message": "Clé API invalide ou refusée",
-    }
+    mock_ai = LLMHealth(
+        status="error",
+        model="un-modele-choisi",
+        latency_ms=None,
+        message="Clé API invalide ou refusée",
+    )
 
     with (
         patch("app.bot.handlers.status.is_night_time", return_value=False),
         patch("app.bot.handlers.status.get_poller_status",
               new_callable=AsyncMock, return_value=None),
-        patch("app.bot.handlers.status.deepseek_client.check_health",
+        patch("app.bot.handlers.status.llm_client.check_health",
               new_callable=AsyncMock, return_value=mock_ai),
     ):
         await handle_status(message, mock_db)
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
+        label = f"{llm_client.vendor} · un-modele-choisi"
         assert (
-            "🤖 <b>Moteur IA (DeepSeek)</b> : 🔴 <b>Indisponible</b> "
+            f"🤖 <b>Moteur IA ({label})</b> : 🔴 <b>Indisponible</b> "
             "(Clé API invalide ou refusée)"
             in text
         )

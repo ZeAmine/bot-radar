@@ -18,7 +18,7 @@ Il sert de boussole aux modèles de langage (LLMs) et assistants de code pour si
 4. [Sujet 4 — Bot Telegram (Commandes, FSM, Claviers, Callbacks)](#sujet-4--bot-telegram-commandes-fsm-claviers-callbacks)
 5. [Sujet 5 — Auto-Tuning & Apprentissage Proactif (Dislikes)](#sujet-5--auto-tuning--apprentissage-proactif-dislikes)
 6. [Sujet 6 — Variantes Orthographiques & Création Assistée](#sujet-6--variantes-orthographiques--création-assistée)
-7. [Sujet 7 — Sous-système IA DeepSeek Post-Alerte](#sujet-7--sous-système-ia-deepseek-post-alerte)
+7. [Sujet 7 — Sous-système IA Post-Alerte](#sujet-7--sous-système-ia-post-alerte)
 8. [Sujet 8 — Base de Données, Modèles ORM & Migrations Alembic](#sujet-8--base-de-données-modèles-orm--migrations-alembic)
 9. [Sujet 9 — Scheduler APScheduler & Tâches d'Arrière-Plan](#sujet-9--scheduler-apscheduler--tâches-darrière-plan)
 10. [Sujet 10 — Sécurité, Authentification & Gestion des Secrets](#sujet-10--sécurité-authentification--gestion-des-secrets)
@@ -134,7 +134,7 @@ Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur 
   - `handle_custom_exclusions_input(...)` : réception et parsing de la liste modifiée par l'utilisateur.
   - `handle_tune_apply(...)` : application des exclusions et purge des faux positifs résolus.
 - [`app/bot/states/alert_creation.py`](app/bot/states/alert_creation.py) : Machine à états `AutoTuneState` avec `waiting_for_custom_exclusions`.
-- [`app/services/ai/modules/auto_tuning.py`](app/services/ai/modules/auto_tuning.py) : Module IA promptant DeepSeek avec l'historique des titres rejetés.
+- [`app/services/ai/modules/auto_tuning.py`](app/services/ai/modules/auto_tuning.py) : Module IA promptant le moteur avec l'historique des titres rejetés.
 
 ### Invariants et contraintes
 - **Format copiable** : Les exclusions suggérées sont envoyées dans un bloc `<code>...</code>` pour faciliter la copie par simple tap sur Telegram.
@@ -159,13 +159,16 @@ Aider l'utilisateur lors de la création (`/add`) ou de l'édition (`/edit`) d'u
 
 ---
 
-## Sujet 7 — Sous-système IA DeepSeek Post-Alerte
+## Sujet 7 — Sous-système IA Post-Alerte
 
 ### Rôle
-Enrichir asynchroniquement les alertes Telegram déjà délivrées pour fournir un conseil d'aide à la décision (analyse de lot, estimation de revente, négociation).
+Enrichir asynchroniquement les alertes Telegram déjà délivrées pour fournir un conseil d'aide à la décision (analyse de lot, estimation de revente, négociation). Le moteur est interchangeable : aucun module ni handler ne connaît le fournisseur.
 
 ### Fichiers clés
-- [`app/services/ai/client.py`](app/services/ai/client.py) : `DeepSeekClient` singleton s'appuyant sur le modèle `deepseek-flash` via l'API OpenAI compatible.
+- [`app/providers/llm/base.py`](app/providers/llm/base.py) : contrat `LLMClient` et `BaseLLMClient`. Seule frontière du projet qui connaît un fournisseur ; porte le client HTTP partagé, l'absorption des erreurs, le repli `None` et la sonde de santé.
+- [`app/providers/llm/openai_compatible.py`](app/providers/llm/openai_compatible.py) / [`anthropic.py`](app/providers/llm/anthropic.py) : adaptateurs, cinq méthodes de traduction chacun.
+- [`app/providers/llm/registry.py`](app/providers/llm/registry.py) : `AI_PROVIDER` → adaptateur ; `llm_client` est le singleton du projet.
+- [`app/providers/llm/listing_analysis.py`](app/providers/llm/listing_analysis.py) : analyse structurée validée par schéma, mémoïsée en Redis (clé incluant fournisseur et modèle).
 - [`app/services/ai/pipeline.py`](app/services/ai/pipeline.py) : `AIPostAlertPipeline.enrich_alert(...)` exécuté en arrière-plan (`safe_create_task`) avec le vrai `message_id` Telegram.
 - [`app/services/ai/registry.py`](app/services/ai/registry.py) : `AIRegistry` centralisant l'activation des modules post-alerte.
 - [`app/services/ai/modules/`](app/services/ai/modules/) :
@@ -177,6 +180,7 @@ Enrichir asynchroniquement les alertes Telegram déjà délivrées pour fournir 
 
 ### Invariants et contraintes
 - **L'IA ne bloque JAMAIS l'alerte** : L'IA intervient uniquement après l'envoi du premier message.
+- **Le fournisseur est un adaptateur (ADR-018)** : changer de modèle est une modification du `.env`. Un fournisseur au dialecte inconnu demande un fichier dans `app/providers/llm/` et une ligne dans `LLM_ADAPTERS` — rien d'autre. `tests/unit/test_llm_contract.py` rejoue le contrat sur chaque adaptateur enregistré.
 - **Règle un flag = un module** : Chaque flag `AI_FEATURE_*` dans `config.py` correspond strictement à un module actif du dossier.
 - *(Note de décision : Les modules superflus `hidden_condition`, `vision_guard`, `bundle_decomposition` et `price_glitch` ont été supprimés — voir ADR-006 et ADR-011).*
 

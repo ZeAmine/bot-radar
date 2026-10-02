@@ -1,4 +1,4 @@
-"""Schémas Pydantic pour le sous-système IA (DeepSeek-V4.1-Flash)."""
+"""Schémas Pydantic du sous-système IA, indépendants du moteur."""
 
 from typing import Any
 

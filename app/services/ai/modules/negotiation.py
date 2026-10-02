@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.db.models.listing import Listing
-from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import NegotiationPayload, NegotiationResult
 
@@ -33,8 +32,6 @@ Format JSON attendu :
 class NegotiationModule(BaseAIModule):
     """Génère un message d'offre calibré et prêt à être copié-collé sur Vinted."""
 
-    def __init__(self, client: DeepSeekClient | None = None) -> None:
-        self.client = client or deepseek_client
 
     @property
     def name(self) -> str:
@@ -58,7 +55,7 @@ class NegotiationModule(BaseAIModule):
         if price_cents <= 0:
             return None
 
-        # Si le client DeepSeek est configuré, générer via l'IA
+        # Si le moteur IA est configuré, générer une offre par le modèle
         if self.client.is_configured:
             price_eur = price_cents / 100.0
             user_prompt = (
@@ -85,7 +82,7 @@ class NegotiationModule(BaseAIModule):
                         message=payload.message.strip(),
                     )
 
-        # Fallback algorithmique déterministe (si clé DeepSeek non configurée ou indisponible)
+        # Repli algorithmique déterministe (moteur non configuré ou indisponible)
         price_eur = price_cents / 100.0
         if price_eur <= 8:
             discount = 1.0 if price_eur >= 5 else 0.0

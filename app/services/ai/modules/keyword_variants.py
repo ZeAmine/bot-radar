@@ -5,7 +5,6 @@ import logging
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import BookContext, KeywordVariantsPayload
 from app.utils.text import normalize_text
@@ -81,8 +80,6 @@ def _clean_terms(raw_terms: list[object], title: str) -> list[str]:
 class KeywordVariantsModule(BaseAIModule):
     """Génère des variantes orthographiques et des exclusions propres à chaque alerte."""
 
-    def __init__(self, client: DeepSeekClient | None = None) -> None:
-        self.client = client or deepseek_client
 
     @property
     def name(self) -> str:

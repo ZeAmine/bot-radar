@@ -88,10 +88,13 @@ class Settings(BaseSettings):
         import random
         return random.choice(proxies)
 
-    # Moteur IA & DeepSeek-V4.1-Flash
-    DEEPSEEK_API_KEY: SecretStr = SecretStr("")
-    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
-    DEEPSEEK_MODEL: str = "deepseek-flash"
+    # Moteur IA — les noms sont neutres : changer de fournisseur est une variable
+    # d'environnement, pas une modification de code. Voir `app/providers/llm/`.
+    AI_PROVIDER: str = "openai-compatible"
+    AI_API_KEY: SecretStr = SecretStr("")
+    AI_BASE_URL: str = "https://api.deepseek.com/v1"
+    AI_MODEL: str = "deepseek-flash"
+    AI_TIMEOUT_SECONDS: float = 12.0
     AI_ENABLED: bool = True
     AI_FEATURE_NATURAL_ADD: bool = True
     AI_FEATURE_PROFIT_SCORING: bool = True

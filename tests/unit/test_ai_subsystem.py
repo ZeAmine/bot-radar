@@ -1,4 +1,4 @@
-"""Tests unitaires pour le sous-système IA (DeepSeek-V4.1-Flash)."""
+"""Tests unitaires du sous-système IA, moteur simulé."""
 
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,13 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.db.models.listing import Listing
-from app.services.ai.client import DeepSeekClient
+from app.providers.llm.base import clean_and_parse_json
 from app.services.ai.modules.natural_add import natural_add_module
 from app.services.ai.modules.negotiation import negotiation_module
 from app.services.ai.modules.profit_scoring import profit_scoring_module
 from app.services.ai.pipeline import AIPostAlertPipeline
 from app.services.ai.registry import AIRegistry
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
+from tests.fakes_llm import FakeLLM
 
 PANCHAUD_EDITION = BookMetadata(
     title="La couleur des choses",
@@ -52,10 +53,8 @@ def sample_listing():
 
 @pytest.mark.asyncio
 async def test_pipeline_skips_llm_when_client_unconfigured(sample_listing):
-    """Un client non configuré ne doit pas lever NameError ni appeler DeepSeek."""
-    client = MagicMock(spec=DeepSeekClient)
-    client.is_configured = False
-    client.generate_json = AsyncMock()
+    """Un moteur non configuré ne doit ni lever, ni appeler le réseau."""
+    client = FakeLLM(enabled=False)
     pipeline = AIPostAlertPipeline(client=client)
     bot = MagicMock()
     bot.send_message = AsyncMock()
@@ -74,33 +73,31 @@ async def test_pipeline_skips_llm_when_client_unconfigured(sample_listing):
         )
 
     log_exception.assert_not_called()
-    client.generate_json.assert_not_awaited()
+    assert client.calls == []
     bot.send_message.assert_not_awaited()
 
 
-def test_deepseek_client_unconfigured():
-    """Un client sans clé API doit renvoyer False pour is_configured."""
-    client = DeepSeekClient(api_key="")
+def test_engine_without_api_key_is_not_configured():
+    """Un moteur sans clé API doit renvoyer False pour is_configured."""
+    client = FakeLLM(api_key="  ")
     assert client.is_configured is False
 
 
-def test_deepseek_clean_and_parse_json():
+def test_clean_and_parse_json_shared_by_every_engine():
     """Vérifie le nettoyage des blocs markdown ```json ... ```."""
     raw = '```json\n{"test": 123, "valid": true}\n```'
-    parsed = DeepSeekClient._clean_and_parse_json(raw)
+    parsed = clean_and_parse_json(raw)
     assert parsed == {"test": 123, "valid": True}
 
     raw_bad = "Ce n'est pas du JSON"
-    assert DeepSeekClient._clean_and_parse_json(raw_bad) is None
+    assert clean_and_parse_json(raw_bad) is None
 
 
 @pytest.mark.asyncio
 async def test_natural_add_parsing():
     """Vérifie que le module natural_add parse correctement une réponse JSON simulée."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "name": "One Piece tomes 1 à 10",
             "category_slug": "bd_comics",
             "include_keywords": ["One Piece", "tome"],
@@ -124,10 +121,8 @@ async def test_natural_add_parsing():
 @pytest.mark.asyncio
 async def test_natural_add_cleaning_price_suffix():
     """Vérifie que tout suffixe de prix résiduel dans le nom est nettoyé."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "name": "Arabe du futur - max 7€",
             "category_slug": "bd_comics",
             "include_keywords": ["Arabe du futur - max 7€"],
@@ -150,10 +145,8 @@ async def test_natural_add_cleaning_price_suffix():
 @pytest.mark.asyncio
 async def test_natural_add_isbn_overruled_by_bnf():
     """L'ISBN proposé par le modèle est remplacé par celui confirmé par la BNF."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "name": "La couleur des choses",
             "category_slug": "bd_comics",
             # ISBN réel mais attribué à « Keeping two » (même éditeur)
@@ -200,10 +193,8 @@ async def test_natural_add_flags_openlibrary_fallback_provenance():
         isbn13="9782072909207",
         source="openlibrary",
     )
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "name": "Klara and the Sun",
             "category_slug": "bd_comics",
             "isbn13": None,
@@ -230,10 +221,8 @@ async def test_natural_add_flags_openlibrary_fallback_provenance():
 @pytest.mark.asyncio
 async def test_natural_add_typed_isbn_wins_when_confirmed():
     """Un ISBN saisi par l'utilisateur prime, dès lors que la BNF confirme l'ouvrage."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "name": "La couleur des choses",
             "category_slug": "bd_comics",
             "isbn13": None,
@@ -262,10 +251,8 @@ async def test_natural_add_typed_isbn_wins_when_confirmed():
 @pytest.mark.asyncio
 async def test_natural_add_skips_redundant_verification_of_resolved_isbn():
     """L'ISBN déjà issu de la notice BNF n'est pas réinterrogé inutilement."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "name": "La couleur des choses",
             "category_slug": "bd_comics",
             "isbn13": None,
@@ -290,10 +277,8 @@ async def test_natural_add_skips_redundant_verification_of_resolved_isbn():
 @pytest.mark.asyncio
 async def test_natural_add_without_verifiable_isbn_falls_back_to_title():
     """Sans confirmation BNF, l'alerte part sur le titre et l'utilisateur est prévenu."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "name": "Oeuvre introuvable",
             "category_slug": "bd_comics",
             "isbn13": "9782369903062",
@@ -320,10 +305,8 @@ async def test_natural_add_without_verifiable_isbn_falls_back_to_title():
 @pytest.mark.asyncio
 async def test_natural_add_drops_ai_isbn_with_invalid_check_digit():
     """Un ISBN au checksum invalide n'est même pas interrogé auprès de la BNF."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "name": "One Piece",
             "category_slug": "bd_comics",
             "isbn13": "9782365770000",
@@ -348,10 +331,8 @@ async def test_natural_add_drops_ai_isbn_with_invalid_check_digit():
 @pytest.mark.asyncio
 async def test_natural_add_skips_isbn_for_series_and_non_book_categories():
     """Série multi-tomes ou produit non littéraire : aucun appel ISBN, aucune latence BNF."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "name": "One Piece",
             "category_slug": "bd_comics",
             "isbn13": "9782369903062",
@@ -389,10 +370,8 @@ async def test_keyword_variants_are_grounded_on_book_context():
         format_detail="1 vol. (224 p.) : ill. en coul. ; 24 cm",
         isbn13="9782369903086",
     )
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "variants": ["La couleur des choses", "couleur des choses"],
             "exclusions": [
                 "Keeping two",
@@ -414,11 +393,11 @@ async def test_keyword_variants_are_grounded_on_book_context():
         )
 
     # Le prompt reçoit les faits vérifiés, pas une liste de goodies toute faite
-    user_prompt = mock_client.generate_json.call_args.kwargs["user_prompt"]
+    user_prompt = mock_client.calls[0]["user_prompt"]
     assert "9782369903086" in user_prompt
     assert "Martin Panchaud" in user_prompt
     assert "24 cm" in user_prompt
-    system_prompt = mock_client.generate_json.call_args.kwargs["system_prompt"]
+    system_prompt = mock_client.calls[0]["system_prompt"]
     assert "figurine" not in system_prompt
 
     # Un mot-clé contenu dans le titre bloquerait l'annonce cible : il est retiré
@@ -436,10 +415,8 @@ async def test_keyword_variants_module_variants_and_exclusions():
     """Vérifie la génération simultanée de variantes et exclusions intelligentes."""
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={
+    mock_client = FakeLLM(
+        text={
             "variants": ["arabe du future", "larabe du futur"],
             "exclusions": ["figurine", "coffret vide", "poster"],
         }
@@ -497,8 +474,7 @@ def test_profit_scoring_module(sample_listing):
 @pytest.mark.asyncio
 async def test_negotiation_module_fallback(sample_listing):
     """Vérifie le fallback algorithmique de négociation si l'IA n'est pas connectée."""
-    mock_client = MagicMock(spec=DeepSeekClient)
-    mock_client.is_configured = False
+    mock_client = FakeLLM(enabled=False)
 
     module = negotiation_module
     with patch.object(module, "client", mock_client):
@@ -563,10 +539,8 @@ async def test_natural_add_exposes_competing_editions():
     """Le parsing /add expose les éditions concurrentes pour le clavier du récap."""
     from app.services.ai.modules.natural_add import natural_add_module
 
-    mock_client = AsyncMock()
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={"name": "la couleur des choses", "category_slug": "bd_comics"}
+    mock_client = FakeLLM(
+        text={"name": "la couleur des choses", "category_slug": "bd_comics"}
     )
 
     bnf = AsyncMock()
@@ -595,10 +569,8 @@ async def test_natural_add_without_alternatives_leaves_empty_list():
     """Une œuvre sans édition concurrente ne produit aucun choix."""
     from app.services.ai.modules.natural_add import natural_add_module
 
-    mock_client = AsyncMock()
-    mock_client.is_configured = True
-    mock_client.generate_json = AsyncMock(
-        return_value={"name": "la couleur des choses", "category_slug": "bd_comics"}
+    mock_client = FakeLLM(
+        text={"name": "la couleur des choses", "category_slug": "bd_comics"}
     )
 
     bnf = AsyncMock()

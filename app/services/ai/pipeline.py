@@ -8,7 +8,8 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
 from app.db.models.listing import Listing
-from app.services.ai.client import DeepSeekClient, deepseek_client
+from app.providers.llm.base import LLMClient
+from app.providers.llm.registry import llm_client
 from app.services.ai.registry import ai_registry
 
 logger = logging.getLogger(__name__)
@@ -24,8 +25,8 @@ COMBINED_SYSTEM_PROMPT = (
 class AIPostAlertPipeline:
     """Orchestre les analyses IA post-alerte sans ralentir l'envoi initial Telegram."""
 
-    def __init__(self, client: DeepSeekClient | None = None) -> None:
-        self.client = client or deepseek_client
+    def __init__(self, client: LLMClient | None = None) -> None:
+        self.client: LLMClient = client or llm_client
 
     async def enrich_alert(
         self,
