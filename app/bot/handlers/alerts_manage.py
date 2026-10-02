@@ -490,6 +490,35 @@ async def handle_edit_condition_all(
     await _show_conditions_menu(callback, alert)
 
 
+async def _lookup_conflicting_isbn(isbn13: str, alert_name: str) -> str | None:
+    """Message d'erreur si la BNF rattache cet ISBN à un autre ouvrage que l'alerte.
+
+    Renvoie None quand l'ISBN est inconnu de la BNF (pas de preuve de conflit) ou quand
+    la BNF est injoignable : la saisie de l'utilisateur ne doit jamais être bloquée par
+    une panne réseau.
+    """
+    from app.services.book_metadata_service import (
+        TITLE_SIMILARITY_MIN,
+        BookMetadataService,
+        title_similarity,
+    )
+
+    try:
+        meta = await BookMetadataService().lookup_by_isbn(isbn13)
+    except Exception as exc:
+        logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", isbn13, exc)
+        return None
+
+    if not meta or title_similarity(meta.title, alert_name) >= TITLE_SIMILARITY_MIN:
+        return None
+
+    real_author = f" de {meta.author}" if meta.author else ""
+    return (
+        f"Cet ISBN ({isbn13}) correspond à « {meta.title} »{real_author}, "
+        f"pas à « {alert_name} »."
+    )
+
+
 @router.message(AlertEditState.waiting_for_new_value)
 async def save_edited_field_value(
     message: Message,
@@ -546,8 +575,13 @@ async def save_edited_field_value(
                 clean_isbn = extract_clean_isbn(raw_text)
                 if not clean_isbn:
                     raise AlertServiceError(
-                        "Format d'ISBN invalide (doit comporter 10 ou 13 chiffres)."
+                        "ISBN invalide : 10 ou 13 chiffres avec une clé de contrôle correcte."
                     )
+                # Filet anti-mauvais ISBN : la BNF doit rattacher ce code à CETTE œuvre.
+                # Une panne réseau ne bloque pas la saisie (aucune preuve de conflit).
+                conflicting = await _lookup_conflicting_isbn(clean_isbn, alert.name)
+                if conflicting:
+                    raise AlertServiceError(conflicting)
                 alert.isbn = clean_isbn
                 # Nettoyer d'éventuels ISBN numériques résiduels dans les mots-clés
                 alert.include_keywords = [

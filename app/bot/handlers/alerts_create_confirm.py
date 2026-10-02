@@ -10,10 +10,11 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
-    format_semi_auto_recap,
+    _resolve_edition_choices,
+    creation_keyboard,
+    recap_from_state,
 )
 from app.bot.keyboards.alerts import (
-    get_alert_confirmation_keyboard,
     get_category_selection_keyboard,
     get_conditions_toggle_keyboard,
 )
@@ -54,6 +55,47 @@ async def cancel_alert_creation(callback: CallbackQuery, state: FSMContext) -> N
     await state.clear()
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text("❌ Création de l'alerte annulée.")
+
+
+@router.callback_query(F.data.startswith("al_create_edition:"))
+async def select_alert_creation_edition(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Change l'ISBN de l'alerte à partir des éditions concurrentes proposées.
+
+    L'ISBN n'est pas une formalité : il contraint la recherche Vinted, le matching et
+    la cote de marché. Le choix se fait donc ici, tant que l'alerte n'est pas créée.
+    """
+    raw_index = (callback.data or "").rsplit(":", 1)[-1]
+    data = await state.get_data()
+    editions = data.get("edition_alternatives") or []
+
+    if not raw_index.isdigit() or not 0 <= int(raw_index) < len(editions):
+        await callback.answer("Édition inconnue.", show_alert=True)
+        return
+
+    chosen = editions[int(raw_index)]
+    isbn13 = str(chosen.get("isbn13") or "").strip()
+    if not isbn13:
+        await callback.answer("Édition sans ISBN exploitable.", show_alert=True)
+        return
+
+    updates: dict[str, object] = {"isbn": isbn13, "is_series": False, "isbn_note": None}
+    # L'éditeur et l'année décrits par la BNF suivent l'édition choisie.
+    if chosen.get("publisher"):
+        updates["publisher"] = chosen["publisher"]
+
+    await state.update_data(data=updates)
+    updated_data = await state.get_data()
+    await state.set_state(AlertCreationState.confirm_creation)
+    await callback.answer("✅ Édition mise à jour")
+
+    if callback.message and hasattr(callback.message, "edit_text"):
+        await callback.message.edit_text(
+            recap_from_state(updated_data),
+            reply_markup=creation_keyboard(updated_data),
+        )
 
 
 @router.callback_query(
@@ -134,8 +176,8 @@ async def prompt_new_price(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("al_create_edit:"))
 async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) -> None:
     """Affiche l'invite de saisie pour le champ sélectionné lors de la création."""
-    parts = callback.data.split(":")
-    field = parts[1]
+    parts = (callback.data or "").split(":")
+    field = parts[1] if len(parts) > 1 else ""
 
     if field == "back":
         await back_to_recap(callback, state)
@@ -232,7 +274,10 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
 @router.callback_query(F.data.startswith("cond_toggle:"))
 async def handle_creation_condition_toggle(callback: CallbackQuery, state: FSMContext) -> None:
     """Bascule l'état d'une condition pendant la création d'alerte."""
-    parts = callback.data.split(":")
+    parts = (callback.data or "").split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        await callback.answer("Sélection invalide.", show_alert=True)
+        return
     idx = int(parts[1])
     target_cond = STANDARD_CONDITIONS[idx]
     data = await state.get_data()
@@ -283,6 +328,13 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
                 )
                 return
             await state.update_data(isbn=clean_isbn, is_series=False)
+            # Un ISBN saisi à la main doit réaligner les éditions concurrentes :
+            # la liste précédente décrivait une autre édition de l'œuvre.
+            await state.update_data(
+                edition_alternatives=await _resolve_edition_choices(
+                    str(data.get("name") or ""), data.get("author")
+                )
+            )
             try:
                 from app.services.book_metadata_service import BookMetadataService
                 meta = await BookMetadataService().lookup_by_isbn(clean_isbn)
@@ -292,12 +344,13 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
                         updates["author"] = meta.author
                     if meta.publisher:
                         updates["publisher"] = meta.publisher
-                    if meta.title and (not data.get("name") or len(data.get("name")) < 3):
+                    current_name = data.get("name")
+                    if meta.title and (not current_name or len(str(current_name)) < 3):
                         updates["name"] = meta.title
                     if updates:
-                        await state.update_data(**updates)
-            except Exception:
-                pass
+                        await state.update_data(data=updates)
+            except Exception as exc:
+                logger.debug("Enrichissement BNF ignoré pour l'ISBN %s : %s", clean_isbn, exc)
 
     elif field == "price":
         try:
@@ -329,23 +382,9 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
     # Réafficher le récapitulatif mis à jour
     updated_data = await state.get_data()
     await state.set_state(AlertCreationState.confirm_creation)
-
-    recap_text = format_semi_auto_recap(
-        title=updated_data.get("name", "Alerte"),
-        author=updated_data.get("author"),
-        publisher=updated_data.get("publisher"),
-        isbn=updated_data.get("isbn"),
-        max_price_cents=updated_data.get("max_item_price_cents"),
-        include_keywords=updated_data.get("include_keywords", []),
-        exclude_keywords=updated_data.get("exclude_keywords", []),
-        category_slug=updated_data.get("category_slug", CategorySlug.BD_COMICS.value),
-        conditions=updated_data.get("selected_conditions"),
-        variants=updated_data.get("variants"),
-        is_series=updated_data.get("is_series", False),
-    )
     await message.answer(
-        f"✅ <b>Modification enregistrée !</b>\n\n{recap_text}",
-        reply_markup=get_alert_confirmation_keyboard(),
+        f"✅ <b>Modification enregistrée !</b>\n\n{recap_from_state(updated_data)}",
+        reply_markup=creation_keyboard(updated_data),
     )
 
 
@@ -356,22 +395,10 @@ async def back_to_recap(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     await state.set_state(AlertCreationState.confirm_creation)
 
-    recap_text = format_semi_auto_recap(
-        title=data.get("name", "Alerte"),
-        author=data.get("author"),
-        publisher=data.get("publisher"),
-        isbn=data.get("isbn"),
-        max_price_cents=data.get("max_item_price_cents"),
-        include_keywords=data.get("include_keywords", []),
-        exclude_keywords=data.get("exclude_keywords", []),
-        category_slug=data.get("category_slug", CategorySlug.BD_COMICS.value),
-        conditions=data.get("selected_conditions"),
-        variants=data.get("variants"),
-        is_series=data.get("is_series", False),
-    )
+    recap_text = recap_from_state(data)
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(
-            recap_text, reply_markup=get_alert_confirmation_keyboard()
+            recap_text, reply_markup=creation_keyboard(data)
         )
 
 

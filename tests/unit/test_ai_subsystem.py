@@ -12,6 +12,23 @@ from app.services.ai.modules.negotiation import negotiation_module
 from app.services.ai.modules.profit_scoring import profit_scoring_module
 from app.services.ai.pipeline import AIPostAlertPipeline
 from app.services.ai.registry import AIRegistry
+from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
+
+PANCHAUD_EDITION = BookMetadata(
+    title="La couleur des choses",
+    author="Martin Panchaud",
+    publisher="Çà et là",
+    isbn13="9782369903086",
+    publication_year=2022,
+    format_detail="1 vol. (224 p.) : ill. en coul. ; 24 cm",
+)
+PANCHAUD_ALTERNATIVE = BookMetadata(
+    title="La couleur des choses",
+    author="Martin Panchaud",
+    publisher="Editions çà et là",
+    isbn13="9782369904151",
+    format_detail="1 vol. (224 p.) ; 19 cm",
+)
 
 
 @pytest.fixture
@@ -128,6 +145,290 @@ async def test_natural_add_cleaning_price_suffix():
         assert "figurine" in res.exclude_keywords
         assert "coffret vide" in res.exclude_keywords
         assert res.max_price_cents == 700
+
+
+@pytest.mark.asyncio
+async def test_natural_add_isbn_overruled_by_bnf():
+    """L'ISBN proposé par le modèle est remplacé par celui confirmé par la BNF."""
+    mock_client = MagicMock(spec=DeepSeekClient)
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={
+            "name": "La couleur des choses",
+            "category_slug": "bd_comics",
+            # ISBN réel mais attribué à « Keeping two » (même éditeur)
+            "isbn13": "9782369903062",
+            "author": "Martin Panchaud",
+            "publisher": "Ça et Là",
+            "include_keywords": ["La couleur des choses"],
+            "exclude_keywords": [],
+            "max_price_cents": 1200,
+            "is_series": False,
+        }
+    )
+
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(
+        return_value=BookResolution(
+            best=PANCHAUD_EDITION, alternatives=[PANCHAUD_ALTERNATIVE]
+        )
+    )
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("la couleur des choses. Max 12 €.")
+
+    assert res is not None
+    assert res.isbn13 == "9782369903086"
+    assert res.book_context is not None
+    assert res.book_context.isbn13 == "9782369903086"
+    assert res.book_context.publication_year == 2022
+    assert res.book_context.format_detail == "1 vol. (224 p.) : ill. en coul. ; 24 cm"
+    assert res.isbn_note == "Autre édition connue : 9782369904151 (224 p. · 19 cm)"
+    bnf.verify_isbn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_natural_add_flags_openlibrary_fallback_provenance():
+    """Un ISBN issu du repli OpenLibrary est signalé dans le récap : confiance moindre."""
+    openlibrary_edition = BookMetadata(
+        title="Klara and the Sun",
+        author="Kazuo Ishiguro",
+        publisher="Le Livre de Poche",
+        isbn13="9782072909207",
+        source="openlibrary",
+    )
+    mock_client = MagicMock(spec=DeepSeekClient)
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={
+            "name": "Klara and the Sun",
+            "category_slug": "bd_comics",
+            "isbn13": None,
+            "include_keywords": ["Klara and the Sun"],
+        }
+    )
+
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(return_value=BookResolution(best=openlibrary_edition))
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("klara and the sun max 15€")
+
+    assert res is not None
+    assert res.isbn13 == "9782072909207"
+    assert res.isbn_note == "Source OpenLibrary (repli BNF)"
+    assert res.book_context is not None
+    assert res.book_context.publication_year is None
+
+
+@pytest.mark.asyncio
+async def test_natural_add_typed_isbn_wins_when_confirmed():
+    """Un ISBN saisi par l'utilisateur prime, dès lors que la BNF confirme l'ouvrage."""
+    mock_client = MagicMock(spec=DeepSeekClient)
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={
+            "name": "La couleur des choses",
+            "category_slug": "bd_comics",
+            "isbn13": None,
+            "include_keywords": ["La couleur des choses"],
+            "max_price_cents": 1200,
+        }
+    )
+
+    # La résolution par titre renvoie l'autre édition du même ouvrage
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(
+        return_value=BookResolution(best=PANCHAUD_ALTERNATIVE)
+    )
+    bnf.verify_isbn = AsyncMock(return_value=PANCHAUD_EDITION)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("9782369903086 max 12€")
+
+    assert res is not None
+    assert res.isbn13 == "9782369903086"
+    bnf.verify_isbn.assert_awaited_once_with("9782369903086", "La couleur des choses")
+
+
+@pytest.mark.asyncio
+async def test_natural_add_skips_redundant_verification_of_resolved_isbn():
+    """L'ISBN déjà issu de la notice BNF n'est pas réinterrogé inutilement."""
+    mock_client = MagicMock(spec=DeepSeekClient)
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={
+            "name": "La couleur des choses",
+            "category_slug": "bd_comics",
+            "isbn13": None,
+            "include_keywords": ["La couleur des choses"],
+        }
+    )
+
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(return_value=BookResolution(best=PANCHAUD_EDITION))
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("9782369903086 max 12€")
+
+    assert res is not None
+    assert res.isbn13 == "9782369903086"
+    bnf.verify_isbn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_natural_add_without_verifiable_isbn_falls_back_to_title():
+    """Sans confirmation BNF, l'alerte part sur le titre et l'utilisateur est prévenu."""
+    mock_client = MagicMock(spec=DeepSeekClient)
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={
+            "name": "Oeuvre introuvable",
+            "category_slug": "bd_comics",
+            "isbn13": "9782369903062",
+            "include_keywords": ["Oeuvre introuvable"],
+        }
+    )
+
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(return_value=None)
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("Oeuvre introuvable")
+
+    assert res is not None
+    assert res.isbn13 is None
+    assert res.book_context is None
+    assert res.isbn_note is not None
+    assert "BNF" in res.isbn_note
+
+
+@pytest.mark.asyncio
+async def test_natural_add_drops_ai_isbn_with_invalid_check_digit():
+    """Un ISBN au checksum invalide n'est même pas interrogé auprès de la BNF."""
+    mock_client = MagicMock(spec=DeepSeekClient)
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={
+            "name": "One Piece",
+            "category_slug": "bd_comics",
+            "isbn13": "9782365770000",
+            "include_keywords": ["One Piece"],
+        }
+    )
+
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(return_value=None)
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("One Piece")
+
+    assert res is not None
+    bnf.verify_isbn.assert_not_awaited()
+    assert res.isbn13 is None
+
+
+@pytest.mark.asyncio
+async def test_natural_add_skips_isbn_for_series_and_non_book_categories():
+    """Série multi-tomes ou produit non littéraire : aucun appel ISBN, aucune latence BNF."""
+    mock_client = MagicMock(spec=DeepSeekClient)
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={
+            "name": "One Piece",
+            "category_slug": "bd_comics",
+            "isbn13": "9782369903062",
+            "is_series": True,
+            "include_keywords": ["One Piece"],
+        }
+    )
+
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock()
+    bnf.verify_isbn = AsyncMock()
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("tous les tomes de One Piece")
+
+    assert res is not None
+    assert res.isbn13 is None
+    bnf.resolve_for_alert.assert_not_awaited()
+    bnf.verify_isbn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_keyword_variants_are_grounded_on_book_context():
+    """Le contexte BNF réel est transmis au modèle et les exclusions sont nettoyées."""
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+    from app.services.ai.schemas import BookContext
+
+    context = BookContext(
+        title="La couleur des choses",
+        author="Martin Panchaud",
+        publisher="Çà et là",
+        publication_year=2022,
+        format_detail="1 vol. (224 p.) : ill. en coul. ; 24 cm",
+        isbn13="9782369903086",
+    )
+    mock_client = MagicMock(spec=DeepSeekClient)
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={
+            "variants": ["La couleur des choses", "couleur des choses"],
+            "exclusions": [
+                "Keeping two",
+                "couleur des choses",
+                "roman poche",
+                "ROMAN POCHE",
+                "exemplaire de bibliothèque",
+                "a",  # trop court, ignoré par la normalisation
+                "film",
+                "bande dessinée",
+            ],
+            "rationale": "Confusions avec l'autre roman du même éditeur.",
+        }
+    )
+
+    with patch.object(keyword_variants_module, "client", mock_client):
+        variants, exclusions = await keyword_variants_module.generate_variants_and_exclusions(
+            "La couleur des choses", category_slug="bd_comics", context=context
+        )
+
+    # Le prompt reçoit les faits vérifiés, pas une liste de goodies toute faite
+    user_prompt = mock_client.generate_json.call_args.kwargs["user_prompt"]
+    assert "9782369903086" in user_prompt
+    assert "Martin Panchaud" in user_prompt
+    assert "24 cm" in user_prompt
+    system_prompt = mock_client.generate_json.call_args.kwargs["system_prompt"]
+    assert "figurine" not in system_prompt
+
+    # Un mot-clé contenu dans le titre bloquerait l'annonce cible : il est retiré
+    assert "couleur des choses" not in variants
+    assert "couleur des choses" not in exclusions
+    # Dédoublonnage sur la casse et plafond d'exclusions
+    assert "roman poche" in exclusions
+    assert exclusions.count("roman poche") == 1
+    assert "film" in exclusions
+    assert len(exclusions) <= 6
 
 
 @pytest.mark.asyncio
@@ -255,4 +556,60 @@ def test_ai_payload_schemas_accept_null_lists():
         "explanation": "test",
     })
     assert p3.suggested_exclusions is None
+
+
+@pytest.mark.asyncio
+async def test_natural_add_exposes_competing_editions():
+    """Le parsing /add expose les éditions concurrentes pour le clavier du récap."""
+    from app.services.ai.modules.natural_add import natural_add_module
+
+    mock_client = AsyncMock()
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={"name": "la couleur des choses", "category_slug": "bd_comics"}
+    )
+
+    bnf = AsyncMock()
+    bnf.resolve_for_alert = AsyncMock(
+        return_value=BookResolution(
+            best=PANCHAUD_EDITION, alternatives=[PANCHAUD_ALTERNATIVE]
+        )
+    )
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("la couleur des choses. Max 12 €.")
+
+    assert res is not None
+    assert [edition.isbn13 for edition in res.edition_alternatives] == [
+        PANCHAUD_EDITION.isbn13,
+        PANCHAUD_ALTERNATIVE.isbn13,
+    ]
+    assert res.edition_alternatives[1].publisher == PANCHAUD_ALTERNATIVE.publisher
+
+
+@pytest.mark.asyncio
+async def test_natural_add_without_alternatives_leaves_empty_list():
+    """Une œuvre sans édition concurrente ne produit aucun choix."""
+    from app.services.ai.modules.natural_add import natural_add_module
+
+    mock_client = AsyncMock()
+    mock_client.is_configured = True
+    mock_client.generate_json = AsyncMock(
+        return_value={"name": "la couleur des choses", "category_slug": "bd_comics"}
+    )
+
+    bnf = AsyncMock()
+    bnf.resolve_for_alert = AsyncMock(return_value=BookResolution(best=PANCHAUD_EDITION))
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("la couleur des choses. Max 12 €.")
+
+    assert res is not None
+    assert len(res.edition_alternatives) == 1
 

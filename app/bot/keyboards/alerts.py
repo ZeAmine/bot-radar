@@ -1,10 +1,13 @@
 """Claviers inline pour la gestion complète des alertes."""
 
 import uuid
+from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
+from app.db.models.alert import Alert
+from app.db.models.category import Category
 
 
 def get_conditions_toggle_keyboard(selected_conditions: list[str]) -> InlineKeyboardMarkup:
@@ -27,17 +30,42 @@ def get_conditions_toggle_keyboard(selected_conditions: list[str]) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_alert_confirmation_keyboard(show_variants_btn: bool = True) -> InlineKeyboardMarkup:
-    """Retourne le clavier de validation finale de création d'alerte."""
-    rows = [
-        [InlineKeyboardButton(text="✅ Créer l’alerte", callback_data="alert_create_confirm")],
+def get_alert_confirmation_keyboard(
+    show_variants_btn: bool = True,
+    edition_alternatives: list[dict[str, Any]] | None = None,
+    current_isbn: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Retourne le clavier de validation finale de création d'alerte.
+
+    Les éditions concurrentes de la même œuvre sont proposées une par une : c'est
+    le dernier moment où l'utilisateur peut choisir l'ISBN qui pilotera le matching,
+    l'URL de recherche Vinted et la cote de marché de l'alerte.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for index, edition in enumerate(edition_alternatives or []):
+        isbn13 = str(edition.get("isbn13") or "").strip()
+        if not isbn13:
+            continue
+        is_current = isbn13 == current_isbn
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{'✅' if is_current else '📚'} {isbn13}",
+                callback_data=f"al_create_edition:{index}",
+            )
+        ])
+
+    rows.append(
+        [InlineKeyboardButton(text="✅ Créer l’alerte", callback_data="alert_create_confirm")]
+    )
+    rest = [
         [
             InlineKeyboardButton(text="✏️ Modifier", callback_data="alert_create_edit"),
             InlineKeyboardButton(text="❌ Annuler", callback_data="alert_create_cancel"),
         ],
     ]
     if show_variants_btn:
-        rows.append(
+        rest.append(
             [
                 InlineKeyboardButton(
                     text="✨ Variantes & Exclusions IA",
@@ -45,7 +73,7 @@ def get_alert_confirmation_keyboard(show_variants_btn: bool = True) -> InlineKey
                 )
             ]
         )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(inline_keyboard=[*rows, *rest])
 
 
 def get_category_selection_keyboard() -> InlineKeyboardMarkup:
@@ -62,7 +90,7 @@ def get_category_selection_keyboard() -> InlineKeyboardMarkup:
 
 
 def _build_category_selection_keyboard(
-    categories: list,
+    categories: list[Category],
     counts: dict[str, int],
     total_count: int,
     callback_prefix: str,
@@ -97,7 +125,7 @@ def _build_category_selection_keyboard(
 
 
 def get_edit_category_selection_keyboard(
-    categories: list,
+    categories: list[Category],
     counts: dict[str, int],
     total_count: int,
 ) -> InlineKeyboardMarkup:
@@ -106,7 +134,7 @@ def get_edit_category_selection_keyboard(
 
 
 def get_list_category_selection_keyboard(
-    categories: list,
+    categories: list[Category],
     counts: dict[str, int],
     total_count: int,
 ) -> InlineKeyboardMarkup:
@@ -231,7 +259,7 @@ def get_edit_conditions_keyboard(
     is_all = accepted_conditions is None or len(accepted_conditions) == 0
 
     for idx, cond in enumerate(STANDARD_CONDITIONS):
-        is_selected = is_all or (cond in accepted_conditions)
+        is_selected = is_all or (accepted_conditions is not None and cond in accepted_conditions)
         icon = "✅" if is_selected else "⬜"
         buttons.append(
             [
@@ -287,7 +315,7 @@ def get_delete_confirmation_keyboard(alert_id: uuid.UUID) -> InlineKeyboardMarku
 
 
 def get_alerts_list_keyboard(
-    alerts: list,
+    alerts: list[Alert],
     current_page: int,
     total_pages: int,
     category_slug: str = "all",

@@ -15,7 +15,13 @@ from app.core.http_client import (
 )
 from app.core.logging import JSONFormatter
 from app.core.tasks import safe_create_task, wait_all_background_tasks
-from app.utils.isbn import extract_clean_isbn, isbn10_to_isbn13
+from app.utils.isbn import (
+    extract_clean_isbn,
+    is_valid_isbn10,
+    is_valid_isbn13,
+    isbn10_to_isbn13,
+    normalize_isbn,
+)
 from app.utils.text import contains_keyword
 
 
@@ -69,18 +75,48 @@ def test_utils_text_contains_keyword():
 def test_utils_isbn_conversion_and_cleaning():
     """Vérifie la conversion et le nettoyage d'ISBNs complexes."""
     # ISBN-10 vers 13
-    assert isbn10_to_isbn13("220507805X") == "9782205078053"
-    assert isbn10_to_isbn13("2-205-07805-X") == "9782205078053"
+    assert isbn10_to_isbn13("2070365034") == "9782070365036"
+    assert isbn10_to_isbn13("2-070-36503-4") == "9782070365036"
     assert isbn10_to_isbn13("invalid") is None
 
     # Extraction d'ISBN-13 dans une phrase ou URL
-    raw_text = "Vends BD Batman ISBN 978-2-36577-000-0 en très bon état"
-    assert extract_clean_isbn(raw_text) == "9782365770000"
+    raw_text = "Vends BD Batman ISBN 978-2-36577-000-2 en très bon état"
+    assert extract_clean_isbn(raw_text) == "9782365770002"
 
     # Extraction depuis chaîne brute compacte
     assert extract_clean_isbn("9782803672080") == "9782803672080"
-    assert extract_clean_isbn("220507805X") == "9782205078053"
+    assert extract_clean_isbn("2070365034") == "9782070365036"
     assert extract_clean_isbn("") is None
+
+
+def test_isbn_check_digit_and_normalization():
+    """La clé de contrôle filtre les fautes de frappe, la normalisation tolère la ponctuation."""
+    assert is_valid_isbn13("9782369903086") is True
+    assert is_valid_isbn13("9782369903062") is True  # vrai ISBN, mais d'un autre ouvrage
+    assert is_valid_isbn13("9782365770000") is False  # chiffre erroné
+    assert is_valid_isbn13("97823699030") is False
+    assert is_valid_isbn13(None) is False
+    assert is_valid_isbn13("97823699030X6") is False
+
+    assert is_valid_isbn10("2070365034") is True
+    assert is_valid_isbn10("2070365038") is False
+    assert is_valid_isbn10(None) is False
+
+    assert normalize_isbn("978-2-36577-000-2") == "9782365770002"
+    assert normalize_isbn(" 2-070-36503-4 ") == "2070365034"
+    assert normalize_isbn("978236") is None
+    assert normalize_isbn(None) is None
+
+
+def test_extract_clean_isbn_rejects_invalid_check_digit():
+    """Un ISBN mal saisi n'est jamais propagé : l'alerte ne doit pas matcher un mauvais livre."""
+    # Clé de contrôle invalide
+    assert extract_clean_isbn("9782365770000") is None
+    assert extract_clean_isbn("2070365038") is None
+    # Ni ISBN-10 ni ISBN-13 exploitables dans un texte
+    assert extract_clean_isbn("prix 12 euros, très bon état") is None
+    # Un code valide présent après un code invalide est retenu
+    assert extract_clean_isbn("9782365770000 / 9782803672080") == "9782803672080"
 
 
 @pytest.mark.asyncio

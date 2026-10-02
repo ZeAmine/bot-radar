@@ -1,8 +1,12 @@
 """Service d'identification et recommandation automatique de métadonnées pour les BD & Comics.
 
-Interroge en priorité la Bibliothèque Nationale de France (BNF) via son protocole SRU standard,
-avec repli vers OpenLibrary et Chasse-aux-livres, afin d'extraire le titre officiel, l'auteur,
-l'éditeur et l'ISBN-13, et de générer des mots-clés d'inclusion/exclusion optimaux.
+Interroge la Bibliothèque Nationale de France (BNF) via son protocole SRU standard afin d'extraire
+le titre officiel, l'auteur, l'éditeur et l'ISBN-13, et de générer des mots-clés
+d'inclusion/exclusion optimaux.
+
+Règle produit : **la BNF est la seule autorité ISBN**. Un ISBN proposé par ailleurs (saisie
+utilisateur ou proposition IA) n'est retenu que s'il est confirmé par une notice BNF dont le
+titre correspond réellement à l'œuvre recherchée.
 """
 
 import difflib
@@ -10,18 +14,32 @@ import logging
 import re
 import urllib.parse
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
-from app.utils.isbn import isbn10_to_isbn13
+from app.utils.isbn import is_valid_isbn, isbn10_to_isbn13, normalize_isbn
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.book_metadata")
 
 STANDARD_BD_EXCLUDES = ["roman", "poche", "anglais", "english", "dvd"]
+
+# Similarité minimale entre le titre demandé et la notice BNF pour valider une correspondance.
+TITLE_SIMILARITY_MIN = 0.75
+# Similarité minimale entre deux titres pour les considérer comme deux éditions de la même œuvre.
+SAME_WORK_TITLE_SIMILARITY_MIN = 0.9
+# Nombre maximum d'éditions alternatives remontées à l'utilisateur.
+MAX_ALTERNATIVE_EDITIONS = 3
+
+# Préfixes ISBN des éditions francophones (règle GF pour la langue française).
+FRENCH_ISBN_PREFIXES = ("9782", "979")
+
+_TITLE_QUERY_ALLOWED_CHARS = r"[^a-zA-Z0-9\sàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ-]"
 
 
 @dataclass
@@ -37,6 +55,128 @@ class BookMetadata:
     recommended_variants: list[str] = field(default_factory=list)
     confidence: MatchConfidence = MatchConfidence.HIGH
     source: str = "bnf"
+    publication_year: int | None = None
+    format_detail: str | None = None
+
+
+class EditionAlternative(BaseModel):
+    """Édition d'une même œuvre, proposée au choix de l'utilisateur avant création."""
+
+    isbn13: str
+    publisher: str | None = None
+    publication_year: int | None = None
+    format_detail: str | None = None
+
+
+@dataclass
+class BookResolution:
+    """Résultat d'une résolution d'œuvre : l'édition de référence et ses variantes."""
+
+    best: BookMetadata
+    alternatives: list[BookMetadata] = field(default_factory=list)
+
+    def editions(self) -> list[EditionAlternative]:
+        """Toutes les éditions de l'œuvre, dédupliquées, édition de référence en tête.
+
+        L'ISBN choisi contraint la recherche Vinted, le matching et la cote de marché :
+        l'utilisateur doit donc pouvoir comparer les éditions avant de valider, y
+        compris revenir sur celle qui a été retenue au départ.
+        """
+        seen: set[str] = set()
+        editions: list[EditionAlternative] = []
+        for meta in [self.best, *self.alternatives]:
+            if not meta.isbn13 or meta.isbn13 in seen:
+                continue
+            seen.add(meta.isbn13)
+            editions.append(
+                EditionAlternative(
+                    isbn13=meta.isbn13,
+                    publisher=meta.publisher,
+                    publication_year=meta.publication_year,
+                    format_detail=meta.format_detail,
+                )
+            )
+        return editions
+
+
+@dataclass
+class _OpenLibraryWork:
+    """Notice OpenLibrary et ISBN des éditions regroupées dans le même document."""
+
+    meta: BookMetadata
+    edition_isbns: list[str] = field(default_factory=list)
+
+
+def clean_openlibrary_author(raw_author: str) -> str:
+    """Retire la mention de rôle éventuelle d'un nom d'auteur OpenLibrary."""
+    cleaned = re.sub(r"\s*\(.*?\)\s*", " ", raw_author).strip(" ,")
+    return cleaned or raw_author.strip()
+
+
+def title_similarity(first: str | None, second: str | None) -> float:
+    """Compare deux titres normalisés (0.0 = aucun rapport, 1.0 = titres identiques)."""
+    norm_a = normalize_text(first)
+    norm_b = normalize_text(second)
+    if not norm_a or not norm_b:
+        return 0.0
+    if norm_a == norm_b:
+        return 1.0
+    ratio = difflib.SequenceMatcher(None, norm_a, norm_b).ratio()
+    # Un sous-titre ou un suffixe d'auteur côté BNF ne doit pas faire tomber la similarité,
+    # mais seulement s'il reste marginal par rapport au titre (sinon c'est un autre ouvrage).
+    shorter, longer = sorted((norm_a, norm_b), key=len)
+    if shorter in longer and len(shorter) / len(longer) >= 0.75:
+        ratio = max(ratio, SAME_WORK_TITLE_SIMILARITY_MIN)
+    return ratio
+
+
+def format_edition_details(
+    publication_year: int | None,
+    format_detail: str | None,
+    publisher: str | None = None,
+) -> str:
+    """Condense une notice d'édition en détails lisibles (« 2021 · 224 p. · Delcourt »).
+
+    La BNF décrit le format de façon bavarde (« 1 vol. (224 p.) : ill. en coul. ;
+    24 cm ») : on la ramène à ses informations discriminantes pour un humain.
+    """
+    parts: list[str] = []
+    if publication_year:
+        parts.append(str(publication_year))
+    for chunk in re.split(r"[;:]", format_detail or ""):
+        cleaned = re.sub(r"^\d+\s*vol\.\s*", "", chunk.strip())
+        cleaned = cleaned.replace("(", "").replace(")", "").strip(" ,")
+        # On ne retient que les fragments chiffrés (pagination, format) : les
+        # mentions purement décoratives de la notice (« ill. en coul. ») sont du bruit.
+        if cleaned and any(char.isdigit() for char in cleaned):
+            parts.append(cleaned)
+    if publisher:
+        parts.append(publisher)
+    return " · ".join(parts)
+
+
+def same_author(first: str | None, second: str | None) -> bool:
+    """Indique si deux notices se rapportent au même auteur (comparaison par mots significatifs).
+
+    Les notices BNF presents les createurs sous des formes heterogenes
+    (« Panchaud, Martin », « Martin Panchaud », rôles inclus) : on compare donc
+    les mots significatifs plutot que les chaînes brutes.
+    """
+    tokens_a = {token for token in normalize_text(first).split() if len(token) >= 3}
+    tokens_b = {token for token in normalize_text(second).split() if len(token) >= 3}
+    return bool(tokens_a & tokens_b)
+
+
+def clean_title_query(title: str) -> str:
+    """Normalise un titre saisi pour la requête CQL de la BNF."""
+    cleaned = re.sub(_TITLE_QUERY_ALLOWED_CHARS, " ", title).strip()
+    return cleaned or title
+
+
+def _parse_year(raw_date: str) -> int | None:
+    """Extrait l'année de publication d'une date BNF (ex: '2022', '2022-09', 'c2022')."""
+    match = re.search(r"(1[89]\d{2}|20\d{2})", raw_date)
+    return int(match.group(1)) if match else None
 
 
 def parse_query_title_and_author(query: str) -> tuple[str, str | None]:
@@ -142,6 +282,12 @@ class BookMetadataService:
     """Service d'interrogation et de recommandation de métadonnées de livres."""
 
     BNF_SRU_URL = "https://catalogue.bnf.fr/api/SRU"
+    OPENLIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
+    OPENLIBRARY_FIELDS = (
+        "title,author_name,publisher,first_publish_year,isbn,"
+        "number_of_pages_median,language"
+    )
+    OPENLIBRARY_MAX_RESULTS = 10
 
     def __init__(
         self,
@@ -171,48 +317,146 @@ class BookMetadataService:
 
     async def lookup_by_isbn(self, isbn: str) -> BookMetadata | None:
         """Recherche une œuvre par son ISBN officiel sur la BNF."""
-        cql = f'bib.isbn adj "{isbn}"'
+        clean_isbn = normalize_isbn(isbn)
+        if not clean_isbn or not is_valid_isbn(clean_isbn):
+            return None
+        cql = f'bib.isbn adj "{clean_isbn}"'
         records = await self._query_bnf_sru(cql)
         if records:
-            meta = records[0]
-            includes, excludes, variants = generate_recommended_keywords(meta.title, meta.author)
-            meta.recommended_includes = includes
-            meta.recommended_excludes = excludes
-            meta.recommended_variants = variants
-            return meta
-        return None
+            return self._attach_recommendations(records[0])
+
+        fallback = await self._openlibrary_works({"isbn": clean_isbn})
+        return fallback[0].meta if fallback else None
+
+    async def verify_isbn(self, isbn13: str, expected_title: str) -> BookMetadata | None:
+        """Confirme qu'un ISBN désigne bien l'œuvre attendue.
+
+        Filet anti-hallucination : un ISBN bien formé mais attribué à une autre œuvre
+        (préfixe d'éditeur recombiné par un LLM, par exemple) est rejeté sur le titre.
+        """
+        clean_isbn = normalize_isbn(isbn13)
+        if not clean_isbn or not is_valid_isbn(clean_isbn):
+            return None
+
+        records = await self._query_bnf_sru(f'bib.isbn adj "{clean_isbn}"')
+        if not records:
+            # La BNF ignore ce code : OpenLibrary tranche en repli, même garde-fou de titre.
+            fallback = await self._openlibrary_works({"isbn": clean_isbn})
+            if not fallback:
+                return None
+            best = fallback[0].meta
+            if title_similarity(best.title, expected_title) < TITLE_SIMILARITY_MIN:
+                logger.info(
+                    "ISBN %s écarté (OpenLibrary) : « %s » ne correspond pas à « %s »",
+                    clean_isbn,
+                    best.title,
+                    expected_title,
+                )
+                return None
+            return best
+
+        best = records[0]
+        if title_similarity(best.title, expected_title) < TITLE_SIMILARITY_MIN:
+            logger.info(
+                "ISBN %s écarté : la BNF le rattache à « %s » et non à « %s »",
+                clean_isbn,
+                best.title,
+                expected_title,
+            )
+            return None
+        return self._attach_recommendations(best)
+
+    async def resolve_for_alert(
+        self, title: str, author_hint: str | None = None
+    ) -> BookResolution | None:
+        """Résout l'édition de référence d'une œuvre à partir d'un titre (+ auteur).
+
+        Ne renvoie que des notices réellement proches du titre demandé et expose les autres
+        éditions connues de la même œuvre pour que l'utilisateur puisse les voir.
+        """
+        if not title.strip():
+            return None
+
+        clean_title_q = clean_title_query(title)
+        records = await self._query_bnf_sru(
+            f'bib.title all "{clean_title_q}"',
+            author_hint=author_hint,
+            title_hint=clean_title_q,
+        )
+        if not records and author_hint:
+            records = await self._query_bnf_sru(
+                f'bib.anywhere all "{clean_title_q}"',
+                author_hint=author_hint,
+                title_hint=clean_title_q,
+            )
+
+        candidates = [
+            record
+            for record in records
+            if title_similarity(record.title, title) >= TITLE_SIMILARITY_MIN
+        ]
+        if not candidates:
+            return await self._resolve_via_openlibrary(title, author_hint)
+
+        best = self._attach_recommendations(candidates[0])
+        alternatives = [
+            record
+            for record in candidates[1 : 1 + MAX_ALTERNATIVE_EDITIONS]
+            if self._is_same_work(record, best)
+        ]
+        return BookResolution(best=best, alternatives=alternatives)
+
+    @staticmethod
+    def _is_same_work(candidate: BookMetadata, reference: BookMetadata) -> bool:
+        """Une autre édition du même ouvrage : titre proche ET même auteur.
+
+        Sans cette double condition, une recherche par titre remonte des ouvrages voisins
+        (« De la couleur des choses ») qui ne sont pas des éditions du livre demandé.
+        """
+        if title_similarity(candidate.title, reference.title) < SAME_WORK_TITLE_SIMILARITY_MIN:
+            return False
+        if candidate.author and reference.author:
+            return same_author(candidate.author, reference.author)
+        return normalize_text(candidate.title) == normalize_text(reference.title)
+
+    @staticmethod
+    def _attach_recommendations(meta: BookMetadata) -> BookMetadata:
+        """Enrichit une notice avec les mots-clés recommandés (mutation en place)."""
+        includes, excludes, variants = generate_recommended_keywords(meta.title, meta.author)
+        meta.recommended_includes = includes
+        meta.recommended_excludes = excludes
+        meta.recommended_variants = variants
+        return meta
 
     async def lookup_by_title_and_author(self, user_input: str) -> BookMetadata | None:
         """Recherche par titre et indice d'auteur avec ranking intelligent."""
         title_cand, author_cand = parse_query_title_and_author(user_input)
-
-        # Nettoyage pour la requête CQL
-        clean_title_q = re.sub(
-            r"[^a-zA-Z0-9\sàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ-]", " ", title_cand).strip()
-        if not clean_title_q:
-            clean_title_q = title_cand
+        clean_title_q = clean_title_query(title_cand)
 
         # Requête BNF avec le titre
         cql = f'bib.title all "{clean_title_q}"'
-        records = await self._query_bnf_sru(cql, author_hint=author_cand)
+        records = await self._query_bnf_sru(
+            cql, author_hint=author_cand, title_hint=clean_title_q
+        )
 
         if not records and author_cand:
             # Essai plus large si pas de résultat
             cql_broad = f'bib.anywhere all "{clean_title_q}"'
-            records = await self._query_bnf_sru(cql_broad, author_hint=author_cand)
+            records = await self._query_bnf_sru(
+                cql_broad, author_hint=author_cand, title_hint=clean_title_q
+            )
 
         if records:
-            best = records[0]
-            includes, excludes, variants = generate_recommended_keywords(best.title, best.author)
-            best.recommended_includes = includes
-            best.recommended_excludes = excludes
-            best.recommended_variants = variants
-            return best
+            return self._attach_recommendations(records[0])
 
-        return None
+        fallback = await self._resolve_via_openlibrary(clean_title_q, author_cand)
+        return fallback.best if fallback else None
 
     async def _query_bnf_sru(
-        self, cql_query: str, author_hint: str | None = None
+        self,
+        cql_query: str,
+        author_hint: str | None = None,
+        title_hint: str | None = None,
     ) -> list[BookMetadata]:
         """Interroge l'API SRU de la BNF et trie les résultats par pertinence."""
         params = {
@@ -246,6 +490,10 @@ class BookMetadataService:
                     ".//{http://purl.org/dc/elements/1.1/}identifier") if i.text]
                 publishers = [p.text for p in record.findall(
                     ".//{http://purl.org/dc/elements/1.1/}publisher") if p.text]
+                dates = [d.text for d in record.findall(
+                    ".//{http://purl.org/dc/elements/1.1/}date") if d.text]
+                formats = [f.text for f in record.findall(
+                    ".//{http://purl.org/dc/elements/1.1/}format") if f.text]
 
                 if not titles:
                     continue
@@ -267,17 +515,29 @@ class BookMetadataService:
                 main_title = clean_bnf_title(titles[0])
                 author_name = clean_bnf_creator(creators[0]) if creators else None
                 pub_name = clean_bnf_publisher(publishers[0]) if publishers else None
+                publication_year = _parse_year(dates[0]) if dates else None
+                format_detail = formats[0].strip() if formats else None
+
+                # Similarité du titre : critère dominant, une notice portant sur un autre
+                # ouvrage ne doit jamais gagner sur la bonne œuvre demandée.
+                score = 1.0
+                if title_hint:
+                    score += 3.0 * title_similarity(main_title, title_hint)
 
                 # Calcul d'un score de similarité d'auteur si un indice d'auteur est donné
-                score = 1.0
                 if author_hint and creators:
                     hint_norm = normalize_text(author_hint)
                     creators_norm = " ".join(normalize_text(c) for c in creators)
                     ratio = difflib.SequenceMatcher(None, hint_norm, creators_norm).ratio()
-                    for word in hint_norm.split():
-                        if len(word) >= 3 and word in creators_norm:
+                    hint_words = [w for w in hint_norm.split() if len(w) >= 3]
+                    for word in hint_words:
+                        if word in creators_norm:
                             ratio += 0.4
                     score += ratio
+                    # Un indice d'auteur totalement absent de la notice déclasse le résultat :
+                    # plusieurs ouvrages portent le même titre, pas le même auteur.
+                    if hint_words and not any(word in creators_norm for word in hint_words):
+                        score -= 0.5
 
                 # Bonus pour les éditions francophones (BD et éditeurs de référence)
                 if isbn13.startswith("9782") or isbn13.startswith("2"):
@@ -292,12 +552,19 @@ class BookMetadataService:
                     if any(fp in norm_pub for fp in fr_publishers):
                         score += 0.6
 
+                # Une notice datée est une fiche complète ; une notice sans date est
+                # souvent un doublon d'édition : elle sert de repli, pas de référence.
+                if publication_year:
+                    score += 0.3
+
                 meta = BookMetadata(
                     title=main_title,
                     author=author_name,
                     publisher=pub_name,
                     isbn13=isbn13,
                     source="bnf",
+                    publication_year=publication_year,
+                    format_detail=format_detail,
                 )
                 results.append((score, meta))
 
@@ -307,6 +574,153 @@ class BookMetadataService:
 
         results.sort(key=lambda x: x[0], reverse=True)
         return [item[1] for item in results]
+
+    async def _resolve_via_openlibrary(
+        self, title: str, author_hint: str | None = None
+    ) -> BookResolution | None:
+        """Résolution de repli : OpenLibrary ne répond que si la BNF n'a rien donné.
+
+        La confiance est moindre (`MEDIUM`) et la provenance est remontée jusqu'au
+        récap Telegram : l'utilisateur doit savoir que l'ISBN vient d'une autre source.
+        """
+        params: dict[str, str] = {"title": title}
+        if author_hint:
+            params["author"] = author_hint
+
+        works = await self._openlibrary_works(params)
+        candidates = [
+            work for work in works
+            if title_similarity(work.meta.title, title) >= TITLE_SIMILARITY_MIN
+        ]
+        if not candidates:
+            return None
+
+        best = candidates[0].meta
+        alternatives = [
+            replace(best, isbn13=isbn)
+            for isbn in candidates[0].edition_isbns
+            if isbn != best.isbn13 and isbn.startswith(FRENCH_ISBN_PREFIXES)
+        ][:MAX_ALTERNATIVE_EDITIONS]
+        return BookResolution(best=best, alternatives=alternatives)
+
+    async def _openlibrary_works(self, params: dict[str, str]) -> list[_OpenLibraryWork]:
+        """Notices OpenLibrary correspondant à une recherche, triées par pertinence."""
+        docs = await self._query_openlibrary(params)
+        title_hint = params.get("title")
+        author_hint = params.get("author")
+        expected_isbn = normalize_isbn(params.get("isbn"))
+
+        scored: list[tuple[float, _OpenLibraryWork]] = []
+        for doc in docs:
+            work = self._build_openlibrary_work(doc, expected_isbn)
+            if not work:
+                continue
+            score = 1.0
+            if title_hint:
+                score += 3.0 * title_similarity(work.meta.title, title_hint)
+            if author_hint and work.meta.author:
+                if same_author(work.meta.author, author_hint):
+                    score += 1.0
+                else:
+                    # Un indice d'auteur contredit par la notice doit déclasser le résultat.
+                    score -= 0.5
+            scored.append((score, work))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [work for _score, work in scored]
+
+    async def _query_openlibrary(self, params: dict[str, str]) -> list[dict[str, Any]]:
+        """Interroge l'API Search d'OpenLibrary (aucune clé, aucune dépendance)."""
+        query = {
+            **params,
+            "fields": self.OPENLIBRARY_FIELDS,
+            "limit": str(self.OPENLIBRARY_MAX_RESULTS),
+        }
+        url = f"{self.OPENLIBRARY_SEARCH_URL}?{urllib.parse.urlencode(query)}"
+        try:
+            client = self.http_client or get_shared_http_client()
+            resp = await client.get(
+                url,
+                timeout=self.timeout_seconds,
+                headers={"User-Agent": "BotRadar/1.0"},
+            )
+            if resp.status_code != 200:
+                logger.warning("OpenLibrary a renvoyé le statut %d", resp.status_code)
+                return []
+            payload = resp.json()
+        except Exception as exc:
+            logger.warning("Erreur lors de la requête OpenLibrary : %s", exc)
+            return []
+
+        docs = payload.get("docs") if isinstance(payload, dict) else None
+        if not isinstance(docs, list):
+            return []
+        return [doc for doc in docs if isinstance(doc, dict)]
+
+    def _build_openlibrary_work(
+        self, doc: dict[str, Any], expected_isbn: str | None
+    ) -> _OpenLibraryWork | None:
+        """Convertit un document OpenLibrary en notice avec l'ISBN pertinent retenu."""
+        title = str(doc.get("title") or "").strip()
+        if not title:
+            return None
+
+        edition_isbns = self._valid_openlibrary_isbns(doc.get("isbn"))
+        isbn13 = self._select_openlibrary_isbn(edition_isbns, expected_isbn)
+        if not isbn13:
+            return None
+
+        authors = doc.get("author_name") or []
+        publishers = doc.get("publisher") or []
+        pages = doc.get("number_of_pages_median")
+        year = doc.get("first_publish_year")
+        meta = BookMetadata(
+            title=title,
+            author=clean_openlibrary_author(str(authors[0])) if authors else None,
+            publisher=str(publishers[0]).strip() if publishers else None,
+            isbn13=isbn13,
+            source="openlibrary",
+            confidence=MatchConfidence.MEDIUM,
+            publication_year=year if isinstance(year, int) else None,
+            format_detail=f"{pages} p." if isinstance(pages, int) else None,
+        )
+        return _OpenLibraryWork(meta=meta, edition_isbns=edition_isbns)
+
+    @staticmethod
+    def _valid_openlibrary_isbns(raw_isbns: Any) -> list[str]:
+        """Normalise la liste d'ISBN d'un document en codes réellement exploitables."""
+        if not isinstance(raw_isbns, list):
+            return []
+        cleaned: list[str] = []
+        for raw in raw_isbns:
+            code = normalize_isbn(str(raw))
+            if code and is_valid_isbn(code) and code not in cleaned:
+                cleaned.append(code)
+        return cleaned
+
+    @staticmethod
+    def _select_openlibrary_isbn(
+        edition_isbns: list[str], expected_isbn: str | None
+    ) -> str | None:
+        """Choisit l'ISBN pertinent parmi les éditions regroupées par OpenLibrary.
+
+        OpenLibrary agrège toutes les éditions d'une œuvre dans un seul document : la
+        liste contient donc l'édition d'origine mais aussi ses traductions. On retient
+        le code demandé, puis un ISBN-13, puis une édition francophone.
+        """
+        codes13 = [isbn for isbn in edition_isbns if len(isbn) == 13]
+        pool = codes13 or edition_isbns
+        if not pool:
+            return None
+
+        if expected_isbn:
+            for isbn in pool:
+                if isbn == expected_isbn or isbn10_to_isbn13(isbn) == expected_isbn:
+                    return isbn
+        for isbn in pool:
+            if isbn.startswith(FRENCH_ISBN_PREFIXES):
+                return isbn
+        return pool[0]
 
     async def _lookup_from_vinted_url(self, url: str) -> BookMetadata | None:
         """Extrait le texte de recherche ou l'ISBN d'une URL Vinted et effectue le lookup."""

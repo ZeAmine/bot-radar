@@ -4,11 +4,45 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.services.book_metadata_service import EditionAlternative
+
 
 class _LoosePayload(BaseModel):
     """JSON LLM : champs absents prennent le défaut, le surplus est ignoré."""
 
     model_config = ConfigDict(extra="ignore")
+
+
+class BookContext(BaseModel):
+    """Fiche réelle d'un ouvrage, source de vérité pour les mots-clés d'une alerte.
+
+    Renseignée depuis la notice BNF : elle permet de raisonner sur l'ouvrage réel
+    (auteur, édition, format) au lieu de recopier des listes de faux positifs types.
+    """
+
+    title: str = Field(description="Titre canonique de l'ouvrage")
+    author: str | None = Field(default=None, description="Auteur principal")
+    publisher: str | None = Field(default=None, description="Éditeur / collection")
+    publication_year: int | None = Field(default=None, description="Année de la référence")
+    format_detail: str | None = Field(default=None, description="Format éditorial (pages, cm)")
+    isbn13: str | None = Field(default=None, description="ISBN de l'édition de référence")
+    is_series: bool = Field(default=False, description="True pour une série multi-tomes")
+
+    def as_facts(self) -> list[str]:
+        """Énumère les faits bibliographiques exploitables par le modèle, en français."""
+        facts = [f"titre officiel : {self.title}"]
+        if self.author:
+            facts.append(f"auteur : {self.author}")
+        if self.publisher:
+            facts.append(f"éditeur : {self.publisher}")
+        if self.publication_year:
+            facts.append(f"année de l'édition : {self.publication_year}")
+        if self.format_detail:
+            facts.append(f"format : {self.format_detail}")
+        if self.isbn13:
+            facts.append(f"ISBN de référence : {self.isbn13}")
+        facts.append("nature : série multi-tomes" if self.is_series else "ouvrage unique")
+        return facts
 
 
 class NaturalAddResult(BaseModel):
@@ -20,7 +54,7 @@ class NaturalAddResult(BaseModel):
         description="Slug de catégorie: bd_comics, tech, gaming, clothes",
     )
     isbn13: str | None = Field(
-        default=None, description="ISBN-13 officiel si livre unique / tome précis"
+        default=None, description="ISBN-13 confirmé par la BNF pour l'ouvrage demandé"
     )
     is_series: bool = Field(default=False, description="True s'il s'agit d'une série multi-tomes")
     author: str | None = Field(default=None, description="Auteur identifié")
@@ -30,6 +64,18 @@ class NaturalAddResult(BaseModel):
     max_price_cents: int | None = Field(default=None, description="Prix maximum en centimes")
     conditions: list[str] | None = Field(default=None, description="États acceptés")
     explanation: str | None = Field(default=None, description="Explication courte du découpage")
+    isbn_note: str | None = Field(
+        default=None,
+        description="Information d'édition à afficher (autre ISBN connu / ISBN non confirmé)",
+    )
+    book_context: BookContext | None = Field(
+        default=None,
+        description="Fiche BNF de l'ouvrage, à injecter dans la génération de mots-clés",
+    )
+    edition_alternatives: list[EditionAlternative] = Field(
+        default_factory=list,
+        description="Éditions concurrentes de la même œuvre, sélectionnables dans le récap",
+    )
 
 
 class ProfitScoringResult(BaseModel):
@@ -81,6 +127,7 @@ class KeywordVariantsPayload(_LoosePayload):
 
     variants: list[Any] | None = None
     exclusions: list[Any] | None = None
+    rationale: str | None = None
 
 
 class AutoTuningPayload(_LoosePayload):

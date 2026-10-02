@@ -209,6 +209,114 @@ async def test_save_edited_field_value_skip_clears_list():
 
 
 @pytest.mark.asyncio
+async def test_save_edited_field_value_rejects_isbn_of_another_book():
+    """Un ISBN qui désigne un autre ouvrage est refusé avec le vrai titre de l'ouvrage."""
+    from unittest.mock import patch
+
+    from app.services.book_metadata_service import BookMetadata
+
+    alert_id = uuid.uuid4()
+    message = AsyncMock()
+    message.text = "9782369903062"
+    state = AsyncMock()
+    state.get_data.return_value = {
+        "edit_alert_id": str(alert_id),
+        "edit_field": "isbn",
+    }
+    user = MagicMock(spec=User, id=uuid.uuid4())
+    session = AsyncMock()
+
+    mock_alert = MagicMock(
+        spec=Alert,
+        id=alert_id,
+        isbn=None,
+        status=AlertStatus.ACTIVE,
+        category=None,
+        max_item_price_cents=1200,
+        include_keywords=["La couleur des choses"],
+    )
+    mock_alert.name = "La couleur des choses"
+    repo_mock = AsyncMock()
+    repo_mock.get_by_id.return_value = mock_alert
+
+    conflicting = BookMetadata(
+        title="Keeping two", author="Jordan Crane", isbn13="9782369903062"
+    )
+    lookup_mock = AsyncMock(return_value=conflicting)
+
+    with (
+        patch("app.bot.handlers.alerts_manage._get_alert_repo", return_value=repo_mock),
+        patch(
+            "app.services.book_metadata_service.BookMetadataService.lookup_by_isbn",
+            new=lookup_mock,
+        ),
+    ):
+        await save_edited_field_value(message, state=state, db_user=user, db_session=session)
+
+    assert mock_alert.isbn is None
+    session.commit.assert_not_awaited()
+    error_text = message.answer.call_args[0][0]
+    assert "Keeping two" in error_text
+    assert "La couleur des choses" in error_text
+
+
+@pytest.mark.asyncio
+async def test_save_edited_field_value_accepts_isbn_matching_alert():
+    """Un ISBN confirmé pour le bon ouvrage est écrit et propagé."""
+    from unittest.mock import patch
+
+    alert_id = uuid.uuid4()
+    message = AsyncMock()
+    message.text = "978-2-36990-308-6"
+    state = AsyncMock()
+    state.get_data.return_value = {
+        "edit_alert_id": str(alert_id),
+        "edit_field": "isbn",
+    }
+    user = MagicMock(spec=User, id=uuid.uuid4())
+    session = AsyncMock()
+
+    mock_alert = MagicMock(
+        spec=Alert,
+        id=alert_id,
+        isbn=None,
+        status=AlertStatus.ACTIVE,
+        category=None,
+        max_item_price_cents=1200,
+        include_keywords=["La couleur des choses"],
+    )
+    mock_alert.name = "La couleur des choses"
+    repo_mock = AsyncMock()
+    repo_mock.get_by_id.return_value = mock_alert
+    repo_mock.count_by_user.return_value = 1
+
+    from app.services.book_metadata_service import BookMetadata
+
+    lookup_mock = AsyncMock(
+        return_value=BookMetadata(
+            title="La couleur des choses", author="Martin Panchaud", isbn13="9782369903086"
+        )
+    )
+
+    with (
+        patch("app.bot.handlers.alerts_manage._get_alert_repo", return_value=repo_mock),
+        patch(
+            "app.services.book_metadata_service.BookMetadataService.lookup_by_isbn",
+            new=lookup_mock,
+        ),
+        patch("app.db.repositories.book_repo.BookRepository", return_value=AsyncMock()),
+        patch(
+            "app.db.repositories.market_price_repo.MarketPriceRepository",
+            return_value=AsyncMock(),
+        ),
+    ):
+        await save_edited_field_value(message, state=state, db_user=user, db_session=session)
+
+    assert mock_alert.isbn == "9782369903086"
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_handle_edit_condition_toggle():
     alert_id = uuid.uuid4()
     callback = AsyncMock()

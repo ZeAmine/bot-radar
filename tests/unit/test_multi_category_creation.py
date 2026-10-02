@@ -424,6 +424,143 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
 
 
 @pytest.mark.asyncio
+async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_note():
+    """Le récap affiche l'édition alternative et fusionne les mots-clés ancrés sur la fiche BNF."""
+    from app.services.ai.schemas import BookContext, NaturalAddResult
+
+    message = MockMessage()
+    message.text = "/add la couleur des choses. Max 12 €"
+    message.chat.id = 12345
+    message.bot = MagicMock()
+    message.bot.send_chat_action = AsyncMock()
+
+    loading_message = MagicMock()
+    loading_message.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=loading_message)
+
+    state = AsyncMock()
+    state.clear = AsyncMock()
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    book_context = BookContext(
+        title="La couleur des choses",
+        author="Martin Panchaud",
+        publisher="Çà et là",
+        publication_year=2022,
+        format_detail="1 vol. (224 p.) : ill. en coul. ; 24 cm",
+        isbn13="9782369903086",
+    )
+    fake_result = NaturalAddResult(
+        name="La couleur des choses",
+        category_slug="bd_comics",
+        is_series=False,
+        isbn13="9782369903086",
+        author="Martin Panchaud",
+        publisher="Çà et là",
+        include_keywords=["La couleur des choses"],
+        exclude_keywords=["roman poche"],
+        max_price_cents=1200,
+        isbn_note="Autre édition connue : 9782369904151 (224 p., 19 cm)",
+        book_context=book_context,
+    )
+
+    keywords_mock = AsyncMock(return_value=(["couleurdeschoses"], ["keeping two"]))
+
+    with (
+        patch(
+            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
+            new_callable=PropertyMock,
+            return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
+            new_callable=AsyncMock,
+            return_value=fake_result,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.keyword_variants_module"
+            ".generate_variants_and_exclusions",
+            new=keywords_mock,
+        ),
+    ):
+        await start_add_alert(message, state, AsyncMock(), User(id=uuid.uuid4()))
+
+    # La génération de mots-clés reçoit la fiche vérifiée de l'ouvrage
+    keywords_mock.assert_awaited_once_with(
+        "La couleur des choses",
+        category_slug="bd_comics",
+        context=book_context,
+    )
+
+    edited_text = loading_message.edit_text.call_args[0][0]
+    assert "9782369903086" in edited_text
+    assert "Autre édition connue : 9782369904151" in edited_text
+    # Exclusions du parsing puis celles ancrées sur la fiche, sans doublon
+    assert "roman poche" in edited_text
+    assert "keeping two" in edited_text
+    assert "couleurdeschoses" in edited_text
+
+    state_data = state.update_data.call_args.kwargs["data"]
+    assert state_data["exclude_keywords"] == ["roman poche", "keeping two"]
+    assert state_data["variants"] == ["couleurdeschoses"]
+    assert state_data["book_context"]["isbn13"] == "9782369903086"
+
+
+@pytest.mark.asyncio
+async def test_start_add_alert_natural_add_warns_when_isbn_unconfirmed():
+    """Sans ISBN confirmé, le récap prévient que la surveillance se fait par titre."""
+    from app.services.ai.schemas import NaturalAddResult
+
+    message = MockMessage()
+    message.text = "/add oeuvre inconnue"
+    message.chat.id = 12345
+    message.bot = MagicMock()
+    message.bot.send_chat_action = AsyncMock()
+
+    loading_message = MagicMock()
+    loading_message.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=loading_message)
+
+    state = AsyncMock()
+    state.clear = AsyncMock()
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    fake_result = NaturalAddResult(
+        name="Œuvre inconnue",
+        category_slug="bd_comics",
+        isbn13=None,
+        include_keywords=["Œuvre inconnue"],
+        isbn_note="Aucun ISBN confirmé par la BNF pour « Œuvre inconnue » : surveillance par titre",
+    )
+
+    with (
+        patch(
+            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
+            new_callable=PropertyMock,
+            return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
+            new_callable=AsyncMock,
+            return_value=fake_result,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.keyword_variants_module"
+            ".generate_variants_and_exclusions",
+            new_callable=AsyncMock,
+            return_value=([], []),
+        ),
+    ):
+        await start_add_alert(message, state, AsyncMock(), User(id=uuid.uuid4()))
+
+    edited_text = loading_message.edit_text.call_args[0][0]
+    assert "non confirmé par la BNF" in edited_text
+    assert "surveillance par titre" in edited_text
+
+
+@pytest.mark.asyncio
 async def test_start_add_alert_natural_add_fallback_on_parse_failure():
     """Vérifie que si l'IA ne peut pas parser, le message d'attente bascule sur le sélecteur."""
     message = MockMessage()
@@ -516,3 +653,96 @@ async def test_handle_negotiate_shows_toast_and_typing_action():
     callback.message.reply.assert_awaited_once()
     reply_text = callback.message.reply.call_args[1]["text"]
     assert "Offre suggérée" in reply_text
+
+
+@pytest.mark.asyncio
+async def test_select_alert_creation_edition_switches_isbn():
+    """Le clic sur une édition concurrente change l'ISBN et rafraîchit le récap."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from aiogram.types import CallbackQuery, Message
+
+    from app.bot.handlers.alerts_create_confirm import select_alert_creation_edition
+    from app.bot.states.alert_creation import AlertCreationState
+
+    editions = [
+        {"isbn13": "9782369903086", "publisher": "Çà et là"},
+        {"isbn13": "9782369904151", "publisher": "Futuropolis"},
+    ]
+    draft = {
+        "name": "La couleur des choses",
+        "author": "Martin Panchaud",
+        "publisher": "Çà et là",
+        "isbn": "9782369903086",
+        "max_item_price_cents": 1200,
+        "include_keywords": ["la couleur des choses"],
+        "exclude_keywords": [],
+        "category_slug": "bd_comics",
+        "edition_alternatives": editions,
+    }
+
+    stored = dict(draft)
+    state = AsyncMock()
+    state.get_data = AsyncMock(side_effect=lambda: dict(stored))
+
+    async def _update(data=None, **_kwargs):
+        stored.update(data or {})
+
+    state.update_data = AsyncMock(side_effect=_update)
+    state.set_state = AsyncMock()
+
+    message = MagicMock(spec=Message)
+    message.edit_text = AsyncMock()
+    callback = MagicMock(spec=CallbackQuery)
+    callback.data = "al_create_edition:1"
+    callback.message = message
+    callback.answer = AsyncMock()
+
+    await select_alert_creation_edition(callback, state)
+
+    assert stored["isbn"] == "9782369904151"
+    assert stored["publisher"] == "Futuropolis"
+    assert stored["is_series"] is False
+    state.set_state.assert_awaited_with(AlertCreationState.confirm_creation)
+
+    text = message.edit_text.call_args[0][0]
+    assert "🔢 <b>ISBN :</b> <code>9782369904151</code>" in text
+    assert "Éditions concurrentes de cette œuvre" in text
+
+    keyboard = message.edit_text.call_args[1]["reply_markup"]
+    edition_buttons = [
+        button
+        for row in keyboard.inline_keyboard
+        for button in row
+        if button.callback_data.startswith("al_create_edition")
+    ]
+    assert [button.text for button in edition_buttons] == [
+        "📚 9782369903086",
+        "✅ 9782369904151",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_select_alert_creation_edition_rejects_out_of_range_index():
+    """Un index hors limites ne doit jamais modifier le brouillon."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from aiogram.types import CallbackQuery, Message
+
+    from app.bot.handlers.alerts_create_confirm import select_alert_creation_edition
+
+    draft = {"isbn": "9782369903086", "edition_alternatives": [{"isbn13": "9782369903086"}]}
+    state = AsyncMock()
+    state.get_data = AsyncMock(return_value=draft)
+    state.update_data = AsyncMock()
+
+    callback = MagicMock(spec=CallbackQuery)
+    callback.data = "al_create_edition:7"
+    callback.message = MagicMock(spec=Message)
+    callback.answer = AsyncMock()
+
+    await select_alert_creation_edition(callback, state)
+
+    state.update_data.assert_not_called()
+    callback.answer.assert_awaited_once_with("Édition inconnue.", show_alert=True)
+

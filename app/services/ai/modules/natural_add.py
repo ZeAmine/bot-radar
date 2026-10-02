@@ -9,7 +9,14 @@ from app.core.config import settings
 from app.core.constants import STANDARD_CONDITIONS, CategorySlug
 from app.services.ai.client import DeepSeekClient, deepseek_client
 from app.services.ai.modules.base import BaseAIModule
-from app.services.ai.schemas import NaturalAddPayload, NaturalAddResult
+from app.services.ai.schemas import BookContext, NaturalAddPayload, NaturalAddResult
+from app.services.book_metadata_service import (
+    BookMetadata,
+    BookMetadataService,
+    EditionAlternative,
+    format_edition_details,
+)
+from app.utils.isbn import extract_clean_isbn, is_valid_isbn, normalize_isbn
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +39,11 @@ SYSTEM_PROMPT = (
     'false s\'il s\'agit d\'un livre unique / one-shot ex: "Le Monde sans fin", '
     '"Sapiens" ou d\'un tome spécifique ex: "L\'Arabe du futur tome 2", '
     '"Daredevil Deluxe 1").\n'
-    '- "isbn13": string ou null (si c\'est un livre unique ou un tome '
-    "spécifique, fournis son ISBN-13 officiel à 13 chiffres commençant par "
-    "978 ou 979 sans tirets ; null s'il s'agit d'une série globale ou si "
-    "incertain).\n"
+    '- "isbn13": string ou null. Règle stricte : un ISBN est un code de 13 '
+    "chiffres identifiant un ouvrage précis. N'invente jamais un ISBN et ne le "
+    'devine pas à partir d\'un éditeur ou d\'une année : réponds null sauf si '
+    "l'utilisateur l'a lui-même écrit dans sa demande (tu le recopies alors "
+    "tel quel). L'ISBN définitif est de toute façon confirmé par la BNF.\n"
     '- "author": string ou null (nom de l\'auteur principal si identifiable).\n'
     '- "publisher": string ou null (éditeur ou collection spécifique '
     'ex: "Dargaud", "Panini Comics", "Marvel Deluxe").\n'
@@ -43,16 +51,13 @@ SYSTEM_PROMPT = (
     '(ex: ["L\'Arabe du futur"]).\n'
     "  IMPORTANT : Ne jamais inclure de prix ou de filtre de prix dans "
     "les mots-clés !\n"
-    '- "exclude_keywords": Liste de mots-clés à exclure pour bloquer '
-    "les faux positifs.\n"
-    "  IMPORTANT : Propose TOUJOURS 2 à 5 exclusions intelligentes "
-    "spécifiquement adaptées à l'objet/livre et à sa catégorie "
-    '(ex: pour "L\'Arabe du futur" ou des BD/mangas: ["figurine", '
-    '"coffret vide", "poster", "ex-libris", "tote bag"] ; pour "iPhone 13" '
-    'ou tech: ["coque", "boite vide", "vitre", "pour pieces"] ; pour '
-    '"Nintendo Switch" ou gaming: ["boite vide", "housse", "support", '
-    '"stickers"]), en plus de celles éventuellement demandées par '
-    "l'utilisateur.\n"
+    '- "exclude_keywords": Liste de mots-clés à exclure pour bloquer les faux '
+    "positifs.\n"
+    "  IMPORTANT : ces exclusions se raisonnent pour CETTE œuvre précise, à partir "
+    "de ce que tu sais d'elle (ce qui porte le même titre sans être cet ouvrage, "
+    "ce qui l'accompagne, ce qui contredit la recherche). N'écris pas une liste "
+    "de goodies génériques qui conviendrait à n'importe quel livre : si tu n'as "
+    "rien de spécifique en tête, réponds une liste vide.\n"
     '- "max_price_cents": Prix max en centimes '
     "(ex: 35€ -> 3500, 7€ -> 700, null si non spécifié).\n"
     '- "conditions": Liste des états parmi : ["Neuf avec étiquette", '
@@ -65,8 +70,20 @@ SYSTEM_PROMPT = (
 )
 
 
+OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
+
+
+def _source_note(meta: BookMetadata) -> str | None:
+    """Signale au récap une donnée d'identité issue d'une autorité secondaire."""
+    return OPENLIBRARY_SOURCE_NOTE if meta.source == "openlibrary" else None
+
+
 class NaturalAddModule(BaseAIModule):
-    """Parse une recherche en langage naturel pour configurer une alerte instantanément."""
+    """Parse une recherche en langage naturel pour configurer une alerte instantanément.
+
+    L'ISBN n'est jamais celui du modèle : il est resolvé puis vérifié par la BNF,
+    seule autorité bibliographique du projet.
+    """
 
     def __init__(self, client: DeepSeekClient | None = None) -> None:
         self.client = client or deepseek_client
@@ -128,30 +145,29 @@ class NaturalAddModule(BaseAIModule):
 
             # Nettoyer exclude_keywords
             clean_excludes = [
-                str(k).strip() for k in payload.exclude_keywords if k and str(k).strip()
+                str(k).strip()
+                for k in (payload.exclude_keywords or [])
+                if k and str(k).strip()
             ]
 
             is_series = payload.is_series
-            raw_isbn = str(payload.isbn13 or "").strip()
-            isbn13 = re.sub(r"[^0-9X]", "", raw_isbn.upper()) if raw_isbn else None
-            if isbn13 and len(isbn13) not in (10, 13):
-                isbn13 = None
-
             author = payload.author.strip() if payload.author else None
             publisher = payload.publisher.strip() if payload.publisher else None
 
-            # Si c'est un livre/BD (pas une série globale) et qu'aucun ISBN n'a été fourni par l'IA
-            if category == "bd_comics" and not is_series and not isbn13:
-                try:
-                    from app.services.book_metadata_service import BookMetadataService
-                    bnf_service = BookMetadataService()
-                    meta = await bnf_service.lookup_by_title_and_author(clean_name)
-                    if meta and meta.isbn13:
-                        isbn13 = meta.isbn13
-                        author = author or meta.author
-                        publisher = publisher or meta.publisher
-                except Exception as bnf_err:
-                    logger.debug("Échec lookup BNF pour '%s': %s", clean_name, bnf_err)
+            isbn13, book, isbn_note, edition_alternatives = await self._resolve_isbn(
+                title=clean_name,
+                category=category,
+                is_series=is_series,
+                author_hint=author,
+                candidates=(
+                    extract_clean_isbn(user_text),
+                    self._sanitize_ai_isbn(payload.isbn13),
+                ),
+            )
+            if book:
+                # La BNF fait autorité sur l'auteur et l'éditeur quand elle a répondu.
+                author = author or book.author
+                publisher = publisher or book.publisher
 
             return NaturalAddResult(
                 name=clean_name,
@@ -165,10 +181,107 @@ class NaturalAddModule(BaseAIModule):
                 max_price_cents=payload.max_price_cents,
                 conditions=valid_conditions,
                 explanation=payload.explanation,
+                isbn_note=isbn_note,
+                edition_alternatives=edition_alternatives,
+                book_context=(
+                    BookContext(
+                        title=book.title,
+                        author=book.author,
+                        publisher=book.publisher,
+                        publication_year=book.publication_year,
+                        format_detail=book.format_detail,
+                        isbn13=book.isbn13,
+                        is_series=is_series,
+                    )
+                    if book
+                    else None
+                ),
             )
         except (ValidationError, Exception) as exc:
             logger.warning("Erreur lors de la construction de NaturalAddResult: %s", exc)
             return None
+
+    @staticmethod
+    def _sanitize_ai_isbn(raw_isbn: str | None) -> str | None:
+        """Garde la proposition du modèle seulement si elle est un ISBN bien formé."""
+        if not raw_isbn:
+            return None
+        candidate = normalize_isbn(str(raw_isbn))
+        if candidate and not is_valid_isbn(candidate):
+            logger.info("Proposition ISBN du modèle ignorée (clé de contrôle invalide) : %s",
+                        candidate)
+            return None
+        return candidate
+
+    async def _resolve_isbn(
+        self,
+        title: str,
+        category: str,
+        is_series: bool,
+        author_hint: str | None,
+        candidates: tuple[str | None, ...],
+    ) -> tuple[str | None, BookMetadata | None, str | None, list[EditionAlternative]]:
+        """Détermine l'ISBN d'une alerte, la notice qui l'atteste et les éditions concurrentes.
+
+        Ordre de priorité : ISBN saisi explicitement par l'utilisateur, puis ISBN
+        proposé par le modèle, puis ISBN de la meilleure notice BNF du titre. Chaque
+        candidat doit être confirmé par une notice BNF portant réellement sur l'œuvre.
+        """
+        if category != CategorySlug.BD_COMICS.value or is_series or not title:
+            return None, None, None, []
+
+        typed_isbn, ai_isbn = candidates
+        service = BookMetadataService()
+
+        resolution = None
+        try:
+            resolution = await service.resolve_for_alert(title, author_hint)
+        except Exception as exc:
+            logger.warning("Résolution BNF impossible pour « %s » : %s", title, exc)
+
+        for candidate in (typed_isbn, ai_isbn):
+            if not candidate or (resolution and resolution.best.isbn13 == candidate):
+                continue
+            try:
+                verified = await service.verify_isbn(candidate, title)
+            except Exception as exc:
+                logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", candidate, exc)
+                continue
+            if verified:
+                return (
+                    candidate,
+                    verified,
+                    _source_note(verified),
+                    resolution.editions() if resolution else [],
+                )
+
+        if resolution:
+            notes = [note for note in (_source_note(resolution.best),) if note]
+            alternatives = ", ".join(
+                f"{alt.isbn13} ({format_edition_details(alt.publication_year, alt.format_detail)})"
+                for alt in resolution.alternatives
+                if format_edition_details(alt.publication_year, alt.format_detail)
+            )
+            if alternatives:
+                notes.append(f"Autre édition connue : {alternatives}")
+            note = " • ".join(notes) or None
+            return (resolution.best.isbn13, resolution.best, note, resolution.editions())
+
+        if typed_isbn:
+            return (
+                None,
+                None,
+                f"ISBN saisi non confirmé par la BNF : surveillance par titre sur « {title} »",
+                [],
+            )
+        if ai_isbn:
+            return (
+                None,
+                None,
+                f"Aucun ISBN confirmé par la BNF pour « {title} » : surveillance par titre",
+                [],
+            )
+        return None, None, None, []
 
 
 natural_add_module = NaturalAddModule()

@@ -23,11 +23,15 @@ from app.core.constants import (
     AlertStatus,
     CategorySlug,
 )
+from app.db.models.alert import Alert
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
-from app.services.book_metadata_service import BookMetadataService
+from app.services.book_metadata_service import (
+    BookMetadataService,
+    format_edition_details,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +99,15 @@ def format_semi_auto_recap(
     conditions: list[str] | None = None,
     variants: list[str] | None = None,
     is_series: bool = False,
+    isbn_note: str | None = None,
+    edition_alternatives: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Formate le récapitulatif clair et sans bruit visuel avant confirmation."""
+    """Formate le récapitulatif clair et sans bruit visuel avant confirmation.
+
+    `isbn_note` signale une provenance d'ISBN douteuse ; un avertissement est affiché
+    quand l'alerte part sans ISBN vérifié. `edition_alternatives` liste les éditions
+    concurrentes de la même œuvre, l'édition retenue étant marquée.
+    """
     price_str = f"{max_price_cents / 100:.2f} €".replace(".", ",") if max_price_cents else "Aucun"
     cat_emoji = CATEGORY_EMOJIS.get(CategorySlug(category_slug), "🎯")
     cat_label = CATEGORY_LABELS.get(CategorySlug(category_slug), "Alerte")
@@ -109,10 +120,18 @@ def format_semi_auto_recap(
         lines.append("🏷️ <b>Type :</b> Série multi-tomes (surveillance dynamique par tome)")
     if author:
         lines.append(f"✍️ <b>Auteur :</b> {html.escape(author)}")
-    if publisher:
+    if publisher and not _has_competing_editions(edition_alternatives):
+        # Avec plusieurs éditions, chaque ligne du bloc « éditions concurrentes »
+        # porte déjà son éditeur : la ligne globale ne ferait que doublon.
         lines.append(f"🏢 <b>Éditeur :</b> {html.escape(publisher)}")
     if isbn:
         lines.append(f"🔢 <b>ISBN :</b> <code>{isbn}</code>")
+        if isbn_note:
+            lines.append(f"ℹ️ <i>{html.escape(isbn_note)}</i>")
+    elif isbn_note:
+        lines.append("🔢 <b>ISBN :</b> <i>non confirmé par la BNF</i>")
+        lines.append(f"⚠️ <i>{html.escape(isbn_note)}</i>")
+    lines.extend(format_edition_lines(edition_alternatives, isbn))
 
     lines.append(f"🎯 <b>Prix max :</b> {price_str}")
     lines.append(f"🔑 <b>Inclus :</b> {', '.join(include_keywords)}")
@@ -135,8 +154,80 @@ def format_semi_auto_recap(
     return "\n".join(lines)
 
 
+def build_edition_choices(resolution: Any) -> list[dict[str, Any]]:
+    """Éditions d'une résolution BNF, converties en brouillon stockable dans le FSM."""
+    if resolution is None:
+        return []
+    return [edition.model_dump() for edition in resolution.editions()]
+
+
+def _has_competing_editions(edition_alternatives: list[dict[str, Any]] | None) -> bool:
+    """Vrai si l'œuvre est proposée en plusieurs éditions sélectionnables."""
+    return len([e for e in (edition_alternatives or []) if e.get("isbn13")]) >= 2
+
+
+def format_edition_lines(
+    edition_alternatives: list[dict[str, Any]] | None,
+    current_isbn: str | None,
+) -> list[str]:
+    """Bloc « éditions concurrentes » du récap, avec l'édition retenue marquée."""
+    editions = [
+        edition for edition in (edition_alternatives or []) if edition.get("isbn13")
+    ]
+    if len(editions) < 2:
+        return []
+
+    lines = ["", "🔀 <b>Éditions concurrentes de cette œuvre</b>"]
+    for edition in editions:
+        isbn13 = str(edition["isbn13"])
+        marker = "✅ <b>" if isbn13 == current_isbn else "▫️ "
+        details = format_edition_details(
+            edition.get("publication_year"),
+            edition.get("format_detail"),
+            edition.get("publisher"),
+        )
+        suffix = f" — {html.escape(details)}" if details else ""
+        lines.append(f"{marker}<code>{isbn13}</code>{suffix}")
+    lines.append(
+        "<i>L'ISBN retenu filtre Vinted et la cote de marché : "
+        "choisis l'édition à surveiller ci-dessous.</i>"
+    )
+    return lines
+
+
+def recap_from_state(data: dict[str, Any]) -> str:
+    """Construit le récap de création à partir du brouillon FSM (rendu unique)."""
+    return format_semi_auto_recap(
+        title=data.get("name", "Alerte"),
+        author=data.get("author"),
+        publisher=data.get("publisher"),
+        isbn=data.get("isbn"),
+        max_price_cents=data.get("max_item_price_cents"),
+        include_keywords=data.get("include_keywords", []),
+        exclude_keywords=data.get("exclude_keywords", []),
+        category_slug=data.get("category_slug", CategorySlug.BD_COMICS.value),
+        conditions=data.get("selected_conditions"),
+        variants=data.get("variants"),
+        is_series=data.get("is_series", False),
+        isbn_note=data.get("isbn_note"),
+        edition_alternatives=data.get("edition_alternatives"),
+    )
+
+
+def creation_keyboard(
+    data: dict[str, Any],
+    show_variants_btn: bool = True,
+) -> InlineKeyboardMarkup:
+    """Clavier du récap : éditions concurrentes puis validation."""
+    return get_alert_confirmation_keyboard(
+        show_variants_btn=show_variants_btn,
+        edition_alternatives=data.get("edition_alternatives"),
+        current_isbn=data.get("isbn"),
+    )
+
+
 def format_alerts_list_text(
-    alerts: list,
+    alerts: list[Alert],
     current_page: int,
     total_count: int,
     category_label: str | None = None,
@@ -171,6 +262,23 @@ def format_alerts_list_text(
             )
     lines.append("\n<i>Cliquez sur un numéro ci-dessous pour ouvrir l'alerte :</i>")
     return "\n".join(lines)
+
+
+async def _resolve_edition_choices(
+    title: str, author_hint: str | None
+) -> list[dict[str, Any]]:
+    """Liste les éditions concurrentes de l'œuvre pour la saisie manuelle.
+
+    Une seule requête BNF supplémentaire : elle ne fait qu'énumérer ce que
+    `resolve_for_alert` a déjà tranché. Un échec réseau ne doit jamais bloquer la
+    création de l'alerte, il prive seulement l'utilisateur du choix.
+    """
+    try:
+        resolution = await BookMetadataService().resolve_for_alert(title, author_hint)
+    except Exception as exc:
+        logger.debug("Éditions concurrentes indisponibles pour « %s » : %s", title, exc)
+        return []
+    return build_edition_choices(resolution)
 
 
 async def process_bd_query_lookup(
@@ -280,6 +388,8 @@ async def process_bd_query_lookup(
     category = await category_repo.get_by_slug(CategorySlug.BD_COMICS.value)
     cat_id_str = str(category.id) if category else ""
 
+    edition_choices = await _resolve_edition_choices(meta.title, meta.author)
+
     await state.update_data(
         category_id=cat_id_str,
         category_slug=CategorySlug.BD_COMICS.value,
@@ -291,21 +401,17 @@ async def process_bd_query_lookup(
         exclude_keywords=meta.recommended_excludes,
         variants=meta.recommended_variants,
         selected_conditions=list(DEFAULT_BD_CONDITIONS),
+        edition_alternatives=edition_choices,
     )
 
     if inline_price_cents is not None:
         await state.update_data(max_item_price_cents=inline_price_cents)
         await state.set_state(AlertCreationState.confirm_creation)
-        recap_text = format_semi_auto_recap(
-            title=meta.title,
-            author=meta.author,
-            publisher=meta.publisher,
-            isbn=meta.isbn13,
-            max_price_cents=inline_price_cents,
-            include_keywords=meta.recommended_includes,
-            exclude_keywords=meta.recommended_excludes,
+        draft = await state.get_data()
+        await status_msg.edit_text(
+            recap_from_state({**draft, "max_item_price_cents": inline_price_cents}),
+            reply_markup=creation_keyboard(draft),
         )
-        await status_msg.edit_text(recap_text, reply_markup=get_alert_confirmation_keyboard())
         return
 
     # Demander le prix max
@@ -464,27 +570,17 @@ async def process_tech_or_clothes_query(
     if inline_price_cents is not None:
         await state.update_data(max_item_price_cents=inline_price_cents)
         await state.set_state(AlertCreationState.confirm_creation)
-        recap_text = format_semi_auto_recap(
-            title=clean_query,
-            author=None,
-            publisher=None,
-            isbn=None,
-            max_price_cents=inline_price_cents,
-            include_keywords=includes,
-            exclude_keywords=default_excludes,
-            category_slug=category_slug,
-            conditions=default_conditions,
-        )
+        draft = await state.get_data()
+        recap_text = recap_from_state({**draft, "max_item_price_cents": inline_price_cents})
+        keyboard = creation_keyboard(draft)
         if (
             isinstance(event, CallbackQuery)
             and event.message
             and hasattr(event.message, "edit_text")
         ):
-            await event.message.edit_text(
-                recap_text, reply_markup=get_alert_confirmation_keyboard()
-            )
+            await event.message.edit_text(recap_text, reply_markup=keyboard)
         else:
-            await target_msg.answer(recap_text, reply_markup=get_alert_confirmation_keyboard())
+            await target_msg.answer(recap_text, reply_markup=keyboard)
         return
 
     # Demander le prix max

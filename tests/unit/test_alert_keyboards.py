@@ -207,3 +207,94 @@ def test_get_alerts_list_keyboard():
     assert rows[3][0].callback_data == "al_list_cat_menu"
     assert rows[3][1].text == "❌ Fermer"
     assert rows[3][1].callback_data == "al_close"
+
+
+def test_get_alert_confirmation_keyboard_lists_competing_editions():
+    """Chaque édition connue de l'œuvre a son bouton, l'édition retenue étant marquée."""
+    editions = [
+        {"isbn13": "9782369903086", "publisher": "Çà et là"},
+        {"isbn13": "9782369904151", "publisher": "Futuropolis"},
+    ]
+    keyboard = get_alert_confirmation_keyboard(
+        edition_alternatives=editions,
+        current_isbn="9782369903086",
+    )
+    rows = keyboard.inline_keyboard
+
+    # Deux lignes d'éditions, placées avant la validation
+    assert rows[0][0].text == "✅ 9782369903086"
+    assert rows[0][0].callback_data == "al_create_edition:0"
+    assert rows[1][0].text == "📚 9782369904151"
+    assert rows[1][0].callback_data == "al_create_edition:1"
+
+    create_row = [button for row in rows for button in row]
+    callbacks = [button.callback_data for button in create_row]
+    assert "alert_create_confirm" in callbacks
+    assert "alert_create_edit" in callbacks
+    assert "alert_create_cancel" in callbacks
+
+
+def test_get_alert_confirmation_keyboard_without_editions_is_unchanged():
+    """Sans éditions concurrentes, le clavier ne comporte aucune ligne supplémentaire."""
+    keyboard = get_alert_confirmation_keyboard()
+    callbacks = [
+        button.callback_data for row in keyboard.inline_keyboard for button in row
+    ]
+    assert not any(data.startswith("al_create_edition") for data in callbacks)
+    assert callbacks[0] == "alert_create_confirm"
+
+
+def test_build_edition_choices_keeps_every_edition_once():
+    """L'édition retenue reste sélectionnable, et aucun ISBN n'est dupliqué."""
+    from app.bot.handlers.alerts_helpers import build_edition_choices
+    from app.services.book_metadata_service import BookMetadata, BookResolution
+
+    best = BookMetadata(title="Blacksad", isbn13="9782205078054", publisher="Delcourt")
+    duplicate = BookMetadata(title="Blacksad", isbn13="9782205078054", publisher="Delcourt")
+    other = BookMetadata(title="Blacksad", isbn13="9782205078061", publisher="Futuropolis")
+
+    choices = build_edition_choices(
+        BookResolution(best=best, alternatives=[duplicate, other])
+    )
+
+    assert [choice["isbn13"] for choice in choices] == [
+        "9782205078054",
+        "9782205078061",
+    ]
+    assert choices[1]["publisher"] == "Futuropolis"
+
+
+def test_build_edition_choices_handles_missing_resolution():
+    from app.bot.handlers.alerts_helpers import build_edition_choices
+
+    assert build_edition_choices(None) == []
+
+
+def test_format_edition_lines_marks_current_edition():
+    """Le récap détaille chaque édition et marque celle qui sera utilisée."""
+    from app.bot.handlers.alerts_helpers import format_edition_lines
+
+    editions = [
+        {"isbn13": "9782369903086", "publication_year": 2022,
+         "format_detail": "1 vol. (224 p.) : ill. en coul. ; 24 cm", "publisher": "Çà et là"},
+        {"isbn13": "9782369904151", "publication_year": 2018,
+         "format_detail": "1 vol. (208 p.) ; 19 cm", "publisher": "Futuropolis"},
+    ]
+
+    lines = format_edition_lines(editions, "9782369904151")
+    body = "\n".join(lines)
+
+    assert "🔀 <b>Éditions concurrentes de cette œuvre</b>" in body
+    assert "▫️ <code>9782369903086</code> — 2022 · 224 p. · 24 cm · Çà et là" in body
+    assert "✅ <b><code>9782369904151</code>" in body
+    # Le bruit purement décoratif de la notice ne pollue pas l'affichage
+    assert "ill. en coul." not in body
+
+
+def test_format_edition_lines_hidden_for_single_edition():
+    """Une œuvre sans édition concurrente n'affiche aucun bloc supplémentaire."""
+    from app.bot.handlers.alerts_helpers import format_edition_lines
+
+    assert format_edition_lines(None, "9782369903086") == []
+    assert format_edition_lines([{"isbn13": "9782369903086"}], "9782369903086") == []
+

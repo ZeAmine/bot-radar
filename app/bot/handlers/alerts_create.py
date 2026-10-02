@@ -14,14 +14,12 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
-    format_semi_auto_recap,
+    creation_keyboard,
     process_bd_query_lookup,
     process_tech_or_clothes_query,
+    recap_from_state,
 )
-from app.bot.keyboards.alerts import (
-    get_alert_confirmation_keyboard,
-    get_category_selection_keyboard,
-)
+from app.bot.keyboards.alerts import get_category_selection_keyboard
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     CATEGORY_EMOJIS,
@@ -41,6 +39,7 @@ from app.db.repositories.category_repo import CategoryRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 from app.providers.registry import ProviderRegistry
+from app.services.ai.modules.keyword_variants import keyword_variants_module
 from app.services.ai.modules.natural_add import natural_add_module
 from app.services.alert_service import (
     AlertServiceError,
@@ -55,6 +54,38 @@ def _get_alert_repo(session: Any) -> Any:
     import app.bot.handlers.alerts as alerts_mod
 
     return getattr(alerts_mod, "AlertRepository", AlertRepository)(session)
+
+
+def _merge_keywords(*groups: list[str] | None) -> list[str]:
+    """Fusionne des listes de mots-clés en préservant l'ordre et en dédupliquant."""
+    merged: list[str] = []
+    for group in groups:
+        for term in group or []:
+            value = str(term).strip()
+            if not value or any(value.lower() == kept.lower() for kept in merged):
+                continue
+            merged.append(value)
+    return merged
+
+
+async def _finalize_loading_message(
+    loading_msg: Message | bool,
+    event: Message | CallbackQuery,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+) -> None:
+    """Édite le message d'attente si possible, sinon envoie une nouvelle réponse.
+
+    Reste tolérant aux messages non éditables (réponse de callback renvoyant un bool).
+    """
+    try:
+        edit_text = getattr(loading_msg, "edit_text", None)
+        if callable(edit_text):
+            await edit_text(text, reply_markup=keyboard)
+            return
+    except Exception:
+        pass
+    await event.answer(text, reply_markup=keyboard)
 
 
 def _get_category_repo(session: Any) -> Any:
@@ -97,7 +128,7 @@ async def start_add_alert(
 
     if inline_query and natural_add_module.is_enabled:
         # Feedback visuel immédiat : indicateur de frappe + message d'attente
-        if event.bot:
+        if isinstance(event, Message) and event.bot:
             with contextlib.suppress(Exception):
                 await event.bot.send_chat_action(chat_id=event.chat.id, action="typing")
 
@@ -116,6 +147,18 @@ async def start_add_alert(
         # Parsing en langage naturel via DeepSeek-V4.1-Flash
         parsed = await natural_add_module.parse_prompt(inline_query)
         if parsed:
+            # Mots-clés ancrés sur la fiche réelle de l'ouvrage (BNF quand elle existe)
+            ai_variants, ai_exclusions = (
+                await keyword_variants_module.generate_variants_and_exclusions(
+                    parsed.name,
+                    category_slug=parsed.category_slug,
+                    context=parsed.book_context,
+                )
+            )
+            include_keywords = parsed.include_keywords or [parsed.name]
+            exclude_keywords = _merge_keywords(parsed.exclude_keywords, ai_exclusions)
+            variants = ai_variants
+
             state_data = {
                 "name": parsed.name,
                 "category_slug": parsed.category_slug,
@@ -123,36 +166,30 @@ async def start_add_alert(
                 "is_series": parsed.is_series,
                 "author": parsed.author,
                 "publisher": parsed.publisher,
-                "include_keywords": parsed.include_keywords or [parsed.name],
-                "exclude_keywords": parsed.exclude_keywords or [],
+                "include_keywords": include_keywords,
+                "exclude_keywords": exclude_keywords,
+                "variants": variants,
                 "max_item_price_cents": parsed.max_price_cents,
                 "selected_conditions": parsed.conditions,
+                "isbn_note": parsed.isbn_note,
+                "book_context": (
+                    parsed.book_context.model_dump() if parsed.book_context else None
+                ),
+                "edition_alternatives": [
+                    edition.model_dump() for edition in parsed.edition_alternatives
+                ],
             }
-            await state.update_data(**state_data)
+            await state.update_data(data=state_data)
             await state.set_state(AlertCreationState.confirm_creation)
 
-            recap = format_semi_auto_recap(
-                title=parsed.name,
-                author=parsed.author,
-                publisher=parsed.publisher,
-                isbn=parsed.isbn13,
-                max_price_cents=parsed.max_price_cents,
-                include_keywords=parsed.include_keywords or [parsed.name],
-                exclude_keywords=parsed.exclude_keywords or [],
-                category_slug=parsed.category_slug,
-                conditions=parsed.conditions,
-                is_series=parsed.is_series,
-            )
+            recap = recap_from_state(state_data)
             prompt_text = (
                 "🪄 <b>Alerte configurée en langage naturel !</b>\n\n"
                 f"{recap}\n\n"
                 "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
             )
-            keyboard = get_alert_confirmation_keyboard()
-            try:
-                await loading_msg.edit_text(prompt_text, reply_markup=keyboard)
-            except Exception:
-                await event.answer(prompt_text, reply_markup=keyboard)
+            keyboard = creation_keyboard(state_data)
+            await _finalize_loading_message(loading_msg, event, prompt_text, keyboard)
             return
 
         # Fallback si l'IA n'a pas pu structurer la demande : sélection de catégorie
@@ -163,10 +200,7 @@ async def start_add_alert(
         )
         await state.set_state(AlertCreationState.waiting_for_category)
         keyboard = get_category_selection_keyboard()
-        try:
-            await loading_msg.edit_text(prompt_text, reply_markup=keyboard)
-        except Exception:
-            await event.answer(prompt_text, reply_markup=keyboard)
+        await _finalize_loading_message(loading_msg, event, prompt_text, keyboard)
         return
 
     if inline_query:
@@ -342,19 +376,11 @@ async def process_max_price_input(
     await state.update_data(max_item_price_cents=price_cents)
     await state.set_state(AlertCreationState.confirm_creation)
 
-    recap_text = format_semi_auto_recap(
-        title=data.get("name", "Alerte"),
-        author=data.get("author"),
-        publisher=data.get("publisher"),
-        isbn=data.get("isbn"),
-        max_price_cents=price_cents,
-        include_keywords=data.get("include_keywords", []),
-        exclude_keywords=data.get("exclude_keywords", []),
-        category_slug=data.get("category_slug", CategorySlug.BD_COMICS.value),
-        conditions=data.get("selected_conditions"),
-        variants=data.get("variants"),
+    updated_data = {**data, "max_item_price_cents": price_cents}
+    await message.answer(
+        recap_from_state(updated_data),
+        reply_markup=creation_keyboard(updated_data),
     )
-    await message.answer(recap_text, reply_markup=get_alert_confirmation_keyboard())
 
 
 @router.callback_query(AlertCreationState.confirm_creation, F.data == "alert_create_ai_variants")
@@ -381,71 +407,47 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
             reply_markup=loading_kb,
         )
 
-    from app.services.ai.modules.keyword_variants import keyword_variants_module
+    from app.services.ai.schemas import BookContext
 
+    book_context = (
+        BookContext(**data["book_context"]) if data.get("book_context") else None
+    )
     variants, new_exclusions = await keyword_variants_module.generate_variants_and_exclusions(
-        name, category_slug=category_slug
+        name, category_slug=category_slug, context=book_context
     )
 
-    include_keywords = data.get("include_keywords") or [name]
-    max_price_cents = data.get("max_item_price_cents")
-    conditions = data.get("selected_conditions") or []
-
     if not variants and not new_exclusions:
-        recap = format_semi_auto_recap(
-            title=name,
-            author=data.get("author"),
-            publisher=data.get("publisher"),
-            isbn=data.get("isbn"),
-            max_price_cents=max_price_cents,
-            include_keywords=include_keywords,
-            exclude_keywords=data.get("exclude_keywords"),
-            category_slug=category_slug,
-            conditions=conditions,
-            variants=data.get("variants"),
-        )
+        recap = recap_from_state(data)
         prompt_text = (
             "ℹ️ <b>Aucune variante ou exclusion supplémentaire nécessaire.</b>\n\n"
             f"{recap}\n\n"
             "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
         )
-        keyboard = get_alert_confirmation_keyboard(show_variants_btn=False)
+        keyboard = creation_keyboard(data, show_variants_btn=False)
         if callback.message and hasattr(callback.message, "edit_text"):
             await callback.message.edit_text(prompt_text, reply_markup=keyboard)
         return
 
     # Stocker les variantes dans 'variants' sans polluer 'include_keywords'
-    existing_variants = list(data.get("variants") or [])
-    for v in variants:
-        if v.lower() not in [x.lower() for x in existing_variants]:
-            existing_variants.append(v)
+    existing_variants = _merge_keywords(data.get("variants"), variants)
 
     # Fusionner les exclusions sans doublons
-    existing_exclusions = list(data.get("exclude_keywords") or [])
-    for e in new_exclusions:
-        if e.lower() not in [x.lower() for x in existing_exclusions]:
-            existing_exclusions.append(e)
+    existing_exclusions = _merge_keywords(data.get("exclude_keywords"), new_exclusions)
 
     await state.update_data(variants=existing_variants, exclude_keywords=existing_exclusions)
 
-    recap = format_semi_auto_recap(
-        title=name,
-        author=data.get("author"),
-        publisher=data.get("publisher"),
-        isbn=data.get("isbn"),
-        max_price_cents=max_price_cents,
-        include_keywords=include_keywords,
-        exclude_keywords=existing_exclusions,
-        category_slug=category_slug,
-        conditions=conditions,
-        variants=existing_variants,
-    )
+    updated_draft = {
+        **data,
+        "variants": existing_variants,
+        "exclude_keywords": existing_exclusions,
+    }
+    recap = recap_from_state(updated_draft)
     prompt_text = (
         "🪄 <b>Alerte mise à jour avec les optimisations IA !</b>\n\n"
         f"{recap}\n\n"
         "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
     )
-    keyboard = get_alert_confirmation_keyboard(show_variants_btn=False)
+    keyboard = creation_keyboard(updated_draft, show_variants_btn=False)
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(prompt_text, reply_markup=keyboard)
 
@@ -548,11 +550,15 @@ async def save_alert(
                             if best_offer.raw_payload
                             else None
                         )
+                        merchant = (
+                            best_offer.raw_payload.get("best_merchant")
+                            if best_offer.raw_payload
+                            else None
+                        )
                         await market_repo.update_or_create_cache(
                             book_id=book.id,
                             lowest_delivered_price_cents=best_offer.delivered_price_cents,
-                            best_provider_name=best_offer.raw_payload.get("best_merchant")
-                            or best_offer.provider_name,
+                            best_provider_name=merchant or best_offer.provider_name,
                             best_source_url=best_offer.source_url,
                             confidence=best_offer.confidence,
                             comparison_status=ComparisonStatus.AVAILABLE,
