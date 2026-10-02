@@ -130,28 +130,20 @@ def title_similarity(first: str | None, second: str | None) -> float:
     return ratio
 
 
-def format_edition_details(
-    publication_year: int | None,
-    format_detail: str | None,
-    publisher: str | None = None,
-) -> str:
-    """Condense une notice d'édition en détails lisibles (« 2021 · 224 p. · Delcourt »).
+def format_edition_fragments(format_detail: str | None) -> str:
+    """Fragments chiffrés d'une notice de format (« 224 p. · 24 cm »).
 
     La BNF décrit le format de façon bavarde (« 1 vol. (224 p.) : ill. en coul. ;
-    24 cm ») : on la ramène à ses informations discriminantes pour un humain.
+    24 cm ») : on ne retient que la pagination et les dimensions, seules informations
+    discriminantes pour un humain. Les mentions purement décoratives de la notice
+    (« ill. en coul. ») sont du bruit.
     """
     parts: list[str] = []
-    if publication_year:
-        parts.append(str(publication_year))
     for chunk in re.split(r"[;:]", format_detail or ""):
         cleaned = re.sub(r"^\d+\s*vol\.\s*", "", chunk.strip())
         cleaned = cleaned.replace("(", "").replace(")", "").strip(" ,")
-        # On ne retient que les fragments chiffrés (pagination, format) : les
-        # mentions purement décoratives de la notice (« ill. en coul. ») sont du bruit.
         if cleaned and any(char.isdigit() for char in cleaned):
             parts.append(cleaned)
-    if publisher:
-        parts.append(publisher)
     return " · ".join(parts)
 
 

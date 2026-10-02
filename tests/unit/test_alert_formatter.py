@@ -130,7 +130,6 @@ def _recap(**overrides):
         "max_price_cents": 1200,
         "include_keywords": ["La couleur des choses"],
         "exclude_keywords": ["figurine"],
-        "category_slug": "bd_comics",
         "conditions": None,
         "variants": None,
         "is_series": False,

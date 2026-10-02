@@ -30,27 +30,44 @@ def get_conditions_toggle_keyboard(selected_conditions: list[str]) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+# Marqueurs d'édition. Le même numéro indexe la ligne « Édition suivie » du récap et
+# le bouton qui la bascule : c'est ce qui rend le choix lisible sans seconde légende.
+EDITION_ORDINALS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣")
+
+
+def edition_ordinal(index: int) -> str:
+    """Numéro d'édition affiché (1️⃣…9️⃣), au-delà un simple ordinal."""
+    if 0 <= index < len(EDITION_ORDINALS):
+        return EDITION_ORDINALS[index]
+    return f"{index + 1}."
+
+
 def get_alert_confirmation_keyboard(
     show_variants_btn: bool = True,
     edition_alternatives: list[dict[str, Any]] | None = None,
-    current_isbn: str | None = None,
+    edition_labels: list[str] | None = None,
 ) -> InlineKeyboardMarkup:
     """Retourne le clavier de validation finale de création d'alerte.
 
-    Les éditions concurrentes de la même œuvre sont proposées une par une : c'est
-    le dernier moment où l'utilisateur peut choisir l'ISBN qui pilotera le matching,
-    l'URL de recherche Vinted et la cote de marché de l'alerte.
+    Chaque édition concurrente de l'œuvre a son bouton, numéroté comme la ligne
+    « Édition suivie » du récap (`build_edition_labels`). C'est le dernier moment où
+    l'utilisateur choisit l'ISBN qui pilotera le matching, l'URL de recherche Vinted
+    et la cote de marché de l'alerte. L'index passé en callback reste celui de
+    `edition_alternatives`, que tous les éléments y soient exploitables ou non.
     """
     rows: list[list[InlineKeyboardButton]] = []
+    labels = edition_labels or []
 
     for index, edition in enumerate(edition_alternatives or []):
         isbn13 = str(edition.get("isbn13") or "").strip()
         if not isbn13:
             continue
-        is_current = isbn13 == current_isbn
+        label = labels[index] if index < len(labels) and labels[index] else (
+            f"{edition_ordinal(index)} {isbn13}"
+        )
         rows.append([
             InlineKeyboardButton(
-                text=f"{'✅' if is_current else '📚'} {isbn13}",
+                text=label,
                 callback_data=f"al_create_edition:{index}",
             )
         ])

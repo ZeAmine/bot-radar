@@ -418,14 +418,16 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
 
     loading_message.edit_text.assert_awaited_once()
     edited_text = loading_message.edit_text.call_args[0][0]
-    assert "Alerte configurée en langage naturel" in edited_text
-    assert "Asterix tome 1" in edited_text
+    # Le récap remplace le message d'attente, sans bannière redondante au-dessus.
+    assert edited_text.startswith("🔢 <b>ISBN :</b>")
+    assert "📌 <b>Titre :</b> Asterix tome 1" in edited_text
+    assert "🎯 <b>Prix max :</b> 10,00 €" in edited_text
     state.set_state.assert_called_with(AlertCreationState.confirm_creation)
 
 
 @pytest.mark.asyncio
 async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_note():
-    """Le récap affiche l'édition alternative et fusionne les mots-clés ancrés sur la fiche BNF."""
+    """Le récap signale la provenance de l'ISBN et fusionne les mots-clés ancrés."""
     from app.services.ai.schemas import BookContext, NaturalAddResult
 
     message = MockMessage()
@@ -461,7 +463,7 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
         include_keywords=["La couleur des choses"],
         exclude_keywords=["roman poche"],
         max_price_cents=1200,
-        isbn_note="Autre édition connue : 9782369904151 (224 p., 19 cm)",
+        isbn_note="Source OpenLibrary (repli BNF)",
         book_context=book_context,
     )
 
@@ -495,7 +497,9 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
 
     edited_text = loading_message.edit_text.call_args[0][0]
     assert "9782369903086" in edited_text
-    assert "Autre édition connue : 9782369904151" in edited_text
+    # La provenance secondaire de l'ISBN reste signalée dans la carte compacte.
+    assert "Source OpenLibrary (repli BNF)" in edited_text
+    assert "🔢 <b>ISBN :</b> <code>9782369903086</code>" in edited_text
     # Exclusions du parsing puis celles ancrées sur la fiche, sans doublon
     assert "roman poche" in edited_text
     assert "keeping two" in edited_text
@@ -706,8 +710,11 @@ async def test_select_alert_creation_edition_switches_isbn():
     state.set_state.assert_awaited_with(AlertCreationState.confirm_creation)
 
     text = message.edit_text.call_args[0][0]
+    assert "🏢 <b>Éditeur :</b> Futuropolis" in text
     assert "🔢 <b>ISBN :</b> <code>9782369904151</code>" in text
-    assert "Éditions concurrentes de cette œuvre" in text
+    # Sans millésime ni format, la ligne « Édition suivie » n'aurait rien de plus à dire
+    # que « 🏢 Éditeur » : elle est omise plutôt que dupliquée.
+    assert "Édition suivie" not in text
 
     keyboard = message.edit_text.call_args[1]["reply_markup"]
     edition_buttons = [
@@ -717,8 +724,8 @@ async def test_select_alert_creation_edition_switches_isbn():
         if button.callback_data.startswith("al_create_edition")
     ]
     assert [button.text for button in edition_buttons] == [
-        "📚 9782369903086",
-        "✅ 9782369904151",
+        "1️⃣ Çà et là",
+        "2️⃣ Futuropolis",
     ]
 
 

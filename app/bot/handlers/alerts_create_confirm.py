@@ -317,8 +317,11 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
         await state.update_data(name=raw_text)
 
     elif field == "isbn":
+        # `isbn_note` décrit la provenance de l'ISBN ou de son absence : changer l'ISBN
+        # invalide cette note, qui sinon contredit le récap (« non confirmé par la BNF »
+        # affiché sous un ISBN que l'utilisateur vient de faire confirmer).
         if raw_text.lower() in ("/skip", "-", "aucun", "aucune", "clear"):
-            await state.update_data(isbn=None, is_series=True)
+            await state.update_data(isbn=None, is_series=True, isbn_note=None)
         else:
             clean_isbn = extract_clean_isbn(raw_text)
             if not clean_isbn:
@@ -327,7 +330,7 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
                     "Réessaie (ou /skip) :"
                 )
                 return
-            await state.update_data(isbn=clean_isbn, is_series=False)
+            await state.update_data(isbn=clean_isbn, is_series=False, isbn_note=None)
             # Un ISBN saisi à la main doit réaligner les éditions concurrentes :
             # la liste précédente décrivait une autre édition de l'œuvre.
             await state.update_data(

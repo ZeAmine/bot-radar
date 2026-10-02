@@ -7,8 +7,8 @@ from typing import Any
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.formatter import format_cents_to_euros
-from app.bot.keyboards.alerts import get_alert_confirmation_keyboard
+from app.bot.formatter import format_cents_to_euros, format_conditions_short
+from app.bot.keyboards.alerts import edition_ordinal, get_alert_confirmation_keyboard
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     CATEGORY_EMOJIS,
@@ -30,7 +30,7 @@ from app.db.repositories.category_repo import CategoryRepository
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
     BookMetadataService,
-    format_edition_details,
+    format_edition_fragments,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,62 +106,54 @@ def format_semi_auto_recap(
     max_price_cents: int | None,
     include_keywords: list[str],
     exclude_keywords: list[str],
-    category_slug: str = "bd_comics",
     conditions: list[str] | None = None,
     variants: list[str] | None = None,
     is_series: bool = False,
     isbn_note: str | None = None,
     edition_alternatives: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Formate le récapitulatif clair et sans bruit visuel avant confirmation.
+    """Carte compacte du brouillon, telle qu'affichée avant « Créer l'alerte ».
 
-    `isbn_note` signale une provenance d'ISBN douteuse ; un avertissement est affiché
-    quand l'alerte part sans ISBN vérifié. `edition_alternatives` liste les éditions
-    concurrentes de la même œuvre, l'édition retenue étant marquée.
+    Une ligne par information, du plus structurant au plus accessoire : identifiant,
+    identité de l'œuvre, critères de veille, puis l'édition surveillée quand il y a un
+    choix à faire. Les états sont abrégés (`format_conditions_short`) pour que la carte
+    tienne à l'écran sans devenir un pavé.
+
+    `isbn_note` signale une provenance d'ISBN douteuse ou un repli de source : il reste
+    affiché juste sous l'ISBN, dont il conditionne la confiance.
     """
     price_str = f"{max_price_cents / 100:.2f} €".replace(".", ",") if max_price_cents else "Aucun"
-    cat_emoji = CATEGORY_EMOJIS.get(CategorySlug(category_slug), "🎯")
-    cat_label = CATEGORY_LABELS.get(CategorySlug(category_slug), "Alerte")
+    cond_display = format_conditions_short(
+        conditions if conditions else DEFAULT_BD_CONDITIONS
+    )
 
-    lines = [
-        f"{cat_emoji} <b>Récapitulatif de l'alerte ({cat_label})</b>\n",
-        f"📌 <b>Nom :</b> {html.escape(title)}",
-    ]
-    if is_series:
-        lines.append("🏷️ <b>Type :</b> Série multi-tomes (surveillance dynamique par tome)")
-    if author:
-        lines.append(f"✍️ <b>Auteur :</b> {html.escape(author)}")
-    if publisher and not _has_competing_editions(edition_alternatives):
-        # Avec plusieurs éditions, chaque ligne du bloc « éditions concurrentes »
-        # porte déjà son éditeur : la ligne globale ne ferait que doublon.
-        lines.append(f"🏢 <b>Éditeur :</b> {html.escape(publisher)}")
+    lines: list[str] = []
     if isbn:
-        lines.append(f"🔢 <b>ISBN :</b> <code>{isbn}</code>")
-        if isbn_note:
-            lines.append(f"ℹ️ <i>{html.escape(isbn_note)}</i>")
+        lines.append(f"🔢 <b>ISBN :</b> <code>{html.escape(isbn)}</code>")
     elif isbn_note:
         lines.append("🔢 <b>ISBN :</b> <i>non confirmé par la BNF</i>")
-        lines.append(f"⚠️ <i>{html.escape(isbn_note)}</i>")
-    lines.extend(format_edition_lines(edition_alternatives, isbn))
+    if isbn_note:
+        lines.append(f"{'ℹ️' if isbn else '⚠️'} <i>{html.escape(isbn_note)}</i>")
+
+    lines.append(f"📌 <b>Titre :</b> {html.escape(title)}")
+    if is_series:
+        lines.append("📚 <b>Série multi-tomes</b> — surveillance par tome")
+    if author:
+        lines.append(f"✍️ <b>Auteur :</b> {html.escape(author)}")
+    if publisher:
+        lines.append(f"🏢 <b>Éditeur :</b> {html.escape(publisher)}")
 
     lines.append(f"🎯 <b>Prix max :</b> {price_str}")
+    lines.append(f"🏷️ <b>États :</b> {html.escape(cond_display)}")
     lines.append(f"🔑 <b>Inclus :</b> {_join_escaped(include_keywords)}")
     if variants:
         lines.append(f"✨ <b>Variantes :</b> {_join_escaped(variants)}")
     if exclude_keywords:
         lines.append(f"🚫 <b>Exclus :</b> {_join_escaped(exclude_keywords)}")
 
-    cond_display = (
-        _join_escaped(conditions)
-        if conditions
-        else "Neuf avec étiquette, Neuf sans étiquette, Très bon état"
-    )
-    lines.extend(
-        [
-            f"💎 <b>États :</b> {cond_display}\n",
-            "Confirmer la création de cette alerte ?",
-        ]
-    )
+    edition_lines = format_edition_line(edition_alternatives, isbn)
+    if edition_lines:
+        lines.extend(["", *edition_lines])
     return "\n".join(lines)
 
 
@@ -172,38 +164,99 @@ def build_edition_choices(resolution: Any) -> list[dict[str, Any]]:
     return [edition.model_dump() for edition in resolution.editions()]
 
 
-def _has_competing_editions(edition_alternatives: list[dict[str, Any]] | None) -> bool:
-    """Vrai si l'œuvre est proposée en plusieurs éditions sélectionnables."""
-    return len([e for e in (edition_alternatives or []) if e.get("isbn13")]) >= 2
+def _edition_button_text(edition: dict[str, Any]) -> str:
+    """« Çà et là - 2022 » : l'éditeur d'abord, puis le millésime.
+
+    L'éditeur prime parce qu'il distingue le plus souvent les éditions concurrentes
+    d'une même œuvre (« Éditions poches » contre « Album ») ; le millésime le suit
+    quand la BNF le donne.
+    """
+    publisher = str(edition.get("publisher") or "").strip()
+    year = edition.get("publication_year")
+    if publisher and year:
+        return f"{publisher} - {year}"
+    if publisher:
+        return publisher
+    return str(year) if year else ""
 
 
-def format_edition_lines(
+def _edition_identity(edition: dict[str, Any]) -> str:
+    """« 2022 · Çà et là · 224 p. · 24 cm » : millésime, éditeur, puis format."""
+    parts: list[str] = []
+    year = edition.get("publication_year")
+    if year:
+        parts.append(str(year))
+    publisher = str(edition.get("publisher") or "").strip()
+    if publisher:
+        parts.append(publisher)
+    fragments = format_edition_fragments(edition.get("format_detail"))
+    if fragments:
+        parts.append(fragments)
+    return " · ".join(parts)
+
+
+def build_edition_labels(
+    edition_alternatives: list[dict[str, Any]] | None,
+) -> list[str]:
+    """Libellés des éditions, alignés sur l'index du clavier (`al_create_edition:{index}`).
+
+    Le numéro (1️⃣, 2️⃣…) est le seul marqueur visuel : il relie la ligne « Édition
+    suivie » du récap au bouton qui bascule l'édition. Deux éditions que l'éditeur et
+    le millésime ne départagent pas reçoivent l'ISBN : mieux vaut un libellé technique
+    qu'un doublon indistinguable. Les libellés sont bruts (pas d'échappement HTML) : le
+    texte du bouton est du plain, l'échappement se fait côté récap.
+    """
+    editions = list(edition_alternatives or [])
+    identities = [_edition_button_text(edition) for edition in editions]
+    labels: list[str] = []
+    for index, edition in enumerate(editions):
+        isbn13 = str(edition.get("isbn13") or "").strip()
+        identity = identities[index]
+        if not isbn13:
+            labels.append("")
+        elif not identity or identities.count(identity) > 1:
+            labels.append(f"{edition_ordinal(index)} {isbn13}")
+        else:
+            labels.append(f"{edition_ordinal(index)} {identity}")
+    return labels
+
+
+def format_edition_line(
     edition_alternatives: list[dict[str, Any]] | None,
     current_isbn: str | None,
 ) -> list[str]:
-    """Bloc « éditions concurrentes » du récap, avec l'édition retenue marquée."""
-    editions = [
-        edition for edition in (edition_alternatives or []) if edition.get("isbn13")
-    ]
-    if len(editions) < 2:
+    """Ligne « Édition suivie » : l'édition retenue, décrite pour un humain.
+
+    Affichée seulement quand plusieurs éditions sont réellement proposées : sans choix
+    à faire, elle ne ferait que répéter l'identité déjà donnée plus haut dans la carte.
+    Elle exige aussi un millésime ou un format : sans eux, elle se réduirait à
+    l'éditeur, déjà porté par la ligne « 🏢 Éditeur » et donc incapable de départager
+    deux éditions.
+    """
+    editions = list(edition_alternatives or [])
+    selectable = [e for e in editions if str(e.get("isbn13") or "").strip()]
+    if not current_isbn or len(selectable) < 2:
         return []
 
-    lines = ["", "🔀 <b>Éditions concurrentes de cette œuvre</b>"]
-    for edition in editions:
-        isbn13 = str(edition["isbn13"])
-        marker = "✅ <b>" if isbn13 == current_isbn else "▫️ "
-        details = format_edition_details(
-            edition.get("publication_year"),
-            edition.get("format_detail"),
-            edition.get("publisher"),
-        )
-        suffix = f" — {html.escape(details)}" if details else ""
-        lines.append(f"{marker}<code>{isbn13}</code>{suffix}")
-    lines.append(
-        "<i>L'ISBN retenu filtre Vinted et la cote de marché : "
-        "choisis l'édition à surveiller ci-dessous.</i>"
+    current_index = next(
+        (
+            index
+            for index, edition in enumerate(editions)
+            if str(edition.get("isbn13") or "").strip() == current_isbn
+        ),
+        None,
     )
-    return lines
+    if current_index is None:
+        return []
+
+    edition = editions[current_index]
+    if not edition.get("publication_year") and not format_edition_fragments(
+        edition.get("format_detail")
+    ):
+        return []
+    return [
+        f"📖 <b>Édition suivie :</b> {html.escape(_edition_identity(edition))}"
+    ]
 
 
 def recap_from_state(data: dict[str, Any]) -> str:
@@ -216,7 +269,6 @@ def recap_from_state(data: dict[str, Any]) -> str:
         max_price_cents=data.get("max_item_price_cents"),
         include_keywords=data.get("include_keywords", []),
         exclude_keywords=data.get("exclude_keywords", []),
-        category_slug=data.get("category_slug", CategorySlug.BD_COMICS.value),
         conditions=data.get("selected_conditions"),
         variants=data.get("variants"),
         is_series=data.get("is_series", False),
@@ -229,11 +281,12 @@ def creation_keyboard(
     data: dict[str, Any],
     show_variants_btn: bool = True,
 ) -> InlineKeyboardMarkup:
-    """Clavier du récap : éditions concurrentes puis validation."""
+    """Clavier du récap : éditions numérotées puis validation."""
+    alternatives = data.get("edition_alternatives")
     return get_alert_confirmation_keyboard(
         show_variants_btn=show_variants_btn,
-        edition_alternatives=data.get("edition_alternatives"),
-        current_isbn=data.get("isbn"),
+        edition_alternatives=alternatives,
+        edition_labels=build_edition_labels(alternatives),
     )
 
 

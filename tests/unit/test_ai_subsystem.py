@@ -179,7 +179,7 @@ async def test_natural_add_isbn_overruled_by_bnf():
     assert res.book_context.isbn13 == "9782369903086"
     assert res.book_context.publication_year == 2022
     assert res.book_context.format_detail == "1 vol. (224 p.) : ill. en coul. ; 24 cm"
-    assert res.isbn_note == "Autre édition connue : 9782369904151 (224 p. · 19 cm)"
+    assert res.isbn_note is None
     bnf.verify_isbn.assert_awaited_once()
 
 

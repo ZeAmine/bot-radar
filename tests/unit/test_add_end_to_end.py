@@ -270,15 +270,19 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
 
         recap = _recap_text(loading_message)
         assert "🔢 <b>ISBN :</b> <code>9782369903086</code>" in recap
+        assert "📌 <b>Titre :</b> La couleur des choses" in recap
+        assert "🏢 <b>Éditeur :</b> Çà et là" in recap
+        # L'ISBN n'apparaît qu'une fois : plus de ligne dédiée redondante.
+        assert recap.count("9782369903086") == 1
         assert ISBN_AUTRE_LIVRE not in recap
-        assert "Éditions concurrentes de cette œuvre" in recap
-        assert "✅ <b><code>9782369903086</code>" in recap
-        assert "<code>9782369904151</code>" in recap
+        assert (
+            "📖 <b>Édition suivie :</b> 2022 · Çà et là · 224 p. · 24 cm" in recap
+        )
 
         buttons = _edition_buttons(loading_message)
         assert [button.text for button in buttons] == [
-            "✅ 9782369903086",
-            "📚 9782369904151",
+            "1️⃣ Çà et là - 2022",
+            "2️⃣ Editions çà et là",
         ]
 
         # 2. L'utilisateur choisit l'autre édition avant de valider.
@@ -293,7 +297,19 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
 
         assert state.data["isbn"] == "9782369904151"
         switch_recap = switch_message.edit_text.call_args[0][0]
-        assert "🔢 <b>ISBN :</b> <code>9782369904151</code>" in switch_recap
+        assert (
+            "📖 <b>Édition suivie :</b> Editions çà et là · 224 p. · 19 cm"
+            in switch_recap
+        )
+        # La bascule met à jour la fiche et l'édition décrite, pas le clavier.
+        assert "🏢 <b>Éditeur :</b> Editions çà et là" in switch_recap
+        switch_keyboard = switch_message.edit_text.call_args[1]["reply_markup"]
+        assert [
+            button.text
+            for row in switch_keyboard.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("al_create_edition")
+        ] == ["1️⃣ Çà et là - 2022", "2️⃣ Editions çà et là"]
 
         # 3. Création : l'ISBN choisi pilote l'URL Vinted, le livre et la cote.
         confirm_message = MagicMock(spec=Message)
@@ -391,7 +407,12 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
 
             typed_answer = typed_message.answer.call_args[0][0]
             assert "🔢 <b>ISBN :</b> <code>9782369903086</code>" in typed_answer
-            assert "Éditions concurrentes de cette œuvre" in typed_answer
+            assert (
+                "📖 <b>Édition suivie :</b> 2022 · Çà et là · 224 p. · 24 cm"
+                in typed_answer
+            )
+            # La note de provenance de l'ancien ISBN ne survit pas à la correction.
+            assert "surveillance par titre" not in typed_answer
 
             # 4. Création sur l'ISBN saisi, avec l'URL Vinted par ISBN.
             confirm_message = MagicMock(spec=Message)

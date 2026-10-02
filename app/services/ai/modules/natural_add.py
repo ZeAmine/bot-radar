@@ -13,7 +13,6 @@ from app.services.book_metadata_service import (
     BookMetadata,
     BookMetadataService,
     EditionAlternative,
-    format_edition_details,
 )
 from app.utils.isbn import extract_clean_isbn, is_valid_isbn, normalize_isbn
 
@@ -253,16 +252,15 @@ class NaturalAddModule(BaseAIModule):
                 )
 
         if resolution:
-            notes = [note for note in (_source_note(resolution.best),) if note]
-            alternatives = ", ".join(
-                f"{alt.isbn13} ({format_edition_details(alt.publication_year, alt.format_detail)})"
-                for alt in resolution.alternatives
-                if format_edition_details(alt.publication_year, alt.format_detail)
+            # Les éditions concurrentes sont portées par `edition_alternatives`, que le
+            # récap transforme en boutons numérotés : les redire ici en texte ne
+            # produirait qu'un doublon de l'information déjà rendue.
+            return (
+                resolution.best.isbn13,
+                resolution.best,
+                _source_note(resolution.best),
+                resolution.editions(),
             )
-            if alternatives:
-                notes.append(f"Autre édition connue : {alternatives}")
-            note = " • ".join(notes) or None
-            return (resolution.best.isbn13, resolution.best, note, resolution.editions())
 
         if typed_isbn:
             return (

@@ -210,21 +210,21 @@ def test_get_alerts_list_keyboard():
 
 
 def test_get_alert_confirmation_keyboard_lists_competing_editions():
-    """Chaque édition connue de l'œuvre a son bouton, l'édition retenue étant marquée."""
+    """Chaque édition concurrente a son bouton numéroté, aligné sur la ligne du récap."""
     editions = [
         {"isbn13": "9782369903086", "publisher": "Çà et là"},
         {"isbn13": "9782369904151", "publisher": "Futuropolis"},
     ]
     keyboard = get_alert_confirmation_keyboard(
         edition_alternatives=editions,
-        current_isbn="9782369903086",
+        edition_labels=["1️⃣ 2022 · 224 p. · 24 cm", "2️⃣ 2018 · 208 p. · 19 cm"],
     )
     rows = keyboard.inline_keyboard
 
     # Deux lignes d'éditions, placées avant la validation
-    assert rows[0][0].text == "✅ 9782369903086"
+    assert rows[0][0].text == "1️⃣ 2022 · 224 p. · 24 cm"
     assert rows[0][0].callback_data == "al_create_edition:0"
-    assert rows[1][0].text == "📚 9782369904151"
+    assert rows[1][0].text == "2️⃣ 2018 · 208 p. · 19 cm"
     assert rows[1][0].callback_data == "al_create_edition:1"
 
     create_row = [button for row in rows for button in row]
@@ -232,6 +232,25 @@ def test_get_alert_confirmation_keyboard_lists_competing_editions():
     assert "alert_create_confirm" in callbacks
     assert "alert_create_edit" in callbacks
     assert "alert_create_cancel" in callbacks
+
+
+def test_get_alert_confirmation_keyboard_falls_back_to_isbn_without_label():
+    """Sans libellé fourni, le bouton reste exploitable : numéro + ISBN."""
+    keyboard = get_alert_confirmation_keyboard(
+        edition_alternatives=[
+            {"isbn13": "9782369903086"},
+            {"isbn13": "9782369904151"},
+            {"isbn13": None},
+        ],
+    )
+    rows = keyboard.inline_keyboard
+
+    assert [rows[0][0].text, rows[1][0].text] == [
+        "1️⃣ 9782369903086",
+        "2️⃣ 9782369904151",
+    ]
+    # L'édition sans ISBN n'a pas de bouton : le clavier vide l'index de sa position.
+    assert rows[2][0].callback_data == "alert_create_confirm"
 
 
 def test_get_alert_confirmation_keyboard_without_editions_is_unchanged():
@@ -270,31 +289,106 @@ def test_build_edition_choices_handles_missing_resolution():
     assert build_edition_choices(None) == []
 
 
-def test_format_edition_lines_marks_current_edition():
-    """Le récap détaille chaque édition et marque celle qui sera utilisée."""
-    from app.bot.handlers.alerts_helpers import format_edition_lines
+def test_build_edition_labels_names_publisher_then_year():
+    """Le libellé d'une édition, c'est son éditeur puis son millésime : ce qui la situe.
 
-    editions = [
-        {"isbn13": "9782369903086", "publication_year": 2022,
-         "format_detail": "1 vol. (224 p.) : ill. en coul. ; 24 cm", "publisher": "Çà et là"},
-        {"isbn13": "9782369904151", "publication_year": 2018,
-         "format_detail": "1 vol. (208 p.) ; 19 cm", "publisher": "Futuropolis"},
+    Le format de notice BNF (« ill. en coul. ») n'entre pas dans un bouton : il est
+    réservé à la ligne « Édition suivie », où la place ne manque pas.
+    """
+    from app.bot.handlers.alerts_helpers import build_edition_labels
+
+    labels = build_edition_labels(
+        [
+            {"isbn13": "9782369903086", "publication_year": 2022,
+             "format_detail": "1 vol. (224 p.) : ill. en coul. ; 24 cm", "publisher": "Çà et là"},
+            {"isbn13": "9782369904151", "publication_year": 2025,
+             "format_detail": "1 vol. (208 p.) ; 19 cm", "publisher": "Çà et là Editions poches"},
+        ]
+    )
+
+    assert labels == [
+        "1️⃣ Çà et là - 2022",
+        "2️⃣ Çà et là Editions poches - 2025",
     ]
 
-    lines = format_edition_lines(editions, "9782369904151")
-    body = "\n".join(lines)
 
-    assert "🔀 <b>Éditions concurrentes de cette œuvre</b>" in body
-    assert "▫️ <code>9782369903086</code> — 2022 · 224 p. · 24 cm · Çà et là" in body
-    assert "✅ <b><code>9782369904151</code>" in body
+def test_build_edition_labels_drops_year_when_unknown():
+    """Sans millésime connu, l'éditeur seul reste un libellé exploitable."""
+    from app.bot.handlers.alerts_helpers import build_edition_labels
+
+    assert build_edition_labels(
+        [
+            {"isbn13": "9782369903086", "publisher": "Çà et là"},
+            {"isbn13": "9782369904151", "publication_year": 2025},
+        ]
+    ) == ["1️⃣ Çà et là", "2️⃣ 2025"]
+
+
+def test_build_edition_labels_falls_back_to_isbn_when_undistinguishable():
+    """Des détails absents ou identiques ne discriminent rien : l'ISBN prend le relais."""
+    from app.bot.handlers.alerts_helpers import build_edition_labels
+
+    assert build_edition_labels(
+        [{"isbn13": "9782369903086"}, {"isbn13": "9782369904151"}]
+    ) == ["1️⃣ 9782369903086", "2️⃣ 9782369904151"]
+
+    assert build_edition_labels(
+        [
+            {"isbn13": "9782369903086", "publication_year": 2022},
+            {"isbn13": "9782369904151", "publication_year": 2022},
+        ]
+    ) == ["1️⃣ 9782369903086", "2️⃣ 9782369904151"]
+
+
+def test_format_edition_line_describes_the_followed_edition():
+    """« Millésime · éditeur · format » de l'édition retenue, dans l'ordre de lecture."""
+    from app.bot.handlers.alerts_helpers import format_edition_line
+
+    editions = [
+        {"isbn13": "9782369903086", "publication_year": 2022, "publisher": "Çà et là",
+         "format_detail": "1 vol. (224 p.) : ill. en coul. ; 24 cm"},
+        {"isbn13": "9782369904151", "publisher": "Éditions poches",
+         "format_detail": "1 vol. (224 p.) ; 19 cm"},
+    ]
+
+    assert format_edition_line(editions, "9782369903086") == [
+        "📖 <b>Édition suivie :</b> 2022 · Çà et là · 224 p. · 24 cm"
+    ]
+    assert format_edition_line(editions, "9782369904151") == [
+        "📖 <b>Édition suivie :</b> Éditions poches · 224 p. · 19 cm"
+    ]
     # Le bruit purement décoratif de la notice ne pollue pas l'affichage
-    assert "ill. en coul." not in body
+    assert "ill. en coul." not in "".join(
+        format_edition_line(editions, "9782369903086")
+    )
+    # Le format est ici, pas dans le bouton : la ligne complète le clavier.
+    assert format_edition_line(editions, "9782369903086") != format_edition_line(
+        editions, "9782369904151"
+    )
 
 
-def test_format_edition_lines_hidden_for_single_edition():
-    """Une œuvre sans édition concurrente n'affiche aucun bloc supplémentaire."""
-    from app.bot.handlers.alerts_helpers import format_edition_lines
+def test_format_edition_line_hidden_without_choice():
+    """Sans édition concurrente, la carte n'ajoute pas de ligne « Édition suivie ».
 
-    assert format_edition_lines(None, "9782369903086") == []
-    assert format_edition_lines([{"isbn13": "9782369903086"}], "9782369903086") == []
+    L'ISBN est déjà affiché en tête de carte : il n'y a rien à recouper.
+    """
+    from app.bot.handlers.alerts_helpers import format_edition_line
+
+    assert format_edition_line(None, "9782369903086") == []
+    assert format_edition_line([{"isbn13": "9782369903086"}], "9782369903086") == []
+    assert format_edition_line(
+        [{"isbn13": "9782369903086"}, {"isbn13": "9782369904151"}], None
+    ) == []
+
+
+def test_format_edition_line_hidden_when_editor_alone_would_repeat():
+    """Un éditeur seul ne dit rien de plus que « 🏢 Éditeur » : la ligne est omise."""
+    from app.bot.handlers.alerts_helpers import format_edition_line
+
+    editions = [
+        {"isbn13": "9782369903086", "publisher": "Çà et là"},
+        {"isbn13": "9782369904151", "publisher": "Futuropolis"},
+    ]
+
+    assert format_edition_line(editions, "9782369904151") == []
 

@@ -194,13 +194,9 @@ async def start_add_alert(
             await state.set_state(AlertCreationState.confirm_creation)
 
             recap = recap_from_state(state_data)
-            prompt_text = (
-                "🪄 <b>Alerte configurée en langage naturel !</b>\n\n"
-                f"{recap}\n\n"
-                "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
+            await _finalize_loading_message(
+                loading_msg, event, recap, creation_keyboard(state_data)
             )
-            keyboard = creation_keyboard(state_data)
-            await _finalize_loading_message(loading_msg, event, prompt_text, keyboard)
             return
 
         # Fallback si l'IA n'a pas pu structurer la demande : sélection de catégorie
@@ -428,11 +424,9 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     )
 
     if not variants and not new_exclusions:
-        recap = recap_from_state(data)
         prompt_text = (
             "ℹ️ <b>Aucune variante ou exclusion supplémentaire nécessaire.</b>\n\n"
-            f"{recap}\n\n"
-            "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
+            f"{recap_from_state(data)}"
         )
         keyboard = creation_keyboard(data, show_variants_btn=False)
         if callback.message and hasattr(callback.message, "edit_text"):
@@ -452,11 +446,9 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
         "variants": existing_variants,
         "exclude_keywords": existing_exclusions,
     }
-    recap = recap_from_state(updated_draft)
     prompt_text = (
         "🪄 <b>Alerte mise à jour avec les optimisations IA !</b>\n\n"
-        f"{recap}\n\n"
-        "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
+        f"{recap_from_state(updated_draft)}"
     )
     keyboard = creation_keyboard(updated_draft, show_variants_btn=False)
     if callback.message and hasattr(callback.message, "edit_text"):
