@@ -1,4 +1,4 @@
-.PHONY: help dev test lint bench format migrate revision up down clean
+.PHONY: help dev test lint bench check-history format migrate revision up down clean
 
 help:
 	@echo "Commandes disponibles pour BotRadar :"
@@ -6,6 +6,7 @@ help:
 	@echo "  make test                Lancer les tests unitaires et d'intégration"
 	@echo "  make bench               Benchmark du chemin d'alerte (invariant 500 ms)"
 	@echo "  make lint                Vérifier le code avec Ruff et Mypy"
+	@echo "  make check-history       Rejouer Ruff, Mypy et Pytest sur chaque commit"
 	@echo "  make format              Formater le code avec Ruff"
 	@echo "  make migrate             Appliquer les migrations Alembic"
 	@echo "  make revision message=\"...\" Créer une nouvelle migration"
@@ -25,6 +26,13 @@ bench:
 lint:
 	ruff check .
 	mypy app
+
+# Garantit qu'aucun commit de la branche n'est rouge : le travail est rejoué dans
+# un worktree jetable par commit, du plus ancien au plus récent.
+# Usage : make check-history | BASE=<tag|sha> | STEPS=ruff,mypy,pytest
+check-history:
+	python scripts/check_history.py $(if $(BASE),--base $(BASE),) \
+		$(if $(STEPS),--steps $(STEPS),) $(if $(MAX_COMMITS),--max-commits $(MAX_COMMITS),)
 
 format:
 	ruff format .

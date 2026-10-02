@@ -131,6 +131,7 @@ Conséquence assumée : la **première** alerte d’une BD inconnue peut partir 
 6. Redis : pool `app.core.redis.get_redis_pool`. Ne pas réintroduire l’import depuis `app.api.dependencies`.
 7. Ne pas élargir le périmètre d’un correctif (pas de refactor opportuniste des handlers 900 lignes).
 8. Après une modification : Ruff sur les fichiers touchés, puis les tests concernés. Suite complète avant un déploiement.
+9. **Historique vert** : chaque commit passe `ruff` et `pytest` sur son propre arbre. Un refactor ne dépend jamais d’un commit futur ; un découpage qui produit un commit rouge est un mauvais découpage. `make check-history` rejoue la série (base = `$CHECK_HISTORY_BASE`, sinon dernier tag `v*`, sinon `HEAD~5`) et la CI rejoue la même chose à chaque tag. `mypy` n’est pas dans le lot par défaut : c’est un objectif de bout de branche, pas un contrat de commit.
 9. Toute cote de marché passe par les règles pures de [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : occasion, état au moins « Très bon », marchand non exclu. Ne pas réintroduire un filtre d'état local à un fournisseur ou dans un handler.
 
 ## Tests

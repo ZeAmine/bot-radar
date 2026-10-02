@@ -2,6 +2,11 @@ name: CI
 
 on:
   push:
+    # `branches` explicite : lister `tags` seul remplacerait le déclenchement
+    # par défaut et la CI ne tournerait plus sur les branches.
+    branches: ["**"]
+    tags:
+      - "v*"
   pull_request:
 
 jobs:
@@ -30,3 +35,29 @@ jobs:
           INGEST_API_TOKEN: "ci_ingest_token_test"
           INTERNAL_API_TOKEN: "ci_internal_token_test"
         run: pytest -v
+
+  # Publier un tag, c'est affirmer que tout l'historique depuis le précédent est
+  # vert. Sans cette étape, un commit de milieu de série peut casser alors que
+  # `HEAD` passe : le défaut n'apparaît qu'au moment d'un bisect.
+  history:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer le projet et les outils de dev
+        run: pip install -e ".[dev]"
+
+      - name: Historique vert
+        env:
+          TELEGRAM_BOT_TOKEN: "123456789:AAG_ci_test_dummy_token_abc123"
+          TELEGRAM_WEBHOOK_SECRET: "ci_webhook_secret_test"
+          INGEST_API_TOKEN: "ci_ingest_token_test"
+          INTERNAL_API_TOKEN: "ci_internal_token_test"
+        run: python scripts/check_history.py --base "$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo HEAD~1)"
