@@ -57,7 +57,7 @@ Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomiqu
 - Python 3.12, FastAPI, aiogram 3, SQLAlchemy asyncio, Alembic, Redis, APScheduler, httpx, Pydantic v2.
 - Un seul processus de production : `uvicorn app.main:app` dans `radar_app` (API + webhook Telegram + scheduler + poller Vinted).
 - PostgreSQL 16, Redis 7, passerelle centralisée `caddy_gateway` via réseau Docker `web_gateway` (HTTPS). Compose : [compose.yml](compose.yml).
-- Tests : pytest + pytest-asyncio (484 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
+- Tests : pytest + pytest-asyncio (489 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
 
 ## Architecture des couches
 
@@ -245,6 +245,7 @@ Interdits :
 - Écrire un `httpx` dans un module IA : tout passe par `BaseLLMClient.complete`.
 - Dupliquer une logique d’erreur ou de santé dans un adaptateur : elle est dans la classe de base.
 - La clé de cache d’analyse doit inclure fournisseur, modèle et version de prompt (`ListingAnalysisProvider.compute_cache_key`), sinon un changement de modèle continuerait de servir l’ancien résultat en silence pendant 7 jours.
+- **Avaler l’erreur ne dispense pas de la montrer** (ADR-005). `BaseLLMClient` repli sur `None`, jamais d’exception : mais une liste vide obtenue parce que personne n’a répondu ne doit jamais se lire dans l’interface comme un avis du moteur. Un module qui rend un avis porte le fait « le moteur a-t-il répondu ? » — `KeywordVariantsOutcome.answered` — et le handler affiche la raison. L’alerte se crée dans les deux cas ; seule la ligne qui l’explique change.
 
 Chemin **vivant** post-alerte : `app/services/ai/` (`AIPostAlertPipeline.enrich_alert`) alimenté par `llm_client`. `data = None` avant l’appel si le client n’est pas configuré.
 
@@ -254,7 +255,7 @@ Modules actifs (`app/services/ai/modules/`) :
 - `natural_add.py` (`AI_FEATURE_NATURAL_ADD=true`) : Création d'alertes en langage naturel (`/add`).
 - `profit_scoring.py` (`AI_FEATURE_PROFIT_SCORING=true`) : Estimation de rentabilité / indice pépite (tech, gaming, vêtements).
 - `negotiation.py` (`AI_FEATURE_NEGOTIATION=true`) : Coach de négociation et message d'offre vendeur (`💬 Négocier`).
-- `keyword_variants.py` (`AI_FEATURE_KEYWORD_VARIANTS=true`) : Suggestions de variantes orthographiques.
+- `keyword_variants.py` (`AI_FEATURE_KEYWORD_VARIANTS=true`) : Suggestions de variantes orthographiques et d’exclusions, ancrées sur la fiche de l’ouvrage. Sur `/add`, la recherche part en arrière-plan (`safe_create_task`) après le jalon « ouvrage trouvé » : le récap n’attend jamais le moteur, et le résultat est fusionné dans le brouillon seulement s’il porte encore sur l’ouvrage affiché.
 - `auto_tuning.py` (`AI_FEATURE_AUTO_TUNING=true`) : Analyse des dislikes et suggestions d'exclusions (`/auto_tune`).
 *(Note : Les modules non pertinents `hidden_condition`, `vision_guard`, `bundle_decomposition`, `price_glitch`, ainsi que `bundle_detector` et le bouton dressing ont été définitivement supprimés — voir ADR-006, ADR-007, ADR-011).*
 

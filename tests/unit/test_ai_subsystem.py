@@ -388,9 +388,11 @@ async def test_keyword_variants_are_grounded_on_book_context():
     )
 
     with patch.object(keyword_variants_module, "client", mock_client):
-        variants, exclusions = await keyword_variants_module.generate_variants_and_exclusions(
+        outcome = await keyword_variants_module.generate_variants_and_exclusions(
             "La couleur des choses", category_slug="bd_comics", context=context
         )
+    variants, exclusions = outcome.variants, outcome.exclusions
+    assert outcome.answered is True
 
     # Le prompt reçoit les faits vérifiés, pas une liste de goodies toute faite
     user_prompt = mock_client.calls[0]["user_prompt"]
@@ -423,9 +425,11 @@ async def test_keyword_variants_module_variants_and_exclusions():
     )
 
     with patch.object(keyword_variants_module, "client", mock_client):
-        variants, exclusions = await keyword_variants_module.generate_variants_and_exclusions(
+        outcome = await keyword_variants_module.generate_variants_and_exclusions(
             "L'Arabe du futur", category_slug="bd_comics"
         )
+        assert outcome.answered is True
+        variants, exclusions = outcome.variants, outcome.exclusions
         assert "arabe du future" in variants
         assert "larabe du futur" in variants
         assert "figurine" in exclusions

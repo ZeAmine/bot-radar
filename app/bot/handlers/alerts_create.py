@@ -33,6 +33,7 @@ from app.core.constants import (
     ComparisonStatus,
     MatchConfidence,
 )
+from app.core.tasks import safe_create_task
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
@@ -41,7 +42,10 @@ from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.providers.base import extract_best_historical_low
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 from app.providers.registry import ProviderRegistry
-from app.services.ai.modules.keyword_variants import keyword_variants_module
+from app.services.ai.modules.keyword_variants import (
+    KeywordVariantsOutcome,
+    keyword_variants_module,
+)
 from app.services.ai.modules.natural_add import natural_add_module
 from app.services.alert_service import (
     AlertServiceError,
@@ -119,6 +123,90 @@ async def _show_step(
         logger.debug("Jalon non affiché : %s", exc)
 
 
+def _draft_matches(current: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+    """Le brouillon affiché est-il encore celui sur lequel on travaille ?
+
+    La recherche des variantes part en arrière-plan : entre le jalon et la réponse du
+    moteur, l'utilisateur a pu annuler, modifier un champ ou relancer une commande.
+    Écrire le récap dans ces cas reviendrait à afficher des mots-clés qui ne
+    correspondent plus à l'état, ou à ressusciter une fiche abandonnée.
+    """
+    if not current:
+        return False
+    return all(current.get(key) == snapshot.get(key) for key in ("name", "category_slug"))
+
+
+def _keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
+    """Ligne discrète expliquant l'absence de variantes, quand elle est anormale.
+
+    Trois fins possibles, trois libellés distincts : le récap ne doit jamais laisser
+    croire qu'une liste vide est un avis du moteur alors que personne n'a été
+    interrogé.
+    """
+    if not outcome.is_empty:
+        return None
+    if outcome.answered:
+        return (
+            "<i>🔎 L'IA n'a trouvé aucune variante ni exclusion pertinente : "
+            "rien n'a été ajouté.</i>"
+        )
+    return (
+        "<i>⚠️ L'IA n'a pas répondu à temps : cette alerte est créée sans variante "
+        "ni exclusion. Tu peux relancer la recherche via « Modifier ».</i>"
+    )
+
+
+async def _search_keywords_in_background(
+    *,
+    loading_msg: Message | bool,
+    event: Message | CallbackQuery,
+    state: FSMContext,
+    snapshot: dict[str, Any],
+    name: str,
+    category_slug: str,
+    book_context: Any,
+) -> None:
+    """Cherche les variantes et exclusions hors du chemin de l'utilisateur.
+
+    Le jalon « ouvrage trouvé » est déjà parti : l'utilisateur n'attend rien. Quand la
+    réponse arrive — ou quand elle ne vient pas — le récap est publié, avec ou sans
+    les mots-clés trouvés, et en disant lequel des deux cas s'est produit.
+    """
+    outcome = await keyword_variants_module.generate_variants_and_exclusions(
+        name,
+        category_slug=category_slug,
+        context=book_context,
+    )
+
+    if not _draft_matches(await state.get_data(), snapshot):
+        logger.info("Brouillon modifié pendant la recherche IA de « %s » : récap non publié.", name)
+        return
+
+    updated = {
+        **snapshot,
+        "variants": outcome.variants,
+        "exclude_keywords": _merge_keywords(
+            snapshot.get("exclude_keywords"), outcome.exclusions
+        ),
+    }
+    await state.update_data(
+        variants=updated["variants"], exclude_keywords=updated["exclude_keywords"]
+    )
+
+    recap = (
+        "🪄 <b>Alerte configurée en langage naturel !</b>\n\n"
+        f"{recap_from_state(updated, keyword_note=_keyword_note(outcome))}"
+    )
+    # Les variantes sont déjà posées : le bouton qui les recalculerait n'apporterait
+    # rien et ferait douter de l'automatisme.
+    await _finalize_loading_message(
+        loading_msg,
+        event,
+        recap,
+        creation_keyboard(updated, show_variants_btn=False),
+    )
+
+
 def _get_category_repo(session: Any) -> Any:
     import app.bot.handlers.alerts as alerts_mod
 
@@ -178,8 +266,33 @@ async def start_add_alert(
         # Parsing en langage naturel par le moteur IA configuré
         parsed = await natural_add_module.parse_prompt(inline_query)
         if parsed:
-            # Jalon : le produit est identifié, on enchaîne sur les variantes. Le
-            # message d'attente avance sur place plutôt que d'en ajouter un second.
+            state_data = {
+                "name": parsed.name,
+                "category_slug": parsed.category_slug,
+                "isbn": parsed.isbn13,
+                "is_series": parsed.is_series,
+                "author": parsed.author,
+                "publisher": parsed.publisher,
+                "include_keywords": parsed.include_keywords or [parsed.name],
+                "exclude_keywords": parsed.exclude_keywords,
+                "variants": [],
+                "max_item_price_cents": parsed.max_price_cents,
+                "selected_conditions": parsed.conditions,
+                "isbn_note": parsed.isbn_note,
+                "book_context": (
+                    parsed.book_context.model_dump() if parsed.book_context else None
+                ),
+                "edition_alternatives": [
+                    edition.model_dump() for edition in parsed.edition_alternatives
+                ],
+            }
+            await state.update_data(data=state_data)
+            await state.set_state(AlertCreationState.confirm_creation)
+
+            # Jalon : l'ouvrage est identifié et la suite part en arrière-plan. Ce
+            # message est un simple statut — il ne doit surtout pas attendre la
+            # réponse du moteur, ni porter un clavier qui validerait une alerte dont
+            # les mots-clés sont encore en cours.
             found_details = " · ".join(
                 html.escape(bit) for bit in (parsed.author, parsed.publisher) if bit
             )
@@ -205,54 +318,17 @@ async def start_add_alert(
                 ),
             )
 
-            # Mots-clés ancrés sur la fiche réelle de l'ouvrage (BNF quand elle existe)
-            ai_variants, ai_exclusions = (
-                await keyword_variants_module.generate_variants_and_exclusions(
-                    parsed.name,
+            safe_create_task(
+                _search_keywords_in_background(
+                    loading_msg=loading_msg,
+                    event=event,
+                    state=state,
+                    snapshot=state_data,
+                    name=parsed.name,
                     category_slug=parsed.category_slug,
-                    context=parsed.book_context,
-                )
-            )
-            include_keywords = parsed.include_keywords or [parsed.name]
-            exclude_keywords = _merge_keywords(parsed.exclude_keywords, ai_exclusions)
-            variants = ai_variants
-
-            state_data = {
-                "name": parsed.name,
-                "category_slug": parsed.category_slug,
-                "isbn": parsed.isbn13,
-                "is_series": parsed.is_series,
-                "author": parsed.author,
-                "publisher": parsed.publisher,
-                "include_keywords": include_keywords,
-                "exclude_keywords": exclude_keywords,
-                "variants": variants,
-                "max_item_price_cents": parsed.max_price_cents,
-                "selected_conditions": parsed.conditions,
-                "isbn_note": parsed.isbn_note,
-                "book_context": (
-                    parsed.book_context.model_dump() if parsed.book_context else None
+                    book_context=parsed.book_context,
                 ),
-                "edition_alternatives": [
-                    edition.model_dump() for edition in parsed.edition_alternatives
-                ],
-            }
-            await state.update_data(data=state_data)
-            await state.set_state(AlertCreationState.confirm_creation)
-
-            # L'en-tête « langage naturel » n'a de sens que sur ce chemin : le récap
-            # manuel ne l'a pas mérité. Il reste ici, une seule fois.
-            recap = (
-                "🪄 <b>Alerte configurée en langage naturel !</b>\n\n"
-                f"{recap_from_state(state_data)}"
-            )
-            # Les variantes sont déjà appliquées ci-dessus : le bouton qui les
-            # recalculerait n'apporterait rien et ferait douter de l'automatisme.
-            await _finalize_loading_message(
-                loading_msg,
-                event,
-                recap,
-                creation_keyboard(state_data, show_variants_btn=False),
+                name="add-variantes",
             )
             return
 
@@ -476,14 +552,21 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     book_context = (
         BookContext(**data["book_context"]) if data.get("book_context") else None
     )
-    variants, new_exclusions = await keyword_variants_module.generate_variants_and_exclusions(
+    outcome = await keyword_variants_module.generate_variants_and_exclusions(
         name, category_slug=category_slug, context=book_context
     )
+    variants, new_exclusions = outcome.variants, outcome.exclusions
 
-    if not variants and not new_exclusions:
+    if outcome.is_empty:
+        # Le moteur a tranché pour « rien » ou n'a pas répondu : dans les deux cas
+        # le récap porte la raison, sinon l'utilisateur croirait à un avis.
+        reason = (
+            "l'IA n'a trouvé aucune variante ni exclusion pertinente."
+            if outcome.answered
+            else "l'IA n'a pas répondu, l'alerte reste sans variante ni exclusion."
+        )
         prompt_text = (
-            "ℹ️ <b>Aucune variante ou exclusion supplémentaire nécessaire.</b>\n\n"
-            f"{recap_from_state(data)}"
+            f"ℹ️ <b>Aucune modification.</b>\n\n<i>{reason}</i>\n\n{recap_from_state(data)}"
         )
         keyboard = creation_keyboard(data, show_variants_btn=False)
         if callback.message and hasattr(callback.message, "edit_text"):

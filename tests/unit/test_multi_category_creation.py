@@ -1,6 +1,8 @@
 """Tests unitaires pour la création d'alertes multi-catégories (/add)."""
 
+import contextlib
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -26,6 +28,7 @@ from app.core.constants import (
 )
 from app.db.models.category import Category
 from app.db.models.user import User
+from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 
 
 @pytest.mark.asyncio
@@ -361,6 +364,84 @@ class MockMessage(MagicMock):
     __class__ = Message
 
 
+class DraftState:
+    """Fausse FSM fidèle à aiogram 3 : `update_data(data=...)` fusionne au premier niveau.
+
+    Le brouillon doit être relu tel qu'il a été écrit : la recherche des variantes
+    s'en sert pour vérifier qu'elle travaille encore sur l'ouvrage affiché.
+    """
+
+    def __init__(self) -> None:
+        self.data: dict = {}
+        self.state = None
+
+    async def clear(self) -> None:
+        self.data = {}
+        self.state = None
+
+    async def get_data(self) -> dict:
+        return dict(self.data)
+
+    async def set_state(self, state) -> None:
+        self.state = state
+
+    async def update_data(self, data=None, **kwargs) -> None:
+        if data:
+            kwargs.update(data)
+        self.data.update(kwargs)
+
+
+def _defer_task(holder: list[tuple[Any, str | None]]) -> Any:
+    """Remplace `safe_create_task` : retient la coroutine pour que le test la pilote.
+
+    Le vrai `safe_create_task` est synchrone et confie la coroutine à la boucle
+    d'événements. Le test garde la main : il prouve que le handler rend la main,
+    puis exécute la recherche quand il le décide.
+    """
+
+    def _run(coro, name=None):
+        holder.append((coro, name))
+        return None
+
+    return _run
+
+
+async def _drain(holder: list[tuple[Any, str | None]]) -> None:
+    """Exécute la recherche de fond retenue, comme le ferait la boucle d'événements."""
+    for coro, _name in holder:
+        await coro
+    holder.clear()
+
+
+@contextlib.contextmanager
+def _natural_add_patches(parsed, outcome):
+    """Frontières du `/add` naturel : parsing, variantes, et tâche de fond retenue.
+
+    Rend la liste des tâches pour que le test puisse déclencher lui-même la recherche.
+    """
+    tasks: list[tuple[Any, str | None]] = []
+    with (
+        patch(
+            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
+            new_callable=PropertyMock,
+            return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
+            new_callable=AsyncMock,
+            return_value=parsed,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.keyword_variants_module"
+            ".generate_variants_and_exclusions",
+            new_callable=AsyncMock,
+            return_value=outcome,
+        ),
+        patch("app.bot.handlers.alerts_create.safe_create_task", new=_defer_task(tasks)),
+    ):
+        yield tasks
+
+
 @pytest.mark.asyncio
 async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     """Vérifie que /add <prompt> envoie le message d'attente puis l'édite avec le récap."""
@@ -376,10 +457,7 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     loading_message.edit_text = AsyncMock()
     message.answer = AsyncMock(return_value=loading_message)
 
-    state = AsyncMock()
-    state.clear = AsyncMock()
-    state.update_data = AsyncMock()
-    state.set_state = AsyncMock()
+    state = DraftState()
 
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
@@ -398,19 +476,12 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
         explanation="Astérix le Gaulois tome 1 max 10€",
     )
 
-    with (
-        patch(
-            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
-            new_callable=PropertyMock,
-            return_value=True,
-        ),
-        patch(
-            "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
-            new_callable=AsyncMock,
-            return_value=fake_result,
-        ),
-    ):
+    with _natural_add_patches(fake_result, KeywordVariantsOutcome.unanswered()) as tasks:
         await start_add_alert(message, state, db_session, db_user)
+
+        # Le handler rend la main sur le jalon : le récap attend la recherche.
+        assert loading_message.edit_text.await_count == 1
+        await _drain(tasks)
 
     message.bot.send_chat_action.assert_awaited_once_with(chat_id=12345, action="typing")
     message.answer.assert_awaited_once()
@@ -428,7 +499,9 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     assert "🔢 <b>ISBN :</b> <code>9782012101333</code>" in edited_text
     assert "📌 <b>Titre :</b> Asterix tome 1" in edited_text
     assert "🎯 <b>Prix max :</b> 10,00 €" in edited_text
-    state.set_state.assert_called_with(AlertCreationState.confirm_creation)
+    assert state.state is AlertCreationState.confirm_creation
+    # Le moteur n'a pas répondu : le récap le dit plutôt que de laisser croire à un avis.
+    assert "L'IA n'a pas répondu à temps" in edited_text
 
 
 @pytest.mark.asyncio
@@ -446,10 +519,7 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
     loading_message.edit_text = AsyncMock()
     message.answer = AsyncMock(return_value=loading_message)
 
-    state = AsyncMock()
-    state.clear = AsyncMock()
-    state.update_data = AsyncMock()
-    state.set_state = AsyncMock()
+    state = DraftState()
 
     book_context = BookContext(
         title="La couleur des choses",
@@ -473,7 +543,13 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
         book_context=book_context,
     )
 
-    keywords_mock = AsyncMock(return_value=(["couleurdeschoses"], ["keeping two"]))
+    outcome = KeywordVariantsOutcome(
+        variants=["couleurdeschoses"],
+        exclusions=["keeping two"],
+        answered=True,
+    )
+    keywords_mock = AsyncMock(return_value=outcome)
+    tasks: list = []
 
     with (
         patch(
@@ -491,8 +567,10 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
             ".generate_variants_and_exclusions",
             new=keywords_mock,
         ),
+        patch("app.bot.handlers.alerts_create.safe_create_task", new=_defer_task(tasks)),
     ):
         await start_add_alert(message, state, AsyncMock(), User(id=uuid.uuid4()))
+        await _drain(tasks)
 
     # La génération de mots-clés reçoit la fiche vérifiée de l'ouvrage
     keywords_mock.assert_awaited_once_with(
@@ -511,10 +589,10 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
     assert "keeping two" in edited_text
     assert "couleurdeschoses" in edited_text
 
-    state_data = state.update_data.call_args.kwargs["data"]
-    assert state_data["exclude_keywords"] == ["roman poche", "keeping two"]
-    assert state_data["variants"] == ["couleurdeschoses"]
-    assert state_data["book_context"]["isbn13"] == "9782369903086"
+    # Le brouillon se lit à plat : les variantes se posent dans l'état du parsing.
+    assert state.data["exclude_keywords"] == ["roman poche", "keeping two"]
+    assert state.data["variants"] == ["couleurdeschoses"]
+    assert state.data["book_context"]["isbn13"] == "9782369903086"
 
 
 @pytest.mark.asyncio
@@ -532,10 +610,7 @@ async def test_start_add_alert_natural_add_warns_when_isbn_unconfirmed():
     loading_message.edit_text = AsyncMock()
     message.answer = AsyncMock(return_value=loading_message)
 
-    state = AsyncMock()
-    state.clear = AsyncMock()
-    state.update_data = AsyncMock()
-    state.set_state = AsyncMock()
+    state = DraftState()
 
     fake_result = NaturalAddResult(
         name="Œuvre inconnue",
@@ -545,29 +620,99 @@ async def test_start_add_alert_natural_add_warns_when_isbn_unconfirmed():
         isbn_note="Aucun ISBN confirmé par la BNF pour « Œuvre inconnue » : surveillance par titre",
     )
 
-    with (
-        patch(
-            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
-            new_callable=PropertyMock,
-            return_value=True,
-        ),
-        patch(
-            "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
-            new_callable=AsyncMock,
-            return_value=fake_result,
-        ),
-        patch(
-            "app.bot.handlers.alerts_create.keyword_variants_module"
-            ".generate_variants_and_exclusions",
-            new_callable=AsyncMock,
-            return_value=([], []),
-        ),
-    ):
+    with _natural_add_patches(fake_result, KeywordVariantsOutcome.unanswered()) as tasks:
         await start_add_alert(message, state, AsyncMock(), User(id=uuid.uuid4()))
+        await _drain(tasks)
 
     edited_text = loading_message.edit_text.call_args[0][0]
     assert "non confirmé par la BNF" in edited_text
     assert "surveillance par titre" in edited_text
+
+
+@pytest.mark.asyncio
+async def test_start_add_alert_natural_add_reports_engine_had_nothing_to_say():
+    """Le moteur tranche « rien de pertinent » : le récap le distingue d'une panne."""
+    from app.services.ai.schemas import NaturalAddResult
+
+    message = MockMessage()
+    message.text = "/add asterix"
+    message.chat.id = 12345
+    message.bot = MagicMock()
+    message.bot.send_chat_action = AsyncMock()
+
+    loading_message = MagicMock()
+    loading_message.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=loading_message)
+
+    state = DraftState()
+    fake_result = NaturalAddResult(
+        name="Astérix",
+        category_slug="bd_comics",
+        is_series=True,
+        include_keywords=["Astérix"],
+        max_price_cents=2000,
+    )
+
+    with _natural_add_patches(fake_result, KeywordVariantsOutcome(answered=True)) as tasks:
+        await start_add_alert(message, state, AsyncMock(), User(id=uuid.uuid4()))
+        await _drain(tasks)
+
+    edited_text = loading_message.edit_text.call_args[0][0]
+    assert "L'IA n'a trouvé aucune variante ni exclusion pertinente" in edited_text
+    # Un avis du moteur ne doit jamais se lire comme un silence du moteur.
+    assert "pas répondu à temps" not in edited_text
+    assert state.data["variants"] == []
+    assert state.data["exclude_keywords"] == []
+
+
+@pytest.mark.asyncio
+async def test_start_add_alert_natural_add_drops_stale_recap_if_draft_changed():
+    """Si l'utilisateur a changé d'ouvrage, le récap tardif n'est pas publié.
+
+    Entre le jalon et la réponse du moteur, le brouillon a pu être modifié ou
+    abandonné. Écrire quand même le récap afficherait des mots-clés calculés pour un
+    autre produit, par-dessus l'état réellement en cours.
+    """
+    from app.services.ai.schemas import NaturalAddResult
+
+    message = MockMessage()
+    message.text = "/add asterix"
+    message.chat.id = 12345
+    message.bot = MagicMock()
+    message.bot.send_chat_action = AsyncMock()
+
+    loading_message = MagicMock()
+    loading_message.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=loading_message)
+
+    state = DraftState()
+    fake_result = NaturalAddResult(
+        name="Astérix",
+        category_slug="bd_comics",
+        is_series=True,
+        include_keywords=["Astérix"],
+        max_price_cents=2000,
+    )
+    outcome = KeywordVariantsOutcome(
+        variants=["asterix tome 1"],
+        exclusions=["figurine"],
+        answered=True,
+    )
+
+    with _natural_add_patches(fake_result, outcome) as tasks:
+        await start_add_alert(message, state, AsyncMock(), User(id=uuid.uuid4()))
+        # L'utilisateur change d'ouvrage pendant que le moteur travaille.
+        await state.update_data(name="Iznogoud")
+
+        await _drain(tasks)
+
+    # Seul le jalon est à l'écran : aucun récap d'un produit abandonné.
+    assert loading_message.edit_text.await_count == 1
+    assert "Alerte configurée en langage naturel" not in (
+        loading_message.edit_text.await_args[0][0]
+    )
+    # Et rien n'a été écrit dans le brouillon courant.
+    assert state.data["variants"] == []
 
 
 @pytest.mark.asyncio

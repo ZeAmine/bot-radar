@@ -75,8 +75,9 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 - **Raison** : Protection contre les rate limits des API marchandes et zéro latence réseau lors de l'alerte.
 
 ### ADR-005 : Rôle purement consultatif de l'IA (DeepSeek)
-- **Contexte** : L'IA apporte une forte valeur ajoutée (conseils de négociation, analyse du prix par rapport à l'état, détection de rééditions).
+- **Contexte** : L'IA apporte une forte valeur ajoutée (conseils de négociation, analyse du prix par rapport à l'état, détection de rééditions). Mais elle tombe en panne : timeout, quota épuisé, JSON illisible.
 - **Décision** : L'IA ne bloque jamais le flux principal. Le pipeline IA post-alerte (`AIPostAlertPipeline`) intervient en arrière-plan. En cas d'erreur API, de timeout ou de quota épuisé, l'alerte initiale est déjà entre les mains de l'utilisateur.
+- **Conséquence (à ne pas oublier)** : consultatif ne veut pas dire muet. Une liste vide obtenue parce que **personne n'a répondu** ne se confond jamais avec un avis du moteur. Les modules qui rendent un avis portent donc un fait « le moteur a-t-il répondu ? » (`KeywordVariantsOutcome.answered`) et l'interface le dit à l'utilisateur. Une alerte sans variante ni exclusion est créée dans les deux cas ; seule la ligne expliquant pourquoi diffère.
 
 ### ADR-006 : Suppression de la détection des défauts cachés ("Hidden Condition")
 - **Contexte** : Une feature expérimentale tentait d'analyser la description complète du vendeur pour y déceler des défauts (coins tassés, pages jaunies, manques).

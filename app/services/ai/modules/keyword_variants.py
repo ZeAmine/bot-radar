@@ -1,6 +1,7 @@
 """Module IA pour la recherche de pépites cachées et fautes de frappe (Use Case E)."""
 
 import logging
+from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
@@ -77,6 +78,35 @@ def _clean_terms(raw_terms: list[object], title: str) -> list[str]:
     return cleaned
 
 
+@dataclass(frozen=True)
+class KeywordVariantsOutcome:
+    """Ce que la recherche a produit, et si elle aabouti.
+
+    Distinguer deux situations que l'ancien retour `(list, list)` confondait :
+
+    - le moteur a répondu et n'a trouvé ni variante ni exclusion pertinente — il a
+      tranché, et c'est une information utile ;
+    - l'appel a échoué : timeout, erreur HTTP, ou JSON que la validation refuse.
+
+    Dans le second cas la liste vide est un mensonge : elle se lit dans le récap
+    comme un avis du moteur, alors que personne n'a rien demandé à personne. Le
+    chemin `/add` s'appuie sur `answered` pour dire ce qui s'est réellement passé.
+    """
+
+    variants: list[str] = field(default_factory=list)
+    exclusions: list[str] = field(default_factory=list)
+    answered: bool = False
+
+    @property
+    def is_empty(self) -> bool:
+        """Aucune variante et aucune exclusion : le moteur a tranché pour « rien »."""
+        return not self.variants and not self.exclusions
+
+    @classmethod
+    def unanswered(cls) -> "KeywordVariantsOutcome":
+        return cls()
+
+
 class KeywordVariantsModule(BaseAIModule):
     """Génère des variantes orthographiques et des exclusions propres à chaque alerte."""
 
@@ -94,11 +124,21 @@ class KeywordVariantsModule(BaseAIModule):
         title: str,
         category_slug: str = "bd_comics",
         context: BookContext | None = None,
-    ) -> tuple[list[str], list[str]]:
+    ) -> KeywordVariantsOutcome:
         """Génère à la fois les variantes orthographiques et les exclusions
-        intelligentes adaptées au produit, à partir de sa fiche réelle quand elle existe."""
+        intelligentes adaptées au produit, à partir de sa fiche réelle quand elle existe.
+
+        Ne lève jamais : l'IA reste consultative. Le résultat dit en plus si le moteur
+        a réellement répondu, pour que l'appelant puisse distinguer une absence de
+        résultat d'une panne.
+        """
         if not self.is_enabled or not self.client.is_configured:
-            return [], []
+            logger.info(
+                "Recherche de mots-clés ignorée pour « %s » : module désactivé ou "
+                "moteur non configuré.",
+                title,
+            )
+            return KeywordVariantsOutcome.unanswered()
 
         user_prompt = self._build_user_prompt(title, category_slug, context)
         data = await self.client.generate_json(
@@ -107,12 +147,17 @@ class KeywordVariantsModule(BaseAIModule):
             temperature=0.3,
         )
         if not data or not isinstance(data, dict):
-            return [], []
+            return KeywordVariantsOutcome.unanswered()
 
         try:
             payload = KeywordVariantsPayload.model_validate(data)
-        except ValidationError:
-            return [], []
+        except ValidationError as exc:
+            logger.warning(
+                "Réponse du moteur illisible pour « %s » : %s",
+                title,
+                str(exc)[:200],
+            )
+            return KeywordVariantsOutcome.unanswered()
 
         variants = _clean_terms(payload.variants or [], title)
         exclusions = _clean_terms(payload.exclusions or [], title)[:MAX_EXCLUSIONS]
@@ -123,7 +168,11 @@ class KeywordVariantsModule(BaseAIModule):
                 title,
                 str(payload.rationale)[:200],
             )
-        return variants, exclusions
+        return KeywordVariantsOutcome(
+            variants=variants,
+            exclusions=exclusions,
+            answered=True,
+        )
 
     @staticmethod
     def _build_user_prompt(
@@ -153,8 +202,8 @@ class KeywordVariantsModule(BaseAIModule):
 
     async def generate_variants(self, keyword: str) -> list[str]:
         """Génère les variantes pour un mot-clé donné (rétrocompatibilité)."""
-        variants, _ = await self.generate_variants_and_exclusions(keyword)
-        return variants
+        outcome = await self.generate_variants_and_exclusions(keyword)
+        return outcome.variants
 
 
 keyword_variants_module = KeywordVariantsModule()

@@ -111,6 +111,7 @@ def format_semi_auto_recap(
     is_series: bool = False,
     isbn_note: str | None = None,
     edition_alternatives: list[dict[str, Any]] | None = None,
+    keyword_note: str | None = None,
 ) -> str:
     """Carte compacte du brouillon, telle qu'affichée avant « Créer l'alerte ».
 
@@ -150,6 +151,10 @@ def format_semi_auto_recap(
         lines.append(f"✨ <b>Variantes :</b> {_join_escaped(variants)}")
     if exclude_keywords:
         lines.append(f"🚫 <b>Exclus :</b> {_join_escaped(exclude_keywords)}")
+    if keyword_note:
+        # La ligne suit immédiatement ce qu'elle explique : des variantes absentes,
+        # c'est une observation faite sur ces lignes-là.
+        lines.append(keyword_note)
 
     edition_lines = format_edition_line(edition_alternatives, isbn)
     if edition_lines:
@@ -268,7 +273,7 @@ def format_edition_line(
     ]
 
 
-def recap_from_state(data: dict[str, Any]) -> str:
+def recap_from_state(data: dict[str, Any], keyword_note: str | None = None) -> str:
     """Construit le récap de création à partir du brouillon FSM (rendu unique)."""
     return format_semi_auto_recap(
         title=data.get("name", "Alerte"),
@@ -283,6 +288,7 @@ def recap_from_state(data: dict[str, Any]) -> str:
         is_series=data.get("is_series", False),
         isbn_note=data.get("isbn_note"),
         edition_alternatives=data.get("edition_alternatives"),
+        keyword_note=keyword_note,
     )
 
 

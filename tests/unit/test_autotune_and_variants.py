@@ -33,6 +33,12 @@ from app.bot.handlers.autotune import (
 from app.bot.states.alert_creation import AutoTuneState
 from app.db.models.alert import Alert
 from app.db.models.user import User
+from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
+
+_GEN_PATH = (
+    "app.services.ai.modules.keyword_variants."
+    "keyword_variants_module.generate_variants_and_exclusions"
+)
 
 
 @pytest.mark.asyncio
@@ -54,14 +60,14 @@ async def test_handle_create_ai_variants():
     )
     state.update_data = AsyncMock()
 
-    gen_path = (
-        "app.services.ai.modules.keyword_variants."
-        "keyword_variants_module.generate_variants_and_exclusions"
-    )
     with patch(
-        gen_path,
+        _GEN_PATH,
         new_callable=AsyncMock,
-        return_value=(["onepiece", "one piece tomes"], ["figurine", "carte"]),
+        return_value=KeywordVariantsOutcome(
+            variants=["onepiece", "one piece tomes"],
+            exclusions=["figurine", "carte"],
+            answered=True,
+        ),
     ):
         await handle_create_ai_variants(callback, state)
 
@@ -78,6 +84,73 @@ async def test_handle_create_ai_variants():
         assert "onepiece" in last_text
         assert "Exclus :" in last_text
         assert "figurine" in last_text
+
+
+@pytest.mark.asyncio
+async def test_handle_create_ai_variants_reports_engine_decision_when_nothing_found():
+    """Le moteur a répondu « rien de pertinent » : le récap le dit, et ne change rien."""
+    callback = MagicMock(spec=CallbackQuery)
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+
+    state = MagicMock(spec=FSMContext)
+    state.get_data = AsyncMock(
+        return_value={
+            "name": "One Piece",
+            "include_keywords": ["One Piece"],
+            "max_item_price_cents": 3500,
+            "category_slug": "bd_comics",
+        }
+    )
+    state.update_data = AsyncMock()
+
+    with patch(
+        _GEN_PATH,
+        new_callable=AsyncMock,
+        return_value=KeywordVariantsOutcome(answered=True),
+    ):
+        await handle_create_ai_variants(callback, state)
+
+    state.update_data.assert_not_called()
+    assert callback.message.edit_text.call_count == 2
+    last_text = callback.message.edit_text.call_args[0][0]
+    assert "Aucune modification" in last_text
+    assert "n'a trouvé aucune variante ni exclusion pertinente" in last_text
+    # Un avis du moteur ne se confond pas avec une panne.
+    assert "pas répondu à temps" not in last_text
+
+
+@pytest.mark.asyncio
+async def test_handle_create_ai_variants_reports_silence_when_engine_failed():
+    """Le moteur n'a pas répondu : le récap avoue l'échec au lieu de laisser croire à un avis."""
+    callback = MagicMock(spec=CallbackQuery)
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+
+    state = MagicMock(spec=FSMContext)
+    state.get_data = AsyncMock(
+        return_value={
+            "name": "One Piece",
+            "include_keywords": ["One Piece"],
+            "max_item_price_cents": 3500,
+            "category_slug": "bd_comics",
+        }
+    )
+    state.update_data = AsyncMock()
+
+    with patch(
+        _GEN_PATH,
+        new_callable=AsyncMock,
+        return_value=KeywordVariantsOutcome.unanswered(),
+    ):
+        await handle_create_ai_variants(callback, state)
+
+    state.update_data.assert_not_called()
+    last_text = callback.message.edit_text.call_args[0][0]
+    assert "Aucune modification" in last_text
+    assert "l'IA n'a pas répondu" in last_text
 
 
 @pytest.mark.asyncio

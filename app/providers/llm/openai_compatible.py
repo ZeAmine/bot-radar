@@ -24,6 +24,19 @@ class OpenAICompatibleClient(BaseLLMClient):
 
     vendor = "openai-compatible"
 
+    # Le mode raisonnement est ACTIVÉ PAR DÉFAUT chez DeepSeek, avec un effort
+    # « high », et il neutralise alors `temperature`. Mesuré sur les prompts de
+    # production (`scripts/probe_llm_latency.py`) : le prompt variantes passe de
+    # 12,3 s — au-delà du budget, donc perdu — à 1,4 s sans raisonnement ; le
+    # parsing `/add` de 10,9 s à 1,2 s. Pour un projet qui tient une ligne de
+    # latence à chaque appel, ce n'est pas un réglage mais une source de pannes.
+    #
+    # C'est un champ de dialecte, donc il vit ici, dans la seule frontière qui
+    # connaît un fournisseur (invariant n°4). Un endpoint qui refuserait un champ
+    # inconnu n'a qu'à passer cet attribut à `None` : le comportement par défaut du
+    # fournisseur est alors rendu tel quel.
+    reasoning_disabled: dict[str, Any] | None = {"type": "disabled"}
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -66,12 +79,15 @@ class OpenAICompatibleClient(BaseLLMClient):
             messages.append({"role": "user", "content": content})
         else:
             messages.append({"role": "user", "content": user_prompt})
-        return {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "response_format": {"type": "json_object"},
             "temperature": temperature,
         }
+        if self.reasoning_disabled is not None:
+            payload["thinking"] = self.reasoning_disabled
+        return payload
 
     def extract_text(self, data: Any) -> str | None:
         """Isole `choices[0].message.content`."""

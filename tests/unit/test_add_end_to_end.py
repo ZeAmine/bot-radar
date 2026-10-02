@@ -26,6 +26,7 @@ from app.bot.handlers.alerts_create_confirm import (
 from app.core.constants import ComparisonStatus
 from app.db.models.user import User
 from app.providers.base import MarketOffer
+from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
 
 # Édition de référence de l'œuvre demandée, confirmée par la BNF.
@@ -180,7 +181,26 @@ def _repositories(isbn13: str) -> dict:
         "category_repo": category_repo,
         "market_repo": market_repo,
         "provider": MagicMock(get_offers=AsyncMock(return_value=[_fake_market_offer(isbn13)])),
+        # La recherche des variantes part en arrière-plan : le test la déclenche lui-même.
+        "tasks": [],
     }
+
+
+def _defer_task(holder: list) -> object:
+    """Remplace `safe_create_task` : retient la coroutine pour que le test la pilote."""
+
+    def _run(coro, name=None):
+        holder.append((coro, name))
+        return None
+
+    return _run
+
+
+async def _drain(tasks: list) -> None:
+    """Exécute la recherche de fond retenue, comme le ferait la boucle d'événements."""
+    for coro, _name in tasks:
+        await coro
+    tasks.clear()
 
 
 def _patched(repos: dict, bnf: MagicMock, client: MagicMock):
@@ -200,7 +220,15 @@ def _patched(repos: dict, bnf: MagicMock, client: MagicMock):
             "app.bot.handlers.alerts_create.keyword_variants_module."
             "generate_variants_and_exclusions",
             new_callable=AsyncMock,
-            return_value=(["couleurdeschoses"], ["keeping two"]),
+            return_value=KeywordVariantsOutcome(
+                variants=["couleurdeschoses"],
+                exclusions=["keeping two"],
+                answered=True,
+            ),
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.safe_create_task",
+            new=_defer_task(repos["tasks"]),
         ),
         patch("app.bot.handlers.alerts_create.BookRepository", return_value=repos["book_repo"]),
         patch("app.bot.handlers.alerts_create.AlertRepository", return_value=repos["alert_repo"]),
@@ -264,6 +292,7 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
         entered.start()
     try:
         await start_add_alert(message, state, db_session, db_user)
+        await _drain(repos["tasks"])
 
         # 1. L'ISBN du modèle est refusé : la BNF le rattache à un autre ouvrage.
         bnf.verify_isbn.assert_awaited_once_with(ISBN_AUTRE_LIVRE, "La couleur des choses")
@@ -374,6 +403,7 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
             entered.start()
         try:
             await start_add_alert(message, state, db_session, db_user)
+            await _drain(repos["tasks"])
 
             # 1. Sans confirmation BNF, l'alerte part en surveillance par titre.
             recap = _recap_text(loading_message)
@@ -455,6 +485,7 @@ async def test_add_end_to_end_typed_isbn_beats_model_proposal():
         entered.start()
     try:
         await start_add_alert(message, state, db_session, db_user)
+        await _drain(repos["tasks"])
 
         bnf.verify_isbn.assert_awaited_once_with("9782369903086", "La couleur des choses")
 
@@ -488,6 +519,15 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
         await start_add_alert(message, state, AsyncMock(), User(
             id=uuid.uuid4(), telegram_user_id=123
         ))
+
+        # Le récap n'est pas encore publié : le handler a rendu la main sur le jalon.
+        # Le récap complet attend la recherche, il ne bloque pas le retour.
+        assert loading_message.edit_text.await_count == 1
+        assert "🔎 <b>La couleur des choses</b> identifié" in (
+            loading_message.edit_text.await_args[0][0]
+        )
+
+        await _drain(repos["tasks"])
 
         # Deux éditions successives : le jalon, puis le récap final.
         assert loading_message.edit_text.await_count == 2
@@ -530,6 +570,7 @@ async def test_add_natural_add_applies_variants_without_asking_for_a_click():
         await start_add_alert(message, state, AsyncMock(), User(
             id=uuid.uuid4(), telegram_user_id=123
         ))
+        await _drain(repos["tasks"])
 
         recap = _recap_text(loading_message)
         assert "✨ <b>Variantes :</b> couleurdeschoses" in recap
@@ -546,6 +587,56 @@ async def test_add_natural_add_applies_variants_without_asking_for_a_click():
             for row in keyboard.inline_keyboard
             for button in row
         ].count("alert_create_ai_variants") == 0
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert():
+    """Les variantes trouvées en arrière-plan atteignent bien la ligne créée.
+
+    La recherche part après l'affichage du jalon : si son résultat ne redescendait pas
+    dans l'état du brouillon, l'alerte serait enregistrée sans variantes — un travail
+    d'IA payé puis perdu, sans que rien ne le signale.
+    """
+    resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
+    bnf = _fake_bnf(resolution)
+    client = _fake_deepseek(_deepseek_payload())
+    repos = _repositories(BNF_EDITION.isbn13)
+
+    message, _loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    state = DraftState()
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    patches = _patched(repos, bnf, client)
+    for entered in patches:
+        entered.start()
+    try:
+        await start_add_alert(message, state, db_session, db_user)
+        await _drain(repos["tasks"])
+
+        confirm_message = MagicMock(spec=Message)
+        confirm_message.edit_text = AsyncMock()
+        confirm_callback = MagicMock()
+        confirm_callback.data = "alert_create_confirm"
+        confirm_callback.message = confirm_message
+        confirm_callback.answer = AsyncMock()
+
+        await save_alert(confirm_callback, state, db_user, db_session)
+
+        create_kwargs = repos["alert_repo"].create.call_args.kwargs
+        assert create_kwargs["name"] == "La couleur des choses"
+        assert create_kwargs["isbn"] == BNF_EDITION.isbn13
+        assert create_kwargs["include_keywords"] == ["La couleur des choses"]
+        assert create_kwargs["variants"] == ["couleurdeschoses"]
+        assert create_kwargs["exclude_keywords"] == ["keeping two"]
+
+        # La confirmation rejoue les mêmes mots-clés : ce qui est annoncé est ce qui est stocké.
+        confirmation = confirm_message.edit_text.call_args[0][0]
+        assert "✨ <b>Variantes :</b> couleurdeschoses" in confirmation
+        assert "🚫 <b>Exclus :</b> keeping two" in confirmation
     finally:
         for entered in reversed(patches):
             entered.stop()
