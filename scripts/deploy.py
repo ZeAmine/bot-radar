@@ -22,7 +22,9 @@ Usage :
 from __future__ import annotations
 
 import argparse
+import base64
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -196,12 +198,110 @@ def step_verify(ctx: Context) -> int:
     return subprocess.run(argv).returncode
 
 
+def clean_commit_message(raw_msg: str) -> str:
+    """Nettoie un message de commit pour en faire une phrase naturelle sans préfixe GitHub.
+
+    Exemples :
+        "feat(bot): interruption binaire stricte sur /add dès détection d'un doublon"
+        -> "Interruption binaire stricte sur /add dès détection d'un doublon"
+        "fix(scripts): le corps du PUT prend la forme que l'API accepte"
+        -> "Le corps du PUT prend la forme que l'API accepte"
+    """
+    cleaned = raw_msg.strip()
+    cleaned = re.sub(
+        r"^(?:feat|fix|refactor|docs|perf|test|chore|style|ci|build)(?:\([^)]+\))?:\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = cleaned.strip()
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
+def format_deploy_notification(commit_messages: list[str]) -> str:
+    """Formate la notification Telegram dans le style naturel des alertes du bot."""
+    cleaned = [clean_commit_message(msg) for msg in commit_messages if msg.strip()]
+    if not cleaned:
+        cleaned = ["Mise à jour des composants et améliorations mineures."]
+
+    bullets = "\n".join(f"• {msg}" for msg in cleaned)
+    return f"🚀 <b>Mise en ligne effectuée</b>\n\n{bullets}"
+
+
+def get_deployed_commits(ctx: Context) -> tuple[str, list[str]]:
+    """Récupère le commit HEAD courant et la liste des commits déployés depuis le précédent."""
+    code, current_head = _run_local(["git", "rev-parse", "HEAD"])
+    if code != 0 or not current_head:
+        return "", []
+
+    prev_commit = ""
+    remote = (
+        None
+        if ctx.dry_run
+        else (ctx.remote if ctx.remote is not None else ctx.remote_or_default())
+    )
+    if remote is not None:
+        code_prev, out_prev, _ = remote.run(
+            f"cat {ctx.remote_dir}/.deployed_commit 2>/dev/null || true"
+        )
+        if code_prev == 0 and out_prev.strip():
+            prev_commit = out_prev.strip()
+
+    commits: list[str] = []
+    if prev_commit:
+        code_anc, _ = _run_local(["git", "cat-file", "-e", prev_commit])
+        if code_anc == 0:
+            code_log, out_log = _run_local(
+                ["git", "log", f"{prev_commit}..HEAD", "--pretty=format:%s"]
+            )
+            if code_log == 0 and out_log.strip():
+                commits = [line.strip() for line in out_log.splitlines() if line.strip()]
+
+    if not commits:
+        code_log, out_log = _run_local(["git", "log", "-1", "--pretty=format:%s"])
+        if code_log == 0 and out_log.strip():
+            commits = [out_log.strip()]
+
+    return current_head, commits
+
+
+def step_notify(ctx: Context) -> int:
+    """Envoie la notification de mise en ligne sur Telegram et met à jour le commit de référence."""
+    print(f"{DIM}envoie la notification de mise en ligne sur Telegram{RESET}")
+    current_head, commits = get_deployed_commits(ctx)
+    message = format_deploy_notification(commits)
+
+    if ctx.dry_run:
+        print(f"{DIM}  Message Telegram (simulation) :\n{message}{RESET}")
+        return 0
+
+    b64_msg = base64.b64encode(message.encode("utf-8")).decode("ascii")
+    script = (
+        f"set -eu\n"
+        f"cd {ctx.remote_dir}\n"
+        f"docker compose exec -T app python scripts/notify_deploy.py --base64 '{b64_msg}' || true\n"
+    )
+    if current_head:
+        script += f"echo '{current_head}' > {ctx.remote_dir}/.deployed_commit\n"
+
+    code, out, err = ctx.remote_or_default().run(script)
+    if out.strip():
+        print(f"{DIM}{out.strip()}{RESET}")
+    if err.strip():
+        print(f"{YELLOW}Avertissement notification : {err.strip()}{RESET}")
+
+    return 0
+
+
 STEPS: tuple[tuple[str, Callable[[Context], int]], ...] = (
     ("Pré-vol", step_preflight),
     ("Synchronisation", step_sync),
     ("Reconstruction de l'image", step_rebuild),
     ("Migration", step_migrate),
     ("Vérification", step_verify),
+    ("Notification", step_notify),
 )
 
 

@@ -17,11 +17,15 @@ from deploy import (  # noqa: E402
     HEALTH_ATTEMPTS,
     RSYNC_EXCLUDES,
     Context,
+    clean_commit_message,
+    format_deploy_notification,
     rsync_argv,
     run_steps,
     step_migrate,
+    step_notify,
     step_rebuild,
 )
+from notify_deploy import send_telegram_notification  # noqa: E402
 
 
 def _ctx(**overrides) -> Context:
@@ -144,3 +148,133 @@ def test_rebuild_runs_on_the_remote_directory():
 def test_remote_failure_is_propagated(code):
     """Une commande distante en échec arrête l'étape, quel que soit son code."""
     assert step_rebuild(_ctx(remote=_FakeRemote(code=code))) == code
+
+
+def test_clean_commit_message_strips_github_prefixes():
+    """Vérifie le retrait des préfixes conventionnels et la capitalisation naturelle."""
+    assert (
+        clean_commit_message("feat(bot): interruption binaire stricte sur /add")
+        == "Interruption binaire stricte sur /add"
+    )
+    assert (
+        clean_commit_message("fix(ia): recherche des variantes stabilisée")
+        == "Recherche des variantes stabilisée"
+    )
+    assert (
+        clean_commit_message("refactor: clarification du pipeline")
+        == "Clarification du pipeline"
+    )
+    # Message déjà naturel sans préfixe
+    assert (
+        clean_commit_message("Le backoff du provider rendu injectable")
+        == "Le backoff du provider rendu injectable"
+    )
+
+
+def test_format_deploy_notification_structure():
+    """La notification contient l'en-tête de mise en ligne et les puces nettoyées."""
+    res = format_deploy_notification(
+        [
+            "feat(bot): détection de doublons",
+            "fix(ia): correction du timeout",
+        ]
+    )
+    assert "🚀 <b>Mise en ligne effectuée</b>" in res
+    assert "• Détection de doublons" in res
+    assert "• Correction du timeout" in res
+
+
+def test_format_deploy_notification_fallback_empty():
+    """Un ensemble vide de commits génère une puce de repli générique."""
+    res = format_deploy_notification([])
+    assert "🚀 <b>Mise en ligne effectuée</b>" in res
+    assert "• Mise à jour des composants et améliorations mineures." in res
+
+
+def test_step_notify_dry_run_executes_nothing():
+    """En dry-run, aucune commande n'est envoyée au VPS."""
+    remote = _FakeRemote()
+    ctx = _ctx(dry_run=True, remote=remote)
+    assert step_notify(ctx) == 0
+    assert remote.scripts == []
+
+
+def test_step_notify_executes_remote_and_saves_commit(monkeypatch):
+    """Vérifie l'exécution distante de notify_deploy.py et l'enregistrement du commit."""
+    remote = _FakeRemote()
+    ctx = _ctx(remote=remote)
+
+    monkeypatch.setattr(
+        "deploy.get_deployed_commits",
+        lambda _c: ("abcdef123456", ["feat(bot): nouvelle fonctionnalité"]),
+    )
+
+    assert step_notify(ctx) == 0
+    assert len(remote.scripts) == 1
+    script = remote.scripts[0]
+    assert "docker compose exec -T app python scripts/notify_deploy.py --base64" in script
+    assert "echo 'abcdef123456' > ~/bot-radar/.deployed_commit" in script
+
+
+def test_step_notify_survives_remote_failure(monkeypatch):
+    """Une erreur de la commande distante ne doit pas faire échouer le déploiement."""
+    remote = _FakeRemote(code=1)
+    ctx = _ctx(remote=remote)
+
+    monkeypatch.setattr(
+        "deploy.get_deployed_commits",
+        lambda _c: ("abcdef123456", ["feat(bot): test"]),
+    )
+
+    # step_notify retourne 0 pour ne pas invalider un déploiement déjà sain
+    assert step_notify(ctx) == 0
+
+
+def test_send_telegram_notification_dry_run(monkeypatch):
+    """En mode dry-run, send_telegram_notification affiche le message sans HTTP."""
+    monkeypatch.setattr("app.core.config.settings.TELEGRAM_BOT_TOKEN", "123:dummy")
+    monkeypatch.setattr("app.core.config.settings.TELEGRAM_ALLOWED_USER_IDS", [123456789])
+
+    assert send_telegram_notification("Test message", dry_run=True) is True
+
+
+def test_send_telegram_notification_missing_credentials(monkeypatch):
+    """Sans token ou utilisateurs, la fonction retourne False proprement."""
+    monkeypatch.setattr("app.core.config.settings.TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setattr("app.core.config.settings.TELEGRAM_ALLOWED_USER_IDS", [])
+
+    assert send_telegram_notification("Test message") is False
+
+
+def test_send_telegram_notification_http_post(monkeypatch):
+    """Vérifie l'envoi HTTP effectif avec httpx mocké."""
+    monkeypatch.setattr("app.core.config.settings.TELEGRAM_BOT_TOKEN", "123:dummy")
+    monkeypatch.setattr("app.core.config.settings.TELEGRAM_ALLOWED_USER_IDS", [123456789])
+
+    posted_urls: list[str] = []
+    posted_payloads: list[dict] = []
+
+    class _MockResponse:
+        status_code = 200
+        text = "ok"
+
+    class _MockClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json=None, **_kwargs):
+            posted_urls.append(url)
+            posted_payloads.append(json or {})
+            return _MockResponse()
+
+    monkeypatch.setattr("httpx.Client", lambda **_kwargs: _MockClient())
+
+    assert send_telegram_notification("<b>Message</b>") is True
+    assert len(posted_urls) == 1
+    assert "https://api.telegram.org/bot123:dummy/sendMessage" in posted_urls[0]
+    assert posted_payloads[0]["chat_id"] == 123456789
+    assert posted_payloads[0]["text"] == "<b>Message</b>"
+    assert posted_payloads[0]["parse_mode"] == "HTML"
