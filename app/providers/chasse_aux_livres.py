@@ -5,6 +5,7 @@ import html
 import logging
 import re
 import urllib.parse
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -23,6 +24,11 @@ from app.services.market_price_service import extract_tome_number_from_title
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.providers.chasse_aux_livres")
+
+# Attente entre deux tentatives. Injectable pour que les tests qui exercent le
+# backoff ne paient pas les délais en temps réel : en production c'est
+# `asyncio.sleep`, jamais autre chose.
+Sleeper = Callable[[float], Awaitable[None]]
 
 # Similarité minimale entre le titre attendu et celui renvoyé par l'agrégateur.
 TITLE_COHERENCE_MIN = 0.72
@@ -110,9 +116,11 @@ class ChasseAuxLivresProvider:
         self,
         timeout_seconds: float = 10.0,
         http_client: httpx.AsyncClient | None = None,
+        sleep: Sleeper = asyncio.sleep,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.http_client = http_client
+        self._sleep = sleep
 
     @staticmethod
     def _significant_words(title: str) -> set[str]:
@@ -211,7 +219,7 @@ class ChasseAuxLivresProvider:
                             max_retries + 1,
                             wait_time,
                         )
-                        await asyncio.sleep(wait_time)
+                        await self._sleep(wait_time)
                         continue
                     logger.warning("Chasse-aux-livres rate-limit persistant pour '%s'.", query)
                     return []
@@ -258,7 +266,7 @@ class ChasseAuxLivresProvider:
 
             except Exception as exc:
                 if attempt < max_retries:
-                    await asyncio.sleep(1.5)
+                    await self._sleep(1.5)
                     continue
                 logger.debug("Erreur silencieuse connecteur Chasse-aux-livres: %s", exc)
                 return []

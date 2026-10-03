@@ -79,6 +79,33 @@ MOCK_LOOKUP_JSON = {
 }
 
 
+def _recording_provider() -> tuple[ChasseAuxLivresProvider, list[float]]:
+    """Provider dont le backoff est enregistré au lieu d'être attendu.
+
+    Sans cela, un test qui atteint la boucle de retry paie 1,5 s puis 1,5 s en
+    temps réel. La liste renvoyée permet surtout d'affirmer qu'aucun repli n'a
+    eu lieu : un `side_effect` épuisé lève, l'exception est avalée, `get_offers`
+    renvoie `[]` — et un test qui n'assert qu'une liste vide passe alors pour la
+    mauvaise raison.
+    """
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    return ChasseAuxLivresProvider(sleep=fake_sleep), slept
+
+
+def _search_call_count(mock_get: AsyncMock) -> int:
+    """Nombre de pages de recherche demandées : une par tentative de `get_offers`.
+
+    Compte les requêtes et non les appels totaux : le nombre exact d'appels
+    profonds est un détail d'implémentation, les deux tentatives (ISBN puis
+    titre) sont ce que le test doit voir.
+    """
+    return sum(1 for call in mock_get.call_args_list if "/search?query=" in call.args[0])
+
+
 @pytest.mark.asyncio
 async def test_chasse_aux_livres_success_by_title():
     provider = ChasseAuxLivresProvider()
@@ -141,11 +168,15 @@ async def test_chasse_aux_livres_no_hash():
 
 @pytest.mark.asyncio
 async def test_chasse_aux_livres_network_error():
-    provider = ChasseAuxLivresProvider()
+    provider, slept = _recording_provider()
 
     with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectTimeout("Timeout")):
         offers = await provider.get_offers(isbn13=None, title="Rip")
-        assert len(offers) == 0
+
+    assert len(offers) == 0
+    # La politique de retry est vérifiée, pas subi : deux pauses de 1,5 s
+    # entre les trois tentatives. Sans l'injection, ce test coûtait 3 s.
+    assert slept == [1.5, 1.5]
 
 
 @pytest.mark.asyncio
@@ -182,25 +213,42 @@ async def test_chasse_aux_livres_deep_lookup_success():
 async def test_chasse_aux_livres_title_mismatch_rejected():
     """Vérifie qu'un résultat dont le titre est disjoint de la recherche
     est rejeté (ex: Ogrest pour Loba Loca)."""
-    provider = ChasseAuxLivresProvider()
+    provider, slept = _recording_provider()
 
     resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
     # MOCK_REST_JSON renvoie 'Rip Tome 1'
     resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
+    resp_prod = httpx.Response(200, text=MOCK_PROD_HTML)
+    resp_lookup = httpx.Response(200, json=MOCK_LOOKUP_JSON)
 
+    # `get_offers` cherche d'abord par ISBN, puis se replie sur le titre, et
+    # chaque recherche va jusqu'à la fiche produit quand le titre est cohérent.
+    # N'en fournir que deux faisait épuiser le `side_effect` : l'exception était
+    # avalée par la boucle de retry, `get_offers` renvoyait `[]`, et le test
+    # passait pour la mauvaise raison. Vérifié : en neutralisant
+    # `is_title_coherent`, la règle morte laissait passer une offre « Rip Tome 1 »
+    # pour « Mutafukaz Loba Loca » — avec les huit réponses, `len(offers) == 0`
+    # la détecte.
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_get.side_effect = [resp_search, resp_rest]
+        mock_get.side_effect = [
+            resp_search, resp_rest, resp_prod, resp_lookup,
+            resp_search, resp_rest, resp_prod, resp_lookup,
+        ]
 
         # Recherche pour "Mutafukaz Loba Loca" avec réponse "Rip Tome 1"
         offers = await provider.get_offers(isbn13="9791033511908", title="Mutafukaz Loba Loca")
-        assert len(offers) == 0
+
+    assert len(offers) == 0
+    # Les deux recherches ont bien abouti, sans repli silencieux.
+    assert _search_call_count(mock_get) == 2
+    assert slept == []
 
 
 @pytest.mark.asyncio
 async def test_chasse_aux_livres_strict_used_filtering():
     """Vérifie que si seules des offres neuves sont retournées,
     aucune offre d'occasion n'est inventée."""
-    provider = ChasseAuxLivresProvider()
+    provider, slept = _recording_provider()
 
     resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
     resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
@@ -221,10 +269,18 @@ async def test_chasse_aux_livres_strict_used_filtering():
     resp_lookup = httpx.Response(200, json=mock_lookup_only_new)
 
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_get.side_effect = [resp_search, resp_rest, resp_prod, resp_lookup]
+        # Deux fois quatre réponses : la recherche par ISBN puis le repli par
+        # titre doivent tous deux aboutir, sans être avalés par le retry.
+        mock_get.side_effect = [
+            resp_search, resp_rest, resp_prod, resp_lookup,
+            resp_search, resp_rest, resp_prod, resp_lookup,
+        ]
 
         offers = await provider.get_offers(isbn13="9791095670568", title="Rip Tome 1")
-        assert len(offers) == 0
+
+    assert len(offers) == 0
+    assert _search_call_count(mock_get) == 2
+    assert slept == []
 
 
 @pytest.mark.asyncio
