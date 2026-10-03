@@ -233,6 +233,34 @@ async def load_active_custom_searches() -> list[tuple[str, str]]:
         return []
 
 
+# Les recherches personnalisées ne changent que sur action de l'utilisateur
+# (création, modification ou suppression d'une alerte). Les relire à chaque cycle,
+# soit toutes les 12 à 15 secondes, est une requête SQL sans objet.
+CUSTOM_SEARCH_TTL_SECONDS = 60.0
+_custom_searches_cache: tuple[float, list[tuple[str, str]]] | None = None
+
+
+async def get_active_custom_searches_cached(now: float | None = None) -> list[tuple[str, str]]:
+    """Recharge les recherches personnalisées au plus une fois par TTL."""
+    global _custom_searches_cache
+    current = time.time() if now is None else now
+    if (
+        _custom_searches_cache is not None
+        and current - _custom_searches_cache[0] < CUSTOM_SEARCH_TTL_SECONDS
+    ):
+        return _custom_searches_cache[1]
+
+    searches = await load_active_custom_searches()
+    _custom_searches_cache = (current, searches)
+    return searches
+
+
+def reset_custom_searches_cache() -> None:
+    """Vide le cache des recherches (utilisé par les tests)."""
+    global _custom_searches_cache
+    _custom_searches_cache = None
+
+
 _ingest_semaphore: asyncio.Semaphore | None = None
 
 
@@ -409,7 +437,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 count_custom = 0
                 # 2. Surveiller les recherches actives hors-livres (Électronique, Vêtements, Jeux
                 # Vidéo)
-                custom_searches = await load_active_custom_searches()
+                custom_searches = await get_active_custom_searches_cached()
                 if custom_searches and not stop_event.is_set():
                     # Interroger 1 recherche personnalisée par cycle en round-robin pour préserver
                     # l'IP

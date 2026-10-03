@@ -347,6 +347,39 @@ async def test_handle_tune_apply():
 
 
 @pytest.mark.asyncio
+async def test_handle_tune_apply_keeps_suggestion_when_alert_missing():
+    """Alerte introuvable : la suggestion n'est pas consommée, l'utilisateur peut réessayer."""
+    alert_id = uuid.uuid4()
+    _pending_tuning[str(alert_id)] = ["figurine", "t-shirt"]
+
+    callback = MagicMock(spec=CallbackQuery)
+    callback.data = f"ai_tune_apply:{alert_id}"
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123456)
+    db_session = MagicMock()
+    db_session.commit = AsyncMock()
+
+    with patch(
+        "app.bot.handlers.autotune.AlertRepository.get_by_id",
+        new_callable=AsyncMock,
+        return_value=None,
+    ), patch(
+        "app.bot.handlers.autotune.clear_dislikes_for_alert",
+        new_callable=AsyncMock,
+    ) as mock_clear:
+        await handle_tune_apply(callback, db_user, db_session)
+
+        callback.answer.assert_awaited_once_with("Alerte introuvable.", show_alert=True)
+        mock_clear.assert_not_called()
+        db_session.commit.assert_not_called()
+        # La suggestion survit à l'échec : rien ne l'a consommée.
+        assert _pending_tuning[str(alert_id)] == ["figurine", "t-shirt"]
+
+
+@pytest.mark.asyncio
 async def test_handle_var_apply():
     """Vérifie l'application effective des variantes orthographiques à alert.variants."""
     alert_id = uuid.uuid4()

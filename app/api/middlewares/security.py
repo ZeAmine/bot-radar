@@ -41,11 +41,26 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
     """Rejette immédiatement les requêtes dont la taille dépasse la limite
-    autorisée (Anti-OOM / Anti-DDoS)."""
+    autorisée (Anti-OOM / Anti-DDoS).
+
+    Une requête en ``Transfer-Encoding: chunked`` n'annonce pas sa taille : sans
+    refus explicite, elle échappe au contrôle et son corps entier finit chargé en
+    mémoire par le handler (`await request.json()`), ce qui suffit à tuer le
+    processus. Aucun client de cette API — webhook Telegram, ingestion, routes
+    internes — n'envoie de corps streamé : le chunked est donc refusé.
+    """
 
     def __init__(self, app: Callable[..., Any], max_bytes: int = 524_288) -> None:  # 512 Ko
         super().__init__(app)
         self.max_bytes = max_bytes
+
+    def _payload_too_large(self) -> JSONResponse:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "detail": (f"Payload trop volumineux (limite: {self.max_bytes // 1024} Ko).")
+            },
+        )
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         content_length_header = request.headers.get("content-length")
@@ -59,16 +74,16 @@ class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
                         content_length,
                         self.max_bytes,
                     )
-                    return JSONResponse(
-                        status_code=413,
-                        content={
-                            "detail": (
-                                f"Payload trop volumineux "
-                                f"(limite: {self.max_bytes // 1024} Ko)."
-                            )},
-                    )
+                    return self._payload_too_large()
             except ValueError:
                 pass
+        elif "chunked" in request.headers.get("transfer-encoding", "").lower():
+            logger.warning(
+                "Requête rejetée : taille de payload indéterminable "
+                "(Transfer-Encoding: chunked) sur %s.",
+                request.url.path,
+            )
+            return self._payload_too_large()
 
         return await call_next(request)
 

@@ -14,9 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY pyproject.toml .
+# Le code applicatif arrive plus bas par COPY : le wheel construit ici ne sert
+# qu'à installer les dépendances. `requirements.lock` contraint chaque version,
+# donc deux reconstructions de la même révision donnent le même environnement.
+COPY pyproject.toml requirements.lock ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir .
+    pip install --no-cache-dir -c requirements.lock .
 
 # ==============================================================================
 # Étape 2 : Runtime final

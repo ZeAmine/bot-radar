@@ -1,5 +1,6 @@
 """Tests unitaires pour l'Auto-Tuning proactif et le self-tuning (Phase A)."""
 
+import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,11 +12,11 @@ from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.db.models.user import User
 from app.services.ai.modules.auto_tuning import (
+    claim_autotune_slot,
     get_pending_tuning,
-    is_autotune_on_cooldown,
     pop_pending_tuning,
+    release_autotune_claim,
     save_pending_tuning,
-    set_autotune_cooldown,
 )
 from app.tasks.proactive_autotune import (
     check_and_trigger_proactive_autotune,
@@ -47,20 +48,47 @@ async def test_pending_tuning_cache_lifecycle():
 
 
 @pytest.mark.asyncio
-async def test_autotune_cooldown():
-    """Vérifie le fonctionnement du cooldown anti-spam."""
+async def test_autotune_claim_is_exclusive():
+    """Un seul appelant obtient le créneau : c'est `SET NX` qui rend cela vrai."""
     alert_id = uuid.uuid4()
     with patch("app.services.ai.modules.auto_tuning.get_redis_client") as mock_redis_factory:
         mock_redis = MagicMock()
-        mock_redis.exists = AsyncMock(return_value=1)
-        mock_redis.set = AsyncMock()
+        # Premier appelant : Redis accepte. Second appelant : clé déjà présente.
+        mock_redis.set = AsyncMock(side_effect=[True, None])
+        mock_redis.delete = AsyncMock()
         mock_redis_factory.return_value = mock_redis
 
-        await set_autotune_cooldown(alert_id, ttl_seconds=3600)
-        mock_redis.set.assert_awaited_once_with(f"autotune:cooldown:{alert_id}", "1", ex=3600)
+        assert await claim_autotune_slot(alert_id, ttl_seconds=3600) is True
+        assert await claim_autotune_slot(alert_id, ttl_seconds=3600) is False
 
-        in_cooldown = await is_autotune_on_cooldown(alert_id)
-        assert in_cooldown is True
+        mock_redis.set.assert_awaited_with(
+            f"autotune:cooldown:{alert_id}", "1", ex=3600, nx=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_autotune_claim_fails_closed_without_redis():
+    """Redis injoignable : on refuse d'émettre plutôt que de risquer un doublon."""
+    alert_id = uuid.uuid4()
+    with patch(
+        "app.services.ai.modules.auto_tuning.get_redis_client",
+        side_effect=ConnectionError("redis down"),
+    ):
+        assert await claim_autotune_slot(alert_id) is False
+
+
+@pytest.mark.asyncio
+async def test_autotune_claim_released_when_no_proposal():
+    """Rien n'étant émis, le créneau est relâché pour permettre un nouvel essai."""
+    alert_id = uuid.uuid4()
+    with patch("app.services.ai.modules.auto_tuning.get_redis_client") as mock_redis_factory:
+        mock_redis = MagicMock()
+        mock_redis.delete = AsyncMock()
+        mock_redis_factory.return_value = mock_redis
+
+        await release_autotune_claim(alert_id)
+
+        mock_redis.delete.assert_awaited_once_with(f"autotune:cooldown:{alert_id}")
 
 
 @pytest.mark.asyncio
@@ -83,9 +111,10 @@ async def test_check_and_trigger_proactive_autotune_success():
 
     with (
         patch(
-            "app.tasks.proactive_autotune.is_autotune_on_cooldown",
-            AsyncMock(return_value=False),
-        ),
+            "app.tasks.proactive_autotune.claim_autotune_slot",
+            AsyncMock(return_value=True),
+        ) as mock_claim,
+        patch("app.tasks.proactive_autotune.release_autotune_claim", AsyncMock()) as mock_release,
         patch("app.tasks.proactive_autotune.AsyncSessionLocal") as mock_session_ctx,
         patch("app.tasks.proactive_autotune.AlertRepository", return_value=mock_alert_repo),
         patch(
@@ -97,7 +126,6 @@ async def test_check_and_trigger_proactive_autotune_success():
             AsyncMock(return_value=(["dvd", "jeu"], "Parasites détectés")),
         ),
         patch("app.tasks.proactive_autotune.save_pending_tuning", AsyncMock()) as mock_save,
-        patch("app.tasks.proactive_autotune.set_autotune_cooldown", AsyncMock()) as mock_cooldown,
     ):
         mock_session_ctx.return_value.__aenter__.return_value = mock_session
 
@@ -105,7 +133,9 @@ async def test_check_and_trigger_proactive_autotune_success():
 
         assert res is True
         mock_save.assert_awaited_once_with(alert_id, ["dvd", "jeu"])
-        mock_cooldown.assert_awaited_once()
+        # Le créneau a été réservé avant l'analyse et conservé : la proposition est partie.
+        mock_claim.assert_awaited_once_with(alert_id)
+        mock_release.assert_not_awaited()
 
         bot.send_message.assert_awaited_once()
         _, kwargs = bot.send_message.call_args
@@ -121,19 +151,73 @@ async def test_check_and_trigger_proactive_autotune_success():
 
 
 @pytest.mark.asyncio
-async def test_check_and_trigger_proactive_autotune_skips_when_on_cooldown():
-    """Vérifie qu'aucune notification n'est envoyée si l'alerte est en cooldown."""
+async def test_check_and_trigger_proactive_autotune_skips_when_slot_taken():
+    """Créneau déjà réservé : une seconde notification ne part pas."""
     alert_id = uuid.uuid4()
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
     with patch(
-        "app.tasks.proactive_autotune.is_autotune_on_cooldown",
-        AsyncMock(return_value=True),
+        "app.tasks.proactive_autotune.claim_autotune_slot",
+        AsyncMock(return_value=False),
     ):
         res = await check_and_trigger_proactive_autotune(alert_id, bot, chat_id=123456789)
         assert res is False
         bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_and_trigger_emits_once_under_concurrency():
+    """Deux analyses lancées ensemble pour la même alerte n'envoient qu'un message.
+
+    C'est le croisement du scan planifié (14 h 00) avec un clic « Faux positif » à
+    13 h 59 min 58 : seul le créneau atomique les sépare.
+    """
+    alert_id = uuid.uuid4()
+    alert = Alert(id=alert_id, name="One Piece", status=AlertStatus.ACTIVE, exclude_keywords=[])
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    mock_session = AsyncMock()
+    mock_alert_repo = MagicMock()
+    mock_alert_repo.get_by_id = AsyncMock(return_value=alert)
+
+    # Créneau simulé : le premier réservataire passe, le suivant est refusé.
+    slots: set[str] = set()
+
+    async def fake_claim(alert_uuid, **_kwargs):
+        if str(alert_uuid) in slots:
+            return False
+        slots.add(str(alert_uuid))
+        return True
+
+    async def fake_release(alert_uuid):
+        slots.discard(str(alert_uuid))
+
+    with (
+        patch("app.tasks.proactive_autotune.claim_autotune_slot", side_effect=fake_claim),
+        patch("app.tasks.proactive_autotune.release_autotune_claim", side_effect=fake_release),
+        patch("app.tasks.proactive_autotune.AsyncSessionLocal") as mock_session_ctx,
+        patch("app.tasks.proactive_autotune.AlertRepository", return_value=mock_alert_repo),
+        patch(
+            "app.tasks.proactive_autotune.get_disliked_titles_for_alert",
+            AsyncMock(return_value=["Figurine One Piece", "T-shirt One Piece"]),
+        ),
+        patch(
+            "app.tasks.proactive_autotune.auto_tuning_module.suggest_exclusions",
+            AsyncMock(return_value=(["figurine"], "Parasites détectés")),
+        ),
+        patch("app.tasks.proactive_autotune.save_pending_tuning", AsyncMock()),
+    ):
+        mock_session_ctx.return_value.__aenter__.return_value = mock_session
+
+        results = await asyncio.gather(
+            check_and_trigger_proactive_autotune(alert_id, bot, chat_id=123456789),
+            check_and_trigger_proactive_autotune(alert_id, bot, chat_id=123456789),
+        )
+
+    assert results.count(True) == 1
+    bot.send_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -150,9 +234,10 @@ async def test_check_and_trigger_proactive_autotune_skips_when_insufficient_disl
 
     with (
         patch(
-            "app.tasks.proactive_autotune.is_autotune_on_cooldown",
-            AsyncMock(return_value=False),
+            "app.tasks.proactive_autotune.claim_autotune_slot",
+            AsyncMock(return_value=True),
         ),
+        patch("app.tasks.proactive_autotune.release_autotune_claim", AsyncMock()) as mock_release,
         patch("app.tasks.proactive_autotune.AsyncSessionLocal") as mock_session_ctx,
         patch("app.tasks.proactive_autotune.AlertRepository", return_value=mock_alert_repo),
         patch(
@@ -165,6 +250,8 @@ async def test_check_and_trigger_proactive_autotune_skips_when_insufficient_disl
         res = await check_and_trigger_proactive_autotune(alert_id, bot, chat_id=123456789)
         assert res is False
         bot.send_message.assert_not_awaited()
+        # Rien n'a été proposé : le créneau est rendu pour un essai ultérieur.
+        mock_release.assert_awaited_once_with(alert_id)
 
 
 @pytest.mark.asyncio
@@ -186,9 +273,10 @@ async def test_check_and_trigger_proactive_autotune_skips_when_no_new_exclusions
 
     with (
         patch(
-            "app.tasks.proactive_autotune.is_autotune_on_cooldown",
-            AsyncMock(return_value=False),
+            "app.tasks.proactive_autotune.claim_autotune_slot",
+            AsyncMock(return_value=True),
         ),
+        patch("app.tasks.proactive_autotune.release_autotune_claim", AsyncMock()) as mock_release,
         patch("app.tasks.proactive_autotune.AsyncSessionLocal") as mock_session_ctx,
         patch("app.tasks.proactive_autotune.AlertRepository", return_value=mock_alert_repo),
         patch(
@@ -205,6 +293,7 @@ async def test_check_and_trigger_proactive_autotune_skips_when_no_new_exclusions
         res = await check_and_trigger_proactive_autotune(alert_id, bot, chat_id=123456789)
         assert res is False
         bot.send_message.assert_not_awaited()
+        mock_release.assert_awaited_once_with(alert_id)
 
 
 @pytest.mark.asyncio

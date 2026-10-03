@@ -114,17 +114,37 @@ async def pop_pending_tuning(alert_id: uuid.UUID) -> list[str]:
     return exclusions
 
 
-async def is_autotune_on_cooldown(alert_id: uuid.UUID) -> bool:
-    """Vérifie si une proposition proactive récente a déjà été émise pour cette alerte."""
-    with contextlib.suppress(Exception):
-        client = get_redis_client()
-        return bool(await client.exists(f"autotune:cooldown:{alert_id}"))
-    return False
+def _cooldown_key(alert_id: uuid.UUID) -> str:
+    return f"autotune:cooldown:{alert_id}"
 
 
-async def set_autotune_cooldown(alert_id: uuid.UUID, ttl_seconds: int = 86400) -> None:
-    """Active un temps de refroidissement pour éviter de spammer l'utilisateur (défaut: 24h)."""
-    with contextlib.suppress(Exception):
+async def claim_autotune_slot(alert_id: uuid.UUID, ttl_seconds: int = 86400) -> bool:
+    """Réserve le créneau d'émission d'une proposition pour cette alerte.
+
+    `SET ... NX` est atomique côté Redis : le scan planifié et le clic
+    « Faux positif » peuvent démarrer la même analyse pour la même alerte, mais un
+    seul obtient le créneau. Le contrôle précède l'appel au moteur : la fenêtre
+    entre la lecture du cooldown et son écriture ne peut plus produire deux
+    messages Telegram.
+
+    Sans Redis, on refuse d'émettre. Le repli « passer quand même » transformerait
+    une panne de cache en notifications en double.
+    """
+    try:
         client = get_redis_client()
-        await client.set(f"autotune:cooldown:{alert_id}", "1", ex=ttl_seconds)
+    except Exception as exc:
+        logger.warning("Client Redis indisponible pour le créneau Auto-Tuning : %s", exc)
+        return False
+    try:
+        claimed = await client.set(_cooldown_key(alert_id), "1", ex=ttl_seconds, nx=True)
+    except Exception as exc:
+        logger.warning("Réservation du créneau Auto-Tuning impossible pour %s : %s", alert_id, exc)
+        return False
+    return bool(claimed)
+
+
+async def release_autotune_claim(alert_id: uuid.UUID) -> None:
+    """Relâche un créneau réservé alors qu'aucune proposition n'a été émise."""
+    with contextlib.suppress(Exception):
+        await get_redis_client().delete(_cooldown_key(alert_id))
 

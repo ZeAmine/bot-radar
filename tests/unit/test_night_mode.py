@@ -7,10 +7,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.tasks.vinted_poller import (
+    get_active_custom_searches_cached,
     get_adaptive_poll_interval,
     get_night_mode_remaining_seconds,
     is_night_time,
     is_peak_hours,
+    reset_custom_searches_cache,
     run_vinted_poller,
 )
 
@@ -131,6 +133,36 @@ async def test_poller_night_mode_suspension():
         # Arrêt
         stop_event.set()
         await task
+
+
+@pytest.mark.asyncio
+async def test_custom_searches_are_reloaded_only_after_the_ttl():
+    """Les recherches personnalisées ne sont rechargées qu'une fois par TTL.
+
+    Le poller boucle toutes les 12 à 15 s : sans ce cache, chaque cycle relisait
+    les alertes en base alors que seule une action de l'utilisateur les change.
+    """
+    reset_custom_searches_cache()
+    searches = [("https://www.vinted.fr/catalog?search_text=ps5", "tech")]
+
+    try:
+        with patch(
+            "app.tasks.vinted_poller.load_active_custom_searches",
+            new_callable=AsyncMock,
+            return_value=searches,
+        ) as mock_load:
+            # Premier appel : lecture effective.
+            assert await get_active_custom_searches_cached(now=1000.0) == searches
+            # Appels suivants dans la fenêtre : servis par le cache.
+            assert await get_active_custom_searches_cached(now=1005.0) == searches
+            assert await get_active_custom_searches_cached(now=1059.0) == searches
+            assert mock_load.await_count == 1
+
+            # TTL dépassée : rechargement.
+            await get_active_custom_searches_cached(now=1061.0)
+            assert mock_load.await_count == 2
+    finally:
+        reset_custom_searches_cache()
 
 
 def test_is_peak_hours():

@@ -23,9 +23,9 @@ from app.db.repositories.autotune_repo import (
 from app.db.session import AsyncSessionLocal
 from app.services.ai.modules.auto_tuning import (
     auto_tuning_module,
-    is_autotune_on_cooldown,
+    claim_autotune_slot,
+    release_autotune_claim,
     save_pending_tuning,
-    set_autotune_cooldown,
 )
 
 logger = logging.getLogger("radar.proactive_autotune")
@@ -47,42 +47,47 @@ async def check_and_trigger_proactive_autotune(
     if not auto_tuning_module.is_enabled:
         return False
 
-    # Vérification du temps de refroidissement anti-spam
-    if await is_autotune_on_cooldown(alert_id):
-        logger.debug("Auto-Tuning proactif en cooldown pour l'alerte %s", alert_id)
+    # Le créneau d'émission est réservé AVANT l'appel au moteur : `SET NX` est
+    # atomique, donc deux analyses concurrentes de la même alerte (scan planifié et
+    # clic « Faux positif ») ne peuvent pas produire deux propositions. Le créneau
+    # est relâché si rien n'a finalement été émis.
+    if not await claim_autotune_slot(alert_id):
+        logger.debug("Auto-Tuning proactif : créneau déjà réservé pour l'alerte %s", alert_id)
         return False
 
-    async with AsyncSessionLocal() as session:
-        alert_repo = AlertRepository(session)
-        alert = await alert_repo.get_by_id(alert_id)
-        if not alert or alert.status != AlertStatus.ACTIVE:
-            return False
+    emitted = False
+    try:
+        async with AsyncSessionLocal() as session:
+            alert_repo = AlertRepository(session)
+            alert = await alert_repo.get_by_id(alert_id)
+            if not alert or alert.status != AlertStatus.ACTIVE:
+                return False
 
-        disliked_titles = await get_disliked_titles_for_alert(alert_id, session)
-        if len(disliked_titles) < 2:
-            return False
+            disliked_titles = await get_disliked_titles_for_alert(alert_id, session)
+            if len(disliked_titles) < 2:
+                return False
 
-        try:
-            exclusions, explanation = await auto_tuning_module.suggest_exclusions(
-                alert.name, disliked_titles
-            )
-        except Exception as exc:
-            logger.warning("Échec de l'analyse IA proactive pour l'alerte %s: %s", alert.name, exc)
-            return False
+            try:
+                exclusions, explanation = await auto_tuning_module.suggest_exclusions(
+                    alert.name, disliked_titles
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Échec de l'analyse IA proactive pour l'alerte %s: %s", alert.name, exc
+                )
+                return False
 
-        if not exclusions:
-            return False
+            if not exclusions:
+                return False
 
-        existing_excludes = [e.lower() for e in (alert.exclude_keywords or [])]
-        new_exclusions = [e for e in exclusions if e.lower() not in existing_excludes]
+            existing_excludes = [e.lower() for e in (alert.exclude_keywords or [])]
+            new_exclusions = [e for e in exclusions if e.lower() not in existing_excludes]
 
-        if not new_exclusions:
-            return False
+            if not new_exclusions:
+                return False
 
-        # Mettre en cache pour la validation 1-clic
-        await save_pending_tuning(alert.id, new_exclusions)
-        # Activer le cooldown (24h)
-        await set_autotune_cooldown(alert.id, ttl_seconds=86400)
+            # Mettre en cache pour la validation 1-clic
+            await save_pending_tuning(alert.id, new_exclusions)
 
         excl_str = ", ".join(new_exclusions)
         titles_bullet = "\n".join(f"• <i>{html.escape(t)}</i>" for t in disliked_titles[:3])
@@ -128,6 +133,7 @@ async def check_and_trigger_proactive_autotune(
                 text=text,
                 reply_markup=keyboard,
             )
+            emitted = True
             logger.info(
                 "Proposition proactive d'Auto-Tuning envoyée pour '%s' (chat: %s)",
                 alert.name,
@@ -137,6 +143,13 @@ async def check_and_trigger_proactive_autotune(
         except Exception as exc:
             logger.error("Erreur lors de l'envoi de la proposition proactive: %s", exc)
             return False
+    finally:
+        # Rien n'a été émis (alerte inactive, moins de 2 dislikes, moteur muet,
+        # rien de nouveau ou envoi en échec) : le créneau est relâché pour qu'une
+        # analyse ultérieure puisse réessayer. Une proposition réellement envoyée
+        # garde son créneau 24 h, ce qui évite de la répéter à chaque scan.
+        if not emitted:
+            await release_autotune_claim(alert_id)
 
 
 async def _delayed_proactive_check(

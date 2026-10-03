@@ -137,6 +137,7 @@ Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur 
 - [`app/services/ai/modules/auto_tuning.py`](app/services/ai/modules/auto_tuning.py) : Module IA promptant le moteur avec l'historique des titres rejetés.
 
 ### Invariants et contraintes
+- **Créneau d'émission atomique** : une proposition proactive réserve son créneau par `SET … NX` **avant** l'appel au moteur (`claim_autotune_slot`). Le scan planifié et le clic « Faux positif » peuvent donc démarrer la même analyse sans produire deux messages. Sans Redis, la réservation échoue et l'émission est refusée : mieux vaut ne pas proposer que proposer en double. Le créneau est relâché (`release_autotune_claim`) si rien n'a été émis.
 - **Format copiable** : Les exclusions suggérées sont envoyées dans un bloc `<code>...</code>` pour faciliter la copie par simple tap sur Telegram.
 - **Personnalisation** : L'utilisateur peut copier, modifier (supprimer, ajouter des termes séparés par virgules, points-virgules ou sauts de ligne) et renvoyer sa liste via `[ ✏️ Modifier la liste ]`.
 - **Purge à l'application** : Dès que l'utilisateur clique sur `[ ✅ Appliquer les exclusions ]`, les faux positifs (`BotEvent` avec `event_type='listing_disliked'`) rattachés à cette alerte sont supprimés pour ne plus polluer `/autotune`.

@@ -69,6 +69,23 @@ def test_payload_size_limit_middleware():
     assert response.status_code != 413
 
 
+def test_payload_size_limit_rejects_chunked_body():
+    """Un corps streamé n'annonce pas sa taille : il doit être refusé, pas chargé.
+
+    Sans ce refus, `await request.json()` lirait un corps de taille arbitraire en
+    mémoire dans le seul processus applicatif.
+    """
+    client = TestClient(app)
+    # Un itérateur force le `Transfer-Encoding: chunked` : aucun `Content-Length`.
+    response = client.post(
+        "/api/v1/ingest/listings",
+        headers={"content-type": "application/json"},
+        content=iter([b'{"source_name": "vinted"}']),
+    )
+    assert response.status_code == 413
+    assert "Payload trop volumineux" in response.json()["detail"]
+
+
 def test_rate_limit_middleware():
     client = TestClient(app)
     rate_limiter.reset_for_test()

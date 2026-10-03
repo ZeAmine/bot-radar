@@ -346,15 +346,17 @@ async def handle_tune_apply(
     except ValueError:
         return
 
-    exclusions = await pop_pending_tuning(alert_id)
-    if not exclusions:
-        await callback.answer("Les suggestions ont expiré. Relancez /autotune.", show_alert=True)
-        return
-
+    # L'alerte est validée AVANT de consommer la suggestion : une erreur de lecture
+    # ne doit pas détruire une analyse payante, l'utilisateur peut la réappliquer.
     alert_repo = AlertRepository(db_session)
     alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
     if not alert:
         await callback.answer("Alerte introuvable.", show_alert=True)
+        return
+
+    exclusions = await pop_pending_tuning(alert_id)
+    if not exclusions:
+        await callback.answer("Les suggestions ont expiré. Relancez /autotune.", show_alert=True)
         return
 
     current_excludes = list(alert.exclude_keywords or [])

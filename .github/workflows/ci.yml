@@ -20,7 +20,10 @@ jobs:
           python-version: "3.12"
 
       - name: Installer le projet et les outils de dev
-        run: pip install -e ".[dev]"
+        run: pip install -c requirements.lock -e ".[dev]"
+
+      - name: Verrou des dépendances
+        run: python scripts/check_lock.py
 
       - name: Ruff
         run: ruff check .
@@ -52,7 +55,7 @@ jobs:
           python-version: "3.12"
 
       - name: Installer le projet et les outils de dev
-        run: pip install -e ".[dev]"
+        run: pip install -c requirements.lock -e ".[dev]"
 
       - name: Historique vert
         env:

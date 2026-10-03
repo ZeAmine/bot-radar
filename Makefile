@@ -1,5 +1,5 @@
 .PHONY: help dev test lint bench check-history format migrate revision up down clean \
-        preflight verify-deploy deploy push
+        lock check-lock preflight verify-deploy deploy push
 
 # Les outils viennent du venv du dépôt quand il existe, sinon du PATH. `make` doit
 # fonctionner sans `source .venv/bin/activate` : en local le venv est là, en CI il
@@ -23,6 +23,8 @@ help:
 	@echo "  make test                Lancer les tests unitaires et d'intégration"
 	@echo "  make bench               Benchmark du chemin d'alerte (invariant 500 ms)"
 	@echo "  make lint                Vérifier le code avec Ruff et Mypy"
+	@echo "  make lock                Régénérer requirements.lock depuis l'environnement courant"
+	@echo "  make check-lock          Vérifier que le verrou couvre pyproject.toml"
 	@echo "  make check-history       Rejouer Ruff, Mypy et Pytest sur chaque commit"
 	@echo "  make preflight           Vérifier le VPS avant une synchronisation"
 	@echo "  make verify-deploy       Revérifier le VPS après une synchronisation"
@@ -47,6 +49,24 @@ bench:
 lint:
 	$(RUFF) check .
 	$(MYPY) app
+
+# Le verrouillage n'a de valeur que s'il suit `pyproject.toml`. Ce contrôle est
+# hors réseau : il échoue si une dépendance a été ajoutée sans être épinglée.
+check-lock:
+	$(PYTHON) scripts/check_lock.py
+
+# Régénération à faire après toute modification de `pyproject.toml`, puis commiter
+# le fichier : c'est lui que le Dockerfile et la CI lisent. Les commentaires
+# d'en-tête sont conservés, seule la liste des versions est réécrite.
+lock:
+	@grep "^#" requirements.lock > requirements.lock.new
+	@$(PYTHON) -m pip freeze \
+		| grep -v "^-e " \
+		| grep -viE "^(botradar|radar_bot|radar-bot)==" \
+		| grep -E "^[A-Za-z0-9._-]+==" \
+		| sort -f >> requirements.lock.new
+	@mv requirements.lock.new requirements.lock
+	@$(MAKE) --no-print-directory check-lock
 
 # Garantit qu'aucun commit de la branche n'est rouge : le travail est rejoué dans
 # un worktree jetable par commit, du plus ancien au plus récent.

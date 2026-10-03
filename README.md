@@ -1,7 +1,7 @@
 # BotRadar 🛰️
 
 [![CI](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-501%20passed-success?style=flat&logo=pytest)](https://docs.pytest.org/)
+[![Tests](https://img.shields.io/badge/Tests-528%20passed-success?style=flat&logo=pytest)](https://docs.pytest.org/)
 [![Linter](https://img.shields.io/badge/Linter-Ruff%20strict-black?style=flat&logo=ruff)](https://astral.sh/ruff)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=flat&logo=python)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
@@ -248,8 +248,9 @@ Le poller Vinted intégré ([`app/tasks/vinted_poller.py`](app/tasks/vinted_poll
 Le projet est outillé avec un pipeline d'Intégration Continue via GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) qui s'exécute à chaque push et pull request :
 
 - **Ruff** : Linting strict conforme aux règles modernes Python 3.12 (longueur de ligne max 100 caractères, imports ordonnés, conventions PEP).
-- **Pytest & Pytest-Asyncio** : Suite complète de **501 tests automatisés** couvrant l'ingestion, le matching déterministe, le FSM Telegram, le cache de cotes, le poller Vinted et le sous-système IA, dont **3 benchmarks de performance** (`make bench`) qui vérifient l'invariant de l'alerte < 500 ms (chemin ingestion → matching → Telegram, ré-ingestion de doublon, matching CPU).
+- **Pytest & Pytest-Asyncio** : Suite complète de **528 tests automatisés** couvrant l'ingestion, le matching déterministe, le FSM Telegram, le cache de cotes, le poller Vinted et le sous-système IA, dont **3 benchmarks de performance** (`make bench`) qui vérifient l'invariant de l'alerte < 500 ms (chemin ingestion → matching → Telegram, ré-ingestion de doublon, matching CPU).
 - **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml`, **zéro erreur** sur les 134 fichiers de `app/`, vérifié en CI (`mypy app` bloque la pull request).
+- **Dépendances verrouillées** : [`requirements.lock`](requirements.lock) contraint les versions résolues par le Dockerfile et par la CI. Deux reconstructions de la mêmerevision produisent donc le même environnement. `make check-lock` échoue si une dépendance a été ajoutée à `pyproject.toml` sans être épinglée.
 
 Pour exécuter les vérifications localement :
 
@@ -257,7 +258,7 @@ Pour exécuter les vérifications localement :
 # Vérification du style et du linting
 .venv/bin/ruff check .
 
-# Exécution de la suite complète de tests (501 tests)
+# Exécution de la suite complète de tests (528 tests)
 .venv/bin/pytest -v
 
 # Benchmark du chemin d'alerte (invariant < 500 ms)
@@ -366,9 +367,11 @@ Le [`Makefile`](Makefile) regroupe les actions récurrentes d'exploitation et de
 ```bash
 make help                 # Affiche l'inventaire des commandes disponibles
 make dev                  # Démarre l'application locale avec rechargement à chaud
-make test                 # Exécute la suite complète de 501 tests pytest
+make test                 # Exécute la suite complète de 528 tests pytest
 make bench                # Benchmark du chemin d'alerte (invariant 500 ms)
 make lint                 # Contrôle la conformité du code avec Ruff et Mypy
+make lock                 # Régénérer requirements.lock (après une modification de pyproject.toml)
+make check-lock           # Vérifier que le verrou couvre toutes les dépendances déclarées
 make check-history        # Rejoue Ruff et Pytest sur chaque commit de la branche
 make preflight            # Vérifie l'état du VPS avant une synchronisation
 make verify-deploy        # Revérifie le VPS après une synchronisation
