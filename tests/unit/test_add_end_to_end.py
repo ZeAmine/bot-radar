@@ -607,6 +607,71 @@ async def test_add_natural_add_applies_variants_without_asking_for_a_click():
 
 
 @pytest.mark.asyncio
+async def test_confirmation_shows_market_price_without_the_marketplace_name():
+    """La confirmation annonce la cote, pas la plateforme qui l'a servie.
+
+    Trois choix-tenus de l'affichage de création :
+
+    - le prix du marché est donné seul, sans le nom du fournisseur ;
+    - le prix bas constaté est donné sans date — `historical_low_at` est réécrit à
+      chaque rafraîchissement de la cote, elle daterait de la création et non du prix ;
+    - le pied annonce la notification, sans la promesse « 24/24 sur Vinted ».
+    """
+    resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
+    bnf = _fake_bnf(resolution)
+    client = _fake_deepseek(_deepseek_payload())
+    repos = _repositories(BNF_EDITION.isbn13)
+
+    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    state = DraftState()
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    patches = _patched(repos, bnf, client)
+    for entered in patches:
+        entered.start()
+    try:
+        await start_add_alert(message, state, db_session, db_user)
+        await _drain(repos["tasks"])
+
+        confirm_message = MagicMock(spec=Message)
+        confirm_message.edit_text = AsyncMock()
+        confirm_callback = MagicMock()
+        confirm_callback.data = "alert_create_confirm"
+        confirm_callback.message = confirm_message
+        confirm_callback.answer = AsyncMock()
+
+        await save_alert(confirm_callback, state, db_user, db_session)
+        confirmation = confirm_message.edit_text.call_args[0][0]
+
+        # La cote et le bas constaté, tous deux servies par Chasse-aux-livres.
+        assert "📊 <b>Prix du marché :</b> 18,00 €" in confirmation
+        assert "📉 <b>Prix bas constaté (1 an) :</b> 16,50 €" in confirmation
+        # Ni la plateforme, ni une date qui daterait du moment de la création.
+        assert "chasse_aux_livres" not in confirmation
+        assert "Chasse" not in confirmation
+        assert "Surveillance active" not in confirmation
+        assert "24/24" not in confirmation
+        # Le pied conservé.
+        assert confirmation.endswith(
+            "⚡ <i>Vous recevrez une notification instantanée "
+            "dès qu'une offre éligible apparaît.</i>"
+        )
+
+        # La confirmation reprend la fiche, même ordre et mêmes émojis que le récap.
+        assert confirmation.startswith("✅ <b>Alerte créée avec succès !</b>\n\n🔢 <b>ISBN :</b>")
+        assert "📌 <b>Titre :</b> La couleur des choses" in confirmation
+        assert f"✍️ <b>Auteur :</b> {BNF_EDITION.author}" in confirmation
+        assert f"🏢 <b>Éditeur :</b> {BNF_EDITION.publisher}" in confirmation
+        assert "🎯 <b>Prix max :</b> 12,00 €" in confirmation
+        # Les états abrégés, comme sur la carte de récap.
+        assert "🏷️ <b>États :</b> NAE, NSE, TBE" in confirmation
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+
+@pytest.mark.asyncio
 async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert():
     """Les variantes trouvées en arrière-plan atteignent bien la ligne créée.
 
@@ -647,10 +712,16 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
         assert create_kwargs["variants"] == ["couleurdeschoses"]
         assert create_kwargs["exclude_keywords"] == ["keeping two"]
 
-        # La confirmation rejoue les mêmes mots-clés : ce qui est annoncé est ce qui est stocké.
+        # La confirmation rejoue les mots-clés qu'elle affiche : ce qui est annoncé est
+        # ce qui est stocké. Elle ne liste plus les variantes ni les exclusions — la carte
+        # de création a été ramenée aux champs de la fiche (ISBN, titre, auteur, éditeur,
+        # prix max, états, inclus) — donc l'aller-retour se vérifie sur l'inclus, seul
+        # champ de mots-clés encore affiché. Les variantes et exclusions restent
+        # vérifiées ci-dessus, sur ce qui atteint réellement la ligne créée.
         confirmation = confirm_message.edit_text.call_args[0][0]
-        assert "✨ <b>Variantes :</b> couleurdeschoses" in confirmation
-        assert "🚫 <b>Exclus :</b> keeping two" in confirmation
+        assert f"🔑 <b>Inclus :</b> {', '.join(create_kwargs['include_keywords'])}" in confirmation
+        assert "✨ <b>Variantes :</b>" not in confirmation
+        assert "🚫 <b>Exclus :</b>" not in confirmation
     finally:
         for entered in reversed(patches):
             entered.stop()

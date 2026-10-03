@@ -13,8 +13,10 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from app.bot.formatter import format_cents_to_euros, format_conditions_short
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
+    _join_escaped,
     build_creation_recap,
     extract_inline_price_and_clean_query,
     process_bd_query_lookup,
@@ -56,6 +58,16 @@ from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text, strip_html_tags
 
 logger = logging.getLogger(__name__)
+
+# Pied de la confirmation de création, identique pour toutes les catégories. Une seule
+# formulation : les deux branches (livre et produit) annoncent la même chose, donc elles
+# ne peuvent pas diverger. La promesse « 24/24 » a été retirée — elle décrit une
+# interrogation continue que le bot ne fait pas : les balises reviennent à chaque
+# passage du poller ou à chaque création d'alerte.
+_CONFIRMATION_FOOTER = (
+    "⚡ <i>Vous recevrez une notification instantanée "
+    "dès qu'une offre éligible apparaît.</i>"
+)
 
 
 def _get_alert_repo(session: Any) -> Any:
@@ -757,39 +769,38 @@ async def save_alert(
         await state.clear()
 
         price_str = f"{max_price / 100:.2f} €".replace(".", ",") if max_price else "Aucun"
-        default_conds = "Neuf avec étiquette, Neuf sans étiquette, Très bon état"
-        cond_str = ", ".join(conditions) if conditions else default_conds
 
-        lines = [
-            "✅ <b>Alerte créée avec succès !</b>\n",
-            f"📚 <b>{html.escape(name)}</b>",
-        ]
+        # La confirmation reprend la carte de récap — même ordre, mêmes émojis — : ce
+        # qui vient d'être validé se relit ligne pour ligne. Les mots-clés sont
+        # échappés comme dans le récap : ils viennent du moteur IA, et un `<b>` glissé
+        # dedans ferait rejeter tout le message par Telegram.
+        lines = ["✅ <b>Alerte créée avec succès !</b>\n"]
         if isbn:
-            lines.append(f"🔢 <b>ISBN :</b> <code>{isbn}</code>")
-
+            lines.append(f"🔢 <b>ISBN :</b> <code>{html.escape(isbn)}</code>")
+        lines.append(f"📌 <b>Titre :</b> {html.escape(name)}")
+        if author:
+            lines.append(f"✍️ <b>Auteur :</b> {html.escape(author)}")
+        if publisher:
+            lines.append(f"🏢 <b>Éditeur :</b> {html.escape(publisher)}")
         lines.append(f"🎯 <b>Prix max :</b> {price_str}")
-        lines.append(f"🔑 <b>Inclus :</b> {', '.join(includes)}")
-        if variants:
-            lines.append(f"✨ <b>Variantes :</b> {', '.join(variants)}")
-        if excludes:
-            lines.append(f"🚫 <b>Exclus :</b> {', '.join(excludes)}")
-
-        lines.append(f"🏷 <b>États :</b> {cond_str}\n")
+        lines.append(f"🏷️ <b>États :</b> {html.escape(format_conditions_short(conditions))}")
+        lines.append(f"🔑 <b>Inclus :</b> {_join_escaped(includes)}\n")
 
         if best_offer and best_offer.delivered_price_cents:
-            deliv_cents = best_offer.delivered_price_cents
-            prov = best_offer.provider_name
-            lowest_str = f"{deliv_cents / 100:.2f} € ({prov})".replace(".", ",")
-            lines.append(f"📊 <b>Prix du marché :</b> {lowest_str}")
+            # Ni marchand, ni date : la même cote est servie par plusieurs plateformes,
+            # et `historical_low_at` est réécrit à chaque rafraîchissement de la cote —
+            # elle daterait du moment de la création, pas du prix constaté.
+            lines.append(
+                f"📊 <b>Prix du marché :</b> "
+                f"{format_cents_to_euros(best_offer.delivered_price_cents)}"
+            )
             if hist_low:
-                hist_low_str = f"{hist_low / 100:.2f} €".replace(".", ",")
-                lines.append(f"📉 <b>Prix bas constaté (1 an) :</b> {hist_low_str}")
+                lines.append(
+                    f"📉 <b>Prix bas constaté (1 an) :</b> {format_cents_to_euros(hist_low)}"
+                )
             lines.append("")
 
-        lines.append(
-            "⚡ <i>Surveillance active 24h/24 sur Vinted. "
-            "Vous recevrez une notification instantanée dès qu'une offre éligible apparaît.</i>"
-        )
+        lines.append(_CONFIRMATION_FOOTER)
         resp_text = "\n".join(lines)
     else:
         # Tech ou Vêtements (sans livre ni cote de livres)
@@ -829,10 +840,7 @@ async def save_alert(
         if excludes:
             lines.append(f"🚫 <b>Exclus :</b> {', '.join(excludes)}")
         lines.append(f"🏷 <b>États :</b> {cond_str}\n")
-        lines.append(
-            "⚡ <i>Surveillance active 24h/24 sur Vinted. "
-            "Vous recevrez une notification instantanée dès qu'une offre éligible apparaît.</i>"
-        )
+        lines.append(_CONFIRMATION_FOOTER)
         resp_text = "\n".join(lines)
 
     vinted_btn = InlineKeyboardMarkup(
