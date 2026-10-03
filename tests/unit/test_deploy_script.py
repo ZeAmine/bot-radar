@@ -247,8 +247,12 @@ def test_send_telegram_notification_missing_credentials(monkeypatch):
 
 
 def test_send_telegram_notification_http_post(monkeypatch):
-    """Vérifie l'envoi HTTP effectif avec httpx mocké."""
-    monkeypatch.setattr("app.core.config.settings.TELEGRAM_BOT_TOKEN", "123:dummy")
+    """Vérifie l'envoi HTTP effectif avec httpx mocké et token SecretStr."""
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(
+        "app.core.config.settings.TELEGRAM_BOT_TOKEN", SecretStr("123:dummy")
+    )
     monkeypatch.setattr("app.core.config.settings.TELEGRAM_ALLOWED_USER_IDS", [123456789])
 
     posted_urls: list[str] = []

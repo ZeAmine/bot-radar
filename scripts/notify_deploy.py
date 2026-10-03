@@ -23,7 +23,11 @@ def send_telegram_notification(text: str, dry_run: bool = False) -> bool:
         return True
 
     allowed_ids = settings.TELEGRAM_ALLOWED_USER_IDS
-    token = settings.TELEGRAM_BOT_TOKEN
+    token = (
+        settings.TELEGRAM_BOT_TOKEN.get_secret_value()
+        if hasattr(settings.TELEGRAM_BOT_TOKEN, "get_secret_value")
+        else str(settings.TELEGRAM_BOT_TOKEN or "")
+    ).strip()
 
     if not token or not allowed_ids:
         print("Telegram non configuré (TELEGRAM_BOT_TOKEN ou TELEGRAM_ALLOWED_USER_IDS manquant).")
