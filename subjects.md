@@ -85,7 +85,7 @@ Calculer instantanément la cote et l'écart de prix pour les bandes dessinées 
 - [`app/db/repositories/market_price_repo.py`](app/db/repositories/market_price_repo.py) : Cache de prix (`book_market_cache`), persistance des snapshots (`market_price_snapshots`) et cotes.
 
 ### Invariants et contraintes
-- **Choix de l'édition avant création** : le récap `/add` décrit l'édition surveillée (« 📖 Édition suivie ») et le clavier `al_create_edition:*` permet de changer d'ISBN sans refaire la commande ; les boutons sont numérotés `1️⃣ Éditeur - année` comme le récap. Le rendu passe par `recap_from_state(draft)` et `creation_keyboard(draft)` : un seul chemin, éditions comprises.
+- **Choix de l'édition avant création** : le récap `/add` décrit l'édition surveillée (« 📖 Édition suivie ») et le clavier `al_create_edition:*` permet de changer d'ISBN sans refaire la commande ; les boutons sont numérotés `1️⃣ Éditeur - année` comme le récap. Ni la ligne ni les boutons n'apparaissent sous **deux éditions exploitables** : sans alternative, la ligne « 🏢 Éditeur » suffit. Le rendu passe par `recap_from_state(draft)` et `creation_keyboard(draft)` : un seul chemin, éditions comprises.
 - **Zéro HTTP sur le chemin de l'alerte** : `MarketPriceService.get_comparison_summary` lit uniquement la table locale `book_market_cache`. Le refresh complet interroge les providers à 07:00 et 19:00 ; un lot incrémental tourne à `:15` et `:45`.
 - **Référence de prix (ADR-016)** : le **prix le plus bas constaté sur 1 an** prime toujours ; le prix du marché du jour n'est qu'un repli. L'écart compare le **total Vinted, frais de port inclus**, à cette référence. Le résumé d'alerte et le panneau détaillé citent la même référence.
 - **Format d'affichage** :

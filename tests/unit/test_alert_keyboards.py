@@ -253,6 +253,41 @@ def test_get_alert_confirmation_keyboard_falls_back_to_isbn_without_label():
     assert rows[2][0].callback_data == "alert_create_confirm"
 
 
+def test_get_alert_confirmation_keyboard_hides_edition_when_there_is_no_choice():
+    """Une édition isolée n'a pas de bouton : il n'y a rien à choisir.
+
+    Le bouton `1️⃣ les Arènes - 2023` d'une seule édition n'opposerait rien à rien,
+    et le récap ne montre déjà pas la ligne « Édition suivie » sous ce seuil
+    (`format_edition_line`). Les deux rendus doivent raconter la même chose : pas de
+    choix, donc aucun bouton.
+    """
+    keyboard = get_alert_confirmation_keyboard(
+        edition_alternatives=[
+            {"isbn13": "9791037509659", "publisher": "les Arènes", "publication_year": 2023},
+        ],
+        edition_labels=["1️⃣ les Arènes - 2023"],
+    )
+    callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+
+    assert not any(data.startswith("al_create_edition") for data in callbacks)
+    assert callbacks[0] == "alert_create_confirm"
+
+    # Même verdict quand la seule édition exploitable cohabite avec une notice sans ISBN.
+    mixed = get_alert_confirmation_keyboard(
+        edition_alternatives=[
+            {"isbn13": "9791037509659", "publisher": "les Arènes"},
+            {"isbn13": None, "publisher": "inconnu"},
+        ],
+        edition_labels=["1️⃣ les Arènes", "2️⃣ inconnu"],
+    )
+    mixed_callbacks = [
+        button.callback_data for row in mixed.inline_keyboard for button in row
+    ]
+
+    assert not any(data.startswith("al_create_edition") for data in mixed_callbacks)
+    assert mixed_callbacks[0] == "alert_create_confirm"
+
+
 def test_get_alert_confirmation_keyboard_without_editions_is_unchanged():
     """Sans éditions concurrentes, le clavier ne comporte aucune ligne supplémentaire."""
     keyboard = get_alert_confirmation_keyboard()

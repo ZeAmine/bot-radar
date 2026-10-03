@@ -54,13 +54,20 @@ def get_alert_confirmation_keyboard(
     l'utilisateur choisit l'ISBN qui pilotera le matching, l'URL de recherche Vinted
     et la cote de marché de l'alerte. L'index passé en callback reste celui de
     `edition_alternatives`, que tous les éléments y soient exploitables ou non.
+
+    Les boutons n'apparaissent qu'à partir de deux éditions exploitables : sous ce
+    seuil, le bouton n'opposerait rien à rien, et le récap ne montre déjà pas la ligne
+    « Édition suivie ». Le seuil est celui de `format_edition_line`, pour que les deux
+    rendus racontent la même chose.
     """
+    editions = list(edition_alternatives or [])
     rows: list[list[InlineKeyboardButton]] = []
     labels = edition_labels or []
+    has_choice = sum(1 for e in editions if str(e.get("isbn13") or "").strip()) >= 2
 
-    for index, edition in enumerate(edition_alternatives or []):
+    for index, edition in enumerate(editions):
         isbn13 = str(edition.get("isbn13") or "").strip()
-        if not isbn13:
+        if not has_choice or not isbn13:
             continue
         label = labels[index] if index < len(labels) and labels[index] else (
             f"{edition_ordinal(index)} {isbn13}"

@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.handlers.alerts_create import handle_create_ai_variants
+from app.bot.handlers.alerts_helpers import RECAP_TITLE
 from app.bot.handlers.alerts_manage import (
     _active_variant_alerts,
     prompt_new_field_value,
@@ -124,8 +125,9 @@ async def test_handle_create_ai_variants_reports_engine_decision_when_nothing_fo
     callback.answer.assert_awaited_once()
     assert callback.message.edit_text.call_count == 2
     last_text = callback.message.edit_text.call_args[0][0]
-    # La carte ne s'habille pas d'un en-tête de cas particulier : elle porte la note.
-    assert last_text.startswith("🔢") or last_text.startswith("📌")
+    # La carte ne s'habille pas d'un en-tête de cas particulier : titre unique, et
+    # c'est elle qui porte la note.
+    assert last_text.startswith(RECAP_TITLE)
     assert "n'a trouvé aucune variante ni exclusion pertinente" in last_text
 
 

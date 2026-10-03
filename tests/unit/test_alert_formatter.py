@@ -3,7 +3,7 @@
 import uuid
 
 from app.bot.formatter import format_alert_card, format_alert_recap, format_cents_to_euros
-from app.bot.handlers.alerts_helpers import format_semi_auto_recap
+from app.bot.handlers.alerts_helpers import RECAP_TITLE, format_semi_auto_recap
 from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.db.models.category import Category
@@ -179,6 +179,33 @@ def test_recap_escapes_isbn_note_alongside_keywords():
 
     assert "<b>ASTON</b>" not in recap
     assert "non confirmé &lt;b&gt;BNF&lt;/b&gt;" in recap
+
+
+def test_recap_opens_on_a_single_fixed_title():
+    """La carte s'ouvre sur un titre, le même partout.
+
+    Le message d'attente « 🪄 Création d'alerte en langage naturel » cède la place à
+    la carte : sans titre, le récap commence froidement sur l'ISBN. Mais le titre qui
+    le remplace est fixe. Les en-têtes de parcours avaient été supprimés parce qu'ils
+    multipliaient les rendus d'un seul brouillon ; un titre qui dépendrait des données
+    ou du chemin redeviendrait exactement ça.
+    """
+    recap = _recap()
+
+    assert recap.startswith(f"{RECAP_TITLE}\n\n")
+    assert recap.count(RECAP_TITLE) == 1
+
+    # Ni le titre ni le contenu ne dépendent du jeu de données fourni.
+    other = _recap(
+        isbn="9782369903086",
+        is_series=True,
+        edition_alternatives=[
+            {"isbn13": "9782369903086", "publisher": "Çà et là", "publication_year": 2022},
+            {"isbn13": "9782369904151", "publisher": "Futuropolis", "publication_year": 2018},
+        ],
+    )
+
+    assert other.splitlines()[0] == recap.splitlines()[0] == RECAP_TITLE
 
 
 def test_recap_always_closes_on_the_confirmation_it_expects():

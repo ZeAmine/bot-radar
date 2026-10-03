@@ -36,6 +36,15 @@ from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger(__name__)
 
+# Titre unique de la carte de récap. La carte est le rendu unique de
+# `build_creation_recap` : tous les chemins qui y aboutissent doivent se reconnaître
+# à la même fiche. Les en-têtes de parcours (« Alerte configurée en langage naturel »,
+# « Variantes & exclusions IA », « Modification enregistrée ») avaient disparu parce
+# qu'ils en multipliaient cinq pour un seul brouillon. Ce titre les remplace sans les
+# réintroduire : il ne dépend ni du chemin ni du geste, donc deux rendus de la même
+# fiche restent identiques.
+RECAP_TITLE = "🪄 <b>Ajout d'une alerte</b>"
+
 
 def _get_alert_repo(session: Any) -> Any:
     import app.bot.handlers.alerts as alerts_mod
@@ -116,10 +125,11 @@ def format_semi_auto_recap(
 ) -> str:
     """Carte compacte du brouillon, telle qu'affichée avant « Créer l'alerte ».
 
-    Une ligne par information, du plus structurant au plus accessoire : identifiant,
-    identité de l'œuvre, critères de veille, puis l'édition surveillée quand il y a un
-    choix à faire. Les états sont abrégés (`format_conditions_short`) pour que la carte
-    tienne à l'écran sans devenir un pavé.
+    La carte s'ouvre sur `RECAP_TITLE`, puis une ligne par information, du plus
+    structurant au plus accessoire : identifiant, identité de l'œuvre, critères de
+    veille, puis l'édition surveillée quand il y a un choix à faire. Les états sont
+    abrégés (`format_conditions_short`) pour que la carte tienne à l'écran sans
+    devenir un pavé.
 
     `isbn_note` signale une provenance d'ISBN douteuse ou un repli de source : il reste
     affiché juste sous l'ISBN, dont il conditionne la confiance.
@@ -129,7 +139,7 @@ def format_semi_auto_recap(
         conditions if conditions else DEFAULT_BD_CONDITIONS
     )
 
-    lines: list[str] = []
+    lines: list[str] = [RECAP_TITLE, ""]
     if isbn:
         lines.append(f"🔢 <b>ISBN :</b> <code>{html.escape(isbn)}</code>")
     elif isbn_note:

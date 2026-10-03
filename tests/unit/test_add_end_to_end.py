@@ -23,12 +23,20 @@ from app.bot.handlers.alerts_create_confirm import (
     process_creation_edit_input,
     select_alert_creation_edition,
 )
-from app.bot.handlers.alerts_helpers import build_creation_recap
+from app.bot.handlers.alerts_helpers import RECAP_TITLE, build_creation_recap
 from app.core.constants import ComparisonStatus
 from app.db.models.user import User
 from app.providers.base import MarketOffer
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
+
+# Bandeaux de parcours qui ont disparu au profit d'un titre unique : leur présence
+# signalerait que la carte redeviendrait dépendante du chemin qui l'a produite.
+ROUTE_BANNERS = (
+    "Alerte configurée en langage naturel",
+    "Modification enregistrée",
+    "Aucune modification",
+)
 
 # Édition de référence de l'œuvre demandée, confirmée par la BNF.
 BNF_EDITION = BookMetadata(
@@ -544,10 +552,11 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
         ] == ["🔍 Variantes & exclusions en cours..."]
 
         recap = _recap_text(loading_message)
-        # La carte est celle du brouillon, sans en-tête de parcours : c'est ce qui
-        # permet de la ré-afficher à l'identique après un changement d'édition.
-        assert not recap.startswith("🪄")
-        assert recap.startswith("🔢 <b>ISBN :</b> <code>9782369903086</code>")
+        # La carte est celle du brouillon : un titre unique, aucun en-tête de parcours.
+        # C'est ce qui permet de la ré-afficher à l'identique après un changement
+        # d'édition.
+        assert recap.startswith(f"{RECAP_TITLE}\n\n🔢 <b>ISBN :</b> <code>9782369903086</code>")
+        assert not any(banner in recap for banner in ROUTE_BANNERS)
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -696,13 +705,14 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
 
         # Et rien d'autre : même structure, aucun bandeau, même pied de confirmation.
         for text in (recap, switch_recap):
-            assert text.startswith("🔢 <b>ISBN :</b>")
+            assert text.startswith(RECAP_TITLE)
+            assert "🔢 <b>ISBN :</b>" in text
             assert text.endswith(
                 "\n\nConfirmer la création de cette alerte ?\n\n"
                 "<i>Clique sur « Créer l'alerte » pour valider "
                 "ou « Modifier » pour ajuster.</i>"
             )
-            for banner in ("🪄", "✅ <b>Modification enregistrée", "ℹ️ <b>Aucune modification"):
+            for banner in ROUTE_BANNERS:
                 assert banner not in text
 
         # Le clavier suit l'état, lui aussi : mêmes boutons, dans le même ordre.

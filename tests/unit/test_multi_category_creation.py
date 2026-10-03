@@ -18,6 +18,7 @@ from app.bot.handlers.alerts import (
     save_alert,
     start_add_alert,
 )
+from app.bot.handlers.alerts_helpers import RECAP_TITLE
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     DEFAULT_GAMING_CONDITIONS,
@@ -502,10 +503,11 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     assert "🔎 <b>Asterix tome 1</b> identifié" in milestone
 
     edited_text = loading_message.edit_text.call_args[0][0]
-    # Le récap est la carte du brouillon, quel que soit le chemin qui y mène :
-    # aucun en-tête de parcours ne le précède.
-    assert not edited_text.startswith("🪄")
-    assert edited_text.startswith("🔢")
+    # Le récap est la carte du brouillon, quel que soit le chemin qui y mène : un
+    # titre unique le précède, aucun bandeau de parcours ne s'intercale.
+    assert edited_text.startswith(f"{RECAP_TITLE}\n\n")
+    for banner in ("Alerte configurée en langage naturel", "Modification enregistrée"):
+        assert banner not in edited_text
     assert "🔢 <b>ISBN :</b> <code>9782012101333</code>" in edited_text
     assert "📌 <b>Titre :</b> Asterix tome 1" in edited_text
     assert "🎯 <b>Prix max :</b> 10,00 €" in edited_text
