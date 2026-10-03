@@ -28,6 +28,9 @@ class SlidingWindowRateLimiter:
         self._last_cleanup: float = time.time()
         # Client Redis partagé, construit paresseusement une seule fois par instance
         self._redis_client: aioredis.Redis | None = None
+        # Vrai tant que Redis n'a pas répondu : évite de répéter le même avertissement
+        # à chaque requête tout en gardant la panne visible.
+        self._redis_degraded: bool = False
 
     def _get_redis_client(self) -> aioredis.Redis | None:
         """Retourne le client Redis de l'instance (pool de connexions partagé)."""
@@ -86,6 +89,7 @@ class SlidingWindowRateLimiter:
                 results = await pipe.execute()
 
                 current_count = int(results[2])
+                self._redis_degraded = False
                 if current_count <= max_requests:
                     remaining = max(0, max_requests - current_count)
                     return True, remaining, 0
@@ -100,7 +104,16 @@ class SlidingWindowRateLimiter:
 
                 return False, 0, retry_after
             except Exception as exc:
-                logger.debug("Repli sur rate-limiter mémoire suite erreur Redis: %s", exc)
+                # Le repli mémoire fonctionne, mais silencieusement : une panne de
+                # Redis ne doit pas pouvoir faire disparaître la protection anti-flood
+                # des diagnostics. Un seul avertissement par episode.
+                if not self._redis_degraded:
+                    logger.warning(
+                        "Rate-limiter : Redis injoignable, repli sur le compteur mémoire "
+                        "local (limitation par IP uniquement). Cause : %s",
+                        exc,
+                    )
+                self._redis_degraded = True
 
         # 2. Repli en mémoire locale
         self._cleanup_memory_if_needed(now)

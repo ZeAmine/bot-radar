@@ -23,6 +23,7 @@ from app.db.repositories.autotune_repo import (
 from app.db.session import AsyncSessionLocal
 from app.services.ai.modules.auto_tuning import (
     auto_tuning_module,
+    build_exclusion_proposal,
     claim_autotune_slot,
     release_autotune_claim,
     save_pending_tuning,
@@ -64,12 +65,12 @@ async def check_and_trigger_proactive_autotune(
                 return False
 
             disliked_titles = await get_disliked_titles_for_alert(alert_id, session)
-            if len(disliked_titles) < 2:
-                return False
 
             try:
-                exclusions, explanation = await auto_tuning_module.suggest_exclusions(
-                    alert.name, disliked_titles
+                proposal = await build_exclusion_proposal(
+                    alert_name=alert.name,
+                    already_excluded=list(alert.exclude_keywords or []),
+                    disliked_titles=disliked_titles,
                 )
             except Exception as exc:
                 logger.warning(
@@ -77,14 +78,11 @@ async def check_and_trigger_proactive_autotune(
                 )
                 return False
 
-            if not exclusions:
+            if proposal is None:
                 return False
 
-            existing_excludes = [e.lower() for e in (alert.exclude_keywords or [])]
-            new_exclusions = [e for e in exclusions if e.lower() not in existing_excludes]
-
-            if not new_exclusions:
-                return False
+            new_exclusions = proposal.exclusions
+            explanation = proposal.explanation
 
             # Mettre en cache pour la validation 1-clic
             await save_pending_tuning(alert.id, new_exclusions)

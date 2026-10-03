@@ -129,34 +129,33 @@ async def notify_admins(
     text: str,
     bot: Bot | None = None,
 ) -> None:
-    """Diffuse un message d'état système à tous les utilisateurs Telegram autorisés."""
+    """Diffuse un message d'état système à tous les utilisateurs Telegram autorisés.
+
+    Le client par défaut est l'instance partagée du bot : en créer un à chaque
+    notification ouvrait une nouvelle session réseau pour un envoi, alors que le
+    cycle de vie du client est déjà géré par le processus.
+    """
     allowed_ids = settings.TELEGRAM_ALLOWED_USER_IDS
     if not allowed_ids:
         return
 
-    should_close_bot = False
-    if bot is None:
-        token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
-        if not token:
-            return
-        bot = Bot(token=token)
-        should_close_bot = True
+    target_bot = bot
+    if target_bot is None:
+        from app.bot.bot_instance import bot as default_bot
 
-    try:
-        for user_id in allowed_ids:
-            try:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=text,
-                    parse_mode="HTML",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Impossible d'envoyer la notification système à l'utilisateur %s: %s",
-                    user_id,
-                    exc,
-                )
-    finally:
-        if should_close_bot:
-            await bot.session.close()
+        target_bot = default_bot
+
+    for user_id in allowed_ids:
+        try:
+            await target_bot.send_message(
+                chat_id=user_id,
+                text=text,
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Impossible d'envoyer la notification système à l'utilisateur %s: %s",
+                user_id,
+                exc,
+            )
 

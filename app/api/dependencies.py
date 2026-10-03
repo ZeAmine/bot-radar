@@ -2,22 +2,14 @@
 
 from collections.abc import AsyncGenerator
 
-import redis.asyncio as aioredis
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.redis import get_redis_session
 from app.core.security import verify_ingest_token, verify_internal_token
 from app.db.session import get_db_session
 
 security_bearer = HTTPBearer(auto_error=True)
-
-
-async def get_redis_client() -> AsyncGenerator[aioredis.Redis, None]:
-    """Fournit une connexion Redis asynchrone via la session gérée."""
-    async with get_redis_session() as client:
-        yield client
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

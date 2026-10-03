@@ -1,8 +1,6 @@
 """Gestionnaire singleton de client HTTP asynchrone partagé avec pool de connexions."""
 
 import logging
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 
 import httpx
 
@@ -41,13 +39,3 @@ async def close_shared_http_client() -> None:
         finally:
             _shared_client = None
         logger.info("Client HTTP partagé fermé avec succès.")
-
-
-@asynccontextmanager
-async def http_client_lifespan() -> AsyncGenerator[httpx.AsyncClient, None]:
-    """Gestionnaire de contexte pour le cycle de vie applicatif ou les workers."""
-    client = get_shared_http_client()
-    try:
-        yield client
-    finally:
-        await close_shared_http_client()

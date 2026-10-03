@@ -2,6 +2,7 @@ import contextlib
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 
 from pydantic import ValidationError
 
@@ -72,6 +73,48 @@ class AutoTuningModule(BaseAIModule):
 
 
 auto_tuning_module = AutoTuningModule()
+
+# Nombre de faux positifs en dessous duquel aucune analyse n'est menée.
+MIN_DISLIKES_FOR_PROPOSAL = 2
+
+
+@dataclass(frozen=True)
+class ExclusionProposal:
+    """Exclusions réellement nouvelles, prêtes à être proposées à validation."""
+
+    exclusions: list[str]
+    explanation: str | None
+
+
+async def build_exclusion_proposal(
+    alert_name: str,
+    already_excluded: list[str],
+    disliked_titles: list[str],
+    min_dislikes: int = MIN_DISLIKES_FOR_PROPOSAL,
+) -> ExclusionProposal | None:
+    """Construit la proposition d'exclusions, ou ``None`` s'il n'y a rien à dire.
+
+    La règle est écrite une seule fois pour le scan planifié et pour l'analyse
+    déclenchée par l'utilisateur : assez de faux positifs, un appel au moteur,
+    puis le retrait de ce que l'alerte exclut déjà. ``None`` couvre les deux issues
+    « pas assez de faux positifs » et « rien de neuf » : dans les deux cas il n'y a
+    rien à proposer, et l'appelant décide seulement du message à afficher.
+
+    Un seuil différent entre les deux appelants est un choix explicite, porté par
+    ``min_dislikes``, et non une divergence accidentelle entre deux copies.
+    """
+    if len(disliked_titles) < min_dislikes:
+        return None
+
+    exclusions, explanation = await auto_tuning_module.suggest_exclusions(
+        alert_name, disliked_titles
+    )
+    existing = {item.lower() for item in already_excluded}
+    fresh = [item for item in exclusions if item.lower() not in existing]
+    if not fresh:
+        return None
+
+    return ExclusionProposal(exclusions=fresh, explanation=explanation)
 
 
 async def save_pending_tuning(alert_id: uuid.UUID, exclusions: list[str]) -> None:

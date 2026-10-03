@@ -130,6 +130,7 @@ Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur 
 - [`app/bot/handlers/autotune.py`](app/bot/handlers/autotune.py) :
   - Commande `/autotune` : hub des alertes ayant des faux positifs non résolus.
   - `process_autotune_for_alert(...)` : exécution de l'analyse avec message de chargement transparent.
+- [`app/services/ai/modules/auto_tuning.py`](app/services/ai/modules/auto_tuning.py) : `build_exclusion_proposal(...)` porte **la règle unique** de construction d'une proposition — seuil de faux positifs, appel au moteur, retrait de ce que l'alerte exclut déjà. Le scan planifié et l'analyse déclenchée par l'utilisateur passent tous deux par elle ; ils ne diffèrent que par `min_dislikes`. `claim_autotune_slot` / `release_autotune_claim` encadrent l'émission.
   - `handle_tune_edit(...)` : passage en mode personnalisation manuelle.
   - `handle_custom_exclusions_input(...)` : réception et parsing de la liste modifiée par l'utilisateur.
   - `handle_tune_apply(...)` : application des exclusions et purge des faux positifs résolus.
@@ -153,7 +154,8 @@ Aider l'utilisateur lors de la création (`/add`) ou de l'édition (`/edit`) d'u
 ### Fichiers clés
 - [`app/services/ai/modules/keyword_variants.py`](app/services/ai/modules/keyword_variants.py) : Module générant variantes orthographiques (ex: *onepiece*, *one-piece*, *one piece*) et faux positifs **ancrés sur la fiche réelle** de l'ouvrage (`BookContext` : auteur, éditeur, année, format, ISBN). Aucune liste de goodies toute faite dans le prompt (ADR-014).
 - [`app/bot/handlers/alerts_create.py`](app/bot/handlers/alerts_create.py) : Handler `handle_create_ai_variants` branché sur le bouton `[ ✨ Suggérer variantes IA ]`.
-- [`app/bot/handlers/alerts_manage.py`](app/bot/handlers/alerts_manage.py) : Handler `handle_manage_ai_variants` pour enrichir une alerte existante.
+- [`app/bot/handlers/alerts_manage.py`](app/bot/handlers/alerts_manage.py) : variante appliquée à une alerte existante, dans la branche `ai_variants` de `prompt_new_field_value(...)` ; la confirmation est traitée par `handle_var_apply` (`ai_var_apply:`) dans [`app/bot/handlers/autotune.py`](app/bot/handlers/autotune.py).
+- **Store des variantes** : `save_pending_variants` / `get_pending_variants` / `pop_pending_variants` dans [`app/bot/handlers/autotune.py`](app/bot/handlers/autotune.py). Volontairement en mémoire seule, contrairement au store d'exclusions (Redis) : ces suggestions sont jetables et se régénèrent d'un `/autotune`.
 
 ### Invariants et contraintes
 - **Transparence d'exécution** : Un clic sur le bouton affiche immédiatement un indicateur de chargement (`⏳ Recherche des variantes en cours...`) avec verrou anti-double clic pour éviter toute fuite d'appels API ou double facturation de tokens.

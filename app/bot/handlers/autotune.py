@@ -21,10 +21,8 @@ from app.db.repositories.autotune_repo import (
     get_disliked_titles_for_alert,
 )
 from app.services.ai.modules.auto_tuning import (
-    _pending_tuning as _pending_tuning,
-)
-from app.services.ai.modules.auto_tuning import (
     auto_tuning_module,
+    build_exclusion_proposal,
     get_pending_tuning,
     pop_pending_tuning,
     save_pending_tuning,
@@ -34,9 +32,26 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="autotune_router")
 
-# Cache mémoire court pour les suggestions en attente de confirmation (évite dépassement 64B)
+# Suggestions de variantes orthographiques en attente de confirmation. Volontairement
+# en mémoire seule, à la différence du store d'exclusions : ces suggestions sont
+# jetables et se régénèrent d'un simple appel à /autotune.
 _pending_variants: dict[str, list[str]] = {}
 _active_tuning_alerts: set[str] = set()
+
+
+def save_pending_variants(alert_id: uuid.UUID, variants: list[str]) -> None:
+    """Mémorise les variantes proposées pour cette alerte."""
+    _pending_variants[str(alert_id)] = variants
+
+
+def get_pending_variants(alert_id: uuid.UUID) -> list[str]:
+    """Variantes proposées pour cette alerte, encore en attente de confirmation."""
+    return _pending_variants.get(str(alert_id), [])
+
+
+def pop_pending_variants(alert_id: uuid.UUID) -> list[str]:
+    """Retire et renvoie les variantes proposées (confirmation ou abandon)."""
+    return _pending_variants.pop(str(alert_id), [])
 
 
 async def show_autotune_hub(
@@ -216,16 +231,16 @@ async def process_autotune_for_alert(
                 await target.answer(msg, reply_markup=back_kb)
             return
 
-        exclusions, explanation = await auto_tuning_module.suggest_exclusions(
-            alert.name, disliked_titles
+        proposal = await build_exclusion_proposal(
+            alert_name=alert.name,
+            already_excluded=list(alert.exclude_keywords or []),
+            disliked_titles=disliked_titles,
+            min_dislikes=1,
         )
-
-        existing_excludes = [e.lower() for e in (alert.exclude_keywords or [])]
-        new_exclusions = [e for e in exclusions if e.lower() not in existing_excludes]
 
         titles_bullet = "\n".join(f"• <i>{html.escape(t)}</i>" for t in disliked_titles[:5])
 
-        if not new_exclusions:
+        if proposal is None:
             # Purger les faux positifs résolus déjà couverts par les exclusions existantes
             await clear_dislikes_for_alert(alert.id, db_session)
             await db_session.commit()
@@ -249,9 +264,10 @@ async def process_autotune_for_alert(
             return
 
         # Mettre en cache pour la confirmation
-        await save_pending_tuning(alert.id, new_exclusions)
+        await save_pending_tuning(alert.id, proposal.exclusions)
 
-        excl_str = ", ".join(new_exclusions)
+        excl_str = ", ".join(proposal.exclusions)
+        explanation = proposal.explanation or ""
         exp_text = f"\n💡 <i>{html.escape(explanation)}</i>\n" if explanation else ""
 
         text = (
@@ -693,7 +709,7 @@ async def handle_var_apply(
     except ValueError:
         return
 
-    variants = _pending_variants.pop(str(alert_id), [])
+    variants = get_pending_variants(alert_id)
     if not variants:
         await callback.answer("Les suggestions ont expiré.", show_alert=True)
         return
@@ -701,8 +717,12 @@ async def handle_var_apply(
     alert_repo = AlertRepository(db_session)
     alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
     if not alert:
+        # L'alerte est introuvable : les variantes restent en mémoire, une
+        # validation ultérieure n'a pas à déclencher une nouvelle analyse.
         await callback.answer("Alerte introuvable.", show_alert=True)
         return
+
+    pop_pending_variants(alert_id)
 
     current_variants = list(alert.variants or [])
     for v in variants:

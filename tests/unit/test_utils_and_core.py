@@ -11,7 +11,6 @@ from app.core.config import settings, validate_production_secrets
 from app.core.http_client import (
     close_shared_http_client,
     get_shared_http_client,
-    http_client_lifespan,
 )
 from app.core.logging import JSONFormatter
 from app.core.tasks import safe_create_task, wait_all_background_tasks
@@ -131,8 +130,8 @@ async def test_shared_http_client_lifecycle():
     assert client1.is_closed
 
     # Réouverture paresseuse automatique
-    async with http_client_lifespan() as client3:
-        assert not client3.is_closed
+    client3 = get_shared_http_client()
+    assert not client3.is_closed
 
     await close_shared_http_client()
 

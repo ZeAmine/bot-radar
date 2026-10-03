@@ -15,6 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.bot.formatter import format_alert_card
 from app.bot.handlers.alerts_view import show_alerts, view_single_alert
+from app.bot.handlers.autotune import save_pending_variants
 from app.bot.keyboards.alerts import (
     get_alert_card_keyboard,
     get_alert_edit_fields_keyboard,
@@ -262,7 +263,6 @@ async def prompt_new_field_value(
             )
 
         try:
-            from app.bot.handlers.autotune import _pending_variants
             from app.services.ai.modules.keyword_variants import keyword_variants_module
 
             variants = await keyword_variants_module.generate_variants(alert.name)
@@ -311,7 +311,7 @@ async def prompt_new_field_value(
                     )
                 return
 
-            _pending_variants[str(alert.id)] = new_variants
+            save_pending_variants(alert.id, new_variants)
             var_str = ", ".join(new_variants)
             hint = "<i>Ces termes permettront de matcher les variantes orthographiques.</i>\n\n"
             text = (

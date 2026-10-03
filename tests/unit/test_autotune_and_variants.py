@@ -14,8 +14,6 @@ from app.bot.handlers.alerts_manage import (
 )
 from app.bot.handlers.autotune import (
     _active_tuning_alerts,
-    _pending_tuning,
-    _pending_variants,
     clear_dislikes_for_alert,
     get_disliked_titles_for_alert,
     handle_autotune_command,
@@ -28,11 +26,17 @@ from app.bot.handlers.autotune import (
     handle_var_apply,
     parse_exclusions_input,
     process_autotune_for_alert,
+    save_pending_variants,
     show_autotune_hub,
 )
 from app.bot.states.alert_creation import AutoTuneState
 from app.db.models.alert import Alert
 from app.db.models.user import User
+from app.services.ai.modules.auto_tuning import (
+    build_exclusion_proposal,
+    get_pending_tuning,
+    save_pending_tuning,
+)
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 
 _GEN_PATH = (
@@ -224,7 +228,7 @@ async def test_handle_autotune_with_dislikes():
         text = message.answer.call_args[0][0]
         assert "Auto-Tuning : « One Piece »" in text
         assert "figurine, t-shirt" in text
-        assert str(alert.id) in _pending_tuning
+        assert await get_pending_tuning(alert.id) == ["figurine", "t-shirt"]
 
 
 @pytest.mark.asyncio
@@ -294,10 +298,65 @@ async def test_handle_autotune_with_target_query():
 
 
 @pytest.mark.asyncio
+async def test_build_exclusion_proposal_keeps_only_new_exclusions():
+    """La règle partagée ne repropose jamais ce que l'alerte exclut déjà."""
+    with patch(
+        "app.services.ai.modules.auto_tuning.auto_tuning_module.suggest_exclusions",
+        new_callable=AsyncMock,
+        return_value=(["Figurine", "t-shirt", "cassette"], "Parasites détectés"),
+    ):
+        proposal = await build_exclusion_proposal(
+            alert_name="One Piece",
+            already_excluded=["figurine"],
+            disliked_titles=["Figurine Luffy", "T-shirt One Piece", "Cassette VHS"],
+        )
+
+    assert proposal is not None
+    # La casse est indifférenciée, l'ordre du moteur est conservé.
+    assert proposal.exclusions == ["t-shirt", "cassette"]
+    assert proposal.explanation == "Parasites détectés"
+
+
+@pytest.mark.asyncio
+async def test_build_exclusion_proposal_returns_none_without_new_exclusions():
+    with patch(
+        "app.services.ai.modules.auto_tuning.auto_tuning_module.suggest_exclusions",
+        new_callable=AsyncMock,
+        return_value=(["figurine"], "déjà exclue"),
+    ):
+        proposal = await build_exclusion_proposal(
+            alert_name="One Piece",
+            already_excluded=["Figurine"],
+            disliked_titles=["Figurine Luffy", "Poster One Piece"],
+        )
+
+    assert proposal is None
+
+
+@pytest.mark.asyncio
+async def test_build_exclusion_proposal_does_not_call_engine_below_threshold():
+    """Trop peu de faux positifs : le moteur n'est même pas sollicité."""
+    mock_engine = AsyncMock(return_value=(["figurine"], None))
+
+    with patch(
+        "app.services.ai.modules.auto_tuning.auto_tuning_module.suggest_exclusions",
+        new_callable=lambda: mock_engine,
+    ):
+        proposal = await build_exclusion_proposal(
+            alert_name="One Piece",
+            already_excluded=[],
+            disliked_titles=["Figurine Luffy"],
+        )
+
+    assert proposal is None
+    mock_engine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_handle_tune_apply():
     """Vérifie l'application effective des exclusions et le nettoyage des faux positifs."""
     alert_id = uuid.uuid4()
-    _pending_tuning[str(alert_id)] = ["figurine", "t-shirt"]
+    await save_pending_tuning(alert_id, ["figurine", "t-shirt"])
 
     callback = MagicMock(spec=CallbackQuery)
     callback.data = f"ai_tune_apply:{alert_id}"
@@ -350,7 +409,7 @@ async def test_handle_tune_apply():
 async def test_handle_tune_apply_keeps_suggestion_when_alert_missing():
     """Alerte introuvable : la suggestion n'est pas consommée, l'utilisateur peut réessayer."""
     alert_id = uuid.uuid4()
-    _pending_tuning[str(alert_id)] = ["figurine", "t-shirt"]
+    await save_pending_tuning(alert_id, ["figurine", "t-shirt"])
 
     callback = MagicMock(spec=CallbackQuery)
     callback.data = f"ai_tune_apply:{alert_id}"
@@ -376,14 +435,14 @@ async def test_handle_tune_apply_keeps_suggestion_when_alert_missing():
         mock_clear.assert_not_called()
         db_session.commit.assert_not_called()
         # La suggestion survit à l'échec : rien ne l'a consommée.
-        assert _pending_tuning[str(alert_id)] == ["figurine", "t-shirt"]
+        assert await get_pending_tuning(alert_id) == ["figurine", "t-shirt"]
 
 
 @pytest.mark.asyncio
 async def test_handle_var_apply():
     """Vérifie l'application effective des variantes orthographiques à alert.variants."""
     alert_id = uuid.uuid4()
-    _pending_variants[str(alert_id)] = ["onepiece", "one piece tomes"]
+    save_pending_variants(alert_id, ["onepiece", "one piece tomes"])
 
     callback = MagicMock(spec=CallbackQuery)
     callback.data = f"ai_var_apply:{alert_id}"
@@ -581,7 +640,7 @@ async def test_clear_dislikes_for_alert_query():
 async def test_handle_tune_cancel_preserves_dislikes():
     """Vérifie que l'annulation ne supprime pas les faux positifs et propose le retour hub."""
     alert_id = uuid.uuid4()
-    _pending_tuning[str(alert_id)] = ["terme_inutile"]
+    await save_pending_tuning(alert_id, ["terme_inutile"])
 
     callback = MagicMock(spec=CallbackQuery)
     callback.data = f"ai_tune_cancel:{alert_id}"
@@ -600,7 +659,7 @@ async def test_handle_tune_cancel_preserves_dislikes():
 
         # Les faux positifs ne sont PAS supprimés lors d'une annulation
         mock_clear.assert_not_called()
-        assert str(alert_id) not in _pending_tuning
+        assert await get_pending_tuning(alert_id) == []
         callback.answer.assert_called_once_with("Opération annulée.")
         callback.message.edit_text.assert_called_once()
         text = callback.message.edit_text.call_args[0][0]
@@ -681,7 +740,7 @@ def test_parse_exclusions_input():
 async def test_handle_tune_edit():
     """Vérifie le passage en état d'édition avec proposition copiable."""
     alert_id = uuid.uuid4()
-    _pending_tuning[str(alert_id)] = ["figurine", "tome 1"]
+    await save_pending_tuning(alert_id, ["figurine", "tome 1"])
 
     callback = MagicMock(spec=CallbackQuery)
     callback.data = f"ai_tune_edit:{alert_id}"
@@ -718,7 +777,7 @@ async def test_handle_tune_edit():
 async def test_handle_tune_back_to_suggestion():
     """Vérifie le retour à la vue suggestion sans modifier les exclusions."""
     alert_id = uuid.uuid4()
-    _pending_tuning[str(alert_id)] = ["figurine", "tome 1"]
+    await save_pending_tuning(alert_id, ["figurine", "tome 1"])
 
     callback = MagicMock(spec=CallbackQuery)
     callback.data = f"ai_tune_back_sug:{alert_id}"
@@ -755,7 +814,7 @@ async def test_handle_tune_back_to_suggestion():
 async def test_handle_custom_exclusions_input_valid():
     """Vérifie la saisie valide d'exclusions personnalisées et l'affichage du récapitulatif."""
     alert_id = uuid.uuid4()
-    _pending_tuning[str(alert_id)] = ["ancienne_suggestion"]
+    await save_pending_tuning(alert_id, ["ancienne_suggestion"])
 
     message = MagicMock(spec=Message)
     message.text = "figurine, tome 2; coffret"
@@ -776,7 +835,7 @@ async def test_handle_custom_exclusions_input_valid():
     ):
         await handle_custom_exclusions_input(message, db_user, db_session, state)
 
-        assert _pending_tuning[str(alert_id)] == ["figurine", "tome 2", "coffret"]
+        assert await get_pending_tuning(alert_id) == ["figurine", "tome 2", "coffret"]
         state.clear.assert_called_once()
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
@@ -792,7 +851,7 @@ async def test_handle_custom_exclusions_input_valid():
 async def test_handle_custom_exclusions_input_cancel():
     """Vérifie l'annulation par commande /cancel lors de la saisie."""
     alert_id = uuid.uuid4()
-    _pending_tuning[str(alert_id)] = ["suggestion"]
+    await save_pending_tuning(alert_id, ["suggestion"])
 
     message = MagicMock(spec=Message)
     message.text = "/cancel"
@@ -808,6 +867,6 @@ async def test_handle_custom_exclusions_input_cancel():
     await handle_custom_exclusions_input(message, db_user, db_session, state)
 
     state.clear.assert_called_once()
-    assert str(alert_id) not in _pending_tuning
+    assert await get_pending_tuning(alert_id) == []
     message.answer.assert_called_once()
     assert "Modification annulée" in message.answer.call_args[0][0]
