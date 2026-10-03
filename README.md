@@ -412,6 +412,24 @@ alembic revision --autogenerate -m "nom_de_la_migration"
 - **Répertoire de travail** : `~/bot-radar/`.
 - **Domaine public** : `https://radar.aminezegmou.fr`.
 
+### Passerelle centralisée (`~/gateway/`, hors dépôt)
+
+La passerelle Caddy est partagée avec **BotStream** : son `Caddyfile` n'est pas versionné ici et ne doit pas être modifié à l'aveugle. Trois points vérifiés en production le 03/10/2026 :
+
+- **Le plafond de payload est appliqué par l'application, pas par la passerelle.** `PayloadSizeLimitMiddleware` borne à 512 Ko et refuse les corps `Transfer-Encoding: chunked`. La directive `request_body { max_size }` de Caddy **n'intercepte pas** un corps streamé par `reverse_proxy` : testé avec un plafond de 10 Ko face à un corps de 100 Ko, la requête a atteint l'application. Ne pas le remettre en croyant qu'il protège.
+- **Recharger exige l'adresse explicite.** L'API d'administration n'écoute que sur `127.0.0.1:2019` (pas sur `localhost`). Un `caddy reload` sans `--address` sort sans erreur et **n'applique rien** :
+
+  ```bash
+  cd ~/gateway
+  docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
+    --address 127.0.0.1:2019
+  # vérifier que la config en service est bien celle qu'on croit :
+  docker compose exec -T caddy wget -qO- http://127.0.0.1:2019/config/ | head -c 300
+  ```
+
+  Si le rechargement reste muet, `docker compose restart caddy` repart d'un état connu : le fichier est monté en lecture seule, donc relu au démarrage.
+
 ### Procédure de déploiement
 
 La procédure complète tient en une commande :
