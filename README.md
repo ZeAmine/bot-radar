@@ -388,7 +388,7 @@ make clean                # Supprime les répertoires de cache temporaires
 
 ## 12. Gestion des Migrations Alembic
 
-Le schéma PostgreSQL est géré par Alembic. La révision courante attendue est `0005_correct_historical_low_from_observations`.
+Le schéma PostgreSQL est géré par Alembic. La révision courante attendue est `0005_correct_historical_low`.
 
 ```bash
 # Appliquer les migrations

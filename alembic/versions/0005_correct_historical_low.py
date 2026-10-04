@@ -1,6 +1,6 @@
 """Abaisse les cotes 1 an que nos propres releves contredisent.
 
-Revision ID: 0005_correct_historical_low_from_observations
+Revision ID: 0005_correct_historical_low
 Revises: 0004_alert_books_book_id_index
 Create Date: 2026-10-04 14:00:00.000000
 
@@ -10,7 +10,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0005_correct_historical_low_from_observations"
+revision: str = "0005_correct_historical_low"
 down_revision: str | None = "0004_alert_books_book_id_index"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
