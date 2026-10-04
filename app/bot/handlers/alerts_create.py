@@ -201,9 +201,12 @@ def _keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
     — ni qu'une exclusion manquante est un oubli quand elle est une décision.
     """
     if not outcome.answered:
+        # La relance a déjà eu lieu : ce n'est plus de la lenteur mais un échec. Le
+        # bouton reste sous la carte, c'est donc lui qu'on nomme, pas « Modifier ».
         return (
-            "<i>⚠️ L'IA n'a pas répondu à temps : cette alerte est créée sans variante "
-            "ni exclusion. Tu peux relancer la recherche via « Modifier ».</i>"
+            "<i>⚠️ L'IA n'a pas répondu après une relance : cette alerte sera créée "
+            "sans variante ni exclusion. Appuie sur « ✨ Variantes & Exclusions IA » "
+            "pour réessayer.</i>"
         )
     if outcome.is_empty:
         return (
@@ -243,6 +246,11 @@ async def _search_keywords_in_background(
         logger.info("Brouillon modifié pendant la recherche IA de « %s » : récap non publié.", name)
         return
 
+    # La recherche n'est « définitive » que si le moteur a répondu. Sinon le bouton
+    # « ✨ Variantes & Exclusions IA » reste sous la carte, et un seul appui
+    # relance : un échec ne doit pas se payer d'un détour par « Modifier ».
+    finalized = outcome.answered
+
     updated = {
         **snapshot,
         "variants": outcome.variants,
@@ -252,13 +260,13 @@ async def _search_keywords_in_background(
         # La note et l'état de la recherche voyagent avec le brouillon : changer
         # d'édition ou de prix plus tard ne doit pas les perdre au re-rendu.
         "keyword_note": _keyword_note(outcome),
-        "keywords_finalized": True,
+        "keywords_finalized": finalized,
     }
     await state.update_data(
         variants=updated["variants"],
         exclude_keywords=updated["exclude_keywords"],
         keyword_note=updated["keyword_note"],
-        keywords_finalized=True,
+        keywords_finalized=finalized,
     )
 
     recap, keyboard = build_creation_recap(updated)
@@ -652,7 +660,9 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     )
 
     # « Rien de pertinent » et « personne n'a répondu » sont deux réponses : la note
-    # les dit, et le brouillon la conserve pour les rendus suivants.
+    # les dit, et le brouillon la conserve pour les rendus suivants. Un échec laisse
+    # le bouton de relance en place, donc rien n'est marqué comme définitif.
+    finalized = outcome.answered
     updated_draft = {
         **data,
         "variants": _merge_keywords(data.get("variants"), outcome.variants),
@@ -660,13 +670,13 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
             data.get("exclude_keywords"), outcome.exclusions
         ),
         "keyword_note": _keyword_note(outcome),
-        "keywords_finalized": True,
+        "keywords_finalized": finalized,
     }
     await state.update_data(
         variants=updated_draft["variants"],
         exclude_keywords=updated_draft["exclude_keywords"],
         keyword_note=updated_draft["keyword_note"],
-        keywords_finalized=True,
+        keywords_finalized=finalized,
     )
 
     recap, keyboard = build_creation_recap(updated_draft)

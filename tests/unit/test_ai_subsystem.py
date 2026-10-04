@@ -766,3 +766,123 @@ async def test_keyword_variants_never_carry_an_isbn_or_the_title_itself():
     system_prompt = mock_client.calls[0]["system_prompt"]
     assert "tout ISBN" in system_prompt
     assert "ne répète jamais le titre" in system_prompt
+
+
+class _FlakyClient:
+    """Moteur qui répond autre chose à chaque appel, `None` compris.
+
+    Le vrai client renvoie `None` après un délai dépassé ou une erreur HTTP : le module
+    doit distinguer un moteur qui a parlé d'un moteur muet, pas une panne d'une absence
+    de réponse. Les réponses sont donc une suite, la dernière étant répétée si le module
+    insiste plus que prévu — ce qui rend visible un essai en trop.
+    """
+
+    def __init__(self, *responses: object, configured: bool = True) -> None:
+        self.responses = list(responses) or [None]
+        self.configured = configured
+        self.calls = 0
+
+    @property
+    def is_configured(self) -> bool:
+        return self.configured
+
+    async def generate_json(self, **_kwargs: object) -> object:
+        self.calls += 1
+        return self.responses[min(self.calls, len(self.responses)) - 1]
+
+
+_GOOD_PAYLOAD = {
+    "variants": ["couleurdeschoses"],
+    "exclusions": ["keeping two"],
+    "rationale": "Confusion avec l'autre ouvrage du même éditeur.",
+}
+
+
+@pytest.mark.asyncio
+async def test_keyword_variants_retries_once_after_a_timeout():
+    """Un délai dépassé est un accident : un second essai évite l'alerte amputée."""
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    client = _FlakyClient(None, _GOOD_PAYLOAD)
+
+    with patch.object(keyword_variants_module, "client", client):
+        outcome = await keyword_variants_module.generate_variants_and_exclusions(
+            "La couleur des choses", category_slug="bd_comics"
+        )
+
+    assert client.calls == 2
+    assert outcome.answered is True
+    assert outcome.variants == ["couleurdeschoses"]
+    assert outcome.exclusions == ["keeping two"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_variants_retries_after_an_unreadable_payload():
+    """Un JSON que la validation refuse est une panne, pas une réponse : on réessaie."""
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    # `variants` doit être une liste : la charge utile du premier appel est irrecevable.
+    client = _FlakyClient({"variants": 42}, _GOOD_PAYLOAD)
+
+    with patch.object(keyword_variants_module, "client", client):
+        outcome = await keyword_variants_module.generate_variants_and_exclusions(
+            "La couleur des choses", category_slug="bd_comics"
+        )
+
+    assert client.calls == 2
+    assert outcome.answered is True
+    assert outcome.variants == ["couleurdeschoses"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_variants_gives_up_after_two_failures():
+    """Deux échecs : le verdict est « personne n'a répondu », et les essais s'arrêtent.
+
+    La troisième réponse est valide : une relance non bornée la ramasserait au lieu
+    de conclure, et le doublement du coût resterait invisible pour l’utilisateur.
+    """
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    client = _FlakyClient(None, None, _GOOD_PAYLOAD)
+
+    with patch.object(keyword_variants_module, "client", client):
+        outcome = await keyword_variants_module.generate_variants_and_exclusions(
+            "La couleur des choses", category_slug="bd_comics"
+        )
+
+    assert client.calls == 2, "la relance doit être bornée à un essai de plus"
+    assert outcome.answered is False
+    assert outcome.is_empty is True
+
+
+@pytest.mark.asyncio
+async def test_keyword_variants_does_not_retry_an_answer_without_variants():
+    """Un moteur qui répond sans variante a tranché : le réinterroger serait du gaspillage."""
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    client = _FlakyClient({"variants": [], "exclusions": [], "rationale": "Rien à ajouter."})
+
+    with patch.object(keyword_variants_module, "client", client):
+        outcome = await keyword_variants_module.generate_variants_and_exclusions(
+            "La couleur des choses", category_slug="bd_comics"
+        )
+
+    assert client.calls == 1
+    assert outcome.answered is True
+    assert outcome.is_empty is True
+
+
+@pytest.mark.asyncio
+async def test_keyword_variants_never_calls_an_unconfigured_engine():
+    """Un moteur absent n'est jamais appelé, et la relance ne le rend pas présent."""
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    client = _FlakyClient(_GOOD_PAYLOAD, configured=False)
+
+    with patch.object(keyword_variants_module, "client", client):
+        outcome = await keyword_variants_module.generate_variants_and_exclusions(
+            "La couleur des choses", category_slug="bd_comics"
+        )
+
+    assert client.calls == 0
+    assert outcome.answered is False

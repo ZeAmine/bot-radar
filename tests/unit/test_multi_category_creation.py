@@ -513,7 +513,14 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     assert "🎯 <b>Prix max :</b> 10,00 €" in edited_text
     assert state.state is AlertCreationState.confirm_creation
     # Le moteur n'a pas répondu : le récap le dit plutôt que de laisser croire à un avis.
-    assert "L'IA n'a pas répondu à temps" in edited_text
+    assert "L'IA n'a pas répondu après une relance" in edited_text
+    # Et il ne laisse pas cette carte sans issue : le bouton de relance est dessous.
+    keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
+    assert any(
+        button.callback_data == "alert_create_ai_variants"
+        for row in keyboard.inline_keyboard
+        for button in row
+    )
     # Aucune alerte existante : rien à signaler.
     milestone = loading_message.edit_text.await_args_list[0][0][0]
     assert "Déjà surveillé" not in milestone
