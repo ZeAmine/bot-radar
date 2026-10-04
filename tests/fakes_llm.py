@@ -83,3 +83,29 @@ class FakeLLM:
         return LLMHealth(
             status="active", model=self.model, latency_ms=1, message=f"simulé (force={force})"
         )
+
+
+class FlakyLLM:
+    """Moteur qui répond autre chose à chaque appel, `None` compris.
+
+    Le vrai client renvoie `None` après un délai dépassé, une erreur HTTP ou un JSON
+    illisible : rien ne distingue alors une panne d'une réponse. Les réponses sont
+    donc une suite, la dernière étant répétée si l'appelant insiste plus que prévu —
+    ce qui rend visible un essai en trop.
+
+    `configured=False` décrit l'autre extrême, celui d'un moteur absent : appelant
+    encore, mais rien à qui demander.
+    """
+
+    def __init__(self, *responses: object, configured: bool = True) -> None:
+        self.responses = list(responses) or [None]
+        self.configured = configured
+        self.calls = 0
+
+    @property
+    def is_configured(self) -> bool:
+        return self.configured
+
+    async def generate_json(self, **_kwargs: object) -> object:
+        self.calls += 1
+        return self.responses[min(self.calls, len(self.responses)) - 1]

@@ -39,6 +39,7 @@ from app.services.ai.modules.auto_tuning import (
     save_pending_tuning,
 )
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
+from tests.fakes_llm import FlakyLLM
 
 _GEN_PATH = (
     "app.services.ai.modules.keyword_variants."
@@ -886,27 +887,6 @@ async def test_handle_custom_exclusions_input_cancel():
     assert "Modification annulée" in message.answer.call_args[0][0]
 
 
-class _StutteringEngine:
-    """Moteur qui manque son premier appel, puis répond : la relance voit le bouton.
-
-    Ce test ne simule pas le module : il passe par le vrai `generate_variants_and_exclusions`
-    avec un client qui se trompe une fois, parce que le défaut était justement à cette
-    couture — le module qui récupère et le handler qui décide de garder le bouton.
-    """
-
-    def __init__(self, *answers: object) -> None:
-        self.answers = list(answers)
-        self.calls = 0
-
-    @property
-    def is_configured(self) -> bool:
-        return True
-
-    async def generate_json(self, **_kwargs: object) -> object:
-        self.calls += 1
-        return self.answers[min(self.calls, len(self.answers)) - 1]
-
-
 @pytest.mark.asyncio
 async def test_handle_create_ai_variants_recovers_from_a_stalled_engine():
     """Un premier appel perdu ne doit pas se voir dans le récap : le bouton fait son travail.
@@ -932,7 +912,7 @@ async def test_handle_create_ai_variants_recovers_from_a_stalled_engine():
     )
     state.update_data = AsyncMock()
 
-    engine = _StutteringEngine(
+    engine = FlakyLLM(
         None,
         {
             "variants": ["onepiece"],
