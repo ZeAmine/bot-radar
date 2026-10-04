@@ -175,11 +175,16 @@ class IsbnConfirmation:
     `conflicting_title` renseignée : elles le rattachent à un autre ouvrage — c'est une
     contradiction, pas un silence. Ni l'un ni l'autre : personne ne connaît ce code,
     ce qui n'interdit rien mais n'autorise aucune fiche.
+
+    `panne` renseignée : personne n'a tranché. Elle est distincte d'un silence, car la
+    seule différence observable pour l'appelant est qu'une notice de repli existe peut-être :
+    sans elle, il la prendrait pour une confirmation que la BNF n'a jamais faite.
     """
 
     meta: BookMetadata | None = None
     conflicting_title: str | None = None
     conflicting_author: str | None = None
+    panne: str | None = None
 
 
 @dataclass(frozen=True)
@@ -529,8 +534,13 @@ class BookMetadataService:
         if not clean_isbn or not is_valid_isbn(clean_isbn):
             return IsbnConfirmation()
 
-        records = await self._query_bnf_sru(f'bib.isbn adj "{clean_isbn}"')
+        records, panne = await self._bnf_records(f'bib.isbn adj "{clean_isbn}"')
         best = records[0] if records else None
+        if best is None and panne:
+            # Aucune autorité n'a tranché. Le repli OpenLibrary existe peut-être, mais le
+            # retenir ici affirmerait une confirmation que personne n'a faite : on rend
+            # la panne, et l'appelant garde l'ISBN saisi sans y attacher de fiche.
+            return IsbnConfirmation(panne=panne)
         if best is None:
             # La BNF ignore ce code : OpenLibrary tranche en repli, même garde-fou de titre.
             fallback = await self._openlibrary_works({"isbn": clean_isbn})

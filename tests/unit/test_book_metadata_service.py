@@ -530,6 +530,47 @@ async def test_resolve_for_alert_keeps_same_work_editions_out_of_homonyms():
 
 
 @pytest.mark.asyncio
+async def test_confirm_ne_confirme_pas_une_panne_meme_si_le_repli_repond():
+    """Une BNF muette et un OpenLibrary bavard ne font pas une confirmation.
+
+    `confirm_isbn_for_title` prenait la notice de repli sans regarder la panne : le
+    brouillon de création se réalignait sur elle, auteur et éditeur compris, comme si la
+    BNF avait validé l'ISBN.
+    """
+    client = _FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
+    service = BookMetadataService(http_client=client)
+
+    verdict = await service.confirm_isbn_for_title("9782369903086", "La couleur des choses")
+
+    assert verdict.meta is None, "une notice de repli ne vaut pas confirmation"
+    assert verdict.conflicting_title is None, "et ne vaut pas davantage une accusation"
+    assert verdict.panne is not None
+    assert "TimeoutError" in verdict.panne
+
+
+@pytest.mark.asyncio
+async def test_confirm_accepte_le_repli_quand_la_bnf_a_repondu():
+    """Le contraste exact : ici la BNF a répondu, le repli reste un repli."""
+    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
+    service = BookMetadataService(http_client=client)
+
+    verdict = await service.confirm_isbn_for_title("9782369903086", "La couleur des choses")
+
+    assert verdict.meta is not None
+    assert verdict.meta.source == "openlibrary"
+    assert verdict.panne is None
+
+
+@pytest.mark.asyncio
+async def test_verify_isbn_ne_valide_pas_un_repli_obtenu_pendant_une_panne():
+    """`verify_isbn` est cette fonction-là : elle ne doit rien confirmer de plus."""
+    client = _FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
+    service = BookMetadataService(http_client=client)
+
+    assert await service.verify_isbn("9782369903086", "La couleur des choses") is None
+
+
+@pytest.mark.asyncio
 async def test_confirm_isbn_for_title_separates_conflict_from_absence():
     """« Confirmé », « rattaché à un autre ouvrage » et « inconnu » sont trois verdicts.
 
