@@ -38,6 +38,7 @@ from dataclasses import asdict, dataclass, field
 from sqlalchemy import select
 
 from app.core.constants import AlertStatus
+from app.core.http_client import close_shared_http_client, get_shared_http_client
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
 from app.db.models.book import Book
@@ -144,6 +145,25 @@ def inspect_identity(
             )
         )
     return findings
+
+
+async def bnf_joignable(client: object) -> bool:
+    """L'autorité répond-elle ? Indispensable avant de croire un « personne ne connaît ».
+
+    `lookup_by_isbn` absorbe ses propres erreurs de transport et renvoie `None` : sans
+    cette sonde, une BNF injoignable se lirait comme un ISBN que personne ne connaît,
+    c'est-à-dire comme une anomalie — exactement la fausse accusation que cet audit
+    existe pour éviter. L'opération `explain` ne renvoie aucun enregistrement : elle
+    coûte une requête et prouve la disponibilité.
+    """
+    try:
+        reponse = await client.get(  # type: ignore[attr-defined]
+            f"{BookMetadataService.BNF_SRU_URL}?version=1.2&operation=explain",
+            timeout=8.0,
+        )
+    except Exception:  # noqa: BLE001 — l'indisponibilité est ici le verdict
+        return False
+    return getattr(reponse, "status_code", 0) == 200
 
 
 @dataclass
@@ -318,9 +338,15 @@ async def run(args: argparse.Namespace) -> int:
 
     service = BookMetadataService()
     try:
+        if not await bnf_joignable(get_shared_http_client()):
+            # Rien n'a pu être vérifié : l'audit n'a pas eu lieu. Aucune alerte n'est
+            # signalée, et le code 2 dit que le rapport est vide parce qu'il n'a pas
+            # été produit, pas parce qu'il n'y avait rien à trouver.
+            print(f"{RED}La BNF ne répond pas : aucune alerte n'a pu être vérifiée.{RESET}")
+            return EXIT_ERROR
         verdicts = await audit(identities, service.lookup_by_isbn)
     finally:
-        await service.close()
+        await close_shared_http_client()
 
     if args.json:
         print(as_json(verdicts))

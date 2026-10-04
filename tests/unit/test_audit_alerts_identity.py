@@ -225,8 +225,32 @@ class _Moteur:
         return None
 
 
+def _joignable(vrai: bool):
+    async def sonde(_client: object) -> bool:
+        return vrai
+
+    return sonde
+
+
+def _hors_ligne(monkeypatch) -> None:
+    """Écarte Postgres, la BNF et le client partagé du chemin `run()`.
+
+    Appelé explicitement plutôt qu'en `autouse` : la sonde d'atteignabilité est
+    elle-même une fonction à vérifier, et un fixture automatique la remplacerait
+    sous le test censé l'exercer.
+    """
+
+    async def fermer() -> None:
+        return None
+
+    monkeypatch.setattr(audit, "bnf_joignable", _joignable(True))
+    monkeypatch.setattr(audit, "get_shared_http_client", object)
+    monkeypatch.setattr(audit, "close_shared_http_client", fermer)
+
+
 @pytest.mark.asyncio
 async def test_code_0_quand_rien_a_signaler(monkeypatch):
+    _hors_ligne(monkeypatch)
     monkeypatch.setattr(audit, "read_identities", _depot([_alerte(author="Panchaud, Martin")]))
     monkeypatch.setattr(audit, "BookMetadataService", lambda: _Moteur(NOTICE_BD))
     assert await audit.run(_args()) == audit.EXIT_CLEAN == 0
@@ -234,6 +258,7 @@ async def test_code_0_quand_rien_a_signaler(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_code_1_des_une_anomalie(monkeypatch):
+    _hors_ligne(monkeypatch)
     monkeypatch.setattr(audit, "read_identities", _depot([_alerte()]))
     monkeypatch.setattr(audit, "BookMetadataService", lambda: _Moteur(NOTICE_HOMONYME))
     assert await audit.run(_args()) == audit.EXIT_ANOMALIES == 1
@@ -241,6 +266,7 @@ async def test_code_1_des_une_anomalie(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_code_2_quand_la_base_est_illisible(monkeypatch):
+    _hors_ligne(monkeypatch)
     async def boom(**_kwargs: object) -> list[audit.AlertIdentity]:
         raise OSError("connexion refusée")
 
@@ -249,7 +275,52 @@ async def test_code_2_quand_la_base_est_illisible(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_une_autorite_muette_ne_produit_aucune_anomalie(monkeypatch, capsys):
+    _hors_ligne(monkeypatch)
+    """La panne ne doit pas se déguiser en « ISBN inconnu », ni en succès silencieux.
+
+    `lookup_by_isbn` absorbant ses propres erreurs, une BNF injoignable renverrait
+    `None` pour chaque alerte — donc `isbn_inconnu` partout. Le code 2 dit que
+    l'audit n'a pas eu lieu ; le code 0 dirait qu'il n'y avait rien à trouver.
+    """
+    monkeypatch.setattr(audit, "read_identities", _depot([_alerte()]))
+    monkeypatch.setattr(audit, "bnf_joignable", _joignable(False))
+
+    class Interdit:
+        async def lookup_by_isbn(self, _isbn: str) -> None:
+            raise AssertionError("aucune notice ne doit être demandée si l'autorité est muette")
+
+    monkeypatch.setattr(audit, "BookMetadataService", lambda: Interdit())
+
+    assert await audit.run(_args()) == audit.EXIT_ERROR
+    assert "ne répond pas" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
 async def test_aucune_alerte_sans_isbn_ne_demande_rien(monkeypatch):
+    _hors_ligne(monkeypatch)
     """Pas d'ISBN, pas de notice à demander : le rapport le dit et le code reste 0."""
     monkeypatch.setattr(audit, "read_identities", _depot([]))
     assert await audit.run(_args()) == audit.EXIT_CLEAN
+
+
+@pytest.mark.asyncio
+async def test_la_sonde_tient_compte_de_la_reponse_de_l_autorite():
+    """200 dit disponible, autre chose dit muet : c'est tout ce que la sonde conclut."""
+
+    class Reponse:
+        def __init__(self, code: int) -> None:
+            self.status_code = code
+
+    class Client:
+        def __init__(self, code: int, panne: bool = False) -> None:
+            self.code, self.panne = code, panne
+
+        async def get(self, *_a, **_kw) -> Reponse:
+            if self.panne:
+                raise TimeoutError("délai dépassé")
+            return Reponse(self.code)
+
+    assert await audit.bnf_joignable(Client(200)) is True
+    assert await audit.bnf_joignable(Client(503)) is False
+    assert await audit.bnf_joignable(Client(200, panne=True)) is False
