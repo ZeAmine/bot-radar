@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import logging
 import re
@@ -31,6 +32,50 @@ from app.services.market_price_service import (
 
 logger = logging.getLogger(__name__)
 router = Router(name="callbacks_router")
+
+# Préfixe des boutons par tome du panneau « 📊 Prix du marché ». Telegram refuse
+# un `callback_data` de plus de 64 octets — une contrainte de l'API, pas une
+# préférence — et rejette alors le message entier avec BUTTON_DATA_INVALID : deux
+# UUID en texte clair en faisaient 85, si bien que le panneau ne s'affichait plus
+# du tout, précisément quand le tome n'était pas identifié, seul cas où ces
+# boutons existent. Les deux identifiants passent donc en base64url sans
+# remplissage : 57 octets, et le préfixe reste lisible.
+TOME_REF_PREFIX = "market_tome:"
+
+
+def _encode_uuid(value: uuid.UUID) -> str:
+    """UUID en base64url sans remplissage (22 caractères)."""
+    return base64.urlsafe_b64encode(value.bytes).decode("ascii").rstrip("=")
+
+
+def _decode_uuid(raw: str) -> uuid.UUID:
+    """Relit un UUID encodé par `_encode_uuid`, ou lève si la donnée est corrompue."""
+    return uuid.UUID(bytes=base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+
+
+def _encode_tome_ref(listing_id: uuid.UUID, book_id: uuid.UUID) -> str:
+    """Référence de callback tenant dans la limite Telegram, et réversible."""
+    return f"{TOME_REF_PREFIX}{_encode_uuid(listing_id)}:{_encode_uuid(book_id)}"
+
+
+def _decode_tome_ref(data: str | None) -> tuple[uuid.UUID, uuid.UUID] | None:
+    """Relit la référence de bouton, ou ``None`` si elle ne se décode pas.
+
+    Un callback tronqué ou forgé ne doit pas faire lever une exception : le
+    panneau reste fermé et l'utilisateur reçoit le même avertissement que pour
+    une annonce inconnue.
+    """
+    raw = data or ""
+    if not raw.startswith(TOME_REF_PREFIX):
+        return None
+    parts = raw.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        # ``binascii.Error`` (``ValueError``) et ``uuid.UUID`` lèvent toutes deux ici.
+        return _decode_uuid(parts[1]), _decode_uuid(parts[2])
+    except ValueError:
+        return None
 
 
 @router.callback_query(F.data.startswith("market:"))
@@ -197,7 +242,7 @@ async def _show_market_details(
             current_row.append(
                 InlineKeyboardButton(
                     text=btn_text,
-                    callback_data=f"market_tome:{listing.id}:{b.id}",
+                    callback_data=_encode_tome_ref(listing.id, b.id),
                 )
             )
             if len(current_row) == 5:
@@ -241,13 +286,11 @@ async def handle_market_tome_select(callback: CallbackQuery, db_session: Any) ->
 
 
 async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
-    parts = (callback.data or "").split(":")
-    try:
-        listing_id = uuid.UUID(parts[1])
-        book_id = uuid.UUID(parts[2])
-    except (IndexError, ValueError):
+    decoded = _decode_tome_ref(callback.data)
+    if decoded is None:
         await callback.answer("Annonce invalide.", show_alert=True)
         return
+    listing_id, book_id = decoded
 
     listing_repo = ListingRepository(db_session)
     listing = await listing_repo.get_by_id(listing_id)

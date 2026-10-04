@@ -8,7 +8,7 @@ from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
 from app.db.repositories.book_repo import resolve_loaded_books
-from app.services.market_price_service import MarketPriceService
+from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceService
 from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 
 
@@ -118,7 +118,7 @@ def test_series_matching_generic_range_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert summary == "ℹ️ Série détectée : tome non identifié, cote indisponible."
+    assert summary == "ℹ️ Série détectée : tome non identifié."
     assert "Écart" not in summary
 
 
@@ -294,7 +294,7 @@ def test_series_matching_blacksad_generic():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert summary == "ℹ️ Série détectée : tome non identifié, cote indisponible."
+    assert summary == "ℹ️ Série détectée : tome non identifié."
     assert "Écart" not in summary
 
 
@@ -317,7 +317,7 @@ async def test_handle_market_tome_select():
 
     from aiogram.types import CallbackQuery, Message
 
-    from app.bot.handlers.callbacks import handle_market_tome_select
+    from app.bot.handlers.callbacks import _encode_tome_ref, handle_market_tome_select
 
     listing_id = uuid.uuid4()
     book_id = uuid.uuid4()
@@ -331,7 +331,7 @@ async def test_handle_market_tome_select():
     mock_book.id = book_id
 
     mock_callback = MagicMock(spec=CallbackQuery)
-    mock_callback.data = f"market_tome:{listing_id}:{book_id}"
+    mock_callback.data = _encode_tome_ref(listing_id, book_id)
     mock_msg = MagicMock(spec=Message)
     mock_msg.edit_text = AsyncMock()
     mock_callback.message = mock_msg
@@ -419,6 +419,111 @@ async def test_handle_view_market_details_success():
         assert "📊 <b>Prix du marché</b>" in text
         assert "5,48 €" in text
         mock_callback.answer.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
+    """Le panneau d'une série doit parsser : un callback_data trop long fait rejeter le message.
+
+    Telegram plafonne `callback_data` à 64 octets et rejette alors le message entier
+    (BUTTON_DATA_INVALID). Ces boutons n'existent que lorsque le tome n'est pas
+    identifié, c'est-à-dire précisément quand l'utilisateur a besoin du panneau.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from aiogram.types import CallbackQuery, Message
+
+    from app.bot.handlers.callbacks import handle_view_market_details
+
+    listing_id = uuid.uuid4()
+    mock_listing = MagicMock(id=listing_id, estimated_total_cents=1198, title="Blast")
+    tome1 = _create_mock_book("Blast — Tome 1 (Grasse Carcasse)", 509)
+    tome2 = _create_mock_book("Blast — Tome 2 (L'Apocalypse selon Saint Jacky)", 899)
+    books = [tome1, tome2]
+
+    mock_msg = MagicMock(spec=Message)
+    mock_msg.reply = AsyncMock()
+    mock_msg.html_text = ""
+
+    mock_callback = MagicMock(spec=CallbackQuery)
+    mock_callback.data = f"market:{listing_id}"
+    mock_callback.message = mock_msg
+    mock_callback.answer = AsyncMock()
+
+    mock_session = AsyncMock()
+    with (
+        patch("app.bot.handlers.callbacks.ListingRepository") as mock_l_cls,
+        patch("app.bot.handlers.callbacks.BookRepository") as mock_b_cls,
+        patch("app.bot.handlers.callbacks.MarketPriceRepository") as mock_m_cls,
+    ):
+        mock_l = MagicMock()
+        mock_l.get_by_id = AsyncMock(return_value=mock_listing)
+        mock_l.get_alert_for_listing = AsyncMock(return_value=MagicMock(isbn=None, name="Blast"))
+        mock_l_cls.return_value = mock_l
+
+        mock_b = MagicMock()
+        # Tome non résolu : c'est ce cas qui produit les boutons par tome.
+        mock_b.resolve_book_for_listing = AsyncMock(return_value=(None, books, None))
+        mock_b_cls.return_value = mock_b
+
+        mock_m = MagicMock()
+        mock_m.get_latest_snapshot = AsyncMock(return_value=None)
+        mock_m_cls.return_value = mock_m
+
+        await handle_view_market_details(mock_callback, mock_session)
+
+    mock_msg.reply.assert_called_once()
+    keyboard = mock_msg.reply.call_args[1]["reply_markup"]
+    buttons = [btn for row in keyboard.inline_keyboard for btn in row]
+    assert any((btn.callback_data or "").startswith("market_tome:") for btn in buttons)
+    for btn in buttons:
+        assert 1 <= len(btn.callback_data.encode()) <= 64, btn.callback_data
+
+
+def test_market_tome_ref_round_trip():
+    """La référence encodée se relit exactement : c'est elle qui désigne le tome cliqué."""
+    from app.bot.handlers.callbacks import _decode_tome_ref, _encode_tome_ref
+
+    listing_id, book_id = uuid.uuid4(), uuid.uuid4()
+    ref = _encode_tome_ref(listing_id, book_id)
+
+    assert len(ref.encode()) <= 64
+    assert _decode_tome_ref(ref) == (listing_id, book_id)
+    # Une donnée tronquée, forgée ou d'un autre panneau ne doit pas lever.
+    assert _decode_tome_ref(None) is None
+    assert _decode_tome_ref("market_details:x") is None
+    assert _decode_tome_ref("market_tome:pas-du-base64:non-plus") is None
+
+
+def test_series_card_shows_pending_line_when_no_tome_is_priced():
+    """Sans aucune cote en base, le panneau annonce une attente au lieu d'être vide."""
+    books = [
+        _create_mock_book("Blast — Tome 1 (Grasse Carcasse)", None),
+        _create_mock_book("Blast — Tome 2 (L'Apocalypse selon Saint Jacky)", None),
+    ]
+    for book in books:
+        book.market_cache = None
+    listing = Listing(
+        source_name="vinted",
+        external_id="blast",
+        url="https://vinted.fr",
+        title="Blast de Manu Larcenet",
+        normalized_title="blast de manu larcenet",
+        category_slug="bd_comics",
+        item_price_cents=800,
+        estimated_total_cents=1198,
+    )
+
+    card = MarketPriceService.format_market_details_card(
+        listing=listing,
+        book=None,
+        books_in_series=books,
+        tome_result=None,
+    )
+    assert "Cotes par tome" in card
+    assert PENDING_COTE_LINE in card
+    # Le total Vinted reste affiché : c'est la seule information fiable ici.
+    assert "11,98 €" in card
 
 
 

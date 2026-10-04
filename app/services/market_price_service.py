@@ -353,9 +353,13 @@ class MarketPriceService:
             if summary is not None:
                 return summary
 
-        # 3. Série reconnue mais tome non résolu : aucune cote fiable à afficher.
+        # 3. Série reconnue mais tome non résolu. La ligne dit ce qui est su — la
+        # série — et se tait sur ce qui ne l'est pas : « cote indisponible » y
+        # annonçait une absence de prix alors que le panneau « 📊 Prix du marché »
+        # en affiche la liste. Le prix n'a rien à faire sur une ligne qui ne sait
+        # pas de quel tome elle parle.
         if len(books_in_series) > 1:
-            return "ℹ️ Série détectée : tome non identifié, cote indisponible."
+            return "ℹ️ Série détectée : tome non identifié."
 
         return None
 
@@ -541,8 +545,11 @@ class MarketPriceService:
             f"🆕 Vinted : {format_cents(vinted_total) if vinted_total else 'à confirmer'}"
         )
         lines.append("<i>Annonce sans tome précis détecté.</i>\n")
-        lines.append("<b>Cotes par tome (Min sur 1 an) :</b>")
-        lines.extend(MarketPriceService._series_books_lines(books_in_series, None))
+        lines.append("<b>Cotes par tome (plus bas connu) :</b>")
+        series_lines = MarketPriceService._series_books_lines(books_in_series, None)
+        # Un tome sans cote est une cote en attente, pas une cote absente : un
+        # titre suivi d'une section vide se lisait comme un panneau mort.
+        lines.extend(series_lines or [PENDING_COTE_LINE])
         lines.append(f"\nDerniere MAJ : {MarketPriceService._latest_checked_at(books_in_series)}")
         return "\n".join(lines)
 
