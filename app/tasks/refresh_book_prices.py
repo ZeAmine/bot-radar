@@ -30,6 +30,7 @@ from app.services.book_market_pricing import (
     persist_market_result,
     pricing_stat,
 )
+from app.services.market_health import notify_stale_certified_lows
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,20 @@ async def _run_wave(
             stats[outcome] += 1
 
 
+async def _report_stale_certs(session: AsyncSession | None) -> None:
+    """Signale les cotes que plus aucun relevé ne nourrit.
+
+    Le contrôle tourne dans sa propre session quand la passe en a utilisé une :
+    celle-ci peut être en fin de vie après des centaines de livres, et une alerte
+    de maintenance ne mérite pas de faire échouer le job qui vient de réussir.
+    """
+    if session is not None:
+        await notify_stale_certified_lows(session)
+        return
+    async with AsyncSessionLocal() as health_session:
+        await notify_stale_certified_lows(health_session)
+
+
 async def refresh_book_prices_task(
     registry: ProviderRegistry | None = None,
     session: AsyncSession | None = None,
@@ -190,4 +205,10 @@ async def refresh_book_prices_task(
         stats["unavailable"],
         stats["errors"],
     )
+
+    # Une passe peut réussir sur tous les livres sans avoir nourri une seule cote :
+    # c'est ce qui s'est produit pendant trois semaines. Le signal part ici, une
+    # fois par jour au plus, et jamais au prix du rafraîchissement.
+    await _report_stale_certs(session)
+
     return stats

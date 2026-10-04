@@ -2,15 +2,25 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.constants import ComparisonStatus, MatchConfidence
+from app.core.constants import AlertStatus, CategorySlug, ComparisonStatus, MatchConfidence
+from app.db.models.alert import Alert
+from app.db.models.alert_book import AlertBook
+from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
+from app.db.models.category import Category
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.providers.base import MarketOffer
+
+# Présence de la cote certifiée dans le `raw_payload` d'un relevé : c'est cette clé
+# qui distingue une observation d'un simple prix du jour. L'opérateur `->>` est
+# nommé explicitement car la colonne est déclarée en `JSON` générique — `.astext`
+# n'existe que sur le comparateur JSONB, et échouerait dès l'import.
+_CERTIFIED_LOW_PRESENT = MarketPriceSnapshot.raw_payload.op("->>")("historical_low_1y_cents")
 
 
 class MarketPriceRepository:
@@ -114,6 +124,69 @@ class MarketPriceRepository:
         if observed is None:
             return low_cents
         return min(low_cents, observed)
+
+    async def find_stale_certified_lows(
+        self,
+        *,
+        stale_after: datetime,
+        limit: int = 8,
+    ) -> list[tuple[str, str | None, int, datetime | None]]:
+        """Livres dont la cote 1 an affichée n'est plus nourrie par aucun relevé.
+
+        Une cote affichée sans nouvelle observation reste un chiffre, et le
+        `historical_low_at` est réécrit à chaque passe : rien ne dit qu'elle a vieilli.
+        Cette requête regarde ce qui a réellement été constaté, et non ce qui est
+        affiché. Ne remontent que les livres d'une alerte BD active — une cote Nobody
+        ne regarde n'a pas besoin d'alerte.
+
+        Returns:
+            Liste de (titre, ISBN, cote en centimes, dernière observation certifiée).
+            `None` comme dernière observation signifie « jamais observé dans les
+            relevés conservés », ce qui est plus grave, pas plus rassurant.
+        """
+        stmt = (
+            select(
+                Book.title,
+                Book.isbn13,
+                BookMarketCache.historical_low_1y_cents,
+                func.max(
+                    MarketPriceSnapshot.checked_at
+                ).filter(_CERTIFIED_LOW_PRESENT.is_not(None)),
+            )
+            .join(BookMarketCache, BookMarketCache.book_id == Book.id)
+            .join(AlertBook, AlertBook.book_id == Book.id)
+            .join(Alert, Alert.id == AlertBook.alert_id)
+            .join(Category, Category.id == Alert.category_id)
+            .outerjoin(MarketPriceSnapshot, MarketPriceSnapshot.book_id == Book.id)
+            .where(
+                Category.slug == CategorySlug.BD_COMICS.value,
+                Alert.status == AlertStatus.ACTIVE,
+                BookMarketCache.historical_low_1y_cents.is_not(None),
+            )
+            .group_by(Book.id, Book.title, Book.isbn13, BookMarketCache.historical_low_1y_cents)
+            .having(
+                func.max(MarketPriceSnapshot.checked_at).filter(
+                    _CERTIFIED_LOW_PRESENT.is_not(None)
+                )
+                < stale_after,
+                # Un livre jamais observé est plus inquiétant qu'un livre ancien.
+                func.max(MarketPriceSnapshot.checked_at)
+                .filter(_CERTIFIED_LOW_PRESENT.is_not(None))
+                .is_(None),
+            )
+            .order_by(Book.title)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        # Titre et ISBN viennent du modèle ; l'agrégat filtré n'a pas de type :
+        # SQLAlchemy ne le propage pas au Tuple.
+        found: list[tuple[str, str | None, int, datetime | None]] = []
+        for title, isbn, low, last_seen in result.all():
+            # `historical_low_1y_cents` est filtré non nul par le WHERE ci-dessus.
+            found.append(
+                (title, isbn, cast(int, low), cast("datetime | None", last_seen))
+            )
+        return found
 
     async def update_or_create_cache(
         self,

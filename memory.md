@@ -7,7 +7,7 @@ Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs po
 ## Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-019, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-020, dette différée).
 
 ---
 
@@ -262,6 +262,15 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
   - **Libellés** : « Prix bas constaté (1 an) » devient « Prix bas constaté », et le panneau « Cote d'occasion basée sur le plus bas prix que nous avons pu constater ». La ligne d'alerte, elle, ne change pas.
 - **Raison** : une cote fausse fait manquer une vraie bonne affaire — c'est exactement ce que l'utilisateur a constaté. Un plancher cheap, local et monotone vaut mieux qu'un agrégateur tiers dont la série 1 an peut s'arrêter sans un seul signal.
 - **Conséquence assumée** : tant que `CHASSE_AUX_LIVRES_DUIH` reste vide, la série certifiée du site ne revient pas et la cote vient de nos relevés (rétention 90 j). La ligne n'affiche toujours aucune date : un chiffre sans date reste un chiffre sans date.
+
+### ADR-020 : Une cote qu'on ne nourrit plus se signale, et la session se réinjecte
+- **Contexte** : deux suites à l'incident « 22,90 € » (ADR-019). Rien n'avertissait qu'une cote cessait d'être nourrie — `historical_low_at` étant réécrit à chaque passe, un chiffre mort se lisait comme vérifié hier. Et la source qui devait le corriger, `/rest/jcd` de Chasse-aux-livres, n'est revenue sur aucun jeton : elle répond `200` vide à une requête HTTP seule et exige une session ayant passé le défi anti-bot du site.
+- **Décision** :
+  - **Signal** : `app/services/market_health.py` liste, une fois par jour au plus, les livres d'alerte BD active dont la cote affichée n'est nourrie par aucun relevé certifié depuis sept jours. Il regarde ce qui a été **observé**, pas ce qui est affiché. Dédoublonné par Redis (`SET NX`), il ne lève jamais, et le job de rafraîchissement l'appelle après sa passe, dans sa propre session.
+  - **Session** : `resolve_session_token()` lit l'environnement d'abord, Redis ensuite. `scripts/sync_chasse_session.py` prend le jeton (argument, fichier ou variable), **le valide en interrogeant `/rest/jcd` avec le provider de production**, et ne l'injecte qu'après une réponse non vide — via `POST /api/v1/internal/chasse/session`, qui ne renvoie que la longueur. `GET` sur la même route dit `has_token` / `source` sans jamais exposer la valeur.
+  - **Pré-vol** : avant synchro, la base est comparée à la tête du graphe **du conteneur qui tourne**, plus à la tête locale : exiger la révision locale rendait tout déploiement d'une migration impossible, le rebuild précédant l'`upgrade head`. Reste fatal : schéma en avance ou en retard sur le code servi, plusieurs têtes en production, et — après synchro — base ne portant pas la tête locale.
+- **Raison** : un chiffre faux que rien ne contredit devient une décision d'achat fausse. Le signal et le injectable traitent les deux moitiés : celle qui prévient, celle qui répare.
+- **Conséquence assumée** : le jeton doit être capturé à la main dans un navigateur (le site ne le délivre qu'à une session ayant passé son défi) ; le script valide avant d'injecter plutôt que de promettre. La capture automatique d'un défi JavaScript n'est pas dans le dépôt.
 
 ---
 
