@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.services.book_metadata_service import EditionAlternative, WorkAlternative
+from app.services.book_metadata_service import BookMetadata, EditionAlternative, WorkAlternative
 
 
 class _LoosePayload(BaseModel):
@@ -43,6 +43,24 @@ class BookContext(BaseModel):
             facts.append(f"ISBN de référence : {self.isbn13}")
         facts.append("nature : série multi-tomes" if self.is_series else "ouvrage unique")
         return facts
+
+
+def book_context_from(meta: BookMetadata, *, is_series: bool = False) -> BookContext:
+    """Fiche vérifiée d'un ouvrage, telle que le moteur doit la recevoir.
+
+    Un seul endroit convertit une notice en faits : le `/add`, la correction d'ISBN et
+    le choix d'une œuvre homonyme décrivent l'ouvrage de la même façon, sinon le
+    raisonnement du moteur change selon le geste qui l'a déclenché.
+    """
+    return BookContext(
+        title=meta.title,
+        author=meta.author,
+        publisher=meta.publisher,
+        publication_year=meta.publication_year,
+        format_detail=meta.format_detail,
+        isbn13=meta.isbn13,
+        is_series=is_series,
+    )
 
 
 class NaturalAddResult(BaseModel):

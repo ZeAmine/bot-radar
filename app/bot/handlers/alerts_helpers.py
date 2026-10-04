@@ -2,6 +2,7 @@
 
 import html
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from aiogram.fsm.context import FSMContext
@@ -27,10 +28,13 @@ from app.db.models.alert import Alert
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
+from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
     BookMetadataService,
+    IsbnConfirmation,
     format_edition_fragments,
+    provenance_note,
 )
 from app.utils.isbn import extract_clean_isbn
 
@@ -246,6 +250,43 @@ def build_edition_labels(
     return labels
 
 
+def build_work_labels(work_choices: list[dict[str, Any]] | None) -> list[str]:
+    """Libellés des œuvres homonymes, alignés sur l'index du clavier (`al_create_work:{index}`).
+
+    « 2️⃣ Nef · 2025 · Éditions du Chêne » : l'auteur d'abord, parce que c'est lui qui
+    distingue deux ouvrages de même titre, puis le millésime et l'éditeur. Sans auteur
+    connu, l'ISBN prend sa place : deux boutons identiques ne seraient pas un choix.
+    """
+    works = list(work_choices or [])
+    identities = [_work_button_text(work) for work in works]
+    labels: list[str] = []
+    for index, work in enumerate(works):
+        isbn13 = str(work.get("isbn13") or "").strip()
+        identity = identities[index]
+        if not isbn13:
+            labels.append("")
+        elif not identity or identities.count(identity) > 1:
+            labels.append(f"{edition_ordinal(index)} {isbn13}")
+        else:
+            labels.append(f"{edition_ordinal(index)} {identity}")
+    return labels
+
+
+def _work_button_text(work: dict[str, Any]) -> str:
+    """« Nef · 2025 · Éditions du Chêne », chaque partie seulement si elle existe."""
+    parts: list[str] = []
+    author = str(work.get("author") or "").strip()
+    if author:
+        parts.append(author)
+    year = work.get("publication_year")
+    if year:
+        parts.append(str(year))
+    publisher = str(work.get("publisher") or "").strip()
+    if publisher:
+        parts.append(publisher)
+    return " · ".join(parts)
+
+
 def format_edition_line(
     edition_alternatives: list[dict[str, Any]] | None,
     current_isbn: str | None,
@@ -306,7 +347,7 @@ def recap_from_state(data: dict[str, Any]) -> str:
 
 
 def creation_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
-    """Clavier du récap : éditions numérotées puis validation.
+    """Clavier du récap : œuvres homonymes, éditions numérotées, puis validation.
 
     « ✨ Variantes & Exclusions IA » n'apparaît que tant que la recherche
     automatique n'a pas été menée. Une fois les mots-clés posés, le bouton ne
@@ -314,10 +355,13 @@ def creation_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
     l'automatisme. L'état du brouillon décide donc, pas le chemin qui affiche.
     """
     alternatives = data.get("edition_alternatives")
+    works = data.get("work_choices")
     return get_alert_confirmation_keyboard(
         show_variants_btn=not data.get("keywords_finalized"),
         edition_alternatives=alternatives,
         edition_labels=build_edition_labels(alternatives),
+        work_choices=works,
+        work_labels=build_work_labels(works),
     )
 
 
@@ -384,7 +428,100 @@ async def _resolve_edition_choices(
     except Exception as exc:
         logger.debug("Éditions concurrentes indisponibles pour « %s » : %s", title, exc)
         return []
+    if resolution is None or resolution.is_ambiguous:
+        # Un titre homonyme n'a pas d'éditions : celles du roman porteraient l'ISBN
+        # d'un autre ouvrage dans le clavier de création.
+        return []
     return build_edition_choices(resolution)
+
+
+@dataclass(frozen=True)
+class IsbnRealignment:
+    """Effet d'une correction d'ISBN sur le brouillon en cours.
+
+    `conflict` renseignée : les autorités rattachent cet ISBN à un autre ouvrage, la
+    correction est refusée et `updates` est vide — le brouillon reste intact.
+    """
+
+    updates: dict[str, Any] = field(default_factory=dict)
+    conflict: str | None = None
+
+
+# Ce que l'ISBN précédent avait rapporté sur l'ouvrage, et que le nouveau contredit.
+# Les variantes et les exclusions ont été raisonnées sur cette fiche-là : les garder
+# ferait matcher l'alerte sur le mauvais livre, puisqu'une variante suffit à contourner
+# la contrainte d'inclusion.
+KEYWORDS_FROM_PREVIOUS_WORK: dict[str, Any] = {
+    "variants": [],
+    "exclude_keywords": [],
+    "keyword_note": None,
+    "keywords_finalized": False,
+    "book_context": None,
+    "work_choices": [],
+}
+
+
+async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealignment:
+    """Réécrit l'identité d'un brouillon à partir d'un ISBN saisi par l'utilisateur.
+
+    Changer d'ISBN, c'est changer d'ouvrage : l'auteur, l'éditeur, la fiche IA et les
+    éditions que l'ancien ISBN avait rapportés décrivent un autre livre. Les laisser en
+    place produisait une carte qui se contredit — un ISBN de 2025 sous l'auteur d'un
+    roman de 1989 — et qui ne se corrigeait plus ensuite.
+
+    Trois verdicts, tous dits à l'utilisateur :
+    - la BNF confirme cet ISBN pour ce titre : sa notice fait autorité ;
+    - elle le rattache à un autre ouvrage : la correction est refusée, en nommant le
+      vrai titre — une contradiction est une preuve, pas un silence ;
+    - personne ne connaît ce code, trop récent pour être catalogué : l'ISBN saisi est
+      gardé et l'identité précédente est vidée, car rien ne la rattache encore à cet ISBN.
+    """
+    title = str(draft.get("name") or "").strip()
+    service = BookMetadataService()
+
+    verdict = IsbnConfirmation()
+    try:
+        verdict = await service.confirm_isbn_for_title(isbn, title or None)
+    except Exception as exc:
+        logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", isbn, exc)
+
+    if verdict.conflicting_title:
+        who = f" de {verdict.conflicting_author}" if verdict.conflicting_author else ""
+        return IsbnRealignment(
+            conflict=(
+                f"Cet ISBN ({isbn}) correspond à « {verdict.conflicting_title} »{who}, "
+                f"pas à « {title} »."
+            )
+        )
+
+    if verdict.meta:
+        meta = verdict.meta
+        return IsbnRealignment(
+            updates={
+                # Le spread vient d'abord : il vide la fiche de l'ouvrage précédent, et
+                # les clés écrites ensuite sont celles de la notice qui atteste l'ISBN.
+                **KEYWORDS_FROM_PREVIOUS_WORK,
+                "isbn": isbn,
+                "is_series": False,
+                "isbn_note": provenance_note(meta),
+                "author": meta.author,
+                "publisher": meta.publisher,
+                "edition_alternatives": await _resolve_edition_choices(title, meta.author),
+                "book_context": book_context_from(meta).model_dump(),
+            }
+        )
+
+    return IsbnRealignment(
+        updates={
+            **KEYWORDS_FROM_PREVIOUS_WORK,
+            "isbn": isbn,
+            "is_series": False,
+            "isbn_note": "ISBN saisi, non confirmé par la BNF",
+            "author": None,
+            "publisher": None,
+            "edition_alternatives": [],
+        }
+    )
 
 
 async def render_existing_alert_response(

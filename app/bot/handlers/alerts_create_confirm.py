@@ -2,6 +2,7 @@
 
 import html
 import logging
+from typing import cast
 
 from aiogram import F
 from aiogram.filters import Command, StateFilter
@@ -9,9 +10,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.bot.handlers._alerts_router import router
+from app.bot.handlers.alerts_create import relaunch_keyword_search
 from app.bot.handlers.alerts_helpers import (
+    KEYWORDS_FROM_PREVIOUS_WORK,
     _resolve_edition_choices,
     build_creation_recap,
+    realign_draft_to_isbn,
 )
 from app.bot.keyboards.alerts import (
     get_category_selection_keyboard,
@@ -22,11 +26,13 @@ from app.core.constants import (
     STANDARD_CONDITIONS,
     CategorySlug,
 )
+from app.services.ai.schemas import book_context_from
 from app.services.alert_service import (
     AlertServiceError,
     parse_comma_separated_list,
     parse_price_to_cents,
 )
+from app.services.book_metadata_service import BookMetadata
 from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger("radar.alerts_create_confirm")
@@ -93,6 +99,71 @@ async def select_alert_creation_edition(
     if callback.message and hasattr(callback.message, "edit_text"):
         recap_text, keyboard = build_creation_recap(updated_data)
         await callback.message.edit_text(recap_text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("al_create_work:"))
+async def select_alert_creation_work(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Rattache le brouillon à l'œuvre homonyme que l'utilisateur désigne.
+
+    Nommer l'œuvre engage son ISBN dans le matching, l'URL de recherche Vinted et la
+    clé de cote de marché : le récap est le dernier moment où l'annuler est gratuit.
+    Choisir un ouvrage remet aussi les mots-clés à zéro, puisqu'ils avaient été
+    raisonnés sur l'autre.
+    """
+    raw_index = (callback.data or "").rsplit(":", 1)[-1]
+    data = await state.get_data()
+    works = data.get("work_choices") or []
+
+    if not raw_index.isdigit() or not 0 <= int(raw_index) < len(works):
+        await callback.answer("Œuvre inconnue.", show_alert=True)
+        return
+
+    chosen = works[int(raw_index)]
+    isbn13 = str(chosen.get("isbn13") or "").strip()
+    if not isbn13:
+        await callback.answer("Œuvre sans ISBN exploitable.", show_alert=True)
+        return
+
+    title = str(data.get("name") or chosen.get("title") or "")
+    author = str(chosen.get("author") or "").strip() or None
+    chosen_meta = BookMetadata(
+        title=str(chosen.get("title") or title),
+        author=author,
+        publisher=chosen.get("publisher"),
+        isbn13=isbn13,
+        publication_year=chosen.get("publication_year"),
+    )
+
+    updates: dict[str, object] = {
+        # D'abord l'état vierge laissé par l'ouvrage précédent, ensuite la fiche de
+        # l'œuvre choisie : le spread ne doit pas écraser ce qu'on vient d'établir.
+        **KEYWORDS_FROM_PREVIOUS_WORK,
+        "isbn": isbn13,
+        "is_series": False,
+        "isbn_note": None,
+        "author": author,
+        "publisher": chosen.get("publisher") or None,
+        "edition_alternatives": await _resolve_edition_choices(title, author),
+        "book_context": book_context_from(chosen_meta).model_dump(),
+    }
+    await state.update_data(data=updates)
+    updated_data = await state.get_data()
+    await state.set_state(AlertCreationState.confirm_creation)
+    await callback.answer("✅ Œuvre retenue")
+
+    if callback.message and hasattr(callback.message, "edit_text"):
+        recap_text, keyboard = build_creation_recap(updated_data)
+        target = cast(Message, callback.message)
+        await target.edit_text(recap_text, reply_markup=keyboard)
+        relaunch_keyword_search(
+            event=target,
+            loading_msg=target,
+            state=state,
+            draft=updated_data,
+        )
 
 
 @router.callback_query(
@@ -306,6 +377,8 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
     data = await state.get_data()
     field = data.get("current_edit_field")
     raw_text = (message.text or "").strip()
+    # Un changement d'identité invalide les mots-clés : ils seront recalculés.
+    identity_changed = False
 
     if field == "name":
         if len(raw_text) < 2:
@@ -318,7 +391,15 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
         # invalide cette note, qui sinon contredit le récap (« non confirmé par la BNF »
         # affiché sous un ISBN que l'utilisateur vient de faire confirmer).
         if raw_text.lower() in ("/skip", "-", "aucun", "aucune", "clear"):
-            await state.update_data(isbn=None, is_series=True, isbn_note=None)
+            await state.update_data(
+                isbn=None,
+                is_series=True,
+                isbn_note=None,
+                # Les éditions proposal étaient celles de l'ISBN abandonné.
+                edition_alternatives=[],
+                work_choices=[],
+                **KEYWORDS_FROM_PREVIOUS_WORK,
+            )
         else:
             clean_isbn = extract_clean_isbn(raw_text)
             if not clean_isbn:
@@ -327,30 +408,19 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
                     "Réessaie (ou /skip) :"
                 )
                 return
-            await state.update_data(isbn=clean_isbn, is_series=False, isbn_note=None)
-            # Un ISBN saisi à la main doit réaligner les éditions concurrentes :
-            # la liste précédente décrivait une autre édition de l'œuvre.
-            await state.update_data(
-                edition_alternatives=await _resolve_edition_choices(
-                    str(data.get("name") or ""), data.get("author")
+            # Changer d'ISBN, c'est changer d'ouvrage : toute la fiche d'identité et les
+            # mots-clés calculés sur l'ancien sont réécrits, pas conservés.
+            realignment = await realign_draft_to_isbn(data, clean_isbn)
+            if realignment.conflict:
+                # Garder cet ISBN ferait matcher l'alerte sur un autre livre et coter
+                # celui-ci : on nomme le vrai titre et on redemande la saisie.
+                await message.answer(
+                    f"⚠️ {realignment.conflict}\n\n"
+                    "Réessaie avec l'ISBN de l'ouvrage voulu (ou /skip) :"
                 )
-            )
-            try:
-                from app.services.book_metadata_service import BookMetadataService
-                meta = await BookMetadataService().lookup_by_isbn(clean_isbn)
-                if meta:
-                    updates = {}
-                    if meta.author:
-                        updates["author"] = meta.author
-                    if meta.publisher:
-                        updates["publisher"] = meta.publisher
-                    current_name = data.get("name")
-                    if meta.title and (not current_name or len(str(current_name)) < 3):
-                        updates["name"] = meta.title
-                    if updates:
-                        await state.update_data(data=updates)
-            except Exception as exc:
-                logger.debug("Enrichissement BNF ignoré pour l'ISBN %s : %s", clean_isbn, exc)
+                return
+            await state.update_data(data=realignment.updates)
+            identity_changed = True
 
     elif field == "price":
         try:
@@ -383,7 +453,17 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
     updated_data = await state.get_data()
     await state.set_state(AlertCreationState.confirm_creation)
     recap_text, keyboard = build_creation_recap(updated_data)
-    await message.answer(recap_text, reply_markup=keyboard)
+    recap_msg = await message.answer(recap_text, reply_markup=keyboard)
+
+    if identity_changed:
+        # Les variantes et exclusions portaient sur l'ancien ouvrage : le récap s'affiche
+        # sans elles, puis se complète sur place quand le moteur a répondu.
+        relaunch_keyword_search(
+            event=message,
+            loading_msg=recap_msg,
+            state=state,
+            draft=updated_data,
+        )
 
 
 @router.callback_query(F.data == "al_create_edit:back")

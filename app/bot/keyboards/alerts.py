@@ -46,22 +46,30 @@ def get_alert_confirmation_keyboard(
     show_variants_btn: bool = True,
     edition_alternatives: list[dict[str, Any]] | None = None,
     edition_labels: list[str] | None = None,
+    work_choices: list[dict[str, Any]] | None = None,
+    work_labels: list[str] | None = None,
 ) -> InlineKeyboardMarkup:
     """Retourne le clavier de validation finale de création d'alerte.
 
-    Chaque édition concurrente de l'œuvre a son bouton, numéroté comme la ligne
-    « Édition suivie » du récap (`build_edition_labels`). C'est le dernier moment où
-    l'utilisateur choisit l'ISBN qui pilotera le matching, l'URL de recherche Vinted
-    et la cote de marché de l'alerte. L'index passé en callback reste celui de
-    `edition_alternatives`, que tous les éléments y soient exploitables ou non.
+    Deux choix, dans cet ordre : **quel ouvrage** d'abord, **quelle édition** ensuite.
+    Les œuvres homonymes passent avant les éditions parce qu'elles sont la question
+    plus large — nommer le mauvais livre ne se rattrape pas en choisissant un autre
+    tirage du bon. Elles ne s'affichent qu'à partir de deux œuvres exploitables : sous
+    ce seuil, il n'y a rien à trancher.
 
-    Les boutons n'apparaissent qu'à partir de deux éditions exploitables : sous ce
-    seuil, le bouton n'opposerait rien à rien, et le récap ne montre déjà pas la ligne
-    « Édition suivie ». Le seuil est celui de `format_edition_line`, pour que les deux
-    rendus racontent la même chose.
+    Chaque édition concurrente a son bouton, numéroté comme la ligne « Édition suivie »
+    du récap (`build_edition_labels`). C'est le dernier moment où l'utilisateur choisit
+    l'ISBN qui pilotera le matching, l'URL de recherche Vinted et la cote de marché de
+    l'alerte. L'index passé en callback reste celui de `edition_alternatives`, que tous
+    les éléments y soient exploitables ou non.
+
+    Les boutons d'édition n'apparaissent qu'à partir de deux éditions exploitables :
+    sous ce seuil, le bouton n'opposerait rien à rien, et le récap ne montre déjà pas
+    la ligne « Édition suivie ». Le seuil est celui de `format_edition_line`, pour que
+    les deux rendus racontent la même chose.
     """
+    rows: list[list[InlineKeyboardButton]] = _work_choice_rows(work_choices, work_labels)
     editions = list(edition_alternatives or [])
-    rows: list[list[InlineKeyboardButton]] = []
     labels = edition_labels or []
     has_choice = sum(1 for e in editions if str(e.get("isbn13") or "").strip()) >= 2
 
@@ -98,6 +106,34 @@ def get_alert_confirmation_keyboard(
             ]
         )
     return InlineKeyboardMarkup(inline_keyboard=[*rows, *rest])
+
+
+def _work_choice_rows(
+    work_choices: list[dict[str, Any]] | None,
+    work_labels: list[str] | None,
+) -> list[list[InlineKeyboardButton]]:
+    """Une ligne par œuvre homonyme offered au choix, la plus décrite en premier.
+
+    Le libellé est fourni par le récap (`build_work_labels`) : le clavier ne connaît que
+    la forme des données, jamais la mise en forme d'un ouvrage.
+    """
+    works = list(work_choices or [])
+    if sum(1 for work in works if str(work.get("isbn13") or "").strip()) < 2:
+        return []
+
+    labels = work_labels or []
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, work in enumerate(works):
+        isbn13 = str(work.get("isbn13") or "").strip()
+        if not isbn13:
+            continue
+        label = labels[index] if index < len(labels) and labels[index] else (
+            f"{edition_ordinal(index)} {work.get('author') or isbn13}"
+        )
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"al_create_work:{index}")
+        ])
+    return rows
 
 
 def get_category_selection_keyboard() -> InlineKeyboardMarkup:

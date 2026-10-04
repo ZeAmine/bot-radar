@@ -9,7 +9,11 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.core.constants import STANDARD_CONDITIONS, CategorySlug
 from app.services.ai.modules.base import BaseAIModule
-from app.services.ai.schemas import BookContext, NaturalAddPayload, NaturalAddResult
+from app.services.ai.schemas import (
+    NaturalAddPayload,
+    NaturalAddResult,
+    book_context_from,
+)
 from app.services.book_metadata_service import (
     BookMetadata,
     BookMetadataService,
@@ -204,17 +208,7 @@ class NaturalAddModule(BaseAIModule):
                 edition_alternatives=resolved.edition_alternatives,
                 work_choices=resolved.work_choices,
                 book_context=(
-                    BookContext(
-                        title=book.title,
-                        author=book.author,
-                        publisher=book.publisher,
-                        publication_year=book.publication_year,
-                        format_detail=book.format_detail,
-                        isbn13=book.isbn13,
-                        is_series=is_series,
-                    )
-                    if book
-                    else None
+                    book_context_from(book, is_series=is_series) if book else None
                 ),
             )
         except (ValidationError, Exception) as exc:

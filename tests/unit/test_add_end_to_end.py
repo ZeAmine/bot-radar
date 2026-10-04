@@ -22,13 +22,19 @@ from app.bot.handlers.alerts_create_confirm import (
     handle_create_edit_choice,
     process_creation_edit_input,
     select_alert_creation_edition,
+    select_alert_creation_work,
 )
 from app.bot.handlers.alerts_helpers import RECAP_TITLE, build_creation_recap
 from app.core.constants import ComparisonStatus
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.user import User
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
-from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
+from app.services.book_metadata_service import (
+    BookMetadata,
+    BookMetadataService,
+    BookResolution,
+    IsbnConfirmation,
+)
 from app.services.market_price_service import PENDING_COTE_LINE
 
 # Bandeaux de parcours qui ont disparu au profit d'un titre unique : leur présence
@@ -58,6 +64,8 @@ BNF_ALTERNATIVE = BookMetadata(
 )
 # ISBN bien formé et réel, mais qui désigne « Keeping two » de Jordan Crane.
 ISBN_AUTRE_LIVRE = "9782369903062"
+# ISBN bien formé, absent de la BNF : un ouvrage paru la semaine dernière.
+ISBN_INCONNU = "9782810206087"
 
 
 class DraftState:
@@ -115,13 +123,21 @@ def _fake_deepseek(payload: dict) -> MagicMock:
 def _fake_bnf(
     resolution: BookResolution | None,
     verified_isbn: str | None = None,
+    conflicting_isbn: str | None = None,
 ) -> MagicMock:
-    """BNF simulée : `verify_isbn` ne confirme que l'ISBN explicitement déclaré."""
+    """BNF simulée : seul l'ISBN explicitement déclaré reçoit un verdict."""
+    confirmed = verified_isbn == BNF_EDITION.isbn13
     bnf = MagicMock(spec=BookMetadataService)
     bnf.resolve_for_alert = AsyncMock(return_value=resolution)
-    bnf.verify_isbn = AsyncMock(
-        return_value=BNF_EDITION if verified_isbn == BNF_EDITION.isbn13 else None
-    )
+    bnf.verify_isbn = AsyncMock(return_value=BNF_EDITION if confirmed else None)
+    if conflicting_isbn:
+        verdict = IsbnConfirmation(
+            conflicting_title="Keeping two",
+            conflicting_author="Jordan Crane",
+        )
+    else:
+        verdict = IsbnConfirmation(meta=BNF_EDITION) if confirmed else IsbnConfirmation()
+    bnf.confirm_isbn_for_title = AsyncMock(return_value=verdict)
     bnf.lookup_by_isbn = AsyncMock(return_value=BNF_EDITION)
     return bnf
 
@@ -265,6 +281,16 @@ def _edition_buttons(loading_message: MagicMock) -> list:
     ]
 
 
+def _work_buttons(keyboard) -> list:
+    """Boutons d'œuvres homonymes proposés par un clavier de récap."""
+    return [
+        button
+        for row in keyboard.inline_keyboard
+        for button in row
+        if button.callback_data.startswith("al_create_work")
+    ]
+
+
 @pytest.mark.asyncio
 async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
     """Le modèle propose l'ISBN d'un autre livre : la BNF tranche, l'utilisateur choisit.
@@ -368,6 +394,19 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
             entered.stop()
 
 
+async def _open_isbn_edit_field(state: DraftState) -> None:
+    """Ouvre le champ ISBN du menu ✏️ Modifier, comme le fait le bouton du récap."""
+    menu_message = MagicMock(spec=Message)
+    menu_message.edit_text = AsyncMock()
+    menu_callback = MagicMock()
+    menu_callback.data = "al_create_edit:isbn"
+    menu_callback.message = menu_message
+    menu_callback.answer = AsyncMock()
+
+    await handle_create_edit_choice(menu_callback, state)
+    assert state.data["current_edit_field"] == "isbn"
+
+
 @pytest.mark.asyncio
 async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
     """Aucun ISBN confirmé : l'utilisateur saisit le bon et l'alerte part dessus.
@@ -392,11 +431,11 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
     with (
         patch(
             "app.bot.handlers.alerts_helpers.BookMetadataService",
-            return_value=_fake_bnf(resolution),
+            return_value=_fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
         ),
         patch(
             "app.services.book_metadata_service.BookMetadataService",
-            return_value=_fake_bnf(resolution),
+            return_value=_fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
         ),
     ):
         for entered in patches:
@@ -412,17 +451,10 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
             assert not _edition_buttons(loading_message)
 
             # 2. L'utilisateur corrige via le menu de modification.
-            menu_message = MagicMock(spec=Message)
-            menu_message.edit_text = AsyncMock()
-            menu_callback = MagicMock()
-            menu_callback.data = "al_create_edit:isbn"
-            menu_callback.message = menu_message
-            menu_callback.answer = AsyncMock()
+            await _open_isbn_edit_field(state)
 
-            await handle_create_edit_choice(menu_callback, state)
-            assert state.data["current_edit_field"] == "isbn"
-
-            # 3. Saisie du bon ISBN : la liste d'éditions est réalignée.
+            # 3. Saisie du bon ISBN : toute la fiche d'identité est réécrite par la
+            #    notice qui l'atteste, et la liste d'éditions est réalignée.
             typed_message = FakeMessage()
             typed_message.text = "9782369903086"
             typed_message.answer = AsyncMock()
@@ -430,6 +462,7 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
 
             assert state.data["isbn"] == "9782369903086"
             assert state.data["is_series"] is False
+            assert state.data["author"] == BNF_EDITION.author
             assert [edition["isbn13"] for edition in state.data["edition_alternatives"]] == [
                 BNF_EDITION.isbn13,
                 BNF_ALTERNATIVE.isbn13,
@@ -444,7 +477,13 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
             # La note de provenance de l'ancien ISBN ne survit pas à la correction.
             assert "surveillance par titre" not in typed_answer
 
-            # 4. Création sur l'ISBN saisi, avec l'URL Vinted par ISBN.
+            # 4. Les mots-clés de l'ancien ouvrage sont recalculés : le récap repart
+            #    sans eux, la recherche repart seule en arrière-plan.
+            await _drain(repos["tasks"])
+            recap_answer = typed_message.answer.call_args[0][0]
+            assert "🔑 <b>Inclus :</b> La couleur des choses" in recap_answer
+
+            # 5. Création sur l'ISBN saisi, avec l'URL Vinted par ISBN.
             confirm_message = MagicMock(spec=Message)
             confirm_message.edit_text = AsyncMock()
             confirm_callback = MagicMock()
@@ -463,6 +502,193 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
                 repos["book_repo"].create.return_value.id,
                 reason="alert_created",
             )
+        finally:
+            for entered in reversed(patches):
+                entered.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_work():
+    """Un ISBN que personne ne connaît est gardé, mais l'identité d'avant part avec lui.
+
+    L'ouvrage n'est pas encore catalogué : garder l'auteur et l'éditeur
+    rapportés par l'ISBN précédent afficherait une fiche qui décrit un autre livre sous
+    le code que l'utilisateur vient de saisir.
+    """
+    resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
+    client = _fake_deepseek(_deepseek_payload())
+    repos = _repositories(ISBN_INCONNU)
+
+    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    state = DraftState()
+
+    patches = _patched(repos, _fake_bnf(resolution), client)
+    for entered in patches:
+        entered.start()
+    try:
+        await start_add_alert(message, state)
+        await _drain(repos["tasks"])
+
+        await _open_isbn_edit_field(state)
+        typed_message = FakeMessage()
+        typed_message.text = ISBN_INCONNU
+        typed_message.answer = AsyncMock()
+        await process_creation_edit_input(typed_message, state)
+
+        assert state.data["isbn"] == ISBN_INCONNU
+        # Rien ne rattache plus l'ancien auteur au nouvel ISBN : le récap le dit.
+        assert state.data["author"] is None
+        assert state.data["publisher"] is None
+        assert state.data["edition_alternatives"] == []
+        typed_answer = typed_message.answer.call_args[0][0]
+        assert "🔢 <b>ISBN :</b> <code>" + ISBN_INCONNU + "</code>" in typed_answer
+        assert "ISBN saisi, non confirmé par la BNF" in typed_answer
+        assert "Martin Panchaud" not in typed_answer
+        await _drain(repos["tasks"])
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_typed_isbn_of_another_book_is_refused():
+    """Un ISBN que la BNF rattache à un autre ouvrage n'est jamais retenu.
+
+    Le garder ferait matcher l'alerte sur un livre qu'on ne cherche pas et coterait
+    celui-ci à la place de l'autre.
+    """
+    resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
+    client = _fake_deepseek(_deepseek_payload())
+    repos = _repositories(BNF_EDITION.isbn13)
+
+    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    state = DraftState()
+
+    patches = _patched(repos, _fake_bnf(resolution), client)
+    with patch(
+        "app.bot.handlers.alerts_helpers.BookMetadataService",
+        return_value=_fake_bnf(resolution, conflicting_isbn=ISBN_AUTRE_LIVRE),
+    ):
+        for entered in patches:
+            entered.start()
+        try:
+            await start_add_alert(message, state)
+            await _drain(repos["tasks"])
+
+            await _open_isbn_edit_field(state)
+            typed_message = FakeMessage()
+            typed_message.text = ISBN_AUTRE_LIVRE
+            typed_message.answer = AsyncMock()
+            await process_creation_edit_input(typed_message, state)
+
+            # Le brouillon garde l'ISBN d'avant : rien n'a été changé.
+            assert state.data["isbn"] != ISBN_AUTRE_LIVRE
+            refusal = typed_message.answer.call_args[0][0]
+            assert "Keeping two" in refusal
+            assert "Jordan Crane" in refusal
+            assert "Réessaie" in refusal
+        finally:
+            for entered in reversed(patches):
+                entered.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
+    """Cas réel : la BNF ne connaît que l'homonyme de 1989 du titre demandé.
+
+    Le récap ne rattache ni ISBN, ni auteur, ni éditeur — la fiche du roman
+    disparaissait sous un ISBN de 2025 et ne se corrigeait plus ensuite. Les deux
+    œuvres sont proposées, et choisir celle qu'on veut réaligne tout.
+    """
+    homonym = BookResolution(
+        best=BookMetadata(
+            title="Les Enfants perdus",
+            author="Rosemonde Ahou de Saintange",
+            publisher="La Pensée universelle",
+            isbn13="9782214080627",
+            source="bnf",
+            publication_year=1989,
+        ),
+        other_works=[
+            BookMetadata(
+                title="Les Enfants perdus",
+                author="Nef",
+                publisher="Éditions du Chêne",
+                isbn13="9782810206087",
+                source="bnf",
+                publication_year=2025,
+            )
+        ],
+    )
+    client = _fake_deepseek(
+        {
+            "name": "Les Enfants perdus",
+            "category_slug": "bd_comics",
+            "isbn13": None,
+            "include_keywords": ["Les Enfants perdus"],
+            "max_price_cents": 1200,
+            "is_series": False,
+        }
+    )
+    repos = _repositories("9782810206087")
+
+    message, loading_message = _message_with_recap("/add les enfants perdus. Max 12 €")
+    state = DraftState()
+
+    patches = _patched(repos, _fake_bnf(homonym), client)
+    # Le choix d'une œuvre réinterroge la BNF pour ses éditions concurrentes.
+    with patch(
+        "app.bot.handlers.alerts_helpers.BookMetadataService",
+        return_value=_fake_bnf(homonym),
+    ):
+        for entered in patches:
+            entered.start()
+        try:
+            await start_add_alert(message, state)
+            await _drain(repos["tasks"])
+
+            recap = _recap_text(loading_message)
+            assert "🔢 <b>ISBN :</b> <i>non confirmé par la BNF</i>" in recap
+            # La note est échappée par le récap : on compare sur un fragment sans apostrophe.
+            assert "est aussi le titre" in recap
+            assert "surveillance par titre" in recap
+            # Aucune donnée du roman : ni l'ISBN, ni l'auteur, ni l'éditeur.
+            assert "9782214080627" not in recap
+            assert "Rosemonde Ahou de Saintange" not in recap
+            assert "La Pensée universelle" not in recap
+
+            keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
+            buttons = _work_buttons(keyboard)
+            assert [button.text for button in buttons] == [
+                "1️⃣ Rosemonde Ahou de Saintange · 1989 · La Pensée universelle",
+                "2️⃣ Nef · 2025 · Éditions du Chêne",
+            ]
+
+            # L'utilisateur désigne la BD : la fiche bascule sur elle.
+            switch_message = MagicMock(spec=Message)
+            switch_message.edit_text = AsyncMock()
+            switch_callback = MagicMock()
+            switch_callback.data = "al_create_work:1"
+            switch_callback.message = switch_message
+            switch_callback.answer = AsyncMock()
+
+            await select_alert_creation_work(switch_callback, state)
+
+            assert state.data["isbn"] == "9782810206087"
+            assert state.data["author"] == "Nef"
+            assert state.data["publisher"] == "Éditions du Chêne"
+
+            switch_recap = switch_message.edit_text.call_args[0][0]
+            assert "🔢 <b>ISBN :</b> <code>9782810206087</code>" in switch_recap
+            assert "✍️ <b>Auteur :</b> Nef" in switch_recap
+            assert "🏢 <b>Éditeur :</b> Éditions du Chêne" in switch_recap
+            assert "9782214080627" not in switch_recap
+            # L'œuvre est choisie : les propositions d'homonymes disparaissent.
+            assert not _work_buttons(switch_message.edit_text.call_args[1]["reply_markup"])
+
+            # Les mots-clés sont recalculés sur la fiche choisie, en arrière-plan.
+            await _drain(repos["tasks"])
+            assert state.data["keywords_finalized"] is True
         finally:
             for entered in reversed(patches):
                 entered.stop()

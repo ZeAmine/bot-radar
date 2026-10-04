@@ -45,6 +45,7 @@ from app.services.ai.modules.keyword_variants import (
     keyword_variants_module,
 )
 from app.services.ai.modules.natural_add import natural_add_module
+from app.services.ai.schemas import BookContext
 from app.services.alert_service import (
     AlertServiceError,
     parse_price_to_cents,
@@ -150,30 +151,70 @@ def _draft_matches(current: dict[str, Any], snapshot: dict[str, Any]) -> bool:
     moteur, l'utilisateur a pu annuler, modifier un champ ou relancer une commande.
     Écrire le récap dans ces cas reviendrait à afficher des mots-clés qui ne
     correspondent plus à l'état, ou à ressusciter une fiche abandonnée.
+
+    L'ISBN et l'auteur en font partie : changer d'ouvrage change la fiche sur laquelle
+    le moteur raisonne, et ses mots-clés seraient alors ceux d'un autre livre.
     """
     if not current:
         return False
-    return all(current.get(key) == snapshot.get(key) for key in ("name", "category_slug"))
+    return all(
+        current.get(key) == snapshot.get(key)
+        for key in ("name", "category_slug", "isbn", "author")
+    )
+
+
+def relaunch_keyword_search(
+    *,
+    event: Message | CallbackQuery,
+    loading_msg: Message | bool,
+    state: FSMContext,
+    draft: dict[str, Any],
+) -> None:
+    """Relance la recherche de mots-clés après un changement d'identité.
+
+    Le même chemin que le départ de `/add` : la tâche part en arrière-plan, le récap est
+    publié tout de suite sans les mots-clés, puis complété sur place. Les variantes et
+    exclusions de l'ouvrage précédent ne survivent pas à son remplacement.
+    """
+    book_context = (
+        BookContext(**draft["book_context"]) if draft.get("book_context") else None
+    )
+    safe_create_task(
+        _search_keywords_in_background(
+            loading_msg=loading_msg,
+            event=event,
+            state=state,
+            snapshot=draft,
+            name=str(draft.get("name") or ""),
+            category_slug=str(draft.get("category_slug") or CategorySlug.BD_COMICS.value),
+            book_context=book_context,
+        ),
+        name="add-variantes-realignement",
+    )
 
 
 def _keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
-    """Ligne discrète expliquant l'absence de variantes, quand elle est anormale.
+    """Ligne discrète expliquant ce que la recherche n'a pas trouvé.
 
-    Trois fins possibles, trois libellés distincts : le récap ne doit jamais laisser
-    croire qu'une liste vide est un avis du moteur alors que personne n'a été
-    interrogé.
+    Cinq fins possibles, cinq libellés distincts : le récap ne doit jamais laisser
+    croire qu'une liste vide est un avis du moteur alors que personne n'a été interrogé
+    — ni qu'une exclusion manquante est un oubli quand elle est une décision.
     """
-    if not outcome.is_empty:
-        return None
-    if outcome.answered:
+    if not outcome.answered:
+        return (
+            "<i>⚠️ L'IA n'a pas répondu à temps : cette alerte est créée sans variante "
+            "ni exclusion. Tu peux relancer la recherche via « Modifier ».</i>"
+        )
+    if outcome.is_empty:
         return (
             "<i>🔎 L'IA n'a trouvé aucune variante ni exclusion pertinente : "
             "rien n'a été ajouté.</i>"
         )
-    return (
-        "<i>⚠️ L'IA n'a pas répondu à temps : cette alerte est créée sans variante "
-        "ni exclusion. Tu peux relancer la recherche via « Modifier ».</i>"
-    )
+    if not outcome.exclusions:
+        return "<i>🔎 L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage.</i>"
+    if not outcome.variants:
+        return "<i>🔎 L'IA n'a trouvé aucune variante de frappe pour cet ouvrage.</i>"
+    return None
 
 
 async def _search_keywords_in_background(
@@ -333,6 +374,11 @@ async def start_add_alert(
                 ),
                 "edition_alternatives": [
                     edition.model_dump() for edition in parsed.edition_alternatives
+                ],
+                # Un titre homonyme ne propose que des œuvres à choisir : sans elles,
+                # l'avertissement du récap n'aurait rien derrière quoi se trancher.
+                "work_choices": [
+                    work.model_dump() for work in parsed.work_choices
                 ],
             }
             await state.update_data(data=state_data)
@@ -597,8 +643,6 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
             f"Analyse de « <b>{html.escape(name)}</b> » en cours.",
             reply_markup=loading_kb,
         )
-
-    from app.services.ai.schemas import BookContext
 
     book_context = (
         BookContext(**data["book_context"]) if data.get("book_context") else None
