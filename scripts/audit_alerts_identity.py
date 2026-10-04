@@ -58,15 +58,15 @@ from app.db.models.book import Book
 from app.db.session import AsyncSessionLocal
 from app.domain.rules.listing_match import carries_foreign_isbn
 from app.services.book_metadata_service import (
+    AUTORITE_BNF,
+    AUTORITE_OPENLIBRARY,
     SAME_WORK_TITLE_SIMILARITY_MIN,
     TITLE_SIMILARITY_MIN,
-    BookMetadata,
     BookMetadataService,
-    IsbnLookup,
+    IsbnVerdict,
     same_author,
     title_similarity,
 )
-from app.utils.isbn import is_valid_isbn, normalize_isbn
 from app.utils.text import normalize_text
 
 # Le SRU de la BNF est une autorité publique : on l'interroge par lots, pas à la
@@ -84,14 +84,9 @@ AUTEUR_DIVERGENT = "auteur_divergent"
 EDITEUR_DIVERGENT = "editeur_divergent"
 VARIANTE_ISBN_ETRANGER = "variante_isbn_etranger"
 
-# L'autorité réellement consultée se lit sur la notice (`BookMetadata.source`), jamais
-# sur une constante devinée ici : c'est elle qui sépare une alerte confirmée par la BNF
-# d'une alerte qui ne repose que sur le repli OpenLibrary.
-AUTORITE_BNF = "bnf"
-AUTORITE_OPENLIBRARY = "openlibrary"
+# Seuls les libellés sont ici : les identifiants viennent du service, et la liste des
+# autorités réellement interrogées vient du verdict, qui l'écrit en faisant les appels.
 LIBELLE_AUTORITE = {AUTORITE_BNF: "la BNF", AUTORITE_OPENLIBRARY: "OpenLibrary"}
-# Le chemin de verdict interroge ces deux autorités, dans cet ordre, pour chaque ISBN.
-AUTORITES_CONSULTEES = (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
 
 GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
 
@@ -142,7 +137,7 @@ def libelle_autorite(source: str | None) -> str:
 
 def inspect_identity(
     identity: AlertIdentity,
-    notice: BookMetadata | None,
+    verdict: IsbnVerdict,
 ) -> list[Anomaly]:
     """Confronte une alerte à sa notice. Fonction pure : ni base, ni réseau.
 
@@ -160,20 +155,22 @@ def inspect_identity(
 
     Chaque message nomme l'autorité qui a répondu : « la BNF » ne doit pas se lire sur
     une notice OpenLibrary, et « personne ne connaît cet ISBN » ne s'écrit que si le
-    code a réellement été soumis.
+    verdict porte les autorités réellement consultées — liste vide comprise.
     """
     findings: list[Anomaly] = []
-    autorite = libelle_autorite(notice.source if notice else None)
+    notice = verdict.notice if verdict.a_tranche else None
+    autorite = libelle_autorite(verdict.autorite)
 
     if notice is None:
-        if is_valid_isbn(normalize_isbn(identity.isbn)):
-            consultees = " ni ".join(LIBELLE_AUTORITE[a] for a in AUTORITES_CONSULTEES)
+        # Le verdict dit qui a été consulté — et un code mal formé n'a été soumis à
+        # personne : accuser une autorité de l'ignorer reviendrait d'inventer la
+        # consultation qui a produit ce verdict.
+        if verdict.consulted:
+            consultees = " ni ".join(libelle_autorite(a) for a in verdict.consulted)
             findings.append(
                 Anomaly(ISBN_INCONNU, f"ni {consultees} ne connaissent l'ISBN {identity.isbn}")
             )
         else:
-            # Un code mal formé n'a été soumis à personne : accuser une autorité de
-            # l'ignorer reviendrait d'inventer la consultation qui a produit ce verdict.
             findings.append(
                 Anomaly(
                     ISBN_INCONNU,
@@ -234,27 +231,41 @@ async def bnf_joignable(client: object) -> bool:
 
 @dataclass
 class AlertVerdict:
-    """Ce que l'audit a conclu pour une alerte, ou pourquoi il n'a pas pu conclure.
+    """Ce que l'audit a conclu pour une alerte, et ce que l'autorité lui a répondu.
 
-    `autorite` est la source de la notice qui a tranché. Aucune autre donnée du
-    verdict ne permet de la deviner : c'est elle qui distingue une alerte confirmée par
-    la BNF d'une alerte qui ne repose que sur le repli OpenLibrary.
+    `verdict` est celui du service : il dit qui a été consulté, qui a tranché, et si
+    personne n'a pu répondre. L'audit n'y ajoute que ses divergences, calculées sur
+    cette même notice. Écrire « aucune autorité n'a répondu » à côté d'une autorité
+    nommée redevient impossible — c'était ce que trois champs facultatifs permettaient,
+    et le rapport affichait les deux à la fois.
     """
 
     identity: AlertIdentity
+    verdict: IsbnVerdict
     anomalies: list[Anomaly] = field(default_factory=list)
-    unverified_reason: str | None = None
-    autorite: str | None = None
 
     @property
     def confirmee_par_la_bnf(self) -> bool:
         """Une alerte n'est conforme que si la BNF elle-même a répondu."""
-        return self.autorite == AUTORITE_BNF
+        return self.verdict.autorite == AUTORITE_BNF
+
+    @property
+    def motif(self) -> str | None:
+        """Pourquoi l'alerte a été mise de côté ; `None` dès que quelqu'un a répondu."""
+        if self.verdict.panne is None:
+            return None
+        motif = f"autorité muette : {self.verdict.panne}"
+        if self.verdict.notice is not None:
+            # Une notice de repli obtenue après un silence de la BNF ne l'a pas
+            # remplacée, elle s'y ajoute : le dire empêche de lire une panne comme
+            # une confirmation, et comme un refus.
+            motif += " — notice de repli écartée : la BNF n'a pas tranché"
+        return motif
 
 
 async def audit(
     identities: Sequence[AlertIdentity],
-    lookup: Callable[[str], Awaitable[IsbnLookup]],
+    lookup: Callable[[str], Awaitable[IsbnVerdict]],
     *,
     delay: float = BNF_PAUSE_SECONDS,
     pause: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -262,9 +273,9 @@ async def audit(
     """Interroge l'autorité notice par notice et applique la règle à chaque verdict.
 
     Deux issues, une seule exigence : ni une panne ni une requête isolée qui échoue
-    ne peuvent devenir une accusation. `IsbnLookup.panne` couvre la seconde — la BNF
-    répond à la sonde globale mais pas à cette notice — et l'exception couvre une
-    panne remontée jusqu'ici. Dans les deux cas l'alerte est mise de côté, et le
+    ne peuvent devenir une accusation. Le `silence` du verdict couvre la seconde —
+    la BNF répond à la sonde globale mais pas à cette notice — et l'exception couvre
+    une panne remontée jusqu'ici. Dans les deux cas l'alerte est mise de côté, et le
     rapport le dit. C'est la seule chose qui rend un audit crédible.
     """
     verdicts: list[AlertVerdict] = []
@@ -276,27 +287,14 @@ async def audit(
         try:
             reponse = await lookup(identity.isbn)
         except Exception as exc:  # noqa: BLE001 — une panne réseau n'est pas un verdict
-            motif = f"{type(exc).__name__}: {exc}"
-            verdicts.append(
-                AlertVerdict(identity, unverified_reason=f"autorité muette : {motif}")
-            )
+            reponse = IsbnVerdict(outcome="silence", panne=f"{type(exc).__name__}: {exc}")
+        if reponse.outcome == "silence":
+            # Personne n'a pu répondre, repli ou non : l'alerte est mise de côté, et
+            # le motif le dit. Une indisponibilité ne doit jamais se lire comme un refus.
+            verdicts.append(AlertVerdict(identity, verdict=reponse))
             continue
-        if reponse.panne:
-            # `panne` l'emporte sur la notice : une réponse de repli obtenue après un
-            # silence de la BNF ne l'a pas remplacée, elle s'y ajoute. La dire
-            # « non vérifiée » empêche de lire une indisponibilité comme un refus.
-            motif = f"autorité muette : {reponse.panne}"
-            if reponse.notice is not None:
-                motif += " — notice de repli écartée : la BNF n'a pas tranché"
-            verdicts.append(AlertVerdict(identity, unverified_reason=motif))
-            continue
-        notice = reponse.notice
         verdicts.append(
-            AlertVerdict(
-                identity,
-                anomalies=inspect_identity(identity, notice),
-                autorite=notice.source if notice else None,
-            )
+            AlertVerdict(identity, verdict=reponse, anomalies=inspect_identity(identity, reponse))
         )
     return verdicts
 
@@ -350,17 +348,16 @@ def render(
 
     for verdict in verdicts:
         head = f"{DIM}{verdict.identity.alert_id[:8]}{RESET} {verdict.identity.name}"
-        if verdict.unverified_reason:
+        motif = verdict.motif
+        if motif:
             unverified += 1
-            lines.append(
-                f"  {YELLOW}?{RESET}      {head} {DIM}— {verdict.unverified_reason}{RESET}"
-            )
+            lines.append(f"  {YELLOW}?{RESET}      {head} {DIM}— {motif}{RESET}")
             continue
 
         confirmee = verdict.confirmee_par_la_bnf
-        if verdict.autorite is not None and not confirmee:
+        if verdict.verdict.a_tranche and not confirmee:
             replis += 1
-            replis_autorites.add(libelle_autorite(verdict.autorite))
+            replis_autorites.add(libelle_autorite(verdict.verdict.autorite))
 
         if not verdict.anomalies:
             if confirmee:
@@ -373,7 +370,7 @@ def render(
                 # passer une absence de confirmation pour une confirmation.
                 lines.append(
                     f"  {YELLOW}REPLI{RESET}    {head} {DIM}({verdict.identity.isbn}) "
-                    f"— {libelle_autorite(verdict.autorite)} a répondu, pas la BNF{RESET}"
+                    f"— {libelle_autorite(verdict.verdict.autorite)} a répondu, pas la BNF{RESET}"
                 )
             continue
         anomalies += 1
@@ -422,8 +419,8 @@ def as_json(verdicts: Sequence[AlertVerdict], *, audit_le: datetime) -> str:
                     "name": v.identity.name,
                     "isbn": v.identity.isbn,
                     "anomalies": [asdict(a) for a in v.anomalies],
-                    "unverified_reason": v.unverified_reason,
-                    "autorite": v.autorite,
+                    "unverified_reason": v.motif,
+                    "autorite": v.verdict.autorite,
                 }
                 for v in verdicts
             ],
@@ -526,7 +523,7 @@ async def run(args: argparse.Namespace) -> int:
             # été produit, pas parce qu'il n'y avait rien à trouver.
             print(f"{RED}La BNF ne répond pas : aucune alerte n'a pu être vérifiée.{RESET}")
             return EXIT_ERROR
-        verdicts = await audit(identities, service.lookup_by_isbn_verdict)
+        verdicts = await audit(identities, service.consult_authorities)
     finally:
         await close_shared_http_client()
 

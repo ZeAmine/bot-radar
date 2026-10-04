@@ -39,6 +39,12 @@ MAX_ALTERNATIVE_EDITIONS = 3
 # Préfixes ISBN des éditions francophones (règle GF pour la langue française).
 FRENCH_ISBN_PREFIXES = ("9782", "979")
 
+# Identifiants des autorités, tels que `BookMetadata.source` les déclare. Les possède
+# le service qui les interroge : un appelant qui les recopierait finirait par annoncer
+# « ni la BNF ni OpenLibrary » le jour où un troisième repli entre en scène.
+AUTORITE_BNF = "bnf"
+AUTORITE_OPENLIBRARY = "openlibrary"
+
 _TITLE_QUERY_ALLOWED_CHARS = r"[^a-zA-Z0-9\sàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ-]"
 
 # Concordance entre l'indice d'auteur saisi et la notice retenue : sans indice, l'indice
@@ -59,7 +65,7 @@ class BookMetadata:
     recommended_excludes: list[str] = field(default_factory=list)
     recommended_variants: list[str] = field(default_factory=list)
     confidence: MatchConfidence = MatchConfidence.HIGH
-    source: str = "bnf"
+    source: str = AUTORITE_BNF
     publication_year: int | None = None
     format_detail: str | None = None
 
@@ -167,50 +173,66 @@ class _OpenLibraryWork:
     edition_isbns: list[str] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class IsbnConfirmation:
-    """Verdict d'une autorité sur un ISBN saisi par l'utilisateur.
+# Les quatre issues d'une recherche d'ISBN, disjointes et exhaustives. `CONTRADICTION`
+# se distingue d'un silence : c'est une preuve, pas une absence.
+IsbnOutcome = Literal["confirme", "contradiction", "inconnu", "silence"]
 
-    `meta` seule : les autorités connaissent cet ISBN et il désigne bien l'œuvre.
-    `conflicting_title` renseignée : elles le rattachent à un autre ouvrage — c'est une
-    contradiction, pas un silence. Ni l'un ni l'autre : personne ne connaît ce code,
-    ce qui n'interdit rien mais n'autorise aucune fiche.
-
-    `panne` renseignée : personne n'a tranché. Elle est distincte d'un silence, car la
-    seule différence observable pour l'appelant est qu'une notice de repli existe peut-être :
-    sans elle, il la prendrait pour une confirmation que la BNF n'a jamais faite.
-    """
-
-    meta: BookMetadata | None = None
-    conflicting_title: str | None = None
-    conflicting_author: str | None = None
-    panne: str | None = None
+_A_TRONCHE: tuple[IsbnOutcome, ...] = ("confirme", "contradiction")
 
 
 @dataclass(frozen=True)
-class IsbnLookup:
-    """Ce qu'une autorité a répondu d'un ISBN, et si elle a répondu.
+class IsbnVerdict:
+    """Ce qu'une recherche d'ISBN a donné, et qui a été consulté.
 
-    Les deux cas que `lookup_by_isbn` confond dans un seul `None` :
+    Un seul champ porte le fond : `notice` est la notice de l'autorité qui a répondu,
+    `panne` le motif d'un silence. Les champs qui ne portent rien admettent, eux, des
+    combinaisons contradictoires — c'est ce que trois champs facultatifs avaient
+    produit, un rapport affichant « REPLI … aucune autorité a répondu » au-dessus de
+    « conforme aux notices ». Ici `outcome` décide de ce que valent les autres, et
+    `__post_init__` refuse ce qui contredit ce verdict.
 
-    - `notice` renseignée : l'autorité connaît ce code et dit de quel ouvrage ;
-    - `notice` et `panne` vides : l'autorité connaît ce code et dit qu'il n'en connaît
-      aucun — une absence de preuve, qui n'interdit rien ;
-    - `panne` renseignée : personne n'a su répondre. Un appelant qui accuse ici se
-      trompe, car il n'a aucune preuve ;
-    - `notice` **et** `panne` : la BNF n'a pas su répondre et une autorité secondaire a
-      fourni une notice. Elle ne remplace pas l'autorité : sans `panne`, une panne et un
-      refus de la BNF donneraient le même verdict, et l'appelant lirait une panne là
-      où il y en a une.
+    `consulted` est écrit par le service qui fait les appels, dans l'ordre où il les
+    fait : « ni la BNF ni OpenLibrary » ne peut donc pas mentir sur une consultation
+    qu'il n'a pas eu lieu. Un code mal formé n'a été soumis à personne, et la liste
+    est vide — ce que l'appelant doit pouvoir dire, pas supposer.
+
+    Sur `silence`, `notice` peut porter une réponse de repli : elle est alors
+    explicitement sans valeur de confirmation, et c'est ce que l'issue dit.
     """
 
+    outcome: IsbnOutcome
     notice: BookMetadata | None = None
+    consulted: tuple[str, ...] = ()
     panne: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.outcome in _A_TRONCHE:
+            if self.notice is None:
+                raise ValueError(f"{self.outcome} : l'autorité a tranché, la notice est requise")
+            if self.panne is not None:
+                raise ValueError(
+                    f"{self.outcome} : une autorité a tranché, ce n'est pas un silence"
+                )
+        elif self.outcome == "silence":
+            if self.panne is None:
+                raise ValueError("silence : le motif de l'absence de réponse est requis")
+        elif self.notice is not None or self.panne is not None:
+            raise ValueError(f"{self.outcome} : personne n'a répondu, il n'y a rien à rendre")
 
     @property
-    def a_repondu(self) -> bool:
-        """L'autorité a-t-elle répondu, quelle que soit sa réponse ?"""
-        return self.panne is None
+    def a_tranche(self) -> bool:
+        """Une autorité a-t-elle nommé un ouvrage pour cet ISBN ?"""
+        return self.outcome in _A_TRONCHE
+
+    @property
+    def confirme(self) -> bool:
+        """L'autorité a-t-elle nommé l'ouvrage demandé ?"""
+        return self.outcome == "confirme"
+
+    @property
+    def autorite(self) -> str | None:
+        """L'autorité qui a tranché, telle que sa notice la déclare ; sinon aucune."""
+        return self.notice.source if self.a_tranche and self.notice is not None else None
 
 
 OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
@@ -218,7 +240,7 @@ OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
 
 def provenance_note(meta: BookMetadata) -> str | None:
     """Signale au récap une donnée d'identité issue d'une autorité secondaire."""
-    return OPENLIBRARY_SOURCE_NOTE if meta.source == "openlibrary" else None
+    return OPENLIBRARY_SOURCE_NOTE if meta.source == AUTORITE_OPENLIBRARY else None
 
 
 def ambiguity_note(resolution: BookResolution) -> str | None:
@@ -487,78 +509,86 @@ class BookMetadataService:
 
         Seule la notice est rendue, quelle qu'ait été la réponse de l'autorité : un
         appelant qui affiche une fiche préfère une fiche absente à une fiche fausse,
-        et une panne ne doit jamais ressembler à un refus. `lookup_by_isbn_verdict`
+        et une panne ne doit jamais ressembler à un refus. `consult_authorities`
         est le même appel pour qui doit, lui, rendre des comptes.
         """
-        return (await self.lookup_by_isbn_verdict(isbn)).notice
+        return (await self.consult_authorities(isbn)).notice
 
-    async def lookup_by_isbn_verdict(self, isbn: str) -> IsbnLookup:
-        """Comme `lookup_by_isbn`, mais distingue « absent » de « autorité muette »."""
+    async def consult_authorities(self, isbn: str) -> IsbnVerdict:
+        """Interroge les autorités, dans l'ordre, et rend leur verdict nommé.
+
+        La BNF tranche ; OpenLibrary ne parle qu'en repli, et sa réponse ne remplace
+        pas la sienne : sur une panne de la BNF, elle est rendue mais vaut confirmation
+        de rien. C'est aussi le seul endroit qui sait qui a été consulté, et dans quel
+        ordre — un appelant ne peut donc pas annoncer des autorités qu'il n'a pas
+        interrogées, ni taire un troisième repli le jour où il entre en scène.
+        """
         clean_isbn = normalize_isbn(isbn)
         if not clean_isbn or not is_valid_isbn(clean_isbn):
-            return IsbnLookup()
+            # Un code mal formé n'a été soumis à personne : le dire « inconnu »
+            # accuserait une autorité de l'ignorer.
+            return IsbnVerdict(outcome="inconnu")
 
         records, panne = await self._bnf_records(f'bib.isbn adj "{clean_isbn}"')
         if records:
-            return IsbnLookup(notice=self._attach_recommendations(records[0]))
+            return IsbnVerdict(
+                outcome="confirme",
+                notice=self._attach_recommendations(records[0]),
+                consulted=(AUTORITE_BNF,),
+            )
 
+        consulted = (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
         fallback = await self._openlibrary_works({"isbn": clean_isbn})
         if fallback:
-            # `panne` accompagne la notice de repli : la BNF a peut-être simplement
-            # ignoré cet ISBN, et c'est alors un repli légitime. Sur une panne, non,
-            # et l'appelant doit voir laquelle des deux il a sous les yeux.
-            return IsbnLookup(notice=fallback[0].meta, panne=panne)
+            return IsbnVerdict(
+                outcome="silence" if panne else "confirme",
+                notice=fallback[0].meta,
+                consulted=consulted,
+                panne=panne,
+            )
         # OpenLibrary n'a rien donné non plus : sans `panne`, ce serait un verdict.
-        return IsbnLookup(panne=panne)
+        return IsbnVerdict(
+            outcome="silence" if panne else "inconnu",
+            consulted=consulted,
+            panne=panne,
+        )
 
     async def verify_isbn(self, isbn13: str, expected_title: str) -> BookMetadata | None:
         """Confirme qu'un ISBN désigne bien l'œuvre attendue.
 
         Filet anti-hallucination : un ISBN bien formé mais attribué à une autre œuvre
         (préfixe d'éditeur recombiné par un LLM, par exemple) est rejeté sur le titre.
+        Une notice obtenue pendant une panne ne confirme rien.
         """
-        return (await self.confirm_isbn_for_title(isbn13, expected_title)).meta
+        verdict = await self.confirm_isbn_for_title(isbn13, expected_title)
+        return verdict.notice if verdict.confirme else None
 
     async def confirm_isbn_for_title(
         self, isbn13: str, expected_title: str | None
-    ) -> IsbnConfirmation:
-        """Verdict complet sur un ISBN saisi : confirmé, contredit, ou inconnu.
+    ) -> IsbnVerdict:
+        """Le même verdict, appliqué à un ISBN saisi : désigne-t-il l'œuvre demandée ?
 
         `verify_isbn` ne renvoie que la notice : l'appelant ne peut pas distinguer
-        « la BNF connaît cet ISBN et c'est un autre livre » de « personne ne connaît cet
-        ISBN ». Ces deux verdicts n'appellent pas la même réponse : le premier est une
-        contradiction, le second une simple absence de preuve. La séparation se fait ici,
-        une fois pour tous.
+        « la BNF connaît cet ISBN et c'est un autre livre » de « personne ne connaît
+        cet ISBN ». Ces deux verdicts n'appellent pas la même réponse : le premier est
+        une contradiction, le second une simple absence de preuve. La séparation se
+        fait ici, une fois pour tous.
         """
-        clean_isbn = normalize_isbn(isbn13)
-        if not clean_isbn or not is_valid_isbn(clean_isbn):
-            return IsbnConfirmation()
+        verdict = await self.consult_authorities(isbn13)
+        # Sans titre attendu, il n'y a rien à quoi comparer la notice : l'ISBN est
+        # alors retenu pour ce qu'il est, sans contradiction à invoquer.
+        if not expected_title or not verdict.confirme or verdict.notice is None:
+            return verdict
 
-        records, panne = await self._bnf_records(f'bib.isbn adj "{clean_isbn}"')
-        best = records[0] if records else None
-        if best is None and panne:
-            # Aucune autorité n'a tranché. Le repli OpenLibrary existe peut-être, mais le
-            # retenir ici affirmerait une confirmation que personne n'a faite : on rend
-            # la panne, et l'appelant garde l'ISBN saisi sans y attacher de fiche.
-            return IsbnConfirmation(panne=panne)
-        if best is None:
-            # La BNF ignore ce code : OpenLibrary tranche en repli, même garde-fou de titre.
-            fallback = await self._openlibrary_works({"isbn": clean_isbn})
-            if not fallback:
-                return IsbnConfirmation()
-            best = fallback[0].meta
-
-        if expected_title and title_similarity(best.title, expected_title) < TITLE_SIMILARITY_MIN:
+        if title_similarity(verdict.notice.title, expected_title) < TITLE_SIMILARITY_MIN:
             logger.info(
                 "ISBN %s écarté : les autorités le rattachent à « %s » et non à « %s »",
-                clean_isbn,
-                best.title,
+                isbn13,
+                verdict.notice.title,
                 expected_title,
             )
-            return IsbnConfirmation(conflicting_title=best.title, conflicting_author=best.author)
-
-        meta = best if best.source == "openlibrary" else self._attach_recommendations(best)
-        return IsbnConfirmation(meta=meta)
+            return replace(verdict, outcome="contradiction")
+        return verdict
 
     async def resolve_for_alert(
         self, title: str, author_hint: str | None = None
@@ -841,7 +871,7 @@ class BookMetadataService:
                     author=author_name,
                     publisher=pub_name,
                     isbn13=isbn13,
-                    source="bnf",
+                    source=AUTORITE_BNF,
                     publication_year=publication_year,
                     format_detail=format_detail,
                 )
@@ -970,7 +1000,7 @@ class BookMetadataService:
             author=clean_openlibrary_author(str(authors[0])) if authors else None,
             publisher=str(publishers[0]).strip() if publishers else None,
             isbn13=isbn13,
-            source="openlibrary",
+            source=AUTORITE_OPENLIBRARY,
             confidence=MatchConfidence.MEDIUM,
             publication_year=year if isinstance(year, int) else None,
             format_detail=f"{pages} p." if isinstance(pages, int) else None,

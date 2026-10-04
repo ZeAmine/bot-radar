@@ -32,7 +32,7 @@ from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
     BookMetadataService,
-    IsbnConfirmation,
+    IsbnVerdict,
     ambiguity_note,
     format_edition_fragments,
     provenance_note,
@@ -470,7 +470,7 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
     place produisait une carte qui se contredit — un ISBN de 2025 sous l'auteur d'un
     roman de 1989 — et qui ne se corrigeait plus ensuite.
 
-    Trois verdicts, tous dits à l'utilisateur :
+    Quatre issues, toutes dites à l'utilisateur :
     - la BNF confirme cet ISBN pour ce titre : sa notice fait autorité ;
     - elle le rattache à un autre ouvrage : la correction est refusée, en nommant le
       vrai titre — une contradiction est une preuve, pas un silence ;
@@ -478,27 +478,33 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
       gardé et l'identité précédente est vidée, car rien ne la rattache encore à cet ISBN ;
     - aucune autorité n'a répondu, alors qu'un repli avait répondu à leur place : même
       conservation, et le motif dit que la vérification est à reprendre plus tard.
+
+    Elles sont disjointes par construction : `IsbnVerdict` ne permet pas d'en melanger deux,
+    et une notice de repli n'y vaut jamais confirmation.
     """
     title = str(draft.get("name") or "").strip()
     service = BookMetadataService()
 
-    verdict = IsbnConfirmation()
+    verdict = IsbnVerdict(outcome="inconnu")
     try:
         verdict = await service.confirm_isbn_for_title(isbn, title or None)
     except Exception as exc:
         logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", isbn, exc)
 
-    if verdict.conflicting_title:
-        who = f" de {verdict.conflicting_author}" if verdict.conflicting_author else ""
+    # Une seule issue à la fois : la notice n'est une réponse d'autorité que si le
+    # verdict le dit, et la garde rend cette lecture impossible à rater.
+    notice = verdict.notice if verdict.a_tranche else None
+
+    if verdict.outcome == "contradiction" and notice is not None:
+        who = f" de {notice.author}" if notice.author else ""
         return IsbnRealignment(
             conflict=(
-                f"Cet ISBN ({isbn}) correspond à « {verdict.conflicting_title} »{who}, "
-                f"pas à « {title} »."
+                f"Cet ISBN ({isbn}) correspond à « {notice.title} »{who}, pas à « {title} »."
             )
         )
 
-    if verdict.meta:
-        meta = verdict.meta
+    if verdict.confirme and notice is not None:
+        meta = notice
         return IsbnRealignment(
             updates={
                 # Le spread vient d'abord : il vide la fiche de l'ouvrage précédent, et
