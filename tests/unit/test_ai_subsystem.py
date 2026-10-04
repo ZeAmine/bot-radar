@@ -13,7 +13,7 @@ from app.services.ai.modules.profit_scoring import profit_scoring_module
 from app.services.ai.pipeline import AIPostAlertPipeline
 from app.services.ai.registry import AIRegistry
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
-from tests.fakes_llm import FakeLLM
+from tests.fakes_llm import FakeLLM, FlakyLLM
 
 PANCHAUD_EDITION = BookMetadata(
     title="La couleur des choses",
@@ -768,29 +768,6 @@ async def test_keyword_variants_never_carry_an_isbn_or_the_title_itself():
     assert "ne répète jamais le titre" in system_prompt
 
 
-class _FlakyClient:
-    """Moteur qui répond autre chose à chaque appel, `None` compris.
-
-    Le vrai client renvoie `None` après un délai dépassé ou une erreur HTTP : le module
-    doit distinguer un moteur qui a parlé d'un moteur muet, pas une panne d'une absence
-    de réponse. Les réponses sont donc une suite, la dernière étant répétée si le module
-    insiste plus que prévu — ce qui rend visible un essai en trop.
-    """
-
-    def __init__(self, *responses: object, configured: bool = True) -> None:
-        self.responses = list(responses) or [None]
-        self.configured = configured
-        self.calls = 0
-
-    @property
-    def is_configured(self) -> bool:
-        return self.configured
-
-    async def generate_json(self, **_kwargs: object) -> object:
-        self.calls += 1
-        return self.responses[min(self.calls, len(self.responses)) - 1]
-
-
 _GOOD_PAYLOAD = {
     "variants": ["couleurdeschoses"],
     "exclusions": ["keeping two"],
@@ -803,7 +780,7 @@ async def test_keyword_variants_retries_once_after_a_timeout():
     """Un délai dépassé est un accident : un second essai évite l'alerte amputée."""
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
-    client = _FlakyClient(None, _GOOD_PAYLOAD)
+    client = FlakyLLM(None, _GOOD_PAYLOAD)
 
     with patch.object(keyword_variants_module, "client", client):
         outcome = await keyword_variants_module.generate_variants_and_exclusions(
@@ -822,7 +799,7 @@ async def test_keyword_variants_retries_after_an_unreadable_payload():
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
     # `variants` doit être une liste : la charge utile du premier appel est irrecevable.
-    client = _FlakyClient({"variants": 42}, _GOOD_PAYLOAD)
+    client = FlakyLLM({"variants": 42}, _GOOD_PAYLOAD)
 
     with patch.object(keyword_variants_module, "client", client):
         outcome = await keyword_variants_module.generate_variants_and_exclusions(
@@ -843,7 +820,7 @@ async def test_keyword_variants_gives_up_after_two_failures():
     """
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
-    client = _FlakyClient(None, None, _GOOD_PAYLOAD)
+    client = FlakyLLM(None, None, _GOOD_PAYLOAD)
 
     with patch.object(keyword_variants_module, "client", client):
         outcome = await keyword_variants_module.generate_variants_and_exclusions(
@@ -860,7 +837,7 @@ async def test_keyword_variants_does_not_retry_an_answer_without_variants():
     """Un moteur qui répond sans variante a tranché : le réinterroger serait du gaspillage."""
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
-    client = _FlakyClient({"variants": [], "exclusions": [], "rationale": "Rien à ajouter."})
+    client = FlakyLLM({"variants": [], "exclusions": [], "rationale": "Rien à ajouter."})
 
     with patch.object(keyword_variants_module, "client", client):
         outcome = await keyword_variants_module.generate_variants_and_exclusions(
@@ -877,7 +854,7 @@ async def test_keyword_variants_never_calls_an_unconfigured_engine():
     """Un moteur absent n'est jamais appelé, et la relance ne le rend pas présent."""
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
-    client = _FlakyClient(_GOOD_PAYLOAD, configured=False)
+    client = FlakyLLM(_GOOD_PAYLOAD, configured=False)
 
     with patch.object(keyword_variants_module, "client", client):
         outcome = await keyword_variants_module.generate_variants_and_exclusions(
