@@ -591,3 +591,88 @@ def test_ambiguity_note_only_speaks_when_nothing_is_confirmed():
     conflict_note = ambiguity_note(conflict)
     assert conflict_note is not None
     assert "Rosemonde" in conflict_note
+
+
+class _Client:
+    """Un client qui ne tombe en panne que sur une requête précise.
+
+    Reproduit le défaut visé : la sonde `explain` du script d'audit répond, donc
+    l'autorité paraît disponible, mais cette notice-là ne remonte rien.
+    """
+
+    def __init__(self, contenu: bytes, panne_sur: str) -> None:
+        self.contenu = contenu
+        self.panne_sur = panne_sur
+        self.requetes: list[str] = []
+
+    async def get(self, url: str, **_kwargs) -> object:
+        self.requetes.append(url)
+        if self.panne_sur in url:
+            raise TimeoutError("délai dépassé")
+        return type("Reponse", (), {"status_code": 200, "content": self.contenu})()
+
+
+_SRU_VIDE = b"""<?xml version="1.0"?>
+<srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/">
+  <srw:numberOfRecords>0</srw:numberOfRecords>
+</srw:searchRetrieveResponse>"""
+
+
+@pytest.mark.asyncio
+async def test_verdict_isbn_inconnu_quand_l_autorite_repond_vide():
+    """Zéro notice après un 200 : l'autorité a répondu, et elle ne connaît rien.
+
+    C'est une absence de preuve, qui n'autorise aucune accusation — mais ce n'est pas
+    une panne : le rapport doit pouvoir le distinguer.
+    """
+    client = _Client(_SRU_VIDE, panne_sur="inconnu-de-l-inconnu")
+    service = BookMetadataService(http_client=client)
+
+    verdict = await service.lookup_by_isbn_verdict("9782369903062")
+
+    assert verdict.notice is None
+    assert verdict.panne is None
+    assert verdict.a_repondu is True
+
+
+@pytest.mark.asyncio
+async def test_verdict_notice_manquee_quand_une_seule_requete_echoue():
+    """La BNF répond à la sonde mais échoue sur cette notice : panne isolée.
+
+    Sans `panne`, ce cas se lirait « personne ne connaît cet ISBN » — une accusation
+    que rien ne prouve, produite par la seule inexplicabilité d'une requête.
+    """
+    client = _Client(_SRU_VIDE, panne_sur="bib.isbn")
+    service = BookMetadataService(http_client=client)
+
+    verdict = await service.lookup_by_isbn_verdict("9782369903062")
+
+    assert verdict.notice is None, "aucune notice ne peut être inventée"
+    assert verdict.panne is not None
+    assert "TimeoutError" in verdict.panne, "le motif de panne doit être transmis"
+    assert verdict.a_repondu is False
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_isbn_ne_change_pas_pour_ses_appelants():
+    """Les appelants existants voient la même chose avant et après : `None` ou la notice.
+
+    `/add` et `/edit` ne doivent jamais transformer une panne en refus de saisie.
+    """
+    en_panne = BookMetadataService(http_client=_Client(_SRU_VIDE, panne_sur="bib.isbn"))
+    assert await en_panne.lookup_by_isbn("9782369903062") is None
+
+    sans_notice = BookMetadataService(http_client=_Client(_SRU_VIDE, panne_sur="jamais"))
+    assert await sans_notice.lookup_by_isbn("9782369903062") is None
+
+
+@pytest.mark.asyncio
+async def test_verdict_refuse_un_isbn_malforme_sans_appeler_personne():
+    """Frontière : un code invalide ne se confond pas non plus avec une panne."""
+    service = BookMetadataService(http_client=_Client(_SRU_VIDE, panne_sur="jamais"))
+
+    verdict = await service.lookup_by_isbn_verdict("pas-un-isbn")
+
+    assert verdict.notice is None
+    assert verdict.panne is None
+    assert service.http_client.requetes == [], "aucun appel réseau pour une saisie invalide"

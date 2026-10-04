@@ -182,6 +182,28 @@ class IsbnConfirmation:
     conflicting_author: str | None = None
 
 
+@dataclass(frozen=True)
+class IsbnLookup:
+    """Ce qu'une autorité a répondu d'un ISBN, et si elle a répondu.
+
+    Les deux cas que `lookup_by_isbn` confond dans un seul `None` :
+
+    - `notice` renseignée : l'autorité connaît ce code et dit de quel ouvrage ;
+    - `notice` et `panne` vides : l'autorité connaît ce code et dit qu'il n'en connaît
+      aucun — une absence de preuve, qui n'interdit rien ;
+    - `panne` renseignée : personne n'a su répondre. Un appelant qui accuse ici se
+      trompe, car il n'a aucune preuve.
+    """
+
+    notice: BookMetadata | None = None
+    panne: str | None = None
+
+    @property
+    def a_repondu(self) -> bool:
+        """L'autorité a-t-elle répondu, quelle que soit sa réponse ?"""
+        return self.panne is None
+
+
 OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
 
 
@@ -452,17 +474,30 @@ class BookMetadataService:
         return await self.resolve_for_alert(title_query, author_query)
 
     async def lookup_by_isbn(self, isbn: str) -> BookMetadata | None:
-        """Recherche une œuvre par son ISBN officiel sur la BNF."""
+        """Recherche une œuvre par son ISBN officiel sur la BNF.
+
+        Seule la notice est rendue, quelle qu'ait été la réponse de l'autorité : un
+        appelant qui affiche une fiche préfère une fiche absente à une fiche fausse,
+        et une panne ne doit jamais ressembler à un refus. `lookup_by_isbn_verdict`
+        est le même appel pour qui doit, lui, rendre des comptes.
+        """
+        return (await self.lookup_by_isbn_verdict(isbn)).notice
+
+    async def lookup_by_isbn_verdict(self, isbn: str) -> IsbnLookup:
+        """Comme `lookup_by_isbn`, mais distingue « absent » de « autorité muette »."""
         clean_isbn = normalize_isbn(isbn)
         if not clean_isbn or not is_valid_isbn(clean_isbn):
-            return None
-        cql = f'bib.isbn adj "{clean_isbn}"'
-        records = await self._query_bnf_sru(cql)
+            return IsbnLookup()
+
+        records, panne = await self._bnf_records(f'bib.isbn adj "{clean_isbn}"')
         if records:
-            return self._attach_recommendations(records[0])
+            return IsbnLookup(notice=self._attach_recommendations(records[0]))
 
         fallback = await self._openlibrary_works({"isbn": clean_isbn})
-        return fallback[0].meta if fallback else None
+        if fallback:
+            return IsbnLookup(notice=fallback[0].meta)
+        # OpenLibrary n'a rien donné non plus : sans `panne`, ce serait un verdict.
+        return IsbnLookup(panne=panne)
 
     async def verify_isbn(self, isbn13: str, expected_title: str) -> BookMetadata | None:
         """Confirme qu'un ISBN désigne bien l'œuvre attendue.
@@ -665,7 +700,27 @@ class BookMetadataService:
         author_hint: str | None = None,
         title_hint: str | None = None,
     ) -> list[BookMetadata]:
-        """Interroge l'API SRU de la BNF et trie les résultats par pertinence."""
+        """Interroge l'API SRU de la BNF. Absorbe les pannes : voir `_bnf_records`.
+
+        Une liste vide y signifie « aucune notice », jamais « authorities muettes » :
+        une panne ne doit pas ressembler à un refus. Seul `lookup_by_isbn_verdict`
+        a besoin de savoir la différence.
+        """
+        records, _panne = await self._bnf_records(cql_query, author_hint, title_hint)
+        return records
+
+    async def _bnf_records(
+        self,
+        cql_query: str,
+        author_hint: str | None = None,
+        title_hint: str | None = None,
+    ) -> tuple[list[BookMetadata], str | None]:
+        """Notices SRU, et le motif de panne si l'autorité n'a pas répondu.
+
+        Le second élément est ce qui manque à une liste vide pour être une réponse :
+        sans lui, `[]` dit aussi bien « la BNF ignore cet ISBN » que « la requête a
+        échoué », et l'appelant qui doit rendre compte ne peut pas trancher.
+        """
         params = {
             "version": "1.2",
             "operation": "searchRetrieve",
@@ -685,7 +740,7 @@ class BookMetadataService:
             )
             if resp.status_code != 200:
                 logger.warning("BNF SRU returned status %d", resp.status_code)
-                return []
+                return [], f"statut HTTP {resp.status_code}"
 
             root = ET.fromstring(resp.content)
             for record in root.findall(".//{http://www.loc.gov/zing/srw/}recordData"):
@@ -777,10 +832,10 @@ class BookMetadataService:
 
         except Exception as exc:
             logger.warning("Erreur lors de la requête BNF SRU (%s) : %s", cql_query, exc)
-            return []
+            return [], f"{type(exc).__name__}: {exc}"
 
         results.sort(key=lambda x: x[0], reverse=True)
-        return [item[1] for item in results]
+        return [item[1] for item in results], None
 
     async def _resolve_via_openlibrary(
         self, title: str, author_hint: str | None = None
