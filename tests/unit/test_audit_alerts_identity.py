@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,10 @@ import audit_alerts_identity as audit  # noqa: E402
 from app.services.book_metadata_service import BookMetadata, IsbnLookup  # noqa: E402
 
 ISBN_BD = "9782369903062"  # La couleur des choses, Martin Panchaud, Çà et là
+
+# Un instant figé : un rapport doit dire quand il a été produit, et un test
+# ne peut pas dépendre de l'heure à laquelle il tourne.
+INSTANT = datetime(2026, 10, 4, 22, 11, 9, tzinfo=UTC)
 ISBN_HOMONYME = "9782214080627"  # Les Enfants perdus, l'homonyme de 1989
 
 NOTICE_BD = BookMetadata(
@@ -261,8 +266,9 @@ def test_le_rapport_distingue_une_alerte_impossible_dune_alerte_saine():
     """Le statut doit se lire : « non vérifiée » n'est pas « conforme », ni « en faute »."""
     muette = audit.AlertVerdict(_alerte(), unverified_reason="autorité muette : statut HTTP 503")
     rapport = audit.render(
-        [muette, audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF)]
-    )
+        [muette, audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF)],
+    audit_le=INSTANT,
+)
 
     assert "autorité muette : statut HTTP 503" in rapport
     assert "non vérifiée" in rapport
@@ -297,7 +303,7 @@ def test_le_rapport_nomme_une_alerte_une_seule_fois():
         ],
     )
 
-    rapport = audit.render([verdict])
+    rapport = audit.render([verdict], audit_le=INSTANT)
 
     assert rapport.count("La couleur des choses") == 1, "en-tête dupliqué"
     assert "1 alerte(s) à regarder" in rapport
@@ -305,7 +311,8 @@ def test_le_rapport_nomme_une_alerte_une_seule_fois():
 
 
 def test_le_rapport_dit_conforme_quand_rien_ne_bouge():
-    rapport = audit.render([audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF)])
+    rapport = audit.render([audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF)],
+                   audit_le=INSTANT)
     assert "conforme" in rapport
     assert "ANOMALIE" not in rapport
 
@@ -315,14 +322,15 @@ def test_le_mode_discret_oublie_les_alertes_saines():
         audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF),
         audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF),
     ]
-    rapport = audit.render(saines, quiet=True)
+    rapport = audit.render(saines, quiet=True, audit_le=INSTANT)
     assert "conforme" in rapport
     assert "ok " not in rapport
 
 
 def test_un_repli_ne_ressemble_pas_a_un_ok():
     """La ligne d'un repli nomme l'autorité qui a répondu et l'absence de la BNF."""
-    rapport = audit.render([audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_OPENLIBRARY)])
+    rapport = audit.render([audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_OPENLIBRARY)],
+                   audit_le=INSTANT)
 
     assert "ok " not in rapport, "un repli ne doit pas se lire comme une confirmation"
     assert "REPLI" in rapport
@@ -360,8 +368,9 @@ def test_un_repli_apres_panne_est_compte_comme_non_verifie_pas_comme_repli():
                     "notice de repli écartée : la BNF n'a pas tranché"
                 ),
             )
-        ]
-    )
+        ],
+    audit_le=INSTANT,
+)
 
     assert "1 alerte(s) non vérifiées" in rapport
     assert "non confirmée(s) par la BNF" not in rapport
@@ -370,7 +379,7 @@ def test_un_repli_apres_panne_est_compte_comme_non_verifie_pas_comme_repli():
 
 def test_un_verdict_sans_autorite_n_est_plus_dit_conforme():
     """Régression : « aucune autorité a répondu » surmontait « conforme aux notices »."""
-    rapport = audit.render([audit.AlertVerdict(_alerte())])
+    rapport = audit.render([audit.AlertVerdict(_alerte())], audit_le=INSTANT)
 
     assert "aucune autorité a répondu" in rapport
     assert "conforme" not in rapport, "un rapport qui doute de son autorité n'est pas conforme"
@@ -384,7 +393,8 @@ def test_le_repli_survit_au_mode_discret():
             audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_OPENLIBRARY),
         ],
         quiet=True,
-    )
+    audit_le=INSTANT,
+)
 
     assert "REPLI" in rapport
     assert "OpenLibrary a répondu, pas la BNF" in rapport
@@ -400,7 +410,7 @@ def test_le_compte_final_separe_les_replis_des_anomalies():
         autorite=audit.AUTORITE_OPENLIBRARY,
     )
 
-    rapport = audit.render([verdict])
+    rapport = audit.render([verdict], audit_le=INSTANT)
 
     assert "1 alerte(s) à regarder" in rapport
     assert "1 alerte(s) non confirmée(s) par la BNF — réponse de : OpenLibrary" in rapport
@@ -420,7 +430,7 @@ async def test_un_isbn_inconnu_n_est_pas_un_repli():
     async def lookup(_isbn: str) -> IsbnLookup:
         return IsbnLookup()
 
-    rapport = audit.render(await audit.audit([_alerte()], lookup))
+    rapport = audit.render(await audit.audit([_alerte()], lookup), audit_le=INSTANT)
 
     assert "isbn_inconnu" in rapport
     assert "non confirmée(s) par la BNF" not in rapport
@@ -430,7 +440,8 @@ async def test_un_isbn_inconnu_n_est_pas_un_repli():
 def test_une_alerte_muette_n_est_pas_comptee_comme_un_repli():
     """Sans réponse, il n'y a pas d'autorité à nommer : le double compte mentirait."""
     rapport = audit.render(
-        [audit.AlertVerdict(_alerte(), unverified_reason="autorité muette : statut HTTP 503")]
+        [audit.AlertVerdict(_alerte(), unverified_reason="autorité muette : statut HTTP 503")],
+        audit_le=INSTANT,
     )
 
     assert "non confirmée(s) par la BNF" not in rapport
@@ -440,12 +451,13 @@ def test_une_alerte_muette_n_est_pas_comptee_comme_un_repli():
 def test_le_json_expose_la_meme_information():
     verdict = audit.AlertVerdict(_alerte(), anomalies=[audit.Anomaly(audit.ISBN_CONFLIT, "d")])
 
-    payload = json.loads(audit.as_json([verdict]))
+    payload = json.loads(audit.as_json([verdict], audit_le=INSTANT))
+    alerte = payload["alertes"][0]
 
-    assert payload[0]["isbn"] == ISBN_BD
-    assert payload[0]["anomalies"][0]["code"] == audit.ISBN_CONFLIT
-    assert payload[0]["unverified_reason"] is None
-    assert payload[0]["autorite"] is None
+    assert alerte["isbn"] == ISBN_BD
+    assert alerte["anomalies"][0]["code"] == audit.ISBN_CONFLIT
+    assert alerte["unverified_reason"] is None
+    assert alerte["autorite"] is None
 
 
 def test_le_json_expose_l_autorite_de_chaque_verdict():
@@ -454,12 +466,92 @@ def test_le_json_expose_l_autorite_de_chaque_verdict():
         audit.as_json(
             [
                 audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_OPENLIBRARY),
-                audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF),
-            ]
+                audit.AlertVerdict(_alerte(inactive=True), autorite=audit.AUTORITE_BNF),
+            ],
+            audit_le=INSTANT,
         )
     )
 
-    assert [verdict["autorite"] for verdict in payload] == ["openlibrary", "bnf"]
+    assert [verdict["autorite"] for verdict in payload["alertes"]] == ["openlibrary", "bnf"]
+    assert payload["population"] == {"auditees": 2, "inactives": 1}
+
+
+# --- L'en-tête : l'instant et la population ---
+
+
+def _conforme(*, inactive: bool = False) -> audit.AlertVerdict:
+    """Une alerte que la BNF elle-même a confirmée : la ligne `ok` du rapport."""
+    return audit.AlertVerdict(_alerte(inactive=inactive), autorite=audit.AUTORITE_BNF)
+
+
+def test_l_entete_nome_l_instant_et_la_population():
+    """Un rapport qui ne dit pas sur quoi il a été produit n'est opposable à personne."""
+    rapport = audit.render([_conforme(), _conforme(inactive=True)], audit_le=INSTANT)
+
+    assert "Audit d'identité — 2026-10-04 22:11:09 UTC" in rapport
+    assert "Population auditée : 2 alerte(s) porteuse(s) d'un ISBN (dont 1 inactive(s))" in rapport
+
+
+def test_l_en_compte_les_inactives_seulement_si_leur_lecture_est_dem():
+    """Hors `--include-inactive`, la population lue n'en contient aucune."""
+    rapport = audit.render([_conforme()], audit_le=INSTANT)
+
+    assert "(dont 0 inactive(s))" in rapport
+
+
+def test_deux_rapports_sur_des_populations_differentes_ne_se_confondent_pas():
+    """Même commande, base qui a grandi entre les deux : les deux rapports le montrent."""
+    avant = audit.render([_conforme()], audit_le=INSTANT)
+    apres = audit.render([_conforme() for _ in range(3)], audit_le=INSTANT)
+
+    assert "Population auditée : 1 alerte(s)" in avant
+    assert "Population auditée : 3 alerte(s)" in apres
+    assert audit.render_entete([_conforme()], INSTANT) != audit.render_entete(
+        [_conforme(), _conforme(inactive=True)], INSTANT
+    )
+
+
+def test_le_mode_discret_garde_l_entete():
+    """`--quiet` retire les lignes `ok`, pas ce qui permet de lire le rapport."""
+    verdicts = [
+        _conforme(),
+        audit.AlertVerdict(
+            _alerte(inactive=True),
+            anomalies=[audit.Anomaly(audit.ISBN_INCONNU, "personne ne connaît cet ISBN")],
+        ),
+    ]
+
+    rapport = audit.render(verdicts, quiet=True, audit_le=INSTANT)
+
+    assert "Audit d'identité — 2026-10-04 22:11:09 UTC" in rapport
+    assert "Population auditée : 2 alerte(s) porteuse(s) d'un ISBN (dont 1 inactive(s))" in rapport
+    assert "1 alerte(s) à regarder" in rapport
+
+
+def test_le_json_et_le_texte_disent_le_meme_chose():
+    """Le `--json` doit porter le même instant et le même effectif que le texte."""
+    verdicts = [
+        _conforme(),
+        audit.AlertVerdict(
+            _alerte(inactive=True), anomalies=[audit.Anomaly(audit.ISBN_INCONNU, "personne")]
+        ),
+    ]
+
+    payload = json.loads(audit.as_json(verdicts, audit_le=INSTANT))
+    rapport = audit.render(verdicts, quiet=True, audit_le=INSTANT)
+
+    assert audit.format_instant(datetime.fromisoformat(payload["genere_le"])) in rapport
+    assert payload["population"] == {"auditees": 2, "inactives": 1}
+    assert f"Population auditée : {payload['population']['auditees']} alerte(s)" in rapport
+    assert len(payload["alertes"]) == payload["population"]["auditees"]
+
+
+def test_un_rapport_vide_reste_identifiable():
+    """Zéro alerte reste un rapport : sans en-tête, on ne saurait pas quand il a été fait."""
+    rapport = audit.render([], audit_le=INSTANT)
+
+    assert "Audit d'identité — 2026-10-04 22:11:09 UTC" in rapport
+    assert "Population auditée : 0 alerte(s) porteuse(s) d'un ISBN (dont 0 inactive(s))" in rapport
 
 
 # --- Codes de sortie, en pilotant run() sans base ---
@@ -563,13 +655,13 @@ async def test_code_2_quand_la_base_est_illisible(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_une_autorite_muette_ne_produit_aucune_anomalie(monkeypatch, capsys):
-    _hors_ligne(monkeypatch)
     """La panne ne doit pas se déguiser en « ISBN inconnu », ni en succès silencieux.
 
     `lookup_by_isbn` absorbant ses propres erreurs, une BNF injoignable renverrait
     `None` pour chaque alerte — donc `isbn_inconnu` partout. Le code 2 dit que
     l'audit n'a pas eu lieu ; le code 0 dirait qu'il n'y avait rien à trouver.
     """
+    _hors_ligne(monkeypatch)
     monkeypatch.setattr(audit, "read_identities", _depot([_alerte()]))
     monkeypatch.setattr(audit, "bnf_joignable", _joignable(False))
 
@@ -589,6 +681,56 @@ async def test_aucune_alerte_sans_isbn_ne_demande_rien(monkeypatch):
     """Pas d'ISBN, pas de notice à demander : le rapport le dit et le code reste 0."""
     monkeypatch.setattr(audit, "read_identities", _depot([]))
     assert await audit.run(_args()) == audit.EXIT_CLEAN
+
+
+@pytest.mark.asyncio
+async def test_deux_executions_sur_une_base_qui_change_donnent_deux_effectifs(
+    monkeypatch, capsys
+):
+    """Le cas qui a motivé l'en-tête : le bot crée des alertes pendant que l'audit tourne.
+
+    Deux « 0 anomalie » de dénominateurs différents ne se comparent pas ; deux en-têtes
+    qui les nomment, si. L'instant, lui, tombe à la seconde : deux exécutions dans la
+    même seconde partagent donc leur première ligne, et c'est l'effectif qui les départage.
+    """
+    _hors_ligne(monkeypatch)
+    lectures = iter([[_alerte()], [_alerte(), _alerte(), _alerte(inactive=True)]])
+
+    async def lire(**_kwargs: object) -> list[audit.AlertIdentity]:
+        return next(lectures)
+
+    monkeypatch.setattr(audit, "read_identities", lire)
+    monkeypatch.setattr(audit, "BookMetadataService", lambda: _Moteur(NOTICE_BD))
+
+    assert await audit.run(_args(include_inactive=True)) == audit.EXIT_CLEAN
+    premier = capsys.readouterr().out
+    assert await audit.run(_args(include_inactive=True)) == audit.EXIT_CLEAN
+    second = capsys.readouterr().out
+
+    assert "Population auditée : 1 alerte(s) porteuse(s) d'un ISBN (dont 0 inactive(s))" in premier
+    assert "Population auditée : 3 alerte(s) porteuse(s) d'un ISBN (dont 1 inactive(s))" in second
+    # Les deux « ligne 2 » — l'effectif — diffèrent ; la ligne 1, l'instant, peut non.
+    assert premier.splitlines()[1] != second.splitlines()[1]
+
+
+@pytest.mark.asyncio
+async def test_un_rapport_sur_base_vide_reste_date_et_parse_en_json(monkeypatch, capsys):
+    """Une base vide est un rapport comme un autre : daté en texte, valide en JSON."""
+    _hors_ligne(monkeypatch)
+    monkeypatch.setattr(audit, "read_identities", _depot([]))
+
+    assert await audit.run(_args(json=True)) == audit.EXIT_CLEAN
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["population"] == {"auditees": 0, "inactives": 0}
+    assert payload["alertes"] == []
+    assert payload["genere_le"].endswith("+00:00")
+
+    assert await audit.run(_args()) == audit.EXIT_CLEAN
+    texte = capsys.readouterr().out
+
+    assert "Population auditée : 0 alerte(s) porteuse(s) d'un ISBN (dont 0 inactive(s))" in texte
+    assert "rien à confronter" in texte
 
 
 @pytest.mark.asyncio
