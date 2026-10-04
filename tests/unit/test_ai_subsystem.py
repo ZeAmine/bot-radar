@@ -726,3 +726,43 @@ async def test_natural_add_bnf_notice_overrules_the_author_guessed_by_the_model(
     assert res is not None
     assert res.author == PANCHAUD_EDITION.author
     assert res.publisher == PANCHAUD_EDITION.publisher
+
+
+@pytest.mark.asyncio
+async def test_keyword_variants_never_carry_an_isbn_or_the_title_itself():
+    """Une variante est une autre écriture du titre, jamais une référence d'ouvrage.
+
+    Le récap affichait « les enfants perdus 9782214080627 » et « les enfants perdus
+    1989 » : des codes de l'homonyme de 1989, qui font sonner l'alerte BD sur les
+    annonces du roman.
+    """
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    mock_client = FakeLLM(
+        text={
+            "variants": [
+                "les enfants perdus 9782214080627",
+                "978-2-214-08062-7",
+                "les enfants perdus 1989",
+                "les enfants perdus la pensée universelle",
+                "les enfnats perdus",
+                "enfants perdus",
+            ],
+            "exclusions": ["roman"],
+            "rationale": "Confusions sur l'homonyme de 1989.",
+        }
+    )
+
+    with patch.object(keyword_variants_module, "client", mock_client):
+        outcome = await keyword_variants_module.generate_variants_and_exclusions(
+            "Les Enfants perdus", category_slug="bd_comics"
+        )
+
+    assert outcome.answered is True
+    # Seule la faute de frappe survit : elle ne contient ni code ni titre complet.
+    assert outcome.variants == ["les enfnats perdus"]
+    assert "roman" in outcome.exclusions
+    # Le prompt interdit explicitement ce qu'il a produit.
+    system_prompt = mock_client.calls[0]["system_prompt"]
+    assert "tout ISBN" in system_prompt
+    assert "ne répète jamais le titre" in system_prompt

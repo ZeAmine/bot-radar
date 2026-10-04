@@ -1,6 +1,7 @@
 """Module IA pour la recherche de pépites cachées et fautes de frappe (Use Case E)."""
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
@@ -39,6 +40,9 @@ OPTIMIZE_SYSTEM_PROMPT = (
     "qu'une exclusion justifiée.\n"
     "INTERDIT : rendre une liste générique valable pour n'importe quelle œuvre "
     "(par exemple des mots de goodies qui n'ont aucun rapport avec l'ouvrage).\n"
+    "INTERDIT : tout ISBN, code-barres, éditeur ou année dans les variantes : une "
+    "variante est une façon d'écrire le TITRE, pas une référence d'un autre ouvrage. "
+    "Une variante ne répète jamais le titre, elle en est une autre écriture.\n"
     "\n"
     "Retourne STRICTEMENT un objet JSON :\n"
     "{\n"
@@ -72,10 +76,30 @@ def _clean_terms(raw_terms: list[object], title: str) -> list[str]:
         # Un mot-clé contenu dans le titre bloquerait l'annonce cible elle-même.
         if not norm_term or norm_term in norm_title:
             continue
+        if _carries_isbn(value) or norm_title in norm_term:
+            continue
         if any(existing == value for existing in cleaned):
             continue
         cleaned.append(value)
     return cleaned
+
+
+# Un ISBN est un code, pas une orthographe : « les enfants perdus 9782214080627 »
+# n'est pas une variante du titre. Pire, une variante sert de porte de sortie au
+# matching (une seule variante suffit à valider une annonce, `listing_match.py`), donc
+# une variante porteuse de l'identité d'un autre ouvrage fait sonner l'alerte sur ce
+# livre-là — l'ISBN d'un roman de 1989 dans les variantes d'une BD de 2025.
+_ISBN_LIKE = re.compile(r"\d[\d\-\s]{8,}\d")
+
+
+def _carries_isbn(value: str) -> bool:
+    """Le terme contient-il une suite de chiffres assimilated à un ISBN ?
+
+    La suite est volontairement plus large que la clé de contrôle : un ISBN recopié
+    avec ou sans tirets, ou suivie de son millésime, doit tomber dans les deux cas.
+    """
+    digits = _ISBN_LIKE.sub("", value)
+    return digits != value
 
 
 @dataclass(frozen=True)

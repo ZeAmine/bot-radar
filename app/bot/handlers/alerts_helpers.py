@@ -33,6 +33,7 @@ from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
     BookMetadataService,
     IsbnConfirmation,
+    ambiguity_note,
     format_edition_fragments,
     provenance_note,
 )
@@ -676,9 +677,9 @@ async def process_bd_query_lookup(
     status_msg = await target_msg.answer("🔍 Recherche automatique de l'œuvre...")
 
     service = BookMetadataService()
-    meta = await service.lookup(clean_query)
+    resolution = await service.resolve_input(clean_query)
 
-    if not meta:
+    if resolution is None:
         await status_msg.edit_text(
             f"❌ Aucune œuvre trouvée pour « <b>{html.escape(clean_query)}</b> ».\n\n"
             "Tu peux réessayer avec un autre titre ou nom d'auteur :"
@@ -686,8 +687,14 @@ async def process_bd_query_lookup(
         await state.set_state(AlertCreationState.waiting_for_query)
         return
 
+    meta = resolution.best
+    # Un titre homonyme ne nomme aucun ouvrage : on n'en retient aucun, et les œuvres
+    # trouvées sont proposées au choix. Même règle que le `/add` en langage naturel.
+    ambiguous = resolution.is_ambiguous
+    note = ambiguity_note(resolution) if ambiguous else None
+
     # GARDE ANTI-DOUBLON APRÈS RÉSOLUTION BNF
-    if db_user:
+    if db_user and not ambiguous:
         alert_repo = _get_alert_repo(db_session)
         existing = await alert_repo.find_existing(db_user.id, isbn=meta.isbn13, title=meta.title)
         if existing:
@@ -705,20 +712,27 @@ async def process_bd_query_lookup(
     category = await category_repo.get_by_slug(CategorySlug.BD_COMICS.value)
     cat_id_str = str(category.id) if category else ""
 
-    edition_choices = await _resolve_edition_choices(meta.title, meta.author)
-
     await state.update_data(
         category_id=cat_id_str,
         category_slug=CategorySlug.BD_COMICS.value,
         name=meta.title,
-        isbn=meta.isbn13,
-        author=meta.author,
-        publisher=meta.publisher,
+        isbn=None if ambiguous else meta.isbn13,
+        author=None if ambiguous else meta.author,
+        publisher=None if ambiguous else meta.publisher,
         include_keywords=meta.recommended_includes,
-        exclude_keywords=meta.recommended_excludes,
-        variants=meta.recommended_variants,
+        exclude_keywords=[] if ambiguous else meta.recommended_excludes,
+        variants=[] if ambiguous else meta.recommended_variants,
         selected_conditions=list(DEFAULT_BD_CONDITIONS),
-        edition_alternatives=edition_choices,
+        isbn_note=note,
+        work_choices=(
+            [work.model_dump() for work in resolution.work_choices()] if ambiguous else []
+        ),
+        # Les éditions concurrentes sont celles de la résolution qu'on tient déjà en
+        # main : une seconde requête BNF n'ajouterait rien, et les homonymes d'un
+        # titre ambigu ne seraient pas des éditions de l'œuvre demandée.
+        edition_alternatives=(
+            [] if ambiguous else build_edition_choices(resolution)
+        ),
     )
 
     if inline_price_cents is not None:

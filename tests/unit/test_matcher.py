@@ -654,3 +654,44 @@ def test_matcher_with_none_include_keywords():
     assert res.is_match is True
 
 
+
+
+def test_matcher_ignores_a_variant_carrying_another_books_isbn():
+    """Une variante qui cite l'ISBN d'un autre ouvrage ne valide pas son annonce.
+
+    Une variante est une porte de sortie : une seule suffit à valider l'annonce.
+    Celle-ci venait de l'homonyme de 1989 d'une BD de 2025, et faisait sonner l'alerte
+    BD sur les annonces du roman.
+    """
+    from app.domain.rules.listing_match import carries_foreign_isbn, usable_variants
+
+    bd_isbn = "9782810206087"
+    roman_isbn = "9782214080627"
+    assert carries_foreign_isbn(f"les enfants perdus {roman_isbn}", bd_isbn) is True
+    assert carries_foreign_isbn(f"les enfants perdus {bd_isbn}", bd_isbn) is False
+    assert carries_foreign_isbn("les enfnats perdus", bd_isbn) is False
+    # Sans ISBN d'alerte, aucune variante n'est suspecte : rien à contraster.
+    assert carries_foreign_isbn(f"les enfants perdus {roman_isbn}", None) is False
+
+    assert usable_variants(
+        [f"les enfants perdus {roman_isbn}", "les enfnats perdus"], bd_isbn
+    ) == ["les enfnats perdus"]
+
+    alert = create_test_alert(
+        name="Les Enfants perdus",
+        include_keywords=["les enfants perdus tome 1"],
+        variants=[f"les enfants perdus {roman_isbn}"],
+    )
+    alert.isbn = bd_isbn
+
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="les enfants perdus",
+        listing_normalized_description=f"rosemonde ahou de saintange 1989 {roman_isbn}",
+        listing_condition="Très bon état",
+        listing_item_price_cents=800,
+    )
+    # L'annonce est refusée : ni l'ISBN de l'alerte ni les mots-clés ne la décrivent.
+    assert res.is_match is False
+    assert bd_isbn in res.reason

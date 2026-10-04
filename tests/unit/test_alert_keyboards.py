@@ -427,3 +427,67 @@ def test_format_edition_line_hidden_when_editor_alone_would_repeat():
 
     assert format_edition_line(editions, "9782369904151") == []
 
+
+
+def test_get_alert_confirmation_keyboard_offers_homonymous_works_first():
+    """Les œuvres homonymes passent avant les éditions : d'abord quel livre, puis lequel.
+
+    Les deux questions ne se valent pas — nommer le mauvais ouvrage ne se rattrape pas
+    en choisissant un autre tirage du bon.
+    """
+    works = [
+        {
+            "isbn13": "9782214080627",
+            "title": "Les Enfants perdus",
+            "author": "Rosemonde Ahou de Saintange",
+            "publisher": "La Pensée universelle",
+            "publication_year": 1989,
+        },
+        {
+            "isbn13": "9782810206087",
+            "title": "Les Enfants perdus",
+            "author": "Nef",
+            "publisher": "Éditions du Chêne",
+            "publication_year": 2025,
+        },
+    ]
+    editions = [
+        {"isbn13": "9782810206087", "publisher": "Éditions du Chêne", "publication_year": 2025},
+        {"isbn13": "9791020401234", "publisher": "Éditions du Chêne", "publication_year": 2025},
+    ]
+
+    keyboard = get_alert_confirmation_keyboard(
+        edition_alternatives=editions,
+        work_choices=works,
+        work_labels=[
+            "1️⃣ Rosemonde Ahou de Saintange · 1989 · La Pensée universelle",
+            "2️⃣ Nef · 2025 · Éditions du Chêne",
+        ],
+    )
+
+    callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+    assert callbacks.index("al_create_work:0") < callbacks.index("al_create_edition:0")
+    assert callbacks.index("al_create_work:1") < callbacks.index("alert_create_confirm")
+
+
+def test_get_alert_confirmation_keyboard_needs_two_works_to_ask():
+    """Une œuvre unique n'oppose rien à rien : aucun bouton de choix d'œuvre."""
+    single = [{"isbn13": "9782810206087", "title": "T", "author": "Nef"}]
+
+    keyboard = get_alert_confirmation_keyboard(work_choices=single, work_labels=["1️⃣ Nef"])
+    callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+
+    assert not any(data.startswith("al_create_work") for data in callbacks)
+
+
+def test_work_choice_callbacks_fit_telegram_limits():
+    """Telegram refuse un `callback_data` de plus de 64 octets."""
+    works = [
+        {"isbn13": f"97828102060{index:02d}", "title": "T", "author": "Nef"} for index in range(9)
+    ]
+
+    keyboard = get_alert_confirmation_keyboard(work_choices=works)
+
+    for row in keyboard.inline_keyboard:
+        for button in row:
+            assert len(button.callback_data.encode("utf-8")) <= 64

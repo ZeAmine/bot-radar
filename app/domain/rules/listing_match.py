@@ -181,6 +181,38 @@ def isbn_digits(value: str | None) -> str:
     return re.sub(r"[^\dX]", "", value.upper())
 
 
+# Suite de chiffres assez longue pour être un ISBN recopié (avec ou sans tirets).
+_ISBN_LIKE_RUN = re.compile(r"\d[\d\-\s]{8,}\d")
+
+
+def carries_foreign_isbn(variant: str, alert_isbn: str | None) -> bool:
+    """Cette variante cite-t-elle un ISBN qui n'est pas celui de l'alerte ?
+
+    Une variante est une porte de sortie du matching : une seule suffit à valider une
+    annonce. Un ISBN qui n'appartient pas à l'alerte ne peut donc pas aider à trouver
+    CET ouvrage — il ne peut que faire sonner l'alerte sur celui qu'il désigne. C'est
+    ce qui arrivait avec « les enfants perdus 9782214080627 », variante tirée de
+    l'homonyme de 1989 d'une BD de 2025.
+
+    Les alertes déjà enregistrées gardent leurs anciennes variantes : le filtre les
+    protège aussi, sans migration.
+    """
+    if not alert_isbn:
+        return False
+    if _ISBN_LIKE_RUN.sub("", variant) == variant:
+        return False
+    return isbn_digits(variant) != alert_isbn
+
+
+def usable_variants(alert_variants: list[str] | None, alert_isbn: str | None) -> list[str]:
+    """Variantes de l'alerte qui peuvent la valider, ISBN étranger retiré."""
+    return [
+        variant
+        for variant in (alert_variants or [])
+        if variant and not carries_foreign_isbn(variant, alert_isbn)
+    ]
+
+
 def price_is_above_max(
     max_item_price_cents: int | None,
     listing_item_price_cents: int,
@@ -367,8 +399,7 @@ def evaluate_listing_against_alert(
 
                 variant_matched = any(
                     contains_keyword(searchable_text, var)
-                    for var in alert.variants
-                    if var
+                    for var in usable_variants(alert.variants, clean_alert_isbn)
                 )
 
                 if not user_kws_match and not variant_matched:
@@ -519,7 +550,7 @@ def evaluate_listing_against_alert(
     if not all_includes_match:
         # Vérification des variantes alternatives (OU logique entre variantes)
         variant_matched = False
-        for raw_variant in alert.variants:
+        for raw_variant in usable_variants(alert.variants, clean_alert_isbn):
             if contains_keyword(searchable_text, raw_variant):
                 variant_matched = True
                 break
