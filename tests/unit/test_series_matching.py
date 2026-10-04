@@ -150,7 +150,7 @@ def test_series_matching_lot_card():
     assert "💵 Lot" not in card
     assert "🆕 Vinted" not in card
     assert "Écart" not in card
-    assert "Cote par tome (Min sur 1 an) :" in card
+    assert "Cote par tome (plus bas connu) :" in card
     assert "• Tome 1 : 16,00 €" in card
     assert "• Tome 2 : 18,50 €" in card
     assert "Derniere MAJ :" in card

@@ -341,6 +341,30 @@ def test_select_historical_low_ignores_looser_condition_tiers():
     )
 
 
+def test_select_historical_low_takes_the_minimum_across_accepted_tiers():
+    """Le plus bas 1 an est le minimum des paliers acceptés, pas le premier trouvé.
+
+    Régression Dead Train : « Comme neuf + » avait atteint 13,50 € quand
+    « Très bon état + » s'arrêtait à 22,90 €. Prendre le premier libellé
+    affichait une cote plus haute qu'un prix déjà constaté dans un état meilleur.
+    """
+    from app.providers.chasse_aux_livres import select_historical_low_cents
+
+    assert (
+        select_historical_low_cents(
+            {"Très bon état +": 22.9, "Comme neuf +": 13.5}
+        )
+        == 1350
+    )
+    # L'ordre des libellés ne doit plus changer le résultat.
+    assert (
+        select_historical_low_cents(
+            {"Comme neuf +": 13.5, "Très bon état +": 22.9}
+        )
+        == 1350
+    )
+
+
 @pytest.mark.asyncio
 async def test_chasse_aux_livres_invalid_isbn_falls_back_to_title():
     """Un ISBN dont la clé de contrôle est fausse ne doit pas être utilisé pour la recherche."""

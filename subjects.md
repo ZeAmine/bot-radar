@@ -73,7 +73,7 @@ Comparer en quelques microsecondes en mémoire CPU chaque annonce entrante avec 
 Calculer instantanément la cote et l'écart de prix pour les bandes dessinées et comics par rapport au marché de l'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres).
 
 ### Fichiers clés
-- [`app/services/market_price_service.py`](app/services/market_price_service.py) : `get_comparison_summary(...)` et `format_market_details_card(...)` synchrones, lisant exclusivement le cache local PostgreSQL. `reference_price(cache)` fixe la règle de référence ; `has_usable_price(cache)` dit si une cote permet de comparer, `format_cote_lines(book)` et `PENDING_COTE_LINE` portent les lignes d'attente ; `_vinted_total_cents`, `_select_secondhand_partners` et `_series_books_lines` sont les helpers partagés (ADR-016).
+- [`app/services/market_price_service.py`](app/services/market_price_service.py) : `get_comparison_summary(...)` et `format_market_details_card(...)` synchrones, lisant exclusivement le cache local PostgreSQL. `reference_price(cache)` fixe la règle de référence ; `has_usable_price(cache)` dit si une cote permet de comparer, `format_cote_lines(book)` et `PENDING_COTE_LINE` portent les lignes d'attente ; `_vinted_total_cents`, `_select_secondhand_partners` et `_series_books_lines` sont les helpers partagés (ADR-016). La référence est le plus bas prix que nous puissions constater, borné par nos relevés (ADR-019).
 - [`app/services/book_market_pricing.py`](app/services/book_market_pricing.py) : **unique point de cotation**. `fetch_offers_for_book` interroge tous les fournisseurs avec l'ISBN validé **et** le titre ensemble (le repli par titre est ce qui permet de coter un ouvrage introuvable par code) ; `price_book_now` attend le résultat pour un écran, `schedule_book_pricing` part en arrière-plan avec une garde d'un seul vol par livre. Consumé par la création d'alerte, l'édition d'un ISBN, le bouton « 📊 Prix du marché » et le job planifié.
 - [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : règles pures de classification d'une offre (`condition_tier`, `is_merchant_excluded`, `is_comparable_secondhand_offer`). Source unique du filtre d'occasion, partagée par le registre de fournisseurs, Chasse-aux-livres et l'affichage (ADR-016).
 - [`app/services/tome_extractor.py`](app/services/tome_extractor.py) : Extraction déterministe des numéros de tomes, intégrales et lots (regex ultra-rapides sans I/O). Un lot dénombré sans numéros posés (« lot de 4 tomes ») remonte `lot_count` ; c'est `resolve_loaded_books` qui décide s'il peut le composer.
@@ -205,7 +205,7 @@ Persister les entités métier, les alertes, les annonces, le catalogue de livre
   - `book_market_cache.py` : cache de cote (`book_market_cache`). `market_price_snapshot.py` : snapshots (`market_price_snapshots`).
   - `bot_event.py` : Modèle `BotEvent` (suivi des interactions : faux positifs `listing_disliked`, clics).
   - `user.py` : Modèle `User` (identifiant Telegram, configuration).
-- [`alembic/versions/`](alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0004_alert_books_book_id_index`.
+- [`alembic/versions/`](alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0005_correct_historical_low_from_observations`.
 
 ### Invariants et contraintes
 - **Sessions isolées en tâche de fond** : Ne jamais réutiliser la session HTTP/API dans une coroutine d'arrière-plan (`safe_create_task`). Toujours ouvrir un nouveau contexte : `async with AsyncSessionLocal() as session:`.

@@ -211,7 +211,7 @@ def test_comparator_historical_low_when_status_unavailable():
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
-    assert "Cote d'occasion basée sur le prix bas constaté 1 an" in card
+    assert "Cote d'occasion basée sur le plus bas prix que nous avons pu constater" in card
 
 
 def test_comparator_single_book_series_fallback():

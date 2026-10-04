@@ -175,6 +175,14 @@ async def persist_market_result(
                 book_id,
                 existing.lowest_delivered_price_cents,
             )
+            # Un silence réseau n'empêche pas de réparer une cote surestimée :
+            # nos relevés sont déjà en base.
+            if existing.historical_low_1y_cents is not None:
+                existing.historical_low_1y_cents = (
+                    await repo.clamp_historical_low_by_observations(
+                        book_id, existing.historical_low_1y_cents
+                    )
+                )
             now = datetime.now(UTC)
             existing.checked_at = now
             existing.expires_at = now + timedelta(hours=CACHE_HOURS_RESILIENT_REFRESH)

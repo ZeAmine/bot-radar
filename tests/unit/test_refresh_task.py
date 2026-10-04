@@ -133,6 +133,7 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
     existing_cache = MagicMock()
     existing_cache.lowest_delivered_price_cents = 470
     existing_cache.comparison_status = ComparisonStatus.AVAILABLE
+    existing_cache.historical_low_1y_cents = 900
 
     with pytest.MonkeyPatch.context() as mp:
         mock_book_repo = MagicMock()
@@ -142,6 +143,8 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
         mock_market_repo.update_or_create_cache = AsyncMock()
+        # Un silence réseau n'empêche pas de borner une cote surestimée (ADR-019).
+        mock_market_repo.clamp_historical_low_by_observations = AsyncMock(return_value=500)
 
         mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
         mp.setattr(
@@ -156,6 +159,10 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
     assert stats["available"] == 1
     assert stats["unavailable"] == 0
     mock_market_repo.update_or_create_cache.assert_not_called()
+    mock_market_repo.clamp_historical_low_by_observations.assert_awaited_once_with(
+        mock_book.id, 900
+    )
+    assert existing_cache.historical_low_1y_cents == 500
     assert existing_cache.checked_at is not None
 
 

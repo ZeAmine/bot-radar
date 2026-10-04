@@ -6,9 +6,12 @@ l'alerte Telegram part avant toute requête) :
 - `get_comparison_summary` : la ligne compacte affichée sous l'annonce dans l'alerte ;
 - `format_market_details_card` : le panneau détaillé du bouton « 📊 Prix du marché ».
 
-Référence de prix, règle unique appliquée partout : le **prix le plus bas constaté
-sur 1 an** s'il est connu, sinon le **prix du marché du jour**. L'écart affiché
-compare toujours le total Vinted (article + protection + port) à cette référence.
+Référence de prix, règle unique appliquée partout : le **prix le plus bas que
+nous puissions constater** pour cet ouvrage s'il est connu, sinon le **prix du
+marché du jour**. Ce plus bas est borné par nos propres relevés : une cotation
+agrégateur supérieure à un prix livré que nous avons vu pour le même livre
+serait une cote fausse. L'écart affiché compare toujours le total Vinted
+(article + protection + port) à cette référence.
 """
 
 import html
@@ -175,7 +178,7 @@ def format_cote_lines(book: Book | None) -> list[str]:
     historical_cents = _positive(cache.historical_low_1y_cents)
     if historical_cents is not None:
         lines.append(
-            f"📉 <b>Prix bas constaté (1 an) :</b> {format_cents(historical_cents)}"
+            f"📉 <b>Prix bas constaté :</b> {format_cents(historical_cents)}"
         )
     return lines
 
@@ -520,7 +523,7 @@ class MarketPriceService:
         matched = _match_lot_books(books_in_series, lot_tomes or [])
         target_books = matched or books_in_series
 
-        lines = MarketPriceService._header("<b>Cote par tome (Min sur 1 an) :</b>")
+        lines = MarketPriceService._header("<b>Cote par tome (plus bas connu) :</b>")
         for book in _sort_series_books(target_books):
             price_cents, _ = reference_price(book.market_cache)
             if price_cents is None:
@@ -566,7 +569,10 @@ class MarketPriceService:
         if is_historical:
             lines.append(f"📉 Prix bas constaté : {format_cents(reference_cents)}")
             if not partners:
-                lines.append("<i>(Cote d'occasion basée sur le prix bas constaté 1 an)</i>")
+                lines.append(
+                    "<i>(Cote d'occasion basée sur le plus bas prix "
+                    "que nous avons pu constater)</i>"
+                )
 
         if partners:
             if is_historical:

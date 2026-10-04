@@ -63,11 +63,19 @@ def select_historical_low_cents(series_by_label: dict[str, float]) -> int | None
 
     Seuls « Très bon état + » et « Comme neuf + » comptent. Un plus bas
     « Bon état + » ou « D'occasion » est ignoré.
+
+    Tous les paliers retenus sont des occasions comparables — « Comme neuf »
+    vaut mieux que « Très bon » — : le plus bas constaté est donc le minimum de
+    ces séries, jamais la première d'entre elles : s'arrêter à la première
+    affichait une « cote » au-dessus d'un prix qu'un meilleur état avait déjà
+    atteint.
     """
-    for label in _HISTORICAL_LOW_LABELS:
-        if label in series_by_label:
-            return round(series_by_label[label] * 100)
-    return None
+    cents = [
+        round(series_by_label[label] * 100)
+        for label in _HISTORICAL_LOW_LABELS
+        if label in series_by_label
+    ]
+    return min(cents) if cents else None
 
 CHASSE_BROWSER_HEADERS = {
     "User-Agent": (

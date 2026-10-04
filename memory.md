@@ -7,7 +7,7 @@ Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs po
 ## Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-018, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-019, dette différée).
 
 ---
 
@@ -248,6 +248,20 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
 - **JSON IA.** Chaque module valide un modèle Pydantic dont les champs manquants prennent un défaut.
 - **SQL.** Les lectures encore dans les handlers sont passées aux repositories (`stats_repo`, `alert_repo`, `book_repo`, `autotune_repo`).
 - **Redis.** Le rate limiter et le FSM Telegram partagent le client de `app.core.redis`.
+
+### ADR-019 : Une cote « prix le plus bas constaté » bornée par nos propres relevés
+- **Contexte** : une alerte BD annonçait « Prix bas constaté : 22,90 € » pour *Dead Train*, un ouvrage que l'agrégateur lui-même affichait à 13 € et quelques. Deux défauts distincts se cumulaient.
+  1. **La règle de sélection** (`select_historical_low_cents`) renvoyait la **première** série d'état trouvée parmi `("Très bon état +", "Comme neuf +")` au lieu du **minimum** de ces séries. Or les deux paliers sont des occasions comparables (`is_very_good_or_better` accepte `like_new` **et** `very_good`) : un prix « Comme neuf » plus bas doit entrer dans le plus bas constaté. Le résultat était un « prix le plus bas » situé **au-dessus** d'un prix déjà constaté dans un état meilleur — une incohérence logique, pas une approximation.
+  2. **La valeur ne pouvait plus être corrigée.** `/rest/jcd` de Chasse-aux-livres ne répond plus depuis le 2026-09-11 (le site exige le jeton anti-bot ; `CHASSE_AUX_LIVRES_DUIH` est vide en production). 230 snapshots sur 2 721 portaient encore un historique 1 an, tous dans une fenêtre de 12 h. Depuis, chaque passe renvoie `None` et `update_or_create_cache` préserve l'ancien chiffre **en réécrivant `historical_low_at = now`** : une valeur de trois semaines se présentait comme vérifiée la veille.
+  - Contrôle en base : **9 livres** portaient une cote 1 an *supérieure* à un prix livré que nous avions nous-mêmes enregistré pour ce même livre — Dead Train 22,90 / 13,57, Carcajou 13,11 / 3,90, Train de nuit 14,52 / 5,92, Watership Down 23,99 / 18,22. Conséquence utilisateur : une annonce Vinted à 20,38 € était présentée « ✅ −2,52 € » alors que l'ouvrage s'écoulait 13,57 €.
+- **Décision** :
+  - **`select_historical_low_cents`** renvoie le minimum des séries dont le libellé est accepté. L'ordre des libellés ne change plus le résultat.
+  - **`MarketPriceRepository.clamp_historical_low_by_observations`** : à chaque écriture de cote, la valeur est bornée par le plus bas prix livré de nos snapshots comparables (`get_observed_low_cents`, offre vide `delivered_price_cents = 0` exclue). Le même bornage s'applique au chemin de résilence de `persist_market_result` : un silence réseau n'empêche pas de réparer une cote surestimée.
+  - **Le plancher corrige, il ne crée pas.** Sans cote préexistante, la référence reste le prix du marché du jour : sinon les 32 livres déjà relevés basculeraient en « prix bas constaté » pour leur seul prix du jour.
+  - **Migration `0005_correct_historical_low_from_observations`** : n'abaisse que, ne crée rien, idempotente. `downgrade` ne fait rien plutôt que de restaurer une valeur inconnue.
+  - **Libellés** : « Prix bas constaté (1 an) » devient « Prix bas constaté », et le panneau « Cote d'occasion basée sur le plus bas prix que nous avons pu constater ». La ligne d'alerte, elle, ne change pas.
+- **Raison** : une cote fausse fait manquer une vraie bonne affaire — c'est exactement ce que l'utilisateur a constaté. Un plancher cheap, local et monotone vaut mieux qu'un agrégateur tiers dont la série 1 an peut s'arrêter sans un seul signal.
+- **Conséquence assumée** : tant que `CHASSE_AUX_LIVRES_DUIH` reste vide, la série certifiée du site ne revient pas et la cote vient de nos relevés (rétention 90 j). La ligne n'affiche toujours aucune date : un chiffre sans date reste un chiffre sans date.
 
 ---
 

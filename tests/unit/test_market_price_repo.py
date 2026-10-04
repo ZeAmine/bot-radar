@@ -20,9 +20,10 @@ async def test_update_or_create_cache_never_uses_live_price_as_historical_low():
     session.add = MagicMock()
     repo = MarketPriceRepository(session)
 
-    # Simuler qu'aucun cache n'existe encore
+    # Simuler qu'aucun cache n'existe encore, et qu'aucun relevé ne l'atteste
     repo.get_cache_by_book_id = AsyncMock(return_value=None)
     repo.get_historical_low_1y = AsyncMock(return_value=None)
+    repo.get_observed_low_cents = AsyncMock(return_value=None)
 
     book_id = uuid.uuid4()
     cache = await repo.update_or_create_cache(
@@ -58,6 +59,7 @@ async def test_update_or_create_cache_preserves_existing_certified_historical_lo
         comparison_status=ComparisonStatus.AVAILABLE,
     )
     repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
+    repo.get_observed_low_cents = AsyncMock(return_value=None)
 
     # Nouvelle offre en direct à 21,89 € sans historique fourni
     cache = await repo.update_or_create_cache(
@@ -91,6 +93,7 @@ async def test_update_or_create_cache_updates_to_lower_certified_historical_low(
         comparison_status=ComparisonStatus.AVAILABLE,
     )
     repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
+    repo.get_observed_low_cents = AsyncMock(return_value=None)
 
     cache = await repo.update_or_create_cache(
         book_id=book_id,
@@ -122,3 +125,122 @@ async def test_get_historical_low_1y_reads_from_raw_payload():
 
     hist_low = await repo.get_historical_low_1y(uuid.uuid4())
     assert hist_low == 670
+
+
+@pytest.mark.asyncio
+async def test_update_or_create_cache_lowers_certified_low_to_our_own_observation():
+    """Une cote 1 an plus haute qu'un prix livre que nous avons releve est fausse.
+
+    Regression Dead Train : cote certifiee 22,90 EUR contre 13,57 EUR observes le
+    30/09. Le plancher prend le plus bas des deux, sans jamais exceeder la cote.
+    """
+    session = AsyncMock()
+    repo = MarketPriceRepository(session)
+
+    book_id = uuid.uuid4()
+    existing_cache = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=book_id,
+        lowest_delivered_price_cents=2063,
+        historical_low_1y_cents=2290,  # 22,90 EUR certifie par l'agregateur
+        historical_low_at=datetime.now(UTC),
+        comparison_status=ComparisonStatus.AVAILABLE,
+    )
+    repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
+    repo.get_observed_low_cents = AsyncMock(return_value=1357)  # 13,57 EUR vus
+
+    cache = await repo.update_or_create_cache(
+        book_id=book_id,
+        lowest_delivered_price_cents=2063,
+        best_provider_name="Momox",
+        best_source_url="https://example.com",
+        confidence=MatchConfidence.HIGH,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        historical_low_1y_cents=2290,
+    )
+
+    assert cache.historical_low_1y_cents == 1357
+
+
+@pytest.mark.asyncio
+async def test_update_or_create_cache_never_raises_the_low_above_observations():
+    """Un releve plus cher que la cote ne peut pas l'éclever : le plancher est un minimum."""
+    session = AsyncMock()
+    repo = MarketPriceRepository(session)
+
+    book_id = uuid.uuid4()
+    existing_cache = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=book_id,
+        lowest_delivered_price_cents=900,
+        historical_low_1y_cents=670,
+        historical_low_at=datetime.now(UTC),
+        comparison_status=ComparisonStatus.AVAILABLE,
+    )
+    repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
+    repo.get_observed_low_cents = AsyncMock(return_value=2189)
+
+    cache = await repo.update_or_create_cache(
+        book_id=book_id,
+        lowest_delivered_price_cents=2189,
+        best_provider_name="Momox",
+        best_source_url="https://example.com",
+        confidence=MatchConfidence.HIGH,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        historical_low_1y_cents=None,
+    )
+
+    assert cache.historical_low_1y_cents == 670
+
+
+@pytest.mark.asyncio
+async def test_update_or_create_cache_does_not_invent_a_low_from_observations_only():
+    """Sans cote preexistante, nos releves ne creent pas de reference.
+
+    Le plancher corrige une cote fausse, il n'en fabrique pas : sinon chaque livre
+    deja releve bascule en « prix bas constate » pour son seul prix du jour.
+    """
+    session = AsyncMock()
+    session.add = MagicMock()
+    repo = MarketPriceRepository(session)
+
+    book_id = uuid.uuid4()
+    repo.get_cache_by_book_id = AsyncMock(return_value=None)
+    repo.get_historical_low_1y = AsyncMock(return_value=None)
+    repo.get_observed_low_cents = AsyncMock(return_value=390)
+
+    cache = await repo.update_or_create_cache(
+        book_id=book_id,
+        lowest_delivered_price_cents=1311,
+        best_provider_name="Momox",
+        best_source_url="https://example.com",
+        confidence=MatchConfidence.HIGH,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        historical_low_1y_cents=None,
+    )
+
+    assert cache.historical_low_1y_cents is None
+
+
+@pytest.mark.asyncio
+async def test_get_observed_low_cents_reads_the_lowest_comparable_delivered_price():
+    """Le minimum porte sur le prix livre, et l'offre vide du fournisseur est exclue."""
+    session = AsyncMock()
+    repo = MarketPriceRepository(session)
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = 1357
+    session.execute = AsyncMock(return_value=result)
+
+    book_id = uuid.uuid4()
+    assert await repo.get_observed_low_cents(book_id) == 1357
+
+    stmt = session.execute.await_args.args[0]
+    sql = str(stmt)
+    assert "min(market_price_snapshots.delivered_price_cents)" in sql
+    assert "delivered_price_cents > " in sql
+    assert "is_comparable IS true" in sql
+
+    # Un agregat vide ne vaut pas un prix nul : la cote reste la sienne.
+    result.scalar_one_or_none.return_value = None
+    assert await repo.get_observed_low_cents(book_id) is None

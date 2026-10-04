@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import ComparisonStatus, MatchConfidence
@@ -79,6 +79,42 @@ class MarketPriceRepository:
         ]
         return min(hist_lows) if hist_lows else None
 
+    async def get_observed_low_cents(self, book_id: uuid.UUID) -> int | None:
+        """Plus bas prix livré que nos propres relevés attestent pour un livre.
+
+        Les relevés comparables conservés (90 jours, cf. `cleanup`) font autorité
+        sous une cotation d'agrégateur : une cote supérieure à un prix livré que
+        nous avons constaté pour ce même livre est une cote fausse, pas une cote
+        haute. L'offre vide émise quand aucune occasion n'est en stock
+        (`delivered_price_cents = 0`, « Occasion indisponible ») n'est pas un prix
+        et n'entre donc pas dans le minimum.
+        """
+        stmt = select(func.min(MarketPriceSnapshot.delivered_price_cents)).where(
+            MarketPriceSnapshot.book_id == book_id,
+            MarketPriceSnapshot.is_comparable.is_(True),
+            MarketPriceSnapshot.delivered_price_cents > 0,
+        )
+        result = await self.session.execute(stmt)
+        observed: int | None = result.scalar_one_or_none()
+        return observed if observed and observed > 0 else None
+
+    async def clamp_historical_low_by_observations(
+        self,
+        book_id: uuid.UUID,
+        low_cents: int,
+    ) -> int:
+        """Abaisse une cote sous le plus bas prix livré que nos relevés attestent.
+
+        Cette méthode ne crée jamais de référence : sans cote préexistante à
+        corriger, la référence reste le prix du marché du jour. Un plancher
+        appliqué dans ce sens ferait basculer des dizaines de livres en « prix
+        bas constaté » pour leur seul prix du jour.
+        """
+        observed = await self.get_observed_low_cents(book_id)
+        if observed is None:
+            return low_cents
+        return min(low_cents, observed)
+
     async def update_or_create_cache(
         self,
         book_id: uuid.UUID,
@@ -113,6 +149,13 @@ class MarketPriceRepository:
             # Si le fournisseur et le cache ont tous deux un historique certifié,
             # conserver le plus bas
             computed_hist_low = min(cache.historical_low_1y_cents, computed_hist_low)
+
+        # Plancher sur nos relevés : une cote 1 an plus haute qu'un prix livré
+        # que nous avons vu pour ce livre est une cote fausse.
+        if computed_hist_low is not None:
+            computed_hist_low = await self.clamp_historical_low_by_observations(
+                book_id, computed_hist_low
+            )
 
         # Ne JAMAIS inventer un historique bas à partir du prix du jour
         # (lowest_delivered_price_cents)

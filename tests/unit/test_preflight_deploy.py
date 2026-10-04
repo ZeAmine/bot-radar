@@ -65,7 +65,7 @@ def test_local_alembic_head_matches_the_repository():
     """La tête est déduite des fichiers, sans base : elle doit être la vraie."""
     head = pf.local_alembic_head()
 
-    assert head == "0004_alert_books_book_id_index"
+    assert head == "0005_correct_historical_low_from_observations"
 
     # `sys.executable`, pas `.venv/bin/python` : ce test tourne aussi dans le
     # worktree jetable de `check-history`, qui n'a pas de venv.
