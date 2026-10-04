@@ -266,9 +266,13 @@ async def audit(
             )
             continue
         if reponse.panne:
-            verdicts.append(
-                AlertVerdict(identity, unverified_reason=f"autorité muette : {reponse.panne}")
-            )
+            # `panne` l'emporte sur la notice : une réponse de repli obtenue après un
+            # silence de la BNF ne l'a pas remplacée, elle s'y ajoute. La dire
+            # « non vérifiée » empêche de lire une indisponibilité comme un refus.
+            motif = f"autorité muette : {reponse.panne}"
+            if reponse.notice is not None:
+                motif += " — notice de repli écartée : la BNF n'a pas tranché"
+            verdicts.append(AlertVerdict(identity, unverified_reason=motif))
             continue
         notice = reponse.notice
         verdicts.append(
@@ -288,9 +292,9 @@ def render(verdicts: Sequence[AlertVerdict], *, quiet: bool = False) -> str:
     devant chacune ferait croire à autant d'alertes que de divergences.
 
     Une alerte que seule OpenLibrary a pu vérifier ne reçoit jamais le marqueur `ok` :
-    elle est comptée à part et le verdict « conforme » est suspendu tant qu'elle existe.
-    Un ISBN que personne ne connaît n'entre pas dans ce décompte : il n'y a pas eu de
-    réponse à remplacer, et il est déjà signalé comme anomalie.
+    elle est comptée à part. « Conforme » signifie « chaque alerte confirmée par la
+    BNF » : un verdict sans autorité ne vaut pas davantage qu'un repli, même s'il
+    n'arrive pas par le chemin d'`audit`.
     """
     lines: list[str] = []
     anomalies = unverified = replis = 0
@@ -349,7 +353,9 @@ def render(verdicts: Sequence[AlertVerdict], *, quiet: bool = False) -> str:
             f"{YELLOW}{unverified} alerte(s) non vérifiées "
             f"(réseau ou autorité indisponible).{RESET}"
         )
-    if not anomalies and not unverified and not replis:
+    # `repls` ne suffit pas à characterizes : un verdict sans autorité n'y est pas
+    # compté, et il n'est pas davantage une confirmation.
+    if not anomalies and not unverified and all(v.confirmee_par_la_bnf for v in verdicts):
         lines.append(f"{GREEN}{len(verdicts)} alerte(s) conforme(s) aux notices.{RESET}")
     return "\n".join(lines)
 

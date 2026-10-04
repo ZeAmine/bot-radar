@@ -192,7 +192,11 @@ class IsbnLookup:
     - `notice` et `panne` vides : l'autorité connaît ce code et dit qu'il n'en connaît
       aucun — une absence de preuve, qui n'interdit rien ;
     - `panne` renseignée : personne n'a su répondre. Un appelant qui accuse ici se
-      trompe, car il n'a aucune preuve.
+      trompe, car il n'a aucune preuve ;
+    - `notice` **et** `panne` : la BNF n'a pas su répondre et une autorité secondaire a
+      fourni une notice. Elle ne remplace pas l'autorité : sans `panne`, une panne et un
+      refus de la BNF donneraient le même verdict, et l'appelant lirait une panne là
+      où il y en a une.
     """
 
     notice: BookMetadata | None = None
@@ -495,7 +499,10 @@ class BookMetadataService:
 
         fallback = await self._openlibrary_works({"isbn": clean_isbn})
         if fallback:
-            return IsbnLookup(notice=fallback[0].meta)
+            # `panne` accompagne la notice de repli : la BNF a peut-être simplement
+            # ignoré cet ISBN, et c'est alors un repli légitime. Sur une panne, non,
+            # et l'appelant doit voir laquelle des deux il a sous les yeux.
+            return IsbnLookup(notice=fallback[0].meta, panne=panne)
         # OpenLibrary n'a rien donné non plus : sans `panne`, ce serait un verdict.
         return IsbnLookup(panne=panne)
 

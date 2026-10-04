@@ -211,9 +211,11 @@ class _FakeCatalogueClient:
         bnf_empty: bool = False,
         openlibrary_docs: list[dict[str, object]] | None = None,
         openlibrary_status: int = 200,
+        bnf_panne_sur: str | None = None,
     ) -> None:
         self.queries: list[str] = []
         self.bnf_empty = bnf_empty
+        self.bnf_panne_sur = bnf_panne_sur
         self.openlibrary_docs = openlibrary_docs
         self.openlibrary_status = openlibrary_status
 
@@ -237,6 +239,9 @@ class _FakeCatalogueClient:
                     else [OPENLIBRARY_DOC]
                 )
             return _FakeResponse(payload={"numFound": len(docs), "docs": docs})
+
+        if self.bnf_panne_sur and self.bnf_panne_sur in url:
+            raise TimeoutError("délai dépassé")
 
         if self.bnf_empty:
             return _FakeResponse(SRU_HEADER.format(count=0, records="").encode("utf-8"))
@@ -651,6 +656,55 @@ async def test_verdict_notice_manquee_quand_une_seule_requete_echoue():
     assert verdict.panne is not None
     assert "TimeoutError" in verdict.panne, "le motif de panne doit être transmis"
     assert verdict.a_repondu is False
+
+
+@pytest.mark.asyncio
+async def test_verdict_conserve_la_panne_meme_si_le_repli_repond():
+    """Panne BNF puis OpenLibrary : la notice n'est pas un verdict, la panne l'accompagne.
+
+    Sans `panne`, ce cas était indiscernable d'une BNF qui répond « je ne connais pas
+    cet ISBN » : deux verdicts strictement identiques, dont le rapport tirait la même
+    conclusion — un repli légitime, alors que personne n'avait tranché.
+    """
+    client = _FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
+    service = BookMetadataService(http_client=client)
+
+    verdict = await service.lookup_by_isbn_verdict("9782369903086")
+
+    assert verdict.notice is not None, "le repli existe, il ne tranche pas"
+    assert verdict.notice.source == "openlibrary"
+    assert verdict.panne is not None, "la panne ne doit pas disparaître derrière le repli"
+    assert "TimeoutError" in verdict.panne
+    assert verdict.a_repondu is False
+
+
+@pytest.mark.asyncio
+async def test_verdict_repli_sans_panne_quand_la_bnf_a_repondu():
+    """Le contraste exact : ici la BNF a répondu, le repli est un repli."""
+    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
+    service = BookMetadataService(http_client=client)
+
+    verdict = await service.lookup_by_isbn_verdict("9782369903086")
+
+    assert verdict.notice is not None
+    assert verdict.notice.source == "openlibrary"
+    assert verdict.panne is None
+    assert verdict.a_repondu is True
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_isbn_rend_la_notice_meme_apres_une_panne():
+    """La façade ne bouge pas : `/add` et `/edit` continuent de voir le repli."""
+    service = BookMetadataService(
+        http_client=_FakeCatalogueClient(
+            bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC]
+        )
+    )
+
+    meta = await service.lookup_by_isbn("9782369903086")
+
+    assert meta is not None
+    assert meta.source == "openlibrary"
 
 
 @pytest.mark.asyncio
