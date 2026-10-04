@@ -475,7 +475,9 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
     - elle le rattache à un autre ouvrage : la correction est refusée, en nommant le
       vrai titre — une contradiction est une preuve, pas un silence ;
     - personne ne connaît ce code, trop récent pour être catalogué : l'ISBN saisi est
-      gardé et l'identité précédente est vidée, car rien ne la rattache encore à cet ISBN.
+      gardé et l'identité précédente est vidée, car rien ne la rattache encore à cet ISBN ;
+    - aucune autorité n'a répondu, alors qu'un repli avait répondu à leur place : même
+      conservation, et le motif dit que la vérification est à reprendre plus tard.
     """
     title = str(draft.get("name") or "").strip()
     service = BookMetadataService()
@@ -512,12 +514,19 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
             }
         )
 
+    note = "ISBN saisi, non confirmé par la BNF"
+    if verdict.panne:
+        # Le motif ne va pas au brouillon — il est technique ; l'utilisateur, lui, doit
+        # savoir qu'une nouvelle tentative a du sens, et qu'aucune autorité n'a tranché.
+        logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", isbn, verdict.panne)
+        note = "ISBN saisi, non confirmé : la BNF n'a pas pu être interrogée, réessaie plus tard"
+
     return IsbnRealignment(
         updates={
             **KEYWORDS_FROM_PREVIOUS_WORK,
             "isbn": isbn,
             "is_series": False,
-            "isbn_note": "ISBN saisi, non confirmé par la BNF",
+            "isbn_note": note,
             "author": None,
             "publisher": None,
             "edition_alternatives": [],
