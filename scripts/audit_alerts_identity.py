@@ -49,6 +49,7 @@ from app.services.book_metadata_service import (
     TITLE_SIMILARITY_MIN,
     BookMetadata,
     BookMetadataService,
+    IsbnLookup,
     same_author,
     title_similarity,
 )
@@ -177,17 +178,18 @@ class AlertVerdict:
 
 async def audit(
     identities: Sequence[AlertIdentity],
-    lookup: Callable[[str], Awaitable[BookMetadata | None]],
+    lookup: Callable[[str], Awaitable[IsbnLookup]],
     *,
     delay: float = BNF_PAUSE_SECONDS,
     pause: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> list[AlertVerdict]:
-    """Interroge la BNF notice par notice et applique la règle à chaque réponse.
+    """Interroge l'autorité notice par notice et applique la règle à chaque verdict.
 
-    Une exception de transport met l'alerte de côté au lieu de la compter comme
-    fausse anomalie : une BNF injoignable ne prouve pas qu'un ISBN est faux, elle
-    prouve seulement qu'on n'a pas su. Le rapport distingue les deux, et c'est la
-    seule chose qui rend un audit crédible.
+    Deux issues, une seule exigence : ni une panne ni une requête isolée qui échoue
+    ne peuvent devenir une accusation. `IsbnLookup.panne` couvre la seconde — la BNF
+    répond à la sonde globale mais pas à cette notice — et l'exception couvre une
+    panne remontée jusqu'ici. Dans les deux cas l'alerte est mise de côté, et le
+    rapport le dit. C'est la seule chose qui rend un audit crédible.
     """
     verdicts: list[AlertVerdict] = []
     asked = False
@@ -196,13 +198,21 @@ async def audit(
             await pause(delay)
         asked = True
         try:
-            notice = await lookup(identity.isbn)
+            reponse = await lookup(identity.isbn)
         except Exception as exc:  # noqa: BLE001 — une panne réseau n'est pas un verdict
+            motif = f"{type(exc).__name__}: {exc}"
             verdicts.append(
-                AlertVerdict(identity, unverified_reason=f"{type(exc).__name__}: {exc}")
+                AlertVerdict(identity, unverified_reason=f"autorité muette : {motif}")
             )
             continue
-        verdicts.append(AlertVerdict(identity, anomalies=inspect_identity(identity, notice)))
+        if reponse.panne:
+            verdicts.append(
+                AlertVerdict(identity, unverified_reason=f"autorité muette : {reponse.panne}")
+            )
+            continue
+        verdicts.append(
+            AlertVerdict(identity, anomalies=inspect_identity(identity, reponse.notice))
+        )
     return verdicts
 
 
@@ -344,7 +354,7 @@ async def run(args: argparse.Namespace) -> int:
             # été produit, pas parce qu'il n'y avait rien à trouver.
             print(f"{RED}La BNF ne répond pas : aucune alerte n'a pu être vérifiée.{RESET}")
             return EXIT_ERROR
-        verdicts = await audit(identities, service.lookup_by_isbn)
+        verdicts = await audit(identities, service.lookup_by_isbn_verdict)
     finally:
         await close_shared_http_client()
 

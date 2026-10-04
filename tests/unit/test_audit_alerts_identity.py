@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import audit_alerts_identity as audit  # noqa: E402
 
-from app.services.book_metadata_service import BookMetadata  # noqa: E402
+from app.services.book_metadata_service import BookMetadata, IsbnLookup  # noqa: E402
 
 ISBN_BD = "9782369903062"  # La couleur des choses, Martin Panchaud, Çà et là
 ISBN_HOMONYME = "9782214080627"  # Les Enfants perdus, l'homonyme de 1989
@@ -127,13 +127,40 @@ def test_audit_et_matcher_emploient_la_meme_definition_de_variante():
 async def test_une_panne_de_reseau_met_l_alerte_de_cote():
     """Une BNF injoignable ne prouve pas qu'un ISBN est faux : absence de preuve, pas preuve."""
 
-    async def lookup(_isbn: str) -> BookMetadata:
+    async def lookup(_isbn: str) -> IsbnLookup:
         raise TimeoutError("délai dépassé")
 
     verdict = (await audit.audit([_alerte()], lookup))[0]
 
     assert verdict.anomalies == [], "une panne ne doit produire aucune anomalie"
     assert "TimeoutError" in (verdict.unverified_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_une_notice_manquee_ne_vaut_pas_isbn_inconnu():
+    """Une requête isolée qui échoue met l'alerte de côté ; seul le silence accuse.
+
+    C'est le défaut que la panne globale ne couvrait pas : la sonde dit que la BNF
+    répond, donc l'audit continuait, et `None` devenait `isbn_inconnu`.
+    """
+
+    async def lookup(_isbn: str) -> IsbnLookup:
+        return IsbnLookup(panne="TimeoutError: délai dépassé")
+
+    verdict = (await audit.audit([_alerte()], lookup))[0]
+
+    assert verdict.anomalies == [], "une notice manquée n'autorise aucune accusation"
+    assert verdict.unverified_reason == "autorité muette : TimeoutError: délai dépassé"
+
+
+def test_le_rapport_distingue_une_alerte_impossible_dune_alerte_saine():
+    """Le statut doit se lire : « non vérifiée » n'est pas « conforme », ni « en faute »."""
+    muette = audit.AlertVerdict(_alerte(), unverified_reason="autorité muette : statut HTTP 503")
+    rapport = audit.render([muette, audit.AlertVerdict(_alerte())])
+
+    assert "autorité muette : statut HTTP 503" in rapport
+    assert "non vérifiée" in rapport
+    assert "conforme" not in rapport, "une alerte non vérifiée ne valide pas le rapport"
 
 
 @pytest.mark.asyncio
@@ -144,8 +171,8 @@ async def test_la_pause_separe_deux_notices_et_ne_les_precede_pas():
     async def note(delay: float) -> None:
         pauses.append(delay)
 
-    async def lookup(_isbn: str) -> BookMetadata:
-        return NOTICE_BD
+    async def lookup(_isbn: str) -> IsbnLookup:
+        return IsbnLookup(notice=NOTICE_BD)
 
     await audit.audit([_alerte()], lookup, pause=note)
     assert pauses == [], "une seule notice, aucune pause"
@@ -218,11 +245,8 @@ class _Moteur:
     def __init__(self, notice: BookMetadata | None) -> None:
         self.notice = notice
 
-    async def lookup_by_isbn(self, _isbn: str) -> BookMetadata | None:
-        return self.notice
-
-    async def close(self) -> None:
-        return None
+    async def lookup_by_isbn_verdict(self, _isbn: str) -> IsbnLookup:
+        return IsbnLookup(notice=self.notice)
 
 
 def _joignable(vrai: bool):
@@ -287,7 +311,7 @@ async def test_une_autorite_muette_ne_produit_aucune_anomalie(monkeypatch, capsy
     monkeypatch.setattr(audit, "bnf_joignable", _joignable(False))
 
     class Interdit:
-        async def lookup_by_isbn(self, _isbn: str) -> None:
+        async def lookup_by_isbn_verdict(self, _isbn: str) -> IsbnLookup:
             raise AssertionError("aucune notice ne doit être demandée si l'autorité est muette")
 
     monkeypatch.setattr(audit, "BookMetadataService", lambda: Interdit())
