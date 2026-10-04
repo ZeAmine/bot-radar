@@ -99,12 +99,23 @@ async def update_vinted_session(
 
 @router.get("/chasse/session")
 async def get_chasse_session_status() -> dict[str, Any]:
-    """État du jeton Chasse-aux-livres, sans la valeur elle-même."""
+    """État du jeton Chasse-aux-livres, sans la valeur elle-même.
+
+    `source` dit d'où vient le jeton *effectivement utilisé*, pas d'où il pourrait
+    venir : aucun jeton se lit `None`, jamais « redis ». Dire « redis » pour une
+    session absente enverrait chercher une clé qui n'existe pas.
+    """
     token = await resolve_session_token()
+    if settings.CHASSE_AUX_LIVRES_DUIH:
+        source: str | None = "env"
+    elif token:
+        source = "redis"
+    else:
+        source = None
     return {
         "has_token": bool(token),
         "token_length": len(token),
-        "source": "env" if settings.CHASSE_AUX_LIVRES_DUIH else "redis",
+        "source": source,
     }
 
 

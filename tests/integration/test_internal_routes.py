@@ -122,8 +122,29 @@ async def test_chasse_session_never_echoes_the_token(
     assert "jeton-ultra-secret" not in status.text
     assert status.json()["has_token"] is True
     assert status.json()["token_length"] > 0
+    assert status.json()["source"] == "redis"
     # Le round-trip est réel : c'est ce que relira le provider à la passe suivante.
     assert list(fake_redis.values()) == ["jeton-ultra-secret-0123456789"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_redis")
+async def test_chasse_session_without_token_names_no_source(
+    internal_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Aucun jeton se lit « aucune source », jamais « redis ».
+
+    Dire d'où viendrait un jeton inexistant enverrait chercher une clé absente au
+    lieu de dire qu'il faut capturer le jeton dans un navigateur.
+    """
+    # L'environnement local ne doit pas décider du résultat de ce test.
+    monkeypatch.setattr(settings, "CHASSE_AUX_LIVRES_DUIH", "")
+
+    res = await internal_client.get("/api/v1/internal/chasse/session")
+
+    assert res.status_code == 200
+    assert res.json() == {"has_token": False, "token_length": 0, "source": None}
 
 
 @pytest.mark.asyncio
