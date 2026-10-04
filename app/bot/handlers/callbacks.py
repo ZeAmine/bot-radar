@@ -20,10 +20,14 @@ from app.db.repositories.autotune_repo import record_listing_dislike
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
-from app.providers.base import extract_best_historical_low
 from app.services.ai.modules.negotiation import negotiation_module
 from app.services.book_catalog_service import BookCatalogService
-from app.services.market_price_service import MarketPriceService, clean_tome_display_title
+from app.services.book_market_pricing import price_book_now
+from app.services.market_price_service import (
+    MarketPriceService,
+    clean_tome_display_title,
+    has_usable_price,
+)
 
 logger = logging.getLogger(__name__)
 router = Router(name="callbacks_router")
@@ -126,63 +130,35 @@ async def _show_market_details(
                 books_in_series.append(book)
             target_isbn = meta.isbn13
 
-    has_valid_price = (
-        book is not None
-        and book.market_cache is not None
-        and (
-            book.market_cache.lowest_delivered_price_cents is not None
-            or book.market_cache.historical_low_1y_cents is not None
-        )
-    )
+    has_valid_price = book is not None and has_usable_price(book.market_cache)
 
     # Si le livre ou le cache de prix est absent, tenter un rafraîchissement direct
     if (book and not has_valid_price) or (not book and not books_in_series):
         try:
-            from app.core.constants import ComparisonStatus
-            from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
-
-            provider = ChasseAuxLivresProvider(timeout_seconds=6.0)
             fallback_title = alert.name if alert else listing.title
-            offers = await provider.get_offers(isbn13=target_isbn, title=fallback_title)
-
-            if offers:
-                best = offers[0]
-                best_hist = extract_best_historical_low(offers)
-
-                catalog_service = BookCatalogService(db_session)
-                if not book:
-                    book = await catalog_service.add_book(
-                        title=fallback_title,
-                        isbn13=target_isbn,
+            catalog_service = BookCatalogService(db_session)
+            if not book:
+                # La recherche se fait sur le nom de l'alerte, qui est aussi le titre
+                # retenu pour la fiche : sans ISBN, c'est ce qui fait converger deux
+                # ouvertures du panneau vers le même livre au lieu d'en créer un par
+                # clic.
+                identified, _ = await catalog_service.identify_book(
+                    isbn13=target_isbn,
+                    title=fallback_title,
+                )
+                book = identified or await catalog_service.add_book(
+                    title=fallback_title,
+                    isbn13=target_isbn,
+                )
+                if alert:
+                    await BookRepository(db_session).link_alert_to_book(
+                        alert_id=alert.id, book_id=book.id
                     )
-                    if alert:
-                        await BookRepository(db_session).link_alert_to_book(
-                            alert_id=alert.id, book_id=book.id
-                        )
-                market_repo = MarketPriceRepository(db_session)
-                await market_repo.save_snapshot(book.id, best)
-
-                status_to_set = (
-                    ComparisonStatus.AVAILABLE
-                    if (best.delivered_price_cents > 0 and best.is_available)
-                    else ComparisonStatus.UNAVAILABLE
-                )
-                lowest_price = (
-                    best.delivered_price_cents if best.delivered_price_cents > 0 else None
-                )
-
-                cache = await market_repo.update_or_create_cache(
-                    book_id=book.id,
-                    lowest_delivered_price_cents=lowest_price,
-                    best_provider_name=best.provider_name if lowest_price else None,
-                    best_source_url=best.source_url,
-                    confidence=best.confidence,
-                    comparison_status=status_to_set,
-                    cache_duration_hours=24,
-                    historical_low_1y_cents=best_hist,
-                )
+            # Le livre doit être écrit avant que la cotation ne lise sa session.
+            await db_session.commit()
+            cache = await price_book_now(book.id, reason="market_button")
+            if cache is not None:
                 book.market_cache = cache
-                await db_session.commit()
         except Exception as exc:
             logger.debug(
                 "Rafraîchissement direct du marché ignoré pour l'annonce %s : %s",

@@ -73,9 +73,10 @@ Comparer en quelques microsecondes en mémoire CPU chaque annonce entrante avec 
 Calculer instantanément la cote et l'écart de prix pour les bandes dessinées et comics par rapport au marché de l'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres).
 
 ### Fichiers clés
-- [`app/services/market_price_service.py`](app/services/market_price_service.py) : `get_comparison_summary(...)` et `format_market_details_card(...)` synchrones, lisant exclusivement le cache local PostgreSQL. `reference_price(cache)` fixe la règle de référence ; `_vinted_total_cents`, `_select_secondhand_partners` et `_series_books_lines` sont les helpers partagés (ADR-016).
+- [`app/services/market_price_service.py`](app/services/market_price_service.py) : `get_comparison_summary(...)` et `format_market_details_card(...)` synchrones, lisant exclusivement le cache local PostgreSQL. `reference_price(cache)` fixe la règle de référence ; `has_usable_price(cache)` dit si une cote permet de comparer, `format_cote_lines(book)` et `PENDING_COTE_LINE` portent les lignes d'attente ; `_vinted_total_cents`, `_select_secondhand_partners` et `_series_books_lines` sont les helpers partagés (ADR-016).
+- [`app/services/book_market_pricing.py`](app/services/book_market_pricing.py) : **unique point de cotation**. `fetch_offers_for_book` interroge tous les fournisseurs avec l'ISBN validé **et** le titre ensemble (le repli par titre est ce qui permet de coter un ouvrage introuvable par code) ; `price_book_now` attend le résultat pour un écran, `schedule_book_pricing` part en arrière-plan avec une garde d'un seul vol par livre. Consumé par la création d'alerte, l'édition d'un ISBN, le bouton « 📊 Prix du marché » et le job planifié.
 - [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : règles pures de classification d'une offre (`condition_tier`, `is_merchant_excluded`, `is_comparable_secondhand_offer`). Source unique du filtre d'occasion, partagée par le registre de fournisseurs, Chasse-aux-livres et l'affichage (ADR-016).
-- [`app/services/tome_extractor.py`](app/services/tome_extractor.py) : Extraction déterministe des numéros de tomes, intégrales et lots (regex ultra-rapides sans I/O).
+- [`app/services/tome_extractor.py`](app/services/tome_extractor.py) : Extraction déterministe des numéros de tomes, intégrales et lots (regex ultra-rapides sans I/O). Un lot dénombré sans numéros posés (« lot de 4 tomes ») remonte `lot_count` ; c'est `resolve_loaded_books` qui décide s'il peut le composer.
 - [`app/services/book_catalog_service.py`](app/services/book_catalog_service.py) : Association d'une alerte à une série ou un livre précis.
 - [`app/services/book_metadata_service.py`](app/services/book_metadata_service.py) : **Autorité ISBN** du projet — BNF en source primaire, OpenLibrary en repli (`_openlibrary_works`, confiance `MEDIUM`, jamais en override). `resolve_for_alert(titre, auteur)` (notice de référence + éditions alternatives), `verify_isbn(isbn, titre)` (confirme le couple ISBN ↔ œuvre), `title_similarity` / `same_author` (ADR-014), `BookResolution.editions()` (éditions concurrentes, ADR-017), `format_edition_fragments` (condensation d'une notice BNF en « 224 p. · 24 cm »).
 - [`app/providers/`](app/providers/) : Clients HTTP pour les sources de marché :
@@ -94,6 +95,7 @@ Calculer instantanément la cote et l'écart de prix pour les bandes dessinées 
   ✅ Écart : -3,50 €
   ```
 - **Zéro faux positif de cotation** : une offre neuve ou en état déclaré inférieur à « Très bon » n'entre jamais dans une cote ; un ISBN invalide n'est jamais utilisé pour interroger un fournisseur ; un lot n'est cumulé que sur les tomes appariés, la couverture étant annoncée (ex: `Lot, 2/3 tomes`).
+- **Lot dénombré** : quand le vendeur donne un compte et aucun numéro (« lot de 4 tomes »), `_resolve_counted_lot` ne compose le lot que si la série compte exactement ce nombre de tomes identifiables, sans doublon d'édition. La composition est alors marquée `composition_inferred` et l'alerte l'affiche comme telle (`Lot de 4 tomes, composition déduite`) : une déduction ne doit jamais se lire comme un inventaire énoncé par le vendeur.
 - **Tome concerné en gras** : Dans les listes d'autres tomes d'une série, le tome ciblé est mis en évidence en gras. Les tomes sans cote disponible sont masqués.
 
 ---
@@ -217,7 +219,7 @@ Orchestrer le rafraîchissement périodique des cotes du marché et le nettoyage
 
 ### Fichiers clés
 - [`app/tasks/scheduler.py`](app/tasks/scheduler.py) : Configuration APScheduler unifiée.
-- [`app/tasks/refresh_book_prices.py`](app/tasks/refresh_book_prices.py) : Job à **07:00** et **19:00**, plus un lot incrémental à **:15** et **:45** (Europe/Paris).
+- [`app/tasks/refresh_book_prices.py`](app/tasks/refresh_book_prices.py) : Job à **07:00** et **19:00**, plus un lot incrémental à **:15** et **:45** (Europe/Paris). Il ne fait qu'ordonner les vagues : la collecte et la consolidation viennent de [`app/services/book_market_pricing.py`](app/services/book_market_pricing.py), le même chemin que la création d'une alerte.
 - [`app/tasks/cleanup.py`](app/tasks/cleanup.py) : Job nocturne à **03:30** purgeant les annonces obsolètes et les vieux snapshots.
 
 ### Invariants et contraintes

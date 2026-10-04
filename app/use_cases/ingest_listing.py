@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.bot_instance import bot as default_bot
 from app.core.constants import CategorySlug
 from app.core.tasks import safe_create_task
+from app.db.models.book import Book
 from app.db.models.bot_event import BotEvent
 from app.db.models.listing import Listing
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
@@ -22,54 +23,15 @@ from app.schemas.listing import (
     ListingMatchItem,
 )
 from app.services.book_catalog_service import BookCatalogService
-from app.services.market_price_service import MarketPriceService
+from app.services.book_market_pricing import schedule_book_pricing
+from app.services.market_price_service import (
+    PENDING_COTE_LINE,
+    MarketPriceService,
+    has_usable_price,
+)
 from app.services.telegram_service import send_listing_alert
 
 logger = logging.getLogger("radar.use_cases.ingest_listing")
-
-
-async def _prefetch_book_market_cache(book_id: uuid.UUID, isbn13: str | None, title: str) -> None:
-    """Préchauffe le cache de marché pour le livre nouvellement associé."""
-    from app.core.constants import ComparisonStatus
-    from app.db.repositories.market_price_repo import MarketPriceRepository
-    from app.db.session import AsyncSessionLocal
-    from app.providers.base import extract_best_historical_low
-    from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
-
-    try:
-        provider = ChasseAuxLivresProvider(timeout_seconds=8.0)
-        offers = await provider.get_offers(isbn13=isbn13, title=title)
-        if offers:
-            best = offers[0]
-            best_hist = extract_best_historical_low(offers)
-
-            async with AsyncSessionLocal() as session:
-                market_repo = MarketPriceRepository(session)
-                await market_repo.save_snapshot(book_id, best)
-                status_to_set = (
-                    ComparisonStatus.AVAILABLE
-                    if (best.delivered_price_cents > 0 and best.is_available)
-                    else ComparisonStatus.UNAVAILABLE
-                )
-                lowest_price = (
-                    best.delivered_price_cents if best.delivered_price_cents > 0 else None
-                )
-                await market_repo.update_or_create_cache(
-                    book_id=book_id,
-                    lowest_delivered_price_cents=lowest_price,
-                    best_provider_name=best.provider_name if lowest_price else None,
-                    best_source_url=best.source_url,
-                    confidence=best.confidence,
-                    comparison_status=status_to_set,
-                    cache_duration_hours=24,
-                    historical_low_1y_cents=best_hist,
-                )
-                await session.commit()
-                logger.info(
-                    "Cache de prix préchauffé en tâche de fond pour %s (%s).", book_id, title
-                )
-    except Exception as exc:
-        logger.debug("Échec du préchauffage du cache de prix pour %s : %s", book_id, exc)
 
 
 async def _link_book_from_bnf(title: str, alert_id: uuid.UUID) -> None:
@@ -82,8 +44,6 @@ async def _link_book_from_bnf(title: str, alert_id: uuid.UUID) -> None:
         if not meta or not meta.isbn13:
             return
         book_id_val: uuid.UUID | None = None
-        book_isbn_val: str | None = None
-        book_title_val: str = title
         async with AsyncSessionLocal() as session:
             book_repo = BookRepository(session)
             catalog = BookCatalogService(session)
@@ -98,15 +58,12 @@ async def _link_book_from_bnf(title: str, alert_id: uuid.UUID) -> None:
             if book:
                 await book_repo.link_alert_to_book(alert_id=alert_id, book_id=book.id)
                 book_id_val = book.id
-                book_isbn_val = book.isbn13
-                book_title_val = book.title
             await session.commit()
 
         if book_id_val:
-            safe_create_task(
-                _prefetch_book_market_cache(book_id_val, book_isbn_val, book_title_val),
-                name=f"prefetch_market_{book_id_val}",
-            )
+            # La cote part en arrière-plan : c'est elle qui fera apparaître la ligne
+            # de prix sur les alertes suivantes de cet ouvrage.
+            schedule_book_pricing(book_id_val, reason="bnf_link")
     except Exception as exc:
         logger.warning("Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc)
 
@@ -114,14 +71,18 @@ async def _link_book_from_bnf(title: str, alert_id: uuid.UUID) -> None:
 def comparison_line_from_loaded_books(
     listing: Listing,
     alert: Any,
-) -> tuple[str | None, bool]:
-    """Cote synchrone depuis les livres déjà chargés. False si le catalogue est vide."""
+) -> tuple[str | None, bool, Book | None]:
+    """Cote synchrone depuis les livres déjà chargés. False si le catalogue est vide.
+
+    Le livre résolu est rendu avec la ligne : c'est lui qui sera coté en arrière-plan
+    si sa cote est encore inconnue, une fois l'alerte partie.
+    """
     links = getattr(alert, "alert_books", None)
     books = []
     if isinstance(links, list):
         books = [link.book for link in links if getattr(link, "book", None) is not None]
     if not books:
-        return None, False
+        return None, False, None
     book, series, tome_result = resolve_loaded_books(
         alert_name=alert.name,
         listing_title=listing.title,
@@ -134,7 +95,16 @@ def comparison_line_from_loaded_books(
         books_in_series=series,
         tome_result=tome_result,
     )
-    return line, True
+    return line or _pending_cote_line(book), True, book
+
+
+def _pending_cote_line(book: Book | None) -> str | None:
+    """Ligne d'attente quand un livre est identifié mais pas encore côté.
+
+    Le silence faisait croire à l'absence de prix. Le livre, lui, n'est cote qu'en
+    arrière-plan : l'alerte ne doit pas attendre un marchand.
+    """
+    return PENDING_COTE_LINE if book is not None else None
 
 
 async def _link_bd_catalog_background(
@@ -186,6 +156,10 @@ def _get_send_listing_alert() -> Any:
     return send_listing_alert
 
 
+# Alerte à notifier, ligne de cote, état du catalogue et livre résolu.
+PendingSend = tuple[Any, Any, str | None, bool, Book | None]
+
+
 class ProcessListingUseCase:
     """Orchestre la déduplication, le matching, la comparaison de prix et les alertes."""
 
@@ -221,7 +195,7 @@ class ProcessListingUseCase:
             is_duplicate = False
 
         active_alerts = await self.listing_repo.get_active_alerts_by_category(payload.category_slug)
-        pending_sends: list[tuple[Any, Any, str | None, bool]] = []
+        pending_sends: list[PendingSend] = []
         for alert in active_alerts:
             match_result = evaluate_listing_against_alert(
                 alert=alert,
@@ -237,13 +211,18 @@ class ProcessListingUseCase:
                 continue
             market_line = None
             catalog_ready = False
+            resolved_book: Book | None = None
             if listing.category_slug == CategorySlug.BD_COMICS.value:
-                market_line, catalog_ready = comparison_line_from_loaded_books(listing, alert)
+                market_line, catalog_ready, resolved_book = comparison_line_from_loaded_books(
+                    listing, alert
+                )
                 if not catalog_ready:
-                    market_line, catalog_ready = await self._comparison_from_catalog_isbn(
-                        listing, alert
+                    market_line, catalog_ready, resolved_book = (
+                        await self._comparison_from_catalog_isbn(listing, alert)
                     )
-            pending_sends.append((alert, match_result, market_line, catalog_ready))
+            pending_sends.append(
+                (alert, match_result, market_line, catalog_ready, resolved_book)
+            )
 
         if is_duplicate and not pending_sends and not pending_ids:
             return ListingIngestResponse(
@@ -253,7 +232,7 @@ class ProcessListingUseCase:
                 matches=[],
             )
 
-        for alert, match_result, _line, _ready in pending_sends:
+        for alert, match_result, _line, _ready, _book in pending_sends:
             if alert.id in pending_ids:
                 continue
             if not _alert_has_telegram_chat(alert):
@@ -268,7 +247,7 @@ class ProcessListingUseCase:
             )
 
         actionable_matches_count = sum(
-            1 for alert, _, _, _ in pending_sends if _alert_has_telegram_chat(alert)
+            1 for alert, _, _, _, _ in pending_sends if _alert_has_telegram_chat(alert)
         )
         event = BotEvent(
             event_type="listing_ingested",
@@ -285,8 +264,9 @@ class ProcessListingUseCase:
 
         match_items: list[ListingMatchItem] = []
         needs_retry = False
+        books_to_price: set[uuid.UUID] = set()
         send_alert_fn = _get_send_listing_alert()
-        for alert, _match_result, market_line, catalog_ready in pending_sends:
+        for alert, _match_result, market_line, catalog_ready, book in pending_sends:
             notification_sent = False
             if _alert_has_telegram_chat(alert):
                 alert_kws = alert.include_keywords or ([alert.name] if alert.name else None)
@@ -303,18 +283,21 @@ class ProcessListingUseCase:
                     await self.db.commit()
                 else:
                     needs_retry = True
-            if listing.category_slug == CategorySlug.BD_COMICS.value and not catalog_ready:
-                safe_create_task(
-                    _link_bd_catalog_background(
-                        alert_id=alert.id,
-                        alert_name=alert.name,
-                        alert_isbn=getattr(alert, "isbn", None),
-                        listing_title=listing.title,
-                        listing_description=listing.description,
-                        listing_isbn13=listing.isbn13,
-                    ),
-                    name=f"bd_catalog_{alert.id}",
-                )
+            if listing.category_slug == CategorySlug.BD_COMICS.value:
+                if book is not None and not has_usable_price(book.market_cache):
+                    books_to_price.add(book.id)
+                if not catalog_ready:
+                    safe_create_task(
+                        _link_bd_catalog_background(
+                            alert_id=alert.id,
+                            alert_name=alert.name,
+                            alert_isbn=getattr(alert, "isbn", None),
+                            listing_title=listing.title,
+                            listing_description=listing.description,
+                            listing_isbn13=listing.isbn13,
+                        ),
+                        name=f"bd_catalog_{alert.id}",
+                    )
             match_items.append(
                 ListingMatchItem(
                     alert_id=alert.id,
@@ -322,6 +305,11 @@ class ProcessListingUseCase:
                     notification_sent=notification_sent,
                 )
             )
+
+        # Toutes les alertes sont parties : la cote des livres qui en sont dépourvus
+        # peut enfin partir chez les marchands, pour que la prochaine l'affiche.
+        for book_id in books_to_price:
+            schedule_book_pricing(book_id, reason="alert_sent")
 
         return ListingIngestResponse(
             listing_id=listing.id,
@@ -335,22 +323,22 @@ class ProcessListingUseCase:
         self,
         listing: Listing,
         alert: Any,
-    ) -> tuple[str | None, bool]:
+    ) -> tuple[str | None, bool, Book | None]:
         """Une lecture ISBN indexée si le livre est déjà au catalogue. Pas de BNF."""
         isbn = listing.isbn13 or getattr(alert, "isbn", None)
         if not isbn:
-            return None, False
+            return None, False, None
         book_repo = BookRepository(self.db)
         book = await book_repo.get_by_isbn13(isbn)
         if book is None:
-            return None, False
+            return None, False, None
         await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
         line = MarketPriceService.get_comparison_summary(
             listing=listing,
             book=book,
             books_in_series=[book],
         )
-        return line, True
+        return line or _pending_cote_line(book), True, book
 
     async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> str | None:
         """Résout le livre en local. La recherche BNF part en tâche de fond."""

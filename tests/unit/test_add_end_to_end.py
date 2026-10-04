@@ -25,10 +25,11 @@ from app.bot.handlers.alerts_create_confirm import (
 )
 from app.bot.handlers.alerts_helpers import RECAP_TITLE, build_creation_recap
 from app.core.constants import ComparisonStatus
+from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.user import User
-from app.providers.base import MarketOffer
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
+from app.services.market_price_service import PENDING_COTE_LINE
 
 # Bandeaux de parcours qui ont disparu au profit d'un titre unique : leur présence
 # signalerait que la carte redeviendrait dépendante du chemin qui l'a produite.
@@ -125,23 +126,15 @@ def _fake_bnf(
     return bnf
 
 
-def _fake_market_offer(isbn13: str) -> MarketOffer:
-    return MarketOffer(
-        provider_name="chasse_aux_livres",
-        item_price_cents=1800,
-        shipping_price_cents=None,
-        delivered_price_cents=1800,
-        source_url=f"https://www.chasse-aux-livres.fr/prix/B0/{isbn13}",
-        price_includes_shipping=True,
-        item_condition="Très bon (Momox)",
-        is_available=True,
-        is_comparable=True,
-        raw_payload={
-            "isbn13": isbn13,
-            "best_merchant": "Momox",
-            "historical_low_1y_cents": 1650,
-            "partners": {},
-        },
+def _cached_market_price() -> BookMarketCache:
+    """Cote déjà en base pour un ouvrage du catalogue : prix du jour et plus bas 1 an."""
+    return BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=uuid.uuid4(),
+        lowest_delivered_price_cents=1800,
+        best_provider_name="Momox",
+        comparison_status=ComparisonStatus.AVAILABLE,
+        historical_low_1y_cents=1650,
     )
 
 
@@ -159,17 +152,22 @@ def _message_with_recap(command: str) -> tuple[FakeMessage, MagicMock]:
     return message, loading_message
 
 
-def _repositories(isbn13: str) -> dict:
-    """Repositories simulées et spies pour `save_alert`."""
+def _repositories(isbn13: str, *, already_catalogued: bool = False) -> dict:
+    """Repositories simulées et spies pour `save_alert`.
+
+    `already_catalogued` décrit un livre déjà au catalogue et déjà coté : c'est le
+    seul cas où la confirmation peut afficher une prix sans attendre les marchands.
+    """
     book = MagicMock()
     book.id = uuid.uuid4()
     book.isbn13 = isbn13
+    book.market_cache = _cached_market_price() if already_catalogued else None
 
     alert = MagicMock()
     alert.id = uuid.uuid4()
 
     book_repo = MagicMock()
-    book_repo.get_by_isbn13 = AsyncMock(return_value=None)
+    book_repo.get_by_isbn13 = AsyncMock(return_value=book if already_catalogued else None)
     book_repo.create = AsyncMock(return_value=book)
     book_repo.link_alert_to_book = AsyncMock()
 
@@ -181,16 +179,13 @@ def _repositories(isbn13: str) -> dict:
     category_repo.get_by_id = AsyncMock()
     category_repo.get_by_slug = AsyncMock(return_value=MagicMock(id=uuid.uuid4()))
 
-    market_repo = MagicMock()
-    market_repo.save_snapshot = AsyncMock()
-    market_repo.update_or_create_cache = AsyncMock()
-
     return {
         "book_repo": book_repo,
         "alert_repo": alert_repo,
         "category_repo": category_repo,
-        "market_repo": market_repo,
-        "provider": MagicMock(get_offers=AsyncMock(return_value=[_fake_market_offer(isbn13)])),
+        # La cotation part en arrière-plan après la création : le handler ne fait
+        # que la demander, elle est vérifiée dans son propre module.
+        "schedule_pricing": MagicMock(),
         # La recherche des variantes part en arrière-plan : le test la déclenche lui-même.
         "tasks": [],
     }
@@ -247,20 +242,12 @@ def _patched(repos: dict, bnf: MagicMock, client: MagicMock):
             return_value=repos["category_repo"],
         ),
         patch(
-            "app.bot.handlers.alerts_create.MarketPriceRepository",
-            return_value=repos["market_repo"],
-        ),
-        patch(
-            "app.bot.handlers.alerts_create.ChasseAuxLivresProvider",
-            return_value=repos["provider"],
+            "app.bot.handlers.alerts_create.schedule_book_pricing",
+            new=repos["schedule_pricing"],
         ),
         patch("app.bot.handlers.alerts.AlertRepository", return_value=repos["alert_repo"]),
         patch("app.bot.handlers.alerts.BookRepository", return_value=repos["book_repo"]),
         patch("app.bot.handlers.alerts.CategoryRepository", return_value=repos["category_repo"]),
-        patch(
-            "app.bot.handlers.alerts.MarketPriceRepository",
-            return_value=repos["market_repo"],
-        ),
     )
 
 
@@ -365,14 +352,17 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
         assert "search_text=9782369904151" in create_kwargs["vinted_search_url"]
         assert repos["book_repo"].create.call_args.kwargs["isbn13"] == "9782369904151"
 
-        cache_kwargs = repos["market_repo"].update_or_create_cache.call_args.kwargs
-        assert cache_kwargs["book_id"] == repos["book_repo"].create.return_value.id
-        assert cache_kwargs["comparison_status"] == ComparisonStatus.AVAILABLE
-        assert cache_kwargs["historical_low_1y_cents"] == 1650
+        # 4. La cote part en arrière-plan sur le livre créé, sans retarder la
+        # confirmation : l'utilisateur ne fait pas attendre son alerte aux marchands.
+        repos["schedule_pricing"].assert_called_once_with(
+            repos["book_repo"].create.return_value.id,
+            reason="alert_created",
+        )
 
         confirmation = confirm_message.edit_text.call_args[0][0]
         assert "ISBN :</b> <code>9782369904151</code>" in confirmation
-        assert "16,50 €" in confirmation
+        # Le livre vient d'être créé : sa cote est annoncée, pas encore chiffrée.
+        assert PENDING_COTE_LINE in confirmation
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -469,7 +459,10 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
             assert "search_start_type=item_page_isbn" in create_kwargs["vinted_search_url"]
             assert "search_text=9782369903086" in create_kwargs["vinted_search_url"]
             assert repos["book_repo"].create.call_args.kwargs["isbn13"] == "9782369903086"
-            assert repos["market_repo"].update_or_create_cache.await_count == 1
+            repos["schedule_pricing"].assert_called_once_with(
+                repos["book_repo"].create.return_value.id,
+                reason="alert_created",
+            )
         finally:
             for entered in reversed(patches):
                 entered.stop()
@@ -616,11 +609,14 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
     - le prix bas constaté est donné sans date — `historical_low_at` est réécrit à
       chaque rafraîchissement de la cote, elle daterait de la création et non du prix ;
     - le pied annonce la notification, sans la promesse « 24/24 sur Vinted ».
+
+    Le livre est déjà au catalogue et déjà coté : la cotation tourne en arrière-plan,
+    la confirmation n'affiche donc que ce qui est déjà en base.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
     bnf = _fake_bnf(resolution)
     client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13)
+    repos = _repositories(BNF_EDITION.isbn13, already_catalogued=True)
 
     message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
@@ -644,10 +640,11 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         await save_alert(confirm_callback, state, db_user, db_session)
         confirmation = confirm_message.edit_text.call_args[0][0]
 
-        # La cote et le bas constaté, tous deux servies par Chasse-aux-livres.
+        # La cote et le bas constaté, tous deux déjà connus du catalogue.
         assert "📊 <b>Prix du marché :</b> 18,00 €" in confirmation
         assert "📉 <b>Prix bas constaté (1 an) :</b> 16,50 €" in confirmation
         # Ni la plateforme, ni une date qui daterait du moment de la création.
+        assert "Momox" not in confirmation
         assert "chasse_aux_livres" not in confirmation
         assert "Chasse" not in confirmation
         assert "Surveillance active" not in confirmation
@@ -796,3 +793,51 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
     finally:
         for entered in reversed(patches):
             entered.stop()
+
+
+@pytest.mark.asyncio
+async def test_series_alert_announces_no_market_price_it_will_never_have():
+    """Une alerte de série n'a pas de livre : la confirmation n'annonce aucune cote.
+
+    Une série surveillée par son nom n'a aucune fiche tant qu'aucun tome n'a été
+    identifié dans une annonce. Annoncer « cote en cours de calcul » ferait
+    attendre une ligne que rien ne produira avant bien des alertes. Comme une
+    alerte produit, la série part donc avec son seul récap : aucune ligne de prix,
+    et surtout aucune demande de cotation.
+    """
+    repos = _repositories("9782369904151")
+    state = DraftState()
+    state.data = {
+        "category_slug": "bd_comics",
+        "name": "Blacksad",
+        "isbn": None,
+        "include_keywords": ["blacksad"],
+        "max_item_price_cents": 1500,
+    }
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    confirm_message = MagicMock(spec=Message)
+    confirm_message.edit_text = AsyncMock()
+    confirm_callback = MagicMock()
+    confirm_callback.data = "alert_create_confirm"
+    confirm_callback.message = confirm_message
+    confirm_callback.answer = AsyncMock()
+
+    patches = _patched(repos, MagicMock(), MagicMock())
+    for entered in patches:
+        entered.start()
+    try:
+        await save_alert(confirm_callback, state, db_user, db_session)
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+    repos["book_repo"].create.assert_not_called()
+    repos["schedule_pricing"].assert_not_called()
+    confirmation = confirm_message.edit_text.call_args[0][0]
+    assert "✅ <b>Alerte créée avec succès !</b>" in confirmation
+    assert "📌 <b>Titre :</b> Blacksad" in confirmation
+    assert PENDING_COTE_LINE not in confirmation
+    assert "Prix du marché" not in confirmation
+    assert "Prix bas constaté" not in confirmation

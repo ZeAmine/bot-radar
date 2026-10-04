@@ -1,10 +1,10 @@
 """Tâche planifiée de rafraîchissement des prix de marché des BD et comics.
 
-Le job interrogé les agrégateurs d'occasion (Chasse-aux-livres en tête, puis
-Momox, Recyclivre, Gibert et eBay si configuré) et consolide pour chaque livre :
-
-- le prix livré le plus bas réellement disponible chez un marchand francophone ;
-- le prix le plus bas constaté sur 1 an, certifié par l'agrégateur.
+Le job passe par le service de cotation commun : interroger tous les
+fournisseurs, consolider le prix livré le plus bas et le prix le plus bas
+constaté sur 1 an, puis écrire le cache local. La création d'une alerte et le
+bouton « 📊 Prix du marché » passent par exactement la même consolidation —
+cette tâche n'en est qu'un client parmi d'autres.
 
 Une passe se déroule par **vagues concurrentes bornées** : la pression sur les
 partenaires reste identique (une pause anti-rate-limit par vague), mais un livre
@@ -16,112 +16,34 @@ import asyncio
 import logging
 import random
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
 from app.db.repositories.book_repo import BookRepository
-from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.db.session import AsyncSessionLocal
-from app.providers.base import MarketOffer, extract_best_historical_low, normalize_search_isbn
+from app.providers.base import MarketOffer, extract_best_historical_low
 from app.providers.registry import ProviderRegistry
+from app.services.book_market_pricing import (
+    BookPricingResult,
+    fetch_offers_for_book,
+    persist_market_result,
+    pricing_stat,
+)
 
 logger = logging.getLogger(__name__)
 
-# Durée maximale d'interrogation d'un livre, tous fournisseurs compris.
-BOOK_FETCH_TIMEOUT_SECONDS = 20.0
 # Nombre de livres interrogés simultanément.
 BOOK_FETCH_CONCURRENCY = 4
 # Durée maximale d'une passe : au-delà, les livres restants attendront la suivante.
 MAX_PASS_DURATION_SECONDS = 900.0
 DEFAULT_BATCH_SIZE = 8
 
-# Durée de validité du cache selon la qualité de la donnée collectée.
-CACHE_HOURS_WITH_PRICE = 24
-CACHE_HOURS_WITHOUT_PRICE = 6
-# Rafraîchissement minimal du cache conservé pour résilience après un silence réseau.
-CACHE_HOURS_RESILIENT_REFRESH = 6
-
 # Pause anti-rate-limit entre deux vagues, en mode incrémental puis complet.
 PAUSE_RANGES: dict[bool, tuple[float, float]] = {
     True: (1.2, 2.2),
     False: (2.5, 3.8),
 }
-
-@dataclass(frozen=True)
-class BookPricingResult:
-    """Issue du calcul de cote d'un livre, indépendante de toute persistance."""
-
-    offers: list[MarketOffer]
-    lowest_delivered_price_cents: int | None
-    best_provider_name: str | None
-    best_source_url: str | None
-    confidence: MatchConfidence | None
-    comparison_status: ComparisonStatus
-    cache_duration_hours: int
-    historical_low_1y_cents: int | None
-
-    @property
-    def has_data(self) -> bool:
-        """Vrai si cette passe a réellement trouvé de quoi coter le livre."""
-        return bool(
-            self.lowest_delivered_price_cents is not None
-            or self.historical_low_1y_cents is not None
-        )
-
-    @staticmethod
-    def from_offers(
-        offers: list[MarketOffer],
-        best_offer: MarketOffer | None,
-        historical_low_cents: int | None,
-    ) -> "BookPricingResult":
-        """Déduit l'état du cache à partir des offres collectées.
-
-        Trois issues possibles : une offre d'occasion disponible, un historique
-        certifié mais plus rien en stock, ou aucune donnée exploitable.
-        """
-        if best_offer is not None:
-            merchant = None
-            if best_offer.raw_payload:
-                raw_merchant = best_offer.raw_payload.get("best_merchant")
-                merchant = raw_merchant if isinstance(raw_merchant, str) and raw_merchant else None
-            return BookPricingResult(
-                offers=offers,
-                lowest_delivered_price_cents=best_offer.delivered_price_cents,
-                best_provider_name=merchant or best_offer.provider_name,
-                best_source_url=best_offer.source_url,
-                confidence=best_offer.confidence,
-                comparison_status=ComparisonStatus.AVAILABLE,
-                cache_duration_hours=CACHE_HOURS_WITH_PRICE,
-                historical_low_1y_cents=historical_low_cents,
-            )
-
-        if historical_low_cents is not None:
-            return BookPricingResult(
-                offers=offers,
-                lowest_delivered_price_cents=None,
-                best_provider_name=None,
-                best_source_url=None,
-                confidence=None,
-                comparison_status=ComparisonStatus.UNAVAILABLE,
-                cache_duration_hours=CACHE_HOURS_WITH_PRICE,
-                historical_low_1y_cents=historical_low_cents,
-            )
-
-        return BookPricingResult(
-            offers=offers,
-            lowest_delivered_price_cents=None,
-            best_provider_name=None,
-            best_source_url=None,
-            confidence=None,
-            comparison_status=ComparisonStatus.UNAVAILABLE,
-            cache_duration_hours=CACHE_HOURS_WITHOUT_PRICE,
-            historical_low_1y_cents=None,
-        )
 
 
 def _iter_chunks[T](items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
@@ -149,48 +71,6 @@ async def _select_books(
         return await _read(read_session)
 
 
-async def _persist_market_result(
-    session: AsyncSession,
-    book_id: UUID,
-    result: BookPricingResult,
-) -> str:
-    """Enregistre snapshots et cache consolidé pour un livre. Retourne la statistique."""
-    repo = MarketPriceRepository(session)
-    for offer in result.offers:
-        await repo.save_snapshot(book_id, offer)
-
-    if not result.has_data:
-        # Règle de résilience : un silence réseau ne doit pas priver l'utilisateur
-        # d'un prix déjà connu et encore frais.
-        existing = await repo.get_cache_by_book_id(book_id)
-        if (
-            existing is not None
-            and existing.comparison_status == ComparisonStatus.AVAILABLE
-            and existing.lowest_delivered_price_cents is not None
-        ):
-            logger.info(
-                "Maintien résilient du prix en cache pour le livre ID %s (%s cents).",
-                book_id,
-                existing.lowest_delivered_price_cents,
-            )
-            now = datetime.now(UTC)
-            existing.checked_at = now
-            existing.expires_at = now + timedelta(hours=CACHE_HOURS_RESILIENT_REFRESH)
-            return "available"
-
-    await repo.update_or_create_cache(
-        book_id=book_id,
-        lowest_delivered_price_cents=result.lowest_delivered_price_cents,
-        best_provider_name=result.best_provider_name,
-        best_source_url=result.best_source_url,
-        confidence=result.confidence,
-        comparison_status=result.comparison_status,
-        cache_duration_hours=result.cache_duration_hours,
-        historical_low_1y_cents=result.historical_low_1y_cents,
-    )
-    return "available" if result.comparison_status == ComparisonStatus.AVAILABLE else "unavailable"
-
-
 async def _price_one_book(
     book: Book,
     registry: ProviderRegistry,
@@ -199,15 +79,7 @@ async def _price_one_book(
 ) -> str:
     """Interroge les fournisseurs pour un livre et consolide sa cote."""
     async with semaphore:
-        offers = await asyncio.wait_for(
-            registry.fetch_all_offers(
-                isbn13=normalize_search_isbn(book.isbn13),
-                title=book.title,
-                author=book.author,
-                edition=book.edition,
-            ),
-            timeout=BOOK_FETCH_TIMEOUT_SECONDS,
-        )
+        offers: list[MarketOffer] = await fetch_offers_for_book(book, registry=registry)
 
     result = BookPricingResult.from_offers(
         offers=offers,
@@ -216,10 +88,10 @@ async def _price_one_book(
     )
 
     if session is not None:
-        return await _persist_market_result(session, book.id, result)
+        return pricing_stat(await persist_market_result(session, book.id, result))
 
     async with AsyncSessionLocal() as book_session:
-        outcome = await _persist_market_result(book_session, book.id, result)
+        outcome = pricing_stat(await persist_market_result(book_session, book.id, result))
         await book_session.commit()
         return outcome
 

@@ -7,6 +7,7 @@ from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
+from app.db.repositories.book_repo import resolve_loaded_books
 from app.services.market_price_service import MarketPriceService
 from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 
@@ -648,6 +649,131 @@ async def test_resolve_book_for_listing_one_shot_returns_single_book():
     assert not tome_res.is_lot
     assert resolved_book is not None
     assert resolved_book.id == one_shot.id
+
+
+# --- Lot dénombré : le vendeur donne un compte, pas des numéros ---
+
+_CHATEAU_COTES = [
+    ("Le Château des animaux — Tome 1 (Miss Bengalore)", 670),
+    ("Le Château des animaux — Tome 2 (Les Marguerites d'hiver)", 922),
+    ("Le Château des animaux — Tome 3 (La Nuit des justes)", 1167),
+    ("Le Château des animaux — Tome 4 (Le Sang du roi)", 1318),
+    ("Le château des animaux", 1775),
+]
+"""Les quatre tomes du Château des animaux aux cotes relevées en production,
+plus la fiche sans numéro que porte aussi cette alerte."""
+
+
+def _chateau_catalogue() -> list[Book]:
+    return [_create_mock_book(title, price) for title, price in _CHATEAU_COTES]
+
+
+def _chateau_lot_listing() -> Listing:
+    """L'annonce du lot à 50,00 € + 6,08 € de frais, soit 56,08 € fdp."""
+    return Listing(
+        source_name="vinted",
+        external_id="chateau",
+        url="https://vinted.fr",
+        title="Lot de 4 tomes Le Chateau des animaux",
+        normalized_title="lot de 4 tomes le chateau des animaux",
+        description="Exemplaires en très bon état.",
+        category_slug="bd_comics",
+        item_price_cents=5000,
+        estimated_total_cents=5608,
+    )
+
+
+def test_counted_lot_resolves_to_the_whole_series_and_prices_it():
+    """« Lot de 4 tomes » face à une série de 4 tomes : la cote est cumulative.
+
+    C'est le cas que l'extracteur produisait déjà (`lot_count=4`) mais que la
+    résolution jetait : sans numéros, le lot retombait sur « cote indisponible ».
+    """
+    books = _chateau_catalogue()
+    listing = _chateau_lot_listing()
+
+    resolved_book, series, tome_res = resolve_loaded_books(
+        alert_name="Le Château des animaux",
+        listing_title=listing.title,
+        listing_description=listing.description,
+        books=books,
+    )
+
+    assert resolved_book is None
+    assert tome_res.is_lot is True
+    assert tome_res.lot_count == 4
+    assert tome_res.lot_tomes == [1, 2, 3, 4]
+    # La composition vient de nous, pas du vendeur : le libellé doit le dire.
+    assert tome_res.composition_inferred is True
+
+    summary = MarketPriceService.get_comparison_summary(
+        listing=listing,
+        book=resolved_book,
+        books_in_series=series,
+        tome_result=tome_res,
+    )
+    assert summary is not None
+    assert "📉 Prix bas constaté (Lot de 4 tomes, composition déduite) : ~40,77 €" in summary
+    assert "⛔️ Écart : <b>+15,31 €</b>" in summary
+
+
+def test_counted_lot_is_refused_when_the_series_is_longer():
+    """Une série plus longue que le compte annoncé ne laisse aucune composition."""
+    books = _chateau_catalogue()
+    books.append(_create_mock_book("Le Château des animaux — Tome 5 (Le Retour)", 1400))
+
+    _, _, tome_res = resolve_loaded_books(
+        alert_name="Le Château des animaux",
+        listing_title="Lot de 4 tomes Le Chateau des animaux",
+        listing_description=None,
+        books=books,
+    )
+
+    assert tome_res.lot_count == 4
+    assert tome_res.lot_tomes == []
+    assert tome_res.composition_inferred is False
+
+
+def test_counted_lot_is_refused_when_a_tome_has_two_editions():
+    """Deux fiches pour le même tome : on ne sait pas laquelle est dans le lot."""
+    books = _chateau_catalogue()
+    books.append(_create_mock_book("Le Château des animaux Tome 2 (édition poche)", 800))
+
+    _, _, tome_res = resolve_loaded_books(
+        alert_name="Le Château des animaux",
+        listing_title="Lot de 4 tomes Le Chateau des animaux",
+        listing_description=None,
+        books=books,
+    )
+
+    assert tome_res.lot_tomes == []
+    assert tome_res.composition_inferred is False
+
+
+def test_counted_lot_is_refused_without_a_single_numbered_tome():
+    """Sans fiche numérotée, le compte ne compose rien."""
+    _, _, tome_res = resolve_loaded_books(
+        alert_name="Le Château des animaux",
+        listing_title="Lot de 4 tomes Le Chateau des animaux",
+        listing_description=None,
+        books=[_create_mock_book("Le château des animaux", 1775)],
+    )
+
+    assert tome_res.lot_tomes == []
+    assert tome_res.composition_inferred is False
+
+
+def test_explicitly_numbered_lot_is_not_flagged_as_inferred():
+    """Quand le vendeur nomme les tomes, la composition reste énoncée."""
+    _, _, tome_res = resolve_loaded_books(
+        alert_name="Le Château des animaux",
+        listing_title="Le chateau des animaux tomes 1 à 4",
+        listing_description=None,
+        books=_chateau_catalogue(),
+    )
+
+    assert tome_res.lot_tomes == [1, 2, 3, 4]
+    assert tome_res.composition_inferred is False
 
 
 

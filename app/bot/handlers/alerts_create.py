@@ -13,7 +13,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.formatter import format_cents_to_euros, format_conditions_short
+from app.bot.formatter import format_conditions_short
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
     _join_escaped,
@@ -33,7 +33,6 @@ from app.core.constants import (
     DEFAULT_GAMING_CONDITIONS,
     DEFAULT_TECH_CONDITIONS,
     CategorySlug,
-    ComparisonStatus,
     MatchConfidence,
 )
 from app.core.tasks import safe_create_task
@@ -41,10 +40,6 @@ from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.category_repo import CategoryRepository
-from app.db.repositories.market_price_repo import MarketPriceRepository
-from app.providers.base import extract_best_historical_low
-from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
-from app.providers.registry import ProviderRegistry
 from app.services.ai.modules.keyword_variants import (
     KeywordVariantsOutcome,
     keyword_variants_module,
@@ -53,6 +48,11 @@ from app.services.ai.modules.natural_add import natural_add_module
 from app.services.alert_service import (
     AlertServiceError,
     parse_price_to_cents,
+)
+from app.services.book_market_pricing import schedule_book_pricing
+from app.services.market_price_service import (
+    PENDING_COTE_LINE,
+    format_cote_lines,
 )
 from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text, strip_html_tags
@@ -234,12 +234,6 @@ def _get_book_repo(session: Any) -> Any:
     import app.bot.handlers.alerts as alerts_mod
 
     return getattr(alerts_mod, "BookRepository", BookRepository)(session)
-
-
-def _get_market_price_repo(session: Any) -> Any:
-    import app.bot.handlers.alerts as alerts_mod
-
-    return getattr(alerts_mod, "MarketPriceRepository", MarketPriceRepository)(session)
 
 
 @router.message(Command("add", "ajouter"))
@@ -685,8 +679,6 @@ async def save_alert(
     if category_slug == CategorySlug.BD_COMICS.value:
         book_repo = _get_book_repo(db_session)
         book = None
-        best_offer = None
-        hist_low = None
 
         if isbn:
             # 1. One-Shot ou tome spécifique : Persistance définitive de l'ISBN en base
@@ -718,37 +710,6 @@ async def save_alert(
             # 3. Liaison alerte <-> livre de référence
             if book:
                 await book_repo.link_alert_to_book(alert.id, book.id, MatchConfidence.HIGH)
-
-            # 4. Préchauffage et enregistrement de la cote du marché EXCLUSIVEMENT par ISBN
-            market_repo = _get_market_price_repo(db_session)
-            try:
-                provider = ChasseAuxLivresProvider()
-                offers = await provider.get_offers(isbn13=isbn, title="")
-                if offers and book:
-                    for off in offers:
-                        await market_repo.save_snapshot(book.id, off)
-                    best_offer = ProviderRegistry.select_best_offer(offers)
-                    if best_offer:
-                        hist_low = extract_best_historical_low([best_offer])
-                        merchant = (
-                            best_offer.raw_payload.get("best_merchant")
-                            if best_offer.raw_payload
-                            else None
-                        )
-                        await market_repo.update_or_create_cache(
-                            book_id=book.id,
-                            lowest_delivered_price_cents=best_offer.delivered_price_cents,
-                            best_provider_name=merchant or best_offer.provider_name,
-                            best_source_url=best_offer.source_url,
-                            confidence=best_offer.confidence,
-                            comparison_status=ComparisonStatus.AVAILABLE,
-                            cache_duration_hours=24,
-                            historical_low_1y_cents=hist_low,
-                        )
-            except Exception as exc:
-                logger.warning(
-                    "Erreur Chasse-aux-livres par ISBN lors de la création d'alerte : %s", exc
-                )
         else:
             # Série multi-tomes : Création propre de l'alerte sans faux livre unique ni fausse cote
             vinted_url = f"https://www.vinted.fr/catalog?search_text={urllib.parse.quote_plus(name)}&order=newest_first"
@@ -768,6 +729,11 @@ async def save_alert(
         await db_session.commit()
         await state.clear()
 
+        # La cote part après le commit : elle lit le livre dans sa propre session, et
+        # surtout elle ne doit pas faire attendre les marchands avant la confirmation.
+        if book is not None:
+            schedule_book_pricing(book.id, reason="alert_created")
+
         price_str = f"{max_price / 100:.2f} €".replace(".", ",") if max_price else "Aucun"
 
         # La confirmation reprend la carte de récap — même ordre, mêmes émojis — : ce
@@ -786,18 +752,16 @@ async def save_alert(
         lines.append(f"🏷️ <b>États :</b> {html.escape(format_conditions_short(conditions))}")
         lines.append(f"🔑 <b>Inclus :</b> {_join_escaped(includes)}\n")
 
-        if best_offer and best_offer.delivered_price_cents:
-            # Ni marchand, ni date : la même cote est servie par plusieurs plateformes,
-            # et `historical_low_at` est réécrit à chaque rafraîchissement de la cote —
-            # elle daterait du moment de la création, pas du prix constaté.
-            lines.append(
-                f"📊 <b>Prix du marché :</b> "
-                f"{format_cents_to_euros(best_offer.delivered_price_cents)}"
-            )
-            if hist_low:
-                lines.append(
-                    f"📉 <b>Prix bas constaté (1 an) :</b> {format_cents_to_euros(hist_low)}"
-                )
+        # La cote déjà connue est affichée telle quelle ; sinon la confirmation
+        # annonce qu'elle arrive, plutôt que de laisser croire qu'il n'y a pas de prix.
+        # Une alerte de série n'a pas encore de livre tant qu'aucun tome n'a été
+        # identifié : dans ce cas, il n'y a rien à coter, donc rien à annoncer.
+        # Ni marchand, ni date : la même cote est servie par plusieurs plateformes,
+        # et `historical_low_at` est réécrit à chaque rafraîchissement de la cote —
+        # elle daterait du moment de la création, pas du prix constaté.
+        cote_lines = format_cote_lines(book)
+        if cote_lines or book is not None:
+            lines.extend(cote_lines or [PENDING_COTE_LINE])
             lines.append("")
 
         lines.append(_CONFIRMATION_FOOTER)

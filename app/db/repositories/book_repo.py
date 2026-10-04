@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
@@ -216,6 +217,57 @@ class BookRepository:
         )
 
 
+def _catalogue_tome_numbers(title: str, series_key: str) -> set[int]:
+    """Tous les numéros de tome qu'une fiche du catalogue peut porter.
+
+    Deux sources, dans le même ordre que la résolution d'un tome unitaire : le
+    sous-titre reconnu par l'extracteur, puis le numéro imprimé dans le titre.
+    Ensemble vide pour une fiche sans tome identifiable (intégrale, hors-série) :
+    elle ne peut ni composer un lot, ni y'appartenir.
+    """
+    numbers: set[int] = set()
+    extractor_tome = TomeExtractor.extract(title, series_key=series_key).tome_number
+    if extractor_tome is not None:
+        numbers.add(extractor_tome)
+    printed = re.search(
+        r"\b(?:tome|t|vol|livre)\s*\.?\s*([0-9]{1,2})\b",
+        title,
+        re.IGNORECASE,
+    )
+    if printed:
+        numbers.add(int(printed.group(1)))
+    return numbers
+
+
+def _resolve_counted_lot(
+    books: list[Book],
+    series_key: str,
+    announced_count: int,
+) -> list[int] | None:
+    """Composition d'un lot dénombré (« lot de 4 tomes ») : la série, ou rien.
+
+    Le vendeur donne un nombre, pas des numéros : c'est le catalogue qui apporte
+    les tomes, et c'est donc nous qui déduisons la composition. On ne s'y risque
+    que si ce nombre ne laisse qu'un seul jeu possible, c'est-à-dire si la série
+    compte exactement autant de tomes identifiables, sans doublon.
+
+    Dans le cas contraire on renvoie ``None`` et l'appelant garde son message
+    honnête : composer un lot à partir d'un compte ferait passer une hypothèse
+    pour un inventaire, et une cote fausse fait perdre de l'argent (ADR-016).
+    """
+    per_number: dict[int, int] = {}
+    for book in books:
+        for number in _catalogue_tome_numbers(book.title, series_key):
+            per_number[number] = per_number.get(number, 0) + 1
+    # Un tome porté par deux fiches (éditions concurrentes) ne dit pas lequel le
+    # vendeur a mis dans le lot : sans ce refus, la cote cumulerait le même tome.
+    if any(count > 1 for count in per_number.values()):
+        return None
+    if len(per_number) != announced_count:
+        return None
+    return sorted(per_number)
+
+
 def resolve_loaded_books(
     *,
     alert_name: str,
@@ -234,20 +286,19 @@ def resolve_loaded_books(
 
     if tome_res.is_lot:
         if tome_res.lot_tomes:
+            wanted = set(tome_res.lot_tomes)
             matching_lot = [
-                b
-                for b in books
-                if any(
-                    TomeExtractor.extract(b.title, series_key=alert_name).tome_number == t
-                    or re.search(
-                        rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t}\b",
-                        b.title,
-                        re.IGNORECASE,
-                    )
-                    for t in tome_res.lot_tomes
-                )
+                b for b in books if _catalogue_tome_numbers(b.title, alert_name) & wanted
             ]
             return None, matching_lot if matching_lot else books, tome_res
+        if tome_res.lot_count:
+            composed = _resolve_counted_lot(books, alert_name, tome_res.lot_count)
+            if composed is not None:
+                return None, books, replace(
+                    tome_res,
+                    lot_tomes=composed,
+                    composition_inferred=True,
+                )
         return None, books, tome_res
 
     if tome_res.tome_number is not None:

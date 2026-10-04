@@ -35,6 +35,7 @@ from app.services.alert_service import (
     parse_price_to_cents,
     validate_and_parse_vinted_url,
 )
+from app.services.book_market_pricing import schedule_book_pricing
 from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger(__name__)
@@ -540,6 +541,7 @@ async def save_edited_field_value(
         return
 
     try:
+        book_to_price: uuid.UUID | None = None
         if field in ("exclude_keywords", "include_keywords", "variants"):
             if raw_text.lower() == "/skip" or raw_text in ("-", "aucun", "aucune"):
                 parsed = []
@@ -594,17 +596,14 @@ async def save_edited_field_value(
                     f"{base_vinted}&search_text={clean_isbn}&order=newest_first"
                 )
 
-                # Propagation globale en base : livre, liaison alerte-livre et cote de marché
-                from app.core.constants import ComparisonStatus, MatchConfidence
+                # Propagation globale en base : livre et liaison alerte-livre. La cote
+                # est relancée après le commit, pour que le livre existe déjà quand
+                # la tâche de fond ouvrira sa session.
+                from app.core.constants import MatchConfidence
                 from app.db.repositories.book_repo import BookRepository
-                from app.db.repositories.market_price_repo import MarketPriceRepository
-                from app.providers.base import extract_best_historical_low
-                from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
-                from app.providers.registry import ProviderRegistry
                 from app.utils.text import normalize_text
 
                 book_repo = BookRepository(db_session)
-                market_repo = MarketPriceRepository(db_session)
 
                 book = await book_repo.get_by_isbn13(clean_isbn)
                 if not book:
@@ -617,38 +616,7 @@ async def save_edited_field_value(
                 if book:
                     await book_repo.clear_alert_books(alert.id)
                     await book_repo.link_alert_to_book(alert.id, book.id, MatchConfidence.HIGH)
-
-                    # Rafraîchir immédiatement la cote de marché pour ce nouvel ISBN
-                    try:
-                        provider = ChasseAuxLivresProvider(timeout_seconds=6.0)
-                        offers = await provider.get_offers(isbn13=clean_isbn, title="")
-                        if offers:
-                            for off in offers:
-                                await market_repo.save_snapshot(book.id, off)
-                            best = ProviderRegistry.select_best_offer(offers)
-                            if best:
-                                hist_low = extract_best_historical_low([best])
-                                merchant = (
-                                    best.raw_payload.get("best_merchant")
-                                    if best.raw_payload
-                                    else None
-                                ) or best.provider_name
-                                await market_repo.update_or_create_cache(
-                                    book_id=book.id,
-                                    lowest_delivered_price_cents=best.delivered_price_cents,
-                                    best_provider_name=merchant,
-                                    best_source_url=best.source_url,
-                                    confidence=best.confidence,
-                                    comparison_status=ComparisonStatus.AVAILABLE,
-                                    cache_duration_hours=24,
-                                    historical_low_1y_cents=hist_low,
-                                )
-                    except Exception as exc:
-                        logger.warning(
-                            "Échec de mise à jour de la cote pour le nouvel ISBN %s : %s",
-                            clean_isbn,
-                            exc,
-                        )
+                    book_to_price = book.id
         elif field == "url":
             parsed_url = validate_and_parse_vinted_url(raw_text)
             alert.vinted_search_url = parsed_url["url"]
@@ -661,6 +629,9 @@ async def save_edited_field_value(
 
         await db_session.commit()
         await state.clear()
+
+        if book_to_price is not None:
+            schedule_book_pricing(book_to_price, reason="isbn_edited")
 
         cat_slug = alert.category.slug if alert.category else "all"
         total_count = await alert_repo.count_by_user(db_user.id, category_slug=cat_slug)

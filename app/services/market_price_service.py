@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 # Nombre de boutiques comparées au maximum dans le panneau détaillé.
 MAX_PARTNERS_SHOWN = 5
 
+# Ligne affichée quand le livre est identifié mais pas encore côté : mieux vaut
+# dire que la cote arrive que laisser croire qu'il n'y a pas de prix.
+PENDING_COTE_LINE = "⏳ <i>Cote d'occasion en cours de calcul…</i>"
+
 try:
     _PARIS_TZ: ZoneInfo = ZoneInfo("Europe/Paris")
 except Exception:  # pragma: no cover - fuseau absent sur l'image de prod
@@ -141,6 +145,41 @@ def reference_price(cache: BookMarketCache | None) -> tuple[int | None, bool]:
     return _positive(cache.lowest_delivered_price_cents), False
 
 
+def has_usable_price(cache: BookMarketCache | None) -> bool:
+    """Vrai si le cache suffit à comparer une annonce à un prix de référence.
+
+    Une cote ``UNAVAILABLE`` sans historique 1 an ne l'est pas : elle dit qu'une
+    passe n'a rien trouvé, pas que l'ouvrage n'a aucun prix.
+    """
+    reference_cents, _ = reference_price(cache)
+    return reference_cents is not None
+
+
+def format_cote_lines(book: Book | None) -> list[str]:
+    """Lignes de cote déjà connues d'un livre, pour un message qui n'attend rien.
+
+    Aucun prix n'est inventé : une ligne absente signifie « inconnu », et c'est
+    à l'appelant de décider s'il doit l'annoncer ou attendre la cotation.
+
+    Le cache doit être chargé : `BookRepository` le fait par défaut, et une
+    lecture paresseuse ici lèverait au lieu de renvoyer une ligne.
+    """
+    cache = book.market_cache if book is not None else None
+    if cache is None:
+        return []
+
+    lines: list[str] = []
+    market_cents = _positive(cache.lowest_delivered_price_cents)
+    if market_cents is not None:
+        lines.append(f"📊 <b>Prix du marché :</b> {format_cents(market_cents)}")
+    historical_cents = _positive(cache.historical_low_1y_cents)
+    if historical_cents is not None:
+        lines.append(
+            f"📉 <b>Prix bas constaté (1 an) :</b> {format_cents(historical_cents)}"
+        )
+    return lines
+
+
 def _format_checked_at(moment: datetime | None) -> str:
     """Horodatage local lisible, utilisé comme pied de panneau."""
     if moment is None:
@@ -184,6 +223,27 @@ def _match_lot_books(books: list[Book], lot_tomes: list[int]) -> list[Book]:
         if (tome := extract_tome_number_from_title(book.title)) is not None
         and tome in lot_tomes
     ]
+
+
+def _lot_label(
+    expected_count: int,
+    priced_count: int,
+    *,
+    composition_inferred: bool,
+) -> str:
+    """Parenthésé de la ligne de cote d'un lot.
+
+    Le libellé dit toujours sur quoi il repose : le vendeur a-t-il nommé les
+    tomes, ou est-ce nous qui les avons composées du seul compte qu'il a donné ?
+    Sans cette nuance, « (Lot) » ferait passer une déduction pour un inventaire,
+    alors que « 4 tomes » face à une série de 12 ne dit rien de la composition.
+    """
+    if not composition_inferred:
+        if priced_count < expected_count:
+            return f" (Lot, {priced_count}/{expected_count} tomes)"
+        return " (Lot)"
+    coverage = f", {priced_count}/{expected_count}" if priced_count < expected_count else ""
+    return f" (Lot de {expected_count} tomes, composition déduite{coverage})"
 
 
 def _sort_series_books(books: list[Book]) -> list[Book]:
@@ -282,7 +342,10 @@ class MarketPriceService:
         # 2. Lot de tomes identifiés dans une série
         if tome_result and tome_result.is_lot and tome_result.lot_tomes and books_in_series:
             summary = MarketPriceService._lot_summary(
-                listing, books_in_series, tome_result.lot_tomes
+                listing,
+                books_in_series,
+                tome_result.lot_tomes,
+                composition_inferred=tome_result.composition_inferred,
             )
             if summary is not None:
                 return summary
@@ -352,6 +415,7 @@ class MarketPriceService:
         listing: Listing,
         books_in_series: list[Book],
         lot_tomes: list[int],
+        composition_inferred: bool = False,
     ) -> str | None:
         """Cote cumulée d'un lot, avec la couverture réelle de l'appariement.
 
@@ -375,10 +439,11 @@ class MarketPriceService:
         cumulated = sum(price_cents for price_cents, _ in priced)
         all_historical = all(is_historical for _, is_historical in priced)
         label = "📉 Prix bas constaté" if all_historical else "📊 Prix du marché"
-        if expected_count > len(priced):
-            label += f" (Lot, {len(priced)}/{expected_count} tomes)"
-        else:
-            label += " (Lot)"
+        label += _lot_label(
+            expected_count,
+            len(priced),
+            composition_inferred=composition_inferred,
+        )
 
         lines = [f"{label} : ~{format_cents(cumulated)}"]
         vinted_total = _vinted_total_cents(listing)

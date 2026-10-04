@@ -432,6 +432,56 @@ def test_lot_summary_reports_partial_tome_matching():
     assert "✅ Écart : <b>-9,50 €</b>" in summary
 
 
+def test_inferred_lot_label_says_the_composition_was_deduced():
+    """Un lot composé par nous ne doit pas se lire comme un inventaire du vendeur."""
+    books = [
+        create_book_with_cache(lowest_delivered_cents=1600, historical_low_1y_cents=1600),
+        create_book_with_cache(lowest_delivered_cents=1850, historical_low_1y_cents=1850),
+    ]
+    books[0].title = "RIP — Tome 1"
+    books[1].title = "RIP — Tome 2"
+
+    listing = create_listing(estimated_total_cents=2500)
+    tome_res = TomeMatchResult(
+        is_lot=True,
+        lot_tomes=[1, 2],
+        lot_count=2,
+        confidence="high",
+        composition_inferred=True,
+    )
+
+    summary = MarketPriceService.get_comparison_summary(
+        listing=listing, book=None, books_in_series=books, tome_result=tome_res
+    )
+    assert summary is not None
+    assert "📉 Prix bas constaté (Lot de 2 tomes, composition déduite) : ~34,50 €" in summary
+
+
+def test_inferred_lot_label_keeps_the_partial_coverage():
+    """La couverture réelle reste annoncée, même quand la composition est déduite."""
+    books = [
+        create_book_with_cache(lowest_delivered_cents=1600, historical_low_1y_cents=1600),
+        create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None),
+    ]
+    books[0].title = "RIP — Tome 1"
+    books[1].title = "RIP — Tome 2"
+
+    listing = create_listing(estimated_total_cents=2500)
+    tome_res = TomeMatchResult(
+        is_lot=True,
+        lot_tomes=[1, 2],
+        lot_count=2,
+        confidence="high",
+        composition_inferred=True,
+    )
+
+    summary = MarketPriceService.get_comparison_summary(
+        listing=listing, book=None, books_in_series=books, tome_result=tome_res
+    )
+    assert summary is not None
+    assert "(Lot de 2 tomes, composition déduite, 1/2) : ~16,00 €" in summary
+
+
 def test_details_card_rejects_unsafe_offer_link():
     """Une URL non publique ou porteuse de HTML brut ne doit jamais être rendue cliquable."""
     book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)

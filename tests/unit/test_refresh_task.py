@@ -7,6 +7,7 @@ import pytest
 
 from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
+from app.db.models.book_market_cache import BookMarketCache
 from app.providers.base import MarketOffer
 from app.tasks.refresh_book_prices import refresh_book_prices_task
 
@@ -43,11 +44,20 @@ async def test_refresh_book_prices_task_success():
         mock_market_repo = MagicMock()
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
-        mock_market_repo.update_or_create_cache = AsyncMock()
+        # Le dépôt simulé rend la cote qu'il viendrait d'écrire : la passe la relit
+        # pour ventiler ses statistiques.
+        mock_market_repo.update_or_create_cache = AsyncMock(
+            return_value=BookMarketCache(
+                id=uuid.uuid4(),
+                book_id=mock_book.id,
+                lowest_delivered_price_cents=1950,
+                comparison_status=ComparisonStatus.AVAILABLE,
+            )
+        )
 
         mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
         mp.setattr(
-            "app.tasks.refresh_book_prices.MarketPriceRepository", lambda _s: mock_market_repo
+            "app.services.book_market_pricing.MarketPriceRepository", lambda _s: mock_market_repo
         )
 
         stats = await refresh_book_prices_task(registry=mock_registry, session=mock_session)
@@ -95,7 +105,7 @@ async def test_refresh_book_prices_task_incremental():
 
         mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
         mp.setattr(
-            "app.tasks.refresh_book_prices.MarketPriceRepository", lambda _s: mock_market_repo
+            "app.services.book_market_pricing.MarketPriceRepository", lambda _s: mock_market_repo
         )
 
         stats = await refresh_book_prices_task(
@@ -135,7 +145,7 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
 
         mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
         mp.setattr(
-            "app.tasks.refresh_book_prices.MarketPriceRepository", lambda _s: mock_market_repo
+            "app.services.book_market_pricing.MarketPriceRepository", lambda _s: mock_market_repo
         )
 
         stats = await refresh_book_prices_task(
@@ -171,7 +181,7 @@ async def test_refresh_processes_several_books_in_one_wave():
 
         mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
         mp.setattr(
-            "app.tasks.refresh_book_prices.MarketPriceRepository", lambda _s: mock_market_repo
+            "app.services.book_market_pricing.MarketPriceRepository", lambda _s: mock_market_repo
         )
 
         stats = await refresh_book_prices_task(

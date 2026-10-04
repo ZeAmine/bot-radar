@@ -90,11 +90,12 @@ Toute modification du chemin ingestion → matching → Telegram doit respecter 
 
 1. Dédoublonner l’annonce (`source_name` + `external_id`).
 2. Matcher en CPU local (`evaluate_listing_against_alert`). Une requête groupée de l'état de notification par annonce (`match_notification_state`), pas un `SELECT` par alerte.
-3. Cote BD : **cache local uniquement**. `MarketPriceService.get_comparison_summary` est synchrone, zéro HTTP. Référence unique : le prix le plus bas constaté sur 1 an, sinon le prix du marché du jour (ADR-016).
+3. Cote BD : **cache local uniquement**. `MarketPriceService.get_comparison_summary` est synchrone, zéro HTTP. Référence unique : le prix le plus bas constaté sur 1 an, sinon le prix du marché du jour (ADR-016). Un livre identifié mais sans cote affiche `PENDING_COTE_LINE` (« cote en cours ») : le silence faisait croire à une absence de prix.
 4. `send_listing_alert` — priorité absolue.
 5. Ensuite seulement, en `safe_create_task` :
    - enrichissement DeepSeek dans `telegram_service.py` avec le **vrai** `message_id` ;
-   - liaison ISBN BNF (`_link_book_from_bnf`) dans une **autre** session.
+   - liaison ISBN BNF (`_link_book_from_bnf`) dans une **autre** session ;
+   - cotation du livre sans cote utilisable (`schedule_book_pricing`), une fois **toutes** les alertes parties. Le livre vient alors d'être identifié : son titre et son ISBN partent ensemble chez tous les fournisseurs, repli par titre compris, sinon la cote resterait vide et l’alerte suivante serait à nouveau muette.
 
 Interdit sur ce chemin :
 
@@ -137,6 +138,7 @@ Conséquence assumée : la **première** alerte d’une BD inconnue peut partir 
 8. Après une modification : Ruff sur les fichiers touchés, puis les tests concernés. Suite complète avant un déploiement.
 9. **Historique vert** : chaque commit passe `ruff` et `pytest` sur son propre arbre. Un refactor ne dépend jamais d’un commit futur ; un découpage qui produit un commit rouge est un mauvais découpage. `make check-history` rejoue la série (base = `$CHECK_HISTORY_BASE`, sinon dernier tag `v*`, sinon `HEAD~5`) et la CI rejoue la même chose à chaque tag. `mypy` n’est pas dans le lot par défaut : c’est un objectif de bout de branche, pas un contrat de commit.
 10. Toute cote de marché passe par les règles pures de [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : occasion, état au moins « Très bon », marchand non exclu. Ne pas réintroduire un filtre d'état local à un fournisseur ou dans un handler.
+11. Toute écriture de cote passe par [`app/services/book_market_pricing.py`](app/services/book_market_pricing.py) : `price_book_now` pour un écran qui attend le résultat, `schedule_book_pricing` pour l'arrière-plan. Ni le handler `/add`, ni le bouton « 📊 Prix du marché », ni l'édition d'un ISBN, ni le job planifié n'ont leur propre collecte d'offres — une copie, c'est une cote qui se contredit selon le chemin qui l'a produite.
 
 ## Tests
 

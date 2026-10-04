@@ -188,7 +188,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.use_cases.ingest_listing.comparison_line_from_loaded_books",
-            return_value=(market_line, True),
+            return_value=(market_line, True, None),
         ),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
@@ -262,6 +262,156 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
 
         # L'enrichissement IA part dans send_listing_alert, pas dans un second use case.
         use_case.listing_repo.mark_notified.assert_awaited_once()
+
+
+def _bd_scenario(market_cache: object) -> tuple[AsyncMock, AsyncMock, MagicMock, MagicMock]:
+    """Annonce BD, session et dépôt simulés, avec un tome unique déjà lié à l'alerte.
+
+    `market_cache` None reproduit l'alerte partie sans cote : le livre est identifié,
+    mais aucun marchand n'a encore répondu pour lui.
+    """
+    from app.core.constants import AlertStatus
+
+    mock_listing = MagicMock()
+    mock_listing.id = uuid.uuid4()
+    mock_listing.category_slug = "bd_comics"
+    mock_listing.normalized_title = "blacksad tome 6"
+    mock_listing.title = "Blacksad - Tome 6"
+    mock_listing.description = "Tome 6 en parfait état"
+    mock_listing.condition = "Très bon état"
+    mock_listing.item_price_cents = 1400
+    mock_listing.estimated_total_cents = 1828
+    mock_listing.isbn13 = None
+    mock_listing.url = "https://vinted.fr/item-123"
+    mock_listing.photos = []
+
+    book = MagicMock()
+    book.id = uuid.uuid4()
+    book.title = "Blacksad - Tome 6"
+    book.isbn13 = "9782205078054"
+    book.market_cache = market_cache
+
+    alert_mock = MagicMock()
+    alert_mock.id = uuid.uuid4()
+    alert_mock.name = "Blacksad"
+    alert_mock.status = AlertStatus.ACTIVE
+    alert_mock.category = MagicMock(slug="bd_comics")
+    alert_mock.isbn = None
+    alert_mock.include_keywords = ["blacksad"]
+    alert_mock.exclude_keywords = []
+    alert_mock.variants = []
+    alert_mock.max_item_price_cents = 2000
+    alert_mock.accepted_conditions = None
+    alert_mock.user = MagicMock(telegram_user_id=123456)
+    alert_mock.alert_books = [MagicMock(book=book)]
+
+    mock_repo = AsyncMock()
+    mock_repo.get_by_source_and_external_id.return_value = None
+    mock_repo.create_from_payload.return_value = mock_listing
+    mock_repo.create_match.return_value = MagicMock()
+    mock_repo.mark_notified = AsyncMock()
+    mock_repo.get_active_alerts_by_category.return_value = [alert_mock]
+
+    return mock_listing, mock_repo, alert_mock, book
+
+
+@pytest.mark.asyncio
+async def test_bd_alert_without_price_is_priced_in_background(mock_db: AsyncMock) -> None:
+    """Un livre sans cote est annoncé puis coté, jamais avant l'envoi de l'alerte.
+
+    L'ordre se lit dans les appels : l'alerte part d'abord, la cotation part après.
+    Sans elle, un livre laissé vide le restait jusqu'au prochain rafraîchissement
+    planifié — c'est ce qui faisait apparaître une alerte sans prix ni écart.
+    """
+    from app.services.market_price_service import PENDING_COTE_LINE
+
+    calls: list[str] = []
+
+    async def _send(**_kwargs: object) -> bool:
+        calls.append("send")
+        return True
+
+    def _schedule(_book_id: object, *, reason: str) -> None:
+        calls.append(f"price:{reason}")
+
+    mock_send_alert = AsyncMock(side_effect=_send)
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal"),
+        patch(
+            "app.use_cases.ingest_listing.schedule_book_pricing",
+            side_effect=_schedule,
+        ) as schedule,
+    ):
+        use_case = ProcessListingUseCase(db=mock_db)
+        _mock_listing, mock_repo, _alert, book = _bd_scenario(None)
+        use_case.listing_repo = mock_repo
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-123",
+            url="https://vinted.fr/item-123",
+            title="Blacksad - Tome 6",
+            category_slug="bd_comics",
+            item_price_cents=1400,
+        )
+        await use_case.execute(payload, raw_payload={})
+
+    mock_send_alert.assert_awaited_once()
+    _, kwargs = mock_send_alert.call_args
+    assert kwargs["market_comparison_line"] == PENDING_COTE_LINE
+    # L'invariant n°1 se lit dans l'ordre des appels : l'alerte d'abord, la cote ensuite.
+    assert calls == ["send", "price:alert_sent"]
+    schedule.assert_called_once_with(book.id, reason="alert_sent")
+
+
+@pytest.mark.asyncio
+async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> None:
+    """Un livre déjà coté est comparé, et sa cote n'est pas redemandée."""
+    from app.db.models.book_market_cache import BookMarketCache
+    from app.services.market_price_service import PENDING_COTE_LINE
+
+    cache = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=uuid.uuid4(),
+        lowest_delivered_price_cents=1200,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        historical_low_1y_cents=1000,
+    )
+    mock_send_alert = AsyncMock(return_value=True)
+
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal"),
+        patch("app.use_cases.ingest_listing.schedule_book_pricing") as schedule,
+    ):
+        use_case = ProcessListingUseCase(db=mock_db)
+        _mock_listing, mock_repo, _alert, book = _bd_scenario(cache)
+        use_case.listing_repo = mock_repo
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-123",
+            url="https://vinted.fr/item-123",
+            title="Blacksad - Tome 6",
+            category_slug="bd_comics",
+            item_price_cents=1400,
+        )
+        await use_case.execute(payload, raw_payload={})
+
+    schedule.assert_not_called()
+    _, kwargs = mock_send_alert.call_args
+    line = kwargs["market_comparison_line"]
+    assert "📉 Prix bas constaté (T6) : 10,00 €" in line
+    assert "Écart" in line
+    assert PENDING_COTE_LINE not in line
+    assert book.market_cache is cache
 
 
 @pytest.mark.asyncio

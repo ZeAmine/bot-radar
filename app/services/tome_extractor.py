@@ -146,6 +146,13 @@ class TomeMatchResult:
     lot_count: int | None = None
     matched_subtitle: str | None = None
     confidence: str = "none"  # "high", "medium", "low", "none"
+    composition_inferred: bool = False
+    """Vrai si `lot_tomes` a été composé par nous et non énoncé par le vendeur.
+
+    Un lot « de 4 tomes » ne dit pas lesquels : c'est le catalogue qui apporte les
+    numéros. L'affichage doit le dire, sinon « (Lot) » ferait passer une déduction
+    pour un inventaire que le vendeur a lui-même donné.
+    """
 
 
 class TomeExtractor:
