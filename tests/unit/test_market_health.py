@@ -42,10 +42,35 @@ def test_no_stale_book_means_no_message():
     assert format_stale_certified_lows([]) == ""
 
 
+def test_the_message_counts_what_the_list_leaves_out():
+    """Une liste tronquée ne doit pas devenir le décompte annoncé.
+
+    Huit lignes pour cent onze livres figés feraient passer l'incident pour une
+    sélection : le chiffre du message est celui de l'inventaire, pas celui de
+    l'extrait.
+    """
+    items = [_item(23, title=f"Book {i:02d}") for i in range(8)]
+
+    message = format_stale_certified_lows(items, total=111)
+
+    assert "111 livre(s)" in message
+    assert "… et 103 autre(s)" in message
+
+
+def test_a_full_list_that_is_the_whole_inventory_states_no_remainder():
+    """Rien à annoncer au-delà quand la liste contient déjà tout."""
+    items = [_item(23, title=f"Book {i:02d}") for i in range(3)]
+
+    message = format_stale_certified_lows(items, total=3)
+
+    assert "3 livre(s)" in message
+    assert "autre(s)" not in message
+
+
 @pytest.mark.asyncio
 async def test_notification_is_sent_once_per_window():
     """Le job passe deux fois par jour : le signal ne doit pas se répéter."""
-    repo_result = AsyncMock(return_value=[("Dead Train", "9782380463972", 1357, None)])
+    repo_result = AsyncMock(return_value=([("Dead Train", "9782380463972", 1357, None)], 1))
 
     with (
         pytest.MonkeyPatch.context() as mp,
@@ -83,7 +108,7 @@ async def test_nothing_is_sent_when_every_book_is_fresh():
         mp.setattr(
             market_health.MarketPriceRepository,
             "find_stale_certified_lows",
-            AsyncMock(return_value=[]),
+            AsyncMock(return_value=([], 0)),
         )
         sent: list[str] = []
 
@@ -118,7 +143,7 @@ async def test_a_silent_redis_does_not_silence_the_signal():
         mp.setattr(
             market_health.MarketPriceRepository,
             "find_stale_certified_lows",
-            AsyncMock(return_value=[("Dead Train", "9782380463972", 1357, None)]),
+            AsyncMock(return_value=([("Dead Train", "9782380463972", 1357, None)], 1)),
         )
         sent: list[str] = []
 

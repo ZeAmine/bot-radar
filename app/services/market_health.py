@@ -58,22 +58,31 @@ def _age_line(item: StaleCertifiedLow) -> str:
     return f"rien depuis {days} j"
 
 
-def format_stale_certified_lows(items: list[StaleCertifiedLow]) -> str:
-    """Message d'état : ce qui est figé, et pourquoi cela ne s'auto-corrige pas."""
+def format_stale_certified_lows(
+    items: list[StaleCertifiedLow],
+    total: int | None = None,
+) -> str:
+    """Message d'état : ce qui est figé, et pourquoi cela ne s'auto-corrige pas.
+
+    `total` est le nombre réel de livres figés, quand il dépasse la liste affichée.
+    Sans lui, un message tronqué à huit lignes annoncerait « 8 livres » pour cent onze :
+    le contrôle qui sous-estime son propre incident vaut moins que pas de contrôle.
+    """
     if not items:
         return ""
 
     listed = items[:MAX_LISTED]
+    affected = max(total or 0, len(items))
     lines = "\n".join(
         f"• <i>{item.title}</i> — {format_cents(item.low_cents)} ({_age_line(item)})"
         for item in listed
     )
-    remainder = len(items) - len(listed)
+    remainder = affected - len(listed)
     tail = f"\n• … et {remainder} autre(s)" if remainder > 0 else ""
 
     return (
         "⚠️ <b>Cotes de marché figées</b>\n\n"
-        f"{len(items)} livre(s) affichent encore un prix bas constaté que plus aucun "
+        f"{affected} livre(s) affichent encore un prix bas constaté que plus aucun "
         "relevé ne nourrit :\n\n"
         f"{lines}{tail}\n\n"
         "Ces valeurs restent affichées tant qu'une source ne les corrige pas : elles ne "
@@ -107,7 +116,7 @@ async def notify_stale_certified_lows(
     """
     try:
         stale_after = datetime.now(UTC) - timedelta(days=stale_after_days)
-        rows = await MarketPriceRepository(session).find_stale_certified_lows(
+        rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
             stale_after=stale_after, limit=MAX_LISTED
         )
         if not rows:
@@ -124,16 +133,16 @@ async def notify_stale_certified_lows(
         ]
         if not await _claim_notification_slot():
             logger.debug(
-                "Cotes figées détectées (%s), déjà signalées aujourd'hui.", len(items)
+                "Cotes figées détectées (%s), déjà signalées aujourd'hui.", total
             )
             return 0
 
-        await notify_admins(format_stale_certified_lows(items))
+        await notify_admins(format_stale_certified_lows(items, total))
         logger.warning(
             "Cotes de marché figées signalées : %s livre(s) sans observation récente.",
-            len(items),
+            total,
         )
-        return len(items)
+        return total
     except Exception as exc:
         logger.warning("Contrôle de santé des cotes impossible : %s", exc)
         return 0

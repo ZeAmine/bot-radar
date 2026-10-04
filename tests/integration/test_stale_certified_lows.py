@@ -116,7 +116,7 @@ async def test_an_old_observation_is_reported(session: AsyncSession) -> None:
     book_id = await _book_with_cached_low(session, title="Dead Train", low_cents=1357)
     await _observe(session, book_id, days_ago=23, certified=True)
 
-    rows = await MarketPriceRepository(session).find_stale_certified_lows(
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
         stale_after=datetime.now(UTC) - timedelta(days=7)
     )
 
@@ -129,7 +129,7 @@ async def test_a_never_observed_book_is_reported(session: AsyncSession) -> None:
     book_id = await _book_with_cached_low(session, title="Carcajou", low_cents=390)
     await _observe(session, book_id, days_ago=23, certified=False)
 
-    rows = await MarketPriceRepository(session).find_stale_certified_lows(
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
         stale_after=datetime.now(UTC) - timedelta(days=7)
     )
 
@@ -141,22 +141,22 @@ async def test_a_fresh_observation_is_not_reported(session: AsyncSession) -> Non
     book_id = await _book_with_cached_low(session, title="Tintin", low_cents=900)
     await _observe(session, book_id, days_ago=1, certified=True)
 
-    rows = await MarketPriceRepository(session).find_stale_certified_lows(
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
         stale_after=datetime.now(UTC) - timedelta(days=7)
     )
 
-    assert rows == []
+    assert (rows, total) == ([], 0)
 
 
 async def test_a_book_without_displayed_low_is_ignored(session: AsyncSession) -> None:
     """Sans cote affichée, il n'y a rien de figé à annoncer."""
     await _book_with_cached_low(session, title="Lucky Luke", low_cents=None)
 
-    rows = await MarketPriceRepository(session).find_stale_certified_lows(
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
         stale_after=datetime.now(UTC) - timedelta(days=7)
     )
 
-    assert rows == []
+    assert (rows, total) == ([], 0)
 
 
 async def test_a_paused_alert_is_not_reported(session: AsyncSession) -> None:
@@ -166,11 +166,11 @@ async def test_a_paused_alert_is_not_reported(session: AsyncSession) -> None:
     )
     await _observe(session, book_id, days_ago=23, certified=True)
 
-    rows = await MarketPriceRepository(session).find_stale_certified_lows(
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
         stale_after=datetime.now(UTC) - timedelta(days=7)
     )
 
-    assert rows == []
+    assert (rows, total) == ([], 0)
 
 
 async def test_a_book_outside_bd_is_not_reported(session: AsyncSession) -> None:
@@ -180,11 +180,11 @@ async def test_a_book_outside_bd_is_not_reported(session: AsyncSession) -> None:
     )
     await _observe(session, book_id, days_ago=23, certified=True)
 
-    rows = await MarketPriceRepository(session).find_stale_certified_lows(
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
         stale_after=datetime.now(UTC) - timedelta(days=7)
     )
 
-    assert rows == []
+    assert (rows, total) == ([], 0)
 
 
 async def test_the_oldest_books_come_first_and_the_list_is_bounded(session: AsyncSession) -> None:
@@ -195,12 +195,31 @@ async def test_the_oldest_books_come_first_and_the_list_is_bounded(session: Asyn
         )
         await _observe(session, book_id, days_ago=40 - index, certified=True)
 
-    rows = await MarketPriceRepository(session).find_stale_certified_lows(
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
         stale_after=datetime.now(UTC) - timedelta(days=7), limit=8
     )
 
     assert len(rows) == 8
     assert [title for title, _, _, _ in rows] == [f"Book {i:02d}" for i in range(8)]
+    # Le total compte ce que la liste tronque : annoncer « 8 livres » pour cent
+    # douze ferait passer la moitié de l'incident pour une sélection.
+    assert total == 12
+
+
+async def test_the_total_counts_what_the_list_leaves_out(session: AsyncSession) -> None:
+    """Le total est l'inventaire, la liste n'est qu'un extrait."""
+    for index in range(3):
+        book_id = await _book_with_cached_low(
+            session, title=f"Tome {index}", low_cents=1000 + index
+        )
+        await _observe(session, book_id, days_ago=30, certified=True)
+
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
+        stale_after=datetime.now(UTC) - timedelta(days=7), limit=2
+    )
+
+    assert len(rows) == 2
+    assert total == 3
 
 
 async def test_a_book_linked_to_no_alert_is_not_reported(session: AsyncSession) -> None:
@@ -210,8 +229,8 @@ async def test_a_book_linked_to_no_alert_is_not_reported(session: AsyncSession) 
     )
     await _observe(session, book_id, days_ago=23, certified=True)
 
-    rows = await MarketPriceRepository(session).find_stale_certified_lows(
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
         stale_after=datetime.now(UTC) - timedelta(days=7)
     )
 
-    assert rows == []
+    assert (rows, total) == ([], 0)

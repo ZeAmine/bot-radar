@@ -132,25 +132,31 @@ class MarketPriceRepository:
         *,
         stale_after: datetime,
         limit: int = 8,
-    ) -> list[tuple[str, str | None, int, datetime | None]]:
+    ) -> tuple[list[tuple[str, str | None, int, datetime | None]], int]:
         """Livres dont la cote 1 an affichée n'est plus nourrie par aucun relevé.
 
         Une cote affichée sans nouvelle observation reste un chiffre, et le
         `historical_low_at` est réécrit à chaque passe : rien ne dit qu'elle a vieilli.
         Cette requête regarde ce qui a réellement été constaté, et non ce qui est
-        affiché. Ne remontent que les livres d'une alerte BD active — une cote Nobody
-        ne regarde n'a pas besoin d'alerte.
+        affiché. Ne remontent que les livres d'une alerte BD active — une cote que
+        personne ne regarde n'a pas besoin d'alerte.
 
         Returns:
-            Liste de (titre, ISBN, cote en centimes, dernière observation certifiée).
-            `None` comme dernière observation signifie « jamais observé dans les
-            relevés conservés », ce qui est plus grave, pas plus rassurant.
+            (livres, total). `livres` est borné par `limit` — c'est une liste à lire,
+            pas un inventaire. `total` compte tous les livres figés, bordés ou non :
+            sans lui, un message annonçant « 8 livres » ferait passer 111 pour 8.
+            Chaque livre est (titre, ISBN, cote en centimes, dernière observation
+            certifiée) ; `None` comme dernière observation signifie « jamais observé
+            dans les relevés conservés », ce qui est plus grave, pas plus rassurant.
         """
         # Dernière observation certifiée, par livre. Réutilisée telle quelle dans le
         # HAVING : c'est le même agrégat, pas une approximation recalculée.
         last_certified = func.max(MarketPriceSnapshot.checked_at).filter(
             _CERTIFIED_LOW_PRESENT.is_not(None)
         )
+        # Comptage sur le jeu déjà filtré : une fonction de fenêtre s'applique après
+        # le HAVING et avant le LIMIT, donc elle voit les livres que la liste tronque.
+        total_matching = func.count().over().label("total_matching")
 
         stmt = (
             select(
@@ -158,6 +164,7 @@ class MarketPriceRepository:
                 Book.isbn13,
                 BookMarketCache.historical_low_1y_cents,
                 last_certified,
+                total_matching,
             )
             .join(BookMarketCache, BookMarketCache.book_id == Book.id)
             .join(AlertBook, AlertBook.book_id == Book.id)
@@ -179,15 +186,18 @@ class MarketPriceRepository:
             .limit(limit)
         )
         result = await self.session.execute(stmt)
-        # Titre et ISBN viennent du modèle ; l'agrégat filtré n'a pas de type :
-        # SQLAlchemy ne le propage pas au Tuple.
+        # Titre et ISBN viennent du modèle ; les agrégats filtrés n'ont pas de type :
+        # SQLAlchemy ne les propage pas au Tuple.
         found: list[tuple[str, str | None, int, datetime | None]] = []
-        for title, isbn, low, last_seen in result.all():
+        total = 0
+        for title, isbn, low, last_seen, matching in result.all():
             # `historical_low_1y_cents` est filtré non nul par le WHERE ci-dessus.
             found.append(
                 (title, isbn, cast(int, low), cast("datetime | None", last_seen))
             )
-        return found
+            # La fenêtre porte le même total sur chaque ligne : une seule suffit.
+            total = matching
+        return found, total
 
     async def update_or_create_cache(
         self,
