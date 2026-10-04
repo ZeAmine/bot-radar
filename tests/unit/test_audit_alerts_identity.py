@@ -330,6 +330,52 @@ def test_un_repli_ne_ressemble_pas_a_un_ok():
     assert "conforme" not in rapport, "un rapport contenant un repli n'est pas conforme"
 
 
+@pytest.mark.asyncio
+async def test_une_notice_de_repli_apres_panne_est_non_verifiee():
+    """La BNF muette ne se remplace pas par OpenLibrary : personne n'a tranché.
+
+    C'est le second point de la mission : la panne isolée ne doit jamais se lire comme
+    une réponse. Ici, non plus, elle ne doit pas se déguiser en repli.
+    """
+
+    async def lookup(_isbn: str) -> IsbnLookup:
+        return IsbnLookup(notice=NOTICE_REPLI, panne="TimeoutError: délai dépassé")
+
+    verdict = (await audit.audit([_alerte()], lookup))[0]
+
+    assert verdict.anomalies == [], "une panne n'autorise aucune accusation"
+    assert verdict.autorite is None, "aucune autorité n'a tranché"
+    assert "TimeoutError" in (verdict.unverified_reason or "")
+    assert "repli écarté" in (verdict.unverified_reason or "")
+
+
+def test_un_repli_apres_panne_est_compte_comme_non_verifie_pas_comme_repli():
+    """Les deux décomptes doivent rester disjoints : c'est ce qui les rend lisibles."""
+    rapport = audit.render(
+        [
+            audit.AlertVerdict(
+                _alerte(),
+                unverified_reason=(
+                    "autorité muette : TimeoutError: délai dépassé — "
+                    "notice de repli écartée : la BNF n'a pas tranché"
+                ),
+            )
+        ]
+    )
+
+    assert "1 alerte(s) non vérifiées" in rapport
+    assert "non confirmée(s) par la BNF" not in rapport
+    assert "conforme" not in rapport
+
+
+def test_un_verdict_sans_autorite_n_est_plus_dit_conforme():
+    """Régression : « aucune autorité a répondu » surmontait « conforme aux notices »."""
+    rapport = audit.render([audit.AlertVerdict(_alerte())])
+
+    assert "aucune autorité a répondu" in rapport
+    assert "conforme" not in rapport, "un rapport qui doute de son autorité n'est pas conforme"
+
+
 def test_le_repli_survit_au_mode_discret():
     """Le mode discret retire le bruit `ok`, pas la seule trace qui reste à lire."""
     rapport = audit.render(
