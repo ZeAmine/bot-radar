@@ -27,6 +27,13 @@ Usage :
 En production :
     docker compose exec app python scripts/audit_alerts_identity.py
 
+Chaque rapport commence par son en-tête : l'instant où la population a été lue et
+l'effectif réellement audité, inactives comprises. Sans lui, deux exécutions de la même
+commande — le bot créant des alertes entre les deux — seraient incomparables.
+
+Le `--json` porte le même en-tête : il rend un objet (`genere_le`, `population`,
+`alertes`) et non un tableau nu, faute de quoi sa population resterait sans nom.
+
 Codes de sortie : 0 rien à signaler, 1 anomalies, 2 erreur. Un verdict de repli n'est
 pas une anomalie : il sort en 0 et se lit `REPLI` dans le rapport.
 """
@@ -39,6 +46,7 @@ import json
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -102,6 +110,9 @@ class AlertIdentity:
     author: str | None = None
     publisher: str | None = None
     variants: Sequence[str] = field(default_factory=tuple)
+    # Le rapport doit dire combien d'alertes en pause il a regardées : sans cela,
+    # deux rapports portant le même nombre d'anomalies ne se comparent pas.
+    inactive: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,6 +121,11 @@ class Anomaly:
 
     code: str
     detail: str
+
+
+def format_instant(audit_le: datetime) -> str:
+    """Un instant lisible et sans ambiguïté de fuseau."""
+    return audit_le.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def libelle_autorite(source: str | None) -> str:
@@ -285,8 +301,37 @@ async def audit(
     return verdicts
 
 
-def render(verdicts: Sequence[AlertVerdict], *, quiet: bool = False) -> str:
-    """Rapport lisible : une ligne par anomalie, un seul verdict à la fin.
+def population(verdicts: Sequence[AlertVerdict]) -> tuple[int, int]:
+    """Effectif audité, inactives comprises — une seule fois, pour les deux rendus.
+
+    Le texte et le `--json` doivent nommer la même population : la calculer à deux
+    endroits les laisserait diverger au premier oubli.
+    """
+    return len(verdicts), sum(1 for v in verdicts if v.identity.inactive)
+
+
+def render_entete(verdicts: Sequence[AlertVerdict], audit_le: datetime) -> str:
+    """L'instant et la population : sans eux, un chiffre n'est opposable à personne.
+
+    Le bot crée des alertes pendant que l'audit tourne. Deux exécutions de la même
+    commande ont donc des dénominateurs différents à juste titre : sans cette ligne,
+    « 24 anomalies » ne dit rien de ce qu'elles décrivaient, ni de quand.
+    """
+    auditees, inactives = population(verdicts)
+    return (
+        f"Audit d'identité — {format_instant(audit_le)}\n"
+        f"Population auditée : {auditees} alerte(s) porteuse(s) d'un ISBN "
+        f"(dont {inactives} inactive(s))"
+    )
+
+
+def render(
+    verdicts: Sequence[AlertVerdict],
+    *,
+    quiet: bool = False,
+    audit_le: datetime,
+) -> str:
+    """Rapport lisible : en-tête daté, une ligne par anomalie, un seul verdict à la fin.
 
     L'en-tête de l'alerte n'est écrit qu'à la première de ses anomalies : le répéter
     devant chacune ferait croire à autant d'alertes que de divergences.
@@ -296,7 +341,7 @@ def render(verdicts: Sequence[AlertVerdict], *, quiet: bool = False) -> str:
     BNF » : un verdict sans autorité ne vaut pas davantage qu'un repli, même s'il
     n'arrive pas par le chemin d'`audit`.
     """
-    lines: list[str] = []
+    lines: list[str] = [render_entete(verdicts, audit_le), ""]
     anomalies = unverified = replis = 0
     # Une réponse venue d'ailleurs que la BNF, et elle seule. Un ISBN que personne ne
     # connaît n'est pas un repli : c'est une absence de réponse, déjà signalée comme
@@ -360,20 +405,29 @@ def render(verdicts: Sequence[AlertVerdict], *, quiet: bool = False) -> str:
     return "\n".join(lines)
 
 
-def as_json(verdicts: Sequence[AlertVerdict]) -> str:
-    """La même information sans mise en forme : lisible par une machine."""
+def as_json(verdicts: Sequence[AlertVerdict], *, audit_le: datetime) -> str:
+    """La même information sans mise en forme : lisible par une machine.
+
+    L'objet porte l'instant et la population au même endroit que le texte : un JSON
+    sans en-tête décrirait une population que rien ne nomme.
+    """
+    auditees, inactives = population(verdicts)
     return json.dumps(
-        [
-            {
-                "alert_id": v.identity.alert_id,
-                "name": v.identity.name,
-                "isbn": v.identity.isbn,
-                "anomalies": [asdict(a) for a in v.anomalies],
-                "unverified_reason": v.unverified_reason,
-                "autorite": v.autorite,
-            }
-            for v in verdicts
-        ],
+        {
+            "genere_le": audit_le.astimezone(UTC).isoformat(),
+            "population": {"auditees": auditees, "inactives": inactives},
+            "alertes": [
+                {
+                    "alert_id": v.identity.alert_id,
+                    "name": v.identity.name,
+                    "isbn": v.identity.isbn,
+                    "anomalies": [asdict(a) for a in v.anomalies],
+                    "unverified_reason": v.unverified_reason,
+                    "autorite": v.autorite,
+                }
+                for v in verdicts
+            ],
+        },
         ensure_ascii=False,
         indent=2,
     )
@@ -412,6 +466,7 @@ async def read_identities(
             author=author,
             publisher=publisher,
             variants=tuple(alert.variants or ()),
+            inactive=alert.status != AlertStatus.ACTIVE,
         )
         for alert, author, publisher in rows
     ]
@@ -450,8 +505,17 @@ async def run(args: argparse.Namespace) -> int:
         print(f"{RED}Lecture des alertes impossible : {exc}{RESET}", file=sys.stderr)
         return EXIT_ERROR
 
+    # L'instant où la population a été lue : c'est elle que le rapport décrit, et non
+    # l'heure de fin, qui dépend de la lenteur des autorités. Prise ici, il vaut aussi
+    # pour une population vide — un rapport muet doit rester daté, lui aussi.
+    population_lue_le = datetime.now(UTC)
+
     if not identities:
-        print("Aucune alerte ne porte d'ISBN : rien à confronter.")
+        if args.json:
+            print(as_json([], audit_le=population_lue_le))
+        else:
+            print(render_entete([], population_lue_le))
+            print("Aucune alerte ne porte d'ISBN : rien à confronter.")
         return EXIT_CLEAN
 
     service = BookMetadataService()
@@ -467,9 +531,9 @@ async def run(args: argparse.Namespace) -> int:
         await close_shared_http_client()
 
     if args.json:
-        print(as_json(verdicts))
+        print(as_json(verdicts, audit_le=population_lue_le))
     else:
-        print(render(verdicts, quiet=args.quiet))
+        print(render(verdicts, quiet=args.quiet, audit_le=population_lue_le))
     return EXIT_ANOMALIES if any(v.anomalies for v in verdicts) else EXIT_CLEAN
 
 
