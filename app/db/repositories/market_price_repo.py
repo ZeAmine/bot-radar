@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import AlertStatus, CategorySlug, ComparisonStatus, MatchConfidence
@@ -17,10 +17,12 @@ from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.providers.base import MarketOffer
 
 # Présence de la cote certifiée dans le `raw_payload` d'un relevé : c'est cette clé
-# qui distingue une observation d'un simple prix du jour. L'opérateur `->>` est
-# nommé explicitement car la colonne est déclarée en `JSON` générique — `.astext`
-# n'existe que sur le comparateur JSONB, et échouerait dès l'import.
-_CERTIFIED_LOW_PRESENT = MarketPriceSnapshot.raw_payload.op("->>")("historical_low_1y_cents")
+# qui distingue une observation d'un simple prix du jour. `as_string()` passe par
+# le comparateur JSON de SQLAlchemy — `->>` sur PostgreSQL, `JSON_EXTRACT` sur
+# SQLite — donc la requête s'exécute réellement dans les tests. L'opérateur brut
+# `op("->>")` aurait produit du SQL que seule la prod sait lire : c'est ainsi qu'une
+# faute de logique est restée invisible jusqu'à la première exécution réelle.
+_CERTIFIED_LOW_PRESENT = MarketPriceSnapshot.raw_payload["historical_low_1y_cents"].as_string()
 
 
 class MarketPriceRepository:
@@ -144,14 +146,18 @@ class MarketPriceRepository:
             `None` comme dernière observation signifie « jamais observé dans les
             relevés conservés », ce qui est plus grave, pas plus rassurant.
         """
+        # Dernière observation certifiée, par livre. Réutilisée telle quelle dans le
+        # HAVING : c'est le même agrégat, pas une approximation recalculée.
+        last_certified = func.max(MarketPriceSnapshot.checked_at).filter(
+            _CERTIFIED_LOW_PRESENT.is_not(None)
+        )
+
         stmt = (
             select(
                 Book.title,
                 Book.isbn13,
                 BookMarketCache.historical_low_1y_cents,
-                func.max(
-                    MarketPriceSnapshot.checked_at
-                ).filter(_CERTIFIED_LOW_PRESENT.is_not(None)),
+                last_certified,
             )
             .join(BookMarketCache, BookMarketCache.book_id == Book.id)
             .join(AlertBook, AlertBook.book_id == Book.id)
@@ -164,16 +170,11 @@ class MarketPriceRepository:
                 BookMarketCache.historical_low_1y_cents.is_not(None),
             )
             .group_by(Book.id, Book.title, Book.isbn13, BookMarketCache.historical_low_1y_cents)
-            .having(
-                func.max(MarketPriceSnapshot.checked_at).filter(
-                    _CERTIFIED_LOW_PRESENT.is_not(None)
-                )
-                < stale_after,
-                # Un livre jamais observé est plus inquiétant qu'un livre ancien.
-                func.max(MarketPriceSnapshot.checked_at)
-                .filter(_CERTIFIED_LOW_PRESENT.is_not(None))
-                .is_(None),
-            )
+            # « Ancien » et « jamais observé » sont deux façons d'être figé, pas deux
+            # conditions cumulables : un `AND` les rendait mutuellement exclusives et
+            # la requête ne pouvait plus rien renvoyer. Un livre jamais observé est
+            # plus inquiétant qu'un livre ancien, pas moins.
+            .having(or_(last_certified < stale_after, last_certified.is_(None)))
             .order_by(Book.title)
             .limit(limit)
         )
