@@ -112,3 +112,122 @@ def test_report_separates_failures_from_warnings():
 
     report.fail("APP_ENV", "development")
     assert len(report.failures) == 1
+
+
+class _FakeRemote:
+    """Un VPS simulé : seule la lecture de l'état Alembic est stubée."""
+
+    def __init__(self, current: str | None, heads: list[str], code: int = 0) -> None:
+        self._state = (current, heads, code)
+        self.scripts: list[str] = []
+
+    def run(self, script: str):
+        self.scripts.append(script)
+        current, heads, code = self._state
+        if code != 0:
+            return code, "", "conteneur injoignable"
+        out = (
+            "__CURRENT__\n"
+            + (f"{current} (head)\n" if current else "\n")
+            + "__HEADS__\n"
+            + "".join(f"{head} (head)\n" for head in heads)
+        )
+        return 0, out, ""
+
+
+def test_migration_state_asks_the_container_not_the_working_directory():
+    """Le graphe pertinent est celui du code qui tourne, pas celui du dossier."""
+    script = pf.migration_state_script("~/bot-radar")
+
+    assert "docker compose exec -T app alembic current" in script
+    assert "docker compose exec -T app alembic heads" in script
+    # Le dossier de travail ne ferait autorité que pour du code pas encore déployé.
+    assert "alembic heads" not in script.replace(
+        "docker compose exec -T app alembic heads", ""
+    )
+    # Sans cette redirection, `docker compose exec` avale la seconde lecture.
+    execs = [line for line in script.splitlines() if "docker compose exec" in line]
+    assert len(execs) == 2
+    for line in execs:
+        assert "< /dev/null" in line, line
+
+
+def test_parse_migration_state_separates_current_from_heads():
+    """Deux marqueurs, deux lectures : les confondre donnerait un faux verdict."""
+    out = (
+        "__CURRENT__\n"
+        "INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.\n"
+        "0005_correct_historical_low (head)\n"
+        "__HEADS__\n"
+        "0006_prix (head)\n"
+    )
+
+    current, heads = pf.parse_migration_state(out)
+
+    assert current == "0005_correct_historical_low"
+    assert heads == ["0006_prix"]
+
+
+def test_pending_migration_does_not_block_the_preflight():
+    """Une migration à jouer est l'attendu d'un déploiement, pas une dérive.
+
+    Régression : le pré-vol comparait la base à la tête locale, donc aucune
+    migration ne pouvait jamais être déployée — le rebuild précède l'`upgrade head`.
+    """
+    remote = _FakeRemote(
+        current="0004_alert_books_book_id_index",
+        heads=["0004_alert_books_book_id_index"],
+    )
+    report = pf.Report()
+
+    pf.check_remote_migration(report, remote, "~/bot-radar", "0005_correct_historical_low", False)
+
+    assert report.failures == []
+
+
+def test_schema_ahead_of_deployed_code_is_fatal():
+    """Une base en avance sur le code qui la sert est la dérive qui casse l'app."""
+    remote = _FakeRemote(current="0006_prix", heads=["0005_correct_historical_low"])
+    report = pf.Report()
+
+    pf.check_remote_migration(report, remote, "~/bot-radar", "0006_prix", False)
+
+    assert len(report.failures) == 1
+    assert "divergent" in report.failures[0]
+
+
+def test_several_heads_in_deployed_code_is_fatal():
+    """Deux têtes en production, c'est un graphe ambigu : rien ne dit quoi jouer."""
+    remote = _FakeRemote(current="0005_correct_historical_low", heads=["0005_a", "0005_b"])
+    report = pf.Report()
+
+    pf.check_remote_migration(report, remote, "~/bot-radar", "0005_a", False)
+
+    assert len(report.failures) == 1
+    assert "têtes" in report.failures[0]
+
+
+def test_after_sync_the_base_must_carry_the_local_head():
+    """Après le rebuild, l'écart est redevenu fatal : la migration a dû être jouée."""
+    remote = _FakeRemote(
+        current="0004_alert_books_book_id_index",
+        heads=["0005_correct_historical_low"],
+    )
+    report = pf.Report()
+
+    pf.check_remote_migration(
+        report, remote, "~/bot-radar", "0005_correct_historical_low", True
+    )
+
+    assert len(report.failures) == 1
+    assert "attendu 0005_correct_historical_low" in report.failures[0]
+
+
+def test_unreadable_migration_state_is_never_a_pass():
+    """Un conteneur muet ne doit pas passer pour un accord."""
+    remote = _FakeRemote(current=None, heads=[], code=1)
+    report = pf.Report()
+
+    pf.check_remote_migration(report, remote, "~/bot-radar", "0005_correct_historical_low", False)
+
+    assert len(report.failures) == 1

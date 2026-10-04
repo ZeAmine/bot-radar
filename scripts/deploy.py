@@ -154,6 +154,10 @@ def step_migrate(ctx: Context) -> int:
     Migrer contre un conteneur qui redémarre encore viserait l'image précédente :
     le schéma resterait en retard d'une version sur le code, sans que rien ne le
     signale. Le schéma doit suivre le code : c'est une condition, pas une étape.
+
+    Chaque `docker compose exec` ferme son entrée standard : le script arrive sur
+    celle de `bash -s`, et le conteneur la consomme. Sans cela, `alembic current`
+    n'est jamais exécuté — la migration passe, sa confirmation disparaît.
     """
     script = f"""set -eu
 cd {ctx.remote_dir}
@@ -173,8 +177,8 @@ if [ "$state" != "healthy" ]; then
   exit 1
 fi
 echo "conteneur sain, migration..."
-docker compose exec -T app alembic upgrade head
-docker compose exec -T app alembic current
+docker compose exec -T app alembic upgrade head < /dev/null
+docker compose exec -T app alembic current < /dev/null
 """
     code, out, err = ctx.remote_or_default().run(script)
     print(f"{DIM}{out.strip()}{RESET}")
@@ -281,7 +285,8 @@ def step_notify(ctx: Context) -> int:
     script = (
         f"set -eu\n"
         f"cd {ctx.remote_dir}\n"
-        f"docker compose exec -T app python scripts/notify_deploy.py --base64 '{b64_msg}' || true\n"
+        f"docker compose exec -T app python scripts/notify_deploy.py --base64 '{b64_msg}'"
+        " < /dev/null || true\n"
     )
     if current_head:
         script += f"echo '{current_head}' > {ctx.remote_dir}/.deployed_commit\n"

@@ -6,7 +6,9 @@ c'est une cible `rsync`. Deux dérives ont déjà survécu à des pushes verts �
 
 - le code poussé n'a jamais été envoyé, le bot a continué de servir l'ancien ;
 - `APP_ENV` est resté à `development`, donc la garde-fou des secrets ne s'exécutait
-  jamais et `/docs` servait la surface d'ingestion en clair.
+  jamais et `/docs` servait la surface d'ingestion en clair ;
+- le schéma et le code qui le sert ont divergé, et l'application démarre sur une
+  base qui ne lui correspond plus.
 
 Aucune des deux n'est visible depuis le dépôt local. Ce script les rend visibles en
 interrogeant le serveur, et échoue bruyamment plutôt que de laisser passer.
@@ -311,24 +313,126 @@ def check_remote_code(
         print(f"        {DIM}{err.strip()[:100]}{RESET}")
 
 
-def check_remote_migration(
-    report: Report, remote: Remote, remote_dir: str, expected: str | None
-) -> None:
-    """La base du VPS doit être à la révision que le dépôt déclare."""
-    print("\nBase de données")
-    if expected is None:
-        report.skip("migration en tête", "révision locale illisible")
-        return
-    code, out, err = remote.run(
-        f"cd {remote_dir} && docker compose exec -T app alembic current 2>&1"
+# Alembic écrit « révision (head) » ; ses lignes de log partagent l'entrée standard
+# (`2>&1`) et un identifiant alphanumérique comme premier mot, si bien qu'une simple
+# lecture du premier mot prendrait « INFO » pour une révision.
+_REVISION_LINE = re.compile(r"^([A-Za-z0-9_]+)\s+\((?:head|branch[^)]*)\)")
+_HEAD_LINE = re.compile(r"^([A-Za-z0-9_]+)\s+\(head\)", re.MULTILINE)
+
+
+def migration_state_script(remote_dir: str) -> str:
+    """Script distant : ce que la base contient, et ce que le code déployé attend.
+
+    Les deux lectures viennent du conteneur : c'est son image qui décide du graphe
+    Alembic qu'il sait exécuter. Lire le dossier de travail donnerait le graphe du
+    code synchronisé, pas celui qui tourne — et les deux diffèrent précisément
+    quand une migration vient d'être ajoutée.
+
+    `< /dev/null` n'est pas cosmétique : le script arrive sur l'entrée standard de
+    `bash -s`, et `docker compose exec` la consomme. Sans cette redirection, la
+    seconde lecture n'est jamais exécutée — le script se termine sur un succès
+    menteur, avec une seule tête lue au lieu de deux.
+    """
+    return (
+        f"cd {remote_dir} || exit 1\n"
+        "echo __CURRENT__\n"
+        "docker compose exec -T app alembic current 2>&1 < /dev/null | tail -n 1\n"
+        "echo __HEADS__\n"
+        "docker compose exec -T app alembic heads 2>&1 < /dev/null\n"
     )
+
+
+def parse_migration_state(out: str) -> tuple[str | None, list[str]]:
+    """Lit la révision courante et les têtes du graphe dans la sortie du script."""
+    current_block, _, heads_block = out.partition("__HEADS__")
+    current_block = current_block.partition("__CURRENT__")[2]
+
+    current: str | None = None
+    for line in current_block.splitlines():
+        match = _REVISION_LINE.match(line.strip())
+        if match:
+            current = match.group(1)
+            break
+    if current is None:
+        # Un `alembic current` sans étiquette reste lisible : une révision isolée.
+        for line in current_block.splitlines():
+            stripped = line.strip()
+            if re.fullmatch(r"[A-Za-z0-9_]+", stripped):
+                current = stripped
+                break
+
+    heads = _HEAD_LINE.findall(heads_block)
+    return current, heads
+
+
+def remote_migration_state(
+    remote: Remote, remote_dir: str
+) -> tuple[str | None, list[str], str]:
+    """Révision de la base et têtes du code déployé ; le dernier champ est l'erreur."""
+    code, out, err = remote.run(migration_state_script(remote_dir))
     if code != 0:
-        report.fail("migration en tête", (err or out).strip()[:80] or "échec")
-    elif expected in out:
-        report.ok("migration en tête", expected)
+        return None, [], (err or out).strip()[:80] or "échec de la lecture"
+    current, heads = parse_migration_state(out)
+    return current, heads, ""
+
+
+def check_remote_migration(
+    report: Report,
+    remote: Remote,
+    remote_dir: str,
+    expected_head: str | None,
+    post_sync: bool,
+) -> None:
+    """Le schéma et le code qui le sert ne doivent jamais diverger.
+
+    Avant synchro, la référence est la tête du graphe **du conteneur qui tourne**.
+    Exiger que la base porte déjà la révision locale rendait tout déploiement d'une
+    migration impossible : le rebuild précède l'`upgrade head`, donc la base est
+    nécessairement en retard au moment du pré-vol. Ce qui reste fatal, c'est la
+    dérive réelle — un schéma en avance ou en retard sur le code qui le sert.
+
+    Après synchro, la migration a été jouée : la base doit porter la tête locale.
+    """
+    print("\nBase de données")
+    current, heads, error = remote_migration_state(remote, remote_dir)
+    if error:
+        report.fail("migration en tête", error)
+        return
+
+    if post_sync:
+        if expected_head is None:
+            report.skip("migration en tête", "révision locale illisible")
+            return
+        if current == expected_head:
+            report.ok("migration en tête", current)
+        else:
+            actual = current or "inconnue"
+            report.fail("migration en tête", f"attendu {expected_head}, base à {actual}")
+        return
+
+    if len(heads) != 1:
+        report.fail(
+            "migration en tête",
+            (
+                f"plusieurs têtes dans le code déployé : {', '.join(heads)}"
+                if heads
+                else "tête Alembic du code déployé illisible"
+            ),
+        )
+        return
+
+    if current != heads[0]:
+        actual = current or "inconnue"
+        report.fail(
+            "migration en tête",
+            f"schéma et code déployé divergent : base à {actual}, code à {heads[0]}",
+        )
+        return
+
+    if expected_head and expected_head != current:
+        report.ok("migration en tête", f"{current} — {expected_head} à jouer après synchro")
     else:
-        actual = out.strip().splitlines()[-1][:40] if out.strip() else "inconnue"
-        report.fail("migration en tête", f"attendu {expected}, base à {actual}")
+        report.ok("migration en tête", current)
 
 
 def main() -> int:
@@ -357,7 +461,9 @@ def main() -> int:
     else:
         check_remote_config(report, remote, args.remote_dir)
         check_remote_code(report, remote, args.remote_dir, args.post_sync)
-        check_remote_migration(report, remote, args.remote_dir, expected_head)
+        check_remote_migration(
+            report, remote, args.remote_dir, expected_head, args.post_sync
+        )
 
     print()
     if report.failures:

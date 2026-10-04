@@ -130,6 +130,22 @@ def test_migration_waits_for_a_healthy_container():
     assert "alembic current" in script
 
 
+def test_docker_exec_in_a_script_never_eats_the_rest_of_it():
+    """`docker compose exec` lit l'entrée standard : sans `</dev/null`, il avale la suite.
+
+    Le script arrive sur l'entrée de `bash -s`. Sans la redirection, tout ce qui suit
+    le premier `docker compose exec` n'est jamais exécuté : la migration passait, sa
+    ligne de confirmation disparaissait, et l'étape rendait un succès muet.
+    """
+    remote = _FakeRemote()
+    assert step_migrate(_ctx(remote=remote)) == 0
+
+    execs = [line for line in remote.scripts[0].splitlines() if "docker compose exec" in line]
+    assert len(execs) == 2
+    for line in execs:
+        assert "< /dev/null" in line, line
+
+
 def test_migration_reports_a_container_that_never_becomes_healthy():
     """Un conteneur qui ne devient pas sain fait échouer l'étape, pas la migration."""
     remote = _FakeRemote(code=1)
