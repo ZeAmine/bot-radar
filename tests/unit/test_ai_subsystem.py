@@ -589,3 +589,140 @@ async def test_natural_add_without_alternatives_leaves_empty_list():
     assert res is not None
     assert len(res.edition_alternatives) == 1
 
+
+
+# --- Cas réel : « Les Enfants perdus », homonymie BNF -----------------------------
+# La BNF ne connaît que le roman de 1989. Le rattacher à la BD de 2025 affichait son
+# ISBN, son auteur et son éditeur comme s'ils étaient ceux de la BD, et les variantes
+# calculées ensuite raisonnaient sur le roman.
+ENFANTS_PERDUS_ROMAN = BookMetadata(
+    title="Les Enfants perdus",
+    author="Rosemonde Ahou de Saintange",
+    publisher="La Pensée universelle",
+    isbn13="9782214080627",
+    source="bnf",
+    publication_year=1989,
+)
+ENFANTS_PERDUS_BD = BookMetadata(
+    title="Les Enfants perdus",
+    author="Nef",
+    publisher="Éditions du Chêne",
+    isbn13="9782810206087",
+    source="bnf",
+    publication_year=2025,
+)
+_HOMONYM_RESOLUTION = BookResolution(
+    best=ENFANTS_PERDUS_ROMAN,
+    other_works=[ENFANTS_PERDUS_BD],
+)
+
+
+def _homonym_bnf(resolution: BookResolution | None = _HOMONYM_RESOLUTION) -> AsyncMock:
+    bnf = AsyncMock()
+    bnf.resolve_for_alert = AsyncMock(return_value=resolution)
+    bnf.verify_isbn = AsyncMock(return_value=None)
+    return bnf
+
+
+@pytest.mark.asyncio
+async def test_natural_add_attaches_nothing_when_the_title_is_a_homonym():
+    """Un titre partagé par deux œuvres ne rattache ni ISBN, ni auteur, ni éditeur."""
+    mock_client = FakeLLM(
+        text={
+            "name": "Les Enfants perdus",
+            "category_slug": "bd_comics",
+            "isbn13": None,
+            "include_keywords": ["Les Enfants perdus"],
+        }
+    )
+    bnf = _homonym_bnf()
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("les enfants perdus. Max 12 €")
+
+    assert res is not None
+    assert res.isbn13 is None
+    assert res.author is None
+    assert res.publisher is None
+    assert res.book_context is None
+    assert res.edition_alternatives == []
+    assert res.isbn_note is not None
+    assert "surveillance par titre" in res.isbn_note
+    # Les deux œuvres sont proposées, l'auteur du roman en premier.
+    assert [work.author for work in res.work_choices] == [
+        "Rosemonde Ahou de Saintange",
+        "Nef",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_natural_add_reads_the_author_the_user_typed():
+    """« Les Enfants perdus de Nef » donne à la résolution l'auteur qu'il a écrit."""
+    mock_client = FakeLLM(
+        text={"name": "Les Enfants perdus", "category_slug": "bd_comics"}
+    )
+    bnf = _homonym_bnf(
+        BookResolution(
+            best=ENFANTS_PERDUS_BD,
+            other_works=[ENFANTS_PERDUS_ROMAN],
+            author_hint_match="matched",
+        )
+    )
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("les enfants perdus de Nef. Max 12 €")
+
+    assert res is not None
+    bnf.resolve_for_alert.assert_awaited_once_with("Les Enfants perdus", "Nef")
+    assert res.author == "Nef"
+    assert res.isbn13 == "9782810206087"
+
+
+@pytest.mark.asyncio
+async def test_natural_add_keeps_a_typed_isbn_on_a_homonymic_title():
+    """Un ISBN saisi n'est pas perdu quand la BNF ignore l'ouvrage : il est signalé."""
+    mock_client = FakeLLM(
+        text={"name": "Les Enfants perdus", "category_slug": "bd_comics"}
+    )
+    bnf = _homonym_bnf()
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("9782810206087 les enfants perdus")
+
+    assert res is not None
+    assert res.isbn13 == "9782810206087"
+    assert res.isbn_note is not None
+    assert "surveillance par titre" in res.isbn_note
+    assert "non confirmé par la BNF" in res.isbn_note
+    assert len(res.work_choices) == 2
+
+
+@pytest.mark.asyncio
+async def test_natural_add_bnf_notice_overrules_the_author_guessed_by_the_model():
+    """Quand la BNF a répondu, c'est sa notice qui fait autorité sur l'auteur."""
+    mock_client = FakeLLM(
+        text={
+            "name": "La couleur des choses",
+            "category_slug": "bd_comics",
+            "author": "Keeping two",
+            "publisher": "Guy Delcourt",
+        }
+    )
+    bnf = AsyncMock()
+    bnf.resolve_for_alert = AsyncMock(return_value=BookResolution(best=PANCHAUD_EDITION))
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("la couleur des choses")
+
+    assert res is not None
+    assert res.author == PANCHAUD_EDITION.author
+    assert res.publisher == PANCHAUD_EDITION.publisher

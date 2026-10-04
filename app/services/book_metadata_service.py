@@ -15,7 +15,7 @@ import re
 import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel
@@ -40,6 +40,11 @@ MAX_ALTERNATIVE_EDITIONS = 3
 FRENCH_ISBN_PREFIXES = ("9782", "979")
 
 _TITLE_QUERY_ALLOWED_CHARS = r"[^a-zA-Z0-9\sàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ-]"
+
+# Concordance entre l'indice d'auteur saisi et la notice retenue : sans indice, l'indice
+# ne tranche rien (« none ») ; il désigne la notice (« matched ») ; il la contredit
+# (« conflicts ») et la notice n'est alors pas l'œuvre demandée.
+AuthorHintMatch = Literal["none", "matched", "conflicts"]
 
 
 @dataclass
@@ -68,12 +73,67 @@ class EditionAlternative(BaseModel):
     format_detail: str | None = None
 
 
+class WorkAlternative(BaseModel):
+    """Autre ouvrage portant le même titre, proposé au choix de l'utilisateur."""
+
+    isbn13: str
+    title: str
+    author: str | None = None
+    publisher: str | None = None
+    publication_year: int | None = None
+
+
 @dataclass
 class BookResolution:
-    """Résultat d'une résolution d'œuvre : l'édition de référence et ses variantes."""
+    """Résultat d'une résolution d'œuvre : l'édition de référence et ses variantes.
+
+    `other_works` porte ce que `_is_same_work` écarte : les notices qui portent
+    exactement le même titre pour un **auteur différent**. Ce ne sont pas des
+    éditions concurrentes, ce sont d'autres ouvrages — « Les Enfants perdus » existe
+    en roman de 1989 et en BD de 2025. Les écarter en silence faisait passer le
+    roman pour l'œuvre demandée, avec son ISBN, son auteur et son éditeur dans le
+    récap.
+    """
 
     best: BookMetadata
     alternatives: list[BookMetadata] = field(default_factory=list)
+    other_works: list[BookMetadata] = field(default_factory=list)
+    author_hint_match: AuthorHintMatch = "none"
+
+    @property
+    def is_ambiguous(self) -> bool:
+        """Le titre ne suffit pas à nommer l'œuvre : aucune fiche n'est confirmée."""
+        if self.author_hint_match == "conflicts":
+            return True
+        if not self.other_works:
+            return False
+        # Un indice d'auteur qui désigne la notice retenue tranche l'homonymie : les
+        # autres notices ne sont plus des candidates, elles ne sont que des homonymes.
+        return self.author_hint_match != "matched"
+
+    def work_choices(self) -> list[WorkAlternative]:
+        """Œuvres homonymes proposées à l'utilisateur, la notice retenue en tête.
+
+        Tant que l'utilisateur n'a pas choisi, rien n'est rattaché : une liste de
+        propositions vaut mieux qu'une fiche fausse affichée comme confirmée.
+        """
+        works = [self.best, *self.other_works]
+        choices: list[WorkAlternative] = []
+        seen: set[str] = set()
+        for meta in works:
+            if not meta.isbn13 or meta.isbn13 in seen:
+                continue
+            seen.add(meta.isbn13)
+            choices.append(
+                WorkAlternative(
+                    isbn13=meta.isbn13,
+                    title=meta.title,
+                    author=meta.author,
+                    publisher=meta.publisher,
+                    publication_year=meta.publication_year,
+                )
+            )
+        return choices
 
     def editions(self) -> list[EditionAlternative]:
         """Toutes les éditions de l'œuvre, dédupliquées, édition de référence en tête.
@@ -105,6 +165,56 @@ class _OpenLibraryWork:
 
     meta: BookMetadata
     edition_isbns: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class IsbnConfirmation:
+    """Verdict d'une autorité sur un ISBN saisi par l'utilisateur.
+
+    `meta` seule : les autorités connaissent cet ISBN et il désigne bien l'œuvre.
+    `conflicting_title` renseignée : elles le rattachent à un autre ouvrage — c'est une
+    contradiction, pas un silence. Ni l'un ni l'autre : personne ne connaît ce code,
+    ce qui n'interdit rien mais n'autorise aucune fiche.
+    """
+
+    meta: BookMetadata | None = None
+    conflicting_title: str | None = None
+    conflicting_author: str | None = None
+
+
+OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
+
+
+def provenance_note(meta: BookMetadata) -> str | None:
+    """Signale au récap une donnée d'identité issue d'une autorité secondaire."""
+    return OPENLIBRARY_SOURCE_NOTE if meta.source == "openlibrary" else None
+
+
+def ambiguity_note(resolution: BookResolution) -> str | None:
+    """Dit pourquoi aucune fiche n'est rattachée quand le titre désigne plusieurs œuvres.
+
+    Sans ce texte, l'absence d'auteur et d'éditeur se lit comme un oubli. Une fiche
+    d'homonyme affichée sans avertissement, elle, se lit comme une confirmation.
+    """
+    if not resolution.is_ambiguous:
+        return None
+    found = resolution.best
+    if resolution.author_hint_match == "conflicts":
+        found_author = found.author or "un auteur non renseigné"
+        return (
+            f"La BNF connaît « {found.title} » de {found_author}, "
+            "pas l'ouvrage que tu as demandé"
+        )
+    others = len(resolution.other_works)
+    if others == 1:
+        return (
+            f"« {found.title} » est aussi le titre d'une autre œuvre : "
+            "surveillance par titre jusqu'au choix ci-dessous"
+        )
+    return (
+        f"« {found.title} » est le titre de {others} autres œuvres : "
+        "surveillance par titre jusqu'au choix ci-dessous"
+    )
 
 
 def clean_openlibrary_author(raw_author: str) -> str:
@@ -185,7 +295,7 @@ def parse_query_title_and_author(query: str) -> tuple[str, str | None]:
     # Découpage explicite par "par" ou "by"
     parts = re.split(r"\s+(?:par|by)\s+", text, flags=re.IGNORECASE)
     if len(parts) == 2 and parts[0].strip() and parts[1].strip():
-        return parts[0].strip(), parts[1].strip()
+        return parts[0].strip(), _clean_author_candidate(parts[1])
 
     # Découpage par "de" (attention aux titres contenant "de", ex: "La saga de Grimr")
     parts_de = re.split(r"\s+de\s+", text, flags=re.IGNORECASE)
@@ -193,12 +303,22 @@ def parse_query_title_and_author(query: str) -> tuple[str, str | None]:
         last_part = parts_de[-1].strip()
         # Si le dernier segment ressemble à un nom d'auteur (1 à 4 mots max)
         if 1 <= len(last_part.split()) <= 4:
-            author_candidate = last_part
+            author_candidate = _clean_author_candidate(last_part)
             title_candidate = " de ".join(parts_de[:-1]).strip()
-            if title_candidate:
+            if title_candidate and author_candidate:
                 return title_candidate, author_candidate
 
     return text, None
+
+
+def _clean_author_candidate(raw_author: str) -> str | None:
+    """Retire la ponctuation de fin de phrase qui entoure un nom d'auteur.
+
+    « les enfants perdus de Nef. » donne « Nef. » : le point final ferait échouer
+    toute concordance d'auteur, donc l'homonymie resterait indétectée.
+    """
+    cleaned = raw_author.strip(" .,;:!? ")
+    return cleaned or None
 
 
 def clean_bnf_title(raw_title: str) -> str:
@@ -307,6 +427,30 @@ class BookMetadataService:
         # 3. Recherche par Titre (+ Auteur éventuel)
         return await self.lookup_by_title_and_author(clean_q)
 
+    async def resolve_input(self, query: str) -> BookResolution | None:
+        """Résout une saisie libre de l'utilisateur, quelle qu'en soit la forme.
+
+        La forme de la saisie (ISBN, URL Vinted, titre + auteur) reste une connaissance
+        du service : l'appelant veut une résolution, pas une décision de forme. Un ISBN
+        ou une URL nommant un ouvrage ne sont pas ambigus, d'où l'absence d'autres
+        œuvres candidates.
+        """
+        clean_q = query.strip()
+        if not clean_q:
+            return None
+
+        raw_digits = re.sub(r"[^0-9X]", "", clean_q.upper())
+        if len(raw_digits) in (10, 13) and (raw_digits.isdigit() or raw_digits.endswith("X")):
+            meta = await self.lookup_by_isbn(raw_digits)
+            return BookResolution(best=meta) if meta else None
+
+        if "vinted." in clean_q.lower():
+            meta = await self._lookup_from_vinted_url(clean_q)
+            return BookResolution(best=meta) if meta else None
+
+        title_query, author_query = parse_query_title_and_author(clean_q)
+        return await self.resolve_for_alert(title_query, author_query)
+
     async def lookup_by_isbn(self, isbn: str) -> BookMetadata | None:
         """Recherche une œuvre par son ISBN officiel sur la BNF."""
         clean_isbn = normalize_isbn(isbn)
@@ -326,37 +470,43 @@ class BookMetadataService:
         Filet anti-hallucination : un ISBN bien formé mais attribué à une autre œuvre
         (préfixe d'éditeur recombiné par un LLM, par exemple) est rejeté sur le titre.
         """
+        return (await self.confirm_isbn_for_title(isbn13, expected_title)).meta
+
+    async def confirm_isbn_for_title(
+        self, isbn13: str, expected_title: str | None
+    ) -> IsbnConfirmation:
+        """Verdict complet sur un ISBN saisi : confirmé, contredit, ou inconnu.
+
+        `verify_isbn` ne renvoie que la notice : l'appelant ne peut pas distinguer
+        « la BNF connaît cet ISBN et c'est un autre livre » de « personne ne connaît cet
+        ISBN ». Ces deux verdicts n'appellent pas la même réponse : le premier est une
+        contradiction, le second une simple absence de preuve. La séparation se fait ici,
+        une fois pour tous.
+        """
         clean_isbn = normalize_isbn(isbn13)
         if not clean_isbn or not is_valid_isbn(clean_isbn):
-            return None
+            return IsbnConfirmation()
 
         records = await self._query_bnf_sru(f'bib.isbn adj "{clean_isbn}"')
-        if not records:
+        best = records[0] if records else None
+        if best is None:
             # La BNF ignore ce code : OpenLibrary tranche en repli, même garde-fou de titre.
             fallback = await self._openlibrary_works({"isbn": clean_isbn})
             if not fallback:
-                return None
+                return IsbnConfirmation()
             best = fallback[0].meta
-            if title_similarity(best.title, expected_title) < TITLE_SIMILARITY_MIN:
-                logger.info(
-                    "ISBN %s écarté (OpenLibrary) : « %s » ne correspond pas à « %s »",
-                    clean_isbn,
-                    best.title,
-                    expected_title,
-                )
-                return None
-            return best
 
-        best = records[0]
-        if title_similarity(best.title, expected_title) < TITLE_SIMILARITY_MIN:
+        if expected_title and title_similarity(best.title, expected_title) < TITLE_SIMILARITY_MIN:
             logger.info(
-                "ISBN %s écarté : la BNF le rattache à « %s » et non à « %s »",
+                "ISBN %s écarté : les autorités le rattachent à « %s » et non à « %s »",
                 clean_isbn,
                 best.title,
                 expected_title,
             )
-            return None
-        return self._attach_recommendations(best)
+            return IsbnConfirmation(conflicting_title=best.title, conflicting_author=best.author)
+
+        meta = best if best.source == "openlibrary" else self._attach_recommendations(best)
+        return IsbnConfirmation(meta=meta)
 
     async def resolve_for_alert(
         self, title: str, author_hint: str | None = None
@@ -365,6 +515,11 @@ class BookMetadataService:
 
         Ne renvoie que des notices réellement proches du titre demandé et expose les autres
         éditions connues de la même œuvre pour que l'utilisateur puisse les voir.
+
+        Un titre n'est pas une identité : « Les Enfants perdus » désigne un roman de 1989
+        comme une BD de 2025. Quand plusieurs notices portent le même titre sous des
+        auteurs différents, `is_ambiguous` est vrai et l'appelant ne rattache rien — il
+        propose le choix. Seule une concordance d'auteur tranche l'homonymie.
         """
         if not title.strip():
             return None
@@ -390,13 +545,73 @@ class BookMetadataService:
         if not candidates:
             return await self._resolve_via_openlibrary(title, author_hint)
 
+        candidates = self._prefer_author_hint(candidates, author_hint)
         best = self._attach_recommendations(candidates[0])
         alternatives = [
             record
             for record in candidates[1 : 1 + MAX_ALTERNATIVE_EDITIONS]
             if self._is_same_work(record, best)
         ]
-        return BookResolution(best=best, alternatives=alternatives)
+        other_works = [
+            record for record in candidates[1:] if self._is_homonym(record, best, title)
+        ][:MAX_ALTERNATIVE_EDITIONS]
+        return BookResolution(
+            best=best,
+            alternatives=alternatives,
+            other_works=other_works,
+            author_hint_match=self._author_hint_match(best, author_hint),
+        )
+
+    @staticmethod
+    def _prefer_author_hint(
+        candidates: list[BookMetadata], author_hint: str | None
+    ) -> list[BookMetadata]:
+        """Fait remonter la notice dont l'auteur correspond à l'indice saisi.
+
+        Le score BNF ne départage deux homonymes que de quelques dixièmes : quand
+        l'utilisateur a écrit « Les Enfants perdus de Nef », c'est cette concordance
+        qui doit trancher, pas la position dans la réponse SRU.
+        """
+        if not author_hint or not author_hint.strip():
+            return candidates
+        for index, record in enumerate(candidates):
+            if record.author and same_author(record.author, author_hint):
+                if index == 0:
+                    return candidates
+                return [record, *candidates[:index], *candidates[index + 1 :]]
+        return candidates
+
+    @staticmethod
+    def _author_hint_match(
+        best: BookMetadata, author_hint: str | None
+    ) -> AuthorHintMatch:
+        """L'indice d'auteur désigne-t-il la notice retenue, la contredit-il, ou rien ?"""
+        if not author_hint or not author_hint.strip() or not best.author:
+            return "none"
+        return "matched" if same_author(best.author, author_hint) else "conflicts"
+
+    @staticmethod
+    def _is_homonym(
+        candidate: BookMetadata, reference: BookMetadata, requested_title: str
+    ) -> bool:
+        """Un autre ouvrage portant exactement le titre que l'utilisateur a demandé.
+
+        Les trois titres doivent coïncider : « Les Enfants perdus » demandé ne peut pas
+        être rendu ambigu par une notice de « Les Enfants perdus tome 2 », ni par un
+        ouvrage voisin comme « De la couleur des choses ». L'ambiguïté porte sur le
+        titre saisi, pas sur les notices voisines qu'il a ramenées.
+        """
+        wanted = normalize_text(requested_title)
+        if not wanted:
+            return False
+        if (
+            normalize_text(candidate.title) != wanted
+            or normalize_text(reference.title) != wanted
+        ):
+            return False
+        # Sans auteur connu des deux côtés, rien ne prouve qu'il s'agit d'un autre
+        # ouvrage : la notice reste une édition possible.
+        return not BookMetadataService._is_same_work(candidate, reference)
 
     @staticmethod
     def _is_same_work(candidate: BookMetadata, reference: BookMetadata) -> bool:
@@ -593,7 +808,19 @@ class BookMetadataService:
             for isbn in candidates[0].edition_isbns
             if isbn != best.isbn13 and isbn.startswith(FRENCH_ISBN_PREFIXES)
         ][:MAX_ALTERNATIVE_EDITIONS]
-        return BookResolution(best=best, alternatives=alternatives)
+        # Chaque document OpenLibrary est une œuvre : deux documents de même titre et
+        # d'auteurs différents sont des homonymes, pas des éditions.
+        other_works = [
+            work.meta
+            for work in candidates[1 : 1 + MAX_ALTERNATIVE_EDITIONS]
+            if self._is_homonym(work.meta, best, title)
+        ]
+        return BookResolution(
+            best=best,
+            alternatives=alternatives,
+            other_works=other_works,
+            author_hint_match=self._author_hint_match(best, author_hint),
+        )
 
     async def _openlibrary_works(self, params: dict[str, str]) -> list[_OpenLibraryWork]:
         """Notices OpenLibrary correspondant à une recherche, triées par pertinence."""

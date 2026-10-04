@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.services.book_metadata_service import EditionAlternative
+from app.services.book_metadata_service import EditionAlternative, WorkAlternative
 
 
 class _LoosePayload(BaseModel):
@@ -75,6 +75,13 @@ class NaturalAddResult(BaseModel):
     edition_alternatives: list[EditionAlternative] = Field(
         default_factory=list,
         description="Éditions concurrentes de la même œuvre, sélectionnables dans le récap",
+    )
+    work_choices: list[WorkAlternative] = Field(
+        default_factory=list,
+        description=(
+            "Autres ouvrages portant le même titre, sélectionnables dans le récap "
+            "quand le titre seul ne désigne pas une œuvre unique"
+        ),
     )
 
 

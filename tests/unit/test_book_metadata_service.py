@@ -9,6 +9,8 @@ from app.core.constants import MatchConfidence
 from app.services.book_metadata_service import (
     BookMetadata,
     BookMetadataService,
+    BookResolution,
+    ambiguity_note,
     clean_bnf_creator,
     clean_bnf_publisher,
     clean_bnf_title,
@@ -417,3 +419,175 @@ def test_clean_openlibrary_author_strips_role():
     """Les noms d'auteur OpenLibrary portent parfois une mention de rôle."""
     assert clean_openlibrary_author("Martin Panchaud (Auteur du texte)") == "Martin Panchaud"
     assert clean_openlibrary_author("J. R. R. Tolkien") == "J. R. R. Tolkien"
+
+
+# --- Cas réel : « Les Enfants perdus », homonymie BNF -----------------------------
+# Le titre d'une BD de 2025 est aussi celui d'un roman de 1989. La BNF ne connaît
+# que le roman : le prendre pour l'œuvre demandée affichait son ISBN, son auteur et
+# son éditeur comme s'ils étaient ceux de la BD.
+def _homonym_records() -> list[BookMetadata]:
+    return [
+        BookMetadata(
+            title="Les Enfants perdus",
+            author="Rosemonde Ahou de Saintange",
+            publisher="La Pensée universelle",
+            isbn13="9782214080627",
+            source="bnf",
+            publication_year=1989,
+        ),
+        BookMetadata(
+            title="Les Enfants perdus",
+            author="Nef",
+            publisher="Éditions du Chêne",
+            isbn13="9782810206087",
+            source="bnf",
+            publication_year=2025,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resolve_for_alert_exposes_homonyms_instead_of_choosing_silently():
+    """Deux œuvres de même titre : aucune n'est confirmée, les deux sont proposées."""
+    service = BookMetadataService()
+    records = _homonym_records()
+
+    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+        resolution = await service.resolve_for_alert("Les Enfants perdus")
+
+    assert resolution is not None
+    assert resolution.is_ambiguous is True
+    assert [work.author for work in resolution.work_choices()] == [
+        "Rosemonde Ahou de Saintange",
+        "Nef",
+    ]
+    # Les homonymes ne sont pas des éditions : l'ISBN du roman ne doit jamais
+    # apparaître dans les éditions concurrentes de la BD.
+    assert [edition.isbn13 for edition in resolution.editions()] == ["9782214080627"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_for_alert_author_hint_designs_the_homonym():
+    """« Les Enfants perdus de Nef » désigne la notice de Nef, pas celle du roman."""
+    service = BookMetadataService()
+    records = _homonym_records()
+
+    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+        resolution = await service.resolve_for_alert("Les Enfants perdus", "Nef")
+
+    assert resolution is not None
+    assert resolution.best.author == "Nef"
+    assert resolution.best.isbn13 == "9782810206087"
+    assert resolution.author_hint_match == "matched"
+    # L'indice d'auteur tranche : le roman n'est plus un homonyme à arbitrer.
+    assert resolution.is_ambiguous is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_for_alert_author_hint_contradicted_by_the_only_record():
+    """Un indice d'auteur que la seule notice disponible contredit : rien n'est confirmé."""
+    service = BookMetadataService()
+    records = _homonym_records()[:1]
+
+    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+        resolution = await service.resolve_for_alert("Les Enfants perdus", "Nef")
+
+    assert resolution is not None
+    assert resolution.best.author == "Rosemonde Ahou de Saintange"
+    assert resolution.author_hint_match == "conflicts"
+    assert resolution.is_ambiguous is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_for_alert_does_not_call_a_lookalike_a_homonym():
+    """Un titre voisin n'est pas un homonyme : il ne doit pas déclencher d'avertissement."""
+    service = BookMetadataService()
+    records = _homonym_records()
+
+    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+        resolution = await service.resolve_for_alert("Les enfants perdus tome 2")
+
+    assert resolution is not None
+    assert resolution.other_works == []
+    assert resolution.is_ambiguous is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_for_alert_keeps_same_work_editions_out_of_homonyms():
+    """Deux éditions d'un même auteur ne sont jamais des œuvres homonymes."""
+    service = BookMetadataService()
+
+    resolution = await service.resolve_for_alert("La couleur des choses", "Martin Panchaud")
+
+    assert resolution is not None
+    assert resolution.other_works == []
+    assert resolution.is_ambiguous is False
+
+
+@pytest.mark.asyncio
+async def test_confirm_isbn_for_title_separates_conflict_from_absence():
+    """« Confirmé », « rattaché à un autre ouvrage » et « inconnu » sont trois verdicts.
+
+    Les confondre, c'est refuser une saisie valide parce que le réseau a tremblé, ou
+    accepter l'ISBN d'un autre livre.
+    """
+    service = BookMetadataService(http_client=_FakeBnFClient())
+
+    confirmed = await service.confirm_isbn_for_title("9782369903086", "La couleur des choses")
+    assert confirmed.meta is not None
+    assert confirmed.conflicting_title is None
+
+    conflict = await service.confirm_isbn_for_title("9782369903086", "Les Enfants perdus")
+    assert conflict.meta is None
+    assert conflict.conflicting_title == "La couleur des choses"
+    assert conflict.conflicting_author == "Martin Panchaud"
+
+    # Une BNF muette sur un code récent : personne ne le connaît, personne ne le contredit.
+    silent = BookMetadataService(
+        http_client=_FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[])
+    )
+    unknown = await silent.confirm_isbn_for_title("9782810206087", "Les Enfants perdus")
+    assert unknown.meta is None
+    assert unknown.conflicting_title is None
+
+    # Un code mal saisi n'est jamais interrogé : c'est une absence, pas un verdict.
+    assert (await service.confirm_isbn_for_title("97828102060", "X")).meta is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_input_returns_a_resolution_for_a_typed_isbn():
+    """Une saisie en ISBN nomme un ouvrage : elle n'est pas ambiguë."""
+    service = BookMetadataService(http_client=_FakeBnFClient())
+
+    resolution = await service.resolve_input("9782369903086")
+
+    assert resolution is not None
+    assert resolution.best.isbn13 == "9782369903086"
+    assert resolution.is_ambiguous is False
+
+
+def test_ambiguity_note_only_speaks_when_nothing_is_confirmed():
+    """Le récap n'explique une homonymie que lorsqu'elle empêche une fiche."""
+    roman_only = BookResolution(
+        best=BookMetadata(title="Les Enfants perdus", author="Rosemonde", isbn13="9782214080627")
+    )
+    assert ambiguity_note(roman_only) is None
+
+    homonyms = BookResolution(
+        best=BookMetadata(title="Les Enfants perdus", author="Rosemonde", isbn13="9782214080627"),
+        other_works=[
+            BookMetadata(title="Les Enfants perdus", author="Nef", isbn13="9782810206087")
+        ],
+    )
+    note = ambiguity_note(homonyms)
+    assert note is not None
+    assert "aussi le titre d'une autre œuvre" in note
+    assert "surveillance par titre" in note
+
+    conflict = BookResolution(
+        best=BookMetadata(title="Les Enfants perdus", author="Rosemonde", isbn13="9782214080627"),
+        author_hint_match="conflicts",
+    )
+    conflict_note = ambiguity_note(conflict)
+    assert conflict_note is not None
+    assert "Rosemonde" in conflict_note

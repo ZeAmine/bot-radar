@@ -2,6 +2,7 @@
 
 import logging
 import re
+from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
@@ -13,6 +14,10 @@ from app.services.book_metadata_service import (
     BookMetadata,
     BookMetadataService,
     EditionAlternative,
+    WorkAlternative,
+    ambiguity_note,
+    parse_query_title_and_author,
+    provenance_note,
 )
 from app.utils.isbn import extract_clean_isbn, is_valid_isbn, normalize_isbn
 
@@ -68,12 +73,20 @@ SYSTEM_PROMPT = (
 )
 
 
-OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
+@dataclass(frozen=True)
+class _ResolvedWork:
+    """Ce que la recherche bibliographique a permis d'établir sur l'œuvre demandée.
 
+    Regroupe ce qui doit être dit sur l'œuvre (ISBN, notice, provenance) et ce qui doit
+    être proposé à l'utilisateur (éditions concurrentes, œuvres homonymes). Tout vide,
+    c'est une surveillance par titre : c'est le récap qui l'explique, jamais le silence.
+    """
 
-def _source_note(meta: BookMetadata) -> str | None:
-    """Signale au récap une donnée d'identité issue d'une autorité secondaire."""
-    return OPENLIBRARY_SOURCE_NOTE if meta.source == "openlibrary" else None
+    isbn13: str | None = None
+    book: BookMetadata | None = None
+    isbn_note: str | None = None
+    edition_alternatives: list[EditionAlternative] = field(default_factory=list)
+    work_choices: list[WorkAlternative] = field(default_factory=list)
 
 
 class NaturalAddModule(BaseAIModule):
@@ -150,25 +163,35 @@ class NaturalAddModule(BaseAIModule):
             author = payload.author.strip() if payload.author else None
             publisher = payload.publisher.strip() if payload.publisher else None
 
-            isbn13, book, isbn_note, edition_alternatives = await self._resolve_isbn(
+            # Ce que l'utilisateur a lui-même écrit (« Les Enfants perdus de Nef »)
+            # designerait la notice de Nef mieux que ce que le moteur suppose de
+            # l'ouvrage. Un indice d'auteur se lit aussi dans la saisie brute quand le
+            # modèle n'en donne pas : sans lui, deux homonymes sont indiscernables. Le
+            # prix de fin de saisie n'est pas un mot d'auteur.
+            typed_query = price_suffix_regex.sub("", user_text).strip()
+            author_hint = author or parse_query_title_and_author(typed_query)[1]
+            resolved = await self._resolve_isbn(
                 title=clean_name,
                 category=category,
                 is_series=is_series,
-                author_hint=author,
+                author_hint=author_hint,
                 candidates=(
                     extract_clean_isbn(user_text),
                     self._sanitize_ai_isbn(payload.isbn13),
                 ),
             )
-            if book:
-                # La BNF fait autorité sur l'auteur et l'éditeur quand elle a répondu.
-                author = author or book.author
-                publisher = publisher or book.publisher
+            if resolved.book:
+                # La BNF fait autorité sur l'auteur et l'éditeur dès qu'elle a
+                # répondu : sa notice remplace ce que le moteur a supposé.
+                author = resolved.book.author or author
+                publisher = resolved.book.publisher or publisher
+
+            book = resolved.book
 
             return NaturalAddResult(
                 name=clean_name,
                 category_slug=category,
-                isbn13=isbn13,
+                isbn13=resolved.isbn13,
                 is_series=is_series,
                 author=author,
                 publisher=publisher,
@@ -177,8 +200,9 @@ class NaturalAddModule(BaseAIModule):
                 max_price_cents=payload.max_price_cents,
                 conditions=valid_conditions,
                 explanation=payload.explanation,
-                isbn_note=isbn_note,
-                edition_alternatives=edition_alternatives,
+                isbn_note=resolved.isbn_note,
+                edition_alternatives=resolved.edition_alternatives,
+                work_choices=resolved.work_choices,
                 book_context=(
                     BookContext(
                         title=book.title,
@@ -216,15 +240,20 @@ class NaturalAddModule(BaseAIModule):
         is_series: bool,
         author_hint: str | None,
         candidates: tuple[str | None, ...],
-    ) -> tuple[str | None, BookMetadata | None, str | None, list[EditionAlternative]]:
-        """Détermine l'ISBN d'une alerte, la notice qui l'atteste et les éditions concurrentes.
+    ) -> _ResolvedWork:
+        """Détermine l'ISBN d'une alerte, la notice qui l'atteste et les œuvres homonymes.
 
         Ordre de priorité : ISBN saisi explicitement par l'utilisateur, puis ISBN
         proposé par le modèle, puis ISBN de la meilleure notice BNF du titre. Chaque
         candidat doit être confirmé par une notice BNF portant réellement sur l'œuvre.
+
+        Un titre homonyme (« Les Enfants perdus », roman de 1989 et BD de 2025) ne
+        rattache rien : ni ISBN, ni auteur, ni éditeur. Renvoyer la fiche du roman
+        erreur comme confirmée contaminerait le matching, l'URL de recherche et la cote
+        de marché, et survivrait à une correction d'ISBN.
         """
         if category != CategorySlug.BD_COMICS.value or is_series or not title:
-            return None, None, None, []
+            return _ResolvedWork()
 
         typed_isbn, ai_isbn = candidates
         service = BookMetadataService()
@@ -235,6 +264,9 @@ class NaturalAddModule(BaseAIModule):
         except Exception as exc:
             logger.warning("Résolution BNF impossible pour « %s » : %s", title, exc)
 
+        ambiguous = resolution is not None and resolution.is_ambiguous
+        work_choices = resolution.work_choices() if ambiguous and resolution else []
+
         for candidate in (typed_isbn, ai_isbn):
             if not candidate or (resolution and resolution.best.isbn13 == candidate):
                 continue
@@ -244,39 +276,56 @@ class NaturalAddModule(BaseAIModule):
                 logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", candidate, exc)
                 continue
             if verified:
-                return (
-                    candidate,
-                    verified,
-                    _source_note(verified),
-                    resolution.editions() if resolution else [],
+                # Les éditions concurrentes ne valent que si le titre désigne une œuvre
+                # unique : sinon elles décrivent l'homonyme retenu par le score, pas
+                # l'ouvrage que l'ISBN vient d'identifier.
+                return _ResolvedWork(
+                    isbn13=candidate,
+                    book=verified,
+                    isbn_note=provenance_note(verified),
+                    edition_alternatives=(
+                        [] if ambiguous or resolution is None else resolution.editions()
+                    ),
+                    work_choices=work_choices,
                 )
+
+        if resolution and ambiguous:
+            note = ambiguity_note(resolution) or ""
+            if typed_isbn:
+                # L'utilisateur a lui-même donné cet ISBN : le garder vaut mieux que de
+                # perdre sa saisie. La BNF se tait sur un ouvrage récent, ce n'est pas
+                # une contradiction — mais le récap doit le dire.
+                return _ResolvedWork(
+                    isbn13=typed_isbn,
+                    isbn_note=f"{note}. ISBN saisi, non confirmé par la BNF",
+                    work_choices=work_choices,
+                )
+            return _ResolvedWork(isbn_note=note, work_choices=work_choices)
 
         if resolution:
             # Les éditions concurrentes sont portées par `edition_alternatives`, que le
             # récap transforme en boutons numérotés : les redire ici en texte ne
             # produirait qu'un doublon de l'information déjà rendue.
-            return (
-                resolution.best.isbn13,
-                resolution.best,
-                _source_note(resolution.best),
-                resolution.editions(),
+            return _ResolvedWork(
+                isbn13=resolution.best.isbn13,
+                book=resolution.best,
+                isbn_note=provenance_note(resolution.best),
+                edition_alternatives=resolution.editions(),
             )
 
         if typed_isbn:
-            return (
-                None,
-                None,
-                f"ISBN saisi non confirmé par la BNF : surveillance par titre sur « {title} »",
-                [],
+            return _ResolvedWork(
+                isbn_note=(
+                    f"ISBN saisi non confirmé par la BNF : surveillance par titre sur « {title} »"
+                )
             )
         if ai_isbn:
-            return (
-                None,
-                None,
-                f"Aucun ISBN confirmé par la BNF pour « {title} » : surveillance par titre",
-                [],
+            return _ResolvedWork(
+                isbn_note=(
+                    f"Aucun ISBN confirmé par la BNF pour « {title} » : surveillance par titre"
+                )
             )
-        return None, None, None, []
+        return _ResolvedWork()
 
 
 natural_add_module = NaturalAddModule()
