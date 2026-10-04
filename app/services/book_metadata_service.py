@@ -749,9 +749,9 @@ class BookMetadataService:
     ) -> list[BookMetadata]:
         """Interroge l'API SRU de la BNF. Absorbe les pannes : voir `_bnf_records`.
 
-        Une liste vide y signifie « aucune notice », jamais « authorities muettes » :
-        une panne ne doit pas ressembler à un refus. Seul `lookup_by_isbn_verdict`
-        a besoin de savoir la différence.
+        Une liste vide y signifie « aucune notice », jamais « autorité muette » :
+        une panne ne doit pas ressembler à un refus. Seul `consult_authorities`,
+        qui interroge les autorités, a besoin de savoir la différence.
         """
         records, _panne = await self._bnf_records(cql_query, author_hint, title_hint)
         return records
