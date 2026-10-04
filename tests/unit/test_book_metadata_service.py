@@ -7,9 +7,12 @@ import pytest
 
 from app.core.constants import MatchConfidence
 from app.services.book_metadata_service import (
+    AUTORITE_BNF,
+    AUTORITE_OPENLIBRARY,
     BookMetadata,
     BookMetadataService,
     BookResolution,
+    IsbnVerdict,
     ambiguity_note,
     clean_bnf_creator,
     clean_bnf_publisher,
@@ -542,8 +545,8 @@ async def test_confirm_ne_confirme_pas_une_panne_meme_si_le_repli_repond():
 
     verdict = await service.confirm_isbn_for_title("9782369903086", "La couleur des choses")
 
-    assert verdict.meta is None, "une notice de repli ne vaut pas confirmation"
-    assert verdict.conflicting_title is None, "et ne vaut pas davantage une accusation"
+    assert verdict.confirme is False, "une notice de repli ne vaut pas confirmation"
+    assert verdict.a_tranche is False, "et ne vaut pas davantage une accusation"
     assert verdict.panne is not None
     assert "TimeoutError" in verdict.panne
 
@@ -556,8 +559,8 @@ async def test_confirm_accepte_le_repli_quand_la_bnf_a_repondu():
 
     verdict = await service.confirm_isbn_for_title("9782369903086", "La couleur des choses")
 
-    assert verdict.meta is not None
-    assert verdict.meta.source == "openlibrary"
+    assert verdict.confirme is True
+    assert verdict.autorite == AUTORITE_OPENLIBRARY
     assert verdict.panne is None
 
 
@@ -580,24 +583,25 @@ async def test_confirm_isbn_for_title_separates_conflict_from_absence():
     service = BookMetadataService(http_client=_FakeBnFClient())
 
     confirmed = await service.confirm_isbn_for_title("9782369903086", "La couleur des choses")
-    assert confirmed.meta is not None
-    assert confirmed.conflicting_title is None
+    assert confirmed.confirme is True
 
     conflict = await service.confirm_isbn_for_title("9782369903086", "Les Enfants perdus")
-    assert conflict.meta is None
-    assert conflict.conflicting_title == "La couleur des choses"
-    assert conflict.conflicting_author == "Martin Panchaud"
+    assert conflict.a_tranche is True, "un autre ouvrage est une preuve, pas un silence"
+    assert conflict.notice is not None
+    assert conflict.notice.title == "La couleur des choses"
+    assert conflict.notice.author == "Martin Panchaud"
 
-    # Une BNF muette sur un code récent : personne ne le connaît, personne ne le contredit.
-    silent = BookMetadataService(
+    # Une BNF qui ne connaît pas ce code : personne ne le connaît, personne ne le contredit.
+    muet = BookMetadataService(
         http_client=_FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[])
     )
-    unknown = await silent.confirm_isbn_for_title("9782810206087", "Les Enfants perdus")
-    assert unknown.meta is None
-    assert unknown.conflicting_title is None
+    unknown = await muet.confirm_isbn_for_title("9782810206087", "Les Enfants perdus")
+    assert unknown.outcome == "inconnu"
 
     # Un code mal saisi n'est jamais interrogé : c'est une absence, pas un verdict.
-    assert (await service.confirm_isbn_for_title("97828102060", "X")).meta is None
+    mal_saisi = await service.confirm_isbn_for_title("97828102060", "X")
+    assert mal_saisi.outcome == "inconnu"
+    assert mal_saisi.consulted == (), "personne n'a été consulté"
 
 
 @pytest.mark.asyncio
@@ -674,11 +678,11 @@ async def test_verdict_isbn_inconnu_quand_l_autorite_repond_vide():
     client = _Client(_SRU_VIDE, panne_sur="inconnu-de-l-inconnu")
     service = BookMetadataService(http_client=client)
 
-    verdict = await service.lookup_by_isbn_verdict("9782369903062")
+    verdict = await service.consult_authorities("9782369903062")
 
-    assert verdict.notice is None
+    assert verdict.outcome == "inconnu"
     assert verdict.panne is None
-    assert verdict.a_repondu is True
+    assert verdict.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY), "les deux ont été consultées"
 
 
 @pytest.mark.asyncio
@@ -691,12 +695,12 @@ async def test_verdict_notice_manquee_quand_une_seule_requete_echoue():
     client = _Client(_SRU_VIDE, panne_sur="bib.isbn")
     service = BookMetadataService(http_client=client)
 
-    verdict = await service.lookup_by_isbn_verdict("9782369903062")
+    verdict = await service.consult_authorities("9782369903062")
 
     assert verdict.notice is None, "aucune notice ne peut être inventée"
     assert verdict.panne is not None
     assert "TimeoutError" in verdict.panne, "le motif de panne doit être transmis"
-    assert verdict.a_repondu is False
+    assert verdict.outcome == "silence"
 
 
 @pytest.mark.asyncio
@@ -710,13 +714,13 @@ async def test_verdict_conserve_la_panne_meme_si_le_repli_repond():
     client = _FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
-    verdict = await service.lookup_by_isbn_verdict("9782369903086")
+    verdict = await service.consult_authorities("9782369903086")
 
     assert verdict.notice is not None, "le repli existe, il ne tranche pas"
-    assert verdict.notice.source == "openlibrary"
+    assert verdict.notice.source == AUTORITE_OPENLIBRARY
     assert verdict.panne is not None, "la panne ne doit pas disparaître derrière le repli"
     assert "TimeoutError" in verdict.panne
-    assert verdict.a_repondu is False
+    assert verdict.a_tranche is False, "un repli obtenu pendant une panne n'a rien tranché"
 
 
 @pytest.mark.asyncio
@@ -725,12 +729,12 @@ async def test_verdict_repli_sans_panne_quand_la_bnf_a_repondu():
     client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
-    verdict = await service.lookup_by_isbn_verdict("9782369903086")
+    verdict = await service.consult_authorities("9782369903086")
 
+    assert verdict.confirme is True
     assert verdict.notice is not None
-    assert verdict.notice.source == "openlibrary"
+    assert verdict.notice.source == AUTORITE_OPENLIBRARY
     assert verdict.panne is None
-    assert verdict.a_repondu is True
 
 
 @pytest.mark.asyncio
@@ -761,13 +765,71 @@ async def test_lookup_by_isbn_ne_change_pas_pour_ses_appelants():
     assert await sans_notice.lookup_by_isbn("9782369903062") is None
 
 
+@pytest.mark.parametrize(
+    ("issue", "champs", "refus"),
+    [
+        pytest.param("confirme", {}, "la notice est requise", id="confirme-sans-notice"),
+        pytest.param("contradiction", {}, "la notice est requise", id="contradiction-sans-notice"),
+        pytest.param(
+            # Le cas que trois champs facultatifs rendaient lisible : une notice rendue
+            # et une panne dans le même objet, lisible comme une confirmation.
+            "confirme",
+            {"notice": BookMetadata(title="X"), "panne": "délai dépassé"},
+            "ce n'est pas un silence",
+            id="confirme-avec-panne",
+        ),
+        pytest.param("silence", {}, "motif de l'absence", id="silence-sans-motif"),
+        pytest.param(
+            "inconnu", {"notice": BookMetadata(title="X")}, "il n'y a rien à rendre",
+            id="inconnu-avec-notice",
+        ),
+        pytest.param(
+            "inconnu", {"panne": "délai dépassé"}, "il n'y a rien à rendre",
+            id="inconnu-avec-panne",
+        ),
+    ],
+)
+def test_le_verdict_refuse_un_etat_contradictoire(issue, champs, refus):
+    """Trois champs facultatifs admettaient « l'autorité n'a pas répondu » + une autorité.
+
+    C'est le défaut affiché : « REPLI … aucune autorité a répondu » au-dessus de
+    « conforme aux notices ». Un seul champ d'issue rend la contradiction impossible à
+    écrire, au lieu d'en multiplier les lectures possibles.
+    """
+    with pytest.raises(ValueError, match=refus):
+        IsbnVerdict(outcome=issue, **champs)
+
+
+@pytest.mark.asyncio
+async def test_les_autorites_consultees_suivent_les_appels_effectifs():
+    """La liste vient du service, pas d'une constante : un troisième repli s'y inscrira.
+
+    Une constante recopiée dans un appelant ne peut que dire « ni la BNF ni
+    OpenLibrary ». Ici, elle est écrite au moment où les appels sont faits, dans
+    l'ordre où ils ont lieu.
+    """
+    client = _FakeCatalogueClient()
+    trouve = await BookMetadataService(http_client=client).consult_authorities("9782369903086")
+
+    assert trouve.consulted == (AUTORITE_BNF,)
+    assert client.openlibrary_queries == [], "le repli n'a pas eu lieu : il n'est pas nommé"
+
+    repli_client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
+    repli = await BookMetadataService(http_client=repli_client).consult_authorities(
+        "9782369903086"
+    )
+
+    assert repli.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
+    assert len(repli_client.openlibrary_queries) == 1, "l'ordre des appels est celui de la liste"
+
+
 @pytest.mark.asyncio
 async def test_verdict_refuse_un_isbn_malforme_sans_appeler_personne():
     """Frontière : un code invalide ne se confond pas non plus avec une panne."""
     service = BookMetadataService(http_client=_Client(_SRU_VIDE, panne_sur="jamais"))
 
-    verdict = await service.lookup_by_isbn_verdict("pas-un-isbn")
+    verdict = await service.consult_authorities("pas-un-isbn")
 
-    assert verdict.notice is None
+    assert verdict.outcome == "inconnu"
     assert verdict.panne is None
     assert service.http_client.requetes == [], "aucun appel réseau pour une saisie invalide"

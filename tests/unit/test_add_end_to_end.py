@@ -33,7 +33,7 @@ from app.services.book_metadata_service import (
     BookMetadata,
     BookMetadataService,
     BookResolution,
-    IsbnConfirmation,
+    IsbnVerdict,
 )
 from app.services.market_price_service import PENDING_COTE_LINE
 
@@ -131,12 +131,16 @@ def _fake_bnf(
     bnf.resolve_for_alert = AsyncMock(return_value=resolution)
     bnf.verify_isbn = AsyncMock(return_value=BNF_EDITION if confirmed else None)
     if conflicting_isbn:
-        verdict = IsbnConfirmation(
-            conflicting_title="Keeping two",
-            conflicting_author="Jordan Crane",
+        verdict = IsbnVerdict(
+            outcome="contradiction",
+            notice=BookMetadata(title="Keeping two", author="Jordan Crane"),
         )
     else:
-        verdict = IsbnConfirmation(meta=BNF_EDITION) if confirmed else IsbnConfirmation()
+        verdict = (
+            IsbnVerdict(outcome="confirme", notice=BNF_EDITION)
+            if confirmed
+            else IsbnVerdict(outcome="inconnu")
+        )
     bnf.confirm_isbn_for_title = AsyncMock(return_value=verdict)
     bnf.lookup_by_isbn = AsyncMock(return_value=BNF_EDITION)
     return bnf
