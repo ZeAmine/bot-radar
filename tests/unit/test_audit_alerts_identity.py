@@ -33,6 +33,18 @@ NOTICE_BD = BookMetadata(
 )
 NOTICE_HOMONYME = BookMetadata(title="Les Enfants perdus", author="Jean Roucas")
 
+# Même ouvrage, mais rendu par l'autorité secondaire : c'est la provenance, pas le
+# contenu, que l'audit doit rendre visible.
+NOTICE_HOMONYME_REPLI = BookMetadata(
+    title="Les Enfants perdus", author="Jean Roucas", source="openlibrary"
+)
+NOTICE_REPLI = BookMetadata(
+    title="La couleur des choses",
+    author="Martin Panchaud",
+    publisher="Çà et là",
+    source="openlibrary",
+)
+
 
 def _alerte(**kwargs) -> audit.AlertIdentity:
     defauts = {
@@ -116,6 +128,98 @@ def test_le_detail_dit_ce_que_l_autorite_a_repondu():
     assert "Les Enfants perdus" in conflit.detail
 
 
+@pytest.mark.parametrize(
+    ("notice", "attendu", "interdit"),
+    [
+        pytest.param(NOTICE_HOMONYME, "la BNF", "OpenLibrary", id="bnf"),
+        pytest.param(NOTICE_HOMONYME_REPLI, "OpenLibrary", "la BNF", id="repli"),
+    ],
+)
+def test_le_conflit_nome_l_autorite_qui_a_repondu(notice, attendu, interdit):
+    """« la BNF » écrit en dur transformait un repli OpenLibrary en accusation BNF.
+
+    C'est le défaut mesuré sur l'audit complet : un verdict rendu par l'autorité
+    secondaire se lisait comme si la BNF avait répondu, et `La Bête` ressortait en `ok`.
+    """
+    detail = audit.inspect_identity(_alerte(), notice)[0].detail
+
+    assert detail.startswith(attendu), detail
+    assert interdit not in detail, f"{interdit} n'a pas répondu, mais le détail l'accuse : {detail}"
+
+
+def test_chaque_divergence_nome_l_autorite_de_la_notice():
+    """Titre, auteur et éditeur nomment eux aussi l'autorité, pas « la notice »."""
+    identite = _alerte(
+        author="Quelquun Dautre",
+        publisher="AutreMaison",
+        name="La couleur des choses (édition 2025)",
+    )
+    divergences = audit.inspect_identity(identite, NOTICE_REPLI)
+
+    codes = [a.code for a in divergences]
+    assert codes == [
+        audit.TITRE_DIVERGENT,
+        audit.AUTEUR_DIVERGENT,
+        audit.EDITEUR_DIVERGENT,
+    ]
+    for anomalie in divergences:
+        assert anomalie.detail.startswith("OpenLibrary"), anomalie.detail
+        assert "la BNF" not in anomalie.detail, anomalie.detail
+
+
+def test_un_isbn_inconnu_nome_les_autorites_qui_ont_repondu():
+    """« Personne ne connaît » n'a de sens que si quelqu'un a vraiment été demandé."""
+    anomalie = audit.inspect_identity(_alerte(), None)[0]
+
+    assert anomalie.code == audit.ISBN_INCONNU
+    assert "ni la BNF ni OpenLibrary" in anomalie.detail
+    assert ISBN_BD in anomalie.detail
+
+
+def test_un_isbn_mal_forme_n_accuse_aucune_autorite():
+    """Un code mal formé n'est soumis à personne : l'accusation serait inventée.
+
+    `lookup_by_isbn_verdict` court-circuite sur un ISBN invalide avant tout appel ;
+    écrire « ni la BNF ni OpenLibrary ne connaissent ce code » hériterait exactement du
+    défaut que ce rapport corrige, en sens inverse.
+    """
+    anomalie = audit.inspect_identity(_alerte(isbn="123"), None)[0]
+
+    assert anomalie.code == audit.ISBN_INCONNU
+    assert "aucune autorité interrogée" in anomalie.detail
+    assert "la BNF" not in anomalie.detail
+    assert "OpenLibrary" not in anomalie.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notice", [NOTICE_BD, NOTICE_REPLI], ids=["bnf", "repli"])
+async def test_audit_note_l_autorite_de_chaque_verdict(notice):
+    """Le verdict retient qui a répondu : c'est la seule donnée qui distingue un repli."""
+
+    async def lookup(_isbn: str) -> IsbnLookup:
+        return IsbnLookup(notice=notice)
+
+    verdict = (await audit.audit([_alerte()], lookup))[0]
+
+    assert verdict.autorite == notice.source
+    assert verdict.confirmee_par_la_bnf is (notice.source == audit.AUTORITE_BNF)
+
+
+@pytest.mark.asyncio
+async def test_aucune_autorite_ne_repondant_n_accuse_ni_ne_confirme():
+    """Les deux autorités ont répondu « rien » : c'est une absence de preuve, nommée."""
+
+    async def lookup(_isbn: str) -> IsbnLookup:
+        return IsbnLookup()
+
+    verdict = (await audit.audit([_alerte()], lookup))[0]
+
+    assert [a.code for a in verdict.anomalies] == [audit.ISBN_INCONNU]
+    assert "ni la BNF ni OpenLibrary" in verdict.anomalies[0].detail
+    assert verdict.autorite is None
+    assert verdict.confirmee_par_la_bnf is False
+
+
 def test_audit_et_matcher_emploient_la_meme_definition_de_variante():
     """Une variante étrangère est définie une fois : le matcher filtre, l'audit signale."""
     from app.domain.rules.listing_match import carries_foreign_isbn
@@ -156,7 +260,9 @@ async def test_une_notice_manquee_ne_vaut_pas_isbn_inconnu():
 def test_le_rapport_distingue_une_alerte_impossible_dune_alerte_saine():
     """Le statut doit se lire : « non vérifiée » n'est pas « conforme », ni « en faute »."""
     muette = audit.AlertVerdict(_alerte(), unverified_reason="autorité muette : statut HTTP 503")
-    rapport = audit.render([muette, audit.AlertVerdict(_alerte())])
+    rapport = audit.render(
+        [muette, audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF)]
+    )
 
     assert "autorité muette : statut HTTP 503" in rapport
     assert "non vérifiée" in rapport
@@ -199,16 +305,90 @@ def test_le_rapport_nomme_une_alerte_une_seule_fois():
 
 
 def test_le_rapport_dit_conforme_quand_rien_ne_bouge():
-    rapport = audit.render([audit.AlertVerdict(_alerte())])
+    rapport = audit.render([audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF)])
     assert "conforme" in rapport
     assert "ANOMALIE" not in rapport
 
 
 def test_le_mode_discret_oublie_les_alertes_saines():
-    saines = [audit.AlertVerdict(_alerte()), audit.AlertVerdict(_alerte())]
+    saines = [
+        audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF),
+        audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF),
+    ]
     rapport = audit.render(saines, quiet=True)
     assert "conforme" in rapport
     assert "ok " not in rapport
+
+
+def test_un_repli_ne_ressemble_pas_a_un_ok():
+    """La ligne d'un repli nomme l'autorité qui a répondu et l'absence de la BNF."""
+    rapport = audit.render([audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_OPENLIBRARY)])
+
+    assert "ok " not in rapport, "un repli ne doit pas se lire comme une confirmation"
+    assert "REPLI" in rapport
+    assert "OpenLibrary a répondu, pas la BNF" in rapport
+    assert "conforme" not in rapport, "un rapport contenant un repli n'est pas conforme"
+
+
+def test_le_repli_survit_au_mode_discret():
+    """Le mode discret retire le bruit `ok`, pas la seule trace qui reste à lire."""
+    rapport = audit.render(
+        [
+            audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF),
+            audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_OPENLIBRARY),
+        ],
+        quiet=True,
+    )
+
+    assert "REPLI" in rapport
+    assert "OpenLibrary a répondu, pas la BNF" in rapport
+    assert "ok " not in rapport
+    assert "conforme" not in rapport
+
+
+def test_le_compte_final_separe_les_replis_des_anomalies():
+    """Un repli est compté même quand il porte déjà une anomalie : les deux sont vrais."""
+    verdict = audit.AlertVerdict(
+        _alerte(),
+        anomalies=audit.inspect_identity(_alerte(), NOTICE_HOMONYME_REPLI),
+        autorite=audit.AUTORITE_OPENLIBRARY,
+    )
+
+    rapport = audit.render([verdict])
+
+    assert "1 alerte(s) à regarder" in rapport
+    assert "1 alerte(s) non confirmée(s) par la BNF — réponse de : OpenLibrary" in rapport
+    assert "OpenLibrary rattache cet ISBN à" in rapport, "l'anomalie nomme aussi l'autorité"
+    assert "conforme" not in rapport
+
+
+@pytest.mark.asyncio
+async def test_un_isbn_inconnu_n_est_pas_un_repli():
+    """Personne n'ayant répondu, il n'y a pas de repli à compter deux fois.
+
+    Le décompte mélangeait « OpenLibrary a répondu » et « personne n'a répondu », et
+    concluait « réponse de : OpenLibrary, aucune autorité » pour une alerte déjà
+    signalée comme `isbn_inconnu`.
+    """
+
+    async def lookup(_isbn: str) -> IsbnLookup:
+        return IsbnLookup()
+
+    rapport = audit.render(await audit.audit([_alerte()], lookup))
+
+    assert "isbn_inconnu" in rapport
+    assert "non confirmée(s) par la BNF" not in rapport
+    assert "aucune autorité" not in rapport
+
+
+def test_une_alerte_muette_n_est_pas_comptee_comme_un_repli():
+    """Sans réponse, il n'y a pas d'autorité à nommer : le double compte mentirait."""
+    rapport = audit.render(
+        [audit.AlertVerdict(_alerte(), unverified_reason="autorité muette : statut HTTP 503")]
+    )
+
+    assert "non confirmée(s) par la BNF" not in rapport
+    assert "1 alerte(s) non vérifiées" in rapport
 
 
 def test_le_json_expose_la_meme_information():
@@ -219,6 +399,21 @@ def test_le_json_expose_la_meme_information():
     assert payload[0]["isbn"] == ISBN_BD
     assert payload[0]["anomalies"][0]["code"] == audit.ISBN_CONFLIT
     assert payload[0]["unverified_reason"] is None
+    assert payload[0]["autorite"] is None
+
+
+def test_le_json_expose_l_autorite_de_chaque_verdict():
+    """Sans ce champ, le `--json` et le texte ne diraient pas la même chose."""
+    payload = json.loads(
+        audit.as_json(
+            [
+                audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_OPENLIBRARY),
+                audit.AlertVerdict(_alerte(), autorite=audit.AUTORITE_BNF),
+            ]
+        )
+    )
+
+    assert [verdict["autorite"] for verdict in payload] == ["openlibrary", "bnf"]
 
 
 # --- Codes de sortie, en pilotant run() sans base ---
@@ -285,6 +480,28 @@ async def test_code_1_des_une_anomalie(monkeypatch):
     _hors_ligne(monkeypatch)
     monkeypatch.setattr(audit, "read_identities", _depot([_alerte()]))
     monkeypatch.setattr(audit, "BookMetadataService", lambda: _Moteur(NOTICE_HOMONYME))
+    assert await audit.run(_args()) == audit.EXIT_ANOMALIES == 1
+
+
+@pytest.mark.asyncio
+async def test_un_repli_laisse_le_code_de_sortie_a_zero(monkeypatch):
+    """Décision du produit : un repli n'est pas une anomalie d'identité.
+
+    Il se distingue dans la ligne, le résumé, le compte final et le JSON ; le code
+    de sortie reste réservé aux anomalies, pour que rien ne change à qui l'automatise.
+    """
+    _hors_ligne(monkeypatch)
+    monkeypatch.setattr(audit, "read_identities", _depot([_alerte()]))
+    monkeypatch.setattr(audit, "BookMetadataService", lambda: _Moteur(NOTICE_REPLI))
+    assert await audit.run(_args()) == audit.EXIT_CLEAN == 0
+
+
+@pytest.mark.asyncio
+async def test_aucune_autorite_ne_repondant_rend_le_code_1(monkeypatch):
+    """Deux silences sont une accusation : le code 1 doit dire qu'il y a à regarder."""
+    _hors_ligne(monkeypatch)
+    monkeypatch.setattr(audit, "read_identities", _depot([_alerte()]))
+    monkeypatch.setattr(audit, "BookMetadataService", lambda: _Moteur(None))
     assert await audit.run(_args()) == audit.EXIT_ANOMALIES == 1
 
 

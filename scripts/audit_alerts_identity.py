@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Confronte les alertes porteuses d'un ISBN à la notice que la BNF lui attribue.
+"""Confronte les alertes porteuses d'un ISBN à la notice que l'autorité lui attribue.
 
 Un ISBN faux n'est pas anodin : il contraint le matching, l'URL de recherche Vinted
 et la clé de cote marché. Une alerte qui en porte un décrit donc un ouvrage, et cet
 ouvrage a une notice. Ce script lit cette notice et signale ce qui ne colle plus :
 un ISBN rattaché à un autre ouvrage, un ISBN que personne ne connaît, un titre, un
 auteur ou un éditeur qui divergent, une variante qui cite le code d'un autre livre.
+
+Chaque verdict nomme l'autorité qui a réellement répondu. La BNF d'abord ; quand elle
+ne connaît pas l'ISBN, OpenLibrary tranche en repli — et ce verdict n'est pas une
+confirmation : il est compté à part et ne se lit jamais comme une alerte conforme.
 
 Il ne corrige rien, volontairement. Les mots-clés d'une alerte ont pu être retouchés
 à la main, et une correction automatique détruirait cette intention sans que personne
@@ -23,7 +27,8 @@ Usage :
 En production :
     docker compose exec app python scripts/audit_alerts_identity.py
 
-Codes de sortie : 0 rien à signaler, 1 anomalies, 2 erreur.
+Codes de sortie : 0 rien à signaler, 1 anomalies, 2 erreur. Un verdict de repli n'est
+pas une anomalie : il sort en 0 et se lit `REPLI` dans le rapport.
 """
 
 from __future__ import annotations
@@ -53,6 +58,7 @@ from app.services.book_metadata_service import (
     same_author,
     title_similarity,
 )
+from app.utils.isbn import is_valid_isbn, normalize_isbn
 from app.utils.text import normalize_text
 
 # Le SRU de la BNF est une autorité publique : on l'interroge par lots, pas à la
@@ -69,6 +75,15 @@ TITRE_DIVERGENT = "titre_divergent"
 AUTEUR_DIVERGENT = "auteur_divergent"
 EDITEUR_DIVERGENT = "editeur_divergent"
 VARIANTE_ISBN_ETRANGER = "variante_isbn_etranger"
+
+# L'autorité réellement consultée se lit sur la notice (`BookMetadata.source`), jamais
+# sur une constante devinée ici : c'est elle qui sépare une alerte confirmée par la BNF
+# d'une alerte qui ne repose que sur le repli OpenLibrary.
+AUTORITE_BNF = "bnf"
+AUTORITE_OPENLIBRARY = "openlibrary"
+LIBELLE_AUTORITE = {AUTORITE_BNF: "la BNF", AUTORITE_OPENLIBRARY: "OpenLibrary"}
+# Le chemin de verdict interroge ces deux autorités, dans cet ordre, pour chaque ISBN.
+AUTORITES_CONSULTEES = (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
 
 GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
 
@@ -97,6 +112,18 @@ class Anomaly:
     detail: str
 
 
+def libelle_autorite(source: str | None) -> str:
+    """Nom l'autorité qui a répondu, tel que la fiche le déclare.
+
+    Une source inconnue est rendue telle quelle plutôt que devinée : « la BNF » par
+    défaut réaffirmerait une consultation qui n'a peut-être pas eu lieu, c'est-à-dire
+    exactement l'accusation que ce rapport existe pour éviter.
+    """
+    if source is None:
+        return "aucune autorité"
+    return LIBELLE_AUTORITE.get(source, source)
+
+
 def inspect_identity(
     identity: AlertIdentity,
     notice: BookMetadata | None,
@@ -114,28 +141,50 @@ def inspect_identity(
     Ce sont les seuils de `book_metadata_service`, pas des constantes locales :
     l'audit et la création d'alerte doivent tomber d'accord sur ce qu'est un autre
     ouvrage, sinon il signalerait en faux positif ce que `/add` a accepté.
+
+    Chaque message nomme l'autorité qui a répondu : « la BNF » ne doit pas se lire sur
+    une notice OpenLibrary, et « personne ne connaît cet ISBN » ne s'écrit que si le
+    code a réellement été soumis.
     """
     findings: list[Anomaly] = []
+    autorite = libelle_autorite(notice.source if notice else None)
 
     if notice is None:
-        findings.append(Anomaly(ISBN_INCONNU, f"aucune notice pour l'ISBN {identity.isbn}"))
+        if is_valid_isbn(normalize_isbn(identity.isbn)):
+            consultees = " ni ".join(LIBELLE_AUTORITE[a] for a in AUTORITES_CONSULTEES)
+            findings.append(
+                Anomaly(ISBN_INCONNU, f"ni {consultees} ne connaissent l'ISBN {identity.isbn}")
+            )
+        else:
+            # Un code mal formé n'a été soumis à personne : accuser une autorité de
+            # l'ignorer reviendrait d'inventer la consultation qui a produit ce verdict.
+            findings.append(
+                Anomaly(
+                    ISBN_INCONNU,
+                    f"ISBN mal formé ({identity.isbn}) : aucune autorité interrogée",
+                )
+            )
     else:
         similarity = title_similarity(notice.title, identity.name)
         if similarity < TITLE_SIMILARITY_MIN:
             findings.append(
-                Anomaly(ISBN_CONFLIT, f"la BNF rattache cet ISBN à « {notice.title} »")
+                Anomaly(ISBN_CONFLIT, f"{autorite} rattache cet ISBN à « {notice.title} »")
             )
         elif similarity < SAME_WORK_TITLE_SIMILARITY_MIN:
             findings.append(
-                Anomaly(TITRE_DIVERGENT, f"la notice s'intitule « {notice.title} »")
+                Anomaly(TITRE_DIVERGENT, f"{autorite} intitule l'ouvrage « {notice.title} »")
             )
 
         if identity.author and notice.author and not same_author(identity.author, notice.author):
-            findings.append(Anomaly(AUTEUR_DIVERGENT, f"la notice donne « {notice.author} »"))
+            findings.append(
+                Anomaly(AUTEUR_DIVERGENT, f"{autorite} donne l'auteur « {notice.author} »")
+            )
         if identity.publisher and notice.publisher and (
             normalize_text(identity.publisher) != normalize_text(notice.publisher)
         ):
-            findings.append(Anomaly(EDITEUR_DIVERGENT, f"la notice donne « {notice.publisher} »"))
+            findings.append(
+                Anomaly(EDITEUR_DIVERGENT, f"{autorite} donne l'éditeur « {notice.publisher} »")
+            )
 
     foreign = [v for v in identity.variants if carries_foreign_isbn(v, identity.isbn)]
     if foreign:
@@ -169,11 +218,22 @@ async def bnf_joignable(client: object) -> bool:
 
 @dataclass
 class AlertVerdict:
-    """Ce que l'audit a conclu pour une alerte, ou pourquoi il n'a pas pu conclure."""
+    """Ce que l'audit a conclu pour une alerte, ou pourquoi il n'a pas pu conclure.
+
+    `autorite` est la source de la notice qui a tranché. Aucune autre donnée du
+    verdict ne permet de la deviner : c'est elle qui distingue une alerte confirmée par
+    la BNF d'une alerte qui ne repose que sur le repli OpenLibrary.
+    """
 
     identity: AlertIdentity
     anomalies: list[Anomaly] = field(default_factory=list)
     unverified_reason: str | None = None
+    autorite: str | None = None
+
+    @property
+    def confirmee_par_la_bnf(self) -> bool:
+        """Une alerte n'est conforme que si la BNF elle-même a répondu."""
+        return self.autorite == AUTORITE_BNF
 
 
 async def audit(
@@ -210,8 +270,13 @@ async def audit(
                 AlertVerdict(identity, unverified_reason=f"autorité muette : {reponse.panne}")
             )
             continue
+        notice = reponse.notice
         verdicts.append(
-            AlertVerdict(identity, anomalies=inspect_identity(identity, reponse.notice))
+            AlertVerdict(
+                identity,
+                anomalies=inspect_identity(identity, notice),
+                autorite=notice.source if notice else None,
+            )
         )
     return verdicts
 
@@ -221,9 +286,18 @@ def render(verdicts: Sequence[AlertVerdict], *, quiet: bool = False) -> str:
 
     L'en-tête de l'alerte n'est écrit qu'à la première de ses anomalies : le répéter
     devant chacune ferait croire à autant d'alertes que de divergences.
+
+    Une alerte que seule OpenLibrary a pu vérifier ne reçoit jamais le marqueur `ok` :
+    elle est comptée à part et le verdict « conforme » est suspendu tant qu'elle existe.
+    Un ISBN que personne ne connaît n'entre pas dans ce décompte : il n'y a pas eu de
+    réponse à remplacer, et il est déjà signalé comme anomalie.
     """
     lines: list[str] = []
-    anomalies = unverified = 0
+    anomalies = unverified = replis = 0
+    # Une réponse venue d'ailleurs que la BNF, et elle seule. Un ISBN que personne ne
+    # connaît n'est pas un repli : c'est une absence de réponse, déjà signalée comme
+    # anomalie. Compter les deux ensemble dirait « réponse de : aucune autorité ».
+    replis_autorites: set[str] = set()
 
     for verdict in verdicts:
         head = f"{DIM}{verdict.identity.alert_id[:8]}{RESET} {verdict.identity.name}"
@@ -233,10 +307,24 @@ def render(verdicts: Sequence[AlertVerdict], *, quiet: bool = False) -> str:
                 f"  {YELLOW}?{RESET}      {head} {DIM}— {verdict.unverified_reason}{RESET}"
             )
             continue
+
+        confirmee = verdict.confirmee_par_la_bnf
+        if verdict.autorite is not None and not confirmee:
+            replis += 1
+            replis_autorites.add(libelle_autorite(verdict.autorite))
+
         if not verdict.anomalies:
-            if not quiet:
+            if confirmee:
+                if not quiet:
+                    lines.append(
+                        f"  {GREEN}ok{RESET}      {head} {DIM}({verdict.identity.isbn}){RESET}"
+                    )
+            else:
+                # Le repli reste visible même en mode discret : un `ok` ici ferait
+                # passer une absence de confirmation pour une confirmation.
                 lines.append(
-                    f"  {GREEN}ok{RESET}      {head} {DIM}({verdict.identity.isbn}){RESET}"
+                    f"  {YELLOW}REPLI{RESET}    {head} {DIM}({verdict.identity.isbn}) "
+                    f"— {libelle_autorite(verdict.autorite)} a répondu, pas la BNF{RESET}"
                 )
             continue
         anomalies += 1
@@ -250,12 +338,18 @@ def render(verdicts: Sequence[AlertVerdict], *, quiet: bool = False) -> str:
     lines.append("")
     if anomalies:
         lines.append(f"{RED}{anomalies} alerte(s) à regarder.{RESET}")
+    if replis:
+        reponses = ", ".join(sorted(replis_autorites))
+        lines.append(
+            f"{YELLOW}{replis} alerte(s) non confirmée(s) par la BNF — "
+            f"réponse de : {reponses}.{RESET}"
+        )
     if unverified:
         lines.append(
             f"{YELLOW}{unverified} alerte(s) non vérifiées "
             f"(réseau ou autorité indisponible).{RESET}"
         )
-    if not anomalies and not unverified:
+    if not anomalies and not unverified and not replis:
         lines.append(f"{GREEN}{len(verdicts)} alerte(s) conforme(s) aux notices.{RESET}")
     return "\n".join(lines)
 
@@ -270,6 +364,7 @@ def as_json(verdicts: Sequence[AlertVerdict]) -> str:
                 "isbn": v.identity.isbn,
                 "anomalies": [asdict(a) for a in v.anomalies],
                 "unverified_reason": v.unverified_reason,
+                "autorite": v.autorite,
             }
             for v in verdicts
         ],
@@ -318,7 +413,10 @@ async def read_identities(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Confronte les alertes porteuses d'un ISBN à leur notice BNF."
+        description=(
+            "Confronte les alertes porteuses d'un ISBN à la notice de l'autorité qui "
+            "le connaît, en nommant cette autorité dans chaque verdict."
+        )
     )
     parser.add_argument("--json", action="store_true", help="sortie JSON")
     parser.add_argument("--limit", type=int, help="nombre maximal d'alertes auditées")
@@ -327,7 +425,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="inclure les alertes en pause ou supprimées",
     )
-    parser.add_argument("--quiet", action="store_true", help="n'afficher que les anomalies")
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="n'afficher que les anomalies et les verdicts de repli",
+    )
     return parser
 
 
