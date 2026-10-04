@@ -13,6 +13,7 @@ import httpx
 from app.core.config import settings
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
+from app.core.redis import get_redis_client
 from app.domain.rules.market_offer import (
     is_brand_new_partner,
     is_merchant_excluded,
@@ -24,6 +25,9 @@ from app.services.market_price_service import extract_tome_number_from_title
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.providers.chasse_aux_livres")
+
+# Cle Redis du jeton anti-bot injecte par `scripts/sync_chasse_session.py`.
+REDIS_SESSION_KEY = "radar:chasse:duih"
 
 # Attente entre deux tentatives. Injectable pour que les tests qui exercent le
 # backoff ne paient pas les délais en temps réel : en production c'est
@@ -56,6 +60,28 @@ _HISTORICAL_LOW_LABELS = (
     "Très bon état +",
     "Comme neuf +",
 )
+
+
+async def resolve_session_token() -> str:
+    """Jeton anti-bot de session, sans jamais le loguer.
+
+    L'environnement passe devant : c'est le réglage d'une installation qui veut
+    figer sa valeur. Sinon le jeton vient de Redis, injecté par
+    `scripts/sync_chasse_session.py` depuis un navigateur — le site le délivre à une
+    session qui a passé son défi JavaScript, et une requête HTTP seule ne l'obtient
+    pas. Un Redis muet ramène à une série 1 an absente, jamais à une exception.
+    """
+    configured = (settings.CHASSE_AUX_LIVRES_DUIH or "").strip()
+    if configured:
+        return configured
+    try:
+        stored = await get_redis_client().get(REDIS_SESSION_KEY)
+    except Exception as exc:  # pragma: no cover - Redis indisponible
+        logger.debug("Jeton de session Chasse-aux-livres illisible : %s", exc)
+        return ""
+    if isinstance(stored, bytes):  # pragma: no cover - client sans decode_responses
+        stored = stored.decode("utf-8", errors="ignore")
+    return (stored or "").strip()
 
 
 def select_historical_low_cents(series_by_label: dict[str, float]) -> int | None:
@@ -445,7 +471,7 @@ class ChasseAuxLivresProvider:
             didh_m = re.search(r'data-didh=["\']([a-f0-9]+)["\']', p_html)
             if didh_m:
                 didh = didh_m.group(1)
-                duih_val = settings.CHASSE_AUX_LIVRES_DUIH or ""
+                duih_val = await resolve_session_token()
                 ui_val = duih_val.split(".")[0] if "." in duih_val else duih_val
                 jcd_url = (
                     f"{self.BASE_URL}/rest/jcd?id={asin}&all=true&days=365"

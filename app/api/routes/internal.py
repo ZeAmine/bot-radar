@@ -6,8 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db, require_internal_token
+from app.core.config import settings
+from app.core.redis import get_redis_client
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
+from app.providers.chasse_aux_livres import REDIS_SESSION_KEY, resolve_session_token
 from app.services.vinted_scraper import vinted_session_manager
 
 router = APIRouter(
@@ -92,6 +95,34 @@ async def update_vinted_session(
         "cookies_stored": len(payload),
         "keys": list(payload.keys()),
     }
+
+
+@router.get("/chasse/session")
+async def get_chasse_session_status() -> dict[str, Any]:
+    """État du jeton Chasse-aux-livres, sans la valeur elle-même."""
+    token = await resolve_session_token()
+    return {
+        "has_token": bool(token),
+        "token_length": len(token),
+        "source": "env" if settings.CHASSE_AUX_LIVRES_DUIH else "redis",
+    }
+
+
+@router.post("/chasse/session")
+async def update_chasse_session(payload: dict[str, str]) -> dict[str, Any]:
+    """Injecte le jeton anti-bot Chasse-aux-livres, après validation hors de prod.
+
+    Le jeton n'est jamais renvoyé : sa longueur suffit à distinguer « vide » de
+    « installé », sans jamais le laisser fuir dans un log.
+    """
+    token = (payload.get("duih") or "").strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Le jeton ne peut pas être vide.",
+        )
+    await get_redis_client().set(REDIS_SESSION_KEY, token)
+    return {"status": "success", "token_length": len(token)}
 
 
 @router.get("/vinted/session")

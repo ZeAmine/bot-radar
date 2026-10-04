@@ -281,6 +281,7 @@ Fournir des utilitaires pour synchroniser la session Vinted et faciliter le test
 
 ### Fichiers clés
 - [`scripts/sync_vinted_session.py`](scripts/sync_vinted_session.py) : Script pour pousser manuellement des cookies de session Vinted valides dans Redis (`radar:vinted_session_cookies`).
+- [`scripts/sync_chasse_session.py`](scripts/sync_chasse_session.py) : capture et injecte le jeton anti-bot Chasse-aux-livres. Le jeton n'est poussé qu'après validation par le provider lui-même ; injecté par `POST /api/v1/internal/chasse/session` (ADR-020).
 - [`scripts/local_vinted_poller.py`](scripts/local_vinted_poller.py) : Poller Vinted autonome pour tester la détection en environnement de développement local.
 - [`scripts/vinted_autobuy.user.js`](scripts/vinted_autobuy.user.js) : Userscript navigateur (Tampermonkey/Violentmonkey) pour accélérer le choix du point de livraison sur Vinted lors de l'achat manuel.
 

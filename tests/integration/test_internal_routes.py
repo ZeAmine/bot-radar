@@ -1,6 +1,7 @@
 """Tests d'intégration pour les routes internes GET /api/v1/internal/*."""
 
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -90,6 +91,57 @@ async def test_internal_routes_unauthorized(async_client: AsyncClient):
         headers={"Authorization": "Bearer bad_token"},
     )
     assert res_bad_auth.status_code == 401
+
+
+@pytest.fixture
+def fake_redis(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Un Redis en mémoire : la session injectée doit survivre au round-trip."""
+    store: dict[str, str] = {}
+    client = AsyncMock()
+    client.set = AsyncMock(side_effect=lambda key, value, **_: store.update({key: value}) or True)
+    client.get = AsyncMock(side_effect=lambda key: store.get(key))
+    monkeypatch.setattr("app.api.routes.internal.get_redis_client", lambda: client)
+    monkeypatch.setattr("app.providers.chasse_aux_livres.get_redis_client", lambda: client)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_chasse_session_never_echoes_the_token(
+    internal_client: AsyncClient, fake_redis: dict[str, str]
+):
+    """Le jeton va et vient : seule sa longueur sort, sinon il finit dans un log."""
+    res = await internal_client.post(
+        "/api/v1/internal/chasse/session",
+        json={"duih": "jeton-ultra-secret-0123456789"},
+    )
+    assert res.status_code == 200
+    assert "jeton-ultra-secret" not in res.text
+
+    status = await internal_client.get("/api/v1/internal/chasse/session")
+    assert status.status_code == 200
+    assert "jeton-ultra-secret" not in status.text
+    assert status.json()["has_token"] is True
+    assert status.json()["token_length"] > 0
+    # Le round-trip est réel : c'est ce que relira le provider à la passe suivante.
+    assert list(fake_redis.values()) == ["jeton-ultra-secret-0123456789"]
+
+
+@pytest.mark.asyncio
+async def test_chasse_session_rejects_an_empty_token(internal_client: AsyncClient):
+    """Un jeton vide s'écrirait, puis se lirait comme une session installée."""
+    res = await internal_client.post("/api/v1/internal/chasse/session", json={"duih": "   "})
+
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_chasse_session_requires_the_internal_token(async_client: AsyncClient):
+    """L'injection d'une session ne peut pas être une porte ouverte."""
+    res = await async_client.post(
+        "/api/v1/internal/chasse/session", json={"duih": "quelconque"}
+    )
+
+    assert res.status_code in (401, 403)
 
 
 @pytest.mark.asyncio
