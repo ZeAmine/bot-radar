@@ -158,10 +158,22 @@ async def test_handle_create_ai_variants_reports_silence_when_engine_failed():
         await handle_create_ai_variants(callback, state)
 
     stored = state.update_data.call_args.kwargs
-    assert "L'IA n'a pas répondu à temps" in stored["keyword_note"]
+    assert "L'IA n'a pas répondu après une relance" in stored["keyword_note"]
+    # Le conseil nomme le bouton sous la carte, pas un détour par le menu de modification.
+    assert "via « Modifier »" not in stored["keyword_note"]
+    # Une recherche échouée n'est pas définitive : le bouton de relance reste.
+    assert stored["keywords_finalized"] is False
+
     last_text = callback.message.edit_text.call_args[0][0]
-    assert "L'IA n'a pas répondu à temps" in last_text
+    assert "L'IA n'a pas répondu après une relance" in last_text
     assert "Aucune modification" not in last_text
+
+    keyboard = callback.message.edit_text.call_args[1]["reply_markup"]
+    assert any(
+        button.callback_data == "alert_create_ai_variants"
+        for row in keyboard.inline_keyboard
+        for button in row
+    ), "le bouton de relance a disparu alors que le moteur n'a pas répondu"
 
 
 @pytest.mark.asyncio
@@ -872,3 +884,76 @@ async def test_handle_custom_exclusions_input_cancel():
     assert await get_pending_tuning(alert_id) == []
     message.answer.assert_called_once()
     assert "Modification annulée" in message.answer.call_args[0][0]
+
+
+class _StutteringEngine:
+    """Moteur qui manque son premier appel, puis répond : la relance voit le bouton.
+
+    Ce test ne simule pas le module : il passe par le vrai `generate_variants_and_exclusions`
+    avec un client qui se trompe une fois, parce que le défaut était justement à cette
+    couture — le module qui récupère et le handler qui décide de garder le bouton.
+    """
+
+    def __init__(self, *answers: object) -> None:
+        self.answers = list(answers)
+        self.calls = 0
+
+    @property
+    def is_configured(self) -> bool:
+        return True
+
+    async def generate_json(self, **_kwargs: object) -> object:
+        self.calls += 1
+        return self.answers[min(self.calls, len(self.answers)) - 1]
+
+
+@pytest.mark.asyncio
+async def test_handle_create_ai_variants_recovers_from_a_stalled_engine():
+    """Un premier appel perdu ne doit pas se voir dans le récap : le bouton fait son travail.
+
+    Le contrat observable est le clavier : le moteur a répondu au second essai, donc les
+    variantes sont affichées et le bouton de relance a disparu.
+    """
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    callback = MagicMock(spec=CallbackQuery)
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+
+    state = MagicMock(spec=FSMContext)
+    state.get_data = AsyncMock(
+        return_value={
+            "name": "One Piece",
+            "include_keywords": ["One Piece"],
+            "max_item_price_cents": 3500,
+            "category_slug": "bd_comics",
+        }
+    )
+    state.update_data = AsyncMock()
+
+    engine = _StutteringEngine(
+        None,
+        {
+            "variants": ["onepiece"],
+            "exclusions": ["figurine"],
+            "rationale": "Orthographe courante en un seul mot.",
+        },
+    )
+
+    with patch.object(keyword_variants_module, "client", engine):
+        await handle_create_ai_variants(callback, state)
+
+    assert engine.calls == 2, "le premier appel perdu doit être relancé"
+    stored = state.update_data.call_args.kwargs
+    assert stored["keywords_finalized"] is True
+    assert "L'IA n'a pas répondu" not in (stored["keyword_note"] or "")
+
+    last_text = callback.message.edit_text.call_args[0][0]
+    assert "✨ <b>Variantes :</b> onepiece" in last_text
+    keyboard = callback.message.edit_text.call_args[1]["reply_markup"]
+    assert not any(
+        button.callback_data == "alert_create_ai_variants"
+        for row in keyboard.inline_keyboard
+        for button in row
+    ), "le moteur a répondu : le bouton n'a plus rien à apporter"
