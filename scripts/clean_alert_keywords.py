@@ -46,8 +46,10 @@ import asyncio
 import json
 import sys
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 
@@ -55,13 +57,11 @@ from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.db.session import AsyncSessionLocal
 from app.domain.rules.keyword_hygiene import (
-    carries_isbn_like,
-    is_degenerate_exclusion,
-    is_degenerate_variant,
-    sanitize_exclusions,
-    sanitize_variants,
+    SanitizedValues,
+    TermRemoval,
+    assess_exclusions,
+    assess_variants,
 )
-from app.utils.text import normalize_text
 
 EXIT_CLEAN, EXIT_CHANGES, EXIT_ERROR = 0, 1, 2
 
@@ -69,43 +69,6 @@ GREEN, RED, DIM, RESET = "\033[32m", "\033[31m", "\033[2m", "\033[0m"
 
 FAMILY_VARIANTS = "variantes"
 FAMILY_EXCLUSIONS = "exclusions"
-
-# Motifs d'un retrait. Ils décrivent **ce que la règle a fait**, jamais ce qu'elle
-# aurait voulu faire : un diff qui n'est pas motivé ne se relit pas, il se subit.
-REASON_EMPTY = "vide, ou trop long pour une recherche"
-REASON_ISBN = "porte un code d'ouvrage (ISBN)"
-REASON_TITLE_VARIANT = "reprend le titre sans rien y ajouter"
-REASON_TITLE_EXCLUSION = "tient dans le titre : il tairait l'annonce cible"
-REASON_ENUMERATION = "né d'une énumération de suffixe"
-REASON_BARE_TOKEN = "chiffre nu ou caractère seul : ne tranche rien"
-REASON_DUPLICATE = "doublon d'un terme déjà présent"
-REASON_LIMIT = "trop long pour une recherche, ou au-delà du plafond de la famille"
-
-# Ce qui est dégénéré sans jamais consulter le titre. Un retrait qui n'est pas dans cette
-# liste dépend du titre de l'alerte : c'est lui que `--only-degenerate` refuse de jouer.
-DEGENERATE_REASONS = frozenset(
-    {REASON_EMPTY, REASON_ISBN, REASON_ENUMERATION, REASON_BARE_TOKEN}
-)
-
-
-@dataclass(frozen=True)
-class TermRemoval:
-    """Un terme retiré, et la raison pour laquelle la règle l'a retiré.
-
-    La raison est déduite des prédicats publics du nettoyeur, jamais réécrite à côté :
-    deux listes de règles qui divergent sont exactement le genre de maintenance qu'on
-    ne voit pas venir.
-    """
-
-    family: str
-    term: str
-    reason: str
-
-    @property
-    def is_degenerate(self) -> bool:
-        """Ce retrait se décide-t-il sans le titre de l'alerte ?"""
-        return self.reason in DEGENERATE_REASONS
-
 
 @dataclass(frozen=True)
 class AlertKeywordPlan:
@@ -123,7 +86,8 @@ class AlertKeywordPlan:
     exclusions_before: tuple[str, ...]
     exclusions_after: tuple[str, ...]
     inactive: bool = False
-    removals: tuple[TermRemoval, ...] = ()
+    variant_removals: tuple[TermRemoval, ...] = ()
+    exclusion_removals: tuple[TermRemoval, ...] = ()
     only_degenerate: bool = False
 
     @property
@@ -143,110 +107,36 @@ class AlertKeywordPlan:
         )
 
 
-def _removal_reason(
-    term: str,
-    title: str,
-    *,
-    is_variant: bool,
-    kept_normalized: set[str],
-) -> str:
-    """Pourquoi le nettoyeur a retiré ce terme.
-
-    On ne réécrit pas la règle : on l'interroge. Le verdict vient de
-    `sanitize_variants`/`sanitize_exclusions`, et le motif est cherché parmi les
-    prédicats que ce module exporte.
-
-    La dégénérescence est nommée **avant** le titre, alors que `_clean_values` consulte
-    le titre d'abord. Ce n'est pas une contradiction : le motif décrit le défaut du
-    terme, pas la ligne de code qui l'a écarté. « né d'une énumération » reste vrai pour
-    un terme que le titre écartait aussi — et c'est cette propriété, pas l'ordre
-    d'exécution, qui décide de la portee de `--only-degenerate`.
-
-    Deux cas ne se voient pas sur un terme seul — la déduplication et le plafond
-    dépendent des autres termes — donc ils sont tranchés en dernier, sur ce qui a
-    effectivement survécu.
-    """
-    value = str(term).strip().lower()
-    sanitize = sanitize_variants if is_variant else sanitize_exclusions
-
-    if not value or not normalize_text(value):
-        return REASON_EMPTY
-    if carries_isbn_like(value):
-        return REASON_ISBN
-    if is_variant and is_degenerate_variant(value):
-        return REASON_ENUMERATION
-    if not is_variant and is_degenerate_exclusion(value):
-        return REASON_BARE_TOKEN
-
-    # Le terme n'est pas dégénéré par lui-même. S'il disparaît quand même, c'est que le
-    # titre le faisait disparaître : la règle du titre est la seule qui le consulte, et
-    # une variante comme une exclusion s'y appuient différemment.
-    if not sanitize([value], title):
-        return REASON_TITLE_VARIANT if is_variant else REASON_TITLE_EXCLUSION
-
-    # Il passe seul, avec son titre : seul un terme voisin a pu l'emporter.
-    if normalize_text(value) in kept_normalized:
-        return REASON_DUPLICATE
-    return REASON_LIMIT
-
-
 def _plan_family(
     before: tuple[str, ...],
     title: str,
     *,
-    family: str,
-    is_variant: bool,
+    assess: Callable[[list[str] | None, str], SanitizedValues],
     only_degenerate: bool,
 ) -> tuple[tuple[str, ...], tuple[TermRemoval, ...]]:
-    """Verdict et motifs d'une seule famille de mots-clés.
+    """Verdict d'une famille, tel que la règle l'a motivé.
 
-    L'appariement se fait **par position** : `_clean_values` n'ajoute que la forme
-    strippée et mise en minuscule, donc un terme survit si et seulement si cette forme
-    reste disponible dans la sortie. Passer par les positions plutôt que par les
-    valeurs évite qu'un terme identique à deux reprises fasse disparaître le survivant
-    quand le doublon part.
+    Aucun filtre ici : ce module ne décide rien, il relaie. La raison affichée vient
+    du même enchaînement qui a écarté le terme, donc elle ne peut pas en diverger —
+    c'était tout le risque d'un motif rejoué à côté des filtres.
     """
-    sanitize = sanitize_variants if is_variant else sanitize_exclusions
-    pool = list(sanitize(list(before), title))
-    kept_normalized = {normalize_text(value) for value in pool}
-
-    kept_indexes: list[int] = []
-    removals: list[tuple[int, TermRemoval]] = []
-    for index, raw in enumerate(before):
-        candidate = str(raw).strip().lower()
-        if candidate in pool:
-            pool.remove(candidate)
-            kept_indexes.append(index)
-        else:
-            removals.append(
-                (
-                    index,
-                    TermRemoval(
-                        family=family,
-                        term=str(raw),
-                        reason=_removal_reason(
-                            raw,
-                            title,
-                            is_variant=is_variant,
-                            kept_normalized=kept_normalized,
-                        ),
-                    ),
-                )
-            )
-
+    outcome = assess(list(before), title)
+    # La règle dit quelles positions elle a gardées : aucune recherche par valeur,
+    # donc deux termes identiques ne font pas disparaître le survivant.
+    after = tuple(before[index] for index in outcome.kept_indexes)
     if not only_degenerate:
-        return tuple(before[i] for i in kept_indexes), tuple(
-            removal for _, removal in removals
-        )
+        return after, outcome.removals
 
-    # Portée restreinte : on repart de la liste d'origine et on n'en retire que ce qui est
-    # dégénéré par lui-même. Tout le reste est conservé tel quel — y compris ce que le
-    # titre, la déduplication ou le plafond auraient écarté — pour qu'un rejeu aveugle ne
-    # puisse pas emporter un terme qualifié. On raisonne par **position**, jamais par
-    # valeur : deux termes identiques ne doivent pas faire disparaître le survivant.
-    dropped = {index for index, removal in removals if removal.is_degenerate}
-    return tuple(raw for index, raw in enumerate(before) if index not in dropped), tuple(
-        removal for _, removal in removals if removal.is_degenerate
+    # Portée restreinte : on repart de la liste d'origine et on n'en retire que ce qui
+    # est dégénéré par lui-même. Tout le reste est conservé tel quel — y compris ce que
+    # le titre, la déduplication ou le plafond auraient écarté — pour qu'un rejeu
+    # aveugle ne puisse pas emporter un terme qualifié.
+    dropped = {
+        removal.index for removal in outcome.removals if removal.reason.is_degenerate
+    }
+    return (
+        tuple(raw for index, raw in enumerate(before) if index not in dropped),
+        tuple(removal for removal in outcome.removals if removal.reason.is_degenerate),
     )
 
 
@@ -257,15 +147,13 @@ def plan_cleanup(alert: Alert, *, only_degenerate: bool = False) -> AlertKeyword
     variants_after, variant_removals = _plan_family(
         variants,
         alert.name,
-        family=FAMILY_VARIANTS,
-        is_variant=True,
+        assess=assess_variants,
         only_degenerate=only_degenerate,
     )
     exclusions_after, exclusion_removals = _plan_family(
         exclusions,
         alert.name,
-        family=FAMILY_EXCLUSIONS,
-        is_variant=False,
+        assess=assess_exclusions,
         only_degenerate=only_degenerate,
     )
     return AlertKeywordPlan(
@@ -276,7 +164,8 @@ def plan_cleanup(alert: Alert, *, only_degenerate: bool = False) -> AlertKeyword
         exclusions_before=exclusions,
         exclusions_after=exclusions_after,
         inactive=alert.status != AlertStatus.ACTIVE,
-        removals=variant_removals + exclusion_removals,
+        variant_removals=variant_removals,
+        exclusion_removals=exclusion_removals,
         only_degenerate=only_degenerate,
     )
 
@@ -364,18 +253,30 @@ def render(
         head = f"{DIM}{plan.alert_id[:8]}{RESET} {plan.name}"
         if diff:
             lines.append(head)
-            for family, before, after in (
-                (FAMILY_VARIANTS, plan.variants_before, plan.variants_after),
-                (FAMILY_EXCLUSIONS, plan.exclusions_before, plan.exclusions_after),
+            for family, before, after, reasons in (
+                (
+                    FAMILY_VARIANTS,
+                    plan.variants_before,
+                    plan.variants_after,
+                    plan.variant_removals,
+                ),
+                (
+                    FAMILY_EXCLUSIONS,
+                    plan.exclusions_before,
+                    plan.exclusions_after,
+                    plan.exclusion_removals,
+                ),
             ):
-                reasons = [r for r in plan.removals if r.family == family]
                 if not reasons:
                     continue
                 lines.append(f"    {family} : {len(before)} → {len(after)}")
                 lines.append(f"      avant : {', '.join(before) if before else '(aucune)'}")
                 lines.append(f"      après : {', '.join(after) if after else '(aucune)'}")
                 for removal in reasons:
-                    lines.append(f"      {RED}-{removal.term}{RESET}  {DIM}{removal.reason}{RESET}")
+                    lines.append(
+                        f"      {RED}-{removal.raw}{RESET}  "
+                        f"{DIM}{removal.reason.value}{RESET}"
+                    )
             continue
         if plan.variants_removed:
             lines.append(
@@ -400,6 +301,18 @@ def render(
             f"{RED}{len(changed)} alerte(s) à nettoyer — relire --diff, puis --apply.{RESET}"
         )
     return "\n".join(lines)
+
+
+def _motifs(removals: tuple[TermRemoval, ...]) -> list[dict[str, Any]]:
+    """Les retraits d'une famille, avec le motif que la règle leur a donné."""
+    return [
+        {
+            "terme": removal.raw,
+            "raison": removal.reason.value,
+            "degenere": removal.reason.is_degenerate,
+        }
+        for removal in removals
+    ]
 
 
 def as_json(
@@ -436,15 +349,10 @@ def as_json(
                         "apres": list(plan.exclusions_after),
                         "retirees": plan.exclusions_removed,
                     },
-                    "motifs": [
-                        {
-                            "famille": removal.family,
-                            "terme": removal.term,
-                            "raison": removal.reason,
-                            "degenere": removal.is_degenerate,
-                        }
-                        for removal in plan.removals
-                    ],
+                    "motifs": {
+                        "variantes": _motifs(plan.variant_removals),
+                        "exclusions": _motifs(plan.exclusion_removals),
+                    },
                 }
                 for plan in plans
                 if plan.changed
