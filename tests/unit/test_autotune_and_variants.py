@@ -241,7 +241,8 @@ async def test_handle_autotune_with_dislikes():
         # Doit envoyer le message de chargement puis le résultat final
         assert message.answer.call_count == 2
         text = message.answer.call_args[0][0]
-        assert "Auto-tuning : « One Piece »" in text
+        assert "🧹 Auto-tuning des alertes" in text
+        assert "Nom : « One Piece »" in text
         assert "figurine, t-shirt" in text
         assert await get_pending_tuning(alert.id) == ["figurine", "t-shirt"]
 
@@ -308,7 +309,8 @@ async def test_handle_autotune_with_target_query():
 
         assert message.answer.call_count == 2
         text = message.answer.call_args[0][0]
-        assert "Auto-tuning : « Watchmen »" in text
+        assert "🧹 Auto-tuning des alertes" in text
+        assert "Nom : « Watchmen »" in text
         assert "gardiens" in text
 
 
@@ -413,7 +415,7 @@ async def test_handle_tune_apply():
         callback.answer.assert_called_once()
         callback.message.edit_text.assert_called_once()
         text = callback.message.edit_text.call_args[0][0]
-        assert "retiré(s) de la liste" in text
+        assert "2 faux positifs traités retirés de la liste" in text
         # Vérifie les boutons de retour : hub prioritaire et alerte secondaire
         kb = callback.message.edit_text.call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == "ai_tune_hub"
@@ -511,7 +513,7 @@ async def test_autotune_concurrency_lock():
     _active_tuning_alerts.add(str(alert_id))
     try:
         await process_autotune_for_alert(callback, alert, MagicMock())
-        lock_msg = "⏳ Une analyse Auto-Tuning est déjà en cours..."
+        lock_msg = "Une analyse est déjà en cours pour cette alerte."
         callback.answer.assert_called_once_with(lock_msg, show_alert=True)
     finally:
         _active_tuning_alerts.discard(str(alert_id))
@@ -854,7 +856,7 @@ async def test_handle_custom_exclusions_input_valid():
         state.clear.assert_called_once()
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "Mots-clés exclus à appliquer (personnalisés) :" in text
+        assert "Mots-clés exclus suggérés (personnalisés) :" in text
         assert "figurine, tome 2, coffret" in text
         kb = message.answer.call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == f"ai_tune_apply:{alert_id}"

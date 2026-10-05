@@ -4,23 +4,31 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.bot.labels import TITLE_HELP
+
 router = Router(name="help_router")
 
+# L'aide est la seule liste de commandes du bot : elle décrit ce que le bot fait,
+# pas l'implémentation. Les libellés suivent la charte (tutoiement, pas
+# d'exclamation) et les intitulés de boutons déjà visibles à l'écran.
 HELP_TEXT = (
-    "📖 Commandes disponibles :\n\n"
-    "/add [titre] — Créer une alerte (recherche automatique)\n"
-    "/show [titre/ISBN] — Consulter les alertes (ou chercher directement)\n"
-    "/list [catégorie] — Liste compacte des alertes (par catégorie ou globale)\n"
+    f"{TITLE_HELP}\n\n"
+    "<b>Mes alertes</b>\n"
+    "/add — Créer une alerte\n"
+    "/show — Consulter mes alertes\n"
+    "/list — Liste compacte, par catégorie ou globale\n"
     "/edit — Modifier une alerte\n"
-    "/pause — Mettre en pause une alerte\n"
+    "/pause — Mettre une alerte en pause\n"
     "/resume — Réactiver une alerte\n"
     "/delete — Supprimer une alerte\n"
-    "/categories — Afficher les catégories\n"
-    "/stats — Voir les statistiques\n"
-    "/autotune — Auto-tuning et suggestions d'exclusions IA (faux positifs)\n"
+    "/categories — Catégories surveillées\n\n"
+    "<b>Suivi et réglages</b>\n"
+    "/stats — Statistiques d'activité\n"
     "/status — État du service, du radar et du moteur IA\n"
+    "/autotune — Suggestions d'exclusions à partir de tes faux positifs\n\n"
+    "<b>En cours</b>\n"
     "/cancel — Annuler l'opération en cours\n"
-    "/help — Afficher l’aide"
+    "/help — Afficher cette aide"
 )
 
 

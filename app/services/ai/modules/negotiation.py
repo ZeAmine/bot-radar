@@ -1,10 +1,10 @@
 """Module IA pour la génération de message de négociation en 1 clic (Use Case F)."""
 
-import html
 import logging
 
 from pydantic import ValidationError
 
+from app.bot.labels import TITLE_OFFER, escape_html, format_price_cents
 from app.core.config import settings
 from app.db.models.listing import Listing
 from app.services.ai.modules.base import BaseAIModule
@@ -105,11 +105,15 @@ class NegotiationModule(BaseAIModule):
         )
 
     def format_telegram_html(self, result: NegotiationResult) -> str:
-        """Formate le message avec balise <code> pour copie en 1 tap."""
-        safe_msg = html.escape(result.message)
+        """Formate le message avec balise <code> pour copie en un toucher.
+
+        Le montant passe par le helper de la charte : « 25,00 € », pas « 25 € ».
+        """
+        safe_msg = escape_html(result.message)
         return (
-            f"💬 <b>Offre suggérée : {result.suggested_offer_euros:.0f} €</b>\n\n"
-            f"<i>Touchez le texte ci-dessous pour le copier :</i>\n"
+            f"{TITLE_OFFER}\n"
+            f"{format_price_cents(result.suggested_offer_cents)}\n\n"
+            f"<i>Touche le texte ci-dessous pour le copier</i>\n"
             f"<code>{safe_msg}</code>"
         )
 

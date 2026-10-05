@@ -1,7 +1,6 @@
 """Handler pour la commande /autotune et l'Auto-Tuning proactif des alertes (Use Case G)."""
 
 import contextlib
-import html
 import logging
 import uuid
 from typing import Any
@@ -11,6 +10,27 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from app.bot.labels import (
+    BTN_ANALYSIS_RUNNING,
+    BTN_APPLY_EXCLUSIONS,
+    BTN_BACK_TO_AUTOTUNE,
+    BTN_CANCEL,
+    BTN_CLOSE,
+    BTN_DISCARD_CHANGES,
+    BTN_EDIT_ALERT_SETTINGS,
+    BTN_EDIT_EXCLUSIONS,
+    BTN_EDIT_EXCLUSIONS_AGAIN,
+    FIELD_EXCLUDE_KEYWORDS,
+    FIELD_FALSE_POSITIVES,
+    FIELD_NAME,
+    FIELD_SUGGESTED_EXCLUDES,
+    FIELD_SUGGESTED_EXCLUDES_CUSTOM,
+    FIELD_VARIANTS,
+    NOT_PROVIDED,
+    TITLE_AUTOTUNE,
+    TITLE_EDIT_EXCLUDES,
+    escape_html,
+)
 from app.bot.states.alert_creation import AutoTuneState
 from app.db.models.alert import Alert
 from app.db.models.user import User
@@ -54,6 +74,46 @@ def pop_pending_variants(alert_id: uuid.UUID) -> list[str]:
     return _pending_variants.pop(str(alert_id), [])
 
 
+def _autotune_back_keyboard(alert_id: object) -> InlineKeyboardMarkup:
+    """Clavier de sortie d'un écran d'auto-tuning : retour à la liste, ou édition."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=BTN_BACK_TO_AUTOTUNE, callback_data="ai_tune_hub")],
+            [
+                InlineKeyboardButton(
+                    text=BTN_EDIT_ALERT_SETTINGS, callback_data=f"al_edit:{alert_id}"
+                )
+            ],
+        ]
+    )
+
+
+def _proposal_keyboard(
+    alert_id: object, edit_label: str = BTN_EDIT_EXCLUSIONS
+) -> InlineKeyboardMarkup:
+    """Clavier d'une proposition d'exclusions : appliquer, retoucher, ou abandonner."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=BTN_APPLY_EXCLUSIONS, callback_data=f"ai_tune_apply:{alert_id}"
+                )
+            ],
+            [InlineKeyboardButton(text=edit_label, callback_data=f"ai_tune_edit:{alert_id}")],
+            [
+                InlineKeyboardButton(
+                    text=f"← {BTN_CANCEL}", callback_data=f"ai_tune_cancel:{alert_id}"
+                )
+            ],
+        ]
+    )
+
+
+def _autotune_header(alert_name: str) -> str:
+    """En-tête commun des écrans d'auto-tuning : titre de charte puis alerte visée."""
+    return f"{TITLE_AUTOTUNE}\n\n{FIELD_NAME} : « {escape_html(alert_name)} »"
+
+
 async def show_autotune_hub(
     target: Message | CallbackQuery,
     user_id: uuid.UUID,
@@ -64,17 +124,17 @@ async def show_autotune_hub(
 
     if not alerts_with_dislikes:
         empty_text = (
-            "🧹 <b>Auto-tuning des alertes</b>\n\n"
+            f"{TITLE_AUTOTUNE}\n\n"
             "Aucun faux positif signalé pour le moment.\n\n"
             "Comment ça marche :\n"
-            "Quand une alerte t'envoie une annonce hors-sujet, touche le bouton "
+            "Quand une alerte t'envoie une annonce hors sujet, touche le bouton "
             "« Faux positif » sous le message.\n"
-            "Relance ensuite <code>/autotune</code> : le moteur analysera les parasites "
-            "pour suggérer des exclusions adaptées."
+            "Relance ensuite <code>/autotune</code> : le moteur analyse les annonces "
+            "signalées et suggère des exclusions adaptées."
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Fermer", callback_data="ai_tune_close")]
+                [InlineKeyboardButton(text=BTN_CLOSE, callback_data="ai_tune_close")]
             ]
         )
         if isinstance(target, CallbackQuery):
@@ -93,11 +153,11 @@ async def show_autotune_hub(
         ]
         for alert, count in alerts_with_dislikes
     ]
-    buttons.append([InlineKeyboardButton(text="Annuler", callback_data="ai_tune_close")])
+    buttons.append([InlineKeyboardButton(text=BTN_CANCEL, callback_data="ai_tune_close")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     hub_text = (
-        "🧹 <b>Auto-tuning des alertes</b>\n\n"
+        f"{TITLE_AUTOTUNE}\n\n"
         "Sélectionne l'alerte à analyser pour nettoyer ses faux positifs :"
     )
     if isinstance(target, CallbackQuery):
@@ -116,7 +176,7 @@ async def handle_autotune_command(
     """Analyse les faux positifs signalés et propose des exclusions intelligentes."""
     if not auto_tuning_module.is_enabled:
         await message.answer(
-            "L'auto-tuning est désactivé dans la configuration."
+            "L'auto-tuning est désactivé dans la configuration de ce bot."
         )
         return
 
@@ -130,7 +190,7 @@ async def handle_autotune_command(
         matched_alerts = await alert_repo.search_by_user(db_user.id, target_query)
         if not matched_alerts:
             await message.answer(
-                f"Aucune alerte trouvée correspondant à « {html.escape(target_query)} »."
+                f"Aucune alerte ne correspond à « {escape_html(target_query)} »."
             )
             return
         target_alert = matched_alerts[0]
@@ -176,17 +236,14 @@ async def process_autotune_for_alert(
     alert_key = str(alert.id)
     if alert_key in _active_tuning_alerts:
         if isinstance(target, CallbackQuery):
-            await target.answer("⏳ Une analyse Auto-Tuning est déjà en cours...", show_alert=True)
+            await target.answer("Une analyse est déjà en cours pour cette alerte.", show_alert=True)
         return
 
     _active_tuning_alerts.add(alert_key)
-    loading_text = (
-        f"🧹 <b>Auto-tuning : « {html.escape(alert.name)} »</b>\n\n"
-        "Analyse des faux positifs en cours…"
-    )
+    loading_text = f"{_autotune_header(alert.name)}\n\nAnalyse des faux positifs en cours…"
     loading_kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⏳ Analyse en cours...", callback_data="noop")]
+            [InlineKeyboardButton(text=BTN_ANALYSIS_RUNNING, callback_data="noop")]
         ]
     )
 
@@ -197,26 +254,13 @@ async def process_autotune_for_alert(
     else:
         await target.answer(loading_text, reply_markup=loading_kb)
 
-    back_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="← Retour à la liste Auto-Tuning", callback_data="ai_tune_hub"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⚙️ Modifier l'alerte", callback_data=f"al_edit:{alert.id}"
-                )
-            ],
-        ]
-    )
+    back_kb = _autotune_back_keyboard(alert.id)
 
     try:
         disliked_titles = await get_disliked_titles_for_alert(alert.id, db_session)
         if not disliked_titles:
             msg = (
-                f"🧹 <b>Auto-tuning : « {html.escape(alert.name)} »</b>\n\n"
+                f"{_autotune_header(alert.name)}\n\n"
                 "Aucun faux positif enregistré pour cette alerte.\n\n"
                 "Pour que l'auto-tuning apprenne de tes préférences :\n"
                 "• Signale les annonces indésirables avec le bouton « Faux positif ».\n"
@@ -236,7 +280,7 @@ async def process_autotune_for_alert(
             min_dislikes=1,
         )
 
-        titles_bullet = "\n".join(f"• <i>{html.escape(t)}</i>" for t in disliked_titles[:5])
+        titles_bullet = "\n".join(f"• <i>{escape_html(t)}</i>" for t in disliked_titles[:5])
 
         if proposal is None:
             # Purger les faux positifs résolus déjà couverts par les exclusions existantes
@@ -244,12 +288,15 @@ async def process_autotune_for_alert(
             await db_session.commit()
 
             active_excl_str = (
-                ", ".join(alert.exclude_keywords) if alert.exclude_keywords else "Aucune"
+                escape_html(", ".join(alert.exclude_keywords))
+                if alert.exclude_keywords
+                else NOT_PROVIDED
             )
             res_text = (
-                f"🧹 <b>Auto-tuning : « {html.escape(alert.name)} »</b>\n\n"
-                f"Annonces indésirables analysées :\n{titles_bullet}\n\n"
-                f"Mots-clés exclus actuels : <code>{html.escape(active_excl_str)}</code>\n\n"
+                f"{_autotune_header(alert.name)}\n\n"
+                f"{FIELD_FALSE_POSITIVES} ({len(disliked_titles)}) :\n"
+                f"{titles_bullet}\n\n"
+                f"{FIELD_EXCLUDE_KEYWORDS} : <code>{active_excl_str}</code>\n\n"
                 "Toutes les exclusions pertinentes sont déjà actives sur l'alerte.\n"
                 "Les faux positifs traités ont été retirés de la liste."
             )
@@ -265,39 +312,18 @@ async def process_autotune_for_alert(
 
         excl_str = ", ".join(proposal.exclusions)
         explanation = proposal.explanation or ""
-        exp_text = f"\n💡 <i>{html.escape(explanation)}</i>\n" if explanation else ""
+        exp_text = f"\n<i>{escape_html(explanation)}</i>\n" if explanation else ""
 
         text = (
-            f"🧹 <b>Auto-tuning : « {html.escape(alert.name)} »</b>\n\n"
-            f"Faux positifs analysés ({len(disliked_titles)}) :\n"
+            f"{_autotune_header(alert.name)}\n\n"
+            f"{FIELD_FALSE_POSITIVES} ({len(disliked_titles)}) :\n"
             f"{titles_bullet}\n"
             f"{exp_text}\n"
-            f"Mots-clés exclus suggérés :\n"
-            f"<code>{html.escape(excl_str)}</code>\n\n"
+            f"{FIELD_SUGGESTED_EXCLUDES} :\n"
+            f"<code>{escape_html(excl_str)}</code>\n\n"
             "Appliquer ces exclusions à l'alerte ?"
         )
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="Appliquer les exclusions",
-                        callback_data=f"ai_tune_apply:{alert.id}",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="Modifier la liste",
-                        callback_data=f"ai_tune_edit:{alert.id}",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="← Annuler",
-                        callback_data=f"ai_tune_cancel:{alert.id}",
-                    )
-                ],
-            ]
-        )
+        keyboard = _proposal_keyboard(alert.id)
 
         if isinstance(target, CallbackQuery):
             if target.message and hasattr(target.message, "edit_text"):
@@ -308,8 +334,8 @@ async def process_autotune_for_alert(
     except Exception as err:
         logger.error("Erreur lors de l'Auto-Tuning pour %s: %s", alert.name, err)
         err_text = (
-            f"⚠️ Une erreur est survenue lors de l'analyse pour « {html.escape(alert.name)} ».\n"
-            "Réessaie dans un instant."
+            f"{_autotune_header(alert.name)}\n\n"
+            "L'analyse n'a pas abouti. Réessaie dans un instant."
         )
         if isinstance(target, CallbackQuery):
             if target.message and hasattr(target.message, "edit_text"):
@@ -384,31 +410,20 @@ async def handle_tune_apply(
     await db_session.commit()
 
     await callback.answer("Exclusions appliquées.", show_alert=True)
-    back_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="← Retour à la liste Auto-Tuning", callback_data="ai_tune_hub"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⚙️ Modifier l'alerte", callback_data=f"al_edit:{alert.id}"
-                )
-            ],
-        ]
-    )
+    back_kb = _autotune_back_keyboard(alert.id)
     if callback.message and hasattr(callback.message, "edit_text"):
         cleanup_note = (
             f"{cleaned_count} faux positif{'s' if cleaned_count > 1 else ''} "
-            "traité(s) retiré(s) de la liste."
+            f"traité{'s' if cleaned_count > 1 else ''} "
+            f"retiré{'s' if cleaned_count > 1 else ''} de la liste."
             if cleaned_count > 0
             else "Les faux positifs traités ont été retirés de la liste."
         )
+        excludes_str = escape_html(", ".join(current_excludes))
         await callback.message.edit_text(
             f"✅ <b>Exclusions appliquées</b>\n\n"
-            f"Alerte : « {html.escape(alert.name)} »\n"
-            f"Mots-clés exclus actuels : <code>{', '.join(current_excludes)}</code>\n\n"
+            f"{FIELD_NAME} : « {escape_html(alert.name)} »\n"
+            f"{FIELD_EXCLUDE_KEYWORDS} : <code>{excludes_str}</code>\n\n"
             f"{cleanup_note}",
             reply_markup=back_kb,
         )
@@ -446,9 +461,9 @@ async def handle_tune_edit(
 
     copy_text = ", ".join(current_suggestions)
     prompt_text = (
-        f"✏️ <b>Mots-clés exclus</b>\n\n"
-        f"Alerte : « {html.escape(alert.name)} »\n"
-        f"Suggestions actuelles :\n<code>{html.escape(copy_text)}</code>\n\n"
+        f"{TITLE_EDIT_EXCLUDES}\n\n"
+        f"{FIELD_NAME} : « {escape_html(alert.name)} »\n"
+        f"{FIELD_SUGGESTED_EXCLUDES} :\n<code>{escape_html(copy_text)}</code>\n\n"
         "Modifie le texte ci-dessus (ajoute, retire ou ajuste des termes "
         "séparés par des virgules ou retours à la ligne) puis envoie-le dans ce chat.\n\n"
         "Tape /cancel pour annuler la modification."
@@ -458,7 +473,7 @@ async def handle_tune_edit(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="← Revenir sans modifier",
+                    text=BTN_DISCARD_CHANGES,
                     callback_data=f"ai_tune_back_sug:{alert.id}",
                 )
             ]
@@ -503,33 +518,12 @@ async def handle_tune_back_to_suggestion(
 
     excl_str = ", ".join(suggestions)
     text = (
-        f"🧹 <b>Auto-tuning : « {html.escape(alert.name)} »</b>\n\n"
-        "Mots-clés exclus suggérés :\n"
-        f"<code>{html.escape(excl_str)}</code>\n\n"
+        f"{_autotune_header(alert.name)}\n\n"
+        f"{FIELD_SUGGESTED_EXCLUDES} :\n"
+        f"<code>{escape_html(excl_str)}</code>\n\n"
         "Appliquer ces exclusions à l'alerte ?"
     )
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Appliquer les exclusions",
-                    callback_data=f"ai_tune_apply:{alert.id}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Modifier la liste",
-                    callback_data=f"ai_tune_edit:{alert.id}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="← Annuler",
-                    callback_data=f"ai_tune_cancel:{alert.id}",
-                )
-            ],
-        ]
-    )
+    keyboard = _proposal_keyboard(alert.id)
     await callback.answer()
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(text, reply_markup=keyboard)
@@ -564,9 +558,10 @@ async def handle_custom_exclusions_input(
     parsed = parse_exclusions_input(raw_text)
     if not parsed:
         await message.answer(
-            "⚠️ Aucun mot-clé valide détecté.\n"
-            "Envoie au moins un mot-clé (séparé par une virgule ou "
-            "un retour à la ligne), ou tape /cancel pour annuler."
+            f"{TITLE_EDIT_EXCLUDES}\n\n"
+            f"{FIELD_SUGGESTED_EXCLUDES} : {NOT_PROVIDED}\n\n"
+            "Envoie au moins un mot-clé, séparé par une virgule ou "
+            "un retour à la ligne, ou tape /cancel pour annuler."
         )
         return
 
@@ -579,33 +574,12 @@ async def handle_custom_exclusions_input(
 
     excl_str = ", ".join(parsed)
     text = (
-        f"🧹 <b>Auto-tuning : « {html.escape(alert_name)} »</b>\n\n"
-        "Mots-clés exclus à appliquer (personnalisés) :\n"
-        f"<code>{html.escape(excl_str)}</code>\n\n"
+        f"{_autotune_header(alert_name)}\n\n"
+        f"{FIELD_SUGGESTED_EXCLUDES_CUSTOM} :\n"
+        f"<code>{escape_html(excl_str)}</code>\n\n"
         "Appliquer cette liste d'exclusions à l'alerte ?"
     )
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Appliquer les exclusions",
-                    callback_data=f"ai_tune_apply:{alert_id_str}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Modifier à nouveau",
-                    callback_data=f"ai_tune_edit:{alert_id_str}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="← Annuler",
-                    callback_data=f"ai_tune_cancel:{alert_id_str}",
-                )
-            ],
-        ]
-    )
+    keyboard = _proposal_keyboard(alert_id_str, BTN_EDIT_EXCLUSIONS_AGAIN)
     await message.answer(text, reply_markup=keyboard)
 
 
@@ -630,20 +604,7 @@ async def handle_tune_cancel(
         await show_autotune_hub(callback, db_user.id, db_session)
         return
 
-    back_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="← Retour à la liste Auto-Tuning", callback_data="ai_tune_hub"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⚙️ Modifier l'alerte", callback_data=f"al_edit:{alert_id}"
-                )
-            ],
-        ]
-    )
+    back_kb = _autotune_back_keyboard(alert_id)
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(
             "Auto-tuning annulé.\n\n"
@@ -742,7 +703,7 @@ async def handle_var_apply(
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(
             f"✅ <b>Variantes ajoutées</b>\n\n"
-            f"Alerte : « {html.escape(alert.name)} »\n"
-            f"Variantes actuelles : <code>{', '.join(current_variants)}</code>",
+            f"{FIELD_NAME} : « {escape_html(alert.name)} »\n"
+            f"{FIELD_VARIANTS} : <code>{escape_html(', '.join(current_variants))}</code>",
             reply_markup=back_kb,
         )

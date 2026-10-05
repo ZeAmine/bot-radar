@@ -1,11 +1,11 @@
 """Cas d'usage : Enrichissement asynchrone d'une annonce via le moteur IA (post-alerte)."""
 
-import html
 import logging
 
 from aiogram import Bot
 
 from app.bot.bot_instance import bot as default_bot
+from app.bot.labels import TITLE_AI_ALERT, escape_html
 from app.domain.entities.analysis import ListingAnalysisResult
 from app.domain.entities.listing import ListingEntity
 from app.domain.protocols.llm import LLMAnalysisProviderProtocol
@@ -52,19 +52,19 @@ class AsyncEnrichListingUseCase:
             )
 
             if has_warning and self._bot:
-                warning_lines: list[str] = ["<b>⚠️ Analyse IA de vigilance :</b>"]
+                # Un titre d'écran et des phrases, pas un emoji par ligne : le
+                # message complète l'alerte, il ne la remplace pas.
+                warning_lines: list[str] = [TITLE_AI_ALERT]
 
                 if analysis.is_scam_or_trap:
                     warning_lines.append(
-                        "⛔️ <b>Alerte suspicion :</b> Risque d'arnaque, boîte vide ou piège."
+                        "Alerte suspicion : risque d'arnaque, boîte vide ou piège."
                     )
                 elif analysis.is_lot_incomplete:
-                    warning_lines.append(
-                        "📦 <b>Lot potentiellement incomplet :</b> Pièces ou tomes manquants."
-                    )
+                    warning_lines.append("Lot incomplet : pièces ou tomes manquants.")
 
                 if analysis.analysis_summary:
-                    warning_lines.append(f"💬 <i>{html.escape(analysis.analysis_summary)}</i>")
+                    warning_lines.append(f"<i>{escape_html(analysis.analysis_summary)}</i>")
 
                 warning_msg = "\n".join(warning_lines)
 
