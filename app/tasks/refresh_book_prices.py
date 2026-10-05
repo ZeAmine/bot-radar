@@ -227,7 +227,7 @@ async def refresh_book_prices_task(
         stats["processed"], total_books, mode_label=mode_label
     )
     await notify_no_prices_found(
-        stats["processed"], stats["available"], mode_label=mode_label
+        stats["processed"], total_books, stats["available"], mode_label=mode_label
     )
     await notify_high_error_ratio(
         stats["processed"], stats["errors"], mode_label=mode_label

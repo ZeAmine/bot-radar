@@ -262,8 +262,8 @@ async def test_a_complete_pass_says_nothing():
         mp.setattr(market_health, "notify_admins", fake_notify)
 
         await market_health.notify_incomplete_refresh(12, 12, mode_label="complet (12 livres)")
-        await market_health.notify_no_prices_found(0, 0, mode_label="complet (0 livres)")
-        await market_health.notify_no_prices_found(12, 3, mode_label="complet (12 livres)")
+        await market_health.notify_no_prices_found(0, 0, 0, mode_label="complet (0 livres)")
+        await market_health.notify_no_prices_found(12, 12, 3, mode_label="complet (12 livres)")
         await market_health.notify_high_error_ratio(12, 2, mode_label="complet (12 livres)")
 
     assert sent == []
@@ -280,10 +280,95 @@ async def test_a_pass_without_any_price_is_reported():
 
         mp.setattr(market_health, "notify_admins", fake_notify)
 
-        await market_health.notify_no_prices_found(10, 0, mode_label="complet (10 livres)")
+        client = MagicMock()
+        client.set = AsyncMock(return_value=True)
+        mp.setattr(market_health, "get_redis_client", lambda: client)
+
+        await market_health.notify_no_prices_found(10, 10, 0, mode_label="complet (10 livres)")
 
     assert len(sent) == 1
     assert "0 cote" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_un_lot_incremental_sans_cote_ne_signale_rien():
+    """Un lot de 8 livres sans cote n'est pas une panne : le lot est trié vers l'échec.
+
+    C'est l'alerte qui revenait jusqu'à quarante-huit fois par jour. Le job
+    glissant traite huit livres toutes les trente minutes, et sa sélection
+    ordonne par `checked_at ASC NULLS FIRST` : un livre sans cote revient en tête
+    de file après six heures là où un livre coté attend vingt-quatre, donc les
+    livres sans offre y sont structurellement sur-représentés. « 0 cote sur 8 »
+    ne prouve rien, et l'affirmer coûtait un message par demi-heure.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        client = MagicMock()
+        client.set = AsyncMock(return_value=True)
+        mp.setattr(market_health, "get_redis_client", lambda: client)
+
+        await market_health.notify_no_prices_found(
+            8, 42, 0, mode_label="incrémental (8 livres)"
+        )
+
+    assert sent == [], "un lot partiel ne peut pas conclure à une panne"
+    # Rien n'est même réservé : on n'a pas consommé la fenêtre d'une future alerte.
+    assert client.set.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_la_passe_sans_cote_ne_signale_quune_seule_fois():
+    """Le dédoublonnage : la fenêtre Redis vaut comme pour les deux autres alertes."""
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        client = MagicMock()
+        client.set = AsyncMock(side_effect=[True, False])
+        mp.setattr(market_health, "get_redis_client", lambda: client)
+
+        await market_health.notify_no_prices_found(10, 10, 0, mode_label="complet (10 livres)")
+        await market_health.notify_no_prices_found(10, 10, 0, mode_label="complet (10 livres)")
+
+    assert len(sent) == 1
+    assert client.set.await_args.kwargs["nx"] is True
+
+
+@pytest.mark.asyncio
+async def test_le_message_ne_saccuse_plus_les_sources():
+    """« Toutes les sources sont muettes » était faux : c'était un fait par livre.
+
+    La base compte des cotes ; déduire de là que les sources sont muettes
+    accusait quatre fournisseurs sur une observation portant sur quelques
+    livres. Le message nomme ce qui a été observé et renvoie à l'alerte qui, elle,
+    sait nommer une source.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        client = MagicMock()
+        client.set = AsyncMock(return_value=True)
+        mp.setattr(market_health, "get_redis_client", lambda: client)
+
+        await market_health.notify_no_prices_found(10, 10, 0, mode_label="complet (10 livres)")
+
+    assert "Toutes les sources sont muettes" not in sent[0]
+    assert "Aucune source" not in sent[0]
 
 
 @pytest.mark.asyncio

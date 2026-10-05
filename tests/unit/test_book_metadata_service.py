@@ -14,6 +14,7 @@ from app.services.book_metadata_service import (
     BookMetadataService,
     BookResolution,
     IsbnVerdict,
+    _declares_doctype,
     ambiguity_note,
     clean_bnf_creator,
     clean_bnf_publisher,
@@ -979,3 +980,78 @@ async def test_une_doctype_ne_peut_pas_confirmer_un_isbn():
     assert verdict.outcome == "silence", "une réponse écartée n'est pas une absence de notice"
     assert verdict.panne == _PANNE_DOCTYPE
     assert verdict.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY), "le repli a bien été tenté"
+
+
+# --- Le faux positif que le garde par octets ne pouvait pas voir -----------------
+#
+# `b"<!DOCTYPE" in resp.content` cherchait le littéral dans les octets. Or le
+# littéral peut apparaître dans le *texte* d'une notice — via un CDATA, seul
+# endroit XML où `<` n'a pas besoin d'être échappé. La réponse était alors
+# écartée comme une panne alors qu'elle était parfaitement lisible : une
+# recherche d'octets ne voit pas la structure du document.
+
+
+@pytest.mark.asyncio
+async def test_un_cdata_qui_mentionne_la_doctype_est_lu():
+    """Une notice qui *parle* de `<!DOCTYPE html>` n'est pas une notice écartée.
+
+    C'est le faux positif assumé du garde précédent : il annonçait une panne BNF
+    alors que la réponse portait la notice attendue.
+    """
+    record = BNF_RECORD_TEMPLATE.format(
+        ark="471036825",
+        title="La couleur des choses <![CDATA[référence <!DOCTYPE html> en annexe]]>",
+        creator="Panchaud, Martin (1982-....). Auteur du texte",
+        publisher="Çà et là (Bussy-Saint-Georges)",
+        date="<dc:date>2022</dc:date>",
+        fmt="1 vol. (224 p.) : ill. en coul. ; 24 cm",
+        isbn="9782369903086",
+    )
+    service = BookMetadataService(http_client=_ClientSRUFige(_sru(record)))
+
+    notices, panne = await service._bnf_records('bib.isbn adj "9782369903086"')
+
+    assert panne is None, "un CDATA est du texte, pas une déclaration"
+    assert len(notices) == 1
+    assert "DOCTYPE" in (notices[0].title or ""), "le texte est bien passé dans la notice"
+
+
+@pytest.mark.asyncio
+async def test_un_texte_echappe_mentionnant_la_doctype_est_lu():
+    """La forme échappée `&lt;!DOCTYPE…` ne déclenche rien non plus."""
+    record = BNF_RECORD_TEMPLATE.format(
+        ark="471036825",
+        title="La couleur des choses &lt;!DOCTYPE html&gt;",
+        creator="Panchaud, Martin (1982-....). Auteur du texte",
+        publisher="Çà et là (Bussy-Saint-Georges)",
+        date="<dc:date>2022</dc:date>",
+        fmt="1 vol. (224 p.) : ill. en coul. ; 24 cm",
+        isbn="9782369903086",
+    )
+    service = BookMetadataService(http_client=_ClientSRUFige(_sru(record)))
+
+    notices, panne = await service._bnf_records('bib.isbn adj "9782369903086"')
+
+    assert panne is None
+    assert len(notices) == 1
+    assert "<!DOCTYPE" in (notices[0].title or ""), "l'échappement redevient du texte"
+
+
+def test_la_garde_reconnait_la_declaration_et_son_menson():
+    """La garde est structurelle : elle distingue déclarer de mentionner."""
+    declaree = (
+        b'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY isbn "9782369903086">]>'
+        b"<r>&isbn;</r>"
+    )
+    externe = b'<?xml version="1.0"?><!DOCTYPE r SYSTEM "file:///etc/passwd"><r/>'
+    cdata = b'<?xml version="1.0"?><r><![CDATA[<!DOCTYPE html>]]></r>'
+    echappe = b'<?xml version="1.0"?><r>&lt;!DOCTYPE html&gt;</r>'
+    ordinaire = b'<?xml version="1.0"?><r><t>rien de special</t></r>'
+    malforme = b'<?xml version="1.0"?><r><t>jamais ferme'
+
+    assert _declares_doctype(declaree), "une déclaration avec entité interne est refusée"
+    assert _declares_doctype(externe), "une entité externe est refusée"
+    assert not _declares_doctype(cdata), "un CDATA n'est pas une déclaration"
+    assert not _declares_doctype(echappe), "du texte échappé n'est pas une déclaration"
+    assert not _declares_doctype(ordinaire), "un document ordinaire ne déclare rien"
+    assert not _declares_doctype(malforme), "un document malformé n'est pas une déclaration"
