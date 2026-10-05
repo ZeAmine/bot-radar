@@ -33,6 +33,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.bot.handlers import alerts, callbacks
+from app.bot.handlers.alerts_create_confirm import DRAFT_GONE_MESSAGE
+from app.bot.middlewares.unhandled_callbacks import (
+    STALE_CALLBACK_MESSAGE,
+    UnconsumedCallbackMiddleware,
+)
 from app.core.constants import AlertStatus, CategorySlug, ComparisonStatus
 from app.db.base import Base
 from app.db.models.alert import Alert
@@ -112,6 +117,9 @@ async def driver() -> AsyncGenerator[tuple[Bot, Dispatcher], None]:
 
     storage = MemoryStorage()
     dispatcher = Dispatcher(storage=storage)
+    # Le filet global de la production : sans lui, un callback qu'aucun handler ne
+    # filtre resterait sans réponse.
+    dispatcher.update.outer_middleware(UnconsumedCallbackMiddleware())
     dispatcher.include_router(alerts.router)
     dispatcher.include_router(callbacks.router)
     yield bot, dispatcher
@@ -300,6 +308,9 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
         method for method in _api_methods(bot) if type(method).__name__ == "AnswerCallbackQuery"
     ]
     assert acknowledgements, "un appui périmé n'a pas été acquitté : le bouton tourne sans fin"
+    # Le flux de création explique lui-même pourquoi le bouton est périmé ; le filet
+    # global ne sert que là où personne ne parle.
+    assert acknowledgements[0].text == DRAFT_GONE_MESSAGE
     rerendered = [
         method
         for method in _api_methods(bot)
@@ -463,3 +474,47 @@ async def test_back_to_all_tomes_lists_the_real_tomes_and_a_tome_still_opens(dri
     assert "Cotes par tome" in _texts(bot)[-1]
     reopened = _buttons_matching(bot, "market_tome:")
     assert len(reopened) == len(books)
+
+
+# --------------------------------------------------------------------------- filet global
+
+
+@pytest.mark.asyncio
+async def test_a_callback_no_handler_wants_stops_spinning(driver, db_session):
+    """Un bouton qu'aucun handler ne prend en charge cesse tout de même de tourner."""
+    bot, dispatcher = driver
+    user = await _add_user(db_session)
+
+    await _feed(
+        bot,
+        dispatcher,
+        _callback_update("bouton_dune_autre_epoque:42", update_id=1),
+        db_session,
+        user,
+    )
+
+    answers = [
+        method for method in _api_methods(bot) if type(method).__name__ == "AnswerCallbackQuery"
+    ]
+    assert len(answers) == 1, "le callback non pris en charge n'a pas été acquitté"
+    assert answers[0].text == STALE_CALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_a_handled_callback_is_answered_exactly_once(driver, db_session):
+    """Le filet ne double pas l'acquittement d'un handler."""
+    bot, dispatcher = driver
+    user = await _add_user(db_session)
+
+    await _feed(
+        bot,
+        dispatcher,
+        _callback_update("alert_create_cancel", update_id=1),
+        db_session,
+        user,
+    )
+
+    answers = [
+        method for method in _api_methods(bot) if type(method).__name__ == "AnswerCallbackQuery"
+    ]
+    assert len(answers) == 1, "le filet a répondu en plus du handler"

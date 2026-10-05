@@ -13,6 +13,7 @@ from aiogram.types import BotCommand
 from app.bot.handlers import get_bot_router
 from app.bot.middlewares.auth import AuthMiddleware
 from app.bot.middlewares.throttling import ThrottlingMiddleware
+from app.bot.middlewares.unhandled_callbacks import UnconsumedCallbackMiddleware
 from app.core.config import settings
 from app.core.redis import get_redis_client
 
@@ -73,6 +74,11 @@ def create_dispatcher(storage: BaseStorage | None = None) -> Dispatcher:
     dp.message.middleware(throttling_middleware)
     dp.callback_query.middleware(auth_middleware)
     dp.callback_query.middleware(throttling_middleware)
+
+    # Filet au niveau de l'update : il voit le résultat de toute la chaîne de
+    # routeurs, donc les callbacks qu'aucun handler n'a filtrés — ceux qu'un
+    # middleware de callback_query ne verrait jamais.
+    dp.update.outer_middleware(UnconsumedCallbackMiddleware())
 
     # Enregistrement des routeurs
     dp.include_router(get_bot_router())
