@@ -314,6 +314,13 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
 - **Raison** : une variante fausse fait sonner l'alerte au hasard, une exclusion fausse la fait taire. Les deux erreurs sont symétriques et coûtent une occasion.
 - **Conséquence assumée** : une variante qui contient le titre de l'alerte est écartée partout, comme le faisait déjà le module IA — l'annonce qu'elle validerait contient déjà le mot-clé d'inclusion. Le nettoyage des alertes passées est une écriture volontaire (`--apply`), jouée au déploiement.
 
+### ADR-024 : Une œuvre numérotée est une série, pas un tome
+- **Contexte** : `/add Absolute Martian Manhunter, 10€` a créé une alerte rattachée au **volume 2** — ISBN, titre et mots-clés compris — parce que la notice rendue par l'autorité portait « Vol. 2 » et que la résolution retenait la première notice proche sans regarder qu'elle numérotait l'œuvre. L'ISBN contraignait alors la recherche Vinted, le matching et la cote à ce seul tome, alors que la demande visait la série.
+- **Décision** : `app/domain/rules/series_detection.py`, règle pure, lit un fait déjà présent dans la résolution : quand la saisie ne demande aucun numéro (ni mot-marqueur « tome/vol/volume/livre/book/partie », ni numéro collé) et qu'une notice du **même préfixe de titre** en porte un, l'œuvre est une série. L'alerte est alors créée avec `is_series=True`, **sans ISBN**, avec le titre de la série pour nom et des mots-clés recalculés sur ce titre — un mot-clé dérivé de « … vol 2 » ne verrait jamais le tome 3. Le récap affiche la trouvaille et le nombre de tomes repérés (`series_note`).
+- **Périmètre** : les deux chemins d'ajout — `process_bd_query_lookup` (saisie manuelle) et `natural_add.parse_prompt` (langage naturel) — appellent la même règle, qui ne fait **aucun appel réseau** : tout vient de la `BookResolution` déjà obtenue, en CPU, donc sans allonger la latence Telegram. Un tome explicitement demandé garde son ISBN (`_names_a_tome`), et un titre ambigu ne détecte rien (les homonymes ne sont pas des tomes).
+- **Raison** : un ISBN de tome rend l'alerte muette sur le reste de la série — elle ne surveille qu'un volume alors que l'utilisateur en veut plusieurs. C'est une perte silencieuse, exactement ce que l'invariant n°1 refuse.
+- **Conséquence assumée** : la détection n'affirme que ce qu'elle lit. Un tome en chiffres romains (« Tome II ») ou un titre qui ne montre qu'un seul numéro n'est pas traité comme une série : mieux vaut ne rien détecter qu'inventer une série. Une fois l'alerte créée, le titre de la série devient son nom — donc son URL de recherche Vinted, qui ramènera tous les tomes.
+
 ---
 
 ## 4. Règles d'or pour tout Agent LLM
