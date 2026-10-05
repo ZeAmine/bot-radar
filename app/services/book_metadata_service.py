@@ -256,19 +256,13 @@ def ambiguity_note(resolution: BookResolution) -> str | None:
     if resolution.author_hint_match == "conflicts":
         found_author = found.author or "un auteur non renseigné"
         return (
-            f"La BNF connaît « {found.title} » de {found_author}, "
-            "pas l'ouvrage que tu as demandé"
+            f"⚠️ La BNF connaît « {found.title} » de {found_author}, "
+            "pas l'ouvrage demandé."
         )
     others = len(resolution.other_works)
     if others == 1:
-        return (
-            f"« {found.title} » est aussi le titre d'une autre œuvre : "
-            "surveillance par titre jusqu'au choix ci-dessous"
-        )
-    return (
-        f"« {found.title} » est le titre de {others} autres œuvres : "
-        "surveillance par titre jusqu'au choix ci-dessous"
-    )
+        return f"⚠️ « {found.title} » : un autre ouvrage porte ce titre."
+    return f"⚠️ « {found.title} » : {others} autres ouvrages portent ce titre."
 
 
 def clean_openlibrary_author(raw_author: str) -> str:
@@ -439,12 +433,17 @@ def clean_bnf_title(raw_title: str) -> str:
 
 
 def clean_bnf_creator(raw_creator: str) -> str:
-    """Formate le créateur BNF ('Nom, Prénom (dates). Fonction' -> 'Prénom Nom')."""
+    """Formate le créateur BNF ('Nom, Prénom (dates). Fonction' -> 'Prénom Nom').
+
+    Le prénom s'arrête au premier millésime ou au rôle BNF : « Nicolas. Auteur du
+    texte » n'est pas un prénom, et un créateur non parenthésé (« Fébule, Nicolas.
+    Auteur du texte ») laissait ce rôle collé au nom, jusque dans les boutons.
+    """
     m = re.match(r"^([^,]+),\s*([^(]+)", raw_creator)
     if m:
         last = m.group(1).strip()
-        first = m.group(2).strip()
-        return f"{first} {last}"
+        first = re.split(r"[.(]", m.group(2))[0].strip()
+        return f"{first} {last}".strip()
     return re.sub(r"\(.*?\).*|\..*", "", raw_creator).strip()
 
 

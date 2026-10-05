@@ -649,7 +649,7 @@ async def test_natural_add_attaches_nothing_when_the_title_is_a_homonym():
     assert res.book_context is None
     assert res.edition_alternatives == []
     assert res.isbn_note is not None
-    assert "surveillance par titre" in res.isbn_note
+    assert "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre." in res.isbn_note
     # Les deux œuvres sont proposées, l'auteur du roman en premier.
     assert [work.author for work in res.work_choices] == [
         "Rosemonde Ahou de Saintange",
@@ -698,7 +698,7 @@ async def test_natural_add_keeps_a_typed_isbn_on_a_homonymic_title():
     assert res is not None
     assert res.isbn13 == "9782810206087"
     assert res.isbn_note is not None
-    assert "surveillance par titre" in res.isbn_note
+    assert "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre." in res.isbn_note
     assert "non confirmé par la BNF" in res.isbn_note
     assert len(res.work_choices) == 2
 

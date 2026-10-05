@@ -361,6 +361,43 @@ async def test_handle_cancel_command_without_state():
     assert "Aucune opération en cours" in args[0]
 
 
+def test_cancel_is_arbitrated_before_the_creation_flow():
+    """« /cancel » doit être arbitré avant tout handler de saisie de titre.
+
+    La saisie d'un titre est un handler d'état qui accepte du texte libre ; enregistré
+    avant l'annulation, il absorbait `/cancel` comme un titre et lançait une recherche
+    BNF sur le mot « cancel ». L'ordre des sous-routeurs est la garantie.
+    """
+    from app.bot.handlers import alerts
+    from app.bot.handlers.alerts_create_confirm import cancel_router
+
+    names = [sub.name for sub in alerts.router.sub_routers]
+    assert names[0] == cancel_router.name
+    assert names.index(alerts.alerts_create_router.name) == 1
+
+
+def test_cancel_router_matches_slash_cancel_and_bare_cancel():
+    """Le routeur d'annulation reconnaît les deux formes, avec ou sans barre."""
+    from app.bot.handlers.alerts_create_confirm import cancel_router
+
+    def matched(text: str) -> bool:
+        event = MagicMock()
+        event.text = text
+        return any(
+            filter_obj.callback(event)
+            for handler in cancel_router.message.handlers
+            for filter_obj in handler.filters
+            # `magic` est renseigné pour les filtres de texte ; les filtres de
+            # commande et d'état ne s'évaluent pas hors dispatcher.
+            if filter_obj.magic is not None
+        )
+
+    assert matched("/cancel")
+    assert matched("/annuler")
+    assert matched("cancel")
+    assert not matched("Le démon de la colline au loup")
+
+
 @pytest.mark.asyncio
 async def test_list_alerts_without_args_shows_category_menu():
     """Vérifie que /list sans argument affiche le sélecteur de catégorie avec les totaux."""

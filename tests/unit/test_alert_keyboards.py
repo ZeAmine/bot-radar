@@ -338,14 +338,52 @@ def test_build_edition_labels_names_publisher_then_year():
             {"isbn13": "9782369903086", "publication_year": 2022,
              "format_detail": "1 vol. (224 p.) : ill. en coul. ; 24 cm", "publisher": "Çà et là"},
             {"isbn13": "9782369904151", "publication_year": 2025,
-             "format_detail": "1 vol. (208 p.) ; 19 cm", "publisher": "Çà et là Editions poches"},
+             "format_detail": "1 vol. (208 p.) ; 19 cm", "publisher": "Futuropolis"},
         ]
     )
 
     assert labels == [
         "1️⃣ Çà et là - 2022",
-        "2️⃣ Çà et là Editions poches - 2025",
+        "2️⃣ Futuropolis - 2025",
     ]
+
+
+def test_edition_labels_drop_the_publisher_formula():
+    """« les Éditions de Beauvi… » se lit « Beauvi… » : la formule ne distingue rien.
+
+    Le libellé d'un bouton doit tenir à l'écran ; un nom propre court vaut mieux
+    qu'une notice recopiée.
+    """
+    from app.bot.handlers.alerts_helpers import build_edition_labels
+
+    labels = build_edition_labels(
+        [
+            {"isbn13": "9782369903086", "publication_year": 2020,
+             "publisher": "les Éditions de Beauvillé"},
+            {"isbn13": "9782369904151", "publication_year": 2025,
+             "publisher": "Dargaud"},
+        ]
+    )
+
+    assert labels == ["1️⃣ Beauvillé - 2020", "2️⃣ Dargaud - 2025"]
+
+
+def test_work_labels_keep_the_surname_and_the_year_only():
+    """Un homonyme se choisit sur le nom de famille, pas sur une notice complète.
+
+    Même si le créateur arrive encore avec son rôle BNF, le libellé doit se réduire
+    au nom : c'est lui qui distingue deux ouvrages de même titre.
+    """
+    from app.bot.handlers.alerts_helpers import build_work_labels
+
+    works = [
+        {"isbn13": "9782214080627", "author": "Rosemonde Ahou de Saintange",
+         "publisher": "La Pensée universelle", "publication_year": 1989},
+        {"isbn13": "9782810206087", "author": "Nicolas. Auteur du texte Fébule",
+         "publisher": "les Éditions de Beauvillé", "publication_year": 2020},
+    ]
+
+    assert build_work_labels(works) == ["1️⃣ Saintange · 1989", "2️⃣ Fébule · 2020"]
 
 
 def test_build_edition_labels_drops_year_when_unknown():

@@ -132,7 +132,7 @@ async def test_process_bd_query_lookup_refuses_to_attach_a_homonym():
     assert stored["variants"] == []
     assert stored["exclude_keywords"] == []
     assert stored["edition_alternatives"] == []
-    assert "surveillance par titre" in stored["isbn_note"]
+    assert "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre." in stored["isbn_note"]
     assert [work["author"] for work in stored["work_choices"]] == [
         "Rosemonde Ahou de Saintange",
         "Nef",
