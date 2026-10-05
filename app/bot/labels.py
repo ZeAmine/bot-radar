@@ -88,16 +88,39 @@ def format_price_cents(cents: int | None) -> str:
     return f"{cents / 100:.2f} €".replace(".", ",")
 
 
-def format_conditions_full(conditions: list[str] | None) -> str:
-    """Libellés complets des états acceptés (« Neuf avec étiquette, Très bon état »).
+# Abréviations d'états : convention d'affichage du bot, valable partout — messages
+# comme boutons. Un libellé complet tient une ligne à lui seul ; à trois lettres,
+# une série d'états tient sur une seule ligne.
+CONDITION_SHORT: dict[str, str] = {
+    ItemCondition.NEW_WITH_TAG.value: "NAE",
+    ItemCondition.NEW_WITHOUT_TAG.value: "NSE",
+    ItemCondition.VERY_GOOD.value: "TBE",
+    ItemCondition.GOOD.value: "BE",
+    ItemCondition.SATISFACTORY.value: "SAT",
+}
 
-    Un libellé hors référentiel est rendu tel quel : une correspondance manquante
-    ne doit jamais effacer un critère d'acceptation de l'alerte.
+
+def abbreviate_condition(condition: str | None) -> str:
+    """Un état en abrégé (« TBE »), son libellé tel quel s'il est hors référentiel.
+
+    Une abréviation manquante ne doit jamais effacer l'état : une source peut
+    nommer un état que le référentiel ignore, et « Non renseigné » serait alors
+    un mensonge. Un état absent, lui, reste « Non renseigné ».
+    """
+    if not condition:
+        return NOT_PROVIDED
+    return CONDITION_SHORT.get(condition, condition)
+
+
+def format_conditions(conditions: list[str] | None) -> str:
+    """États acceptés en abrégé (« NAE, NSE, TBE »), « Non renseigné » si vide.
+
+    Même règle qu'`abbreviate_condition` : un état hors référentiel est rendu tel
+    quel plutôt que perdu.
     """
     if not conditions:
         return NOT_PROVIDED
-    known = {condition.value for condition in ItemCondition}
-    return ", ".join(conditions if not known else conditions)
+    return ", ".join(CONDITION_SHORT.get(condition, condition) for condition in conditions)
 
 
 def escape_html(value: str | None) -> str:

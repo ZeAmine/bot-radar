@@ -23,7 +23,7 @@ from app.bot.handlers.alerts_helpers import (
     render_existing_alert_response,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
-from app.bot.labels import format_conditions_full, format_price_cents
+from app.bot.labels import format_conditions, format_price_cents
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     CATEGORY_EMOJIS,
@@ -805,7 +805,7 @@ async def save_alert(
             lines.append(f"Éditeur : {html.escape(publisher)}")
         lines.append("")
         lines.append(f"Prix maximum : {price_str}")
-        lines.append(f"États acceptés : {html.escape(format_conditions_full(conditions))}")
+        lines.append(f"États acceptés : {html.escape(format_conditions(conditions))}")
         lines.append(f"Mots-clés inclus : {_join_escaped(includes)}\n")
 
         # La cote déjà connue est affichée telle quelle ; sinon la confirmation
@@ -847,7 +847,7 @@ async def save_alert(
         cat_emoji = CATEGORY_EMOJIS.get(cat_slug_enum, "🎯")
         cat_label = CATEGORY_LABELS.get(cat_slug_enum, "Produit")
         price_str = format_price_cents(max_price)
-        cond_str = format_conditions_full(conditions)
+        cond_str = format_conditions(conditions)
 
         lines = [
             "✅ <b>Alerte créée</b>\n",

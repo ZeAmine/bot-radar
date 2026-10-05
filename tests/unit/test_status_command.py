@@ -82,8 +82,8 @@ async def test_handle_status_day_active():
         # Percentiles interpolés (sémantique `percentile_cont`) sur [0,98 ; 4,09] s :
         # p50 = 2,535 s et p95 = 3,9345 s.
         assert "<b>Latence</b>" in text
-        assert "Détection → alerte : <b>2535 ms</b> (p50, p95 3934 ms — 2 alertes / 7 j)" in text
-        assert "Cadence de scrutation : <b>17.4 s</b> (p50, p90 35.1 s)" in text
+        assert "Détection → alerte : <b>2535 ms</b>" in text
+        assert "Cadence de scrutation : <b>17.4 s</b>" in text
         assert "📚 Livres : <b>5</b>" in text
         assert "💻 Électronique : <b>3</b>" in text
         assert "🎮 Jeux Vidéo : <b>2</b>" in text

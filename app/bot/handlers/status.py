@@ -73,23 +73,20 @@ async def handle_status(message: Message, db_session: Any) -> None:
     # horodatage de publication), donc le délai face à la publication reste hors de
     # portée. La cadence de scrutation, elle, est l'autre moitié du délai — et la
     # seule que l'on puisse encore réduire.
+    # Une seule mesure par ligne : les percentiles et l'effectif sont du détail
+    # d'exploitation, illisible sur un écran de statut lu depuis un téléphone. Les
+    # valeurs restent mesurées et disponibles en base — seul l'affichage change.
     latency = await StatsRepository(db_session).get_notification_latency_ms(days=7)
     if latency["count"] and latency["p50_ms"] is not None:
-        latency_line = (
-            f"Détection → alerte : <b>{latency['p50_ms']} ms</b> "
-            f"(p50, p95 {latency['p95_ms']} ms — {latency['count']} alertes / 7 j)"
-        )
+        latency_line = f"Détection → alerte : <b>{latency['p50_ms']} ms</b>"
     else:
-        latency_line = "Détection → alerte : aucune alerte mesurée"
+        latency_line = "Détection → alerte : Indisponible"
 
     cycle_p50 = (poller_data or {}).get("cycle_gap_p50_s")
-    cycle_p90 = (poller_data or {}).get("cycle_gap_p90_s")
     if cycle_p50:
-        cadence_line = (
-            f"Cadence de scrutation : <b>{cycle_p50:g} s</b> (p50, p90 {cycle_p90:g} s)"
-        )
+        cadence_line = f"Cadence de scrutation : <b>{cycle_p50:g} s</b>"
     else:
-        cadence_line = "Cadence de scrutation : mesure en cours…"
+        cadence_line = "Cadence de scrutation : Indisponible"
 
     cat_counts = await StatsRepository(db_session).count_active_alerts_by_category()
 

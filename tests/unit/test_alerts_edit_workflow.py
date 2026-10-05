@@ -41,7 +41,8 @@ def test_get_edit_conditions_keyboard():
     kb_sel = get_edit_conditions_keyboard(alert_id, ["Très bon état"])
     found_checked = False
     for row in kb_sel.inline_keyboard[:-2]:
-        if "Très bon état" in row[0].text:
+        # Abrégé : « TBE » pour « Très bon état ».
+        if row[0].text.endswith("TBE"):
             assert row[0].text.startswith("✅")
             found_checked = True
         else:
