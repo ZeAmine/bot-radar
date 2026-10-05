@@ -39,6 +39,12 @@ TITLE_CATEGORIES = "📁 Catégories"
 TITLE_CREATE_ALERT = "➕ Créer une alerte"
 TITLE_EDIT_ALERT = "✏️ Modifier l'alerte"
 TITLE_ALERT_EXISTS = "⚠️ Alerte déjà existante"
+TITLE_HELP = "📖 Commandes"
+TITLE_STATS = "📊 Statistiques"
+TITLE_AUTOTUNE = "🧹 Auto-tuning des alertes"
+TITLE_EDIT_EXCLUDES = "✏️ Mots-clés exclus"
+TITLE_OFFER = "💬 Offre suggérée"
+TITLE_AI_ALERT = "⚠️ Analyse IA de vigilance"
 
 # ---------------------------------------------------------------------------
 # Libellés de champs — les mêmes mots d'un écran à l'autre
@@ -55,6 +61,10 @@ FIELD_STATUS = "Statut"
 FIELD_TITLE = "Titre"
 FIELD_AUTHOR = "Auteur"
 FIELD_PUBLISHER = "Éditeur"
+FIELD_PERIOD = "Période"
+FIELD_FALSE_POSITIVES = "Faux positifs analysés"
+FIELD_SUGGESTED_EXCLUDES = "Mots-clés exclus suggérés"
+FIELD_SUGGESTED_EXCLUDES_CUSTOM = "Mots-clés exclus suggérés (personnalisés)"
 
 # ---------------------------------------------------------------------------
 # Navigation et boutons — libellés explicites et constants
@@ -75,6 +85,22 @@ BTN_CATEGORIES = "Catégories"
 BTN_ALERTS_LIST = "Liste des alertes"
 BTN_BACK_TO_MENU = "← Retour au menu"
 BTN_BACK_TO_RECAP = "← Retour au récapitulatif"
+BTN_BACK_TO_AUTOTUNE = "← Retour à la liste"
+BTN_APPLY_EXCLUSIONS = "Appliquer les exclusions"
+BTN_EDIT_EXCLUSIONS = "Modifier la liste"
+BTN_EDIT_EXCLUSIONS_AGAIN = "Modifier à nouveau"
+BTN_DISCARD_CHANGES = "← Revenir sans modifier"
+BTN_EDIT_ALERT_SETTINGS = "⚙️ Modifier l'alerte"
+BTN_ANALYSIS_RUNNING = "⏳ Analyse en cours"
+
+# Sélecteur de période : la période courante est marquée, l'autre reste neutre.
+BTN_PERIOD_7 = "7 jours"
+BTN_PERIOD_30 = "30 jours"
+
+
+def period_button(label: str, is_current: bool) -> str:
+    """Bouton de période, coché quand il correspond à la période affichée."""
+    return f"✅ {label}" if is_current else label
 
 # ---------------------------------------------------------------------------
 # Helpers de formatage

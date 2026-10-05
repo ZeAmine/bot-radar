@@ -29,8 +29,8 @@ async def test_handle_stats_command():
         assert "reply_markup" in kwargs
         keyboard = kwargs["reply_markup"].inline_keyboard
         assert len(keyboard) == 1
-        assert "🟢 7 jours" in keyboard[0][0].text
-        assert "30 jours" in keyboard[0][1].text
+    assert "✅ 7 jours" in keyboard[0][0].text
+    assert keyboard[0][1].text == "30 jours"
 
 
 @pytest.mark.asyncio
@@ -58,6 +58,6 @@ async def test_handle_stats_callback_switch_period():
         args, kwargs = inner_message.edit_text.call_args
         assert kwargs["text"] == "📊 Statistiques (30 jours)"
         keyboard = kwargs["reply_markup"].inline_keyboard
-        assert "7 jours" in keyboard[0][0].text
-        assert "🟢 30 jours" in keyboard[0][1].text
+        assert keyboard[0][0].text == "7 jours"
+        assert "✅ 30 jours" in keyboard[0][1].text
         callback.answer.assert_called_once()

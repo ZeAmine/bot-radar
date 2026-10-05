@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.labels import FIELD_PERIOD, TITLE_STATS
 from app.db.repositories.stats_repo import StatsRepository
 
 CATEGORY_NAMES: dict[str, str] = {
@@ -34,7 +35,11 @@ class StatisticsService:
 
     @staticmethod
     def format_stats_message(data: dict[str, Any]) -> str:
-        """Formate le dictionnaire de statistiques en message Telegram HTML."""
+        """Formate le dictionnaire de statistiques en message Telegram HTML.
+
+        Une mesure absente ne devient jamais un zéro : un ratio qu'on ne peut pas
+        calculer est « Indisponible », pas 0 %.
+        """
         days = data.get("days", 7)
         active_alerts = data.get("active_alerts", 0)
         category_alerts = data.get("category_alerts", [])
@@ -79,22 +84,24 @@ class StatisticsService:
 
         top_alerts_text = "\n".join(top_alerts_lines)
 
+        # Un taux sans dénominateur n'est pas un taux : il ne vaut pas 0 %.
         match_rate = (
-            f" ({(matched_listings / received_listings) * 100:.1f}%)"
+            f" ({(matched_listings / received_listings) * 100:.1f} %".replace(".", ",") + ")"
             if received_listings > 0
             else ""
         )
 
         return (
-            f"📊 <b>Statistiques BotRadar ({days} derniers jours)</b>\n\n"
+            f"{TITLE_STATS}\n"
+            f"{FIELD_PERIOD} : {days} derniers jours\n\n"
             f"Alertes actives : {active_alerts}{cat_breakdown}\n"
             f"Annonces reçues : {received_listings}\n"
             f"Annonces correspondant à une alerte : {matched_listings}{match_rate}\n"
-            f"Alertes Telegram envoyées : {sent_notifications}\n\n"
+            f"Alertes envoyées : {sent_notifications}\n\n"
             f"Catégorie la plus active : {top_category_display}\n\n"
             f"Alertes les plus déclenchées :\n"
             f"{top_alerts_text}\n\n"
-            f"Comparaisons de prix Livres :\n"
+            f"Comparaisons de prix (livres) :\n"
             f"• Disponibles : {bd_available}\n"
             f"• Indisponibles : {bd_unavailable}"
         )
