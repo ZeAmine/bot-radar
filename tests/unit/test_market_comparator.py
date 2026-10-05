@@ -68,7 +68,7 @@ def test_comparator_vinted_cheaper_than_market():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 22,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "✅ <b>Écart :</b> -8,31 €" in summary
+    assert "<b>Écart :</b> -8,31 € ✅" in summary
 
 
 def test_comparator_vinted_very_good_deal_fire_badge():
@@ -80,7 +80,7 @@ def test_comparator_vinted_very_good_deal_fire_badge():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 30,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "✅ <b>Écart :</b> -15,00 €" in summary
+    assert "<b>Écart :</b> -15,00 € ✅" in summary
 
 
 def test_comparator_vinted_more_expensive_than_market():
@@ -92,7 +92,7 @@ def test_comparator_vinted_more_expensive_than_market():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "⛔️ <b>Écart :</b> +5,00 €" in summary
+    assert "<b>Écart :</b> +5,00 € ⛔️" in summary
 
 
 def test_comparator_small_difference_warning():
@@ -104,7 +104,49 @@ def test_comparator_small_difference_warning():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "⛔️ <b>Écart :</b> +0,50 €" in summary
+    assert "<b>Écart :</b> +0,50 € ⛔️" in summary
+
+
+def test_gap_marker_closes_the_line_and_stays_out_of_a_null_gap():
+    """Le marqueur ferme la ligne ; à l'égalité, il disparaît.
+
+    Un emoji en tête de ligne se lit comme une puce qui qualifierait tout le
+    bloc alors qu'il ne parle que de cet écart — sur iOS, ses métriques
+    verticales le poussent en outre au-dessus du texte. En fin de ligne le
+    décalage ne se voit plus. À l'écart nul, « au prix de référence » porte
+    déjà le sens : un marqueur vert y serait une approbation de trop.
+    """
+    above = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    below = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=2200)
+    equal = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+
+    summary_above = MarketPriceService.get_comparison_summary(
+        create_listing(estimated_total_cents=2500), above
+    )
+    summary_below = MarketPriceService.get_comparison_summary(
+        create_listing(estimated_total_cents=1800), below
+    )
+    summary_equal = MarketPriceService.get_comparison_summary(
+        create_listing(estimated_total_cents=2000), equal
+    )
+    assert summary_above is not None
+    assert summary_below is not None
+    assert summary_equal is not None
+
+    above_line = next(line for line in summary_above.splitlines() if "Écart :" in line)
+    below_line = next(line for line in summary_below.splitlines() if "Écart :" in line)
+    equal_line = next(line for line in summary_equal.splitlines() if "Écart :" in line)
+
+    # le marqueur ferme la ligne, il ne l'ouvre pas
+    assert above_line.endswith("⛔️")
+    assert below_line.endswith("✅")
+    assert not above_line.startswith(("✅", "⛔️"))
+    assert not below_line.startswith(("✅", "⛔️"))
+
+    # à l'égalité : aucun marqueur, la parenthèse suffit
+    assert equal_line == "<b>Écart :</b> 0,00 € (au prix de référence)"
+    assert "✅" not in equal_line
+    assert "⛔️" not in equal_line
 
 
 def test_comparator_market_unavailable():
@@ -139,7 +181,7 @@ def test_comparator_with_historical_low_1y():
     assert summary is not None
     assert "Prix du marché" not in summary
     assert "<b>Prix bas constaté :</b> 18,50 €" in summary
-    assert "✅ <b>Écart :</b> -4,81 €" in summary
+    assert "<b>Écart :</b> -4,81 € ✅" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
     # Les lignes redondantes Vinted, Offres et Écart sont supprimées
@@ -157,7 +199,7 @@ def test_comparator_no_historical_low_falls_back_to_live_market_price():
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     assert "<b>Prix du marché :</b> 22,00 € (Ebay)" in summary
-    assert "✅ <b>Écart :</b> -8,31 €" in summary
+    assert "<b>Écart :</b> -8,31 € ✅" in summary
 
 
 def test_comparator_market_details_card_excludes_amazon_de():
@@ -202,7 +244,7 @@ def test_comparator_historical_low_when_status_unavailable():
     assert summary is not None
     assert "Prix du marché" not in summary
     assert "<b>Prix bas constaté :</b> 18,50 €" in summary
-    assert "✅ <b>Écart :</b> -4,81 €" in summary
+    assert "<b>Écart :</b> -4,81 € ✅" in summary
 
     # Vérifier que le panneau 'Prix du marché' affiche le prix bas constaté
     card = MarketPriceService.format_market_details_card(listing, book)
@@ -408,7 +450,7 @@ def test_summary_uses_vinted_total_including_shipping():
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     # 1 500 + 75 (5 % arrondi) + 70 + 288 (port) = 1 933 cts -> 1 933 - 2 000
-    assert "✅ <b>Écart :</b> -0,67 €" in summary
+    assert "<b>Écart :</b> -0,67 € ✅" in summary
 
 
 def test_lot_summary_reports_partial_tome_matching():
@@ -432,7 +474,7 @@ def test_lot_summary_reports_partial_tome_matching():
     assert summary is not None
     # Seul T1 + T2 sont cumulés (34,50 €) et l'appariement partiel est annoncé
     assert "<b>Prix bas constaté (Lot, 2/3 tomes) :</b> ~34,50 €" in summary
-    assert "✅ <b>Écart :</b> -9,50 €" in summary
+    assert "<b>Écart :</b> -9,50 € ✅" in summary
 
 
 def test_inferred_lot_label_says_the_composition_was_deduced():

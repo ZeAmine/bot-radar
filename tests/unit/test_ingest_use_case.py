@@ -183,7 +183,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
     """La ligne de cote locale est transmise à l'envoi Telegram."""
     mock_send_alert = AsyncMock(return_value=True)
 
-    market_line = "<b>Prix bas constaté (T6) :</b> 5,12 €\n⛔️ <b>Écart :</b> +13,16 €"
+    market_line = "<b>Prix bas constaté (T6) :</b> 5,12 €\n<b>Écart :</b> +13,16 € ⛔️"
     with (
         patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
@@ -257,7 +257,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         mock_send_alert.assert_awaited_once()
         _, kwargs = mock_send_alert.call_args
         assert kwargs["market_comparison_line"] == (
-            "<b>Prix bas constaté (T6) :</b> 5,12 €\n⛔️ <b>Écart :</b> +13,16 €"
+            "<b>Prix bas constaté (T6) :</b> 5,12 €\n<b>Écart :</b> +13,16 € ⛔️"
         )
 
         # L'enrichissement IA part dans send_listing_alert, pas dans un second use case.
