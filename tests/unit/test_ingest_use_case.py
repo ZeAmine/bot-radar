@@ -183,7 +183,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
     """La ligne de cote locale est transmise à l'envoi Telegram."""
     mock_send_alert = AsyncMock(return_value=True)
 
-    market_line = "📉 Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
+    market_line = "Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
     with (
         patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
@@ -257,7 +257,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         mock_send_alert.assert_awaited_once()
         _, kwargs = mock_send_alert.call_args
         assert kwargs["market_comparison_line"] == (
-            "📉 Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
+            "Prix bas constaté (T6) : 5,12 €\n⛔️ Écart : <b>+13,16 €</b>"
         )
 
         # L'enrichissement IA part dans send_listing_alert, pas dans un second use case.
@@ -408,7 +408,7 @@ async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> No
     schedule.assert_not_called()
     _, kwargs = mock_send_alert.call_args
     line = kwargs["market_comparison_line"]
-    assert "📉 Prix bas constaté (T6) : 10,00 €" in line
+    assert "Prix bas constaté (T6) : 10,00 €" in line
     assert "Écart" in line
     assert PENDING_COTE_LINE not in line
     assert book.market_cache is cache

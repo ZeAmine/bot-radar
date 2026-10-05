@@ -6,11 +6,16 @@ valeur. Un écran qui réécrit « Mots-clés exclus » ou « Non renseigné » 
 fait échouer ici, ce qui est exactement le but.
 """
 
+import inspect
+import uuid
+
 from app.bot.handlers.autotune import _autotune_back_keyboard, _autotune_header
 from app.bot.handlers.help import HELP_TEXT
 from app.bot.keyboards.stats import get_stats_keyboard
 from app.bot.labels import (
     BTN_BACK_TO_AUTOTUNE,
+    BTN_CANCEL,
+    BTN_CONFIRM,
     BTN_EDIT_ALERT_SETTINGS,
     FIELD_EXCLUDE_KEYWORDS,
     FIELD_NAME,
@@ -20,9 +25,12 @@ from app.bot.labels import (
     TITLE_HELP,
     TITLE_OFFER,
     TITLE_STATS,
+    format_price_line,
     period_button,
 )
 from app.services.ai.schemas import NegotiationResult
+from app.services.market_price_service import MarketPriceService
+from app.services.price_calculator import format_price_summary
 
 
 def test_help_screen_leads_with_the_charte_title():
@@ -114,3 +122,111 @@ def test_absent_exclusions_read_as_not_provided_not_zero():
     """« Aucune » n'est pas une valeur : l'absence se dit « Non renseigné »."""
     assert NOT_PROVIDED == "Non renseigné"
     assert FIELD_EXCLUDE_KEYWORDS == "Mots-clés exclus"
+
+
+# ---------------------------------------------------------------------------
+# Ligne de prix : regle de charte, valable pour toutes les alertes a venir
+# ---------------------------------------------------------------------------
+
+
+def test_price_line_puts_the_total_in_parentheses():
+    """« Prix : 4,00 € (Total est. : 7,78 €) » : le format demande, verrouille.
+
+    Le libelle vit dans `labels`, pas dans chaque appelant : une future alerte
+    qui afficherait un total estime heritera du format sans le redemander.
+    """
+    assert format_price_line(400, 778) == "Prix : 4,00 € (Total est. : 7,78 €)"
+
+
+def test_price_line_omits_an_unknown_total_rather_than_faking_one():
+    """Sans total connu, la parenthese disparait au lieu de laisser un trou."""
+    assert format_price_line(400, None) == "Prix : 4,00 €"
+
+
+def test_price_line_uses_the_french_decimal_separator():
+    """La virgule decimale, comme tous les autres montants du bot."""
+    assert format_price_line(400, 778).count(",") == 2
+
+
+def test_price_summary_delegates_to_the_charte():
+    """Le calculateur calcule, la charte rend : un seul endroit ecrit la ligne."""
+    assert format_price_summary(item_price_cents=400, estimated_total_cents=778) == (
+        "Prix : 4,00 € (Total est. : 7,78 €)"
+    )
+
+
+def test_price_calculations_are_untouched():
+    """Le format a change, pas les frais : 0,70 € + 5% + 2,88 € restent exacts."""
+    from app.services.price_calculator import (
+        calculate_buyer_protection_cents,
+        calculate_estimated_total,
+    )
+
+    assert calculate_buyer_protection_cents(400) == 90
+    assert calculate_estimated_total(400, fallback_defaults=True) == 778
+
+
+# ---------------------------------------------------------------------------
+# Cote de marche : la ligne nomme sa source, elle ne se justifie pas
+# ---------------------------------------------------------------------------
+
+
+def _rendered_market_strings() -> list[str]:
+    """Chaînes que le module renvoie réellement, commentaires et docstrings exclus.
+
+    Un emoji cité dans un commentaire ne s'affiche nulle part : le verrou doit
+    porter sur ce que l'utilisateur lit, pas sur le source entier.
+    """
+    import ast
+
+    tree = ast.parse(inspect.getsource(MarketPriceService))
+    rendered: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            rendered.append(node.value)
+        elif isinstance(node, ast.JoinedStr):
+            rendered.extend(
+                part.value
+                for part in node.values
+                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            )
+    return rendered
+
+
+def test_market_price_lines_carry_no_decorative_emoji():
+    """📉 et 📊 disparaissent des lignes de prix : le libelle porte le sens.
+
+    Verrou global plutôt qu'une ligne par écran : un rendu ajouté plus tard
+    réintroduirait l'emoji quelque part, et ce test le verrait.
+    """
+    for text in _rendered_market_strings():
+        assert "\U0001F4C9" not in text, text
+        assert "📊 Prix du marché" not in text, text
+
+
+def test_market_panel_does_not_explain_the_reference_price_in_parentheses():
+    """« Cote d'occasion basee sur le plus bas prix... » ne revient pas au panneau."""
+    for text in _rendered_market_strings():
+        assert "nous avons pu constater" not in text, text
+        assert "Cote d\'occasion basée" not in text, text
+
+
+# ---------------------------------------------------------------------------
+# Bouton de confirmation : il ne repete pas ce que l'ecran vient d'annoncer
+# ---------------------------------------------------------------------------
+
+
+def test_dislike_confirmation_button_is_short():
+    """« Confirmer » suffit : le message au-dessus dit deja ce qui est confirme."""
+    from app.bot.keyboards.listings import get_dislike_confirmation_keyboard
+    from app.core.constants import CategorySlug
+
+    keyboard = get_dislike_confirmation_keyboard(
+        listing_id=uuid.uuid4(),
+        listing_url="https://www.vinted.fr/item/1",
+        category_slug=CategorySlug.BD_COMICS.value,
+    )
+    confirm, cancel = keyboard.inline_keyboard[-1]
+
+    assert confirm.text == BTN_CONFIRM == "Confirmer"
+    assert cancel.text == BTN_CANCEL

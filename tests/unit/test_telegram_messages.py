@@ -40,13 +40,13 @@ def test_telegram_caption_bd_without_market_price():
 
     assert "🆕 <b>Blacksad — Intégrale</b>" in caption
     assert "État : TBE" in caption
-    assert "Prix : 9,00 € — Total estimé : 13,69 € (protection et port inclus)" in caption
+    assert "Prix : 9,00 € (Total est. : 13,69 €)" in caption
     assert "Occasion :" not in caption
 
 
 def test_telegram_caption_bd_with_market_price_and_keywords():
     listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
-    comparison = "📊 Prix du marché : 22,00 € livré\n✅ Écart : -8,31 €"
+    comparison = "Prix du marché : 22,00 € livré\n✅ Écart : -8,31 €"
     caption = build_listing_caption(
         listing,
         market_comparison_line=comparison,
@@ -55,8 +55,8 @@ def test_telegram_caption_bd_with_market_price_and_keywords():
 
     assert "🆕 <b>Blacksad — Intégrale</b>" in caption
     assert "État : TBE" in caption
-    assert "Prix : 9,00 € — Total estimé : 13,69 € (protection et port inclus)" in caption
-    assert "📊 Prix du marché : 22,00 € livré" in caption
+    assert "Prix : 9,00 € (Total est. : 13,69 €)" in caption
+    assert "Prix du marché : 22,00 € livré" in caption
     assert "✅ Écart : -8,31 €" in caption
     assert "Mots-clés : blacksad, intégrale" in caption
 
@@ -72,7 +72,7 @@ def test_telegram_caption_clothes():
 
     assert "🆕 <b>Veste Carhartt Detroit</b>" in caption
     assert "État : TBE" in caption
-    assert "Prix : 45,00 € — Total estimé : 51,00 € (protection et port inclus)" in caption
+    assert "Prix : 45,00 € (Total est. : 51,00 €)" in caption
     # Jamais de prix marché pour les vêtements
     assert "Occasion :" not in caption
 
@@ -89,7 +89,7 @@ def test_telegram_caption_tech():
 
     assert "🆕 <b>Logitech MX Master 3S</b>" in caption
     assert "État : TBE" in caption
-    assert "Prix : 60,00 € — Total estimé : 66,58 € (protection et port inclus)" in caption
+    assert "Prix : 60,00 € (Total est. : 66,58 €)" in caption
     assert "Occasion :" not in caption
 
 
@@ -181,7 +181,7 @@ def test_dislike_confirmation_keyboard():
     assert rows[0][0].text == "Voir l'annonce"
     assert rows[1][0].text == "📊 Prix du marché"
     # Ligne 3 = confirmation et annulation
-    assert rows[2][0].text == "Confirmer le signalement"
+    assert rows[2][0].text == "Confirmer"
     assert rows[2][0].callback_data == f"confirm_dislike:{listing_id}"
     assert rows[2][1].text == "Annuler"
     assert rows[2][1].callback_data == f"cancel_dislike:{listing_id}"

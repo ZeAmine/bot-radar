@@ -1,5 +1,7 @@
 """Service de calcul du montant total estimé d'une annonce (article, protection et port)."""
 
+from app.bot.labels import format_price_line
+
 # Frais standards constatés sur Vinted France
 DEFAULT_PROTECTION_FIXED_CENTS: int = 70  # 0,70 € fixe
 DEFAULT_PROTECTION_RATE: float = 0.05  # 5% du prix de l'article
@@ -49,11 +51,12 @@ def format_price_summary(
     Le total inclut protection acheteur et port : ce n'est jamais un montant réel
     fourni par Vinted, il est donc toujours présenté comme une estimation.
 
-    Exemples :
-    - "Prix : 15,00 € — Total estimé : 19,33 € (protection et port inclus)"
+    Le rendu suit la charte (`app.bot.labels.format_price_line`) :
+    - "Prix : 15,00 € (Total est. : 19,33 €)"
     - "Prix : 15,00 €" (si le total est inconnu et le repli désactivé)
+
+    Les formules ci-dessus ne sont pas touchées : seul l'écran change.
     """
-    item_euros = f"{item_price_cents / 100:.2f} €".replace(".", ",")
     total_cents = estimated_total_cents
 
     if total_cents is None and fallback_to_default_fees:
@@ -62,8 +65,4 @@ def format_price_summary(
             fallback_defaults=True,
         )
 
-    if total_cents is not None:
-        total_euros = f"{total_cents / 100:.2f} €".replace(".", ",")
-        return f"Prix : {item_euros} — Total estimé : {total_euros} (protection et port inclus)"
-
-    return f"Prix : {item_euros}"
+    return format_price_line(item_price_cents, total_cents)

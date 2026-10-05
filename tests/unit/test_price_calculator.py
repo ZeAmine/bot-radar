@@ -40,15 +40,14 @@ def test_calculate_total_unknown_shipping_or_protection():
 
 
 def test_format_price_summary():
+    # Format de charte : le prix d'abord, le total estimé entre parenthèses.
     # Total fourni explicitement : 9,00 € + frais = 13,69 € estimés
     summary_known = format_price_summary(item_price_cents=900, estimated_total_cents=1369)
-    assert summary_known == "Prix : 9,00 € — Total estimé : 13,69 € (protection et port inclus)"
+    assert summary_known == "Prix : 9,00 € (Total est. : 13,69 €)"
 
     # Total manquant : calcul automatique du total estimé (15,00 € -> 19,33 €)
     summary_auto_fallback = format_price_summary(item_price_cents=1500, estimated_total_cents=None)
-    assert summary_auto_fallback == (
-        "Prix : 15,00 € — Total estimé : 19,33 € (protection et port inclus)"
-    )
+    assert summary_auto_fallback == "Prix : 15,00 € (Total est. : 19,33 €)"
 
     # Total manquant sans fallback : pas de total inventé
     summary_no_fallback = format_price_summary(
