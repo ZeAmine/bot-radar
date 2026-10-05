@@ -211,16 +211,26 @@ def _vinted_total_cents(listing: Listing) -> int | None:
 def _format_gap(total_cents: int, reference_cents: int) -> str:
     """Ligne d'écart entre le total Vinted et le prix de référence.
 
-    Le libellé est gras, la valeur en romain (charte) : l'emoji ✅/⛔️ porte le
-    sens du signe, il n'a pas à être mis en gras avec lui.
+    Le libellé est gras, la valeur en romain (charte), et l'emoji qui porte le
+    sens du signe reste hors du gras : il n'a pas à être mis en gras avec lui.
+
+    L'emoji est en **fin** de ligne, pas en tête. Sur iOS les métriques
+    verticales d'un emoji le poussent au-dessus de la ligne de texte ; en tête
+    de ligne ce décalage se lit comme une puce de titre qui qualifierait tout le
+    bloc, alors qu'il ne concerne que cet écart. En fin de ligne il ne se voit
+    plus. Et si la ligne se replie sur un écran étroit, l'emoji seul sur la
+    deuxième ligne se lit encore comme la conclusion de la ligne précédente.
+
+    À l'écart nul, aucun emoji : « au prix de référence » porte déjà le sens,
+    et un marqueur vert devant un écart nul se lit comme une approbation.
     """
     diff_cents = total_cents - reference_cents
     diff_euros = format_cents(abs(diff_cents))
     if diff_cents < 0:
-        return f"✅ <b>Écart :</b> -{diff_euros}"
+        return f"<b>Écart :</b> -{diff_euros} ✅"
     if diff_cents > 0:
-        return f"⛔️ <b>Écart :</b> +{diff_euros}"
-    return "✅ <b>Écart :</b> 0,00 € (au prix de référence)"
+        return f"<b>Écart :</b> +{diff_euros} ⛔️"
+    return "<b>Écart :</b> 0,00 € (au prix de référence)"
 
 
 def _match_lot_books(books: list[Book], lot_tomes: list[int]) -> list[Book]:

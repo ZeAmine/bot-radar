@@ -56,7 +56,7 @@ def test_series_matching_specific_tome_summary():
     assert summary is not None
     assert "<b>Prix bas constaté (T2) :</b> 18,50 €" in summary
     assert "Prix du marché" not in summary
-    assert "✅ <b>Écart :</b> -6,50 €" in summary
+    assert "<b>Écart :</b> -6,50 € ✅" in summary
 
 
 def test_series_matching_lot_summary():
@@ -89,7 +89,7 @@ def test_series_matching_lot_summary():
     assert "<b>Prix bas constaté (Lot) :</b> ~54,50 €" in summary
     assert "Prix du marché" not in summary
     # Gain : 25.00 - 54.50 = -29.50 €
-    assert "✅ <b>Écart :</b> -29,50 €" in summary
+    assert "<b>Écart :</b> -29,50 € ✅" in summary
 
 
 def test_series_matching_generic_range_summary():
@@ -202,7 +202,7 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
     assert "<b>Prix bas constaté (Lot) :</b> ~42,30 €" in summary
     # Écart vs prix bas: 37.18 - 42.30 = -5.12 €
-    assert "✅ <b>Écart :</b> -5,12 €" in summary
+    assert "<b>Écart :</b> -5,12 € ✅" in summary
 
 
 @pytest.mark.parametrize(
@@ -256,7 +256,7 @@ def test_series_matching_lot_variations_matrix(
     )
     assert summary is not None
     assert expected_label in summary
-    assert f"{expected_icon} <b>Écart :</b> {expected_diff}" in summary
+    assert f"<b>Écart :</b> {expected_diff} {expected_icon}" in summary
 
 
 def test_series_matching_blacksad_generic():
@@ -843,7 +843,7 @@ def test_counted_lot_resolves_to_the_whole_series_and_prices_it():
     )
     assert summary is not None
     assert "<b>Prix bas constaté (Lot de 4 tomes, composition déduite) :</b> ~40,77 €" in summary
-    assert "⛔️ <b>Écart :</b> +15,31 €" in summary
+    assert "<b>Écart :</b> +15,31 € ⛔️" in summary
 
 
 def test_counted_lot_is_refused_when_the_series_is_longer():

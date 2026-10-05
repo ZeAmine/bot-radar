@@ -7,7 +7,7 @@ Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs po
 ## Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-029, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-030, dette différée).
 
 ---
 
@@ -350,7 +350,13 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
 - **Raison** : le titre d'une capture avait montré une alerte sans ISBN, sans rien qui permette de distinguer « l'ouvrage n'est pas catalogué » d'« un oubli ». Sur une identité d'ouvrage, l'absence d'information doit se lire comme une information, pas comme un silence.
 - **Conséquence assumée** : la limite de la BNF est **consignée, pas contournée**. La réparer demanderait un point d'entrée capable d'interroger un ISBN (data.bnf.fr ou autre schéma SRU) : c'est un pari sur une API, hors périmètre ici, et `test_bnf_never_confirms_an_isbn_and_openlibrary_does` est le test à faire changer le jour où elle existe. Ajouter une place de marché comme autorité de l'ISBN a été envisuré puis écarté : un EAN affiché par une place de marché et un ISBN sought auprès d'une autorité disent la même chose : ni l'un ni l'autre ne décide. Il n'y avait donc rien à gagner, et pas d'autorité de plus.
 
-### ADR-029 : Une exclusion n'est jamais le titre plus un numéro
+### ADR-029 : Un libellé de trois lettres, un marqueur qui ferme la ligne
+- **Contexte** : l'alerte annonçait `Prix : 35,00 € (Total est. : 40,33 €)` et menait son verdict par un emoji : `⛔️ Écart : +34,91 €`. Deux défauts, tous deux visibles sur un iPhone. « Total est. » occupe treize caractères là où la ligne est la plus encombrée du message, et « estimé » se lit comme un doute sur un montant dont la protection et le port sont parfaitement réels. L'emoji de tête ne se désaligne pas seulement : sur iOS ses métriques verticales le poussent au-dessus de la ligne de texte, et en tête ce décalage se lit comme une puce qui qualifierait tout le bloc — alors qu'il ne parle que de cet écart.
+- **Décision** : 1. le total ne porte plus de libellé, seulement le suffixe `TTC`, en romain comme les montants (règle 1 : seul `Prix :` est gras ; « TTC » qualifie le montant, il n'en est pas un) ; 2. le marqueur passe en **fin** de ligne et reste hors du gras ; 3. à l'écart nul, aucun marqueur : « au prix de référence » porte déjà le sens, et une coche verte devant un écart nul serait une approbation de trop.
+- **Raison** : la place est la ressource rare de cet écran, et un libellé long la gaspille à chaque alerte. Un marqueur en tête s'applique à la ligne qui suit — une information fausse dès que la ligne en contient plusieurs ; en fin de ligne il ne qualifie plus que ce qui précède, et si la ligne se replie sur un écran étroit il se lit encore comme sa conclusion.
+- **Conséquence assumée** : le montant reste affiché, parce que l'écart se calcule sur lui — le masquer rendrait un « +0,42 € » illisible en face d'un prix de 20,00 €. `FIELD_ESTIMATED_TOTAL` disparaît de `labels` : un écran qui voudrait une autre formulation l'écrit là, et personne n'hérite d'un libellé que plus personne ne choisit. Le rendu iOS, lui, n'est vérifiable par aucune machine : seul un vrai Telegram sur un vrai iPhone confirme l'alignement.
+
+### ADR-030 : Une exclusion n'est jamais le titre plus un numéro
 - **Contexte** : `/add Absolute Martian Manhunter, 10€` a produit six exclusions — `absolute martian manhunter #1` jusqu'à `#6`. Le prompt de `keyword_variants` demandait « 3 à 6 mots-clés » : contraint d'en produire, le moteur a collé un numéro au titre. Le nettoyeur ne les attrapait pas — sa règle de titre ne refusait que l'exclusion **plus étroite** que le titre (ADR-027) — et elles étaient nuisibles, pas seulement inutiles : sur une alerte qui surveille la série, `… #2` rejette l'annonce du tome 2, précisément celle qu'on veut voir.
 - **Décision** : deux mesures, une seule idée — une exclusion n'existe que si elle nomme une confusion.
   1. **Le prompt demande 0 à 3 exclusions** au lieu de « 3 à 6 », dit qu'une **liste vide est une réponse attendue**, interdit l'exclusion obtenue en collant un numéro au titre, et interdit de nommer un numéro quand le titre n'en porte aucun. La même discipline est écrite dans le prompt de `natural_add`.
