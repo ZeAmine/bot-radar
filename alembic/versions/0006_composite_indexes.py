@@ -6,7 +6,12 @@ Deux requêtes fréquentes ne sont pas optimisées par les index existants :
 2. `get_books_needing_price_refresh` filtre sur `checked_at IS NULL` — sans index
    sur `checked_at`, PostgreSQL doit scanner toute la table.
 
-Revision ID: 0006_composite_indexes_for_alert_and_cache_queries
+L'identifiant fait 22 caractères : la colonne `alembic_version.version_num` est un
+`VARCHAR(32)` créé par Alembic lui-même, et un identifiant plus long y échoue au
+moment d'écrire la version — en production, après avoir déjà créé les index.
+`tests/unit/test_alembic_revisions.py` tient cette limite.
+
+Revision ID: 0006_composite_indexes
 Revises: 0005_correct_historical_low
 Create Date: 2026-10-05 10:00:00.000000
 
@@ -16,7 +21,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0006_composite_indexes_for_alert_and_cache_queries"
+revision: str = "0006_composite_indexes"
 down_revision: str | None = "0005_correct_historical_low"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

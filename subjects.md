@@ -207,7 +207,7 @@ Persister les entités métier, les alertes, les annonces, le catalogue de livre
   - `book_market_cache.py` : cache de cote (`book_market_cache`). `market_price_snapshot.py` : snapshots (`market_price_snapshots`).
   - `bot_event.py` : Modèle `BotEvent` (suivi des interactions : faux positifs `listing_disliked`, clics).
   - `user.py` : Modèle `User` (identifiant Telegram, configuration).
-- [`alembic/versions/`](alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0006_composite_indexes_for_alert_and_cache_queries`.
+- [`alembic/versions/`](alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0006_composite_indexes`.
 
 ### Invariants et contraintes
 - **Sessions isolées en tâche de fond** : Ne jamais réutiliser la session HTTP/API dans une coroutine d'arrière-plan (`safe_create_task`). Toujours ouvrir un nouveau contexte : `async with AsyncSessionLocal() as session:`.
