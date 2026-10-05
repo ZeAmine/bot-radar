@@ -1,6 +1,19 @@
-"""Tests de la métrique de cadence du poller Vinted."""
+"""Tests des métriques du poller Vinted : cadence et couverture de fenêtre."""
 
-from app.tasks.vinted_poller import MAX_MEANINGFUL_CYCLE_GAP_S, CycleCadence
+import logging
+from unittest.mock import AsyncMock, patch
+
+import httpx
+import pytest
+
+from app.services.vinted_parsing import CATALOG_PAGE_SIZE
+from app.services.vinted_scraper import ScrapedVintedItem
+from app.tasks.vinted_poller import (
+    MAX_MEANINGFUL_CYCLE_GAP_S,
+    WINDOW_LOG_EVERY_CYCLES,
+    CycleCadence,
+    poll_vinted_once,
+)
 
 
 def test_cycle_cadence_ignores_the_first_cycle() -> None:
@@ -67,3 +80,93 @@ def test_cycle_cadence_percentiles_are_interpolated() -> None:
 
     assert cadence.percentile(50) == 20.0
     assert cadence.percentile(90) == 28.0
+
+
+def _items(count: int) -> list[ScrapedVintedItem]:
+    return [
+        ScrapedVintedItem(
+            external_id=f"v_{index}",
+            url=f"https://vinted.fr/items/{index}",
+            title="Tintin",
+            condition="Très bon état",
+            item_price_cents=1000,
+            photo_url=None,
+        )
+        for index in range(count)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_window_truncation_is_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """Une fenêtre servie en dessous de la demande est un avertissement, pas un détail.
+
+    C'est le seul moyen de savoir que l'API plafonne sans erreur : la couverture
+    réelle peut rester à quelques dizaines de secondes pendant que le code annonce
+    plusieurs minutes.
+    """
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            return_value=_items(24),
+        ),
+        patch(
+            "app.tasks.vinted_poller._ingest_scraped_item",
+            new_callable=AsyncMock,
+            return_value=_MockIngest(),
+        ),
+        caplog.at_level(logging.WARNING, logger="radar.vinted_poller"),
+    ):
+        # `seen_ids` déjà rempli : cycle sans nouveauté, celui qui n'était jamais journalisé.
+        await poll_vinted_once(
+            seen_ids={f"v_{i}" for i in range(24)},
+            vinted_client=AsyncMock(spec=httpx.AsyncClient),
+            cycle_index=3,
+        )
+
+    assert "Fenêtre catalogue tronquée : 24 items reçus pour 96 demandés" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_full_window_logs_a_sparse_heartbeat(caplog: pytest.LogCaptureFixture) -> None:
+    """Fenêtre complète : un heartbeat tous les N cycles, et rien entre."""
+    seen = {f"v_{i}" for i in range(CATALOG_PAGE_SIZE)}
+    items = _items(CATALOG_PAGE_SIZE)
+
+    def heartbeats() -> list[str]:
+        return [line for line in caplog.text.splitlines() if "Fenêtre catalogue :" in line]
+
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            return_value=items,
+        ),
+        caplog.at_level(logging.INFO, logger="radar.vinted_poller"),
+    ):
+        for cycle in range(1, WINDOW_LOG_EVERY_CYCLES):
+            await poll_vinted_once(
+                seen_ids=seen,
+                vinted_client=AsyncMock(spec=httpx.AsyncClient),
+                cycle_index=cycle,
+            )
+        assert heartbeats() == [], "le cas nominal ne doit pas parler à chaque cycle"
+
+        await poll_vinted_once(
+            seen_ids=seen,
+            vinted_client=AsyncMock(spec=httpx.AsyncClient),
+            cycle_index=WINDOW_LOG_EVERY_CYCLES,
+        )
+
+    assert len(heartbeats()) == 1
+    assert f"{CATALOG_PAGE_SIZE} items reçus pour {CATALOG_PAGE_SIZE} demandés" in (
+        heartbeats()[0]
+    )
+    assert "tronc" not in caplog.text
+
+
+class _MockIngest:
+    """Ce que `_ingest_scraped_item` rend : un résultat sans appel réseau."""
+
+    notified_count = 0
+    needs_retry = False
