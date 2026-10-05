@@ -44,9 +44,21 @@ def test_help_lists_every_registered_command():
     Une commande offerte dans la barre de commandes mais absente de l'aide est
     une commande que l'utilisateur doit connaître par hasard.
     """
-    for command in ("/add", "/show", "/list", "/edit", "/pause", "/resume",
-                    "/delete", "/categories", "/stats", "/autotune", "/status",
-                    "/cancel", "/help"):
+    for command in (
+        "/add",
+        "/show",
+        "/list",
+        "/edit",
+        "/pause",
+        "/resume",
+        "/delete",
+        "/categories",
+        "/stats",
+        "/autotune",
+        "/status",
+        "/cancel",
+        "/help",
+    ):
         assert command in HELP_TEXT, command
 
 
@@ -130,17 +142,17 @@ def test_absent_exclusions_read_as_not_provided_not_zero():
 
 
 def test_price_line_puts_the_total_in_parentheses():
-    """« Prix : 4,00 € (Total est. : 7,78 €) » : le format demande, verrouille.
+    """« **Prix :** 4,00 € (**Total est. :** 7,78 €) » : le format demande, verrouille.
 
     Le libelle vit dans `labels`, pas dans chaque appelant : une future alerte
     qui afficherait un total estime heritera du format sans le redemander.
     """
-    assert format_price_line(400, 778) == "Prix : 4,00 € (Total est. : 7,78 €)"
+    assert format_price_line(400, 778) == ("<b>Prix :</b> 4,00 € (<b>Total est. :</b> 7,78 €)")
 
 
 def test_price_line_omits_an_unknown_total_rather_than_faking_one():
     """Sans total connu, la parenthese disparait au lieu de laisser un trou."""
-    assert format_price_line(400, None) == "Prix : 4,00 €"
+    assert format_price_line(400, None) == "<b>Prix :</b> 4,00 €"
 
 
 def test_price_line_uses_the_french_decimal_separator():
@@ -151,7 +163,7 @@ def test_price_line_uses_the_french_decimal_separator():
 def test_price_summary_delegates_to_the_charte():
     """Le calculateur calcule, la charte rend : un seul endroit ecrit la ligne."""
     assert format_price_summary(item_price_cents=400, estimated_total_cents=778) == (
-        "Prix : 4,00 € (Total est. : 7,78 €)"
+        "<b>Prix :</b> 4,00 € (<b>Total est. :</b> 7,78 €)"
     )
 
 
@@ -200,7 +212,7 @@ def test_market_price_lines_carry_no_decorative_emoji():
     réintroduirait l'emoji quelque part, et ce test le verrait.
     """
     for text in _rendered_market_strings():
-        assert "\U0001F4C9" not in text, text
+        assert "\U0001f4c9" not in text, text
         assert "📊 Prix du marché" not in text, text
 
 
@@ -208,7 +220,7 @@ def test_market_panel_does_not_explain_the_reference_price_in_parentheses():
     """« Cote d'occasion basee sur le plus bas prix... » ne revient pas au panneau."""
     for text in _rendered_market_strings():
         assert "nous avons pu constater" not in text, text
-        assert "Cote d\'occasion basée" not in text, text
+        assert "Cote d'occasion basée" not in text, text
 
 
 # ---------------------------------------------------------------------------
@@ -230,3 +242,130 @@ def test_dislike_confirmation_button_is_short():
 
     assert confirm.text == BTN_CONFIRM == "Confirmer"
     assert cancel.text == BTN_CANCEL
+
+
+# ---------------------------------------------------------------------------
+# Charte de rendu (ADR-022) : libellé gras / valeur romaine, consigne en
+# italique, avertissement italique et isolé. Trois pertes invisibles aux autres
+# tests parce qu'elles ne se voient qu'à l'écran — donc trois verrous ici.
+# ---------------------------------------------------------------------------
+
+
+def test_charte_documents_its_three_rendering_rules():
+    """Les règles vivent dans `labels`, source unique : un écran ne les réinvente pas."""
+    import app.bot.labels as labels
+
+    docstring = labels.__doc__ or ""
+    assert "libellé de champ est gras" in docstring
+    assert "instruction, d'exemple ou d'aide est en italique" in docstring
+    assert "avertissement est en italique et isolé" in docstring
+
+
+def test_field_labels_are_bold_and_values_stay_roman():
+    """`**Prix :** 4,00 €` : le libellé guide, la donnée reste en romain.
+
+    Un gras qui engloberait la valeur noierait la lecture au lieu de la guider —
+    c'est la règle 1, et elle se vérifie sur la ligne partagée par tous les écrans.
+    """
+    line = format_price_line(400, 778)
+
+    assert "<b>Prix :</b>" in line
+    assert "<b>Total est. :</b>" in line
+    assert "<b>4,00 €" not in line
+    assert "<b>7,78 €" not in line
+
+
+def test_alert_caption_bolds_labels_and_leaves_values_roman():
+    """L'alerte d'annonce suit la règle 1 : `État` et `Mots-clés` gras, valeurs nues."""
+    import uuid as _uuid
+
+    from app.core.constants import CategorySlug
+    from app.db.models.listing import Listing
+    from app.services.telegram_service import build_listing_caption
+
+    listing = Listing(
+        id=_uuid.uuid4(),
+        source_name="authorized-source",
+        external_id=str(_uuid.uuid4()),
+        url="https://www.example.com/listing-1",
+        title="Blacksad — Intégrale",
+        normalized_title="blacksad — intégrale",
+        category_slug=CategorySlug.BD_COMICS.value,
+        item_price_cents=900,
+        estimated_total_cents=1369,
+        condition="Très bon état",
+        raw_payload={},
+    )
+    caption = build_listing_caption(
+        listing, market_comparison_line=None, alert_keywords=["blacksad"]
+    )
+
+    assert "<b>État :</b> TBE" in caption
+    assert "<b>TBE</b>" not in caption
+    assert "<b>Mots-clés :</b> blacksad" in caption
+    assert "<b>blacksad</b>" not in caption
+
+
+def test_instruction_text_is_italic():
+    """Les consignes portent l'italique : une instruction n'est pas une donnée."""
+    from app.bot.handlers.alerts_create import _CONFIRMATION_FOOTER
+    from app.bot.handlers.alerts_helpers import format_semi_auto_recap
+
+    recap = format_semi_auto_recap(
+        title="La couleur des choses",
+        author=None,
+        publisher=None,
+        isbn=None,
+        max_price_cents=1200,
+        include_keywords=["la couleur des choses"],
+        exclude_keywords=[],
+    )
+
+    assert recap.rstrip().endswith("<i>Valide les critères ci-dessus avant de créer l'alerte.</i>")
+    assert _CONFIRMATION_FOOTER.startswith("<i>")
+    assert _CONFIRMATION_FOOTER.endswith("</i>")
+
+
+def test_both_warnings_are_italic_and_the_identity_one_leads_above_the_isbn():
+    """Règle 3 : les deux avertissements sont en italique, isolés, au-dessus de l'ISBN.
+
+    L'avertissement d'identité était collé entre l'ISBN et le titre, donc invisible,
+    et en romain tandis que la note du moteur était en italique. Deux avertissements,
+    un seul style et une seule place : la référence.
+    """
+    import html
+
+    from app.bot.handlers.alerts_helpers import RECAP_TITLE, format_semi_auto_recap
+
+    isbn_note = "⚠️ « L'Âge d'or » : 3 autres ouvrages portent ce titre."
+    keyword_note = "🔎 L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage."
+    recap = format_semi_auto_recap(
+        title="L'Âge d'or",
+        author=None,
+        publisher=None,
+        isbn=None,
+        max_price_cents=1500,
+        include_keywords=["L'Âge d'or"],
+        exclude_keywords=[],
+        isbn_note=isbn_note,
+        keyword_note=keyword_note,
+    )
+
+    # `isbn_note` porte des données de notice, donc échappé ; `keyword_note` est un
+    # libellé interne, rendu tel quel.
+    escaped_isbn_note = f"<i>{html.escape(isbn_note)}</i>"
+    escaped_keyword_note = f"<i>{keyword_note}</i>"
+
+    lines = recap.splitlines()
+    assert escaped_isbn_note in lines
+    assert escaped_keyword_note in lines
+    # L'avertissement d'identité précède l'ISBN, et rien ne le colle à lui.
+    note_index = lines.index(escaped_isbn_note)
+    isbn_index = next(i for i, line in enumerate(lines) if line.startswith("<b>ISBN :</b>"))
+    assert note_index < isbn_index
+    assert lines[0] == RECAP_TITLE
+    assert lines[note_index - 1] == ""
+    assert lines[note_index + 1] == ""
+    # La note du moteur est isolée des critères qu'elle commente.
+    keyword_index = lines.index(escaped_keyword_note)
+    assert lines[keyword_index - 1] == ""

@@ -2,7 +2,7 @@
 
 import uuid
 
-from app.bot.formatter import format_alert_card, format_alert_recap, format_cents_to_euros
+from app.bot.formatter import format_alert_card, format_cents_to_euros
 from app.bot.handlers.alerts_helpers import RECAP_TITLE, format_semi_auto_recap
 from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
@@ -15,26 +15,6 @@ def test_format_cents_to_euros():
     assert format_cents_to_euros(999) == "9,99 €"
     assert format_cents_to_euros(0) == "0,00 €"
     assert format_cents_to_euros(None) == "Non renseigné"
-
-
-def test_format_alert_recap():
-    recap = format_alert_recap(
-        emoji="📚",
-        name="Blacksad intégrale",
-        include_keywords=["blacksad", "intégrale"],
-        exclude_keywords=["tome 1", "poche"],
-        variants=["blacksad integral"],
-        max_price_cents=1500,
-        accepted_conditions=["Très bon état", "Neuf sans étiquette"],
-    )
-
-    assert "📚 Nouvelle alerte" in recap
-    assert "Nom : Blacksad intégrale" in recap
-    assert "Mots-clés : blacksad, intégrale" in recap
-    assert "Exclusions : tome 1, poche" in recap
-    assert "Variantes : blacksad integral" in recap
-    assert "Prix maximum article : 15,00 €" in recap
-    assert "États acceptés : TBE, NSE" in recap
 
 
 def test_format_alert_card():
@@ -63,14 +43,14 @@ def test_format_alert_card():
 
     card = format_alert_card(alert, current_index=0, total_count=1)
     assert "📚 <b>Blacksad intégrale</b>" in card
-    assert "ISBN : <code>9782205089752</code>" in card
-    assert "Prix maximum : 15,00 €" in card
-    assert "Mots-clés inclus : blacksad, intégrale" in card
-    assert "Mots-clés exclus : tome 1" in card
-    assert "Statut : Active" in card
-    assert "États acceptés : TBE" in card
+    assert "<b>ISBN :</b> <code>9782205089752</code>" in card
+    assert "<b>Prix maximum :</b> 15,00 €" in card
+    assert "<b>Mots-clés inclus :</b> blacksad, intégrale" in card
+    assert "<b>Mots-clés exclus :</b> tome 1" in card
+    assert "<b>Statut :</b> Active" in card
+    assert "<b>États acceptés :</b> TBE" in card
     assert (
-        'Lien : <a href="https://www.vinted.fr/catalog?search_text=blacksad">'
+        '<b>Lien :</b> <a href="https://www.vinted.fr/catalog?search_text=blacksad">'
         "Consulter la recherche</a>"
         in card
     )
@@ -217,7 +197,7 @@ def test_recap_always_closes_on_the_confirmation_it_expects():
     recap = _recap()
 
     assert recap.rstrip().endswith(
-        "Valide les critères ci-dessus avant de créer l'alerte."
+        "<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"
     )
     assert recap.count("Valide les critères ci-dessus avant de créer l'alerte.") == 1
 

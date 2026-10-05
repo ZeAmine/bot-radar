@@ -204,14 +204,18 @@ def _vinted_total_cents(listing: Listing) -> int | None:
 
 
 def _format_gap(total_cents: int, reference_cents: int) -> str:
-    """Ligne d'écart entre le total Vinted et le prix de référence."""
+    """Ligne d'écart entre le total Vinted et le prix de référence.
+
+    Le libellé est gras, la valeur en romain (charte) : l'emoji ✅/⛔️ porte le
+    sens du signe, il n'a pas à être mis en gras avec lui.
+    """
     diff_cents = total_cents - reference_cents
     diff_euros = format_cents(abs(diff_cents))
     if diff_cents < 0:
-        return f"✅ Écart : <b>-{diff_euros}</b>"
+        return f"✅ <b>Écart :</b> -{diff_euros}"
     if diff_cents > 0:
-        return f"⛔️ Écart : <b>+{diff_euros}</b>"
-    return "✅ Écart : <b>0,00 €</b> (au prix de référence)"
+        return f"⛔️ <b>Écart :</b> +{diff_euros}"
+    return "✅ <b>Écart :</b> 0,00 € (au prix de référence)"
 
 
 def _match_lot_books(books: list[Book], lot_tomes: list[int]) -> list[Book]:
@@ -385,7 +389,7 @@ class MarketPriceService:
             else ""
         )
         lines = [
-            f"Prix bas constaté{tome_suffix} : {format_cents(reference_cents)}"
+            f"<b>Prix bas constaté{tome_suffix} :</b> {format_cents(reference_cents)}"
             if is_historical
             else MarketPriceService._market_price_line(cache, tome_suffix)
         ]
@@ -411,7 +415,7 @@ class MarketPriceService:
         provider = (cache.best_provider_name or "").replace("_", " ").title()
         provider_suffix = f" ({provider})" if provider else ""
         price = format_cents(_positive(cache.lowest_delivered_price_cents) or 0)
-        return f"Prix du marché{tome_suffix} : {price}{provider_suffix}"
+        return f"<b>Prix du marché{tome_suffix} :</b> {price}{provider_suffix}"
 
     @staticmethod
     def _lot_summary(
@@ -448,7 +452,7 @@ class MarketPriceService:
             composition_inferred=composition_inferred,
         )
 
-        lines = [f"{label} : ~{format_cents(cumulated)}"]
+        lines = [f"<b>{label} :</b> ~{format_cents(cumulated)}"]
         vinted_total = _vinted_total_cents(listing)
         if vinted_total is not None:
             lines.append(_format_gap(vinted_total, cumulated))
@@ -531,7 +535,7 @@ class MarketPriceService:
             lines.append(f"• {clean_tome_display_title(book.title)} : {format_cents(price_cents)}")
 
         latest = MarketPriceService._latest_checked_at(target_books)
-        lines.append(f"\nDernière mise à jour : {latest}")
+        lines.append(f"\n<b>Dernière mise à jour :</b> {latest}")
         return "\n".join(lines)
 
     @staticmethod
@@ -539,7 +543,8 @@ class MarketPriceService:
         """Panneau d'une série sans tome résolu : les cotes de tous ses tomes."""
         vinted_total = _vinted_total_cents(listing)
         lines = MarketPriceService._header(
-            f"🆕 Vinted : {format_cents(vinted_total) if vinted_total else 'à confirmer'}"
+            f"🆕 <b>Vinted :</b> "
+            f"{format_cents(vinted_total) if vinted_total else 'à confirmer'}"
         )
         lines.append("Annonce sans tome précis détecté.\n")
         lines.append("<b>Cotes par tome (plus bas connu) :</b>")
@@ -548,7 +553,7 @@ class MarketPriceService:
         # titre suivi d'une section vide se lisait comme un panneau mort.
         lines.extend(series_lines or [PENDING_COTE_LINE])
         latest = MarketPriceService._latest_checked_at(books_in_series)
-        lines.append(f"\nDernière mise à jour : {latest}")
+        lines.append(f"\n<b>Dernière mise à jour :</b> {latest}")
         return "\n".join(lines)
 
     @staticmethod
@@ -576,7 +581,7 @@ class MarketPriceService:
             # nomme déjà sa source, et la ligne d'écart en dessous dit ce
             # qu'elle vaut. La phrase qui expliquait la cote prenait la moitié
             # de l'écran pour répéter le titre.
-            lines.append(f"Prix bas constaté : {format_cents(reference_cents)}")
+            lines.append(f"<b>Prix bas constaté :</b> {format_cents(reference_cents)}")
 
         if partners:
             if is_historical:
@@ -604,9 +609,11 @@ class MarketPriceService:
 
         best_url = MarketPriceService._best_offer_url(cache, partners)
         if best_url:
-            lines.append(f'\nLien : <a href="{best_url}">Consulter l\'offre</a>')
+            lines.append(f'\n<b>Lien :</b> <a href="{best_url}">Consulter l\'offre</a>')
 
-        lines.append(f"\nDernière mise à jour : {_format_checked_at(cache.checked_at)}")
+        lines.append(
+            f"\n<b>Dernière mise à jour :</b> {_format_checked_at(cache.checked_at)}"
+        )
         return "\n".join(lines)
 
     @staticmethod

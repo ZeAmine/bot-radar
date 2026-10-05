@@ -26,6 +26,10 @@ def build_listing_caption(
     Ordre : titre, prix et total estimé, état, bloc de comparaison si applicable,
     mots-clés déclencheurs si disponibles. Les informations absentes ne produisent
     pas de bloc vide.
+
+    Chaque libellé de champ est gras, sa valeur reste en romain (charte,
+    `app.bot.labels`) : la donnée se lit d'un coup d'œil sans que la ligne entière
+    pèse sur l'écran.
     """
     raw_condition = listing.condition or ""
     condition_text = CONDITION_ALIASES.get(raw_condition.lower(), raw_condition)
@@ -40,7 +44,7 @@ def build_listing_caption(
     lines: list[str] = [
         f"🆕 <b>{safe_title}</b>",
         price_line,
-        f"État : {safe_condition}",
+        f"<b>État :</b> {safe_condition}",
     ]
 
     if market_comparison_line and market_comparison_line not in (
@@ -52,7 +56,7 @@ def build_listing_caption(
 
     if alert_keywords:
         lines.append("")
-        lines.append(f"Mots-clés : {join_list(alert_keywords)}")
+        lines.append(f"<b>Mots-clés :</b> {join_list(alert_keywords)}")
 
     return "\n".join(lines)
 

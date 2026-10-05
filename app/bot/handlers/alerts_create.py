@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 # déclenche une alerte au prochain passage du poller — sans promettre d'instantanéité
 # ni de surveillance permanente.
 _CONFIRMATION_FOOTER = (
-    "Les annonces correspondant à ces critères déclencheront une alerte Telegram."
+    "<i>Les annonces correspondant à ces critères déclencheront une alerte Telegram.</i>"
 )
 
 
@@ -198,24 +198,28 @@ def _keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
     Cinq fins possibles, cinq libellés distincts : le récap ne doit jamais laisser
     croire qu'une liste vide est un avis du moteur alors que personne n'a été interrogé
     — ni qu'une exclusion manquante est un oubli quand elle est une décision.
+
+    Le texte est rendu en italique par `format_semi_auto_recap` (charte, règle 3) :
+    c'est un avertissement, jamais une information du livre. La mise en forme vit
+    donc dans le rendu, pas ici : deux notes ne peuvent pas porter deux styles.
     """
     if not outcome.answered:
         # La relance a déjà eu lieu : ce n'est plus de la lenteur mais un échec. Le
         # bouton reste sous la carte, c'est donc lui qu'on nomme, pas « Modifier ».
         return (
-            "<i>⚠️ L'IA n'a pas répondu après une relance : cette alerte sera créée "
+            "⚠️ L'IA n'a pas répondu après une relance : cette alerte sera créée "
             "sans variante ni exclusion. Appuie sur « ✨ Variantes & Exclusions IA » "
-            "pour réessayer.</i>"
+            "pour réessayer."
         )
     if outcome.is_empty:
         return (
-            "<i>🔎 L'IA n'a trouvé aucune variante ni exclusion pertinente : "
-            "rien n'a été ajouté.</i>"
+            "🔎 L'IA n'a trouvé aucune variante ni exclusion pertinente : "
+            "rien n'a été ajouté."
         )
     if not outcome.exclusions:
-        return "<i>🔎 L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage.</i>"
+        return "🔎 L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage."
     if not outcome.variants:
-        return "<i>🔎 L'IA n'a trouvé aucune variante de frappe pour cet ouvrage.</i>"
+        return "🔎 L'IA n'a trouvé aucune variante de frappe pour cet ouvrage."
     return None
 
 
@@ -439,8 +443,8 @@ async def start_add_alert(
         await state.update_data(inline_query=inline_query)
         prompt_text = (
             f"➕ <b>Créer une alerte</b>\n\n"
-            f"Article : « {html.escape(inline_query)} »\n"
-            "Choisis la catégorie de ce produit :"
+            f"<b>Article :</b> « {html.escape(inline_query)} »\n"
+            "<i>Choisis la catégorie de ce produit.</i>"
         )
         await state.set_state(AlertCreationState.waiting_for_category)
         keyboard = get_category_selection_keyboard()
@@ -451,13 +455,13 @@ async def start_add_alert(
         await state.update_data(inline_query=inline_query)
         prompt_text = (
             f"➕ <b>Créer une alerte</b>\n\n"
-            f"Article : « {html.escape(inline_query)} »\n"
-            "Choisis la catégorie de ce produit :"
+            f"<b>Article :</b> « {html.escape(inline_query)} »\n"
+            "<i>Choisis la catégorie de ce produit.</i>"
         )
     else:
         prompt_text = (
             "➕ <b>Créer une alerte</b>\n\n"
-            "Choisis la catégorie du produit à surveiller :"
+            "<i>Choisis la catégorie du produit à surveiller.</i>"
         )
 
     await state.set_state(AlertCreationState.waiting_for_category)
@@ -503,28 +507,29 @@ async def handle_category_selected(
     if category_slug == CategorySlug.BD_COMICS.value:
         prompt = (
             "📚 <b>Alerte Livres & BD</b>\n\n"
-            "Entre le titre de l'œuvre que tu souhaites surveiller (avec auteur optionnel) :\n\n"
+            "<i>Entre le titre de l'œuvre que tu souhaites surveiller "
+            "(avec auteur optionnel).</i>\n\n"
             "<i>(Tape /cancel à tout moment pour annuler)</i>"
         )
     elif category_slug == CategorySlug.TECH.value:
         prompt = (
             "💻 <b>Alerte Électronique</b>\n\n"
-            "Quel produit ou modèle électronique recherches-tu ?\n"
-            "<i>(ex: Raspberry Pi 4, Steam Deck 512Go, Sony WH-1000XM4...)\n\n"
+            "<i>Quel produit ou modèle électronique recherches-tu ?</i>\n\n"
+            "<i>(ex: Raspberry Pi 4, Steam Deck 512Go, Sony WH-1000XM4...)</i>\n\n"
             "<i>(Tape /cancel à tout moment pour annuler)</i>"
         )
     elif category_slug == CategorySlug.GAMING.value:
         prompt = (
             "🎮 <b>Alerte Jeux Vidéo</b>\n\n"
-            "Quel jeu ou console recherches-tu ?\n"
-            "<i>(ex: Mario Kart 8 Switch, Zelda Tears of the Kingdom, Switch Oled...)\n\n"
+            "<i>Quel jeu ou console recherches-tu ?</i>\n\n"
+            "<i>(ex: Mario Kart 8 Switch, Zelda Tears of the Kingdom, Switch Oled...)</i>\n\n"
             "<i>(Tape /cancel à tout moment pour annuler)</i>"
         )
     else:
         prompt = (
             "👕 <b>Alerte Vêtements</b>\n\n"
-            "Quel vêtement ou modèle recherches-tu ?\n"
-            "<i>(ex: Veste Carhartt Detroit, Pull Ralph Lauren M...)\n\n"
+            "<i>Quel vêtement ou modèle recherches-tu ?</i>\n\n"
+            "<i>(ex: Veste Carhartt Detroit, Pull Ralph Lauren M...)</i>\n\n"
             "<i>(Tape /cancel à tout moment pour annuler)</i>"
         )
 
@@ -542,7 +547,9 @@ async def handle_query_input(
     """Traite la saisie du titre/produit et oriente vers la recherche adaptée."""
     query = (message.text or "").strip()
     if not query or len(query) < 2:
-        await message.answer("La recherche doit contenir au moins 2 caractères. Réessaie :")
+        await message.answer(
+            "<i>La recherche doit contenir au moins 2 caractères. Réessaie :</i>"
+        )
         return
 
     data = await state.get_data()
@@ -579,7 +586,7 @@ async def handle_update_existing_alert_price(
             await callback.message.edit_text(
                 f"✅ <b>Prix maximum mis à jour</b>\n\n"
                 f"📚 <b>{html.escape(existing.name)}</b>\n"
-                f"Nouveau prix maximum : {new_price_str}\n\n"
+                f"<b>Nouveau prix maximum :</b> {new_price_str}\n\n"
                 "L'alerte existante a été actualisée sans créer de doublon."
             )
     else:
@@ -613,7 +620,7 @@ async def process_max_price_input(
             await message.answer(
                 f"✅ <b>Prix maximum mis à jour</b>\n\n"
                 f"📚 <b>{html.escape(existing.name)}</b>\n"
-                f"Nouveau prix maximum : {new_price_str}\n\n"
+                f"<b>Nouveau prix maximum :</b> {new_price_str}\n\n"
                 "L'alerte existante a été actualisée sans créer de doublon."
             )
             return
@@ -803,16 +810,16 @@ async def save_alert(
         # dedans ferait rejeter tout le message par Telegram.
         lines = ["✅ <b>Alerte créée</b>\n"]
         if isbn:
-            lines.append(f"ISBN : <code>{html.escape(isbn)}</code>")
-        lines.append(f"Titre : {html.escape(name)}")
+            lines.append(f"<b>ISBN :</b> <code>{html.escape(isbn)}</code>")
+        lines.append(f"<b>Titre :</b> {html.escape(name)}")
         if author:
-            lines.append(f"Auteur : {html.escape(author)}")
+            lines.append(f"<b>Auteur :</b> {html.escape(author)}")
         if publisher:
-            lines.append(f"Éditeur : {html.escape(publisher)}")
+            lines.append(f"<b>Éditeur :</b> {html.escape(publisher)}")
         lines.append("")
-        lines.append(f"Prix maximum : {price_str}")
-        lines.append(f"États acceptés : {html.escape(format_conditions(conditions))}")
-        lines.append(f"Mots-clés inclus : {_join_escaped(includes)}\n")
+        lines.append(f"<b>Prix maximum :</b> {price_str}")
+        lines.append(f"<b>États acceptés :</b> {html.escape(format_conditions(conditions))}")
+        lines.append(f"<b>Mots-clés inclus :</b> {_join_escaped(includes)}\n")
 
         # La cote déjà connue est affichée telle quelle ; sinon la confirmation
         # annonce qu'elle arrive, plutôt que de laisser croire qu'il n'y a pas de prix.
@@ -859,14 +866,14 @@ async def save_alert(
             "✅ <b>Alerte créée</b>\n",
             f"{cat_emoji} <b>{html.escape(name)}</b> ({cat_label})",
             "",
-            f"Prix maximum : {price_str}",
-            f"États acceptés : {html.escape(cond_str)}",
-            f"Mots-clés inclus : {_join_escaped(includes)}",
+            f"<b>Prix maximum :</b> {price_str}",
+            f"<b>États acceptés :</b> {html.escape(cond_str)}",
+            f"<b>Mots-clés inclus :</b> {_join_escaped(includes)}",
         ]
         if variants:
-            lines.append(f"Variantes : {_join_escaped(variants)}")
+            lines.append(f"<b>Variantes :</b> {_join_escaped(variants)}")
         if excludes:
-            lines.append(f"Mots-clés exclus : {_join_escaped(excludes)}")
+            lines.append(f"<b>Mots-clés exclus :</b> {_join_escaped(excludes)}")
         lines.append("")
         lines.append(_CONFIRMATION_FOOTER)
         resp_text = "\n".join(lines)

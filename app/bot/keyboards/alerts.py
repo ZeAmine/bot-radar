@@ -5,7 +5,7 @@ from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.labels import CONDITION_SHORT
+from app.bot.labels import BTN_DELETE, CONDITION_SHORT
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
 from app.db.models.alert import Alert
 from app.db.models.category import Category
@@ -217,7 +217,7 @@ def get_alert_card_keyboard(
     row_actions = [
         InlineKeyboardButton(text="Modifier", callback_data=f"al_edit:{alert_id}"),
         InlineKeyboardButton(text=pause_text, callback_data=f"al_{pause_action}:{alert_id}"),
-        InlineKeyboardButton(text="🗑 Supprimer", callback_data=f"al_del:{alert_id}"),
+        InlineKeyboardButton(text=BTN_DELETE, callback_data=f"al_del:{alert_id}"),
     ]
 
     row_nav: list[InlineKeyboardButton] = []
@@ -366,7 +366,7 @@ def get_delete_confirmation_keyboard(alert_id: uuid.UUID) -> InlineKeyboardMarku
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🗑 Oui, supprimer",
+                    text=f"Oui, {BTN_DELETE.lower()}",
                     callback_data=f"al_del_confirm:{alert_id}",
                 )
             ],

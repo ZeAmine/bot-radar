@@ -288,7 +288,7 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
 
     confirmation = [text for text in _texts(bot) if "✅ <b>Alerte créée</b>" in text]
     assert confirmation, "la confirmation de création n'a jamais été rendue"
-    assert "ISBN : <code>9782369904151</code>" in confirmation[-1]
+    assert "<b>ISBN :</b> <code>9782369904151</code>" in confirmation[-1]
 
     assert await _state_of(bot, dispatcher) is None
 

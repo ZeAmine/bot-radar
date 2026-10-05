@@ -116,20 +116,20 @@ class ProfitScoringModule(BasePostAlertModule):
         if result.purchase_cost_cents:
             purchase_eur = result.purchase_cost_cents / 100.0
             purchase_str = f"{purchase_eur:.2f} €".replace(".", ",")
-            lines.append(f"💰 Prix d'achat TTC : {purchase_str}")
+            lines.append(f"💰 <b>Prix d'achat TTC :</b> {purchase_str}")
 
         if result.estimated_resale_cents:
             resale_eur = result.estimated_resale_cents / 100.0
             resale_str = f"{resale_eur:.2f} €".replace(".", ",")
-            lines.append(f"📈 Revente estimée : ~{resale_str}")
+            lines.append(f"📈 <b>Revente estimée :</b> ~{resale_str}")
 
         if result.net_profit_cents is not None:
             profit_eur = result.net_profit_cents / 100.0
             sign = "+" if profit_eur > 0 else ""
             profit_str = f"{sign}{profit_eur:.2f} €".replace(".", ",")
-            lines.append(f"🚀 Marge nette : <b>{profit_str}</b>")
+            lines.append(f"🚀 <b>Marge nette :</b> {profit_str}")
 
-        lines.append(f"⭐ Indice pépite : {score_str}/10")
+        lines.append(f"⭐ <b>Indice pépite :</b> {score_str}/10")
 
         if result.verdict:
             lines.append(f"\n💡 {html.escape(result.verdict)}")
