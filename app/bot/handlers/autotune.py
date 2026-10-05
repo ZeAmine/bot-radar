@@ -40,6 +40,7 @@ from app.db.repositories.autotune_repo import (
     get_alerts_with_dislikes,
     get_disliked_titles_for_alert,
 )
+from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.auto_tuning import (
     auto_tuning_module,
     build_exclusion_proposal,
@@ -403,7 +404,9 @@ async def handle_tune_apply(
         if exc.lower() not in [e.lower() for e in current_excludes]:
             current_excludes.append(exc)
 
-    alert.exclude_keywords = current_excludes
+    # Les exclusions viennent du moteur : le nettoyeur est le dernier filtre avant
+    # la base. Une exclusion numérique nue rejetterait toute annonce chiffrée.
+    alert.exclude_keywords = sanitize_exclusions(current_excludes, alert.name)
 
     # Suppression des faux positifs résolus pour cette alerte
     cleaned_count = await clear_dislikes_for_alert(alert.id, db_session)
@@ -419,7 +422,7 @@ async def handle_tune_apply(
             if cleaned_count > 0
             else "Les faux positifs traités ont été retirés de la liste."
         )
-        excludes_str = escape_html(", ".join(current_excludes))
+        excludes_str = escape_html(", ".join(alert.exclude_keywords or []))
         await callback.message.edit_text(
             f"✅ <b>Exclusions appliquées</b>\n\n"
             f"{FIELD_NAME} : « {escape_html(alert.name)} »\n"
@@ -687,7 +690,7 @@ async def handle_var_apply(
         if v.lower() not in [k.lower() for k in current_variants]:
             current_variants.append(v)
 
-    alert.variants = current_variants
+    alert.variants = sanitize_variants(current_variants, alert.name)
     await db_session.commit()
 
     await callback.answer("Variantes ajoutées.", show_alert=True)

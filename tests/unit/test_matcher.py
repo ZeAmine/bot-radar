@@ -695,3 +695,73 @@ def test_matcher_ignores_a_variant_carrying_another_books_isbn():
     # L'annonce est refusée : ni l'ISBN de l'alerte ni les mots-clés ne la décrivent.
     assert res.is_match is False
     assert bd_isbn in res.reason
+
+
+def test_stored_degenerate_variant_cannot_validate_a_listing():
+    """Une variante « … 2a » stockée autrefois ne valide plus une annonce (sans migration).
+
+    L'énumération du numéro a produit cette famille ; le filtre en lecture la neutralise
+    sur les alertes déjà enregistrées.
+    """
+    from app.domain.rules.listing_match import usable_variants
+
+    alert = create_test_alert(
+        include_keywords=["blacksad integrale"],
+        variants=["blacksad 2a"],
+    )
+
+    assert usable_variants(alert.variants, None) == []
+
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="blacksad 2a",
+        listing_normalized_description=None,
+        listing_condition="Très bon état",
+        listing_item_price_cents=1200,
+    )
+    assert res.is_match is False
+
+
+def test_stored_numeric_exclusion_rejects_nothing():
+    """Une exclusion « 1 » stockée autrefois ne rejette plus toute annonce chiffrée.
+
+    Sans le filtre, cette alerte taisait toute annonce contenant un « 1 ».
+    """
+    from app.domain.rules.listing_match import usable_exclusions
+
+    alert = create_test_alert(
+        include_keywords=["blacksad"],
+        exclude_keywords=["1", "coffret vide"],
+    )
+
+    assert usable_exclusions(alert.exclude_keywords) == ["coffret vide"]
+
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="blacksad tome 1",
+        listing_normalized_description="bon etat",
+        listing_condition="Très bon état",
+        listing_item_price_cents=1000,
+    )
+    assert res.is_match is True
+
+
+def test_real_exclusion_still_rejects():
+    """Le filtre ne désarme pas les exclusions qui portent du sens."""
+    alert = create_test_alert(
+        include_keywords=["blacksad"],
+        exclude_keywords=["roman poche"],
+    )
+
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="blacksad tome 1",
+        listing_normalized_description="edition roman poche",
+        listing_condition="Très bon état",
+        listing_item_price_cents=1000,
+    )
+    assert res.is_match is False
+    assert "exclu" in res.reason.lower()

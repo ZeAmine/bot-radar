@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.constants import STANDARD_CONDITIONS, CategorySlug
+from app.domain.rules.series_detection import detect_series
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import (
     NaturalAddPayload,
@@ -192,11 +193,23 @@ class NaturalAddModule(BaseAIModule):
 
             book = resolved.book
 
+            # La résolution peut révéler une œuvre numérotée que le moteur n'avait pas
+            # vue : la notice porte un tome alors que la demande n'en visait aucun.
+            # L'ISBN est alors écarté, sinon il verrouillerait l'alerte sur ce volume —
+            # et les mots-clés du récap seraient ceux de ce volume, pas de la série.
+            series = detect_series(
+                query_title=clean_name,
+                notices=[resolved.book.title] if resolved.book else [],
+            )
+            if series.is_series:
+                is_series = True
+
             return NaturalAddResult(
                 name=clean_name,
                 category_slug=category,
-                isbn13=resolved.isbn13,
+                isbn13=None if series.is_series else resolved.isbn13,
                 is_series=is_series,
+                series_volumes=list(series.volumes),
                 author=author,
                 publisher=publisher,
                 include_keywords=clean_includes or [clean_name],
@@ -204,8 +217,10 @@ class NaturalAddModule(BaseAIModule):
                 max_price_cents=payload.max_price_cents,
                 conditions=valid_conditions,
                 explanation=payload.explanation,
-                isbn_note=resolved.isbn_note,
-                edition_alternatives=resolved.edition_alternatives,
+                isbn_note=None if series.is_series else resolved.isbn_note,
+                edition_alternatives=(
+                    [] if series.is_series else resolved.edition_alternatives
+                ),
                 work_choices=resolved.work_choices,
                 book_context=(
                     book_context_from(book, is_series=is_series) if book else None

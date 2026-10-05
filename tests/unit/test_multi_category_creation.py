@@ -14,7 +14,6 @@ from app.bot.handlers.alerts import (
     handle_category_selected,
     handle_query_input,
     prompt_new_price,
-    restart_from_scratch,
     save_alert,
     start_add_alert,
 )
@@ -325,7 +324,6 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     prompt_text, kwargs = call_args[0][0], call_args[1]
     assert "Modifier l'alerte" in prompt_text
     kb = kwargs["reply_markup"]
-    assert "10,00 €" in str(kb.inline_keyboard)
     actions = [btn[0].callback_data for btn in kb.inline_keyboard]
     assert "al_create_edit:name" in actions
     assert "al_create_edit:price" in actions
@@ -333,8 +331,16 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     assert "al_create_edit:exclude_keywords" in actions
     assert "al_create_edit:variants" in actions
     assert "al_create_edit:conditions" in actions
-    assert "al_create_edit:restart" in actions
     assert "al_create_edit:back" in actions
+    # Le bouton « Recommencer » a disparu avec son handler : aucun callback orphelin.
+    assert not any("restart" in action for action in actions)
+
+    # Les libellés sont nus : rien entre parenthèses, la valeur courante ne tronque
+    # plus le nom du champ. Le clavier réel est inspecté, pas une constante.
+    labels = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert "(" not in "".join(labels)
+    assert "Prix maximum" in labels
+    assert "← Retour au récapitulatif" in labels
 
     # 2. Test de la sous-option modification de prix
     callback.answer.reset_mock()
@@ -352,14 +358,54 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     state.set_state.assert_called_once_with(AlertCreationState.confirm_creation)
     assert "Veste Dickies" in callback.message.edit_text.call_args[0][0]
 
-    # 4. Test de la sous-option recommencer de zéro
-    callback.answer.reset_mock()
-    callback.message.edit_text.reset_mock()
-    state.set_state.reset_mock()
-    await restart_from_scratch(callback, state)
-    state.clear.assert_called_once()
-    state.set_state.assert_called_once_with(AlertCreationState.waiting_for_category)
-    assert "Choisis la catégorie" in callback.message.edit_text.call_args[0][0]
+
+@pytest.mark.asyncio
+async def test_edit_menu_labels_are_bare_for_a_bd_with_an_isbn():
+    """Le cas de l'écran réel — ISBN et prix renseignés : les libellés restent nus.
+
+    L'écran affichait « ISBN (9781799510871) » et « Prix maximum (10,00 €) » : la
+    parenthèse tronquait le nom du champ sans rien apprendre de plus. Le clavier
+    réellement rendu est inspecté, libellé par libellé.
+    """
+    callback = MagicMock()
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+
+    state = AsyncMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "name": "Absolute Martian Manhunter",
+            "category_slug": "bd_comics",
+            "isbn": "9781799510871",
+            "max_item_price_cents": 1000,
+            "include_keywords": ["absolute martian manhunter"],
+            "exclude_keywords": [],
+            "selected_conditions": ["Très bon état"],
+        }
+    )
+
+    await edit_alert_creation_prompt(callback, state)
+
+    kb = callback.message.edit_text.call_args[1]["reply_markup"]
+    buttons = [button for row in kb.inline_keyboard for button in row]
+    assert [button.text for button in buttons] == [
+        "Nom / Titre",
+        "ISBN",
+        "Prix maximum",
+        "Mots-clés inclus",
+        "Mots-clés exclus",
+        "Variantes",
+        "États acceptés",
+        "← Retour au récapitulatif",
+    ]
+    # Ni la valeur de l'ISBN ni celle du prix ne débordent dans un libellé.
+    assert "9781799510871" not in str(kb.inline_keyboard)
+    assert "10,00 €" not in str(kb.inline_keyboard)
+    # Aucun callback orphelin : le bouton supprimé ne survit pas dans le clavier.
+    assert not any(
+        "restart" in (button.callback_data or "") for button in buttons
+    )
 
 
 class MockMessage(MagicMock):

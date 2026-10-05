@@ -29,6 +29,7 @@ from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
+from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.alert_service import (
     AlertServiceError,
     parse_comma_separated_list,
@@ -553,6 +554,13 @@ async def save_edited_field_value(
 
             if field == "include_keywords" and not parsed:
                 raise AlertServiceError("Au moins un mot-clé requis pour surveiller l'alerte.")
+            # Les variantes et exclusions saisies peuvent venir d'un copier-coller du
+            # moteur : le nettoyeur est le dernier filtre avant la base. Les mots-clés
+            # *inclus*, eux, sont l'intention de l'utilisateur et restent tels quels.
+            if field == "variants":
+                parsed = sanitize_variants(parsed, alert.name)
+            elif field == "exclude_keywords":
+                parsed = sanitize_exclusions(parsed, alert.name)
 
             setattr(alert, field, parsed)
 
