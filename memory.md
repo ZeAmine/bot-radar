@@ -7,7 +7,7 @@ Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs po
 ## Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-026, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-029, dette différée).
 
 ---
 
@@ -349,6 +349,12 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
 - **Décision** : deux corrections, aucune autorité nouvelle. **Un EAN-13 est l'ISBN-13** — pour un livre, c'est le même code, préfixé `978`/`979` ; `isbn_from_identifier` (module pur) lit les trois écritures d'un identifiant d'autorité — `urn:isbn:…`, `ISBN : …`, code nu — refuse un EAN qui ne désigne pas un livre (préfixe autre) et un code dont la clé de contrôle ne tombe pas, et se refuse à lire une URL d'ark. `_bnf_records` délègue : il exigeait le mot « ISBN », si bien qu'une notice entière disparaissait sans un mot. **Le récap dit l'absence** : sans ISBN, la ligne affiche `introuvable — la BNF ne catalogue pas cet ouvrage`, ou `non utilisé — série multi-tomes` quand l'absence est un choix. Une alerte hors livres n'affiche pas de ligne : elle n'a pas d'ISBN à trouver.
 - **Raison** : le titre d'une capture avait montré une alerte sans ISBN, sans rien qui permette de distinguer « l'ouvrage n'est pas catalogué » d'« un oubli ». Sur une identité d'ouvrage, l'absence d'information doit se lire comme une information, pas comme un silence.
 - **Conséquence assumée** : la limite de la BNF est **consignée, pas contournée**. La réparer demanderait un point d'entrée capable d'interroger un ISBN (data.bnf.fr ou autre schéma SRU) : c'est un pari sur une API, hors périmètre ici, et `test_bnf_never_confirms_an_isbn_and_openlibrary_does` est le test à faire changer le jour où elle existe. Ajouter une place de marché comme autorité de l'ISBN a été envisuré puis écarté : un EAN affiché par une place de marché et un ISBN sought auprès d'une autorité disent la même chose : ni l'un ni l'autre ne décide. Il n'y avait donc rien à gagner, et pas d'autorité de plus.
+
+### ADR-029 : Un libellé de trois lettres, un marqueur qui ferme la ligne
+- **Contexte** : l'alerte annonçait `Prix : 35,00 € (Total est. : 40,33 €)` et menait son verdict par un emoji : `⛔️ Écart : +34,91 €`. Deux défauts, tous deux visibles sur un iPhone. « Total est. » occupe treize caractères là où la ligne est la plus encombrée du message, et « estimé » se lit comme un doute sur un montant dont la protection et le port sont parfaitement réels. L'emoji de tête ne se désaligne pas seulement : sur iOS ses métriques verticales le poussent au-dessus de la ligne de texte, et en tête ce décalage se lit comme une puce qui qualifierait tout le bloc — alors qu'il ne parle que de cet écart.
+- **Décision** : 1. le total ne porte plus de libellé, seulement le suffixe `TTC`, en romain comme les montants (règle 1 : seul `Prix :` est gras ; « TTC » qualifie le montant, il n'en est pas un) ; 2. le marqueur passe en **fin** de ligne et reste hors du gras ; 3. à l'écart nul, aucun marqueur : « au prix de référence » porte déjà le sens, et une coche verte devant un écart nul serait une approbation de trop.
+- **Raison** : la place est la ressource rare de cet écran, et un libellé long la gaspille à chaque alerte. Un marqueur en tête s'applique à la ligne qui suit — une information fausse dès que la ligne en contient plusieurs ; en fin de ligne il ne qualifie plus que ce qui précède, et si la ligne se replie sur un écran étroit il se lit encore comme sa conclusion.
+- **Conséquence assumée** : le montant reste affiché, parce que l'écart se calcule sur lui — le masquer rendrait un « +0,42 € » illisible en face d'un prix de 20,00 €. `FIELD_ESTIMATED_TOTAL` disparaît de `labels` : un écran qui voudrait une autre formulation l'écrit là, et personne n'hérite d'un libellé que plus personne ne choisit. Le rendu iOS, lui, n'est vérifiable par aucune machine : seul un vrai Telegram sur un vrai iPhone confirme l'alignement.
 
 ---
 
