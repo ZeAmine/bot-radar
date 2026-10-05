@@ -17,11 +17,7 @@ from app.bot.handlers.alerts_helpers import (
     build_creation_recap,
     realign_draft_to_isbn,
 )
-from app.bot.keyboards.alerts import (
-    get_category_selection_keyboard,
-    get_conditions_toggle_keyboard,
-)
-from app.bot.labels import format_price_cents
+from app.bot.keyboards.alerts import get_conditions_toggle_keyboard
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     STANDARD_CONDITIONS,
@@ -215,8 +211,6 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
     name = data.get("name")
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
     isbn = data.get("isbn")
-    current_price = data.get("max_item_price_cents")
-    current_price_str = format_price_cents(current_price)
 
     title = f" pour « {html.escape(name)} »" if name else ""
     text = (
@@ -224,23 +218,21 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
         "Choisis l'information à modifier :"
     )
 
+    # Un libellé nu, sans valeur entre parenthèses : la valeur courante est déjà
+    # affichée juste après la saisie, et sur un téléphone la parenthèse tronque le
+    # libellé au lieu de l'éclairer. Chaque bouton nomme le champ, rien d'autre.
     buttons = [
         [InlineKeyboardButton(text="Nom / Titre", callback_data="al_create_edit:name")],
     ]
 
     # Pour les BD/Comics ou si un ISBN est présent
     if category_slug == CategorySlug.BD_COMICS.value or isbn:
-        isbn_str = f" ({isbn})" if isbn else ""
-        buttons.append([
-            InlineKeyboardButton(text=f"ISBN{isbn_str}", callback_data="al_create_edit:isbn")
-        ])
+        buttons.append(
+            [InlineKeyboardButton(text="ISBN", callback_data="al_create_edit:isbn")]
+        )
 
     buttons.extend([
-        [
-            InlineKeyboardButton(
-                text=f"Prix maximum ({current_price_str})", callback_data="al_create_edit:price"
-            )
-        ],
+        [InlineKeyboardButton(text="Prix maximum", callback_data="al_create_edit:price")],
         [
             InlineKeyboardButton(
                 text="Mots-clés inclus", callback_data="al_create_edit:include_keywords"
@@ -255,11 +247,6 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
         [
             InlineKeyboardButton(
                 text="États acceptés", callback_data="al_create_edit:conditions"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="Changer de produit / Recommencer", callback_data="al_create_edit:restart"
             )
         ],
         [
@@ -287,9 +274,6 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
 
     if field == "back":
         await back_to_recap(callback, state)
-        return
-    if field == "restart":
-        await restart_from_scratch(callback, state)
         return
     if field == "menu":
         await edit_alert_creation_prompt(callback, state)
@@ -519,21 +503,3 @@ async def back_to_recap(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(recap_text, reply_markup=keyboard)
 
-
-@router.callback_query(F.data == "al_create_edit:restart")
-async def restart_from_scratch(
-    callback: CallbackQuery,
-    state: FSMContext,
-) -> None:
-    """Réinitialise et réaffiche le choix des catégories en éditant le message existant."""
-    await callback.answer()
-    await state.clear()
-    await state.set_state(AlertCreationState.waiting_for_category)
-    prompt_text = (
-        "🎯 <b>Création d'une nouvelle alerte</b>\n\n"
-        "Choisis la catégorie du produit que tu souhaites surveiller :"
-    )
-    if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(
-            prompt_text, reply_markup=get_category_selection_keyboard()
-        )

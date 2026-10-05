@@ -12,7 +12,12 @@ from app.services.ai.modules.negotiation import negotiation_module
 from app.services.ai.modules.profit_scoring import profit_scoring_module
 from app.services.ai.pipeline import AIPostAlertPipeline
 from app.services.ai.registry import AIRegistry
-from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
+from app.services.book_metadata_service import (
+    AUTORITE_OPENLIBRARY,
+    BookMetadata,
+    BookMetadataService,
+    BookResolution,
+)
 from tests.fakes_llm import FakeLLM, FlakyLLM
 
 PANCHAUD_EDITION = BookMetadata(
@@ -354,6 +359,80 @@ async def test_natural_add_skips_isbn_for_series_and_non_book_categories():
     assert res.isbn13 is None
     bnf.resolve_for_alert.assert_not_awaited()
     bnf.verify_isbn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_natural_add_detects_the_series_the_notice_reveals():
+    """Le moteur n'a pas vu la série : la notice numérotée la révèle, et l'ISBN tombe.
+
+    Sans détection, l'alerte se rattachait au volume 2 rendu par l'autorité — ISBN,
+    titre et mots-clés compris — alors que la demande visait la série entière.
+    """
+    mock_client = FakeLLM(
+        text={
+            "name": "Absolute Martian Manhunter",
+            "category_slug": "bd_comics",
+            "is_series": False,
+            "include_keywords": ["Absolute Martian Manhunter"],
+        }
+    )
+    volume_2 = BookMetadata(
+        title="Absolute Martian Manhunter Vol. 2",
+        author="Deniz Camp",
+        publisher="DC Comics",
+        isbn13="9781799510871",
+        source=AUTORITE_OPENLIBRARY,
+    )
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(return_value=BookResolution(best=volume_2))
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("Absolute Martian Manhunter")
+
+    assert res is not None
+    assert res.is_series is True
+    assert res.isbn13 is None
+    assert res.series_volumes == ["Tome 2"]
+    # Ce serait l'édition d'un tome, pas de la série.
+    assert res.edition_alternatives == []
+    # La provenance de l'ISBN abandonné ne s'affiche pas sous une alerte sans ISBN.
+    assert res.isbn_note is None
+    assert res.book_context is not None
+    assert res.book_context.is_series is True
+
+
+@pytest.mark.asyncio
+async def test_natural_add_keeps_the_isbn_when_a_tome_is_requested():
+    """« … Tome 2 » reste un tome : la détection ne s'applique pas."""
+    mock_client = FakeLLM(
+        text={
+            "name": "Absolute Martian Manhunter Tome 2",
+            "category_slug": "bd_comics",
+            "include_keywords": ["Absolute Martian Manhunter Tome 2"],
+        }
+    )
+    volume_2 = BookMetadata(
+        title="Absolute Martian Manhunter Vol. 2",
+        author="Deniz Camp",
+        publisher="DC Comics",
+        isbn13="9781799510871",
+    )
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(return_value=BookResolution(best=volume_2))
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("Absolute Martian Manhunter Tome 2")
+
+    assert res is not None
+    assert res.is_series is False
+    assert res.isbn13 == "9781799510871"
+    assert res.series_volumes == []
 
 
 @pytest.mark.asyncio

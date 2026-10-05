@@ -3,6 +3,7 @@
 import html
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +44,7 @@ from app.db.models.alert import Alert
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
+from app.domain.rules.series_detection import SeriesSignal, detect_series
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
@@ -50,6 +52,8 @@ from app.services.book_metadata_service import (
     IsbnVerdict,
     ambiguity_note,
     format_edition_fragments,
+    generate_recommended_keywords,
+    parse_query_title_and_author,
     provenance_note,
 )
 from app.utils.isbn import extract_clean_isbn
@@ -64,6 +68,33 @@ logger = logging.getLogger(__name__)
 # réintroduire : il ne dépend ni du chemin ni du geste, donc deux rendus de la même
 # fiche restent identiques.
 RECAP_TITLE = "➕ <b>Créer une alerte</b>"
+
+# Ligne d'une série que le moteur a reconnue lui-même, sans numéro de tome à énumérer.
+DEFAULT_SERIES_LINE = "Série multi-tomes — surveillance par tome"
+
+# Au-delà, la ligne de récap deviendrait un pavé : on annonce le compte.
+MAX_LISTED_VOLUMES = 6
+
+
+def series_note_for(volumes: Sequence[str]) -> str:
+    """Ligne de récap d'une série : les tomes repérés, et l'ISBN volontairement omis.
+
+    Les deux chemins d'ajout — saisie manuelle et `/add` en langage naturel —
+    l'utilisent, donc ils disent la même chose. La liste est bornée : un pavé de vingt
+    tomes ne se lit pas, et le compte suffit à décider.
+    """
+    if not volumes:
+        return DEFAULT_SERIES_LINE
+    if len(volumes) > MAX_LISTED_VOLUMES:
+        listed = ", ".join(volumes[:MAX_LISTED_VOLUMES])
+        return (
+            f"Série multi-tomes détectée — {len(volumes)} tomes repérés ({listed}, …) "
+            "— veille sur tous les tomes, sans ISBN."
+        )
+    return (
+        f"Série multi-tomes détectée ({', '.join(volumes)}) "
+        "— veille sur tous les tomes, sans ISBN."
+    )
 
 
 def _get_alert_repo(session: Any) -> Any:
@@ -139,6 +170,7 @@ def format_semi_auto_recap(
     conditions: list[str] | None = None,
     variants: list[str] | None = None,
     is_series: bool = False,
+    series_note: str | None = None,
     isbn_note: str | None = None,
     edition_alternatives: list[dict[str, Any]] | None = None,
     keyword_note: str | None = None,
@@ -178,7 +210,7 @@ def format_semi_auto_recap(
 
     lines.append(f"<b>{FIELD_TITLE} :</b> {html.escape(title)}")
     if is_series:
-        lines.append("Série multi-tomes — surveillance par tome")
+        lines.append(series_note or DEFAULT_SERIES_LINE)
     if author:
         lines.append(f"<b>{FIELD_AUTHOR} :</b> {html.escape(author)}")
     if publisher:
@@ -418,6 +450,7 @@ def recap_from_state(data: dict[str, Any]) -> str:
         conditions=data.get("selected_conditions"),
         variants=data.get("variants"),
         is_series=data.get("is_series", False),
+        series_note=data.get("series_note"),
         isbn_note=data.get("isbn_note"),
         edition_alternatives=data.get("edition_alternatives"),
         # La note accompagne le brouillon plutôt que l'appel : changer d'édition ou
@@ -779,11 +812,28 @@ async def process_bd_query_lookup(
     # trouvées sont proposées au choix. Même règle que le `/add` en langage naturel.
     ambiguous = resolution.is_ambiguous
     note = ambiguity_note(resolution) if ambiguous else None
+    # Une notice qui porte un numéro de tome alors que la saisie n'en demande aucun
+    # décrit un volume, pas l'œuvre : c'est la preuve d'une série. Rien de neuf n'est
+    # interrogé — tout est déjà dans la résolution qu'on tient en main.
+    query_title = parse_query_title_and_author(clean_query)[0]
+    series = (
+        SeriesSignal()
+        if ambiguous
+        else detect_series(
+            query_title=query_title,
+            notices=[meta.title, *(alt.title for alt in resolution.alternatives)],
+        )
+    )
 
-    # GARDE ANTI-DOUBLON APRÈS RÉSOLUTION BNF
+    # GARDE ANTI-DOUBLON APRÈS RÉSOLUTION BNF. Une série n'a pas d'ISBN : c'est le
+    # titre qui la dédouble, sinon deux volumes seraient deux alertes.
     if db_user and not ambiguous:
         alert_repo = _get_alert_repo(db_session)
-        existing = await alert_repo.find_existing(db_user.id, isbn=meta.isbn13, title=meta.title)
+        existing = await alert_repo.find_existing(
+            db_user.id,
+            isbn=None if series.is_series else meta.isbn13,
+            title=query_title if series.is_series else meta.title,
+        )
         if existing:
             await render_existing_alert_response(
                 event,
@@ -799,26 +849,41 @@ async def process_bd_query_lookup(
     category = await category_repo.get_by_slug(CategorySlug.BD_COMICS.value)
     cat_id_str = str(category.id) if category else ""
 
+    # Une alerte de série porte le titre demandé, pas celui d'un volume : l'inclusion
+    # dérivée de « … vol 2 » ne verrait jamais le tome 3. Les mots-clés sont donc
+    # recalculés sur le titre de la série, en CPU, sans requête supplémentaire.
+    if series.is_series:
+        name = query_title
+        includes, excludes, variants = generate_recommended_keywords(query_title, meta.author)
+    else:
+        name = meta.title
+        includes = meta.recommended_includes
+        excludes = [] if ambiguous else meta.recommended_excludes
+        variants = [] if ambiguous else meta.recommended_variants
+
     await state.update_data(
         category_id=cat_id_str,
         category_slug=CategorySlug.BD_COMICS.value,
-        name=meta.title,
-        isbn=None if ambiguous else meta.isbn13,
+        name=name,
+        isbn=None if (ambiguous or series.is_series) else meta.isbn13,
         author=None if ambiguous else meta.author,
         publisher=None if ambiguous else meta.publisher,
-        include_keywords=meta.recommended_includes,
-        exclude_keywords=[] if ambiguous else meta.recommended_excludes,
-        variants=[] if ambiguous else meta.recommended_variants,
+        include_keywords=includes,
+        exclude_keywords=excludes,
+        variants=variants,
         selected_conditions=list(DEFAULT_BD_CONDITIONS),
         isbn_note=note,
+        is_series=series.is_series,
+        series_note=series_note_for(series.volumes) if series.is_series else None,
         work_choices=(
             [work.model_dump() for work in resolution.work_choices()] if ambiguous else []
         ),
         # Les éditions concurrentes sont celles de la résolution qu'on tient déjà en
         # main : une seconde requête BNF n'ajouterait rien, et les homonymes d'un
-        # titre ambigu ne seraient pas des éditions de l'œuvre demandée.
+        # titre ambigu ne seraient pas des éditions de l'œuvre demandée. Une série
+        # n'en a pas non plus : chaque « édition » y serait celle d'un tome.
         edition_alternatives=(
-            [] if ambiguous else build_edition_choices(resolution)
+            [] if (ambiguous or series.is_series) else build_edition_choices(resolution)
         ),
     )
 
@@ -832,15 +897,23 @@ async def process_bd_query_lookup(
 
     # Demander le prix max
     await state.set_state(AlertCreationState.waiting_for_max_price)
+    identity_lines = [f"📚 <b>{html.escape(name)}</b>"]
+    if series.is_series:
+        # Une série n'affiche pas d'ISBN : c'est le choix, pas un oubli.
+        identity_lines.append(f"📖 {html.escape(series_note_for(series.volumes))}")
+    identity_lines.append(f"✍️ <b>Auteur :</b> {html.escape(meta.author or 'Non spécifié')}")
+    if not series.is_series:
+        identity_lines.append(
+            f"🏢 <b>Éditeur :</b> {html.escape(meta.publisher or 'Non spécifié')}"
+        )
+        identity_lines.append(f"🔢 <b>ISBN :</b> <code>{meta.isbn13 or 'Non trouvé'}</code>")
     prompt = (
-        f"📚 <b>{html.escape(meta.title)}</b>\n"
-        f"✍️ <b>Auteur :</b> {html.escape(meta.author or 'Non spécifié')}\n"
-        f"🏢 <b>Éditeur :</b> {html.escape(meta.publisher or 'Non spécifié')}\n"
-        f"🔢 <b>ISBN :</b> <code>{meta.isbn13 or 'Non trouvé'}</code>\n\n"
-        f"🔑 <b>Inclus :</b> {', '.join(meta.recommended_includes)}\n"
-        f"🚫 <b>Exclus :</b> {', '.join(meta.recommended_excludes)}\n"
-        "💎 <b>États :</b> Neuf avec étiquette, Neuf sans étiquette, Très bon état\n\n"
-        "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
+        "\n".join(identity_lines)
+        + "\n\n"
+        + f"🔑 <b>Inclus :</b> {', '.join(includes)}\n"
+        + f"🚫 <b>Exclus :</b> {', '.join(excludes)}\n"
+        + "💎 <b>États :</b> Neuf avec étiquette, Neuf sans étiquette, Très bon état\n\n"
+        + "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
     )
     await status_msg.edit_text(prompt)
 

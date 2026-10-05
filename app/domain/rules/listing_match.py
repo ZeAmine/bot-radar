@@ -9,6 +9,7 @@ from app.core.constants import (
     AlertStatus,
 )
 from app.db.models.alert import Alert
+from app.domain.rules.keyword_hygiene import is_degenerate_exclusion, is_degenerate_variant
 from app.utils.text import contains_keyword, contains_normalized_keyword, normalize_text
 
 
@@ -235,11 +236,31 @@ def carries_foreign_isbn(variant: str, alert_isbn: str | None) -> bool:
 
 
 def usable_variants(alert_variants: list[str] | None, alert_isbn: str | None) -> list[str]:
-    """Variantes de l'alerte qui peuvent la valider, ISBN étranger retiré."""
+    """Variantes de l'alerte qui peuvent la valider, ISBN étranger retiré.
+
+    Le filtrage vaut aussi pour les alertes **déjà enregistrées** : une variante
+    dégénérée (« … 2a ») héritée d'une ancienne énumération du moteur ne peut plus
+    valider d'annonce, sans migration ni réécriture en base.
+    """
     return [
         variant
         for variant in (alert_variants or [])
-        if variant and not carries_foreign_isbn(variant, alert_isbn)
+        if variant
+        and not carries_foreign_isbn(variant, alert_isbn)
+        and not is_degenerate_variant(variant)
+    ]
+
+
+def usable_exclusions(alert_exclusions: list[str] | None) -> list[str]:
+    """Exclusions capables de trancher : ni chiffre nu, ni lettre seule.
+
+    Équivalent de `usable_variants` en lecture : une exclusion « 1 » stockée par une
+    ancienne version ne peut plus rejeter toute annonce contenant un chiffre.
+    """
+    return [
+        exclusion
+        for exclusion in (alert_exclusions or [])
+        if exclusion and not is_degenerate_exclusion(exclusion)
     ]
 
 
@@ -542,7 +563,9 @@ def evaluate_listing_against_alert(
         )
 
     # Vérification des mots-clés exclus configurés par l'utilisateur (avec extension multilingue)
-    expanded_user_excludes = expand_exclusions_multilingual(alert.exclude_keywords)
+    expanded_user_excludes = expand_exclusions_multilingual(
+        usable_exclusions(alert.exclude_keywords)
+    )
     user_hit = first_matching_exclusion(searchable_text, expanded_user_excludes)
     if user_hit:
         return MatchResult(

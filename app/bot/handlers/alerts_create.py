@@ -21,6 +21,7 @@ from app.bot.handlers.alerts_helpers import (
     process_bd_query_lookup,
     process_tech_or_clothes_query,
     render_existing_alert_response,
+    series_note_for,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
 from app.bot.labels import format_conditions, format_price_cents
@@ -40,6 +41,7 @@ from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.category_repo import CategoryRepository
+from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.keyword_variants import (
     KeywordVariantsOutcome,
     keyword_variants_module,
@@ -256,9 +258,9 @@ async def _search_keywords_in_background(
 
     updated = {
         **snapshot,
-        "variants": outcome.variants,
-        "exclude_keywords": _merge_keywords(
-            snapshot.get("exclude_keywords"), outcome.exclusions
+        "variants": sanitize_variants(outcome.variants, name),
+        "exclude_keywords": sanitize_exclusions(
+            _merge_keywords(snapshot.get("exclude_keywords"), outcome.exclusions), name
         ),
         # La note et l'état de la recherche voyagent avec le brouillon : changer
         # d'édition ou de prix plus tard ne doit pas les perdre au re-rendu.
@@ -388,6 +390,9 @@ async def start_add_alert(
                 "category_slug": parsed.category_slug,
                 "isbn": parsed.isbn13,
                 "is_series": parsed.is_series,
+                "series_note": (
+                    series_note_for(parsed.series_volumes) if parsed.is_series else None
+                ),
                 "author": parsed.author,
                 "publisher": parsed.publisher,
                 "include_keywords": parsed.include_keywords or [parsed.name],
@@ -689,9 +694,11 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     finalized = outcome.answered
     updated_draft = {
         **data,
-        "variants": _merge_keywords(data.get("variants"), outcome.variants),
-        "exclude_keywords": _merge_keywords(
-            data.get("exclude_keywords"), outcome.exclusions
+        "variants": sanitize_variants(
+            _merge_keywords(data.get("variants"), outcome.variants), name
+        ),
+        "exclude_keywords": sanitize_exclusions(
+            _merge_keywords(data.get("exclude_keywords"), outcome.exclusions), name
         ),
         "keyword_note": _keyword_note(outcome),
         "keywords_finalized": finalized,
@@ -725,8 +732,10 @@ async def save_alert(
     author = data.get("author")
     publisher = data.get("publisher")
     includes = data.get("include_keywords", [])
-    excludes = data.get("exclude_keywords", [])
-    variants = data.get("variants", [])
+    # Dernier point de passage avant la base : une liste brute du moteur ne peut pas
+    # être stockée, même si un chemin amont a laissé passer une énumération.
+    excludes = sanitize_exclusions(data.get("exclude_keywords", []), name)
+    variants = sanitize_variants(data.get("variants", []), name)
     max_price = data.get("max_item_price_cents")
     conditions = data.get("selected_conditions") or (
         list(DEFAULT_BD_CONDITIONS)

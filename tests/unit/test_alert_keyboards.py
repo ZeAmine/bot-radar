@@ -26,17 +26,29 @@ def test_get_categories_keyboard():
 
 
 def test_get_category_selection_keyboard():
+    """Quatre catégories, et rien d'autre : le bouton « Annuler » n'y est plus.
+
+    L'écran n'engage encore rien, et son échappatoire est `/cancel`. Le clavier rendu
+    est inspecté libellé par libellé, pas par la seule présence d'un callback.
+    """
     from app.bot.keyboards.alerts import get_category_selection_keyboard
 
     keyboard = get_category_selection_keyboard()
-    buttons = keyboard.inline_keyboard
-    assert len(buttons) == 5
-    callbacks = [row[0].callback_data for row in buttons]
-    assert "add_cat:bd_comics" in callbacks
-    assert "add_cat:tech" in callbacks
-    assert "add_cat:gaming" in callbacks
-    assert "add_cat:clothes" in callbacks
-    assert "alert_create_cancel" in callbacks
+    buttons = [button for row in keyboard.inline_keyboard for button in row]
+
+    assert [button.text for button in buttons] == [
+        "📚 Livres",
+        "💻 Électronique",
+        "🎮 Jeux Vidéo",
+        "👕 Vêtements",
+    ]
+    assert [button.callback_data for button in buttons] == [
+        "add_cat:bd_comics",
+        "add_cat:tech",
+        "add_cat:gaming",
+        "add_cat:clothes",
+    ]
+    assert not any(button.callback_data == "alert_create_cancel" for button in buttons)
 
 
 def test_get_conditions_toggle_keyboard():

@@ -75,6 +75,10 @@ class NaturalAddResult(BaseModel):
         default=None, description="ISBN-13 confirmé par la BNF pour l'ouvrage demandé"
     )
     is_series: bool = Field(default=False, description="True s'il s'agit d'une série multi-tomes")
+    series_volumes: list[str] = Field(
+        default_factory=list,
+        description="Tomes repérés quand la résolution révèle une œuvre numérotée",
+    )
     author: str | None = Field(default=None, description="Auteur identifié")
     publisher: str | None = Field(default=None, description="Éditeur ou collection identifié")
     include_keywords: list[str] = Field(default_factory=list, description="Mots-clés obligatoires")
