@@ -13,10 +13,7 @@ from aiogram.types import (
     Message,
 )
 
-from app.bot.keyboards.listings import (
-    get_dislike_confirmation_keyboard,
-    get_listing_alert_keyboard,
-)
+from app.bot.keyboards.listings import get_dislike_confirmation_keyboard
 from app.bot.labels import escape_html
 from app.db.models.listing import Listing
 from app.db.repositories.autotune_repo import record_listing_dislike
@@ -352,27 +349,28 @@ async def handle_dislike(
         category_slug=listing.category_slug,
     )
     if isinstance(callback.message, Message):
-        # Le clavier est remplacé sur le message d'annonce, sans texte nouveau :
-        # sous une légende qui ne dit rien du signalement, « Confirmer » se
-        # lisait comme une confirmation d'achat. Le toast, lui, disparaît en
-        # quelques secondes alors que le clavier reste — c'est le texte qui
-        # porte la question, pas le toast. Le clavier est restauré tel quel si
-        # l'édition du texte échoue : on préfère un clavier sans question à
-        # aucun clavier.
+        # La confirmation est un message à part, en réponse à l'annonce.
+        #
+        # Réutiliser le message d'annonce serait plus court : on y poserait le
+        # clavier, et son texte porterait la question. Mais ce message est la
+        # trace de l'annonce — son prix, sa cote, ses mots-clés — et cette
+        # légende n'est pas reconstructible ici : la cote et les mots-clés
+        # viennent de l'ingestion, pas du handler. Un « Annuler » ou un
+        # « Confirmer » laisserait donc l'écran bloqué sur la question, sans
+        # prix à jamais. Un message séparé se remplace, se supprime, et
+        # n'abîme rien : c'est le clavier du message d'annonce qui reste
+        # intact, avec son texte d'origine.
         confirmation_text = (
-            f"{escape_html(listing.title)}\n\n"
-            "Signaler cette annonce comme faux positif ?\n\n"
-            "Cette annonce sera ignorée pour cette alerte."
+            f"Signaler cette annonce comme faux positif ?\n\n"
+            f"{escape_html(listing.title)}\n"
+            "Elle sera ignorée pour cette alerte."
         )
-        try:
-            await callback.message.edit_text(
+        with contextlib.suppress(Exception):
+            await callback.message.reply(
                 text=confirmation_text,
                 reply_markup=confirm_kb,
                 disable_web_page_preview=True,
             )
-        except Exception:
-            with contextlib.suppress(Exception):
-                await callback.message.edit_reply_markup(reply_markup=confirm_kb)
 
     await callback.answer("Confirmer le faux positif ?")
 
@@ -400,14 +398,11 @@ async def handle_confirm_dislike(
     await db_session.commit()
 
     if listing and isinstance(callback.message, Message):
-        updated_kb = get_listing_alert_keyboard(
-            listing_id=listing.id,
-            listing_url=listing.url,
-            category_slug=listing.category_slug,
-            is_disliked=True,
-        )
+        # Le message de confirmation se termine ici : on le supprime pour ne pas
+        # laisser une question sans réponse au-dessus du fil. Le message
+        # d'annonce, lui, garde son texte et son clavier.
         with contextlib.suppress(Exception):
-            await callback.message.edit_reply_markup(reply_markup=updated_kb)
+            await callback.message.delete()
 
     await callback.answer(
         "👎 Faux positif enregistré ! L'IA l'utilisera pour auto-nettoyer vos alertes.",
@@ -425,26 +420,24 @@ async def handle_confirm_dislike(
 
 
 @router.callback_query(F.data.startswith("cancel_dislike:"))
-async def handle_cancel_dislike(
-    callback: CallbackQuery,
-    db_session: Any,
-) -> None:
-    """Annule la demande de faux positif et restaure le clavier initial."""
+async def handle_cancel_dislike(callback: CallbackQuery) -> None:
+    """Annule la demande de faux positif et referme l'écran de confirmation.
+
+    Le message d'annonce n'a jamais été modifié : il n'y a rien à restaurer.
+    Seul le message de confirmation est supprimé. Le paramètre `db_session` a
+    disparu avec la lecture qui servait à reconstruire le clavier — l'injection
+    par le routeur reste tolérante, une signature plus courte ne casse rien.
+    """
     listing_id = await _parse_listing_id(callback)
     if listing_id is None:
         return
 
-    listing_repo = ListingRepository(db_session)
-    listing = await listing_repo.get_by_id(listing_id)
-
-    if listing and isinstance(callback.message, Message):
-        original_kb = get_listing_alert_keyboard(
-            listing_id=listing.id,
-            listing_url=listing.url,
-            category_slug=listing.category_slug,
-        )
+    if isinstance(callback.message, Message):
+        # Rien à restaurer : l'annonce n'a jamais été modifiée. Le message de
+        # confirmation disparaît, ce qui laisse le fil dans l'état où
+        # l'utilisateur était avant son appui.
         with contextlib.suppress(Exception):
-            await callback.message.edit_reply_markup(reply_markup=original_kb)
+            await callback.message.delete()
 
     await callback.answer("Annulé.")
 
