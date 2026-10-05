@@ -10,6 +10,9 @@ from __future__ import annotations
 from app.domain.rules.keyword_hygiene import (
     MAX_EXCLUSIONS,
     MAX_VARIANTS,
+    Reason,
+    assess_exclusions,
+    assess_variants,
     is_degenerate_exclusion,
     is_degenerate_variant,
     names_only_a_volume,
@@ -135,6 +138,94 @@ def test_degenerate_variant_does_not_flag_a_model_suffix():
     assert is_degenerate_variant("iphone 13mini") is False
     assert is_degenerate_variant("one piece 2a") is True
 
+
+def test_sanitize_is_the_values_of_assess():
+    """Les deux portes rendent le même verdict : l'une la liste, l'autre la motive.
+
+    C'est le contrat qui permet de ne plus avoir à rejouer la règle pour l'expliquer :
+    `sanitize_*` ne peut pas dire autre chose que `assess_*`.
+    """
+    values = ["absolute martian manhunter 2a", "tome 2", "9782864971412"]
+    pairs = (
+        (assess_variants, sanitize_variants),
+        (assess_exclusions, sanitize_exclusions),
+    )
+    for assess, sanitize in pairs:
+        outcome = assess(values, TITRE_NUMEROTE)
+        assert outcome.values == sanitize(values, TITRE_NUMEROTE)
+        # Les positions gardées préservent l'ordre d'entrée : sans quoi le
+        # nettoyeur devrait les reconstruire, et le faire par valeur.
+        assert list(outcome.kept_indexes) == sorted(outcome.kept_indexes)
+
+
+def test_every_removed_term_carries_a_reason():
+    """Aucun retrait sans motif : c'est l'invariant qui autorise une écriture.
+
+    Un terme écarté sans raison laisserait l'utilisateur approuver une suppression sur
+    une explication absente, ce qui est le pire des deux mondes.
+    """
+    outcome = assess_variants(
+        ["absolute martian manhunter 2a", "", "9782864971412", "  ", "tome 2", "tome 2"],
+        TITRE_NUMEROTE,
+    )
+
+    assert outcome.removals
+    assert all(isinstance(removal.reason, Reason) for removal in outcome.removals)
+    assert {r.raw for r in outcome.removals} >= {"", "  ", "9782864971412"}
+
+
+def test_kept_indexes_and_removals_partition_the_input():
+    """Chaque terme est gardé ou retiré : jamais les deux, jamais aucun des deux."""
+    values = ["tome 2", "absolute martian manhunter 2a", "", "tome 2", "tome 3"]
+    outcome = assess_variants(values, TITRE_NUMEROTE)
+
+    removed_indexes = {r.index for r in outcome.removals}
+    assert set(outcome.kept_indexes) | removed_indexes == set(range(len(values)))
+    assert not set(outcome.kept_indexes) & removed_indexes
+
+
+def test_the_reason_names_the_filter_that_decided():
+    """Chaque motif est rattaché au filtre correspondant, pas seulement présent."""
+    outcome = assess_variants(["absolute martian manhunter 2a", "", "x" * 50], TITRE_NUMEROTE)
+    reasons = {r.reason for r in outcome.removals}
+
+    assert Reason.ENUMERATION in reasons
+    assert Reason.EMPTY in reasons
+
+
+def test_a_volume_exclusion_carries_its_own_reason():
+    """La règle du tome voisin motive elle aussi, sans qu'aucun appelant change.
+
+    C'est l'invariant qui a coûté le moins cher, vérifié sur le cas qui l'a mis à
+    l'épreuve : la règle d'ADR-030 est apparue **après** le nettoyeur, et
+    `scripts/clean_alert_keywords.py` n'a reçu aucune ligne pour la connaître. Elle
+    affiche pourtant « n'ajoute au titre qu'un numéro de tome » parce que le motif est
+    écrit là où la décision se prend.
+    """
+    outcome = assess_exclusions(["absolute martian manhunter #2"], "Absolute Martian Manhunter")
+
+    assert outcome.values == []
+    assert [removal.reason for removal in outcome.removals] == [Reason.VOLUME_ONLY]
+    # Le motif dépend du titre : `--only-degenerate` ne le franchit donc pas.
+    assert Reason.VOLUME_ONLY.is_degenerate is False
+
+
+def test_only_the_rule_decides_what_counts_as_degenerate():
+    """`is_degenerate` est la frontière que `--only-degenerate` refuse de franchir.
+
+    Les motifs issus du titre, d'un doublon ou du plafond ne sont pas dégénérés : ils
+    dépendent du contexte, donc ils ne sont pas jouables sur une liste qu'on relit sans
+    son contexte.
+    """
+    # Un titre sans rapport avec les termes : seul le doublon et le plafond peuvent
+    # décider, sinon la règle du titre parlerait avant eux.
+    values = ["tome 2", "tome 2", *[f"tome {n}" for n in range(3, MAX_VARIANTS + 4)]]
+    outcome = assess_variants(values, "Absolute Martian Manhunter")
+
+    kinds = {r.reason for r in outcome.removals}
+    assert Reason.DUPLICATE in kinds or Reason.LIMIT in kinds
+    contextual = {Reason.DUPLICATE, Reason.LIMIT}
+    assert not any(kind.is_degenerate for kind in kinds & contextual)
 
 def test_exclusion_that_only_appends_a_volume_number_is_dropped():
     """Le cas réel : le titre plus un numéro n'identifie aucune confusion.

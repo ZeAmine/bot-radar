@@ -23,6 +23,7 @@ import clean_alert_keywords as cck  # noqa: E402
 
 from app.core.constants import AlertStatus  # noqa: E402
 from app.db.models.alert import Alert  # noqa: E402
+from app.domain.rules.keyword_hygiene import Reason  # noqa: E402
 
 INSTANT = datetime(2026, 10, 5, 19, 30, 0, tzinfo=UTC)
 
@@ -227,12 +228,12 @@ def test_the_diff_motives_every_removal():
     )
 
     plan = cck.plan_cleanup(alert)
-    motives = {r.term: r.reason for r in plan.removals}
+    motives = {r.raw: r.reason for r in plan.variant_removals + plan.exclusion_removals}
 
-    assert motives["absolute martian manhunter 2a"] == cck.REASON_ENUMERATION
-    assert motives["9782864971412"] == cck.REASON_ISBN
-    assert motives["1"] == cck.REASON_BARE_TOKEN
-    assert motives["x"] == cck.REASON_BARE_TOKEN
+    assert motives["absolute martian manhunter 2a"] == Reason.ENUMERATION
+    assert motives["9782864971412"] == Reason.ISBN
+    assert motives["1"] == Reason.BARE_TOKEN
+    assert motives["x"] == Reason.BARE_TOKEN
 
 
 def test_the_diff_shows_the_lists_around_each_removal():
@@ -249,7 +250,10 @@ def test_the_diff_shows_the_lists_around_each_removal():
     assert "exclusions : 2 → 1" in report
     assert "avant : coffret vide, 1" in report
     assert "après : coffret vide" in report
-    assert f"{cck.RED}-1{cck.RESET}  {cck.DIM}{cck.REASON_BARE_TOKEN}{cck.RESET}" in report
+    assert (
+        f"{cck.RED}-1{cck.RESET}  {cck.DIM}{Reason.BARE_TOKEN.value}{cck.RESET}"
+        in report
+    )
 
 
 def test_only_degenerate_never_consults_the_title():
@@ -283,7 +287,10 @@ def test_only_degenerate_still_removes_a_term_degenerate_on_its_own():
 
     assert plan.variants_after == ()
     assert plan.exclusions_after == ()
-    assert all(removal.is_degenerate for removal in plan.removals)
+    assert all(
+        removal.reason.is_degenerate
+        for removal in plan.variant_removals + plan.exclusion_removals
+    )
 
 
 def test_only_degenerate_does_not_deduplicate():
@@ -385,5 +392,7 @@ def test_as_json_carries_the_motifs():
 
     assert payload["portee"] == "degenere"
     motifs = payload["alertes"][0]["motifs"]
-    assert {m["terme"]: m["raison"] for m in motifs}["1"] == cck.REASON_BARE_TOKEN
-    assert all(m["degenere"] for m in motifs)
+    assert {m["terme"]: m["raison"] for m in motifs["exclusions"]}["1"] == (
+        Reason.BARE_TOKEN.value
+    )
+    assert all(m["degenere"] for m in motifs["variantes"] + motifs["exclusions"])
