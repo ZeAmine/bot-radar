@@ -209,3 +209,30 @@ def test_strip_html_tags_produces_readable_plain_text():
     assert plain == "🎯 Nom : PS5 & Switchprix 12 €"
     assert "<" not in plain
     assert "&amp;" not in plain
+
+
+def test_recap_says_an_unfound_isbn_instead_of_saying_nothing():
+    """L'absence d'ISBN est une information : elle s'affiche.
+
+    La ligne disparaissait, et le récap laissait croire à un oubli plutôt qu'à un
+    ouvrage que l'autorité ne catalogue pas — le cas même de la capture remontée.
+    """
+    recap = _recap(isbn=None, isbn_note=None)
+
+    assert "<b>ISBN :</b> introuvable — la BNF ne catalogue pas cet ouvrage" in recap
+
+
+def test_recap_distinguishes_a_series_that_chooses_not_to_use_one():
+    """Une série surveillée par son titre n'a pas d'ISBN : ce n'est pas un défaut."""
+    recap = _recap(isbn=None, is_series=True)
+
+    assert "<b>ISBN :</b> non utilized" not in recap
+    assert "<b>ISBN :</b> non utilisé — série multi-tomes" in recap
+    assert "introuvable" not in recap
+
+
+def test_recap_says_nothing_about_isbn_where_none_can_exist():
+    """Un objet n'a pas d'ISBN à chercher : la ligne n'aurait pas de sujet."""
+    recap = _recap(isbn=None, expects_isbn=False)
+
+    assert "<b>ISBN :</b>" not in recap
