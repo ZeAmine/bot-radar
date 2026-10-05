@@ -154,12 +154,14 @@ async def test_save_edited_field_value_updates_list():
     mock_alert = MagicMock(
         spec=Alert,
         id=alert_id,
-        name="Bleach",
         status=AlertStatus.ACTIVE,
         category=None,
         max_item_price_cents=1500,
         exclude_keywords=["tome 1", "coffret"],
     )
+    # `name=` passée à MagicMock nomme le mock, ce n'est pas l'attribut : le nettoyeur
+    # de mots-clés lit le titre de l'alerte, il doit donc être posé explicitement.
+    mock_alert.name = "Bleach"
     repo_mock = AsyncMock()
     repo_mock.get_by_id.return_value = mock_alert
     repo_mock.count_by_user.return_value = 1

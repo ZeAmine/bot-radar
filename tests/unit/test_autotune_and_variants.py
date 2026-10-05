@@ -80,7 +80,10 @@ async def test_handle_create_ai_variants():
         state.update_data.assert_called_once()
         updated_data = state.update_data.call_args[1]
         assert "onepiece" in updated_data["variants"]
-        assert "one piece tomes" in updated_data["variants"]
+        # « one piece tomes » répète le titre : le nettoyeur l'écarte, comme le fait
+        # déjà le module en amont. Une variante qui contient le titre n'ajoute rien,
+        # l'annonce qu'elle validerait contient déjà le mot-clé d'inclusion.
+        assert "one piece tomes" not in updated_data["variants"]
         assert "figurine" in updated_data["exclude_keywords"]
 
         # Doit afficher le message de chargement puis le récapitulatif mis à jour
@@ -488,9 +491,10 @@ async def test_handle_var_apply():
 
         # Les mots-clés obligatoires restent intacts
         assert alert.include_keywords == ["One Piece"]
-        # Les variantes sont ajoutées à alert.variants
+        # Les variantes sont ajoutées à alert.variants ; celle qui répète le titre est
+        # écartée au passage, comme le fait déjà le module en amont.
         assert "onepiece" in alert.variants
-        assert "one piece tomes" in alert.variants
+        assert "one piece tomes" not in alert.variants
         db_session.commit.assert_called_once()
 
         callback.answer.assert_called_once()
