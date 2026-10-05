@@ -17,7 +17,16 @@ from app.domain.rules.series_detection import detect_series
 
 VOLUME_2_TITLE = "Absolute Martian Manhunter Vol. 2"
 SERIES_TITLE = "Absolute Martian Manhunter"
+# Les deux codes réels rendus par le repli pour cette œuvre : l'édition de référence
+# (titre sans numéro) et le document du tome 2.
+ISBN_VOLUME_1 = "9781799505204"
 ISBN_VOLUME_2 = "9781799510871"
+
+# Cas BNF réel : les deux tomes ne se distinguent que par un numéro caché après le
+# sous-titre, que `clean_bnf_title` coupe. Le titre de base est le même des deux côtés.
+MANUEL_TITLE = "Manuel du cuisinier amateur"
+ISBN_MANUEL_1 = "9782812321344"
+ISBN_MANUEL_2 = "9782812321689"
 
 # --- Règle pure -----------------------------------------------------------------
 
@@ -163,19 +172,72 @@ async def _lookup(query: str, resolution: object) -> dict:
     return state.update_data.call_args.kwargs
 
 
-def _volume_2_resolution() -> object:
-    from app.services.book_metadata_service import BookMetadata, BookResolution
+def _notice(title: str, isbn13: str):
+    from app.services.book_metadata_service import BookMetadata
 
-    volume_2 = BookMetadata(
-        title=VOLUME_2_TITLE,
+    return BookMetadata(
+        title=title,
         author="Deniz Camp",
         publisher="DC Comics",
-        isbn13=ISBN_VOLUME_2,
-        recommended_includes=["absolute martian manhunter vol 2"],
+        isbn13=isbn13,
+        recommended_includes=[title.lower()],
         recommended_excludes=["roman"],
         recommended_variants=[],
     )
-    return BookResolution(best=volume_2)
+
+
+def _series_resolution() -> object:
+    """La forme RÉELLE du repli pour cette œuvre : deux documents, dont un numéroté.
+
+    La notice retenue — parce que son titre colle exactement à la saisie — ne porte
+    aucun numéro. Le document « Vol. 2 » n'est ni une édition (`_is_same_work` compare
+    les titres) ni un homonyme (`_is_homonym` exige un titre identique) : il était jeté,
+    et la série devenait invisible. Il est ici, dans `notice_titles`, comme la résolution
+    le rend désormais.
+    """
+    from app.services.book_metadata_service import BookResolution
+
+    return BookResolution(
+        best=_notice(SERIES_TITLE, ISBN_VOLUME_1),
+        notice_titles=(SERIES_TITLE, VOLUME_2_TITLE),
+    )
+
+
+def _volume_2_resolution() -> object:
+    """Une saisie qui vise le tome 2 : la notice retenue EST celle du volume."""
+    from app.services.book_metadata_service import BookResolution
+
+    return BookResolution(
+        best=_notice(VOLUME_2_TITLE, ISBN_VOLUME_2),
+        notice_titles=(VOLUME_2_TITLE,),
+    )
+
+
+def test_resolution_signal_reads_every_notice_the_authority_rendered():
+    """La preuve vit dans la notice voisine, jamais transmise : elle l'est maintenant.
+
+    C'était le défaut : `detect_series` ne recevait que le titre retenu — sans numéro —
+    donc l'œuvre numérotée passait pour un one-shot et l'alerte partait avec l'ISBN d'un
+    tome.
+    """
+    signal = _series_resolution().series_signal(SERIES_TITLE)
+
+    assert signal.is_series is True
+    assert signal.volumes == ("Tome 2",)
+
+
+def test_resolution_signal_stays_silent_on_an_ambiguous_resolution():
+    """Un titre qui désigne plusieurs œuvres ne prouve aucun tome : la garde est ici."""
+    from app.services.book_metadata_service import BookResolution
+
+    homonym = BookResolution(
+        best=_notice(SERIES_TITLE, ISBN_VOLUME_1),
+        other_works=[_notice(SERIES_TITLE, ISBN_VOLUME_2)],
+        notice_titles=(SERIES_TITLE, VOLUME_2_TITLE),
+    )
+
+    assert homonym.is_ambiguous is True
+    assert homonym.series_signal(SERIES_TITLE).is_series is False
 
 
 @pytest.mark.asyncio
@@ -183,7 +245,7 @@ async def test_creation_builds_a_series_alert_without_isbn():
     """La saisie ne vise aucun tome : le brouillon surveille la série, et le récap le dit."""
     from app.bot.handlers.alerts_helpers import recap_from_state
 
-    stored = await _lookup(SERIES_TITLE, _volume_2_resolution())
+    stored = await _lookup(SERIES_TITLE, _series_resolution())
 
     assert stored["is_series"] is True
     assert stored["isbn"] is None
@@ -202,6 +264,51 @@ async def test_creation_builds_a_series_alert_without_isbn():
     # utilisé : l'alerte n'a pas d'identifiant, mais elle ne fait pas croire à un oubli.
     recap = recap_from_state(stored)
     assert stored["series_note"] in recap
+    assert "<b>ISBN :</b> non utilisé — série multi-tomes" in recap
+    assert "<code>" not in recap, "aucun ISBN ne doit être rendu"
+
+
+def _manuel_resolution() -> object:
+    """La résolution BNF réelle de « Manuel du cuisinier amateur » : deux tomes.
+
+    Le titre de base ne porte aucun numéro — c'est `volume_title` qui le retient, après
+    que `clean_bnf_title` a coupé le sous-titre. Les deux notices sont donc éditions
+    « alternatives » du même titre, et c'est la détection de série qui doit trancher.
+    """
+    from app.services.book_metadata_service import BookResolution
+
+    tome_1 = _notice(MANUEL_TITLE, ISBN_MANUEL_1)
+    tome_1.volume_title = f"{MANUEL_TITLE} Tome 1"
+    tome_2 = _notice(MANUEL_TITLE, ISBN_MANUEL_2)
+    tome_2.volume_title = f"{MANUEL_TITLE} Tome 2"
+    return BookResolution(
+        best=tome_1,
+        alternatives=[tome_2],
+        notice_titles=(tome_1.volume_title, tome_2.volume_title),
+    )
+
+
+@pytest.mark.asyncio
+async def test_creation_builds_a_series_alert_from_tomes_hidden_in_the_subtitle():
+    """Tome 1 + tome 2 sous un même titre : alerte de série, sans ISBN.
+
+    C'est le cas réel « Manuel du cuisinier amateur » : deux notices BNF, même titre,
+    même éditeur, seul le numéro de tome — coupé avec le sous-titre — les distingue.
+    """
+    from app.bot.handlers.alerts_helpers import recap_from_state
+
+    stored = await _lookup(MANUEL_TITLE, _manuel_resolution())
+
+    assert stored["is_series"] is True
+    assert stored["isbn"] is None
+    assert stored["name"] == MANUEL_TITLE
+    assert stored["series_note"] == (
+        "Série multi-tomes détectée (Tome 1, Tome 2) — veille sur tous les tomes, sans ISBN."
+    )
+    # Plus de tomes proposés comme éditions concurrentes : ce seraient deux volumes.
+    assert stored["edition_alternatives"] == []
+
+    recap = recap_from_state(stored)
     assert "<b>ISBN :</b> non utilisé — série multi-tomes" in recap
     assert "<code>" not in recap, "aucun ISBN ne doit être rendu"
 

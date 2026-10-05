@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
+from app.domain.rules.series_detection import SeriesSignal, detect_series
 from app.utils.isbn import (
     is_valid_isbn,
     isbn10_to_isbn13,
@@ -78,6 +79,11 @@ class BookMetadata:
     source: str = AUTORITE_BNF
     publication_year: int | None = None
     format_detail: str | None = None
+    # Titre de la notice portant son numéro de tome, tel que la détection de série le
+    # lit (« … Tome 2 »). `None` quand la notice n'en porte aucun. C'est un titre de
+    # secours pour la seule détection : l'affichage, le score de similarité et le
+    # filtre de candidats restent sur `title`, le titre de base.
+    volume_title: str | None = None
 
 
 class EditionAlternative(BaseModel):
@@ -109,12 +115,33 @@ class BookResolution:
     en roman de 1989 et en BD de 2025. Les écarter en silence faisait passer le
     roman pour l'œuvre demandée, avec son ISBN, son auteur et son éditeur dans le
     récap.
+
+    `notice_titles` porte les titres que l'autorité a **réellement rendus** pour
+    cette recherche, notice retenue en tête, y compris ceux que ni `alternatives` ni
+    `other_works` ne retiennent. Une notice numérotée voisine (« Absolute Martian
+    Manhunter, Vol. 2 » quand on demande la série) n'est ni une édition du même
+    ouvrage ni un homonyme : elle était jetée, et sans elle une œuvre numérotée
+    passait pour un one-shot — l'alerte partait avec l'ISBN d'un tome
+    (`series_signal`).
     """
 
     best: BookMetadata
     alternatives: list[BookMetadata] = field(default_factory=list)
     other_works: list[BookMetadata] = field(default_factory=list)
     author_hint_match: AuthorHintMatch = "none"
+    notice_titles: tuple[str, ...] = ()
+
+    def series_signal(self, query_title: str) -> SeriesSignal:
+        """La résolution prouve-t-elle une œuvre numérotée que la saisie ne demande pas ?
+
+        Seul point d'entrée de la détection de série : il porte la garde d'ambiguïté,
+        donc aucune des deux voies d'ajout ne peut l'oublier. Une résolution ambiguë ne
+        prouve rien — les notices qu'elle hésite à départager sont des homonymes, pas
+        des tomes.
+        """
+        if self.is_ambiguous:
+            return SeriesSignal()
+        return detect_series(query_title=query_title, notices=self.notice_titles)
 
     @property
     def is_ambiguous(self) -> bool:
@@ -441,6 +468,45 @@ def clean_bnf_title(raw_title: str) -> str:
     return t
 
 
+# Marqueur explicite de tome, cherché **en fin** de sous-titre (« 150 recettes et
+# techniques. Tome 1 »). Le `\b` devant la lettre évite de confondre le « t » d'un mot
+# avec un marqueur, et un simple nombre en fin de sous-titre (« … 2022 ») n'en est pas
+# un : seule une forme nommée décrit un tome.
+_TOME_MARKER = re.compile(
+    r"\b(?:tomes?|t|vols?|volumes?|livres?|books?|parties?|parts?)\s*\d{1,4}\b\s*$",
+    re.IGNORECASE,
+)
+
+
+def clean_bnf_series_title(raw_title: str) -> str:
+    """Titre de la notice avec son numéro de tome, quand le sous-titre le portait.
+
+    `clean_bnf_title` coupe tout ce qui suit « : » — sous-titre **et** numéro de tome :
+    « Manuel du cuisinier amateur : 150 recettes et techniques. Tome 1 » devenait
+    « Manuel du cuisinier amateur », indistinguable du tome 2. Deux tomes passaient
+    alors pour deux éditions d'un one-shot, et l'alerte partait avec l'ISBN de l'un
+    d'eux (ADR-025).
+
+    Ici, le titre de base reste celui de `clean_bnf_title` — c'est lui qui porte
+    l'affichage, le score de similarité et le filtre de candidats — et seul le marqueur
+    de tome explicitement présent dans le sous-titre lui est ré-appendé. Un sous-titre
+    sans marqueur rend le titre de base inchangé.
+    """
+    base = clean_bnf_title(raw_title)
+    without_author = raw_title.strip()
+    if " / " in without_author:
+        without_author = without_author.split(" / ")[0].strip()
+    prefix, separator, subtitle = without_author.partition(" : ")
+    # Base trop courte pour nommer l'œuvre : `clean_bnf_title` a gardé le titre entier,
+    # il n'y a rien à ré-appender sans le dupliquer.
+    if not separator or len(prefix.strip()) < 3:
+        return base
+    marker = _TOME_MARKER.search(subtitle.strip())
+    if not marker:
+        return base
+    return f"{base} {marker.group(0).strip()}"
+
+
 def clean_bnf_creator(raw_creator: str) -> str:
     """Formate le créateur BNF ('Nom, Prénom (dates). Fonction' -> 'Prénom Nom').
 
@@ -701,6 +767,14 @@ class BookMetadataService:
             alternatives=alternatives,
             other_works=other_works,
             author_hint_match=self._author_hint_match(best, author_hint),
+            # La preuve d'une série est portée par le titre qui garde son numéro de
+            # tome : la notice retenue ne l'a pas toujours, le sous-titre peut le
+            # cacher.
+            notice_titles=tuple(
+                dict.fromkeys(
+                    record.volume_title or record.title for record in candidates
+                )
+            ),
         )
 
     @staticmethod
@@ -941,6 +1015,10 @@ class BookMetadataService:
                     continue
 
                 main_title = clean_bnf_title(titles[0])
+                series_title = clean_bnf_series_title(titles[0])
+                # Le titre de secours n'est conservé que s'il apprend quelque chose : un
+                # marqueur de tome que le titre de base n'a plus.
+                volume_title = series_title if series_title != main_title else None
                 author_name = clean_bnf_creator(creators[0]) if creators else None
                 pub_name = clean_bnf_publisher(publishers[0]) if publishers else None
                 publication_year = _parse_year(dates[0]) if dates else None
@@ -993,6 +1071,7 @@ class BookMetadataService:
                     source=AUTORITE_BNF,
                     publication_year=publication_year,
                     format_detail=format_detail,
+                    volume_title=volume_title,
                 )
                 results.append((score, meta))
 
@@ -1041,6 +1120,9 @@ class BookMetadataService:
             alternatives=alternatives,
             other_works=other_works,
             author_hint_match=self._author_hint_match(best, author_hint),
+            notice_titles=tuple(
+                dict.fromkeys(work.meta.title for work in candidates)
+            ),
         )
 
     async def _openlibrary_works(self, params: dict[str, str]) -> list[_OpenLibraryWork]:

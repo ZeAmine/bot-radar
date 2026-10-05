@@ -142,12 +142,16 @@ def test_absent_exclusions_read_as_not_provided_not_zero():
 
 
 def test_price_line_puts_the_total_in_parentheses():
-    """« **Prix :** 4,00 € (**Total est. :** 7,78 €) » : le format demande, verrouille.
+    """« **Prix :** 4,00 € (7,78 € TTC) » : le format demandé, verrouillé.
 
-    Le libelle vit dans `labels`, pas dans chaque appelant : une future alerte
-    qui afficherait un total estime heritera du format sans le redemander.
+    Le libellé du total tient en trois lettres. « Total est. » était treize
+    caractères pour dire la même chose, et « estimé » se lisait comme un doute
+    sur un montant — protection et port sont, eux, parfaitement réels.
+
+    Le libellé vit dans `labels`, pas dans chaque appelant : une future alerte
+    qui afficherait un total héritera du format sans le redemander.
     """
-    assert format_price_line(400, 778) == ("<b>Prix :</b> 4,00 € (<b>Total est. :</b> 7,78 €)")
+    assert format_price_line(400, 778) == ("<b>Prix :</b> 4,00 € (7,78 € TTC)")
 
 
 def test_price_line_omits_an_unknown_total_rather_than_faking_one():
@@ -163,7 +167,7 @@ def test_price_line_uses_the_french_decimal_separator():
 def test_price_summary_delegates_to_the_charte():
     """Le calculateur calcule, la charte rend : un seul endroit ecrit la ligne."""
     assert format_price_summary(item_price_cents=400, estimated_total_cents=778) == (
-        "<b>Prix :</b> 4,00 € (<b>Total est. :</b> 7,78 €)"
+        "<b>Prix :</b> 4,00 € (7,78 € TTC)"
     )
 
 
@@ -270,9 +274,12 @@ def test_field_labels_are_bold_and_values_stay_roman():
     line = format_price_line(400, 778)
 
     assert "<b>Prix :</b>" in line
-    assert "<b>Total est. :</b>" in line
     assert "<b>4,00 €" not in line
     assert "<b>7,78 €" not in line
+    # « TTC » qualifie le montant, ce n'est pas le libellé d'un champ : le gras
+    # de « Prix : » ne déborde pas sur lui.
+    assert "TTC" in line
+    assert "<b>TTC</b>" not in line
 
 
 def test_alert_caption_bolds_labels_and_leaves_values_roman():

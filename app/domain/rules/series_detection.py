@@ -13,6 +13,13 @@ numéro donnent simplement « ce n'est pas une série prouvée ».
 
 Ce module ne décide pas de ce qu'on affiche : il rend un fait (`is_series`, les tomes
 repérés), la présentation du récap en fait une phrase.
+
+**Cette règle n'a jamais été fausse ; c'est son alimentation qui l'était.** Elle ne
+lisait qu'une notice — celle que la résolution retenait — alors que la preuve vivait
+souvent dans la notice voisine, jetée par la résolution. `BookResolution.series_signal`
+lui passe désormais tous les titres rendus par l'autorité. Une correction de ce côté-ci
+ne servirait à rien : ne pas « réparer » une règle qui lit correctement ce qu'on lui
+donne.
 """
 
 from __future__ import annotations

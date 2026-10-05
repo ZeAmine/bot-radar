@@ -76,12 +76,14 @@ FIELD_STATUS = "Statut"
 FIELD_TITLE = "Titre"
 FIELD_AUTHOR = "Auteur"
 FIELD_PUBLISHER = "Éditeur"
+FIELD_EDITION = "Édition"
 FIELD_PERIOD = "Période"
 FIELD_PRICE = "Prix"
-# « Total est. » et non « Total estimé » : le montant n'est pas un prix
-# Vinted mais notre calcul (article + protection + port), et l'abréviation
-# tient la ligne sans la tronquer sur un téléphone.
-FIELD_ESTIMATED_TOTAL = "Total est."
+# Le total qui suit le prix n'a pas de libellé : « TTC » suffit, et il tient la
+# ligne sans la tronquer sur un téléphone. « Total estimé » y était long de
+# treize caractères pour dire la même chose — et « estimé » se lit comme un doute
+# sur le montant, alors que la protection et le port sont, eux, bien réels.
+TOTAL_SUFFIX_TTC = "TTC"
 FIELD_FALSE_POSITIVES = "Faux positifs analysés"
 FIELD_SUGGESTED_EXCLUDES = "Mots-clés exclus suggérés"
 FIELD_SUGGESTED_EXCLUDES_CUSTOM = "Mots-clés exclus suggérés (personnalisés)"
@@ -176,19 +178,26 @@ def format_price_line(
     item_price_cents: int,
     estimated_total_cents: int | None = None,
 ) -> str:
-    """Ligne de prix unique du bot : « **Prix :** 4,00 € (**Total est. :** 7,78 €) ».
+    """Ligne de prix unique du bot : « **Prix :** 4,00 € (7,78 € TTC) ».
 
     Règle de charte, valable pour toutes les alertes et tous les messages
-    futurs : le prix de l'annonce d'abord, le total estimé entre parenthèses.
-    Seuls les libellés sont gras (règle 1 de la charte) ; les montants restent
-    en romain. Sans total connu, la ligne se réduit au prix — elle n'invente rien
-    et ne laisse pas de parenthèse vide derrière elle.
+    futurs : le prix de l'annonce d'abord, le total entre parenthèses, marqué
+    « TTC » et non d'un libellé.
+
+    « TTC » reste en romain avec les montants : il qualifie le total, il n'est
+    pas le libellé d'un champ (règle 1 — seuls « Prix : » est gras). Le montant
+    reste affiché même si l'écart de marché se calcule sur lui : sans lui, un
+    écart de +0,42 € sur un prix de 20,00 € ne se recompose plus à l'œil et passe
+    pour une erreur de calcul.
+
+    Sans total connu, la ligne se réduit au prix — elle n'invente rien et ne
+    laisse pas de parenthèse vide derrière elle.
     """
     price = format_price_cents(item_price_cents)
     if estimated_total_cents is None:
         return f"<b>{FIELD_PRICE} :</b> {price}"
     total = format_price_cents(estimated_total_cents)
-    return f"<b>{FIELD_PRICE} :</b> {price} (<b>{FIELD_ESTIMATED_TOTAL} :</b> {total})"
+    return f"<b>{FIELD_PRICE} :</b> {price} ({total} {TOTAL_SUFFIX_TTC})"
 
 
 def escape_html(value: str | None) -> str:

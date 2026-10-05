@@ -52,7 +52,7 @@ def format_price_summary(
     fourni par Vinted, il est donc toujours présenté comme une estimation.
 
     Le rendu suit la charte (`app.bot.labels.format_price_line`) :
-    - "Prix : 15,00 € (Total est. : 19,33 €)"
+    - "Prix : 15,00 € (19,33 € TTC)"
     - "Prix : 15,00 €" (si le total est inconnu et le repli désactivé)
 
     Les formules ci-dessus ne sont pas touchées : seul l'écran change.

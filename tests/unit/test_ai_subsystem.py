@@ -19,6 +19,7 @@ from app.services.book_metadata_service import (
     BookResolution,
 )
 from tests.fakes_llm import FakeLLM, FlakyLLM
+from tests.unit.test_book_metadata_service import _FakeCatalogueClient
 
 PANCHAUD_EDITION = BookMetadata(
     title="La couleur des choses",
@@ -363,10 +364,13 @@ async def test_natural_add_skips_isbn_for_series_and_non_book_categories():
 
 @pytest.mark.asyncio
 async def test_natural_add_detects_the_series_the_notice_reveals():
-    """Le moteur n'a pas vu la série : la notice numérotée la révèle, et l'ISBN tombe.
+    """Le moteur n'a pas vu la série : la résolution la révèle, et l'ISBN tombe.
 
-    Sans détection, l'alerte se rattachait au volume 2 rendu par l'autorité — ISBN,
-    titre et mots-clés compris — alors que la demande visait la série entière.
+    Forme réelle du repli pour cette œuvre : l'autorité rend deux documents, dont un
+    numéroté. La notice retenue — celle dont le titre colle exactement à la saisie — ne
+    porte aucun numéro, et le document « Vol. 2 » n'est ni une édition ni un homonyme,
+    donc la résolution ne le retenait nulle part. Sans `notice_titles`, la série restait
+    invisible et l'alerte partait avec l'ISBN d'un tome, titre et mots-clés compris.
     """
     mock_client = FakeLLM(
         text={
@@ -376,15 +380,23 @@ async def test_natural_add_detects_the_series_the_notice_reveals():
             "include_keywords": ["Absolute Martian Manhunter"],
         }
     )
-    volume_2 = BookMetadata(
-        title="Absolute Martian Manhunter Vol. 2",
+    retained = BookMetadata(
+        title="Absolute Martian Manhunter",
         author="Deniz Camp",
         publisher="DC Comics",
-        isbn13="9781799510871",
+        isbn13="9781799505204",
         source=AUTORITE_OPENLIBRARY,
     )
     bnf = MagicMock(spec=BookMetadataService)
-    bnf.resolve_for_alert = AsyncMock(return_value=BookResolution(best=volume_2))
+    bnf.resolve_for_alert = AsyncMock(
+        return_value=BookResolution(
+            best=retained,
+            notice_titles=(
+                "Absolute Martian Manhunter",
+                "Absolute Martian Manhunter, Vol. 2",
+            ),
+        )
+    )
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
@@ -402,6 +414,59 @@ async def test_natural_add_detects_the_series_the_notice_reveals():
     assert res.isbn_note is None
     assert res.book_context is not None
     assert res.book_context.is_series is True
+
+
+@pytest.mark.asyncio
+async def test_natural_add_reads_the_series_from_the_real_fallback_resolution():
+    """Bout en bout : seul le client HTTP est simulé, la résolution est celle du dépôt.
+
+    Le maillon qui manquait n'était ni la règle de détection ni le modèle, mais la notice
+    voisine que la résolution jetait. Ce test traverse la vraie résolution de repli, la
+    vraie détection et le vrai module : il ne peut pas passer si l'un des trois reperd la
+    preuve.
+    """
+    mock_client = FakeLLM(
+        text={
+            "name": "Absolute Martian Manhunter",
+            "category_slug": "bd_comics",
+            "is_series": False,
+            "include_keywords": ["Absolute Martian Manhunter"],
+        }
+    )
+    http = _FakeCatalogueClient(
+        bnf_empty=True,
+        openlibrary_docs=[
+            {
+                "title": "Absolute Martian Manhunter",
+                "author_name": ["Deniz Camp"],
+                "publisher": ["DC Comics"],
+                "first_publish_year": 2025,
+                "isbn": ["9781799505204"],
+            },
+            {
+                "title": "Absolute Martian Manhunter, Vol. 2",
+                "author_name": ["Deniz Camp"],
+                "publisher": ["DC Comics"],
+                "first_publish_year": 2026,
+                "isbn": ["9781799510871"],
+            },
+        ],
+    )
+
+    with (
+        patch.object(natural_add_module, "client", mock_client),
+        patch(
+            "app.services.book_metadata_service.get_shared_http_client",
+            return_value=http,
+        ),
+    ):
+        res = await natural_add_module.parse_prompt("Absolute Martian Manhunter, 10€")
+
+    assert res is not None
+    assert res.is_series is True
+    assert res.isbn13 is None
+    assert res.series_volumes == ["Tome 2"]
+    assert res.name == "Absolute Martian Manhunter"
 
 
 @pytest.mark.asyncio

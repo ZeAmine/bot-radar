@@ -270,7 +270,7 @@ def test_get_alert_confirmation_keyboard_hides_edition_when_there_is_no_choice()
     """Une édition isolée n'a pas de bouton : il n'y a rien à choisir.
 
     Le bouton `1️⃣ les Arènes - 2023` d'une seule édition n'opposerait rien à rien,
-    et le récap ne montre déjà pas la ligne « Édition suivie » sous ce seuil
+    et le récap ne montre déjà pas la ligne « Édition » sous ce seuil
     (`format_edition_line`). Les deux rendus doivent raconter la même chose : pas de
     choix, donc aucun bouton.
     """
@@ -341,7 +341,7 @@ def test_build_edition_labels_names_publisher_then_year():
     """Le libellé d'une édition, c'est son éditeur puis son millésime : ce qui la situe.
 
     Le format de notice BNF (« ill. en coul. ») n'entre pas dans un bouton : il est
-    réservé à la ligne « Édition suivie », où la place ne manque pas.
+    réservé à la ligne « Édition », où la place ne manque pas.
     """
     from app.bot.handlers.alerts_helpers import build_edition_labels
 
@@ -438,10 +438,10 @@ def test_format_edition_line_describes_the_followed_edition():
     ]
 
     assert format_edition_line(editions, "9782369903086") == [
-        "📖 <b>Édition suivie :</b> 2022 · Çà et là · 224 p. · 24 cm"
+        "<b>Édition :</b> 2022 · Çà et là · 224 p. · 24 cm"
     ]
     assert format_edition_line(editions, "9782369904151") == [
-        "📖 <b>Édition suivie :</b> Éditions poches · 224 p. · 19 cm"
+        "<b>Édition :</b> Éditions poches · 224 p. · 19 cm"
     ]
     # Le bruit purement décoratif de la notice ne pollue pas l'affichage
     assert "ill. en coul." not in "".join(
@@ -454,7 +454,7 @@ def test_format_edition_line_describes_the_followed_edition():
 
 
 def test_format_edition_line_hidden_without_choice():
-    """Sans édition concurrente, la carte n'ajoute pas de ligne « Édition suivie ».
+    """Sans édition concurrente, la carte n'ajoute pas de ligne « Édition ».
 
     L'ISBN est déjà affiché en tête de carte : il n'y a rien à recouper.
     """
@@ -478,6 +478,48 @@ def test_format_edition_line_hidden_when_editor_alone_would_repeat():
 
     assert format_edition_line(editions, "9782369904151") == []
 
+
+def test_recap_places_the_edition_line_between_publisher_and_max_price():
+    """« Édition » complète l'identité du livre : après « Éditeur », avant les critères.
+
+    Elle n'est plus rejetée en fin de carte : l'utilisateur recoupe l'édition qu'il
+    suit avec l'éditeur, avant de lire prix et mots-clés. Le libellé est nu — plus de
+    « suivie » ni d'emoji, comme les autres champs de la fiche.
+    """
+    from app.bot.handlers.alerts_helpers import format_semi_auto_recap
+
+    editions = [
+        {"isbn13": "9782369903086", "publication_year": 2022, "publisher": "Çà et là",
+         "format_detail": "1 vol. (224 p.) : ill. en coul. ; 24 cm"},
+        {"isbn13": "9782369904151", "publisher": "Éditions poches",
+         "format_detail": "1 vol. (224 p.) ; 19 cm"},
+    ]
+    recap = format_semi_auto_recap(
+        title="La couleur des choses",
+        author="Martin Panchaud",
+        publisher="Çà et là",
+        isbn="9782369903086",
+        max_price_cents=1500,
+        include_keywords=["la couleur des choses"],
+        exclude_keywords=[],
+        edition_alternatives=editions,
+    )
+
+    lines = recap.splitlines()
+    publisher_index = next(
+        i for i, line in enumerate(lines) if line.startswith("<b>Éditeur :</b>")
+    )
+    edition_index = next(
+        i for i, line in enumerate(lines) if line.startswith("<b>Édition :</b>")
+    )
+    price_index = next(
+        i for i, line in enumerate(lines) if line.startswith("<b>Prix maximum :</b>")
+    )
+
+    assert publisher_index < edition_index < price_index
+    assert "<b>Édition :</b> 2022 · Çà et là · 224 p. · 24 cm" in recap
+    assert "suivie" not in recap
+    assert "📖" not in recap
 
 
 def test_get_alert_confirmation_keyboard_offers_homonymous_works_first():

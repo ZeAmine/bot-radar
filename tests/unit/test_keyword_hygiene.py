@@ -15,6 +15,7 @@ from app.domain.rules.keyword_hygiene import (
     assess_variants,
     is_degenerate_exclusion,
     is_degenerate_variant,
+    names_only_a_volume,
     sanitize_exclusions,
     sanitize_variants,
 )
@@ -192,6 +193,23 @@ def test_the_reason_names_the_filter_that_decided():
     assert Reason.EMPTY in reasons
 
 
+def test_a_volume_exclusion_carries_its_own_reason():
+    """La règle du tome voisin motive elle aussi, sans qu'aucun appelant change.
+
+    C'est l'invariant qui a coûté le moins cher, vérifié sur le cas qui l'a mis à
+    l'épreuve : la règle d'ADR-030 est apparue **après** le nettoyeur, et
+    `scripts/clean_alert_keywords.py` n'a reçu aucune ligne pour la connaître. Elle
+    affiche pourtant « n'ajoute au titre qu'un numéro de tome » parce que le motif est
+    écrit là où la décision se prend.
+    """
+    outcome = assess_exclusions(["absolute martian manhunter #2"], "Absolute Martian Manhunter")
+
+    assert outcome.values == []
+    assert [removal.reason for removal in outcome.removals] == [Reason.VOLUME_ONLY]
+    # Le motif dépend du titre : `--only-degenerate` ne le franchit donc pas.
+    assert Reason.VOLUME_ONLY.is_degenerate is False
+
+
 def test_only_the_rule_decides_what_counts_as_degenerate():
     """`is_degenerate` est la frontière que `--only-degenerate` refuse de franchir.
 
@@ -208,3 +226,51 @@ def test_only_the_rule_decides_what_counts_as_degenerate():
     assert Reason.DUPLICATE in kinds or Reason.LIMIT in kinds
     contextual = {Reason.DUPLICATE, Reason.LIMIT}
     assert not any(kind.is_degenerate for kind in kinds & contextual)
+
+def test_exclusion_that_only_appends_a_volume_number_is_dropped():
+    """Le cas réel : le titre plus un numéro n'identifie aucune confusion.
+
+    Sur une alerte qui surveille la série, « … #2 » rejette l'annonce du tome 2 — celle
+    qu'on veut voir. La famille entière tombe, et une exclusion qui ajoute autre chose
+    que le numéro reste.
+    """
+    title = "Absolute Martian Manhunter"
+    family = [f"absolute martian manhunter #{number}" for number in range(1, 7)]
+
+    assert sanitize_exclusions(family, title) == []
+    assert sanitize_exclusions(["absolute martian manhunter 2"], title) == []
+    assert sanitize_exclusions(["absolute martian manhunter vol 2"], title) == []
+    # Le qualificatif autre que le numéro est la forme utile du rejet : il survit.
+    assert sanitize_exclusions(["absolute martian manhunter coffret"], title) == [
+        "absolute martian manhunter coffret"
+    ]
+
+
+def test_a_year_is_not_a_volume_number():
+    """« Blade Runner 2049 » est une autre œuvre, pas le tome 2049 du titre."""
+    assert names_only_a_volume("blade runner 2049", "Blade Runner") is False
+    assert sanitize_exclusions(["blade runner 2049"], "Blade Runner") == [
+        "blade runner 2049"
+    ]
+
+
+def test_a_title_carrying_a_number_keeps_its_qualifying_exclusions():
+    """Sur « One Piece tome 1 », exclure le tome 2 nomme un autre tome : c'est utile.
+
+    La règle ne peut s'armer que sur un titre **sans** numéro : dès qu'il en porte un,
+    le terme ne le commence plus, donc la garde est inerte.
+    """
+    assert names_only_a_volume("one piece tome 2", "One Piece tome 1") is False
+    assert sanitize_exclusions(["one piece tome 2"], "One Piece tome 1") == [
+        "one piece tome 2"
+    ]
+
+
+def test_an_exclusion_without_the_title_is_left_to_the_user():
+    """« vol 2 » nu ne reprend pas le titre : le nettoyeur n'a pas à trancher à sa place.
+
+    Le retirer supprimerait une exclusion volontaire — le reproche qu'ADR-026 adresse
+    déjà au nettoyeur.
+    """
+    assert names_only_a_volume("vol 2", "Blacksad") is False
+    assert sanitize_exclusions(["vol 2"], "Blacksad") == ["vol 2"]

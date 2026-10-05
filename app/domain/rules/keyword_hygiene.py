@@ -48,6 +48,33 @@ _ISBN_LIKE = re.compile(r"\d[\d\-\s]{8,}\d")
 # concerné (la lettre est suivie d'une autre lettre, donc pas de frontière de mot).
 _DEGENERATE_ENUMERATION = re.compile(r"\b\d[a-z]{1,2}\b")
 
+# Mots qui ne désignent qu'un découpage du titre, quand ils suivent celui-ci :
+# « one piece tome 2 ». Ils ne portent aucune confusion propre.
+_VOLUME_MARKERS = frozenset(
+    {
+        "t",
+        "tome",
+        "tomes",
+        "vol",
+        "vols",
+        "volume",
+        "volumes",
+        "livre",
+        "livres",
+        "book",
+        "books",
+        "partie",
+        "parties",
+        "part",
+        "parts",
+    }
+)
+
+# Un numéro de tome tient sur trois chiffres au plus. Au-delà, c'est un millésime
+# (« Blade Runner 2049 ») : une exclusion qui nomme une année peut viser un autre
+# ouvrage, elle n'est pas un simple numéro collé au titre.
+_MAX_VOLUME_NUMBER_DIGITS = 3
+
 
 def carries_isbn_like(value: str) -> bool:
     """Le terme contient-il une suite de chiffres assimilable à un ISBN ?
@@ -94,6 +121,38 @@ def _repeats_the_title(value: str, title: str) -> bool:
     return normalized_term in normalized_title or normalized_title in normalized_term
 
 
+def names_only_a_volume(value: str, title: str) -> bool:
+    """Le terme n'ajoute au titre qu'un numéro de tome : il ne désigne aucune confusion.
+
+    « absolute martian manhunter #2 » n'est pas un faux positif identifié : c'est le
+    titre auquel le moteur a collé un numéro. Le matching y verrait un rejet du tome 2 —
+    une alerte qui surveille la série se tairait donc sur l'un de ses tomes, exactement
+    ce qu'elle veut voir. Famille observée en production : « … #1 » jusqu'à « … #6 ».
+
+    La règle ne peut s'armer que sur un titre **sans numéro**. Dès que le titre en porte
+    un, le terme ne le commence plus (« one piece tome 2 » ne commence pas « one piece
+    tome 1 ») et l'exclusion reste : elle nomme alors un autre tome que celui visé, ce
+    qui est bien un rejet utile.
+
+    Deux limites, assumées : une exclusion qui ne reprend pas le titre (« vol 2 » nu)
+    est laissée au jugement de l'utilisateur — la retirer supprimerait une exclusion
+    volontaire, le reproche qu'ADR-027 adresse déjà au nettoyeur ; et un millésime à
+    quatre chiffres n'est pas un numéro de tome, donc « blade runner 2049 » survit.
+    """
+    normalized_term = normalize_text(value)
+    normalized_title = normalize_text(title)
+    if not normalized_term or not normalized_title:
+        return False
+    if not normalized_term.startswith(normalized_title):
+        return False
+
+    remainder = normalized_term[len(normalized_title) :]
+    numbers = re.findall(r"\d+", remainder)
+    if not numbers or any(len(number) > _MAX_VOLUME_NUMBER_DIGITS for number in numbers):
+        return False
+    return all(word in _VOLUME_MARKERS for word in re.findall(r"[a-z]+", remainder))
+
+
 def _swallows_the_title(value: str, title: str) -> bool:
     """Le terme tient *dans* le titre, sans rien y ajouter.
 
@@ -136,6 +195,7 @@ class Reason(StrEnum):
     BARE_TOKEN = "chiffre nu ou caractère seul : ne tranche rien"
     TITLE_VARIANT = "reprend le titre sans rien y ajouter"
     TITLE_EXCLUSION = "tient dans le titre : il tairait l'annonce cible"
+    VOLUME_ONLY = "n'ajoute au titre qu'un numéro de tome : il tairait le tome voisin"
     DUPLICATE = "doublon d'un terme déjà présent"
     LIMIT = "trop long pour une recherche, ou au-delà du plafond de la famille"
 
@@ -180,33 +240,51 @@ class SanitizedValues:
 
 @dataclass(frozen=True)
 class _Family:
-    """Les deux points où une famille s'écarte de l'autre, nommés une fois.
+    """Ce en quoi une famille s'écarte de l'autre : plafond, dégénérescence, titre.
 
-    Même logique, deux libellés : une exclusion et une variante consultent le titre
-    différemment et dégénèrent différemment. Les seuils et les motifs sont donc portés
-    ici, et `_clean_values` n'a plus qu'à appliquer.
+    Une variante et une exclusion consultent le titre différemment et dégénèrent
+    différemment. Le verdict du titre est une **fonction qui rend son motif** plutôt
+    qu'un booléen doublé d'un libellé : une exclusion doit maintenant dire laquelle de
+    ses deux façons de ne rien dire face au titre l'a écartée, et deux règles pour un
+    seul libellé forceraient à choisir lequel ment.
     """
 
     max_size: int
     is_degenerate: Callable[[str], bool]
-    title_rule: Callable[[str, str], bool]
-    reason_title: Reason
+    title_verdict: Callable[[str, str], Reason | None]
     reason_degenerate: Reason
+
+
+def _variant_title_verdict(value: str, title: str) -> Reason | None:
+    """Une variante qui reprend le titre n'ouvre aucune porte de plus."""
+    return Reason.TITLE_VARIANT if _repeats_the_title(value, title) else None
+
+
+def _exclusion_title_verdict(value: str, title: str) -> Reason | None:
+    """Les deux façons pour une exclusion de ne rien dire face au titre.
+
+    *Plus étroite* que le titre, elle tairait l'annonce cible (`_swallows_the_title`) ;
+    *plus large* d'un simple numéro, elle tairait le tome voisin (`names_only_a_volume`).
+    Entre les deux vit la forme utile du rejet, celle qui précise le titre.
+    """
+    if _swallows_the_title(value, title):
+        return Reason.TITLE_EXCLUSION
+    if names_only_a_volume(value, title):
+        return Reason.VOLUME_ONLY
+    return None
 
 
 VARIANT_FAMILY = _Family(
     max_size=MAX_VARIANTS,
     is_degenerate=is_degenerate_variant,
-    title_rule=_repeats_the_title,
-    reason_title=Reason.TITLE_VARIANT,
+    title_verdict=_variant_title_verdict,
     reason_degenerate=Reason.ENUMERATION,
 )
 
 EXCLUSION_FAMILY = _Family(
     max_size=MAX_EXCLUSIONS,
     is_degenerate=is_degenerate_exclusion,
-    title_rule=_swallows_the_title,
-    reason_title=Reason.TITLE_EXCLUSION,
+    title_verdict=_exclusion_title_verdict,
     reason_degenerate=Reason.BARE_TOKEN,
 )
 
@@ -221,8 +299,9 @@ def _removal_reason(value: str, title: str, family: _Family) -> Reason | None:
         return Reason.EMPTY
     if carries_isbn_like(value):
         return Reason.ISBN
-    if family.title_rule(value, title):
-        return family.reason_title
+    title_verdict = family.title_verdict(value, title)
+    if title_verdict is not None:
+        return title_verdict
     if family.is_degenerate(value):
         return family.reason_degenerate
     return None
@@ -285,9 +364,11 @@ def assess_variants(values: list[str] | None, title: str) -> SanitizedValues:
 def assess_exclusions(values: list[str] | None, title: str) -> SanitizedValues:
     """Verdict motivé du côté exclusions : ce qui reste, et ce qui part et pourquoi.
 
-    Le titre n'est consulté que pour écarter une exclusion qui tient *dans* lui
-    (`_swallows_the_title`) — celle-là tairait l'annonce cible. Une exclusion qui le
-    précise, elle, est conservée : c'est la forme normale d'un rejet.
+    Le titre est consulté pour écarter une exclusion qui tient *dans* lui
+    (`_swallows_the_title`) — celle-là tairait l'annonce cible — et une exclusion qui ne
+    fait que lui ajouter un numéro de tome (`names_only_a_volume`) — celle-là tairait le
+    tome voisin. Une exclusion qui le précise, elle, est conservée : c'est la forme
+    normale d'un rejet.
     """
     return _clean_values(values, title, EXCLUSION_FAMILY)
 
