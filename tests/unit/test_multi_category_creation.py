@@ -1072,9 +1072,9 @@ async def test_select_alert_creation_edition_switches_isbn():
     text = message.edit_text.call_args[0][0]
     assert "<b>Éditeur :</b> Futuropolis" in text
     assert "<b>ISBN :</b> <code>9782369904151</code>" in text
-    # Sans millésime ni format, la ligne « Édition suivie » n'aurait rien de plus à dire
-    # que « 🏢 Éditeur » : elle est omise plutôt que dupliquée.
-    assert "Édition suivie" not in text
+    # Sans millésime ni format, la ligne « Édition » n'aurait rien de plus à dire
+    # que « Éditeur » : elle est omise plutôt que dupliquée.
+    assert "<b>Édition :</b>" not in text
 
     keyboard = message.edit_text.call_args[1]["reply_markup"]
     edition_buttons = [

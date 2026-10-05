@@ -15,6 +15,7 @@ from app.bot.keyboards.alerts import edition_ordinal, get_alert_confirmation_key
 from app.bot.labels import (
     FIELD_AUTHOR,
     FIELD_CONDITIONS,
+    FIELD_EDITION,
     FIELD_EXCLUDE_KEYWORDS,
     FIELD_INCLUDE_KEYWORDS,
     FIELD_ISBN,
@@ -178,10 +179,10 @@ def format_semi_auto_recap(
     """Carte compacte du brouillon, telle qu'affichée avant « Créer l'alerte ».
 
     La carte s'ouvre sur `RECAP_TITLE`, puis une ligne par information, du plus
-    structurant au plus accessoire : identifiant, identité de l'œuvre, critères de
-    veille, puis l'édition surveillée quand il y a un choix à faire. Les états sont
-    abrégés (`format_conditions`) pour que la carte tienne à l'écran sans
-    devenir un pavé.
+    structurant au plus accessoire : identifiant, identité de l'œuvre — l'édition
+    surveillée comprise, quand il y a un choix à faire —, puis les critères de veille.
+    Les états sont abrégés (`format_conditions`) pour que la carte tienne à l'écran
+    sans devenir un pavé.
 
     Les deux notes — `isbn_note` (provenance d'ISBN douteuse, repli de source) et
     `keyword_note` (ce que la recherche de mots-clés a ou n'a pas trouvé) — sont des
@@ -226,6 +227,10 @@ def format_semi_auto_recap(
         lines.append(f"<b>{FIELD_AUTHOR} :</b> {html.escape(author)}")
     if publisher:
         lines.append(f"<b>{FIELD_PUBLISHER} :</b> {html.escape(publisher)}")
+    # L'édition surveillée complète l'identité du livre : elle se lit juste après
+    # l'éditeur, avec lequel l'utilisateur la recoupe, et avant que la carte ne passe
+    # aux critères de veille. Elle n'apparaît que quand il y a un choix à faire.
+    lines.extend(format_edition_line(edition_alternatives, isbn))
 
     lines.append("")
     lines.append(f"<b>{FIELD_MAX_PRICE} :</b> {price_str}")
@@ -242,10 +247,6 @@ def format_semi_auto_recap(
     # mise à part.
     if keyword_note:
         lines.extend(["", f"<i>{keyword_note}</i>"])
-
-    edition_lines = format_edition_line(edition_alternatives, isbn)
-    if edition_lines:
-        lines.extend(["", *edition_lines])
 
     # Le pied de confirmation est porté par la carte elle-même : tous les chemins qui
     # aboutissent ici finissent sur le même clavier, donc une seule formulation, et
@@ -414,12 +415,12 @@ def format_edition_line(
     edition_alternatives: list[dict[str, Any]] | None,
     current_isbn: str | None,
 ) -> list[str]:
-    """Ligne « Édition suivie » : l'édition retenue, décrite pour un humain.
+    """Ligne « Édition » : l'édition retenue, décrite pour un humain.
 
     Affichée seulement quand plusieurs éditions sont réellement proposées : sans choix
     à faire, elle ne ferait que répéter l'identité déjà donnée plus haut dans la carte.
     Elle exige aussi un millésime ou un format : sans eux, elle se réduirait à
-    l'éditeur, déjà porté par la ligne « 🏢 Éditeur » et donc incapable de départager
+    l'éditeur, déjà porté par la ligne « Éditeur » et donc incapable de départager
     deux éditions.
     """
     editions = list(edition_alternatives or [])
@@ -444,7 +445,7 @@ def format_edition_line(
     ):
         return []
     return [
-        f"📖 <b>Édition suivie :</b> {html.escape(_edition_identity(edition))}"
+        f"<b>{FIELD_EDITION} :</b> {html.escape(_edition_identity(edition))}"
     ]
 
 

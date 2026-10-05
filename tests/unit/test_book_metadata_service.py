@@ -19,6 +19,7 @@ from app.services.book_metadata_service import (
     ambiguity_note,
     clean_bnf_creator,
     clean_bnf_publisher,
+    clean_bnf_series_title,
     clean_bnf_title,
     clean_openlibrary_author,
     generate_recommended_keywords,
@@ -59,6 +60,36 @@ def test_clean_bnf_helpers():
     # Éditeurs
     assert clean_bnf_publisher("Éditions Delcourt (Paris)") == "Éditions Delcourt"
     assert clean_bnf_publisher("Casterman (Bruxelles)") == "Casterman"
+
+
+def test_clean_bnf_series_title_keeps_the_tome_number_the_subtitle_hides():
+    """Le numéro de tome vit après le « : » : le titre de base le perd, lui non.
+
+    Sans ce titre de secours, « Tome 1 » et « Tome 2 » deviennent la même chaîne et
+    l'œuvre numérotée passe pour un one-shot (voir `test_resolve_for_alert_sees_a_series…`).
+    """
+    tome_1 = (
+        "Manuel du cuisinier amateur : 150 recettes et techniques. Tome 1"
+        " / par Whoogy's ; photographies de Maurine Toussaint"
+    )
+    tome_2 = (
+        "Manuel du cuisinier amateur : 150 recettes et techniques. Tome 2"
+        " / par Whoogy's ; photographies de Maurine Toussaint"
+    )
+
+    assert clean_bnf_title(tome_1) == "Manuel du cuisinier amateur"
+    assert clean_bnf_series_title(tome_1) == "Manuel du cuisinier amateur Tome 1"
+    assert clean_bnf_series_title(tome_2) == "Manuel du cuisinier amateur Tome 2"
+
+    # Un sous-titre sans marqueur ne change rien : le titre de base est rendu tel quel.
+    assert (
+        clean_bnf_series_title("Ion mud : un long voyage / Amaury Bündgen") == "Ion mud"
+    )
+    # Un simple nombre n'est pas un numéro de tome : « Blade Runner 2049 » reste un one-shot.
+    assert (
+        clean_bnf_series_title("Blade Runner : l'univers du film. 2049")
+        == "Blade Runner"
+    )
 
 
 def test_generate_recommended_keywords():
@@ -240,6 +271,36 @@ BNF_RECORDS = [
     OTHER_BOOK_SAME_PUBLISHER,
 ]
 
+# Réponse BNF réelle pour « Manuel du cuisinier amateur » (Whoogy's). La notice de
+# référence, sans sous-titre, n'a pas d'ISBN et est donc écartée : les deux candidats
+# sont les tomes, que seul le numéro perdu après le « : » distingue.
+BNF_MANUEL_TOMES = [
+    BNF_RECORD_TEMPLATE.format(
+        ark="471752286",
+        title=(
+            "Manuel du cuisinier amateur : 150 recettes et techniques. Tome 1"
+            " / par Whoogy's ; photographies de Maurine Toussaint"
+        ),
+        creator="Whoogy's. Auteur du texte",
+        publisher="Chêne (Vanves)",
+        date="<dc:date>2022</dc:date>",
+        fmt="1 vol. (258 p.) : ill. en coul. ; 27 cm",
+        isbn="9782812321344",
+    ),
+    BNF_RECORD_TEMPLATE.format(
+        ark="47567143s",
+        title=(
+            "Manuel du cuisinier amateur : 150 recettes et techniques. Tome 2"
+            " / par Whoogy's ; photographies de Maurine Toussaint"
+        ),
+        creator="Whoogy's. Auteur du texte",
+        publisher="Chêne (Vanves)",
+        date="<dc:date>2024</dc:date>",
+        fmt="1 vol. (256 p.) : ill. en coul. ; 27 cm",
+        isbn="9782812321689",
+    ),
+]
+
 
 # Document OpenLibrary : un même document regroupe toutes les éditions de l'œuvre,
 # y compris une traduction anglaise (9780261102217) qui ne doit pas être retenue.
@@ -281,12 +342,14 @@ class _FakeCatalogueClient:
         openlibrary_docs: list[dict[str, object]] | None = None,
         openlibrary_status: int = 200,
         bnf_panne_sur: str | None = None,
+        bnf_records: list[str] | None = None,
     ) -> None:
         self.queries: list[str] = []
         self.bnf_empty = bnf_empty
         self.bnf_panne_sur = bnf_panne_sur
         self.openlibrary_docs = openlibrary_docs
         self.openlibrary_status = openlibrary_status
+        self.bnf_records = BNF_RECORDS if bnf_records is None else bnf_records
 
     @property
     def openlibrary_queries(self) -> list[str]:
@@ -318,9 +381,9 @@ class _FakeCatalogueClient:
         query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["query"][0]
         matched = [
             record
-            for record in BNF_RECORDS
+            for record in self.bnf_records
             if f'"{record.split("ISBN ")[1].split("<")[0]}"' in query
-        ] or BNF_RECORDS
+        ] or self.bnf_records
         payload = SRU_HEADER.format(count=len(matched), records="".join(matched))
         return _FakeResponse(payload.encode("utf-8"))
 
@@ -384,6 +447,30 @@ async def test_resolve_for_alert_rejects_unrelated_records():
 
     assert await service.resolve_for_alert("One Piece", "Oda Eiichiro") is None
     assert await service.resolve_for_alert("   ") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_for_alert_sees_a_series_when_the_tome_number_hides_in_the_subtitle():
+    """Deux tomes cachés par leur sous-titre : la résolution doit prouver la série.
+
+    C'est le cas réel « Manuel du cuisinier amateur ». Les deux notices devenaient
+    identiques, l'écran les proposait comme deux éditions, et l'alerte partait avec
+    l'ISBN du tome 1.
+    """
+    client = _FakeCatalogueClient(bnf_records=list(BNF_MANUEL_TOMES))
+    service = BookMetadataService(http_client=client)
+
+    resolution = await service.resolve_for_alert("Manuel du cuisinier amateur")
+
+    assert resolution is not None
+    # Le titre de base reste celui de l'affichage : ni sous-titre, ni numéro.
+    assert resolution.best.title == "Manuel du cuisinier amateur"
+    assert [alt.isbn13 for alt in resolution.alternatives] == ["9782812321689"]
+
+    signal = resolution.series_signal("Manuel du cuisinier amateur")
+
+    assert signal.is_series is True
+    assert signal.volumes == ("Tome 1", "Tome 2")
 
 
 @pytest.mark.asyncio

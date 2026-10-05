@@ -31,7 +31,7 @@ def get_conditions_toggle_keyboard(selected_conditions: list[str]) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# Marqueurs d'édition. Le même numéro indexe la ligne « Édition suivie » du récap et
+# Marqueurs d'édition. Le même numéro indexe la ligne « Édition » du récap et
 # le bouton qui la bascule : c'est ce qui rend le choix lisible sans seconde légende.
 EDITION_ORDINALS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣")
 
@@ -58,7 +58,7 @@ def get_alert_confirmation_keyboard(
     tirage du bon. Elles ne s'affichent qu'à partir de deux œuvres exploitables : sous
     ce seuil, il n'y a rien à trancher.
 
-    Chaque édition concurrente a son bouton, numéroté comme la ligne « Édition suivie »
+    Chaque édition concurrente a son bouton, numéroté comme la ligne « Édition »
     du récap (`build_edition_labels`). C'est le dernier moment où l'utilisateur choisit
     l'ISBN qui pilotera le matching, l'URL de recherche Vinted et la cote de marché de
     l'alerte. L'index passé en callback reste celui de `edition_alternatives`, que tous
@@ -66,7 +66,7 @@ def get_alert_confirmation_keyboard(
 
     Les boutons d'édition n'apparaissent qu'à partir de deux éditions exploitables :
     sous ce seuil, le bouton n'opposerait rien à rien, et le récap ne montre déjà pas
-    la ligne « Édition suivie ». Le seuil est celui de `format_edition_line`, pour que
+    la ligne « Édition ». Le seuil est celui de `format_edition_line`, pour que
     les deux rendus racontent la même chose.
     """
     rows: list[list[InlineKeyboardButton]] = _work_choice_rows(work_choices, work_labels)
