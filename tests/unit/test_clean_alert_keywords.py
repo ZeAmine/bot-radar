@@ -68,6 +68,26 @@ def test_plan_keeps_only_usable_terms():
     assert plan.exclusions_removed == ["1"]
 
 
+def test_plan_leaves_exclusions_qualified_by_the_title_alone():
+    """Le script réécrit la base : il ne doit pas y retirer un rejet utile.
+
+    « deep it coffret » est exactement l'exclusion que le rapport avait fait
+    remonter : le nettoyage ne doit plus l'effacer, sous peine de détruire une
+    protection saisie à la main. La variante, elle, reste redondante et part.
+    """
+    alert = make_alert(
+        name="Deep It",
+        variants=["deep it delcourt"],
+        exclusions=["deep it coffret", "deep it intégrale", "coffret"],
+    )
+
+    plan = cck.plan_cleanup(alert)
+
+    assert plan.exclusions_removed == []
+    assert plan.exclusions_after == ("deep it coffret", "deep it intégrale", "coffret")
+    assert plan.variants_removed == ["deep it delcourt"]
+
+
 def test_apply_then_replan_is_idempotent():
     """Une seconde passe ne trouve plus rien : le nettoyage est idempotent."""
     alert = make_alert(variants=FAMILY, exclusions=["1"])

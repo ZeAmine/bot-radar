@@ -177,6 +177,47 @@ async def test_save_edited_field_value_updates_list():
 
 
 @pytest.mark.asyncio
+async def test_save_edited_field_value_keeps_an_exclusion_qualified_by_the_title():
+    """Une exclusion saisie à la main et qualifiée par le titre doit survivre.
+
+    « deep it coffret » écarte les intégrales d'un « Deep It » : c'est la forme
+    normale d'un rejet, et c'est la seule façon d'exprimer ce refus. Le passage par
+    l'écran « Modifier » est le point où elle se perdait, en silence.
+    """
+    alert_id = uuid.uuid4()
+    message = AsyncMock()
+    message.text = "deep it coffret, tome 1"
+    state = AsyncMock()
+    state.get_data.return_value = {
+        "edit_alert_id": str(alert_id),
+        "edit_field": "exclude_keywords",
+    }
+    user = MagicMock(spec=User, id=uuid.uuid4())
+    session = AsyncMock()
+
+    mock_alert = MagicMock(
+        spec=Alert,
+        id=alert_id,
+        status=AlertStatus.ACTIVE,
+        category=None,
+        max_item_price_cents=1500,
+        exclude_keywords=[],
+    )
+    mock_alert.name = "Deep It"
+    repo_mock = AsyncMock()
+    repo_mock.get_by_id.return_value = mock_alert
+    repo_mock.count_by_user.return_value = 1
+
+    from unittest.mock import patch
+
+    with patch("app.bot.handlers.alerts_manage._get_alert_repo", return_value=repo_mock):
+        await save_edited_field_value(message, state=state, db_user=user, db_session=session)
+
+    assert mock_alert.exclude_keywords == ["deep it coffret", "tome 1"]
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_save_edited_field_value_skip_clears_list():
     alert_id = uuid.uuid4()
     message = AsyncMock()
