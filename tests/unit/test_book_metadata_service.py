@@ -10,6 +10,7 @@ from app.core.constants import MatchConfidence
 from app.services.book_metadata_service import (
     AUTORITE_BNF,
     AUTORITE_OPENLIBRARY,
+    OPENLIBRARY_SOURCE_NOTE,
     BookMetadata,
     BookMetadataService,
     BookResolution,
@@ -22,6 +23,7 @@ from app.services.book_metadata_service import (
     clean_openlibrary_author,
     generate_recommended_keywords,
     parse_query_title_and_author,
+    provenance_note,
     same_author,
     title_similarity,
 )
@@ -1136,3 +1138,62 @@ def test_la_garde_reconnait_la_declaration_et_son_menson():
     assert not _declares_doctype(malforme), "un document malformé n'est pas une déclaration"
     assert not _declares_doctype(b""), "une charge vide ne déclare rien"
     assert not _declares_doctype(b"   \n "), "des blancs ne déclarent rien"
+
+
+# --- Identifiant d'autorité : ce que la notice porte vraiment --------------------
+_SRU_EAN_NU = b"""<?xml version="1.0" encoding="UTF-8"?>
+<srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/">
+ <srw:numberOfRecords>1</srw:numberOfRecords><srw:records>
+<srw:record><srw:recordSchema>dc</srw:recordSchema><srw:recordData>
+<oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/"
+ xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:identifier>http://catalogue.bnf.fr/ark:/12148/cb471036825</dc:identifier>
+  <dc:title>Dailyeux : 150 recettes pour se regaler tous les jours</dc:title>
+  <dc:creator>Whoogy's</dc:creator>
+  <dc:publisher>Le Chen</dc:publisher>
+  <dc:date>2026</dc:date>
+  <dc:format>1 vol. (272 p.) : ill. en coul. ; 26 cm</dc:format>
+  <dc:identifier>9782812322495</dc:identifier>
+</oai_dc:dc>
+</srw:recordData></srw:record>
+</srw:records></srw:searchRetrieveResponse>"""
+
+
+@pytest.mark.asyncio
+async def test_notice_carrying_only_a_bare_ean_is_kept():
+    """Une notice dont l'identifiant est un EAN nu reste une notice de livre.
+
+    Elle disparaissait avant, sans un mot : l'identifiant ne portait pas le mot
+    « ISBN », et tout ce que la notice disait de l'ouvrage partait avec elle.
+    """
+    service = BookMetadataService(http_client=_ClientSRUFige(_SRU_EAN_NU))
+
+    records, panne = await service._bnf_records('bib.anywhere all "Dailyeux"')
+
+    assert panne is None
+    assert len(records) == 1
+    assert records[0].isbn13 == "9782812322495"
+    assert records[0].title.startswith("Dailyeux")
+
+
+@pytest.mark.asyncio
+async def test_bnf_never_confirms_an_isbn_and_openlibrary_does():
+    """Limite structurelle, consignée pour qu'on ne la « corrige » pas à l'aveugle.
+
+    Le SRU de la BNF ne sait pas être interrogé par ISBN : `bib.isbn adj` comme
+    `bib.anywhere all` renvoient zéro notice, même pour un ISBN que la BNF possède
+    par ailleurs (vérifié sur `9782864971412`, extrait d'une notice réellement
+    obtenue). Un ISBN soumis au projet est donc toujours tranché par OpenLibrary,
+    et c'est dit comme tel au récap. Un jour où la BNF expose un point d'entrée par
+    ISBN, ce test est celui qui doit changer.
+    """
+    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
+    service = BookMetadataService(http_client=client)
+
+    verdict = await service.consult_authorities("9782369903086")
+
+    assert verdict.confirme is True
+    assert verdict.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
+    assert verdict.notice is not None
+    assert verdict.notice.source == AUTORITE_OPENLIBRARY
+    assert provenance_note(verdict.notice) == OPENLIBRARY_SOURCE_NOTE

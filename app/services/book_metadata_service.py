@@ -23,7 +23,12 @@ from pydantic import BaseModel
 
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
-from app.utils.isbn import is_valid_isbn, isbn10_to_isbn13, normalize_isbn
+from app.utils.isbn import (
+    is_valid_isbn,
+    isbn10_to_isbn13,
+    isbn_from_identifier,
+    normalize_isbn,
+)
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.book_metadata")
@@ -924,17 +929,14 @@ class BookMetadataService:
                 if not titles:
                     continue
 
-                isbn13: str | None = None
-                for ident in identifiers:
-                    if "ISBN" in ident.upper():
-                        c_isbn = re.sub(r"[^0-9X]", "", ident.upper())
-                        if len(c_isbn) == 13:
-                            isbn13 = c_isbn
-                            break
-                        elif len(c_isbn) == 10 and not isbn13:
-                            converted = isbn10_to_isbn13(c_isbn)
-                            isbn13 = converted or c_isbn
-
+                # Une notice sans identifiant exploitable est écartée : mieux vaut
+                # rien rendre qu'un rattachement douteux. Ce qui compte est que
+                # l'identifiant soit *lu*, pas qu'il soit libellé « ISBN » : une
+                # notice ne portant qu'un EAN-13 est aussi une notice de livre.
+                isbn13 = next(
+                    (found for found in map(isbn_from_identifier, identifiers) if found),
+                    None,
+                )
                 if not isbn13:
                     continue
 

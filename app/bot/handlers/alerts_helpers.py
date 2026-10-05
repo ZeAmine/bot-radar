@@ -174,6 +174,7 @@ def format_semi_auto_recap(
     isbn_note: str | None = None,
     edition_alternatives: list[dict[str, Any]] | None = None,
     keyword_note: str | None = None,
+    expects_isbn: bool = True,
 ) -> str:
     """Carte compacte du brouillon, telle qu'affichée avant « Créer l'alerte ».
 
@@ -203,10 +204,21 @@ def format_semi_auto_recap(
         lines.append(f"<i>{html.escape(isbn_note)}</i>")
         lines.append("")
 
+    # La ligne ISBN est toujours là, même vide. Son absence se confondait avec un
+    # oubli, alors qu'elle porte l'information : « cet ouvrage n'a pas d'identifiant »
+    # est justement ce qu'il faut lire avant de valider une alerte. Pour une alerte
+    # qui ne peut pas avoir d'ISBN — un objet, un jeu — la ligne n'a pas de sujet et
+    # ne s'affiche donc pas.
     if isbn:
         lines.append(f"<b>{FIELD_ISBN} :</b> <code>{html.escape(isbn)}</code>")
+    elif is_series:
+        lines.append(f"<b>{FIELD_ISBN} :</b> non utilisé — série multi-tomes")
     elif isbn_note:
         lines.append(f"<b>{FIELD_ISBN} :</b> À confirmer")
+    elif expects_isbn:
+        lines.append(
+            f"<b>{FIELD_ISBN} :</b> introuvable — la BNF ne catalogue pas cet ouvrage"
+        )
 
     lines.append(f"<b>{FIELD_TITLE} :</b> {html.escape(title)}")
     if is_series:
@@ -456,6 +468,8 @@ def recap_from_state(data: dict[str, Any]) -> str:
         # La note accompagne le brouillon plutôt que l'appel : changer d'édition ou
         # modifier un prix re-rend la carte, et l'explication doit survivre au rendu.
         keyword_note=data.get("keyword_note"),
+        expects_isbn=data.get("category_slug", CategorySlug.BD_COMICS.value)
+        == CategorySlug.BD_COMICS.value,
     )
 
 

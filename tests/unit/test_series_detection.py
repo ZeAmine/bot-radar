@@ -198,10 +198,12 @@ async def test_creation_builds_a_series_alert_without_isbn():
     # Pas d'éditions concurrentes : ce seraient celles d'un tome.
     assert stored["edition_alternatives"] == []
 
-    # Le récap réellement affiché porte la trouvaille, et aucune ligne ISBN.
+    # Le récap réellement affiché porte la trouvaille, et dit que l'ISBN n'est pas
+    # utilisé : l'alerte n'a pas d'identifiant, mais elle ne fait pas croire à un oubli.
     recap = recap_from_state(stored)
     assert stored["series_note"] in recap
-    assert "<b>ISBN :</b>" not in recap
+    assert "<b>ISBN :</b> non utilisé — série multi-tomes" in recap
+    assert "<code>" not in recap, "aucun ISBN ne doit être rendu"
 
 
 @pytest.mark.asyncio
