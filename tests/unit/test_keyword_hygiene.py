@@ -108,6 +108,21 @@ def test_exclusion_qualified_by_the_title_survives():
     assert sanitize_exclusions(["deep"], title) == []
 
 
+def test_empty_title_decides_nothing():
+    """Un titre vide ne doit rien décider, dans les deux familles.
+
+    La comparaison est une inclusion de chaîne et `'' in terme` est toujours vrai :
+    sans cette garde, un brouillon sans nom effacerait toutes ses variantes au
+    premier passage du nettoyeur — c'est le cas que la recherche de mots-clés en
+    arrière-plan peut atteindre, où le nom arrive par `draft.get("name") or ""`.
+    """
+    empty_titles: list[str | None] = ["", "   ", None]
+
+    for title in empty_titles:
+        assert sanitize_variants(["one piece", "tome 2"], title) == ["one piece", "tome 2"]
+        assert sanitize_exclusions(["coffret", "figurine"], title) == ["coffret", "figurine"]
+
+
 def test_exclusions_cap_is_preserved():
     """Le plafond d'exclusions ne bouge pas."""
     many = [f"exclusion {index}" for index in range(10)]

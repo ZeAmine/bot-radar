@@ -87,6 +87,8 @@ def _repeats_the_title(value: str, title: str) -> bool:
     """
     normalized_term = normalize_text(value)
     normalized_title = normalize_text(title)
+    if not normalized_term or not normalized_title:
+        return False
     return normalized_term in normalized_title or normalized_title in normalized_term
 
 
@@ -99,8 +101,17 @@ def _swallows_the_title(value: str, title: str) -> bool:
     un simple recouvrement la supprimait en silence. Une exclusion *plus étroite* que
     le titre (« couleur des choses » pour « La couleur des choses »), elle, rejetterait
     l'annonce cible elle-même : celle-là doit tomber.
+
+    Un titre vide ne doit rien décider. La comparaison est une inclusion de chaîne,
+    or `'' in terme` est toujours vrai : sans cette garde, un titre absent — un
+    brouillon sans nom, une alerte au nom vide — effacerait toutes ses variantes au
+    premier passage du nettoyeur, y compris dans `scripts/clean_alert_keywords.py`.
     """
-    return normalize_text(value) in normalize_text(title)
+    normalized_term = normalize_text(value)
+    normalized_title = normalize_text(title)
+    if not normalized_term or not normalized_title:
+        return False
+    return normalized_term in normalized_title
 
 
 def _clean_values(
