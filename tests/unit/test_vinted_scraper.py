@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from app.services.vinted_parsing import CATALOG_PAGE_SIZE
 from app.services.vinted_scraper import (
     VintedSessionManager,
     catalog_url_to_api_params,
@@ -190,7 +191,11 @@ def test_catalog_url_to_api_params():
     assert params["attribute_ids[status]"] == "1,2"
     assert params["attribute_ids[language_book]"] == "6436"
     assert params["order"] == "newest_first"
-    assert params["per_page"] == "24"
+    # La fenêtre doit couvrir le débit du flux entre deux cycles, sinon les annonces
+    # publiées dans l'intervalle passent dessous sans jamais être vues. 24 items ne
+    # couvraient que ~34 s face à un flux de 2 500 annonces/h, alors que la cadence
+    # monte à 35 s au p90 et que la micro-pause dure 30 à 45 s.
+    assert params["per_page"] == str(CATALOG_PAGE_SIZE) == "96"
 
     url_search = "https://www.vinted.fr/catalog?search_text=zelda+switch"
     params_search = catalog_url_to_api_params(url_search)

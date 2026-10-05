@@ -11,6 +11,16 @@ OVERLAY_LINK_REGEX = re.compile(
     re.DOTALL,
 )
 
+# Taille de la fenêtre de catalogue demandée à Vinted. Elle doit couvrir le débit
+# réel du flux entre deux scrutations, sinon les annonces publiées dans l'intervalle
+# passent sous la fenêtre et ne sont jamais vues — une perte silencieuse, sans erreur.
+# Mesuré en production : le flux global BD dépasse 2 500 annonces/h, soit ~10/min.
+# À 24 items la fenêtre ne couvrait que ~34 s, alors que la cadence de scrutation monte
+# à 35 s au p90 et que la micro-pause anti-détection dure 30 à 45 s : la perte était
+# réelle. 96 items coûtent +29 ms de fetch (164 -> 193 ms) et couvrent ~5 min.
+# 192 est le plafond de l'API : au-delà, elle renvoie 96 items sans erreur.
+CATALOG_PAGE_SIZE = 96
+
 @dataclass
 class ScrapedVintedItem:
     """Représente une annonce extraite depuis le flux Vinted."""
@@ -184,7 +194,7 @@ def catalog_url_to_api_params(catalog_url: str) -> dict[str, str]:
             params[clean_k] = v[0]
 
     params.setdefault("order", "newest_first")
-    params.setdefault("per_page", "24")
+    params.setdefault("per_page", str(CATALOG_PAGE_SIZE))
     return params
 
 

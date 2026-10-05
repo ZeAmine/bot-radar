@@ -1,6 +1,7 @@
 """Règles de matching entre une annonce et une alerte. Aucun I/O."""
 
 import re
+from functools import lru_cache
 
 from app.core.constants import (
     DEFAULT_GAMING_EXCLUSIONS,
@@ -8,7 +9,7 @@ from app.core.constants import (
     AlertStatus,
 )
 from app.db.models.alert import Alert
-from app.utils.text import contains_keyword, normalize_text
+from app.utils.text import contains_keyword, contains_normalized_keyword, normalize_text
 
 
 class MatchResult:
@@ -87,15 +88,44 @@ MULTILINGUAL_EXCLUSION_MAPPING: dict[str, list[str]] = {
 }
 
 
-def expand_exclusions_multilingual(exclusions: list[str]) -> list[str]:
-    """Étend une liste d'exclusions en y ajoutant automatiquement les équivalents multilingues."""
-    expanded = set(exclusions)
+@lru_cache(maxsize=64)
+def _expand_exclusions_cached(exclusions: tuple[str, ...]) -> tuple[str, ...]:
+    """Extension multilingue mémoïsée, les entrées étant les listes constantes du module.
+
+    L'ordre de sortie est celui de l'entrée, puis celui du dictionnaire d'équivalents.
+    Un `set` donnait un ordre dépendant du hash des chaînes — donc différent d'un
+    démarrage à l'autre — alors que cette liste décide du motif affiché à l'utilisateur
+    (« Mot-clé exclu détecté : … ») dès que plusieurs exclusions correspondent. Mémoïsée
+    sans plus, elle rejouait ce tirage à chaque évaluation.
+    """
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        if value not in seen:
+            seen.add(value)
+            expanded.append(value)
+
+    for excl in exclusions:
+        add(excl)
     for excl in exclusions:
         norm_excl = normalize_text(excl)
         for fr_key, foreign_list in MULTILINGUAL_EXCLUSION_MAPPING.items():
             if fr_key == norm_excl:
-                expanded.update(foreign_list)
-    return list(expanded)
+                for foreign in foreign_list:
+                    add(foreign)
+    return tuple(expanded)
+
+
+def expand_exclusions_multilingual(exclusions: list[str]) -> list[str]:
+    """Étend une liste d'exclusions en y ajoutant automatiquement les équivalents multilingues.
+
+    Les exclusions par défaut de catégorie et les exclusions utilisateur reviennent à
+    l'identique à chaque évaluation : l'extension était donc recalculée des centaines
+    de fois par passe de matching pour le même résultat. Mémoïsée sur la tuple d'entrée,
+    et déterministe : deux exécutions renvoient la même liste, dans le même ordre.
+    """
+    return list(_expand_exclusions_cached(tuple(exclusions)))
 
 
 # Marqueurs de langue étrangère pour les jeux vidéo (rejet des jaquettes non-françaises)
@@ -236,9 +266,17 @@ def condition_is_accepted(
 
 
 def first_matching_exclusion(text: str, exclusions: list[str]) -> str | None:
-    """Premier mot-clé d'exclusion présent dans le texte, sinon None."""
+    """Premier mot-clé d'exclusion présent dans le texte, sinon None.
+
+    Le texte est normalisé une fois, puis interrogé exclusion par exclusion : le
+    renormaliser à chaque mot-clé donnait le même résultat (la normalisation est
+    idempotente) pour autant de traversées NFKD.
+    """
+    if not text or not exclusions:
+        return None
+    normalized = normalize_text(text)
     for raw_exclude in exclusions:
-        if contains_keyword(text, raw_exclude):
+        if contains_normalized_keyword(normalized, raw_exclude):
             return raw_exclude
     return None
 
@@ -250,9 +288,12 @@ def default_exclusion_hit(
 ) -> str | None:
     """Exclusion de catégorie sur le titre, ignorée si le mot-clé est explicitement requis."""
     includes = include_keywords or []
+    normalized_title = normalize_text(title)
     for c_excl in exclusions:
-        if not contains_keyword(title, c_excl):
+        if not contains_normalized_keyword(normalized_title, c_excl):
             continue
+        # Les mots-clés inclus restent bruts : ils viennent de l'alerte, pas du texte
+        # déjà normalisé, et ils sont peu nombreux — c'est le titre qui est long.
         if any(contains_keyword(kw, c_excl) for kw in includes):
             continue
         return c_excl
@@ -363,22 +404,29 @@ def evaluate_listing_against_alert(
                     w for w in norm_work_title.split() if w not in stop_words and len(w) > 2
                 ]
 
-                # Titre complet ou sous-titre spécifique présent dans l'annonce
+                # Titre complet ou sous-titre spécifique présent dans l'annonce.
+                # Le titre de l'annonce et `searchable_text` sont déjà normalisés, et
+                # les trois Norm* ci-dessus aussi : ce sont des Confrontations sur du
+                # texte normalisé, pas des normalisations.
                 title_in_listing = (
-                    contains_keyword(listing_normalized_title, norm_alert_name)
-                    or contains_keyword(searchable_text, norm_alert_name)
+                    contains_normalized_keyword(listing_normalized_title, norm_alert_name)
+                    or contains_normalized_keyword(searchable_text, norm_alert_name)
                     or (
                         bool(norm_sub_title)
                         and (
-                            contains_keyword(listing_normalized_title, norm_sub_title)
-                            or contains_keyword(searchable_text, norm_sub_title)
+                            contains_normalized_keyword(
+                                listing_normalized_title, norm_sub_title
+                            )
+                            or contains_normalized_keyword(searchable_text, norm_sub_title)
                         )
                     )
                     or (
                         not is_franchise
                         and (
-                            contains_keyword(listing_normalized_title, norm_work_title)
-                            or contains_keyword(searchable_text, norm_work_title)
+                            contains_normalized_keyword(
+                                listing_normalized_title, norm_work_title
+                            )
+                            or contains_normalized_keyword(searchable_text, norm_work_title)
                         )
                     )
                 )
@@ -392,13 +440,13 @@ def evaluate_listing_against_alert(
                 ]
                 if non_isbn_kws:
                     user_kws_match = all(
-                        contains_keyword(searchable_text, kw) for kw in non_isbn_kws
+                        contains_normalized_keyword(searchable_text, kw) for kw in non_isbn_kws
                     )
                 else:
                     user_kws_match = title_in_listing
 
                 variant_matched = any(
-                    contains_keyword(searchable_text, var)
+                    contains_normalized_keyword(searchable_text, var)
                     for var in usable_variants(alert.variants, clean_alert_isbn)
                 )
 
@@ -449,7 +497,10 @@ def evaluate_listing_against_alert(
                                     author_words.append(w)
                         has_author_or_context = (
                             variant_matched
-                            or any(contains_keyword(searchable_text, aw) for aw in author_words)
+                            or any(
+                                contains_normalized_keyword(searchable_text, aw)
+                                for aw in author_words
+                            )
                             or bool(
                                 re.search(
                                     r"\b(bd|tome|vol|volume|edition|integrale|album|illustre|graphique)\b",
@@ -541,7 +592,7 @@ def evaluate_listing_against_alert(
                 if not hybrid_matched:
                     all_includes_match = False
                     break
-            elif not contains_keyword(searchable_text, raw_kw):
+            elif not contains_normalized_keyword(searchable_text, raw_kw):
                 all_includes_match = False
                 break
     else:
@@ -551,7 +602,7 @@ def evaluate_listing_against_alert(
         # Vérification des variantes alternatives (OU logique entre variantes)
         variant_matched = False
         for raw_variant in usable_variants(alert.variants, clean_alert_isbn):
-            if contains_keyword(searchable_text, raw_variant):
+            if contains_normalized_keyword(searchable_text, raw_variant):
                 variant_matched = True
                 break
 
