@@ -7,7 +7,7 @@ Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs po
 ## Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-020, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-022, dette différée).
 
 ---
 
@@ -296,6 +296,15 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
   - **`_keyword_note`** couvre les cinq fins (les deux listes, aucune exclusion, aucune variante, aucune des deux, moteur muet).
 - **Raison** : l'ISBN engage le matching, l'URL de recherche Vinted et la clé de cote. Une fiche d'identité fausse ne se corrige pas après coup — c'est pour cela qu'elle ne doit jamais s'afficher sans preuve, et qu'une correction doit réécrire ce qu'elle contredit au lieu de le laisser survivre.
 - **Conséquence assumée** : un ouvrage que la BNF ignore ne peut être suivi qu'après que l'utilisateur a lui-même saisi son ISBN, et son auteur ne s'affiche plus tant qu'aucune autorité ne le confirme. Une requête SRU supplémentaire quand on corrige un ISBN (déjà le cas à la création d'après ADR-017), et une résolution de titre au lieu de deux requêtes sur la saisie manuelle.
+
+### ADR-022 : Libellé gras, consigne en italique, avertissement isolé
+- **Contexte** : trois dérives d'affichage constatées ensemble sur les mêmes écrans. Les alertes d'annonce n'affichaient `Prix`, `État`, `Écart`, `Prix bas constaté` et `Mots-clés` qu'en texte romain, alors que la carte de récap était déjà passée au libellé gras. L'avertissement d'ambiguïté d'ISBN était collé entre l'ISBN et le titre — donc invisible — et en romain tandis que la note du moteur IA, elle, était en italique : deux avertissements, deux styles. Enfin, les consignes et exemples (« Valide les critères… », « (Tape /cancel…) », « (ex: …) ») se mêlaient aux informations du livre, si bien qu'une instruction se lisait comme une donnée.
+- **Décision** : trois règles, écrites une seule fois dans la docstring de `app/bot/labels.py` (source de la charte) et verrouillées par `tests/unit/test_charte_copy.py` :
+  1. **Un libellé de champ est gras, sa valeur reste en romain.** `format_price_line`, les lignes de cote et les libellés `FIELD_*` portent le gras ; un écran ne réécrit pas son propre `<b>`.
+  2. **Un texte d'instruction, d'exemple ou d'aide est en italique.** Pied de récap, `_CONFIRMATION_FOOTER`, `(Tape /cancel…)`, `(ex: …)`, prompts de prix.
+  3. **Un avertissement est en italique et isolé par une ligne vide.** La note d'identité (ISBN) passe **au-dessus** de l'ISBN ; la note du moteur IA vit dans son propre bloc sous les critères. `_keyword_note` rend le texte nu et le rendu applique l'italique : deux notes ne peuvent plus porter deux styles.
+- **Raison** : un libellé gras guide l'œil vers la donnée, une consigne en italique ne se confond pas avec une valeur, un avertissement isolé se lit. Aucune de ces trois pertes ne faisait échouer un test — elles ne se voient qu'à l'écran, ce qui est précisément pourquoi elles ont besoin d'un verrou.
+- **Conséquence assumée** : `format_alert_recap` n'était appelé que par les tests (jamais rendu à l'écran) ; il est supprimé avec son test plutôt que mis au gras. Le bouton « Supprimer » perd son emoji `🗑`, seule icône de sa rangée : l'action se lit dans son libellé `BTN_DELETE`, pas dans un pictogramme orphelin.
 
 ---
 

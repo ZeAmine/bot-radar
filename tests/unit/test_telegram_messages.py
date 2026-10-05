@@ -46,14 +46,14 @@ def test_telegram_caption_bd_without_market_price():
     caption = build_listing_caption(listing, market_comparison_line=None)
 
     assert "🆕 <b>Blacksad — Intégrale</b>" in caption
-    assert "État : TBE" in caption
-    assert "Prix : 9,00 € (Total est. : 13,69 €)" in caption
+    assert "<b>État :</b> TBE" in caption
+    assert "<b>Prix :</b> 9,00 € (<b>Total est. :</b> 13,69 €)" in caption
     assert "Occasion :" not in caption
 
 
 def test_telegram_caption_bd_with_market_price_and_keywords():
     listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
-    comparison = "Prix du marché : 22,00 € livré\n✅ Écart : -8,31 €"
+    comparison = "<b>Prix du marché :</b> 22,00 € livré\n✅ <b>Écart :</b> -8,31 €"
     caption = build_listing_caption(
         listing,
         market_comparison_line=comparison,
@@ -61,11 +61,11 @@ def test_telegram_caption_bd_with_market_price_and_keywords():
     )
 
     assert "🆕 <b>Blacksad — Intégrale</b>" in caption
-    assert "État : TBE" in caption
-    assert "Prix : 9,00 € (Total est. : 13,69 €)" in caption
-    assert "Prix du marché : 22,00 € livré" in caption
-    assert "✅ Écart : -8,31 €" in caption
-    assert "Mots-clés : blacksad, intégrale" in caption
+    assert "<b>État :</b> TBE" in caption
+    assert "<b>Prix :</b> 9,00 € (<b>Total est. :</b> 13,69 €)" in caption
+    assert "<b>Prix du marché :</b> 22,00 € livré" in caption
+    assert "✅ <b>Écart :</b> -8,31 €" in caption
+    assert "<b>Mots-clés :</b> blacksad, intégrale" in caption
 
 
 def test_telegram_caption_clothes():
@@ -78,8 +78,8 @@ def test_telegram_caption_clothes():
     caption = build_listing_caption(listing)
 
     assert "🆕 <b>Veste Carhartt Detroit</b>" in caption
-    assert "État : TBE" in caption
-    assert "Prix : 45,00 € (Total est. : 51,00 €)" in caption
+    assert "<b>État :</b> TBE" in caption
+    assert "<b>Prix :</b> 45,00 € (<b>Total est. :</b> 51,00 €)" in caption
     # Jamais de prix marché pour les vêtements
     assert "Occasion :" not in caption
 
@@ -95,8 +95,8 @@ def test_telegram_caption_tech():
     caption = build_listing_caption(listing)
 
     assert "🆕 <b>Logitech MX Master 3S</b>" in caption
-    assert "État : TBE" in caption
-    assert "Prix : 60,00 € (Total est. : 66,58 €)" in caption
+    assert "<b>État :</b> TBE" in caption
+    assert "<b>Prix :</b> 60,00 € (<b>Total est. :</b> 66,58 €)" in caption
     assert "Occasion :" not in caption
 
 

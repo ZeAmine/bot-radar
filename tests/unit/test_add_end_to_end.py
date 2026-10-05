@@ -416,7 +416,7 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
         )
 
         confirmation = confirm_message.edit_text.call_args[0][0]
-        assert "ISBN : <code>9782369904151</code>" in confirmation
+        assert "<b>ISBN :</b> <code>9782369904151</code>" in confirmation
         # Le livre vient d'être créé : sa cote est annoncée, pas encore chiffrée.
         assert PENDING_COTE_LINE in confirmation
     finally:
@@ -904,17 +904,18 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         assert "24/24" not in confirmation
         # Le pied conservé.
         assert confirmation.endswith(
-            "Les annonces correspondant à ces critères déclencheront une alerte Telegram."
+            "<i>Les annonces correspondant à ces critères déclencheront une alerte "
+            "Telegram.</i>"
         )
 
         # La confirmation reprend la fiche, même ordre et mêmes émojis que le récap.
         assert confirmation.startswith("✅ <b>Alerte créée</b>")
-        assert "Titre : La couleur des choses" in confirmation
-        assert f"Auteur : {BNF_EDITION.author}" in confirmation
-        assert f"Éditeur : {BNF_EDITION.publisher}" in confirmation
-        assert "Prix maximum : 12,00 €" in confirmation
+        assert "<b>Titre :</b> La couleur des choses" in confirmation
+        assert f"<b>Auteur :</b> {BNF_EDITION.author}" in confirmation
+        assert f"<b>Éditeur :</b> {BNF_EDITION.publisher}" in confirmation
+        assert "<b>Prix maximum :</b> 12,00 €" in confirmation
         # Les états complets, libellés du référentiel ItemCondition.
-        conditions_ligne = "États acceptés : NAE, NSE, TBE"
+        conditions_ligne = "<b>États acceptés :</b> NAE, NSE, TBE"
         assert conditions_ligne in confirmation
     finally:
         for entered in reversed(patches):
@@ -969,7 +970,8 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
         # champ de mots-clés encore affiché. Les variantes et exclusions restent
         # vérifiées ci-dessus, sur ce qui atteint réellement la ligne créée.
         confirmation = confirm_message.edit_text.call_args[0][0]
-        assert f"Mots-clés inclus : {', '.join(create_kwargs['include_keywords'])}" in confirmation
+        keywords_line = f"<b>Mots-clés inclus :</b> {', '.join(create_kwargs['include_keywords'])}"
+        assert keywords_line in confirmation
         assert "Variantes :" not in confirmation
         assert "<b>Mots-clés exclus :</b>" not in confirmation
     finally:
@@ -1029,7 +1031,7 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
             assert text.startswith(RECAP_TITLE)
             assert "ISBN :" in text
             assert text.endswith(
-                "\n\nValide les critères ci-dessus avant de créer l'alerte."
+                "\n\n<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"
             )
             for banner in ROUTE_BANNERS:
                 assert banner not in text
@@ -1088,7 +1090,7 @@ async def test_series_alert_announces_no_market_price_it_will_never_have():
     repos["schedule_pricing"].assert_not_called()
     confirmation = confirm_message.edit_text.call_args[0][0]
     assert "✅ <b>Alerte créée</b>" in confirmation
-    assert "Titre : Blacksad" in confirmation
+    assert "<b>Titre :</b> Blacksad" in confirmation
     assert PENDING_COTE_LINE not in confirmation
     assert "Prix du marché" not in confirmation
     assert "Prix bas constaté" not in confirmation
@@ -1134,7 +1136,7 @@ async def test_a_just_created_book_still_gets_its_confirmation():
 
     confirmation = confirm_message.edit_text.call_args[0][0]
     assert "✅ <b>Alerte créée</b>" in confirmation
-    assert "Titre : Le démon de la colline au loup" in confirmation
+    assert "<b>Titre :</b> Le démon de la colline au loup" in confirmation
     assert PENDING_COTE_LINE in confirmation
     # Le livre de la confirmation est relu par son id, jamais l'objet rendu par `create`.
     repos["book_repo"].get_by_id.assert_awaited_once()

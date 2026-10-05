@@ -448,10 +448,10 @@ def test_profit_scoring_module(sample_listing):
     assert result.pepite_score == 8.5
 
     html = profit_scoring_module.format_telegram_html(result)
-    assert "Prix d'achat TTC" in html
-    assert "Revente estimée : ~55,00 €" in html
-    assert "Marge nette : <b>+25,50 €</b>" in html
-    assert "Indice pépite : 8,5/10" in html
+    assert "<b>Prix d'achat TTC :</b>" in html
+    assert "<b>Revente estimée :</b> ~55,00 €" in html
+    assert "<b>Marge nette :</b> +25,50 €" in html
+    assert "<b>Indice pépite :</b> 8,5/10" in html
     assert "Excellente marge nette" in html
 
     # Vérifier l'exclusion des livres / BDs (gérés par Chasse-aux-Livres)

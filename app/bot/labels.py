@@ -8,6 +8,21 @@ maximum » de l'autre.
 Les statuts (`Active`, `En pause`) et les mentions d'absence (« Non renseigné »,
 « Indisponible », « À confirmer ») sont des constantes : la présentation ne
 réinvente pas la donnée, elle la nomme. Les enums restent dans `app.domain`.
+
+Trois règles de mise en forme, valables sur **tous** les écrans :
+
+1. **Un libellé de champ est gras, sa valeur reste en romain.**
+   `**Prix maximum :** 15,00 €` — jamais `**Prix maximum : 15,00 €**`. La valeur
+   est la donnée ; la mettre en gras avec le libellé noie la lecture au lieu de
+   la guider.
+2. **Un texte d'instruction, d'exemple ou d'aide est en italique.**
+   « *(Tape /cancel à tout moment pour annuler)* », « *(ex: PS5)* », le pied de
+   confirmation. L'italique sépare ce que le bot demande de ce que le bot
+   affirme — le lecteur ne confond plus une consigne avec une donnée.
+3. **Un avertissement est en italique et isolé par une ligne vide.**
+   Ambiguïté d'ISBN, moteur IA muet : la note vit dans son propre bloc, jamais
+   collée entre deux informations du livre. Deux avertissements ne se composent
+   pas de deux styles : tous portent l'italique.
 """
 
 import html
@@ -161,18 +176,19 @@ def format_price_line(
     item_price_cents: int,
     estimated_total_cents: int | None = None,
 ) -> str:
-    """Ligne de prix unique du bot : « Prix : 4,00 € (Total est. : 7,78 €) ».
+    """Ligne de prix unique du bot : « **Prix :** 4,00 € (**Total est. :** 7,78 €) ».
 
     Règle de charte, valable pour toutes les alertes et tous les messages
     futurs : le prix de l'annonce d'abord, le total estimé entre parenthèses.
-    Sans total connu, la ligne se réduit au prix — elle n'invente rien et ne
-    laisse pas de parenthèse vide derrière elle.
+    Seuls les libellés sont gras (règle 1 de la charte) ; les montants restent
+    en romain. Sans total connu, la ligne se réduit au prix — elle n'invente rien
+    et ne laisse pas de parenthèse vide derrière elle.
     """
     price = format_price_cents(item_price_cents)
     if estimated_total_cents is None:
-        return f"{FIELD_PRICE} : {price}"
+        return f"<b>{FIELD_PRICE} :</b> {price}"
     total = format_price_cents(estimated_total_cents)
-    return f"{FIELD_PRICE} : {price} ({FIELD_ESTIMATED_TOTAL} : {total})"
+    return f"<b>{FIELD_PRICE} :</b> {price} (<b>{FIELD_ESTIMATED_TOTAL} :</b> {total})"
 
 
 def escape_html(value: str | None) -> str:

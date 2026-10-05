@@ -151,8 +151,12 @@ def format_semi_auto_recap(
     abrégés (`format_conditions`) pour que la carte tienne à l'écran sans
     devenir un pavé.
 
-    `isbn_note` signale une provenance d'ISBN douteuse ou un repli de source : il reste
-    affiché juste sous l'ISBN, dont il conditionne la confiance.
+    Les deux notes — `isbn_note` (provenance d'ISBN douteuse, repli de source) et
+    `keyword_note` (ce que la recherche de mots-clés a ou n'a pas trouvé) — sont des
+    avertissements : en italique, dans leur propre bloc isolé par une ligne vide
+    (charte, règle 3). `isbn_note` passe **au-dessus** de l'ISBN, dont il conditionne
+    la confiance ; collé entre l'identifiant et le titre, il ne se lisait pas.
+    Le pied de confirmation, lui, est une consigne, donc en italique (règle 2).
     """
     price_str = format_price_cents(max_price_cents)
     cond_display = format_conditions(
@@ -160,12 +164,17 @@ def format_semi_auto_recap(
     )
 
     lines: list[str] = [RECAP_TITLE, ""]
+    # L'avertissement d'identité ouvre la carte, isolé par une ligne vide : il
+    # conditionne la confiance dans l'ISBN qui suit, et n'est donc jamais coincé
+    # entre deux informations du livre.
+    if isbn_note:
+        lines.append(f"<i>{html.escape(isbn_note)}</i>")
+        lines.append("")
+
     if isbn:
         lines.append(f"<b>{FIELD_ISBN} :</b> <code>{html.escape(isbn)}</code>")
     elif isbn_note:
         lines.append(f"<b>{FIELD_ISBN} :</b> À confirmer")
-    if isbn_note:
-        lines.append(html.escape(isbn_note))
 
     lines.append(f"<b>{FIELD_TITLE} :</b> {html.escape(title)}")
     if is_series:
@@ -183,10 +192,13 @@ def format_semi_auto_recap(
         lines.append(f"<b>{FIELD_VARIANTS} :</b> {_join_escaped(variants)}")
     if exclude_keywords:
         lines.append(f"<b>{FIELD_EXCLUDE_KEYWORDS} :</b> {_join_escaped(exclude_keywords)}")
+
+    # Le verdict du moteur sur les mots-clés est un avertissement : italique et
+    # séparé des informations du livre par une ligne vide. Les mots-clés et leurs
+    # exclusions restent au-dessus, groupés ; seule la note qui les commente est
+    # mise à part.
     if keyword_note:
-        # La ligne suit immédiatement ce qu'elle explique : des variantes absentes,
-        # c'est une observation faite sur ces lignes-là.
-        lines.append(keyword_note)
+        lines.extend(["", f"<i>{keyword_note}</i>"])
 
     edition_lines = format_edition_line(edition_alternatives, isbn)
     if edition_lines:
@@ -195,8 +207,8 @@ def format_semi_auto_recap(
     # Le pied de confirmation est porté par la carte elle-même : tous les chemins qui
     # aboutissent ici finissent sur le même clavier, donc une seule formulation, et
     # aucune ne peut la laisser de côté. L'alerte n'est pas encore créée : le texte
-    # ne dit pas le contraire.
-    lines.extend(["", "Valide les critères ci-dessus avant de créer l'alerte."])
+    # ne dit pas le contraire. C'est une consigne, donc en italique (charte).
+    lines.extend(["", "<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"])
     return "\n".join(lines)
 
 
@@ -657,8 +669,8 @@ async def render_existing_alert_response(
             f"{item_label} est déjà surveillé{agreement} dans tes alertes.\n\n"
             f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
             f"{isbn_line}"
-            f"Prix maximum actuel : {price_str}\n"
-            f"Statut : {status_text}\n\n"
+            f"<b>Prix maximum actuel :</b> {price_str}\n"
+            f"<b>Statut :</b> {status_text}\n\n"
             f"Tu as indiqué un prix de {new_price_str}.\n"
             "Souhaites-tu mettre à jour le prix maximum de cette alerte existante ?"
         )
@@ -688,8 +700,8 @@ async def render_existing_alert_response(
             f"{item_label} est déjà surveillé{agreement} dans tes alertes.\n\n"
             f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
             f"{isbn_line}"
-            f"Prix maximum actuel : {price_str}\n"
-            f"Statut : {status_text}\n\n"
+            f"<b>Prix maximum actuel :</b> {price_str}\n"
+            f"<b>Statut :</b> {status_text}\n\n"
             "Pour modifier son prix maximum, entre un nouveau montant "
             "ou choisis Conserver sans modification."
         )
@@ -757,7 +769,7 @@ async def process_bd_query_lookup(
     if resolution is None:
         await status_msg.edit_text(
             f"❌ Aucune œuvre trouvée pour « <b>{html.escape(clean_query)}</b> ».\n\n"
-            "Tu peux réessayer avec un autre titre ou nom d'auteur :"
+            "<i>Tu peux réessayer avec un autre titre ou nom d'auteur.</i>"
         )
         await state.set_state(AlertCreationState.waiting_for_query)
         return
@@ -828,7 +840,7 @@ async def process_bd_query_lookup(
         f"🔑 <b>Inclus :</b> {', '.join(meta.recommended_includes)}\n"
         f"🚫 <b>Exclus :</b> {', '.join(meta.recommended_excludes)}\n"
         "💎 <b>États :</b> Neuf avec étiquette, Neuf sans étiquette, Très bon état\n\n"
-        "💶 <b>Indique ton prix maximum pour cette alerte (en €)</b> <i>(ou /cancel)</i> :"
+        "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
     )
     await status_msg.edit_text(prompt)
 
@@ -921,7 +933,7 @@ async def process_tech_or_clothes_query(
         f"🔑 <b>Inclus :</b> {', '.join(includes)}\n"
         f"🚫 <b>Exclus :</b> {', '.join(default_excludes)}\n"
         f"💎 <b>États :</b> {', '.join(default_conditions)}\n\n"
-        "💶 <b>Indique ton prix maximum pour cette alerte (en €)</b> <i>(ou /cancel)</i> :"
+        "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
     )
     if isinstance(event, CallbackQuery) and event.message and hasattr(event.message, "edit_text"):
         await event.message.edit_text(prompt)
