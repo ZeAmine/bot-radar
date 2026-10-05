@@ -18,6 +18,7 @@ Deux formes d'appel, une seule implémentation :
 
 import asyncio
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -33,7 +34,7 @@ from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.db.session import AsyncSessionLocal
 from app.providers.base import MarketOffer, extract_best_historical_low, normalize_search_isbn
 from app.providers.registry import ProviderRegistry
-from app.services.market_price_service import format_cents
+from app.utils.price import format_cents
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ CACHE_HOURS_WITHOUT_PRICE = 6
 
 # Livres dont la cotation est déjà en vol : un seul passage à la fois par livre.
 _pricing_in_flight: set[uuid.UUID] = set()
+_pricing_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -256,10 +258,11 @@ def schedule_book_pricing(book_id: uuid.UUID, *, reason: str) -> None:
     Plusieurs annonces de la même BD peuvent tomber dans la même seconde ; sans
     ce garde-fou, chacune déclencherait sa propre salve chez les marchands.
     """
-    if book_id in _pricing_in_flight:
-        logger.debug("Cotation déjà en vol pour le livre ID %s (%s).", book_id, reason)
-        return
-    _pricing_in_flight.add(book_id)
+    with _pricing_lock:
+        if book_id in _pricing_in_flight:
+            logger.debug("Cotation déjà en vol pour le livre ID %s (%s).", book_id, reason)
+            return
+        _pricing_in_flight.add(book_id)
     safe_create_task(
         _price_in_background(book_id, reason),
         name=f"market_price_{book_id}",

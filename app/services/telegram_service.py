@@ -87,7 +87,7 @@ async def send_listing_alert(
                     caption=caption,
                     reply_markup=keyboard,
                 )
-            except TelegramAPIError as photo_exc:
+            except Exception as photo_exc:
                 logger.warning(
                     "Échec d'envoi de la photo (%s), repli sur message texte: %s",
                     listing.photos[0],

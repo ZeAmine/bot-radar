@@ -17,8 +17,8 @@ from typing import Any
 
 from app.core.redis import get_redis_client
 from app.db.repositories.market_price_repo import MarketPriceRepository
-from app.services.market_price_service import format_cents
 from app.services.telegram_service import notify_admins
+from app.utils.price import format_cents
 
 logger = logging.getLogger(__name__)
 
@@ -146,3 +146,156 @@ async def notify_stale_certified_lows(
     except Exception as exc:
         logger.warning("Contrôle de santé des cotes impossible : %s", exc)
         return 0
+
+
+# --- Alertes de fin de passe ---
+
+# Seuil d'erreurs au-delà duquel la passe est considérée comme défaillante.
+ERROR_RATIO_THRESHOLD = 0.5
+# En dessous de ce nombre d'erreurs, le ratio n'a pas de sens statistique.
+MIN_ERRORS_FOR_ALERT = 3
+
+# Un fournisseur dont les relevés se taisent depuis ce délai est signalé.
+SILENT_PROVIDER_AFTER_HOURS = 48
+# Fenêtre de sollicitation : un fournisseur doit avoir été réellement interrogé
+# pendant cette période avant que son silence ne devienne un incident.
+PROVIDER_RECENT_WINDOW_DAYS = 7
+SILENT_PROVIDER_MIN_OBSERVATIONS = 3
+
+# Dédoublonnage propre aux sources silencieuses : un figement de cote et une
+# source muette sont deux incidents distincts qui ne doivent pas s'étouffer.
+SILENT_NOTIFY_KEY = "radar:market:silent_provider:notified"
+SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
+
+
+async def _claim_silent_notification_slot() -> bool:
+    """Réserve le droit d'envoyer l'alerte de source muette, une fois par fenêtre."""
+    try:
+        claimed = await get_redis_client().set(
+            SILENT_NOTIFY_KEY, "1", ex=SILENT_NOTIFY_TTL_SECONDS, nx=True
+        )
+        return bool(claimed)
+    except Exception as exc:  # pragma: no cover - Redis indisponible
+        # Mieux vaut deux messages qu'un silence : le job passe deux fois par jour.
+        logger.warning("Dédoublonnage de l'alerte de source muette indisponible : %s", exc)
+        return True
+
+
+def _provider_age_line(last_seen: datetime | None, now: datetime) -> str:
+    """Heures depuis le dernier relevé d'un fournisseur, ou « jamais »."""
+    if last_seen is None:
+        return "jamais"
+    aware = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=UTC)
+    hours = max((now - aware).total_seconds() / 3600, 0)
+    return f"dernier relevé il y a {hours:.0f} h"
+
+
+async def notify_silent_providers(session: Any) -> int:
+    """Signale les fournisseurs de cotation sans aucun relevé depuis 48 h.
+
+    Un fournisseur en panne ne casse rien : les autres répondent, le cache
+    continue de servir son dernier prix, et le silence passe inaperçu. Ce
+    contrôle ne lève jamais et n'envoie qu'une fois par fenêtre — un contrôle
+    de santé qui casse ce qu'il surveille serait le meilleur moyen de ne jamais
+    savoir ce qu'il voyait.
+    """
+    try:
+        now = datetime.now(UTC)
+        silent_after = now - timedelta(hours=SILENT_PROVIDER_AFTER_HOURS)
+        recent_after = now - timedelta(days=PROVIDER_RECENT_WINDOW_DAYS)
+        rows = await MarketPriceRepository(session).find_silent_providers(
+            silent_after=silent_after,
+            recent_after=recent_after,
+            min_recent_observations=SILENT_PROVIDER_MIN_OBSERVATIONS,
+        )
+        if not rows:
+            return 0
+        if not await _claim_silent_notification_slot():
+            logger.debug("%d source(s) muette(s), déjà signalée(s) aujourd'hui.", len(rows))
+            return 0
+
+        lines = "\n".join(
+            f"• <b>{name}</b> — {_provider_age_line(last_seen, now)}"
+            for name, last_seen in rows
+        )
+        message = (
+            "⚠️ <b>Sources de cotation muettes</b>\n\n"
+            f"{len(rows)} fournisseur(s) interrogés régulièrement n'ont renvoyé "
+            f"aucun relevé depuis {SILENT_PROVIDER_AFTER_HOURS} h :\n\n"
+            f"{lines}\n\n"
+            "Leur dernier prix reste affiché dans les cotes : sans relevé nouveau, "
+            "rien ne le corrige."
+        )
+        await notify_admins(message)
+        logger.warning(
+            "%d fournisseur(s) de cotation silencieux depuis %d h.",
+            len(rows),
+            SILENT_PROVIDER_AFTER_HOURS,
+        )
+        return len(rows)
+    except Exception as exc:
+        logger.warning("Contrôle des sources de cotation impossible : %s", exc)
+        return 0
+
+
+async def notify_incomplete_refresh(
+    processed: int,
+    total: int,
+    *,
+    mode_label: str,
+) -> None:
+    """Prévient quand la passe n'a pas traité tous les livres (plafond de durée)."""
+    if processed >= total:
+        return
+    message = (
+        f"⚠️ <b>Rafraîchissement incomplet</b>\n\n"
+        f"Mode {mode_label} : {processed}/{total} livres traités.\n"
+        "Le reste attendra la prochaine passe."
+    )
+    await notify_admins(message)
+    logger.warning("Rafraîchissement incomplet : %d/%d livres traités.", processed, total)
+
+
+async def notify_high_error_ratio(
+    processed: int,
+    errors: int,
+    *,
+    mode_label: str,
+) -> None:
+    """Prévient quand une part des livres a échoué au lieu de simplement manquer.
+
+    Un livre sans offre est normal ; une passe où la moitié des livres terminent
+    en exception signale un fournisseur ou un réseau défaillant, et rien ne le
+    dira autrement.
+    """
+    if processed == 0 or errors < MIN_ERRORS_FOR_ALERT:
+        return
+    if errors / processed < ERROR_RATIO_THRESHOLD:
+        return
+    message = (
+        f"⚠️ <b>Rafraîchissement dégradé</b>\n\n"
+        f"Mode {mode_label} : {errors}/{processed} livres en erreur.\n"
+        "Les cotes de ces livres n'ont pas été mises à jour."
+    )
+    await notify_admins(message)
+    logger.warning(
+        "Rafraîchissement dégradé : %d/%d livres en erreur.", errors, processed
+    )
+
+
+async def notify_no_prices_found(
+    processed: int,
+    available: int,
+    *,
+    mode_label: str,
+) -> None:
+    """Prévient quand aucune cote n'a été trouvée sur une passe non vide."""
+    if processed == 0 or available > 0:
+        return
+    message = (
+        f"⚠️ <b>Aucune cote trouvée</b>\n\n"
+        f"Mode {mode_label} : {processed} livres traités, 0 cote disponible.\n"
+        "Toutes les sources sont muettes ou en erreur."
+    )
+    await notify_admins(message)
+    logger.warning("Aucune cote trouvée sur %d livres traités.", processed)

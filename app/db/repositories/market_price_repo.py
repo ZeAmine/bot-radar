@@ -199,6 +199,48 @@ class MarketPriceRepository:
             total = matching
         return found, total
 
+    async def find_silent_providers(
+        self,
+        *,
+        silent_after: datetime,
+        recent_after: datetime,
+        min_recent_observations: int = 3,
+    ) -> list[tuple[str, datetime | None]]:
+        """Fournisseurs récemment sollicités qui ne répondent plus depuis `silent_after`.
+
+        Un fournisseur ne se signale pas quand il tombe en panne : ses relevés
+        s'arrêtent et le cache continue d'afficher son dernier prix. Ce regroupement
+        ne remonte que ceux qui étaient **encore actifs récemment** (au moins
+        `min_recent_observations` relevés entre `recent_after` et `silent_after`)
+        puis se sont tus : un fournisseur retiré du pipeline depuis longtemps
+        cesse donc d'alerter de lui-même.
+
+        Returns:
+            (nom, dernier relevé) par fournisseur silencieux, du plus ancien au
+            plus récent.
+        """
+        recent_observations = func.count().filter(
+            MarketPriceSnapshot.checked_at >= recent_after,
+            MarketPriceSnapshot.checked_at < silent_after,
+        )
+        stmt = (
+            select(
+                MarketPriceSnapshot.provider_name,
+                func.max(MarketPriceSnapshot.checked_at).label("last_seen"),
+            )
+            .group_by(MarketPriceSnapshot.provider_name)
+            .having(
+                func.max(MarketPriceSnapshot.checked_at) < silent_after,
+                recent_observations >= min_recent_observations,
+            )
+            .order_by(func.max(MarketPriceSnapshot.checked_at))
+        )
+        result = await self.session.execute(stmt)
+        return [
+            (name, cast("datetime | None", last_seen))
+            for name, last_seen in result.all()
+        ]
+
     async def update_or_create_cache(
         self,
         book_id: uuid.UUID,

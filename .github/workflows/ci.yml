@@ -39,6 +39,44 @@ jobs:
           INTERNAL_API_TOKEN: "ci_internal_token_test"
         run: pytest -v
 
+  # Les tests d'intégration tournent sur SQLite par défaut. Ce job les rejoue
+  # sur PostgreSQL pour que les requêtes JSON, les upserts et les types natifs
+  # ne puissent plus diverger entre les deux dialectes.
+  test-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer le projet et les outils de dev
+        run: pip install -c requirements.lock -e ".[dev]"
+
+      - name: Tests d'intégration sur PostgreSQL
+        env:
+          TELEGRAM_BOT_TOKEN: "123456789:AAG_ci_test_dummy_token_abc123"
+          TELEGRAM_WEBHOOK_SECRET: "ci_webhook_secret_test"
+          INGEST_API_TOKEN: "ci_ingest_token_test"
+          INTERNAL_API_TOKEN: "ci_internal_token_test"
+          TEST_DATABASE_URL: "postgresql+asyncpg://test:test@localhost:5432/test"
+        run: pytest tests/integration/ -v
+
   # Publier un tag, c'est affirmer que tout l'historique depuis le précédent est
   # vert. Sans cette étape, un commit de milieu de série peut casser alors que
   # `HEAD` passe : le défaut n'apparaît qu'au moment d'un bisect.

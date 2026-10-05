@@ -1,5 +1,6 @@
 """Tests d'intégration pour l'endpoint d'ingestion POST /api/v1/ingest/listings."""
 
+import os
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -16,9 +17,9 @@ from app.main import app
 
 @pytest.fixture
 async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Crée une base SQLite asynchrone en mémoire pour les tests d'intégration."""
+    """Crée une base de test asynchrone (PostgreSQL si TEST_DATABASE_URL, sinon SQLite)."""
     test_engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:"),
         echo=False,
     )
 
