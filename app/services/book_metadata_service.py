@@ -36,6 +36,10 @@ TITLE_SIMILARITY_MIN = 0.75
 SAME_WORK_TITLE_SIMILARITY_MIN = 0.9
 # Nombre maximum d'éditions alternatives remontées à l'utilisateur.
 MAX_ALTERNATIVE_EDITIONS = 3
+# Nombre maximum de tomes rattachés à une série suivie par son nom. Au-delà, on
+# remplirait le catalogue de notices voisines pour un gain de couverture nul : les
+# annonces d'une série portent leurs tomes, pas les vingt suivants.
+MAX_SERIES_BOOKS = 6
 
 # Préfixes ISBN des éditions francophones (règle GF pour la langue française).
 FRENCH_ISBN_PREFIXES = ("9782", "979")
@@ -790,6 +794,59 @@ class BookMetadataService:
 
         fallback = await self._resolve_via_openlibrary(clean_title_q, author_cand)
         return fallback.best if fallback else None
+
+    async def lookup_series_notices(
+        self,
+        series_title: str,
+        author_hint: str | None = None,
+        *,
+        limit: int = MAX_SERIES_BOOKS,
+    ) -> list[BookMetadata]:
+        """Notices distinctes d'une série — ses tomes — quand la BNF les nomme.
+
+        Une série suivie par son nom (« Blacksad ») n'a aucune fiche : ses annonces
+        partaient sans cote tant qu'aucun tome n'avait été lié. Chercher par titre
+        remonte les tomes, dont le titre commence par celui de la série. Un titre
+        n'est pas une identité (ADR-021) : sans concordance d'auteur, rien n'est
+        rattaché, et la recherche reste bornée à `limit` notices.
+
+        Contrairement à `lookup_by_title_and_author`, il n'y a pas de repli
+        OpenLibrary : composer une série est un enrichissement, pas un sauvetage.
+        """
+        wanted = normalize_text(series_title)
+        if not wanted:
+            return []
+        clean_title = clean_title_query(series_title)
+        records = await self._query_bnf_sru(
+            f'bib.title all "{clean_title}"',
+            author_hint=author_hint,
+            title_hint=clean_title,
+        )
+        if not records and author_hint:
+            records = await self._query_bnf_sru(
+                f'bib.anywhere all "{clean_title}"',
+                author_hint=author_hint,
+                title_hint=clean_title,
+            )
+
+        selected: list[BookMetadata] = []
+        seen: set[str] = set()
+        for record in records:
+            if not record.isbn13 or record.isbn13 in seen:
+                continue
+            notice_title = normalize_text(record.title)
+            is_series_member = notice_title.startswith(wanted) or (
+                title_similarity(record.title, series_title) >= TITLE_SIMILARITY_MIN
+            )
+            if not is_series_member:
+                continue
+            if author_hint and record.author and not same_author(record.author, author_hint):
+                continue
+            seen.add(record.isbn13)
+            selected.append(record)
+            if len(selected) >= limit:
+                break
+        return selected
 
     async def _query_bnf_sru(
         self,

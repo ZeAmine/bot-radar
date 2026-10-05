@@ -24,6 +24,7 @@ from app.schemas.listing import (
 )
 from app.services.book_catalog_service import BookCatalogService
 from app.services.book_market_pricing import schedule_book_pricing
+from app.services.market_health import classify_sent_cote_state, record_sent_cote_state
 from app.services.market_price_service import (
     PENDING_COTE_LINE,
     SEARCHING_BOOK_LINE,
@@ -35,50 +36,74 @@ from app.services.telegram_service import send_listing_alert
 logger = logging.getLogger("radar.use_cases.ingest_listing")
 
 
-async def link_book_from_bnf(
+async def link_books_from_bnf(
     title: str,
     alert_id: uuid.UUID,
     author: str | None = None,
+    *,
+    series: bool = False,
 ) -> None:
-    """Associe un ISBN BNF à l'alerte sans retarder l'envoi Telegram.
+    """Lie les notices BNF d'une œuvre et les cote, sans retarder l'envoi Telegram.
 
     L'entrée est le **nom de l'alerte** (l'œuvre surveillée), pas le titre brut de
     l'annonce : « The Grocery : l'intégrale » n'est pas une notice, « The Grocery »
     en est une. Le repli BNF échouait précisément là et laissait le livre sans ISBN.
     L'auteur, quand il est connu, accompagne le titre ; `lookup_by_title_and_author`
     attend la forme « Titre par Auteur ».
+
+    `series=True` demande à la BNF la série entière : une alerte suivie par son nom
+    n'a aucune fiche, et sa première annonce partait sans cote tant qu'aucun tome
+    n'avait été lié. Chaque notice liée est cotée si elle n'a pas déjà une cote
+    utilisable, une seule fois par livre (le garde de `schedule_book_pricing`).
     """
     from app.db.session import AsyncSessionLocal
     from app.services.book_metadata_service import BookMetadataService
 
     query = f"{title} par {author}" if author else title
     try:
-        meta = await BookMetadataService().lookup_by_title_and_author(query)
-        if not meta or not meta.isbn13:
+        service = BookMetadataService()
+        if series:
+            found = await service.lookup_series_notices(title, author_hint=author)
+        else:
+            meta = await service.lookup_by_title_and_author(query)
+            found = [meta] if meta else []
+        notices = [notice for notice in found if notice and notice.isbn13]
+        if not notices:
             return
-        book_id_val: uuid.UUID | None = None
+
+        to_price: list[uuid.UUID] = []
         async with AsyncSessionLocal() as session:
             book_repo = BookRepository(session)
             catalog = BookCatalogService(session)
-            book = await book_repo.get_by_isbn13(meta.isbn13)
-            if not book:
-                book = await catalog.add_book(
-                    title=title,
-                    isbn13=meta.isbn13,
-                    author=meta.author,
-                    publisher=meta.publisher,
-                )
-            if book:
+            for notice in notices:
+                isbn13 = notice.isbn13
+                if not isbn13:
+                    continue
+                book = await book_repo.get_by_isbn13(isbn13)
+                if not book:
+                    book = await catalog.add_book(
+                        title=notice.title,
+                        isbn13=isbn13,
+                        author=notice.author,
+                        publisher=notice.publisher,
+                    )
+                if not book:
+                    continue
                 await book_repo.link_alert_to_book(alert_id=alert_id, book_id=book.id)
-                book_id_val = book.id
+                # `add_book` rend un livre dont `market_cache` n'est pas chargé : on
+                # relit par le dépôt (qui précharge la relation) avant de décider.
+                loaded = await book_repo.get_by_id(book.id)
+                if loaded is not None and not has_usable_price(loaded.market_cache):
+                    to_price.append(book.id)
             await session.commit()
-
-        if book_id_val:
-            # La cote part en arrière-plan : c'est elle qui fera apparaître la ligne
-            # de prix sur les alertes suivantes de cet ouvrage.
-            schedule_book_pricing(book_id_val, reason="bnf_link")
     except Exception as exc:
         logger.warning("Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc)
+        return
+
+    # La cote part en arrière-plan : c'est elle qui fera apparaître la ligne de prix
+    # sur les alertes suivantes de cet ouvrage.
+    for book_id in to_price:
+        schedule_book_pricing(book_id, reason="bnf_link")
 
 
 def comparison_line_from_loaded_books(
@@ -324,6 +349,13 @@ class ProcessListingUseCase:
                 else:
                     needs_retry = True
             if listing.category_slug == CategorySlug.BD_COMICS.value:
+                if notification_sent:
+                    # Mesure après l'envoi, jamais avant : le diagnostic porte sur la
+                    # ligne que l'utilisateur a réellement reçue.
+                    safe_create_task(
+                        record_sent_cote_state(classify_sent_cote_state(market_line)),
+                        name=f"cote_state_{alert.id}",
+                    )
                 if book is not None and not has_usable_price(book.market_cache):
                     books_to_price.add(book.id)
                 if not catalog_ready:
@@ -406,7 +438,7 @@ class ProcessListingUseCase:
                 has_lot = bool(tome_result and tome_result.is_lot and tome_result.lot_tomes)
                 if not discovered_isbn and not has_lot:
                     safe_create_task(
-                        link_book_from_bnf(
+                        link_books_from_bnf(
                             alert.name,
                             alert.id,
                             author=getattr(alert, "author", None),
