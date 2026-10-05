@@ -5,6 +5,7 @@ from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.bot.labels import CONDITION_SHORT
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
 from app.db.models.alert import Alert
 from app.db.models.category import Category
@@ -19,7 +20,7 @@ def get_conditions_toggle_keyboard(selected_conditions: list[str]) -> InlineKeyb
         buttons.append(
             [
                 InlineKeyboardButton(
-                    text=f"{icon} {cond}",
+                    text=f"{icon} {CONDITION_SHORT.get(cond, cond)}",
                     callback_data=f"cond_toggle:{idx}",
                 )
             ]
@@ -324,7 +325,7 @@ def get_edit_conditions_keyboard(
         buttons.append(
             [
                 InlineKeyboardButton(
-                    text=f"{icon} {cond}",
+                    text=f"{icon} {CONDITION_SHORT.get(cond, cond)}",
                     callback_data=f"ed_c_tog:{alert_id}:{idx}",
                 )
             ]

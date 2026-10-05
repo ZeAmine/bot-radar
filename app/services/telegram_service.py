@@ -5,7 +5,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
 from app.bot.keyboards.listings import get_listing_alert_keyboard
-from app.bot.labels import escape_html, join_list
+from app.bot.labels import abbreviate_condition, escape_html, join_list
 from app.core.config import settings
 from app.core.tasks import safe_create_task
 from app.db.models.listing import Listing
@@ -28,18 +28,14 @@ def build_listing_caption(
     pas de bloc vide.
     """
     raw_condition = listing.condition or ""
-    condition_text = (
-        CONDITION_ALIASES.get(raw_condition.lower(), raw_condition)
-        if raw_condition
-        else "Non renseigné"
-    )
+    condition_text = CONDITION_ALIASES.get(raw_condition.lower(), raw_condition)
     price_line = format_price_summary(
         item_price_cents=listing.item_price_cents,
         estimated_total_cents=listing.estimated_total_cents,
     )
 
     safe_title = escape_html(listing.title)
-    safe_condition = escape_html(condition_text)
+    safe_condition = escape_html(abbreviate_condition(condition_text))
 
     lines: list[str] = [
         f"🆕 <b>{safe_title}</b>",

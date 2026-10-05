@@ -21,7 +21,7 @@ from app.bot.labels import (
     FIELD_TITLE,
     FIELD_VARIANTS,
     TITLE_ALERT_EXISTS,
-    format_conditions_full,
+    format_conditions,
     format_price_cents,
 )
 from app.bot.states.alert_creation import AlertCreationState
@@ -147,14 +147,14 @@ def format_semi_auto_recap(
     La carte s'ouvre sur `RECAP_TITLE`, puis une ligne par information, du plus
     structurant au plus accessoire : identifiant, identité de l'œuvre, critères de
     veille, puis l'édition surveillée quand il y a un choix à faire. Les états sont
-    abrégés (`format_conditions_short`) pour que la carte tienne à l'écran sans
+    abrégés (`format_conditions`) pour que la carte tienne à l'écran sans
     devenir un pavé.
 
     `isbn_note` signale une provenance d'ISBN douteuse ou un repli de source : il reste
     affiché juste sous l'ISBN, dont il conditionne la confiance.
     """
     price_str = format_price_cents(max_price_cents)
-    cond_display = format_conditions_full(
+    cond_display = format_conditions(
         conditions if conditions else DEFAULT_BD_CONDITIONS
     )
 

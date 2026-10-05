@@ -4,32 +4,11 @@ from app.bot.labels import (
     NOT_PROVIDED,
     STATUS_ACTIVE,
     STATUS_PAUSED,
-    format_conditions_full,
+    format_conditions,
 )
-from app.core.constants import AlertStatus, ItemCondition
+from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.utils.price import format_cents
-
-# Abréviations d'états pour les cartes compactes. Présentation pure : c'est pourquoi
-# elles vivent ici et non dans app/core, où seuls les libellés d'ItemCondition font foi.
-_CONDITION_SHORT = {
-    ItemCondition.NEW_WITH_TAG.value: "NAE",
-    ItemCondition.NEW_WITHOUT_TAG.value: "NSE",
-    ItemCondition.VERY_GOOD.value: "TBE",
-    ItemCondition.GOOD.value: "BE",
-    ItemCondition.SATISFACTORY.value: "SAT",
-}
-
-
-def format_conditions_short(conditions: list[str] | None) -> str:
-    """Abrège les états acceptés (« NAE, NSE, TBE ») pour tenir sur une seule ligne.
-
-    Un libellé hors référentiel est rendu tel quel : une abréviation manquante ne doit
-    jamais effacer un critère d'acceptation de l'alerte.
-    """
-    return ", ".join(
-        _CONDITION_SHORT.get(condition, condition) for condition in (conditions or [])
-    )
 
 
 def format_cents_to_euros(cents: int | None) -> str:
@@ -68,10 +47,7 @@ def format_alert_recap(
     else:
         lines.append("Prix maximum article : Aucun seuil")
 
-    if accepted_conditions:
-        lines.append(f"États : {', '.join(accepted_conditions)}")
-    else:
-        lines.append("États : Tous")
+    lines.append(f"États acceptés : {format_conditions(accepted_conditions)}")
 
     return "\n".join(lines)
 
@@ -101,7 +77,7 @@ def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1
     lines.extend([
         f"Statut : {status_text}",
         f"Prix maximum : {format_cents_to_euros(alert.max_item_price_cents)}",
-        f"États acceptés : {format_conditions_full(alert.accepted_conditions)}",
+        f"États acceptés : {format_conditions(alert.accepted_conditions)}",
         f"Mots-clés inclus : {', '.join(html.escape(kw) for kw in alert.include_keywords)}",
     ])
     if alert.exclude_keywords:

@@ -887,9 +887,7 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         assert f"Éditeur : {BNF_EDITION.publisher}" in confirmation
         assert "Prix maximum : 12,00 €" in confirmation
         # Les états complets, libellés du référentiel ItemCondition.
-        conditions_ligne = (
-            "États acceptés : Neuf avec étiquette, Neuf sans étiquette, Très bon état"
-        )
+        conditions_ligne = "États acceptés : NAE, NSE, TBE"
         assert conditions_ligne in confirmation
     finally:
         for entered in reversed(patches):

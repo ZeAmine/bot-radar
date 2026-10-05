@@ -49,7 +49,8 @@ def test_get_conditions_toggle_keyboard():
     found_checked = False
     for row in buttons[:-1]:
         text = row[0].text
-        if "Très bon état" in text:
+        # Les états sont affichés en abrégé : « TBE » pour « Très bon état ».
+        if text.endswith("TBE"):
             assert text.startswith("✅")
             found_checked = True
         else:

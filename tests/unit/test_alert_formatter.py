@@ -34,7 +34,7 @@ def test_format_alert_recap():
     assert "Exclusions : tome 1, poche" in recap
     assert "Variantes : blacksad integral" in recap
     assert "Prix maximum article : 15,00 €" in recap
-    assert "États : Très bon état, Neuf sans étiquette" in recap
+    assert "États acceptés : TBE, NSE" in recap
 
 
 def test_format_alert_card():
@@ -68,7 +68,7 @@ def test_format_alert_card():
     assert "Mots-clés inclus : blacksad, intégrale" in card
     assert "Mots-clés exclus : tome 1" in card
     assert "Statut : Active" in card
-    assert "États acceptés : Très bon état" in card
+    assert "États acceptés : TBE" in card
     assert (
         'Lien : <a href="https://www.vinted.fr/catalog?search_text=blacksad">'
         "Consulter la recherche</a>"
