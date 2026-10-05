@@ -17,6 +17,7 @@ from typing import Any
 
 from app.core.redis import get_redis_client
 from app.db.repositories.market_price_repo import MarketPriceRepository
+from app.services.market_price_service import PENDING_COTE_LINE, SEARCHING_BOOK_LINE
 from app.services.telegram_service import notify_admins
 from app.utils.price import format_cents
 
@@ -359,3 +360,45 @@ async def notify_no_prices_found(
     )
     await notify_admins(message)
     logger.warning("Aucune cote trouvée sur une passe complète (%d livres).", processed)
+
+
+# --- Diagnostic : avec quelle cote une alerte BD part-elle ? ---
+#
+# Le diagnostic au repos ne peut pas trancher : le job glissant finit par coter un
+# livre lié, si bien que la base affiche « cote utilisable » longtemps après une
+# alerte partie muette. Ces compteurs-ci mesurent l'instant de l'envoi, et rien
+# d'autre : un compteur par état, incrémenté après que l'alerte est partie.
+
+COTE_STATE_KEY_PREFIX = "radar:cote_sent_state:"
+COTE_STATES = ("real", "pending", "searching")
+
+
+def classify_sent_cote_state(market_line: str | None) -> str:
+    """État de la cote réellement transmise à une alerte BD.
+
+    ``real`` : une cote chiffrée. ``pending`` : un livre identifié, sa cote en
+    cours. ``searching`` : aucun livre résolu, la recherche est annoncée. Une
+    ligne absente est comptée ``pending`` : c'est un livre dont la ligne manque,
+    pas une recherche qui n'a pas lieu.
+    """
+    if market_line == SEARCHING_BOOK_LINE:
+        return "searching"
+    if market_line is None or market_line == PENDING_COTE_LINE:
+        return "pending"
+    return "real"
+
+
+async def record_sent_cote_state(state: str) -> None:
+    """Incrémente le compteur d'un état. Ne lève jamais : une mesure n'est pas une alerte."""
+    try:
+        await get_redis_client().incr(f"{COTE_STATE_KEY_PREFIX}{state}")
+    except Exception as exc:  # pragma: no cover - Redis indisponible
+        logger.debug("Compteur d'état de cote non incrémenté (%s) : %s", state, exc)
+
+
+async def read_sent_cote_states() -> dict[str, int]:
+    """Lecture brute des trois compteurs, pour le rapport d'audit."""
+    values = await get_redis_client().mget(
+        [f"{COTE_STATE_KEY_PREFIX}{state}" for state in COTE_STATES]
+    )
+    return {state: int(value or 0) for state, value in zip(COTE_STATES, values, strict=True)}

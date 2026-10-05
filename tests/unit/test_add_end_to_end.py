@@ -1079,7 +1079,7 @@ async def test_series_alert_starts_book_resolution_at_creation():
     confirm_callback.answer = AsyncMock()
 
     with patch(
-        "app.use_cases.ingest_listing.link_book_from_bnf", new_callable=AsyncMock
+        "app.use_cases.ingest_listing.link_books_from_bnf", new_callable=AsyncMock
     ) as bnf:
         patches = _patched(repos, MagicMock(), MagicMock())
         for entered in patches:
@@ -1098,6 +1098,8 @@ async def test_series_alert_starts_book_resolution_at_creation():
     args, kwargs = bnf.call_args
     assert args[0] == "Blacksad"
     assert kwargs.get("author") == "Juan Díaz Canales"
+    # La série est demandée en entier : ses tomes sont liés et cotés d'un coup.
+    assert kwargs.get("series") is True
 
     confirmation = confirm_message.edit_text.call_args[0][0]
     assert "✅ <b>Alerte créée</b>" in confirmation

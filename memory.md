@@ -7,7 +7,7 @@ Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs po
 ## Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-023, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-026, dette différée).
 
 ---
 
@@ -329,6 +329,13 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
 - **Périmètre** : les deux chemins d'ajout — `process_bd_query_lookup` (saisie manuelle) et `natural_add.parse_prompt` (langage naturel) — appellent la même règle, qui ne fait **aucun appel réseau** : tout vient de la `BookResolution` déjà obtenue, en CPU, donc sans allonger la latence Telegram. Un tome explicitement demandé garde son ISBN (`_names_a_tome`), et un titre ambigu ne détecte rien (les homonymes ne sont pas des tomes).
 - **Raison** : un ISBN de tome rend l'alerte muette sur le reste de la série — elle ne surveille qu'un volume alors que l'utilisateur en veut plusieurs. C'est une perte silencieuse, exactement ce que l'invariant n°1 refuse.
 - **Conséquence assumée** : la détection n'affirme que ce qu'elle lit. Un tome en chiffres romains (« Tome II ») ou un titre qui ne montre qu'un seul numéro n'est pas traité comme une série : mieux vaut ne rien détecter qu'inventer une série. Une fois l'alerte créée, le titre de la série devient son nom — donc son URL de recherche Vinted, qui ramènera tous les tomes.
+### ADR-026 : Une série se compose par ses tomes, et la mesure se fait à l'envoi
+- **Contexte** : deux suites d'ADR-023. D'une part, une série suivie par son nom ne liait qu'**une** notice BNF : sa première annonce pouvait coter un seul tome, et les autres restaient muets. D'autre part, le diagnostic au repos ne pouvait pas trancher la question initiale (« les alertes BD partent-elles sans cote ? ») : le job glissant finit par coter les livres liés, si bien que la base affiche « cote utilisable » longtemps après une alerte partie muette — 112/113 alertes actives étaient cotées au repos, ce qui ne dit rien de l'instant de l'envoi.
+- **Décision** :
+  1. `BookMetadataService.lookup_series_notices(série, auteur)` remonte les notices dont le titre **commence** par celui de la série, dédupliquées par ISBN, bornées à `MAX_SERIES_BOOKS = 6`, et écartées si l'auteur diverge. `link_books_from_bnf(..., series=True)` les lie toutes et les cote une par une. Une série surveillée par son nom a donc déjà de quoi coter sa première annonce.
+  2. Le diagnostic « à l'envoi » est un compteur Redis par état (`real` / `pending` / `searching`), incrémenté **après** que l'alerte est partie (jamais avant : invariant n°1), lu par `scripts/report_cote_sent_state.py` en lecture seule.
+- **Raison** : coter **tous** les tomes qu'une annonce peut viser vaut mieux qu'en coter un ; et une mesure qui porte sur l'envoi est la seule qui décrit ce que l'utilisateur a vu. Le diagnostic au repos disait « tout va bien » sur une population dont la moitié pouvait être partie muette.
+- **Conséquence assumée** : la découverte de série s'appuie sur un **préfixe de titre**, pas sur une identité : contrairement à `resolve_for_alert`, elle ne peut pas distinguer deux séries homonymes d'auteurs différents si l'auteur de l'alerte est inconnu. C'est un enrichissement borné et additif (lier un tome de plus ne dégrade pas le matching des autres), pas une autorité — l'ISBN reste validé par la BNF avant toute cotation, et `lookup_series_notices` n'a pas de repli OpenLibrary. Le compteur, lui, ne mesure que depuis sa mise en service : un rapport immédiat après déploiement est vide, et se lit « rien mesuré », jamais « aucune anomalie ».
 
 ---
 
