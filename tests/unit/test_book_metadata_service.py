@@ -1049,9 +1049,20 @@ def test_la_garde_reconnait_la_declaration_et_son_menson():
     ordinaire = b'<?xml version="1.0"?><r><t>rien de special</t></r>'
     malforme = b'<?xml version="1.0"?><r><t>jamais ferme'
 
+    declaree_utf16 = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<!DOCTYPE r [<!ENTITY isbn "9782369903086">]><r>&isbn;</r>'
+    ).encode("utf-16")
+
     assert _declares_doctype(declaree), "une déclaration avec entité interne est refusée"
     assert _declares_doctype(externe), "une entité externe est refusée"
+    # Le garde par octets laissait passer celle-ci : en UTF-16, les octets
+    # `<!DOCTYPE` ne sont pas là. C'était un contournement, pas un oubli.
+    assert b"<!DOCTYPE" not in declaree_utf16, "le cas ne vaut rien s'il contient les octets"
+    assert _declares_doctype(declaree_utf16), "une entité interne en UTF-16 est refusée"
     assert not _declares_doctype(cdata), "un CDATA n'est pas une déclaration"
     assert not _declares_doctype(echappe), "du texte échappé n'est pas une déclaration"
     assert not _declares_doctype(ordinaire), "un document ordinaire ne déclare rien"
     assert not _declares_doctype(malforme), "un document malformé n'est pas une déclaration"
+    assert not _declares_doctype(b""), "une charge vide ne déclare rien"
+    assert not _declares_doctype(b"   \n "), "des blancs ne déclarent rien"

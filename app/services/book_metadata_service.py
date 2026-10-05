@@ -329,41 +329,54 @@ def clean_title_query(title: str) -> str:
     return cleaned or title
 
 
-class _DoctypeRefuseError(Exception):
-    """Interrompt la lecture dès que le document déclare une DOCTYPE."""
+class _PrologCompleteError(Exception):
+    """Interrompt la lecture : la question posée au prolog a reçu sa réponse."""
 
 
 def _declares_doctype(payload: bytes) -> bool:
     """Vrai si le document *déclare* une DOCTYPE, et non s'il en parle.
 
-    Le garde précédent cherchait le littéral `<!DOCTYPE` dans les octets, ce qui
-    écartait aussi une notice dont le texte — via un CDATA — mentionne `<!DOCTYPE
-    html>`. Une recherche d'octets ne voit pas la structure du document ; elle
-    confondait une mention et une déclaration, et annonçait une panne là où la
-    réponse était parfaitement lisible.
+    Le garde précédent cherchait le littéral `<!DOCTYPE` dans les octets. Cette
+    recherche avait deux défauts, tous deux vérifiés :
 
-    `expat` distingue les deux, et son gestionnaire `StartDoctypeDeclHandler`
-    s'exécute quand la déclaration est lue, donc **avant** que le sous-ensemble
-    interne ne soit traité et qu'une entité puisse être développée. Lever ici
-    interrompt le document au bon moment : la garde ne dépend plus du fait
-    qu'un parseur refuse les entités par accident d'implémentation.
+    - elle écartait une notice dont le texte — via un CDATA — mentionne
+      `<!DOCTYPE html`, et annonçait une panne sur une réponse lisible ;
+    - elle laissait passer l'inverse : une réponse en UTF-16 ne contient pas ces
+      octets-là, et une entité interne y était donc développée sans être vue.
 
-    Un document malformé n'est pas une déclaration de DOCTYPE : il rend `False`,
-    et le parseur de la ligne suivante rendra la panne, avec son motif.
+    Une recherche d'octets ne voit pas la structure du document. `expat` la voit.
+
+    La lecture s'arrête au premier élément racine : une déclaration DOCTYPE est
+    nécessairement dans le prolog, donc avant lui. Un document ordinaire ne coûte
+    ainsi que son en-tête, et non un second parcours de toutes ses notices. Le
+    gestionnaire `StartDoctypeDeclHandler` s'exécute quant à lui quand la
+    déclaration est lue, donc avant que le sous-ensemble interne ne soit traité —
+    la garde ne dépend plus d'un parseur qui refuserait les entités par accident
+    d'implémentation.
+
+    Un document malformé n'est pas une déclaration : il rend `False`, et le
+    parseur de la ligne suivante rendra la panne, avec son motif.
     """
+    declaree = False
     parser = xml.parsers.expat.ParserCreate()
 
-    def _refuse(*_args: object) -> None:
-        raise _DoctypeRefuseError
+    def _lu(_name: str, *_args: object) -> None:
+        nonlocal declaree
+        declaree = True
+        raise _PrologCompleteError
 
-    parser.StartDoctypeDeclHandler = _refuse
+    def _racine(_name: str, _attrs: dict[str, str]) -> None:
+        raise _PrologCompleteError
+
+    parser.StartDoctypeDeclHandler = _lu
+    parser.StartElementHandler = _racine
     try:
         parser.Parse(payload, True)
-    except _DoctypeRefuseError:
-        return True
+    except _PrologCompleteError:
+        pass
     except xml.parsers.expat.ExpatError:
         return False
-    return False
+    return declaree
 
 
 def _parse_year(raw_date: str) -> int | None:
