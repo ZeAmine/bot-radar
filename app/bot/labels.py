@@ -62,6 +62,11 @@ FIELD_TITLE = "Titre"
 FIELD_AUTHOR = "Auteur"
 FIELD_PUBLISHER = "Éditeur"
 FIELD_PERIOD = "Période"
+FIELD_PRICE = "Prix"
+# « Total est. » et non « Total estimé » : le montant n'est pas un prix
+# Vinted mais notre calcul (article + protection + port), et l'abréviation
+# tient la ligne sans la tronquer sur un téléphone.
+FIELD_ESTIMATED_TOTAL = "Total est."
 FIELD_FALSE_POSITIVES = "Faux positifs analysés"
 FIELD_SUGGESTED_EXCLUDES = "Mots-clés exclus suggérés"
 FIELD_SUGGESTED_EXCLUDES_CUSTOM = "Mots-clés exclus suggérés (personnalisés)"
@@ -92,6 +97,9 @@ BTN_EDIT_EXCLUSIONS_AGAIN = "Modifier à nouveau"
 BTN_DISCARD_CHANGES = "← Revenir sans modifier"
 BTN_EDIT_ALERT_SETTINGS = "⚙️ Modifier l'alerte"
 BTN_ANALYSIS_RUNNING = "⏳ Analyse en cours"
+# Un bouton ne répète pas l'action qu'il propose déjà à l'écran : « Confirmer »
+# suffit, le message juste au-dessus dit ce qui est confirmé.
+BTN_CONFIRM = "Confirmer"
 
 # Sélecteur de période : la période courante est marquée, l'autre reste neutre.
 BTN_PERIOD_7 = "7 jours"
@@ -147,6 +155,24 @@ def format_conditions(conditions: list[str] | None) -> str:
     if not conditions:
         return NOT_PROVIDED
     return ", ".join(CONDITION_SHORT.get(condition, condition) for condition in conditions)
+
+
+def format_price_line(
+    item_price_cents: int,
+    estimated_total_cents: int | None = None,
+) -> str:
+    """Ligne de prix unique du bot : « Prix : 4,00 € (Total est. : 7,78 €) ».
+
+    Règle de charte, valable pour toutes les alertes et tous les messages
+    futurs : le prix de l'annonce d'abord, le total estimé entre parenthèses.
+    Sans total connu, la ligne se réduit au prix — elle n'invente rien et ne
+    laisse pas de parenthèse vide derrière elle.
+    """
+    price = format_price_cents(item_price_cents)
+    if estimated_total_cents is None:
+        return f"{FIELD_PRICE} : {price}"
+    total = format_price_cents(estimated_total_cents)
+    return f"{FIELD_PRICE} : {price} ({FIELD_ESTIMATED_TOTAL} : {total})"
 
 
 def escape_html(value: str | None) -> str:

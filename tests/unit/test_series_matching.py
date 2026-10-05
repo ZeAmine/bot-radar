@@ -54,7 +54,7 @@ def test_series_matching_specific_tome_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📉 Prix bas constaté (T2) : 18,50 €" in summary
+    assert "Prix bas constaté (T2) : 18,50 €" in summary
     assert "Prix du marché" not in summary
     assert "✅ Écart : <b>-6,50 €</b>" in summary
 
@@ -86,7 +86,7 @@ def test_series_matching_lot_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📉 Prix bas constaté (Lot) : ~54,50 €" in summary
+    assert "Prix bas constaté (Lot) : ~54,50 €" in summary
     assert "Prix du marché" not in summary
     # Gain : 25.00 - 54.50 = -29.50 €
     assert "✅ Écart : <b>-29,50 €</b>" in summary
@@ -200,7 +200,7 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     assert summary is not None
     assert "Prix du marché" not in summary
     # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
-    assert "📉 Prix bas constaté (Lot) : ~42,30 €" in summary
+    assert "Prix bas constaté (Lot) : ~42,30 €" in summary
     # Écart vs prix bas: 37.18 - 42.30 = -5.12 €
     assert "✅ Écart : <b>-5,12 €</b>" in summary
 
@@ -209,13 +209,13 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     ("lot_tomes", "item_total_cents", "expected_label", "expected_icon", "expected_diff"),
     [
         # Lot de 2 tomes consécutifs (T1 + T2 = 16.00 + 18.50 = 34.50 €)
-        ([1, 2], 2500, "📉 Prix bas constaté (Lot) : ~34,50 €", "✅", "-9,50 €"),
+        ([1, 2], 2500, "Prix bas constaté (Lot) : ~34,50 €", "✅", "-9,50 €"),
         # Lot de 2 tomes non-consécutifs (T1 + T3 = 16.00 + 20.00 = 36.00 €)
-        ([1, 3], 3000, "📉 Prix bas constaté (Lot) : ~36,00 €", "✅", "-6,00 €"),
+        ([1, 3], 3000, "Prix bas constaté (Lot) : ~36,00 €", "✅", "-6,00 €"),
         # Lot de 3 tomes (T1 + T2 + T3 = 54.50 €), prix Vinted supérieur (écart défavorable)
-        ([1, 2, 3], 6000, "📉 Prix bas constaté (Lot) : ~54,50 €", "⛔️", "+5,50 €"),
+        ([1, 2, 3], 6000, "Prix bas constaté (Lot) : ~54,50 €", "⛔️", "+5,50 €"),
         # Lot de 1 tome dans une liste de lot (T2 = 18.50 €)
-        ([2], 1500, "📉 Prix bas constaté (Lot) : ~18,50 €", "✅", "-3,50 €"),
+        ([2], 1500, "Prix bas constaté (Lot) : ~18,50 €", "✅", "-3,50 €"),
     ],
 )
 def test_series_matching_lot_variations_matrix(
@@ -818,7 +818,7 @@ def test_counted_lot_resolves_to_the_whole_series_and_prices_it():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "📉 Prix bas constaté (Lot de 4 tomes, composition déduite) : ~40,77 €" in summary
+    assert "Prix bas constaté (Lot de 4 tomes, composition déduite) : ~40,77 €" in summary
     assert "⛔️ Écart : <b>+15,31 €</b>" in summary
 
 

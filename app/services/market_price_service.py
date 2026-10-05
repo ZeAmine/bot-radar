@@ -170,11 +170,11 @@ def format_cote_lines(book: Book | None) -> list[str]:
     lines: list[str] = []
     market_cents = _positive(cache.lowest_delivered_price_cents)
     if market_cents is not None:
-        lines.append(f"📊 <b>Prix du marché :</b> {format_cents(market_cents)}")
+        lines.append(f"<b>Prix du marché :</b> {format_cents(market_cents)}")
     historical_cents = _positive(cache.historical_low_1y_cents)
     if historical_cents is not None:
         lines.append(
-            f"📉 <b>Prix bas constaté :</b> {format_cents(historical_cents)}"
+            f"<b>Prix bas constaté :</b> {format_cents(historical_cents)}"
         )
     return lines
 
@@ -385,7 +385,7 @@ class MarketPriceService:
             else ""
         )
         lines = [
-            f"📉 Prix bas constaté{tome_suffix} : {format_cents(reference_cents)}"
+            f"Prix bas constaté{tome_suffix} : {format_cents(reference_cents)}"
             if is_historical
             else MarketPriceService._market_price_line(cache, tome_suffix)
         ]
@@ -411,7 +411,7 @@ class MarketPriceService:
         provider = (cache.best_provider_name or "").replace("_", " ").title()
         provider_suffix = f" ({provider})" if provider else ""
         price = format_cents(_positive(cache.lowest_delivered_price_cents) or 0)
-        return f"📊 Prix du marché{tome_suffix} : {price}{provider_suffix}"
+        return f"Prix du marché{tome_suffix} : {price}{provider_suffix}"
 
     @staticmethod
     def _lot_summary(
@@ -441,7 +441,7 @@ class MarketPriceService:
 
         cumulated = sum(price_cents for price_cents, _ in priced)
         all_historical = all(is_historical for _, is_historical in priced)
-        label = "📉 Prix bas constaté" if all_historical else "📊 Prix du marché"
+        label = "Prix bas constaté" if all_historical else "Prix du marché"
         label += _lot_label(
             expected_count,
             len(priced),
@@ -572,12 +572,11 @@ class MarketPriceService:
 
         lines = ["📊 <b>Prix du marché</b>\n"]
         if is_historical:
-            lines.append(f"📉 Prix bas constaté : {format_cents(reference_cents)}")
-            if not partners:
-                lines.append(
-                    "(Cote d'occasion basée sur le plus bas prix "
-                    "que nous avons pu constater)"
-                )
+            # Ni parenthèse de justification ni emoji : « Prix bas constaté »
+            # nomme déjà sa source, et la ligne d'écart en dessous dit ce
+            # qu'elle vaut. La phrase qui expliquait la cote prenait la moitié
+            # de l'écran pour répéter le titre.
+            lines.append(f"Prix bas constaté : {format_cents(reference_cents)}")
 
         if partners:
             if is_historical:
