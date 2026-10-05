@@ -56,6 +56,11 @@ MEASURED_ITERATIONS = 150
 BLACKSAD_ISBN = "9782205049657"
 BUDGET_MS = 500.0  # Invariant n°1
 
+# ADR-003 : < 100 µs par évaluation alerte×annonce. La constante existe pour que le
+# seuil et son message ne puissent pas diverger, comme c'était le cas avec un 500 µs
+# écrit en dur sous un docstring qui annonçait 100.
+ADR003_MATCHING_BUDGET_US = 100.0
+
 
 def _percentile(values: list[float], pct: float) -> float:
     """Percentile interpolé (pct entre 0 et 100)."""
@@ -304,7 +309,10 @@ async def test_benchmark_cpu_matching_only(benchmark_db: AsyncSession) -> None:
     """Matching CPU seul : ~81 évaluations réelles par annonce (ADR-003 : < 100 µs/éval).
 
     Mesure le temps CPU pur d'une passe de matching sur toutes les alertes actives,
-    hors SQL et hors Telegram. Garde-fou large (×5) pour rester stable en CI.
+    hors SQL et hors Telegram. Le seuil est celui de l'ADR-003 lui-même, pas un multiple
+    de celui-ci : un garde-fou relaxé à 500 µs avait fini par couvrir la régression
+    qu'il devait au contraire signaler (le texte de l'annonce était renormalisé à chaque
+    mot-clé, 341 µs/éval sur 113 alertes réelles). Le correctif est mesuré à ~51 µs.
     """
     from sqlalchemy import select
 
@@ -352,10 +360,14 @@ async def test_benchmark_cpu_matching_only(benchmark_db: AsyncSession) -> None:
         f"\n📊 Benchmark matching CPU ({len(alerts)} alertes × {passes} passes, "
         "hors SQL et hors Telegram)"
     )
-    print(f"  médiane par évaluation alerte×annonce : {median_us:.1f} µs (ADR-003 : < 100 µs)")
+    print(
+        f"  médiane par évaluation alerte×annonce : {median_us:.1f} µs "
+        f"(ADR-003 : < {ADR003_MATCHING_BUDGET_US:.0f} µs)"
+    )
     pass_ms = [us * len(alerts) / 1000 for us in per_eval_us]
     print(_report_line("passe complète de matching", pass_ms))
 
-    assert median_us < 500.0, (
-        f"matching CPU dégradé : {median_us:.0f} µs par évaluation (garde-fou : 500 µs)"
+    assert median_us < ADR003_MATCHING_BUDGET_US, (
+        f"matching CPU dégradé : {median_us:.0f} µs par évaluation "
+        f"(ADR-003 : < {ADR003_MATCHING_BUDGET_US:.0f} µs)"
     )

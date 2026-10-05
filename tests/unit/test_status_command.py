@@ -11,27 +11,52 @@ from app.providers.llm.base import LLMHealth
 from app.services.telegram_service import notify_admins
 
 
+def _two_query_db(latency_rows: list[tuple], category_rows: list[tuple]):
+    """Session double qui répond à deux requêtes distinctes, dans l'ordre du handler.
+
+    `/status` interroge désormais la base deux fois : les percentiles de latence de
+    notification, puis les comptages par catégorie. Un double qui renvoyait le même
+    jeu de résultats aux deux ne décrivait plus rien : la première requête recevait
+    des tuples de catégorie et échouait au dépaquetage.
+    """
+    latency_result = MagicMock()
+    latency_result.all.return_value = latency_rows
+    category_result = MagicMock()
+    category_result.all.return_value = category_rows
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[latency_result, category_result])
+    return db
+
+
 @pytest.mark.asyncio
 async def test_handle_status_day_active():
     """Vérifie le message de statut quand la surveillance est active en journée."""
     message = MagicMock(spec=Message)
     message.answer = AsyncMock()
 
-    mock_db = MagicMock()
-    # Simuler les comptages par catégorie
-    mock_result = MagicMock()
-    mock_result.all.return_value = [
-        ("bd_comics", "Livres", "📚", 5),
-        ("tech", "Électronique", "💻", 3),
-        ("gaming", "Jeux Vidéo", "🎮", 2),
-    ]
-    mock_db.execute = AsyncMock(return_value=mock_result)
-
     now_ts = time.time()
+    mock_db = _two_query_db(
+        # 0,98 s en p50 puis 4,09 s : les valeurs relevées en production, pour que le
+        # rendu de la section « Latence » soit vérifié sur autre chose que du vide.
+        latency_rows=[
+            # (notified_at, received_at) : l'ordre de la requête.
+            (now_ts, now_ts - 0.98),
+            (now_ts, now_ts - 4.09),
+        ],
+        category_rows=[
+            ("bd_comics", "Livres", "📚", 5),
+            ("tech", "Électronique", "💻", 3),
+            ("gaming", "Jeux Vidéo", "🎮", 2),
+        ],
+    )
+
     mock_status_data = {
         "status": "active",
         "last_poll_at": now_ts - 15,
         "consecutive_blocks": 0,
+        # Cadence mesurée en production : 17,4 s en p50, 35,1 s au p90.
+        "cycle_gap_p50_s": 17.4,
+        "cycle_gap_p90_s": 35.1,
     }
 
     with (
@@ -52,6 +77,13 @@ async def test_handle_status_day_active():
         assert "scan -" in text
         assert "00:00 - 07:00" in text
         assert "🎯 <b>Alertes actives (10) :</b>" in text
+        # La section « Latence » rend les deux mesures : le délai que l'application
+        # contrôle, et la cadence qui reste la seule part réellement réductible.
+        # Percentiles interpolés (sémantique `percentile_cont`) sur [0,98 ; 4,09] s :
+        # p50 = 2,535 s et p95 = 3,9345 s.
+        assert "⏱ <b>Latence</b>" in text
+        assert "Détection → alerte : <b>2535 ms</b> (p50, p95 3934 ms — 2 alertes / 7 j)" in text
+        assert "Cadence de scrutation : <b>17.4 s</b> (p50, p90 35.1 s)" in text
         assert "   └  📚 Livres : <b>5</b>" in text
         assert "   └  💻 Électronique : <b>3</b>" in text
         assert "   └  🎮 Jeux Vidéo : <b>2</b>" in text
@@ -63,10 +95,10 @@ async def test_handle_status_cooldown():
     message = MagicMock(spec=Message)
     message.answer = AsyncMock()
 
-    mock_db = MagicMock()
-    mock_result = MagicMock()
-    mock_result.all.return_value = [("bd_comics", "Livres", "📚", 1)]
-    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db = _two_query_db(
+        latency_rows=[],
+        category_rows=[("bd_comics", "Livres", "📚", 1)],
+    )
 
     now_ts = time.time()
     mock_status_data = {
@@ -100,10 +132,7 @@ async def test_handle_status_night_mode():
     message = MagicMock(spec=Message)
     message.answer = AsyncMock()
 
-    mock_db = MagicMock()
-    mock_result = MagicMock()
-    mock_result.all.return_value = []
-    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db = _two_query_db(latency_rows=[], category_rows=[])
 
     with (
         patch("app.bot.handlers.status.is_night_time", return_value=True),
@@ -144,10 +173,7 @@ async def test_handle_status_ai_active():
     message = MagicMock(spec=Message)
     message.answer = AsyncMock()
 
-    mock_db = MagicMock()
-    mock_result = MagicMock()
-    mock_result.all.return_value = []
-    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db = _two_query_db(latency_rows=[], category_rows=[])
 
     mock_ai = LLMHealth(
         status="active",
@@ -178,10 +204,7 @@ async def test_handle_status_ai_error():
     message = MagicMock(spec=Message)
     message.answer = AsyncMock()
 
-    mock_db = MagicMock()
-    mock_result = MagicMock()
-    mock_result.all.return_value = []
-    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db = _two_query_db(latency_rows=[], category_rows=[])
 
     mock_ai = LLMHealth(
         status="error",

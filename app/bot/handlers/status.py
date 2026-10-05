@@ -68,6 +68,29 @@ async def handle_status(message: Message, db_session: Any) -> None:
     else:
         poller_status = "🟢 <b>Active</b>"
 
+    # Latence d'ingestion → alerte Telegram. C'est la part du délai que l'application
+    # contrôle : `published_at` est vide (Vinted ne dore pas sa charge utile d'un
+    # horodatage de publication), donc le délai face à la publication reste hors de
+    # portée. La cadence de scrutation, elle, est l'autre moitié du délai — et la
+    # seule que l'on puisse encore réduire.
+    latency = await StatsRepository(db_session).get_notification_latency_ms(days=7)
+    if latency["count"] and latency["p50_ms"] is not None:
+        latency_line = (
+            f"   └  Détection → alerte : <b>{latency['p50_ms']} ms</b> "
+            f"(p50, p95 {latency['p95_ms']} ms — {latency['count']} alertes / 7 j)"
+        )
+    else:
+        latency_line = "   └  Détection → alerte : <i>aucune alerte mesurée</i>"
+
+    cycle_p50 = (poller_data or {}).get("cycle_gap_p50_s")
+    cycle_p90 = (poller_data or {}).get("cycle_gap_p90_s")
+    if cycle_p50:
+        cadence_line = (
+            f"   └  Cadence de scrutation : <b>{cycle_p50:g} s</b> (p50, p90 {cycle_p90:g} s)"
+        )
+    else:
+        cadence_line = "   └  Cadence de scrutation : <i>mesure en cours…</i>"
+
     cat_counts = await StatsRepository(db_session).count_active_alerts_by_category()
 
     total_active = sum(row[3] for row in cat_counts)
@@ -100,6 +123,9 @@ async def handle_status(message: Message, db_session: Any) -> None:
         f"🔍 <b>Scanner Vinted</b> : {poller_status}\n"
         f"🤖 <b>Moteur IA ({ai_info.model})</b> : {ai_status}\n"
         f"🌙 <b>Plage de veille</b> : {night_hours_info}\n\n"
+        "⏱ <b>Latence</b>\n"
+        f"{latency_line}\n"
+        f"{cadence_line}\n\n"
         f"🎯 <b>Alertes actives ({total_active}) :</b>\n"
         f"{cat_summary}\n\n"
         "💡 <i>Utilisez /list pour voir le détail ou /add pour en créer une.</i>"

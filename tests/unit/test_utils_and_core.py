@@ -21,7 +21,7 @@ from app.utils.isbn import (
     isbn10_to_isbn13,
     normalize_isbn,
 )
-from app.utils.text import contains_keyword
+from app.utils.text import contains_keyword, contains_normalized_keyword, normalize_text
 
 
 def test_json_formatter_redacts_secrets_in_message_and_extras():
@@ -69,6 +69,81 @@ def test_utils_text_contains_keyword():
     assert contains_keyword(text, "george orwell") is False
     assert contains_keyword(None, "1984") is False
     assert contains_keyword(text, None) is False
+
+
+def test_utils_text_contains_normalized_keyword_matches_unnormalized_entrypoint():
+    """Le chemin rapide et le chemin prudent doivent répondre pareil.
+
+    `contains_normalized_keyword` reçoit un texte déjà normalisé et ne le renormalise
+    pas : c'est ce qui a fait passer le matching de 341 à ~51 µs par évaluation. Le
+    gain ne vaut que si les deux fonctions restent indiscernables sur les mêmes
+    entrées — y compris les accents, la ponctuation et les mots partiels. Ce test
+    verrouille cette équivalence ; il ne la prouve pas, il empêche qu'elle se casse.
+    """
+    normalized = "bd 1984 xavier coste sarbacane tres bon etat"
+    # Le texte brut dont `normalized` est la normalisation
+    raw = "BD 1984 — Xavier Coste : Sarbacane, Très bon état."
+    keywords = [
+        "1984",
+        "coste",
+        "xavier coste",
+        "COSTE",
+        "Très bon état",  # accent + espaces : doit normaliser le mot-clé
+        "livre—complet",  # tiret cadratin dans le mot-clé
+        "george orwell",  # absent
+        "198",  # préfixe : ne doit pas matcher
+        "sar",  # idem
+        "état",  # accent
+        "l'etat",  # apostrophe
+    ]
+
+    for keyword in keywords:
+        assert contains_normalized_keyword(normalized, keyword) is (
+            contains_keyword(raw, keyword)
+        ), f"divergence sur le mot-clé {keyword!r}"
+
+    assert normalize_text(normalized) == normalized, "le texte de test doit être normalisé"
+
+    # Cas limites : entrées vides ou sans mots ne doivent jamais matcher ni lever.
+    assert contains_normalized_keyword("", "1984") is False
+    assert contains_normalized_keyword(None, "1984") is False
+    assert contains_normalized_keyword(normalized, None) is False
+    assert contains_normalized_keyword(normalized, "!!!") is False
+    assert contains_normalized_keyword(normalized, "") is False
+
+
+def test_utils_text_contains_normalized_keyword_is_not_fooled_by_substrings():
+    """La frontière de mot reste entière sur le chemin rapide.
+
+    Un mot-clé ne doit pas sscanfuer dans un mot plus long : « cos » ne trouve pas
+    « coste ». C'est la raison d'être du `\b`, et elle doit tenir sur les deux chemins.
+    """
+    normalized = "bd blacksad tome 6 coste sarbacane"
+    assert contains_normalized_keyword(normalized, "cos") is False
+    assert contains_normalized_keyword(normalized, "coste") is True
+    assert contains_normalized_keyword(normalized, "tome 6") is True
+    assert contains_normalized_keyword(normalized, "tome") is True
+    assert contains_normalized_keyword(normalized, "tome 7") is False
+    # Expression multi-mots : les mots doivent être contigus, dans l'ordre.
+    assert contains_normalized_keyword(normalized, "blacksad tome 6") is True
+    assert contains_normalized_keyword(normalized, "tome blacksad") is False
+    assert contains_normalized_keyword(normalized, "blacksad 6") is False
+
+
+def test_utils_text_keyword_pattern_cache_reuses_pattern():
+    """Le motif compilé d'un mot-clé est réutilisé, pas recompilé à chaque appel.
+
+    C'est la seconde moitié du gain : la normalisation du mot-clé était déjà peu
+    coûteuse, la recompilation du motif ne l'était pas.
+    """
+    from app.utils.text import _keyword_pattern
+
+    first = _keyword_pattern("xavier coste")
+    second = _keyword_pattern("Xavier—Costé")  # même mot-clé une fois normalisé
+    assert first is not None
+    assert first is second, "le motif doit être réutilisé, pas recompilé"
+    assert first.pattern == r"\bxavier\s+coste\b"
+    assert _keyword_pattern("!!!") is None, "un mot-clé sans lettre n'a pas de motif"
 
 
 def test_utils_isbn_conversion_and_cleaning():

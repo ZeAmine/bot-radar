@@ -35,6 +35,26 @@ Un changement est terminé seulement si :
 - Aucun appel réseau (BNF, places de marché, DeepSeek) n’est ajouté avant l’envoi de l’alerte.
 - Revue humaine si le diff touche [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py), les formules de prix ou de comparaison marché, ou le chemin ingestion → matching → Telegram.
 
+### Workflow Git
+
+Le dépôt est protégé : le status check `check` est obligatoire et `enforce_admins` est actif, donc le push direct sur `main` est refusé, **y compris par le propriétaire**. Ce n’est pas une précaution de style : la CI ne peut pas jouer le rôle de `check` sur un commit qui n’existe pas encore sur GitHub. La branche est donc la seule voie, et elle est aussi la bonne.
+
+- **Une feature = une branche**, issue de `main`, nommée `feat/`, `fix/`, `docs/` ou `chore/` selon l’intention. Jamais de commit direct sur `main`.
+- **Commit et push sur la branche sont libres**, sans demande préalable : c’est le prix de la protection, et la branche supprimée après merge en garde la trace dans l’historique.
+- **PR via `gh pr create`, merge en squash**, aligné sur l’historique (`(#12)`, `(#11)`, …).
+- **Double vérification** avant merge, les deux passes exigées :
+  1. la CI verte — job `check` (et `test-postgres`) au vert sur la PR ;
+  2. le second passage local — `make lint && make test` rejoué dans l’arbre de la branche, **après** le push et juste avant le merge.
+
+  `make verify` enchaîne les deux et s’arrête au premier échec. Le merge n’a lieu que si les deux passent : **zéro anomalie** = `pytest`, `ruff` et `mypy` verts tous les trois, sur la branche autant que sur la CI.
+
+```bash
+make pr MESSAGE="…" TITLE="…" [BRANCH=fix/isbn] [STAGE="app/… tests/…"]   # branche, commit, push, PR
+make verify                                                            # second passage local + attente CI verte
+```
+
+Un agent qui implémente une feature travaille donc ainsi : branche depuis `main`, commits, `make pr`, `make verify`, puis merge squash. S’il n’est pas Explicitement demandé de merger, il s’arrête à la PR verte et le dit.
+
 ## Produit
 
 BotRadar est un bot Telegram **privé** d’aide à la décision pour l’occasion (BD/comics, vêtements, tech, jeux vidéo).
@@ -210,18 +230,9 @@ Puis `make verify-deploy` : les mêmes contrôles, mais cette fois un écart de 
 
 Ne pas committer ni pousser sauf demande. Ne pas `--force` git.
 
-**Protection de `main`** (actrice, à ne pas défaire) : le status check `check` est obligatoire et `enforce_admins` est actif, donc **le force-push est refusé, y compris par le propriétaire**. Pas de PR exigée : le dépôt est à un seul contributeur.
+**Protection de `main`** (actrice, à ne pas défaire) : le status check `check` est obligatoire et `enforce_admins` est actif, donc **le force-push est refusé, y compris par le propriétaire**. Elle rend le push direct impossible, et pas par prudence : la CI ne peut pas jouer le role `check` sur un commit qui n’existe pas encore sur GitHub. Le chemin normal n’est donc plus de la lever : c’est la branche et la PR (voir « Workflow Git »). `scripts/push_protected.py` a été supprimé avec cette voie — la constitution ne tolère pas un chemin contourné maintenu en vie à côté du chemin réel.
 
-Cette obligation rend le push direct impossible, et pas par prudence : la CI ne peut pas jouer le role `check` sur un commit qui n’existe pas encore sur GitHub. Lever la protection, pousser, la remettre est donc le seul chemin, en un geste :
-
-```bash
-make push                # lève la protection, pousse, la restaure
-make push PUSH_ARGS=--dry-run   # relit le plan et le corps du PUT
-```
-
-`scripts/push_protected.py` fait ce que la procédure manuelle ne garantissait pas : l’état lu par `GET` est celui qu’il renvoie par `PUT`, et la restauration est dans un `finally` — un push rejeté, une exception ou un `Ctrl-C` rendent la branche exactement comme le script l’a trouvée. Il refuse en amont ce qu’il ne saurait pas remettre (`required_signatures`, `block_creations` : absents du `PUT`), et sort en `3` si l’état relu diffère de l’état capturé. Codes : `0` poussé et restauré, `1` refus, `2` push refusé mais protection restaurée, `3` restauration non vérifiée.
-
-L’équivalent manuel, pour le cas où le script refuse ou que l’API change. Lever :
+La procédure de restauration ci-dessous reste la référence, pour le cas où la configuration de la branche doit être rétablie à la main. Lever :
 
 ```bash
 gh api -X DELETE repos/ZeAmine/bot-radar/branches/main/protection

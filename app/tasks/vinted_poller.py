@@ -33,10 +33,54 @@ from app.services.vinted_scraper import (
     to_ingest_payload,
     vinted_session_manager,
 )
+from app.utils.percentile import interpolated_percentile
 
 logger = logging.getLogger("radar.vinted_poller")
 
 VINTED_POLLER_STATUS_KEY = "radar:vinted_poller_status"
+
+# Nombre d'écarts entre cycles conservés pour la métrique de cadence. Assez pour
+# absorber une micro-pause ou un cycle lent sans que le p50 soit tiré par un seul
+# incident, assez court pour que la cadence affichée suive un changement réel.
+CYCLE_GAP_SAMPLES = 40
+
+# Au-delà, l'écart n'est plus un cycle de scrutation mais une interruption : reprise
+# du mode nuit, fin d'une pause anti-blocage de 3 à 60 min, ou blocage du process.
+# L'inclure ferait lire 30 min de p50 là où la cadence réelle est de 15 s.
+MAX_MEANINGFUL_CYCLE_GAP_S = 90.0
+
+class CycleCadence:
+    """Historique des écarts entre deux cycles de scrutation.
+
+    La cadence décide de la position dans la file : une annonce publiée entre deux
+    cycles n'est vue qu'au suivant. Elle était une constante codée en dur, invisible
+    donc non vérifiable ; la rendre mesurée permet de voir une cadence dégradée au
+    lieu de la lire comme normale. L'interpolation est celle de la latence
+    (`interpolated_percentile`) : les deux s'affichent dans le même `/status`.
+    """
+
+    def __init__(self, samples: int = CYCLE_GAP_SAMPLES) -> None:
+        self.gaps: deque[float] = deque(maxlen=samples)
+        self._last_at: float | None = None
+
+    def record(self, now_ts: float) -> None:
+        """Enregistre l'écart depuis le cycle précédent.
+
+        Le premier cycle n'ouvre pas d'échantillon : son écart porterait sur
+        l'initialisation, pas sur la cadence. Les écarts plus longs que
+        `MAX_MEANINGFUL_CYCLE_GAP_S` sont ignorés : ce sont des interruptions — reprise
+        du mode nuit, fin d'une pause anti-blocage — et non des cycles de scrutation.
+        """
+        if self._last_at is not None:
+            gap = now_ts - self._last_at
+            if 0 < gap <= MAX_MEANINGFUL_CYCLE_GAP_S:
+                self.gaps.append(gap)
+        self._last_at = now_ts
+
+    def percentile(self, pct: float) -> float | None:
+        """Percentile des écarts, arrondi à 0,1 s. None si l'échantillon est vide."""
+        value = interpolated_percentile(self.gaps, pct)
+        return None if value is None else round(value, 1)
 
 
 class FifoSet(set[str]):
@@ -376,6 +420,11 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
     ) as vinted_client:
         consecutive_blocks = 0
         poll_cycle = 0
+        # Historique des écarts entre deux cycles, pour rendre la cadence observable.
+        # C'est le délai qui décide de la position dans la file : le traitement interne
+        # ne pèse que ~17 ms face à des cycles de plusieurs secondes. Sans mesure, une
+        # cadence dégradée se lit comme une cadence normale.
+        cadence = CycleCadence()
 
         while not stop_event.is_set():
             # 0. Vérification du Mode Nuit (suspension nocturne pour préserver l'IP et éviter les
@@ -466,13 +515,18 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                         name="notify_vinted_recovered",
                     )
 
+                now_ts = time.time()
+                cadence.record(now_ts)
+
                 await save_poller_status({
                     "status": "active",
                     "consecutive_blocks": 0,
                     "cooldown_until": None,
                     "cooldown_seconds": 0,
-                    "last_poll_at": time.time(),
+                    "last_poll_at": now_ts,
                     "last_items_found": count_bd + count_custom,
+                    "cycle_gap_p50_s": cadence.percentile(50),
+                    "cycle_gap_p90_s": cadence.percentile(90),
                     "message": "Surveillance Vinted active",
                 })
 
