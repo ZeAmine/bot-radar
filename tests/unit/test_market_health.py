@@ -262,8 +262,12 @@ async def test_a_complete_pass_says_nothing():
         mp.setattr(market_health, "notify_admins", fake_notify)
 
         await market_health.notify_incomplete_refresh(12, 12, mode_label="complet (12 livres)")
-        await market_health.notify_no_prices_found(0, 0, 0, mode_label="complet (0 livres)")
-        await market_health.notify_no_prices_found(12, 12, 3, mode_label="complet (12 livres)")
+        await market_health.notify_no_prices_found(
+            0, 0, 0, incremental=False, mode_label="complet (0 livres)"
+        )
+        await market_health.notify_no_prices_found(
+            12, 12, 3, incremental=False, mode_label="complet (12 livres)"
+        )
         await market_health.notify_high_error_ratio(12, 2, mode_label="complet (12 livres)")
 
     assert sent == []
@@ -284,7 +288,9 @@ async def test_a_pass_without_any_price_is_reported():
         client.set = AsyncMock(return_value=True)
         mp.setattr(market_health, "get_redis_client", lambda: client)
 
-        await market_health.notify_no_prices_found(10, 10, 0, mode_label="complet (10 livres)")
+        await market_health.notify_no_prices_found(
+            10, 10, 0, incremental=False, mode_label="complet (10 livres)"
+        )
 
     assert len(sent) == 1
     assert "0 cote" in sent[0]
@@ -314,7 +320,7 @@ async def test_un_lot_incremental_sans_cote_ne_signale_rien():
         mp.setattr(market_health, "get_redis_client", lambda: client)
 
         await market_health.notify_no_prices_found(
-            8, 42, 0, mode_label="incrémental (8 livres)"
+            8, 8, 0, incremental=True, mode_label="incrémental (8 livres)"
         )
 
     assert sent == [], "un lot partiel ne peut pas conclure à une panne"
@@ -337,8 +343,12 @@ async def test_la_passe_sans_cote_ne_signale_quune_seule_fois():
         client.set = AsyncMock(side_effect=[True, False])
         mp.setattr(market_health, "get_redis_client", lambda: client)
 
-        await market_health.notify_no_prices_found(10, 10, 0, mode_label="complet (10 livres)")
-        await market_health.notify_no_prices_found(10, 10, 0, mode_label="complet (10 livres)")
+        await market_health.notify_no_prices_found(
+            10, 10, 0, incremental=False, mode_label="complet (10 livres)"
+        )
+        await market_health.notify_no_prices_found(
+            10, 10, 0, incremental=False, mode_label="complet (10 livres)"
+        )
 
     assert len(sent) == 1
     assert client.set.await_args.kwargs["nx"] is True
@@ -365,7 +375,9 @@ async def test_le_message_ne_saccuse_plus_les_sources():
         client.set = AsyncMock(return_value=True)
         mp.setattr(market_health, "get_redis_client", lambda: client)
 
-        await market_health.notify_no_prices_found(10, 10, 0, mode_label="complet (10 livres)")
+        await market_health.notify_no_prices_found(
+            10, 10, 0, incremental=False, mode_label="complet (10 livres)"
+        )
 
     assert "Toutes les sources sont muettes" not in sent[0]
     assert "Aucune source" not in sent[0]

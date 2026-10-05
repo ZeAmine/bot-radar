@@ -308,6 +308,7 @@ async def notify_no_prices_found(
     total: int,
     available: int,
     *,
+    incremental: bool,
     mode_label: str,
 ) -> None:
     """Prévient quand une passe complète n'a trouvé aucune cote.
@@ -329,13 +330,20 @@ async def notify_no_prices_found(
     """
     if processed == 0 or available > 0:
         return
-    if total > 0 and processed < total:
+    # `total` est la sélection, pas le catalogue : en mode incrémental la
+    # sélection EST le lot, donc `processed == total` toujours, et compter ne
+    # prouve rien. C'est le mode qui dit ce qu'une passe a couvert.
+    if incremental:
         logger.debug(
-            "Passe partielle (%d/%d) sans cote : aucun verdict, un lot de %d "
-            "livres ne prouve rien.",
+            "Lot incrémental de %d livres sans cote : aucun verdict, "
+            "la sélection est le lot lui-même.",
             processed,
-            total,
-            processed,
+        )
+        return
+    # `processed > 0` implique une sélection non vide, donc `total > 0`.
+    if processed < total:
+        logger.debug(
+            "Passe partielle (%d/%d) sans cote : aucun verdict.", processed, total
         )
         return
     if not await _claim_no_prices_notification_slot():
