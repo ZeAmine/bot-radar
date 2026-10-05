@@ -57,6 +57,41 @@ def isbn10_to_isbn13(isbn10: str) -> str | None:
     return core + str(check_digit)
 
 
+# Préfixes GS1 qui désignent un livre. Un code-barres peut commencer par 2 (prix
+# complémentaire) : c'est un autre produit, et l'attacher à une alerte ferait porter
+# le mauvais identifiant au bon livre.
+_BOOK_EAN_PREFIXES = ("978", "979")
+
+
+def isbn_from_identifier(value: str | None) -> str | None:
+    """L'ISBN-13 qu'un identifiant d'autorité porte, ou `None` s'il n'en porte pas.
+
+    Une autorité écrit le même code de trois manières : `urn:isbn:9782812322495`,
+    `ISBN : 978-2-8123-2249-5`, ou le code nu. Les deux premières portent le mot
+    « ISBN » ; la troisième est un EAN-13, c'est-à-dire exactement le même code pour
+    un livre — et c'est elle qui se faisait écarter, en silence, avec la notice
+    entière. La comparaison par mots-clés laissait donc une source d'autorité
+    partiellement muette, sans aucun signe pour l'expliquer.
+
+    Un EAN de 13 chiffres est retenu seulement s'il valide sa clé de contrôle : sans
+    elle, la seule garantie que ce soit un livre et non un code tronqué disparaît.
+    """
+    if not value:
+        return None
+    # Un ark de la BNF est une URL : les chiffres qu'il contient sont un identifiant
+    # de notice, pas un livre. Le lire comme un ISBN lui prêterait un faux code.
+    if "://" in value:
+        return None
+    cleaned = re.sub(r"[^0-9Xx]", "", value.upper())
+    if len(cleaned) == 13:
+        if not cleaned.startswith(_BOOK_EAN_PREFIXES):
+            return None
+        return cleaned if is_valid_isbn13(cleaned) else None
+    if len(cleaned) == 10 and is_valid_isbn10(cleaned):
+        return isbn10_to_isbn13(cleaned)
+    return None
+
+
 def _isbn_candidates(text: str) -> list[str]:
     """Liste les codes ISBN plausibles présents dans un texte, du plus explicite au plus large."""
     candidates: list[str] = []
