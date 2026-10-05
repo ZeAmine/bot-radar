@@ -17,6 +17,7 @@ from app.bot.keyboards.listings import (
     get_dislike_confirmation_keyboard,
     get_listing_alert_keyboard,
 )
+from app.bot.labels import escape_html
 from app.db.models.listing import Listing
 from app.db.repositories.autotune_repo import record_listing_dislike
 from app.db.repositories.book_repo import BookRepository
@@ -345,8 +346,27 @@ async def handle_dislike(
         category_slug=listing.category_slug,
     )
     if isinstance(callback.message, Message):
-        with contextlib.suppress(Exception):
-            await callback.message.edit_reply_markup(reply_markup=confirm_kb)
+        # Le clavier est remplacé sur le message d'annonce, sans texte nouveau :
+        # sous une légende qui ne dit rien du signalement, « Confirmer » se
+        # lisait comme une confirmation d'achat. Le toast, lui, disparaît en
+        # quelques secondes alors que le clavier reste — c'est le texte qui
+        # porte la question, pas le toast. Le clavier est restauré tel quel si
+        # l'édition du texte échoue : on préfère un clavier sans question à
+        # aucun clavier.
+        confirmation_text = (
+            f"{escape_html(listing.title)}\n\n"
+            "Signaler cette annonce comme faux positif ?\n\n"
+            "Cette annonce sera ignorée pour cette alerte."
+        )
+        try:
+            await callback.message.edit_text(
+                text=confirmation_text,
+                reply_markup=confirm_kb,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            with contextlib.suppress(Exception):
+                await callback.message.edit_reply_markup(reply_markup=confirm_kb)
 
     await callback.answer("Confirmer le faux positif ?")
 
