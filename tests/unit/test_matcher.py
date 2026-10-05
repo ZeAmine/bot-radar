@@ -748,6 +748,34 @@ def test_stored_numeric_exclusion_rejects_nothing():
     assert res.is_match is True
 
 
+def test_stored_exclusion_of_a_neighbouring_volume_rejects_nothing():
+    """Une exclusion « … #2 » stockée autrefois ne tait plus le tome 2 (sans migration).
+
+    Elle n'identifie aucune confusion : elle n'est que le titre de la série plus un
+    numéro. Sans le filtre en lecture, l'annonce du tome 2 était rejetée — par l'alerte
+    qui la voulait.
+    """
+    from app.domain.rules.listing_match import usable_exclusions
+
+    alert = create_test_alert(
+        name="Absolute Martian Manhunter",
+        include_keywords=["absolute martian manhunter"],
+        exclude_keywords=["absolute martian manhunter #2", "coffret vide"],
+    )
+
+    assert usable_exclusions(alert.exclude_keywords, alert.name) == ["coffret vide"]
+
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="absolute martian manhunter 2",
+        listing_normalized_description="etat neuf",
+        listing_condition="Très bon état",
+        listing_item_price_cents=1000,
+    )
+    assert res.is_match is True
+
+
 def test_real_exclusion_still_rejects():
     """Le filtre ne désarme pas les exclusions qui portent du sens."""
     alert = create_test_alert(

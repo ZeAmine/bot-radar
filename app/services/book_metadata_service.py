@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
+from app.domain.rules.series_detection import SeriesSignal, detect_series
 from app.utils.isbn import (
     is_valid_isbn,
     isbn10_to_isbn13,
@@ -109,12 +110,33 @@ class BookResolution:
     en roman de 1989 et en BD de 2025. Les écarter en silence faisait passer le
     roman pour l'œuvre demandée, avec son ISBN, son auteur et son éditeur dans le
     récap.
+
+    `notice_titles` porte les titres que l'autorité a **réellement rendus** pour
+    cette recherche, notice retenue en tête, y compris ceux que ni `alternatives` ni
+    `other_works` ne retiennent. Une notice numérotée voisine (« Absolute Martian
+    Manhunter, Vol. 2 » quand on demande la série) n'est ni une édition du même
+    ouvrage ni un homonyme : elle était jetée, et sans elle une œuvre numérotée
+    passait pour un one-shot — l'alerte partait avec l'ISBN d'un tome
+    (`series_signal`).
     """
 
     best: BookMetadata
     alternatives: list[BookMetadata] = field(default_factory=list)
     other_works: list[BookMetadata] = field(default_factory=list)
     author_hint_match: AuthorHintMatch = "none"
+    notice_titles: tuple[str, ...] = ()
+
+    def series_signal(self, query_title: str) -> SeriesSignal:
+        """La résolution prouve-t-elle une œuvre numérotée que la saisie ne demande pas ?
+
+        Seul point d'entrée de la détection de série : il porte la garde d'ambiguïté,
+        donc aucune des deux voies d'ajout ne peut l'oublier. Une résolution ambiguë ne
+        prouve rien — les notices qu'elle hésite à départager sont des homonymes, pas
+        des tomes.
+        """
+        if self.is_ambiguous:
+            return SeriesSignal()
+        return detect_series(query_title=query_title, notices=self.notice_titles)
 
     @property
     def is_ambiguous(self) -> bool:
@@ -701,6 +723,9 @@ class BookMetadataService:
             alternatives=alternatives,
             other_works=other_works,
             author_hint_match=self._author_hint_match(best, author_hint),
+            notice_titles=tuple(
+                dict.fromkeys(record.title for record in candidates)
+            ),
         )
 
     @staticmethod
@@ -1041,6 +1066,9 @@ class BookMetadataService:
             alternatives=alternatives,
             other_works=other_works,
             author_hint_match=self._author_hint_match(best, author_hint),
+            notice_titles=tuple(
+                dict.fromkeys(work.meta.title for work in candidates)
+            ),
         )
 
     async def _openlibrary_works(self, params: dict[str, str]) -> list[_OpenLibraryWork]:

@@ -12,6 +12,7 @@ from app.domain.rules.keyword_hygiene import (
     MAX_VARIANTS,
     is_degenerate_exclusion,
     is_degenerate_variant,
+    names_only_a_volume,
     sanitize_exclusions,
     sanitize_variants,
 )
@@ -133,3 +134,52 @@ def test_degenerate_variant_does_not_flag_a_model_suffix():
     """« 13mini » n'est pas une énumération : la lettre n'est pas seule après le chiffre."""
     assert is_degenerate_variant("iphone 13mini") is False
     assert is_degenerate_variant("one piece 2a") is True
+
+
+def test_exclusion_that_only_appends_a_volume_number_is_dropped():
+    """Le cas réel : le titre plus un numéro n'identifie aucune confusion.
+
+    Sur une alerte qui surveille la série, « … #2 » rejette l'annonce du tome 2 — celle
+    qu'on veut voir. La famille entière tombe, et une exclusion qui ajoute autre chose
+    que le numéro reste.
+    """
+    title = "Absolute Martian Manhunter"
+    family = [f"absolute martian manhunter #{number}" for number in range(1, 7)]
+
+    assert sanitize_exclusions(family, title) == []
+    assert sanitize_exclusions(["absolute martian manhunter 2"], title) == []
+    assert sanitize_exclusions(["absolute martian manhunter vol 2"], title) == []
+    # Le qualificatif autre que le numéro est la forme utile du rejet : il survit.
+    assert sanitize_exclusions(["absolute martian manhunter coffret"], title) == [
+        "absolute martian manhunter coffret"
+    ]
+
+
+def test_a_year_is_not_a_volume_number():
+    """« Blade Runner 2049 » est une autre œuvre, pas le tome 2049 du titre."""
+    assert names_only_a_volume("blade runner 2049", "Blade Runner") is False
+    assert sanitize_exclusions(["blade runner 2049"], "Blade Runner") == [
+        "blade runner 2049"
+    ]
+
+
+def test_a_title_carrying_a_number_keeps_its_qualifying_exclusions():
+    """Sur « One Piece tome 1 », exclure le tome 2 nomme un autre tome : c'est utile.
+
+    La règle ne peut s'armer que sur un titre **sans** numéro : dès qu'il en porte un,
+    le terme ne le commence plus, donc la garde est inerte.
+    """
+    assert names_only_a_volume("one piece tome 2", "One Piece tome 1") is False
+    assert sanitize_exclusions(["one piece tome 2"], "One Piece tome 1") == [
+        "one piece tome 2"
+    ]
+
+
+def test_an_exclusion_without_the_title_is_left_to_the_user():
+    """« vol 2 » nu ne reprend pas le titre : le nettoyeur n'a pas à trancher à sa place.
+
+    Le retirer supprimerait une exclusion volontaire — le reproche qu'ADR-026 adresse
+    déjà au nettoyeur.
+    """
+    assert names_only_a_volume("vol 2", "Blacksad") is False
+    assert sanitize_exclusions(["vol 2"], "Blacksad") == ["vol 2"]

@@ -44,7 +44,6 @@ from app.db.models.alert import Alert
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
-from app.domain.rules.series_detection import SeriesSignal, detect_series
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
@@ -830,14 +829,9 @@ async def process_bd_query_lookup(
     # décrit un volume, pas l'œuvre : c'est la preuve d'une série. Rien de neuf n'est
     # interrogé — tout est déjà dans la résolution qu'on tient en main.
     query_title = parse_query_title_and_author(clean_query)[0]
-    series = (
-        SeriesSignal()
-        if ambiguous
-        else detect_series(
-            query_title=query_title,
-            notices=[meta.title, *(alt.title for alt in resolution.alternatives)],
-        )
-    )
+    # Toute la résolution est consultée, pas seulement la notice retenue : la preuve
+    # d'une série est souvent dans la notice voisine, celle qui porte le numéro.
+    series = resolution.series_signal(query_title)
 
     # GARDE ANTI-DOUBLON APRÈS RÉSOLUTION BNF. Une série n'a pas d'ISBN : c'est le
     # titre qui la dédouble, sinon deux volumes seraient deux alertes.
