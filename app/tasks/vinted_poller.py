@@ -25,6 +25,7 @@ from app.db.models.category import Category
 from app.db.models.listing import Listing
 from app.db.session import AsyncSessionLocal
 from app.services.telegram_service import notify_admins
+from app.services.vinted_parsing import CATALOG_PAGE_SIZE
 from app.services.vinted_scraper import (
     DEFAULT_GLOBAL_BD_URL,
     VintedBlockError,
@@ -38,6 +39,11 @@ from app.utils.percentile import interpolated_percentile
 logger = logging.getLogger("radar.vinted_poller")
 
 VINTED_POLLER_STATUS_KEY = "radar:vinted_poller_status"
+
+# Un heartbeat de couverture de fenêtre tous les N cycles. Assez espacé pour ne pas
+# noyer les logs (deux cibles à 15 s d'intervalle), assez fréquent pour qu'un plafond
+# silencieux de l'API soit visible dans la demi-heure.
+WINDOW_LOG_EVERY_CYCLES = 20
 
 # Nombre d'écarts entre cycles conservés pour la métrique de cadence. Assez pour
 # absorber une micro-pause ou un cycle lent sans que le p50 soit tiré par un seul
@@ -340,17 +346,48 @@ async def _ingest_scraped_item(item: Any, category_slug: str) -> ScrapedIngestRe
         )
 
 
+def _log_window_coverage(received: int, category_slug: str, cycle_index: int) -> None:
+    """Journalise la fenêtre réellement obtenue, pour qu'on puisse la mesurer.
+
+    La taille demandée est une intention, pas une garantie : l'API peut plafonner sans
+    erreur, et l'ignorer revient à croire que la couverture est alors de plusieurs
+    minutes alors qu'elle peut rester à quelques dizaines de secondes. Un cycle sans
+    nouveauté n'était journalisé nulle part — c'est précisément le cycle muet qui
+    laisserait une annonce passer sous la fenêtre sans trace.
+
+    Le cas tronqué est donc un avertissement, à chaque cycle : il se répète tant qu'il
+    dure. Le cas nominal ne sort qu'un heartbeat, sinon deux lignes toutes les 15 s.
+    """
+    if received < CATALOG_PAGE_SIZE:
+        logger.warning(
+            "Fenêtre catalogue tronquée : %d items reçus pour %d demandés (%s) — "
+            "des annonces peuvent passer sous la fenêtre sans être vues",
+            received,
+            CATALOG_PAGE_SIZE,
+            category_slug,
+        )
+    elif cycle_index % WINDOW_LOG_EVERY_CYCLES == 0:
+        logger.info(
+            "Fenêtre catalogue : %d items reçus pour %d demandés (%s)",
+            received,
+            CATALOG_PAGE_SIZE,
+            category_slug,
+        )
+
+
 async def poll_vinted_once(
     seen_ids: set[str],
     vinted_client: httpx.AsyncClient,
     target_url: str = DEFAULT_GLOBAL_BD_URL,
     category_slug: str = "bd_comics",
+    cycle_index: int = 0,
 ) -> int:
     """Exécute un cycle de scraping sur une URL cible et pousse les nouvelles annonces.
 
     Retourne le nombre de nouvelles annonces ingérées avec succès.
     """
     items = await fetch_vinted_page(target_url, vinted_client)
+    _log_window_coverage(len(items), category_slug, cycle_index)
     if not items:
         return 0
 
@@ -481,6 +518,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     vinted_client=vinted_client,
                     target_url=DEFAULT_GLOBAL_BD_URL,
                     category_slug=CategorySlug.BD_COMICS.value,
+                    cycle_index=poll_cycle,
                 )
 
                 count_custom = 0
@@ -497,6 +535,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                         vinted_client=vinted_client,
                         target_url=custom_url,
                         category_slug=custom_slug,
+                        cycle_index=poll_cycle,
                     )
 
                 # Si une alerte de blocage avait eu lieu et qu'on réussit, réinitialiser et avertir
