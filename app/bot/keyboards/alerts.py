@@ -138,14 +138,18 @@ def _work_choice_rows(
 
 
 def get_category_selection_keyboard() -> InlineKeyboardMarkup:
-    """Retourne le clavier de sélection de catégorie lors de la commande /add."""
+    """Clavier de sélection de catégorie lors de la commande /add : les quatre catégories.
+
+    Sans bouton « Annuler » : à cet instant rien n'est encore engagé, et l'échappatoire
+    est `/cancel` (ou le mot « annuler »), que `handle_cancel_command` prend en charge
+    depuis n'importe quel état.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📚 Livres", callback_data="add_cat:bd_comics")],
             [InlineKeyboardButton(text="💻 Électronique", callback_data="add_cat:tech")],
             [InlineKeyboardButton(text="🎮 Jeux Vidéo", callback_data="add_cat:gaming")],
             [InlineKeyboardButton(text="👕 Vêtements", callback_data="add_cat:clothes")],
-            [InlineKeyboardButton(text="Annuler", callback_data="alert_create_cancel")],
         ]
     )
 
