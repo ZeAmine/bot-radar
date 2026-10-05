@@ -14,6 +14,7 @@ import logging
 import re
 import urllib.parse
 import xml.etree.ElementTree as ET
+import xml.parsers.expat
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -326,6 +327,43 @@ def clean_title_query(title: str) -> str:
     """Normalise un titre saisi pour la requête CQL de la BNF."""
     cleaned = re.sub(_TITLE_QUERY_ALLOWED_CHARS, " ", title).strip()
     return cleaned or title
+
+
+class _DoctypeRefuseError(Exception):
+    """Interrompt la lecture dès que le document déclare une DOCTYPE."""
+
+
+def _declares_doctype(payload: bytes) -> bool:
+    """Vrai si le document *déclare* une DOCTYPE, et non s'il en parle.
+
+    Le garde précédent cherchait le littéral `<!DOCTYPE` dans les octets, ce qui
+    écartait aussi une notice dont le texte — via un CDATA — mentionne `<!DOCTYPE
+    html>`. Une recherche d'octets ne voit pas la structure du document ; elle
+    confondait une mention et une déclaration, et annonçait une panne là où la
+    réponse était parfaitement lisible.
+
+    `expat` distingue les deux, et son gestionnaire `StartDoctypeDeclHandler`
+    s'exécute quand la déclaration est lue, donc **avant** que le sous-ensemble
+    interne ne soit traité et qu'une entité puisse être développée. Lever ici
+    interrompt le document au bon moment : la garde ne dépend plus du fait
+    qu'un parseur refuse les entités par accident d'implémentation.
+
+    Un document malformé n'est pas une déclaration de DOCTYPE : il rend `False`,
+    et le parseur de la ligne suivante rendra la panne, avec son motif.
+    """
+    parser = xml.parsers.expat.ParserCreate()
+
+    def _refuse(*_args: object) -> None:
+        raise _DoctypeRefuseError
+
+    parser.StartDoctypeDeclHandler = _refuse
+    try:
+        parser.Parse(payload, True)
+    except _DoctypeRefuseError:
+        return True
+    except xml.parsers.expat.ExpatError:
+        return False
+    return False
 
 
 def _parse_year(raw_date: str) -> int | None:
@@ -795,8 +833,8 @@ class BookMetadataService:
             # rouges et `mypy app` en erreur. Ce parseur refuse déjà les entités
             # externes (`undefined entity`) ; ce qui reste possible est la déclaration
             # d'entités internes, alors un document qui en déclare une n'est pas lu.
-            if b"<!DOCTYPE" in resp.content:
-                logger.warning("Réponse SRU BNF écartée : elle déclare uneDOCTYPE")
+            if _declares_doctype(resp.content):
+                logger.warning("Réponse SRU BNF écartée : elle déclare une DOCTYPE")
                 return [], "DOCTYPE déclaré dans la réponse"
 
             root = ET.fromstring(resp.content)

@@ -157,6 +157,11 @@ MIN_ERRORS_FOR_ALERT = 3
 
 # Un fournisseur dont les relevés se taisent depuis ce délai est signalé.
 SILENT_PROVIDER_AFTER_HOURS = 48
+# Dédoublonnage propre à « aucune cote » : comme les deux autres, cette alerte
+# ne part qu'une fois par fenêtre. Sans elle, elle suivait le rythme du job
+# glissant, soit jusqu'à quarante-huit messages par jour.
+NO_PRICES_NOTIFY_KEY = "radar:market:no_prices:notified"
+NO_PRICES_NOTIFY_TTL_SECONDS = 20 * 3600
 # Fenêtre de sollicitation : un fournisseur doit avoir été réellement interrogé
 # pendant cette période avant que son silence ne devienne un incident.
 PROVIDER_RECENT_WINDOW_DAYS = 7
@@ -166,6 +171,21 @@ SILENT_PROVIDER_MIN_OBSERVATIONS = 3
 # source muette sont deux incidents distincts qui ne doivent pas s'étouffer.
 SILENT_NOTIFY_KEY = "radar:market:silent_provider:notified"
 SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
+
+
+async def _claim_no_prices_notification_slot() -> bool:
+    """Réserve le droit d'envoyer l'alerte « aucune cote », une fois par fenêtre.
+
+    Un Redis muet n'empêche rien : mieux vaut deux messages qu'un silence.
+    """
+    try:
+        claimed = await get_redis_client().set(
+            NO_PRICES_NOTIFY_KEY, "1", ex=NO_PRICES_NOTIFY_TTL_SECONDS, nx=True
+        )
+        return bool(claimed)
+    except Exception as exc:  # pragma: no cover - Redis indisponible
+        logger.warning("Dédoublonnage de l'alerte « aucune cote » indisponible : %s", exc)
+        return True
 
 
 async def _claim_silent_notification_slot() -> bool:
@@ -285,17 +305,49 @@ async def notify_high_error_ratio(
 
 async def notify_no_prices_found(
     processed: int,
+    total: int,
     available: int,
     *,
     mode_label: str,
 ) -> None:
-    """Prévient quand aucune cote n'a été trouvée sur une passe non vide."""
+    """Prévient quand une passe complète n'a trouvé aucune cote.
+
+    Cette alerte ne se prononce plus sur un lot partiel. Le mode incrémental
+    traite huit livres toutes les trente minutes, et sa sélection est *triée*
+    vers l'échec : `get_books_needing_price_refresh` ordonne par `checked_at ASC
+    NULLS FIRST`, donc par les livres les moins récemment vérifiés, et un livre
+    sans cote revient en tête de file après six heures là où un livre coté
+    attend vingt-quatre. Les livres sans offre sont donc structurellement sur-
+    représentés dans le lot — « 0 cote sur 8 » n'y prouve rien.
+
+    Juger un micro-lot revenait à annoncer « toutes les sources sont muettes »
+    à partir d'un fait par livre, alors que la base en compte 90 cotés : le
+    message était faux, et il revenait jusqu'à quarante-huit fois par jour
+    faute de dédoublonnage. Une passe complète (07:00 et 19:00) couvre en
+    revanche tous les livres et justifie le verdict ; la panne de fournisseur,
+    elle, reste portée par `notify_silent_providers`, qui sait la nommer.
+    """
     if processed == 0 or available > 0:
         return
+    if total > 0 and processed < total:
+        logger.debug(
+            "Passe partielle (%d/%d) sans cote : aucun verdict, un lot de %d "
+            "livres ne prouve rien.",
+            processed,
+            total,
+            processed,
+        )
+        return
+    if not await _claim_no_prices_notification_slot():
+        logger.debug("Passe sans cote déjà signalée dans la fenêtre.")
+        return
+
     message = (
         f"⚠️ <b>Aucune cote trouvée</b>\n\n"
-        f"Mode {mode_label} : {processed} livres traités, 0 cote disponible.\n"
-        "Toutes les sources sont muettes ou en erreur."
+        f"Passe {mode_label} : {processed} livres traités, 0 cote disponible.\n\n"
+        "Aucun livre n'a produit d'offre d'occasion. Cela ne dit pas quelle "
+        "source a répondu : l'alerte « Sources de cotation muettes » nomme "
+        "celles qui se sont tues."
     )
     await notify_admins(message)
-    logger.warning("Aucune cote trouvée sur %d livres traités.", processed)
+    logger.warning("Aucune cote trouvée sur une passe complète (%d livres).", processed)
