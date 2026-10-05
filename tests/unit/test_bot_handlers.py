@@ -62,9 +62,7 @@ async def test_handle_categories():
     await handle_categories(message)
 
     message.answer.assert_called_once_with(CATEGORIES_TEXT)
-    assert "📚 Livres" in CATEGORIES_TEXT
-    assert "👕 Vêtements" in CATEGORIES_TEXT
-    assert "💻 Électronique" in CATEGORIES_TEXT
+    assert "Catégories prises en charge" in CATEGORIES_TEXT
 
 
 @pytest.mark.asyncio
@@ -174,7 +172,7 @@ async def test_handle_edit_command_shows_categories():
 
     message.answer.assert_called_once()
     args, kwargs = message.answer.call_args
-    assert "Gestion et modification de vos alertes" in args[0]
+    assert "Modifier l'alerte" in args[0]
     keyboard = kwargs["reply_markup"]
     buttons = keyboard.inline_keyboard
     assert any("📚 Livres (11)" in b[0].text for b in buttons)
@@ -225,7 +223,7 @@ async def test_handle_select_edit_category():
     args, kwargs = callback.message.edit_text.call_args
     assert "Raspberry Pi 4" in args[0]
     keyboard = kwargs["reply_markup"]
-    assert any(btn.text == "📁 Catégories" for row in keyboard.inline_keyboard for btn in row)
+    assert any(btn.text == "Catégories" for row in keyboard.inline_keyboard for btn in row)
     assert any(
         "al_list_cat:tech:0" in btn.callback_data
         for row in keyboard.inline_keyboard
@@ -268,7 +266,7 @@ async def test_handle_edit_category_menu():
 
     callback.message.edit_text.assert_called_once()
     args, _ = callback.message.edit_text.call_args
-    assert "Gestion et modification de vos alertes" in args[0]
+    assert "Modifier l'alerte" in args[0]
 
 
 @pytest.mark.asyncio
@@ -394,7 +392,7 @@ async def test_list_alerts_without_args_shows_category_menu():
 
     message.answer.assert_called_once()
     args, kwargs = message.answer.call_args
-    assert "Choisissez une catégorie pour afficher vos alertes" in args[0]
+    assert "Choisis une catégorie pour afficher tes alertes" in args[0]
     keyboard = kwargs["reply_markup"]
     assert any(
         "al_list_cat:tech:0" in btn.callback_data
@@ -453,9 +451,9 @@ async def test_list_alerts_with_arg_displays_category_directly():
 
     message.answer.assert_called_once()
     args, kwargs = message.answer.call_args
-    assert "Vos alertes surveillées — 💻 Électronique" in args[0]
+    assert "Mes alertes — 💻 Électronique" in args[0]
     assert "Nintendo Switch Mario Kart" in args[0]
-    assert "sans ISBN" not in args[0]
+    assert "Active — 30,00 €" in args[0]
     keyboard = kwargs["reply_markup"]
     assert any(
         "al_list_cat_menu" in btn.callback_data

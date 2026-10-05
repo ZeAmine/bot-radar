@@ -8,8 +8,22 @@ from typing import Any
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.formatter import format_cents_to_euros, format_conditions_short
+from app.bot.formatter import format_cents_to_euros
 from app.bot.keyboards.alerts import edition_ordinal, get_alert_confirmation_keyboard
+from app.bot.labels import (
+    FIELD_AUTHOR,
+    FIELD_CONDITIONS,
+    FIELD_EXCLUDE_KEYWORDS,
+    FIELD_INCLUDE_KEYWORDS,
+    FIELD_ISBN,
+    FIELD_MAX_PRICE,
+    FIELD_PUBLISHER,
+    FIELD_TITLE,
+    FIELD_VARIANTS,
+    TITLE_ALERT_EXISTS,
+    format_conditions_full,
+    format_price_cents,
+)
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     CATEGORY_EMOJIS,
@@ -48,7 +62,7 @@ logger = logging.getLogger(__name__)
 # qu'ils en multipliaient cinq pour un seul brouillon. Ce titre les remplace sans les
 # réintroduire : il ne dépend ni du chemin ni du geste, donc deux rendus de la même
 # fiche restent identiques.
-RECAP_TITLE = "🪄 <b>Ajout d'une alerte</b>"
+RECAP_TITLE = "➕ <b>Créer une alerte</b>"
 
 
 def _get_alert_repo(session: Any) -> Any:
@@ -139,34 +153,35 @@ def format_semi_auto_recap(
     `isbn_note` signale une provenance d'ISBN douteuse ou un repli de source : il reste
     affiché juste sous l'ISBN, dont il conditionne la confiance.
     """
-    price_str = f"{max_price_cents / 100:.2f} €".replace(".", ",") if max_price_cents else "Aucun"
-    cond_display = format_conditions_short(
+    price_str = format_price_cents(max_price_cents)
+    cond_display = format_conditions_full(
         conditions if conditions else DEFAULT_BD_CONDITIONS
     )
 
     lines: list[str] = [RECAP_TITLE, ""]
     if isbn:
-        lines.append(f"🔢 <b>ISBN :</b> <code>{html.escape(isbn)}</code>")
+        lines.append(f"<b>{FIELD_ISBN} :</b> <code>{html.escape(isbn)}</code>")
     elif isbn_note:
-        lines.append("🔢 <b>ISBN :</b> <i>non confirmé par la BNF</i>")
+        lines.append(f"<b>{FIELD_ISBN} :</b> À confirmer")
     if isbn_note:
-        lines.append(f"{'ℹ️' if isbn else '⚠️'} <i>{html.escape(isbn_note)}</i>")
+        lines.append(html.escape(isbn_note))
 
-    lines.append(f"📌 <b>Titre :</b> {html.escape(title)}")
+    lines.append(f"<b>{FIELD_TITLE} :</b> {html.escape(title)}")
     if is_series:
-        lines.append("📚 <b>Série multi-tomes</b> — surveillance par tome")
+        lines.append("Série multi-tomes — surveillance par tome")
     if author:
-        lines.append(f"✍️ <b>Auteur :</b> {html.escape(author)}")
+        lines.append(f"<b>{FIELD_AUTHOR} :</b> {html.escape(author)}")
     if publisher:
-        lines.append(f"🏢 <b>Éditeur :</b> {html.escape(publisher)}")
+        lines.append(f"<b>{FIELD_PUBLISHER} :</b> {html.escape(publisher)}")
 
-    lines.append(f"🎯 <b>Prix max :</b> {price_str}")
-    lines.append(f"🏷️ <b>États :</b> {html.escape(cond_display)}")
-    lines.append(f"🔑 <b>Inclus :</b> {_join_escaped(include_keywords)}")
+    lines.append("")
+    lines.append(f"<b>{FIELD_MAX_PRICE} :</b> {price_str}")
+    lines.append(f"<b>{FIELD_CONDITIONS} :</b> {html.escape(cond_display)}")
+    lines.append(f"<b>{FIELD_INCLUDE_KEYWORDS} :</b> {_join_escaped(include_keywords)}")
     if variants:
-        lines.append(f"✨ <b>Variantes :</b> {_join_escaped(variants)}")
+        lines.append(f"<b>{FIELD_VARIANTS} :</b> {_join_escaped(variants)}")
     if exclude_keywords:
-        lines.append(f"🚫 <b>Exclus :</b> {_join_escaped(exclude_keywords)}")
+        lines.append(f"<b>{FIELD_EXCLUDE_KEYWORDS} :</b> {_join_escaped(exclude_keywords)}")
     if keyword_note:
         # La ligne suit immédiatement ce qu'elle explique : des variantes absentes,
         # c'est une observation faite sur ces lignes-là.
@@ -178,12 +193,9 @@ def format_semi_auto_recap(
 
     # Le pied de confirmation est porté par la carte elle-même : tous les chemins qui
     # aboutissent ici finissent sur le même clavier, donc une seule formulation, et
-    # aucune ne peut la laisser de côté.
-    lines.extend(["", "Confirmer la création de cette alerte ?"])
-    lines.append(
-        "\n<i>Clique sur « Créer l'alerte » pour valider "
-        "ou « Modifier » pour ajuster.</i>"
-    )
+    # aucune ne peut la laisser de côté. L'alerte n'est pas encore créée : le texte
+    # ne dit pas le contraire.
+    lines.extend(["", "Valide les critères ci-dessus avant de créer l'alerte."])
     return "\n".join(lines)
 
 
@@ -383,35 +395,32 @@ def format_alerts_list_text(
     total_count: int,
     category_label: str | None = None,
 ) -> str:
-    """Génère le texte de la vue compacte /list."""
+    """Génère le texte de la vue compacte /list, dans l'ordre de la charte.
+
+    Titre « Mes alertes », pagination et total sur une ligne distincte, une entrée
+    par alerte : numéro, titre, statut, Prix maximum. L'ISBN et les filtres restent
+    dans la fiche détaillée, chaque valeur dynamique est échappée.
+    """
     total_pages = max(1, (total_count + 9) // 10)
     title_suffix = f" — {category_label}" if category_label else ""
-    header = (
-        f"📋 <b>Vos alertes surveillées{title_suffix}</b> "
-        f"(Page {current_page + 1}/{total_pages} — "
-        f"{total_count} alerte{'s' if total_count > 1 else ''}) :\n"
+    lines = [f"📚 <b>Mes alertes{title_suffix}</b>"]
+    lines.append(
+        f"Page {current_page + 1}/{total_pages} — "
+        f"{total_count} alerte{'s' if total_count > 1 else ''}"
     )
-    lines = [header]
+    lines.append("")
     start_num = current_page * 10 + 1
     for i, a in enumerate(alerts, start=start_num):
-        status_icon = "🟢" if a.status == AlertStatus.ACTIVE else "⏸️"
+        status_text = "Active" if a.status == AlertStatus.ACTIVE else "En pause"
         cat_icon = (
             f"{a.category.emoji} "
             if getattr(a, "category", None) and getattr(a.category, "emoji", None)
             else ""
         )
         price_str = format_cents_to_euros(a.max_item_price_cents)
-        if getattr(a, "isbn", None):
-            lines.append(
-                f"<b>{i}.</b> {status_icon} {cat_icon}<b>{html.escape(a.name)}</b>\n"
-                f"   ↳ ISBN : <code>{a.isbn}</code> • Max : {price_str}"
-            )
-        else:
-            lines.append(
-                f"<b>{i}.</b> {status_icon} {cat_icon}<b>{html.escape(a.name)}</b>\n"
-                f"   ↳ Max : {price_str}"
-            )
-    lines.append("\n<i>Cliquez sur un numéro ci-dessous pour ouvrir l'alerte :</i>")
+        lines.append(
+            f"{i}. {cat_icon}<b>{html.escape(a.name)}</b> — {status_text} — {price_str}"
+        )
     return "\n".join(lines)
 
 
@@ -553,13 +562,8 @@ async def render_existing_alert_response(
     Arrêt net et binaire : aucune alerte concurrente n'est créée, aucune recherche de variantes
     n'est déclenchée, et le récapitulatif de confirmation de création n'est jamais affiché.
     """
-    status_emoji = "🟢" if existing.status == AlertStatus.ACTIVE else "⏸️"
     status_text = "Active" if existing.status == AlertStatus.ACTIVE else "En pause"
-    price_str = (
-        f"{existing.max_item_price_cents / 100:.2f} €".replace(".", ",")
-        if existing.max_item_price_cents
-        else "Aucun"
-    )
+    price_str = format_price_cents(existing.max_item_price_cents)
 
     category_slug = (
         existing.category.slug
@@ -580,39 +584,40 @@ async def render_existing_alert_response(
         item_label = f"Ce produit ({cat_text})"
 
     isbn_line = (
-        f"🔢 <b>ISBN :</b> <code>{html.escape(existing.isbn)}</code>\n"
+        f"<b>ISBN :</b> <code>{html.escape(existing.isbn)}</code>\n"
         if existing.isbn
         else ""
     )
 
     # Cas 1 : Un nouveau prix différent du prix actuel a été spécifié
     if new_price_cents is not None and new_price_cents != existing.max_item_price_cents:
-        new_price_str = f"{new_price_cents / 100:.2f} €".replace(".", ",")
+        new_price_str = format_price_cents(new_price_cents)
         await state.update_data(
             existing_alert_id=str(existing.id),
             new_max_price_cents=new_price_cents,
         )
         agreement = "e" if item_label.startswith("Cette") else ""
         warn_text = (
-            f"⚠️ <b>{item_label} est déjà surveillé{agreement} dans tes alertes !</b>\n\n"
+            f"⚠️ <b>{TITLE_ALERT_EXISTS[2:].strip()}</b>\n\n"
+            f"{item_label} est déjà surveillé{agreement} dans tes alertes.\n\n"
             f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
             f"{isbn_line}"
-            f"🎯 <b>Prix max actuel :</b> {price_str}\n"
-            f"{status_emoji} <b>Statut :</b> {status_text}\n\n"
-            f"💡 <i>Tu as indiqué un prix de <b>{new_price_str}</b>.</i>\n"
-            "Souhaites-tu mettre à jour le prix max de cette alerte existante ?"
+            f"Prix maximum actuel : {price_str}\n"
+            f"Statut : {status_text}\n\n"
+            f"Tu as indiqué un prix de {new_price_str}.\n"
+            "Souhaites-tu mettre à jour le prix maximum de cette alerte existante ?"
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=f"🔄 Mettre à jour à {new_price_str}",
+                        text=f"Mettre à jour à {new_price_str}",
                         callback_data=f"upd_alert_price:{existing.id}:{new_price_cents}",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        text="❌ Conserver l'existante",
+                        text="Conserver l'existante",
                         callback_data="alert_create_cancel",
                     )
                 ],
@@ -624,20 +629,20 @@ async def render_existing_alert_response(
         await state.set_state(AlertCreationState.waiting_for_max_price)
         agreement = "e" if item_label.startswith("Cette") else ""
         warn_text = (
-            f"⚠️ <b>{item_label} est déjà surveillé{agreement} dans tes alertes !</b>\n\n"
+            f"⚠️ <b>{TITLE_ALERT_EXISTS[2:].strip()}</b>\n\n"
+            f"{item_label} est déjà surveillé{agreement} dans tes alertes.\n\n"
             f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
             f"{isbn_line}"
-            f"🎯 <b>Prix max actuel :</b> {price_str}\n"
-            f"{status_emoji} <b>Statut :</b> {status_text}\n\n"
-            "ℹ️ <i>Cette alerte est déjà surveillée en continu 24h/24.</i>\n\n"
-            "💶 <b>Pour modifier son prix max, entre un nouveau montant "
-            "(ou clique sur Conserver sans modification) :</b>"
+            f"Prix maximum actuel : {price_str}\n"
+            f"Statut : {status_text}\n\n"
+            "Pour modifier son prix maximum, entre un nouveau montant "
+            "ou choisis Conserver sans modification."
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="❌ Conserver sans modification",
+                        text="Conserver sans modification",
                         callback_data="alert_create_cancel",
                     )
                 ]

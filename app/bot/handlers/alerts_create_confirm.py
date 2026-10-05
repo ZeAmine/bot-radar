@@ -21,6 +21,7 @@ from app.bot.keyboards.alerts import (
     get_category_selection_keyboard,
     get_conditions_toggle_keyboard,
 )
+from app.bot.labels import format_price_cents
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     STANDARD_CONDITIONS,
@@ -173,55 +174,54 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
     """Affiche le menu complet de modification des informations d'alerte."""
     await callback.answer()
     data = await state.get_data()
-    name = data.get("name", "cet article")
+    name = data.get("name")
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
     isbn = data.get("isbn")
     current_price = data.get("max_item_price_cents")
-    current_price_str = (
-        f"{current_price / 100:.2f} €".replace(".", ",") if current_price else "Aucun"
-    )
+    current_price_str = format_price_cents(current_price)
 
+    title = f" pour « {html.escape(name)} »" if name else ""
     text = (
-        f"✏️ <b>Modification de l'alerte « {html.escape(name)} »</b>\n\n"
-        "Choisis l'information que tu souhaites modifier :"
+        f"✏️ <b>Modifier l'alerte{title}</b>\n\n"
+        "Choisis l'information à modifier :"
     )
 
     buttons = [
-        [InlineKeyboardButton(text="📌 Nom / Titre", callback_data="al_create_edit:name")],
+        [InlineKeyboardButton(text="Nom / Titre", callback_data="al_create_edit:name")],
     ]
 
     # Pour les BD/Comics ou si un ISBN est présent
     if category_slug == CategorySlug.BD_COMICS.value or isbn:
-        isbn_str = f" ({isbn})" if isbn else " (aucun)"
+        isbn_str = f" ({isbn})" if isbn else ""
         buttons.append([
-            InlineKeyboardButton(text=f"🔢 ISBN{isbn_str}", callback_data="al_create_edit:isbn")
+            InlineKeyboardButton(text=f"ISBN{isbn_str}", callback_data="al_create_edit:isbn")
         ])
 
     buttons.extend([
         [
             InlineKeyboardButton(
-                text=f"🎯 Prix max ({current_price_str})", callback_data="al_create_edit:price"
+                text=f"Prix maximum ({current_price_str})", callback_data="al_create_edit:price"
             )
         ],
         [
             InlineKeyboardButton(
-                text="🔑 Mots-clés inclus", callback_data="al_create_edit:include_keywords"
+                text="Mots-clés inclus", callback_data="al_create_edit:include_keywords"
             )
         ],
         [
             InlineKeyboardButton(
-                text="🚫 Mots-clés exclus", callback_data="al_create_edit:exclude_keywords"
+                text="Mots-clés exclus", callback_data="al_create_edit:exclude_keywords"
             )
         ],
-        [InlineKeyboardButton(text="✨ Variantes", callback_data="al_create_edit:variants")],
+        [InlineKeyboardButton(text="Variantes", callback_data="al_create_edit:variants")],
         [
             InlineKeyboardButton(
-                text="🏷 États acceptés", callback_data="al_create_edit:conditions"
+                text="États acceptés", callback_data="al_create_edit:conditions"
             )
         ],
         [
             InlineKeyboardButton(
-                text="🔄 Changer de produit / Recommencer", callback_data="al_create_edit:restart"
+                text="Changer de produit / Recommencer", callback_data="al_create_edit:restart"
             )
         ],
         [
@@ -261,8 +261,8 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
         data = await state.get_data()
         selected = list(data.get("selected_conditions") or STANDARD_CONDITIONS)
         text = (
-            "💎 <b>Choisis les états acceptés pour cette alerte :</b>\n\n"
-            "Coche ou décoche les états souhaités puis clique sur Confirmer :"
+            "✏️ <b>États acceptés</b>\n\n"
+            "Coche ou décoche les états souhaités puis clique sur Confirmer."
         )
         keyboard = get_conditions_toggle_keyboard(selected)
         keyboard.inline_keyboard.append([
@@ -286,7 +286,7 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
             "Envoie le nouvel ISBN (10 ou 13 chiffres, ou /skip pour retirer) :",
         ),
         "price": (
-            "Prix maximum (€)",
+            "Prix maximum (en euros)",
             f"{data.get('max_item_price_cents', 0) / 100:.2f}".replace(".", ",")
             if data.get("max_item_price_cents")
             else "",
@@ -298,7 +298,7 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
             "Envoie les mots-clés séparés par des virgules :",
         ),
         "exclude_keywords": (
-            "Exclusions",
+            "Mots-clés exclus",
             ", ".join(data.get("exclude_keywords", [])),
             "Envoie les exclusions séparées par des virgules (ou /skip pour effacer) :",
         ),
@@ -315,14 +315,15 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
 
     if current_val:
         text = (
-            f"🎯 <b>{title} actuel :</b> <i>(touche pour copier)</i>\n\n"
-            f"<code>{html.escape(current_val)}</code>\n\n"
-            f"<i>{hint}</i>"
+            f"✏️ <b>{title}</b>\n\n"
+            f"Valeur actuelle :\n<code>{html.escape(current_val)}</code>\n\n"
+            f"{hint}"
         )
     else:
         text = (
-            f"🎯 <b>{title} :</b> <i>(actuellement vide)</i>\n\n"
-            f"<i>{hint}</i>"
+            f"✏️ <b>{title}</b>\n\n"
+            f"Valeur actuelle : Non renseignée\n\n"
+            f"{hint}"
         )
 
     keyboard = InlineKeyboardMarkup(

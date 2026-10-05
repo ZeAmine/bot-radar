@@ -94,8 +94,8 @@ async def show_edit_categories(
     counts = await alert_repo.count_by_user_grouped_by_category(db_user.id)
 
     text = (
-        "📁 <b>Gestion et modification de vos alertes</b>\n\n"
-        "Choisissez une catégorie pour afficher et modifier vos alertes :"
+        "✏️ <b>Modifier l'alerte</b>\n\n"
+        "Choisis une catégorie pour afficher et modifier tes alertes :"
     )
     keyboard = get_edit_category_selection_keyboard(active_categories, counts, total_count)
 
@@ -184,9 +184,11 @@ async def select_edit_field(
         return
 
     cat_slug = alert.category.slug if alert.category else None
-    cat_emoji = alert.category.emoji if alert.category else "🎯"
+    cat_emoji = alert.category.emoji if alert.category else ""
+    emoji_prefix = f"{cat_emoji} " if cat_emoji else ""
     text = (
-        f"Modifier l'alerte {cat_emoji} « <b>{html.escape(alert.name)}</b> ».\n"
+        f"✏️ <b>Modifier l'alerte</b>\n\n"
+        f"{emoji_prefix}« <b>{html.escape(alert.name)}</b> »\n"
         "Choisis le critère à mettre à jour :"
     )
     keyboard = get_alert_edit_fields_keyboard(alert.id, category_slug=cat_slug)
@@ -200,8 +202,9 @@ async def _show_conditions_menu(
 ) -> None:
     """Affiche le menu de bascule des conditions acceptées."""
     text = (
-        f"💎 <b>États acceptés pour « {html.escape(alert.name)} »</b>\n\n"
-        "Coche ou décoche les états autorisés pour cette alerte en cliquant sur les boutons :"
+        f"✏️ <b>États acceptés</b>\n\n"
+        f"Alerte : « {html.escape(alert.name)} »\n"
+        "Coche ou décoche les états autorisés pour cette alerte."
     )
     keyboard = get_edit_conditions_keyboard(alert.id, alert.accepted_conditions)
     if hasattr(target, "message") and target.message and hasattr(target.message, "edit_text"):
@@ -258,8 +261,7 @@ async def prompt_new_field_value(
         )
         if callback.message and hasattr(callback.message, "edit_text"):
             await callback.message.edit_text(
-                f"⏳ <b>Recherche des variantes orthographiques IA...</b>\n\n"
-                f"Analyse de « <b>{html.escape(alert.name)}</b> » par l'IA en cours.",
+                "⏳ Recherche des variantes orthographiques en cours…",
                 reply_markup=loading_keyboard,
             )
 
@@ -284,9 +286,8 @@ async def prompt_new_field_value(
                 )
                 if callback.message and hasattr(callback.message, "edit_text"):
                     await callback.message.edit_text(
-                        f"ℹ️ <b>Aucune variante nécessaire</b>\n\n"
-                        f"L'IA n'a pas identifié de variantes orthographiques ou phonétiques "
-                        f"pertinentes pour « <b>{html.escape(alert.name)}</b> ».",
+                        "Aucune variante trouvée : le moteur n'a pas identifié "
+                        f"de variante pertinente pour « {html.escape(alert.name)} ».",
                         reply_markup=empty_keyboard,
                     )
                 return
@@ -305,27 +306,25 @@ async def prompt_new_field_value(
                 var_str = ", ".join(variants)
                 if callback.message and hasattr(callback.message, "edit_text"):
                     await callback.message.edit_text(
-                        f"💡 <b>Toutes les variantes sont déjà actives</b>\n\n"
-                        f"Variantes trouvées par l'IA :\n<code>{html.escape(var_str)}</code>\n\n"
-                        f"Elles sont déjà toutes enregistrées sur cette alerte.",
+                        "Toutes les variantes suggérées sont déjà actives sur cette alerte.",
                         reply_markup=existing_keyboard,
                     )
                 return
 
             save_pending_variants(alert.id, new_variants)
             var_str = ", ".join(new_variants)
-            hint = "<i>Ces termes permettront de matcher les variantes orthographiques.</i>\n\n"
             text = (
-                f"🔤 <b>Variantes suggérées par l'IA pour « {html.escape(alert.name)} » :</b>\n\n"
+                f"✏️ <b>Variantes suggérées</b>\n\n"
+                f"Alerte : « {html.escape(alert.name)} »\n"
                 f"<code>{html.escape(var_str)}</code>\n\n"
-                f"{hint}"
-                f"Souhaitez-vous ajouter ces {len(new_variants)} variante(s) à l'alerte ?"
+                f"Ces termes permettront de matcher les variantes orthographiques. "
+                f"Ajouter ces {len(new_variants)} variante(s) à l'alerte ?"
             )
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="✅ Ajouter aux variantes",
+                            text="Ajouter aux variantes",
                             callback_data=f"ai_var_apply:{alert.id}",
                         )
                     ],
@@ -353,8 +352,8 @@ async def prompt_new_field_value(
             )
             if callback.message and hasattr(callback.message, "edit_text"):
                 err_msg = (
-                    f"⚠️ Erreur recherche des variantes pour « {html.escape(alert.name)} ».\n"
-                    "Veuillez réessayer dans un instant."
+                    f"⚠️ Erreur lors de la recherche des variantes pour "
+                    f"« {html.escape(alert.name)} ».\nRéessaie dans un instant."
                 )
                 await callback.message.edit_text(
                     err_msg,
@@ -381,18 +380,21 @@ async def prompt_new_field_value(
         "isbn": ("ISBN", "Colle dans la zone de texte, modifie et envoie :"),
         "url": ("Lien Vinted", "Colle dans la zone de texte, modifie et envoie :"),
         "include_keywords": (
-            "Mots-clés requis",
+            "Mots-clés inclus",
             "Colle dans la zone de texte, modifie et envoie :",
         ),
         "exclude_keywords": (
-            "Exclusions",
+            "Mots-clés exclus",
             "Colle dans la zone de texte, modifie et envoie (ou /skip pour tout effacer) :",
         ),
         "variants": (
             "Variantes",
             "Colle dans la zone de texte, modifie et envoie (ou /skip pour tout effacer) :",
         ),
-        "max_price": ("Prix maximum (€)", "Colle dans la zone de texte, modifie et envoie :"),
+        "max_price": (
+            "Prix maximum (en euros)",
+            "Colle dans la zone de texte, modifie et envoie :",
+        ),
     }
     title, prompt_hint = labels.get(field, (field, "Envoie la nouvelle valeur :"))
 
@@ -416,14 +418,15 @@ async def prompt_new_field_value(
 
     if current_str:
         text = (
-            f"🎯 <b>{title} actuels :</b> <i>(touche pour copier)</i>\n\n"
-            f"<code>{html.escape(current_str)}</code>\n\n"
-            f"<i>{prompt_hint}</i>"
+            f"✏️ <b>{title}</b>\n\n"
+            f"Valeur actuelle :\n<code>{html.escape(current_str)}</code>\n\n"
+            f"{prompt_hint}"
         )
     else:
         text = (
-            f"🎯 <b>{title} :</b> <i>(actuellement vide)</i>\n\n"
-            f"<i>{prompt_hint}</i>"
+            f"✏️ <b>{title}</b>\n\n"
+            f"Valeur actuelle : Non renseignée\n\n"
+            f"{prompt_hint}"
         )
 
     keyboard = get_cancel_edit_keyboard(alert.id)
@@ -636,7 +639,7 @@ async def save_edited_field_value(
         cat_slug = alert.category.slug if alert.category else "all"
         total_count = await alert_repo.count_by_user(db_user.id, category_slug=cat_slug)
 
-        await message.answer(f"✅ Champ <b>{field}</b> mis à jour avec succès !")
+        await message.answer("✅ Modification enregistrée.")
         card_text = format_alert_card(alert, current_index=0, total_count=total_count)
         await message.answer(
             card_text,
@@ -649,7 +652,7 @@ async def save_edited_field_value(
             ),
         )
     except AlertServiceError as exc:
-        await message.answer(f"⚠️ {exc}\nMerci de réessayer (ou /cancel pour annuler) :")
+        await message.answer(f"⚠️ {exc}\nRéessaie (ou /cancel pour annuler) :")
 
 
 @router.message(Command("pause"))
@@ -726,7 +729,7 @@ async def prompt_delete_confirmation(
         await callback.answer("Alerte introuvable.", show_alert=True)
         return
 
-    msg = f"Supprimer définitivement l'alerte « <b>{alert.name}</b> » ?"
+    msg = f"Supprimer définitivement l'alerte « <b>{html.escape(alert.name)}</b> » ?"
     keyboard = get_delete_confirmation_keyboard(alert.id)
     if isinstance(callback.message, Message):
         await callback.message.edit_text(msg, reply_markup=keyboard)
@@ -754,13 +757,13 @@ async def confirm_soft_delete_alert(
     await db_session.commit()
     if isinstance(callback.message, Message):
         await callback.message.edit_text(
-            f"🗑 L'alerte « <b>{alert_name}</b> » et toutes ses données associées "
+            f"L'alerte « <b>{html.escape(alert_name)}</b> » et toutes ses données associées "
             "ont été supprimées définitivement.",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="📁 Retour aux catégories", callback_data="ed_cat_menu"
+                            text="← Retour aux catégories", callback_data="ed_cat_menu"
                         )
                     ]
                 ]

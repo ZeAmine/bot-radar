@@ -153,7 +153,7 @@ def test_series_matching_lot_card():
     assert "Cote par tome (plus bas connu) :" in card
     assert "• Tome 1 : 16,00 €" in card
     assert "• Tome 2 : 18,50 €" in card
-    assert "Derniere MAJ :" in card
+    assert "Dernière mise à jour :" in card
 
 
 def test_series_matching_chateau_des_animaux_lot_1_2_3():

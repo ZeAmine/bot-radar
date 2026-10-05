@@ -88,19 +88,19 @@ def get_alert_confirmation_keyboard(
         ])
 
     rows.append(
-        [InlineKeyboardButton(text="✅ Créer l’alerte", callback_data="alert_create_confirm")]
+        [InlineKeyboardButton(text="Créer l'alerte", callback_data="alert_create_confirm")]
     )
     rest = [
         [
-            InlineKeyboardButton(text="✏️ Modifier", callback_data="alert_create_edit"),
-            InlineKeyboardButton(text="❌ Annuler", callback_data="alert_create_cancel"),
+            InlineKeyboardButton(text="Modifier", callback_data="alert_create_edit"),
+            InlineKeyboardButton(text="Annuler", callback_data="alert_create_cancel"),
         ],
     ]
     if show_variants_btn:
         rest.append(
             [
                 InlineKeyboardButton(
-                    text="✨ Variantes & Exclusions IA",
+                    text="Variantes & Exclusions IA",
                     callback_data="alert_create_ai_variants",
                 )
             ]
@@ -144,7 +144,7 @@ def get_category_selection_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="💻 Électronique", callback_data="add_cat:tech")],
             [InlineKeyboardButton(text="🎮 Jeux Vidéo", callback_data="add_cat:gaming")],
             [InlineKeyboardButton(text="👕 Vêtements", callback_data="add_cat:clothes")],
-            [InlineKeyboardButton(text="❌ Annuler", callback_data="alert_create_cancel")],
+            [InlineKeyboardButton(text="Annuler", callback_data="alert_create_cancel")],
         ]
     )
 
@@ -176,7 +176,7 @@ def _build_category_selection_keyboard(
     buttons.append(
         [
             InlineKeyboardButton(
-                text="❌ Fermer",
+                text="Fermer",
                 callback_data="al_close",
             )
         ]
@@ -210,11 +210,11 @@ def get_alert_card_keyboard(
     category_slug: str = "all",
 ) -> InlineKeyboardMarkup:
     """Retourne le clavier pour une carte d'alerte individuelle dans /show et /edit."""
-    pause_text = "⏸ Pause" if status == AlertStatus.ACTIVE else "▶️ Reprendre"
+    pause_text = "Mettre en pause" if status == AlertStatus.ACTIVE else "Réactiver"
     pause_action = "pause" if status == AlertStatus.ACTIVE else "resume"
 
     row_actions = [
-        InlineKeyboardButton(text="✏️ Modifier", callback_data=f"al_edit:{alert_id}"),
+        InlineKeyboardButton(text="Modifier", callback_data=f"al_edit:{alert_id}"),
         InlineKeyboardButton(text=pause_text, callback_data=f"al_{pause_action}:{alert_id}"),
         InlineKeyboardButton(text="🗑 Supprimer", callback_data=f"al_del:{alert_id}"),
     ]
@@ -244,9 +244,9 @@ def get_alert_card_keyboard(
     inline_keyboard.append(
         [
             InlineKeyboardButton(
-                text="📋 Liste", callback_data=f"al_list_cat:{category_slug}:{list_page}"
+                text="Liste des alertes", callback_data=f"al_list_cat:{category_slug}:{list_page}"
             ),
-            InlineKeyboardButton(text="📁 Catégories", callback_data="ed_cat_menu"),
+            InlineKeyboardButton(text="Catégories", callback_data="ed_cat_menu"),
         ]
     )
 
@@ -264,7 +264,7 @@ def get_alert_edit_fields_keyboard(
             ("ISBN", "isbn"),
             ("Prix maximum", "max_price"),
             ("Mots-clés inclus", "include_keywords"),
-            ("Exclusions", "exclude_keywords"),
+            ("Mots-clés exclus", "exclude_keywords"),
             ("Variantes", "variants"),
             ("États acceptés", "conditions"),
         ]
@@ -283,7 +283,7 @@ def get_alert_edit_fields_keyboard(
             (name_label, "name"),
             ("Prix maximum", "max_price"),
             ("Mots-clés inclus", "include_keywords"),
-            ("Exclusions", "exclude_keywords"),
+            ("Mots-clés exclus", "exclude_keywords"),
             ("États acceptés", "conditions"),
         ]
     else:
@@ -291,13 +291,13 @@ def get_alert_edit_fields_keyboard(
             ("Nom", "name"),
             ("Prix maximum", "max_price"),
             ("Mots-clés inclus", "include_keywords"),
-            ("Exclusions", "exclude_keywords"),
+            ("Mots-clés exclus", "exclude_keywords"),
             ("États acceptés", "conditions"),
         ]
 
     # Ajout des actions intelligentes IA
-    fields.append(("🔤 Suggérer variantes IA", "ai_variants"))
-    fields.append(("🧹 Auto-tuning exclusions IA", "ai_autotune"))
+    fields.append(("Suggérer variantes IA", "ai_variants"))
+    fields.append(("Auto-tuning exclusions IA", "ai_autotune"))
 
     buttons = [
         [InlineKeyboardButton(text=label, callback_data=f"ed_f:{alert_id}:{field}")]
@@ -334,7 +334,7 @@ def get_edit_conditions_keyboard(
     buttons.append(
         [
             InlineKeyboardButton(
-                text=f"{all_icon} 🌐 Tous les états",
+                text=f"{all_icon} Tous les états",
                 callback_data=f"ed_c_all:{alert_id}",
             )
         ]
@@ -354,7 +354,7 @@ def get_cancel_edit_keyboard(alert_id: uuid.UUID) -> InlineKeyboardMarkup:
     """Retourne un clavier avec bouton retour/annuler lors de la saisie d'une nouvelle valeur."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← Annuler / Retour", callback_data=f"al_edit:{alert_id}")],
+            [InlineKeyboardButton(text="← Retour aux champs", callback_data=f"al_edit:{alert_id}")],
         ]
     )
 
@@ -369,7 +369,7 @@ def get_delete_confirmation_keyboard(alert_id: uuid.UUID) -> InlineKeyboardMarku
                     callback_data=f"al_del_confirm:{alert_id}",
                 )
             ],
-            [InlineKeyboardButton(text="← Annuler", callback_data=f"al_view:{alert_id}")],
+            [InlineKeyboardButton(text="Annuler", callback_data=f"al_view:{alert_id}")],
         ]
     )
 
@@ -389,7 +389,7 @@ def get_alerts_list_keyboard(
     for i, alert in enumerate(alerts, start=start_num):
         row.append(
             InlineKeyboardButton(
-                text=f"🔍 {i}",
+                text=f"{i}",
                 callback_data=f"al_view:{alert.id}",
             )
         )
@@ -409,13 +409,13 @@ def get_alerts_list_keyboard(
     if current_page > 0:
         nav_row.append(
             InlineKeyboardButton(
-                text="⬅️ Précédent", callback_data=f"{page_prefix}:{current_page - 1}"
+                text="← Précédent", callback_data=f"{page_prefix}:{current_page - 1}"
             )
         )
     if current_page < total_pages - 1:
         nav_row.append(
             InlineKeyboardButton(
-                text="Suivant ➡️", callback_data=f"{page_prefix}:{current_page + 1}"
+                text="Suivant →", callback_data=f"{page_prefix}:{current_page + 1}"
             )
         )
     if nav_row:
@@ -424,8 +424,8 @@ def get_alerts_list_keyboard(
     # Ligne d'actions globales : retour au choix de catégorie ou fermer
     buttons.append(
         [
-            InlineKeyboardButton(text="📁 Catégories", callback_data="al_list_cat_menu"),
-            InlineKeyboardButton(text="❌ Fermer", callback_data="al_close"),
+            InlineKeyboardButton(text="Catégories", callback_data="al_list_cat_menu"),
+            InlineKeyboardButton(text="Fermer", callback_data="al_close"),
         ]
     )
 

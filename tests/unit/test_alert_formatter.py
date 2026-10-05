@@ -14,7 +14,7 @@ def test_format_cents_to_euros():
     assert format_cents_to_euros(1500) == "15,00 €"
     assert format_cents_to_euros(999) == "9,99 €"
     assert format_cents_to_euros(0) == "0,00 €"
-    assert format_cents_to_euros(None) == "non défini"
+    assert format_cents_to_euros(None) == "Non renseigné"
 
 
 def test_format_alert_recap():
@@ -63,11 +63,12 @@ def test_format_alert_card():
 
     card = format_alert_card(alert, current_index=0, total_count=1)
     assert "📚 <b>Blacksad intégrale</b>" in card
-    assert "ISBN : 9782205089752" in card
-    assert "Prix max : 15,00 €" in card
-    assert "Inclus : blacksad, intégrale" in card
-    assert "Exclus : tome 1" in card
-    assert "Statut : 🟢 Active" in card
+    assert "ISBN : <code>9782205089752</code>" in card
+    assert "Prix maximum : 15,00 €" in card
+    assert "Mots-clés inclus : blacksad, intégrale" in card
+    assert "Mots-clés exclus : tome 1" in card
+    assert "Statut : Active" in card
+    assert "États acceptés : Très bon état" in card
     assert (
         'Lien : <a href="https://www.vinted.fr/catalog?search_text=blacksad">'
         "Consulter la recherche</a>"
@@ -109,15 +110,12 @@ def test_format_alerts_list_text():
         category_label="📚 Livres",
     )
 
-    assert "Vos alertes surveillées — 📚 Livres" in text
+    assert "Mes alertes — 📚 Livres" in text
     assert "Page 1/1 — 2 alertes" in text
-    # Alerte avec ISBN
-    assert "<b>1.</b> 🟢 📚 <b>Astérix - Tome 40</b>" in text
-    assert "↳ ISBN : <code>9782014001150</code> • Max : 8,00 €" in text
-    # Alerte sans ISBN (ne doit PAS afficher 'sans ISBN')
-    assert "<b>2.</b> 🟢 💻 <b>Switch Mario Kart 8</b>" in text
-    assert "↳ Max : 30,00 €" in text
-    assert "sans ISBN" not in text
+    # Chaque entrée : numéro, titre, statut, prix maximum — l'ISBN reste dans la fiche
+    assert "1. 📚 <b>Astérix - Tome 40</b> — Active — 8,00 €" in text
+    assert "2. 💻 <b>Switch Mario Kart 8</b> — Active — 30,00 €" in text
+    assert "9782014001150" not in text
 
 
 def _recap(**overrides):
@@ -160,8 +158,8 @@ def test_recap_escapes_model_output():
     assert "&lt;i&gt;figurine&lt;/i&gt;" in recap
     assert "&lt;code&gt;couleurdeschoses&lt;/code&gt;" in recap
     # Les balises du récap lui-même restent intactes.
-    assert "<b>Inclus :</b>" in recap
-    assert "<b>Exclus :</b>" in recap
+    assert "<b>Mots-clés inclus :</b>" in recap
+    assert "<b>Mots-clés exclus :</b>" in recap
 
 
 def test_recap_escapes_model_conditions():
@@ -219,9 +217,9 @@ def test_recap_always_closes_on_the_confirmation_it_expects():
     recap = _recap()
 
     assert recap.rstrip().endswith(
-        "<i>Clique sur « Créer l'alerte » pour valider ou « Modifier » pour ajuster.</i>"
+        "Valide les critères ci-dessus avant de créer l'alerte."
     )
-    assert recap.count("Confirmer la création de cette alerte ?") == 1
+    assert recap.count("Valide les critères ci-dessus avant de créer l'alerte.") == 1
 
 
 def test_strip_html_tags_produces_readable_plain_text():

@@ -25,7 +25,7 @@ def test_get_cancel_edit_keyboard():
     alert_id = uuid.uuid4()
     kb = get_cancel_edit_keyboard(alert_id)
     assert len(kb.inline_keyboard) == 1
-    assert kb.inline_keyboard[0][0].text == "← Annuler / Retour"
+    assert kb.inline_keyboard[0][0].text == "← Retour aux champs"
     assert kb.inline_keyboard[0][0].callback_data == f"al_edit:{alert_id}"
 
 
@@ -104,7 +104,7 @@ async def test_prompt_new_field_value_shows_code_block_to_copy():
     call_args = callback.message.edit_text.call_args[0][0]
     # Doit contenir le bloc <code> cliquable pour copier en 1 clic
     assert "<code>tome 1, coffret</code>" in call_args
-    assert "touche pour copier" in call_args
+    assert "Valeur actuelle" in call_args
     state.set_state.assert_awaited_once()
 
 

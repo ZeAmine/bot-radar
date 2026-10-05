@@ -13,7 +13,6 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.formatter import format_conditions_short
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
     _join_escaped,
@@ -24,6 +23,7 @@ from app.bot.handlers.alerts_helpers import (
     render_existing_alert_response,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
+from app.bot.labels import format_conditions_full, format_price_cents
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     CATEGORY_EMOJIS,
@@ -439,7 +439,8 @@ async def start_add_alert(
         # Fallback si l'IA n'a pas pu structurer la demande : sélection de catégorie
         await state.update_data(inline_query=inline_query)
         prompt_text = (
-            f"🎯 <b>Ajout d'une alerte pour « {html.escape(inline_query)} »</b>\n\n"
+            f"➕ <b>Créer une alerte</b>\n\n"
+            f"Article : « {html.escape(inline_query)} »\n"
             "Choisis la catégorie de ce produit :"
         )
         await state.set_state(AlertCreationState.waiting_for_category)
@@ -450,13 +451,14 @@ async def start_add_alert(
     if inline_query:
         await state.update_data(inline_query=inline_query)
         prompt_text = (
-            f"🎯 <b>Ajout d'une alerte pour « {html.escape(inline_query)} »</b>\n\n"
+            f"➕ <b>Créer une alerte</b>\n\n"
+            f"Article : « {html.escape(inline_query)} »\n"
             "Choisis la catégorie de ce produit :"
         )
     else:
         prompt_text = (
-            "🎯 <b>Création d'une nouvelle alerte</b>\n\n"
-            "Choisis la catégorie du produit que tu souhaites surveiller :"
+            "➕ <b>Créer une alerte</b>\n\n"
+            "Choisis la catégorie du produit à surveiller :"
         )
 
     await state.set_state(AlertCreationState.waiting_for_category)
@@ -573,13 +575,13 @@ async def handle_update_existing_alert_price(
         existing.max_item_price_cents = price_cents
         await db_session.commit()
         await state.clear()
-        new_price_str = f"{price_cents / 100:.2f} €".replace(".", ",")
+        new_price_str = format_price_cents(price_cents)
         if isinstance(callback.message, Message):
             await callback.message.edit_text(
-                f"✅ <b>Prix max mis à jour !</b>\n\n"
+                f"✅ <b>Prix maximum mis à jour</b>\n\n"
                 f"📚 <b>{html.escape(existing.name)}</b>\n"
-                f"🎯 <b>Nouveau prix max :</b> {new_price_str}\n\n"
-                f"⚡ <i>L'alerte existante a été actualisée sans créer de doublon.</i>"
+                f"Nouveau prix maximum : {new_price_str}\n\n"
+                "L'alerte existante a été actualisée sans créer de doublon."
             )
     else:
         await state.clear()
@@ -788,23 +790,24 @@ async def save_alert(
         if book is not None:
             schedule_book_pricing(book.id, reason="alert_created")
 
-        price_str = f"{max_price / 100:.2f} €".replace(".", ",") if max_price else "Aucun"
+        price_str = format_price_cents(max_price)
 
-        # La confirmation reprend la carte de récap — même ordre, mêmes émojis — : ce
+        # La confirmation reprend la carte de récap — même ordre, mêmes libellés — : ce
         # qui vient d'être validé se relit ligne pour ligne. Les mots-clés sont
         # échappés comme dans le récap : ils viennent du moteur IA, et un `<b>` glissé
         # dedans ferait rejeter tout le message par Telegram.
-        lines = ["✅ <b>Alerte créée avec succès !</b>\n"]
+        lines = ["✅ <b>Alerte créée</b>\n"]
         if isbn:
-            lines.append(f"🔢 <b>ISBN :</b> <code>{html.escape(isbn)}</code>")
-        lines.append(f"📌 <b>Titre :</b> {html.escape(name)}")
+            lines.append(f"ISBN : <code>{html.escape(isbn)}</code>")
+        lines.append(f"Titre : {html.escape(name)}")
         if author:
-            lines.append(f"✍️ <b>Auteur :</b> {html.escape(author)}")
+            lines.append(f"Auteur : {html.escape(author)}")
         if publisher:
-            lines.append(f"🏢 <b>Éditeur :</b> {html.escape(publisher)}")
-        lines.append(f"🎯 <b>Prix max :</b> {price_str}")
-        lines.append(f"🏷️ <b>États :</b> {html.escape(format_conditions_short(conditions))}")
-        lines.append(f"🔑 <b>Inclus :</b> {_join_escaped(includes)}\n")
+            lines.append(f"Éditeur : {html.escape(publisher)}")
+        lines.append("")
+        lines.append(f"Prix maximum : {price_str}")
+        lines.append(f"États acceptés : {html.escape(format_conditions_full(conditions))}")
+        lines.append(f"Mots-clés inclus : {_join_escaped(includes)}\n")
 
         # La cote déjà connue est affichée telle quelle ; sinon la confirmation
         # annonce qu'elle arrive, plutôt que de laisser croire qu'il n'y a pas de prix.
@@ -844,26 +847,28 @@ async def save_alert(
         cat_slug_enum = CategorySlug(category_slug)
         cat_emoji = CATEGORY_EMOJIS.get(cat_slug_enum, "🎯")
         cat_label = CATEGORY_LABELS.get(cat_slug_enum, "Produit")
-        price_str = f"{max_price / 100:.2f} €".replace(".", ",") if max_price else "Aucun"
-        cond_str = ", ".join(conditions) if conditions else "Tous"
+        price_str = format_price_cents(max_price)
+        cond_str = format_conditions_full(conditions)
 
         lines = [
-            "✅ <b>Alerte créée avec succès !</b>\n",
+            "✅ <b>Alerte créée</b>\n",
             f"{cat_emoji} <b>{html.escape(name)}</b> ({cat_label})",
-            f"🎯 <b>Prix max :</b> {price_str}",
-            f"🔑 <b>Inclus :</b> {', '.join(includes)}",
+            "",
+            f"Prix maximum : {price_str}",
+            f"États acceptés : {html.escape(cond_str)}",
+            f"Mots-clés inclus : {_join_escaped(includes)}",
         ]
         if variants:
-            lines.append(f"✨ <b>Variantes :</b> {', '.join(variants)}")
+            lines.append(f"Variantes : {_join_escaped(variants)}")
         if excludes:
-            lines.append(f"🚫 <b>Exclus :</b> {', '.join(excludes)}")
-        lines.append(f"🏷 <b>États :</b> {cond_str}\n")
+            lines.append(f"Mots-clés exclus : {_join_escaped(excludes)}")
+        lines.append("")
         lines.append(_CONFIRMATION_FOOTER)
         resp_text = "\n".join(lines)
 
     vinted_btn = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔗 Voir sur Vinted", url=vinted_url)]
+            [InlineKeyboardButton(text="Voir la recherche Vinted", url=vinted_url)]
         ]
     )
     if callback.message and hasattr(callback.message, "edit_text"):

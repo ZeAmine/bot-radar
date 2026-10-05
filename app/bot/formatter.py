@@ -1,5 +1,11 @@
 import html
 
+from app.bot.labels import (
+    NOT_PROVIDED,
+    STATUS_ACTIVE,
+    STATUS_PAUSED,
+    format_conditions_full,
+)
 from app.core.constants import AlertStatus, ItemCondition
 from app.db.models.alert import Alert
 from app.utils.price import format_cents
@@ -29,11 +35,11 @@ def format_conditions_short(conditions: list[str] | None) -> str:
 def format_cents_to_euros(cents: int | None) -> str:
     """Formate un montant en centimes en euros (ex: 1500 -> '15,00 €').
 
-    Dépend du helper canonique : seul le cas ``None`` — « non défini » — est
-    propre à l'affichage d'une alerte qui n'a pas de seuil.
+    Dépend du helper canonique : le cas ``None`` — seuil absent — est rendu
+    « Non renseigné », jamais zéro.
     """
     if cents is None:
-        return "non défini"
+        return NOT_PROVIDED
     return format_cents(cents)
 
 
@@ -71,8 +77,14 @@ def format_alert_recap(
 
 
 def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1) -> str:
-    """Génère la carte compacte d'une alerte pour /show."""
-    status_emoji = "🟢 Active" if alert.status == AlertStatus.ACTIVE else "⏸ En pause"
+    """Génère la fiche d'une alerte pour /show, dans l'ordre de la charte.
+
+    Ordre : nom, statut, Prix maximum, identification (ISBN), États acceptés,
+    bloc de filtres, position dans la navigation. Les libellés et le vocabulaire
+    viennent de `app.bot.labels` : un statut est en toutes lettres, les états en
+    libellés complets, et une valeur dynamique est toujours échappée.
+    """
+    status_text = STATUS_ACTIVE if alert.status == AlertStatus.ACTIVE else STATUS_PAUSED
     category_emoji = alert.category.emoji if alert.category else "📚"
 
     header = f"{category_emoji} <b>{html.escape(alert.name)}</b>"
@@ -82,21 +94,21 @@ def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1
     lines = [
         f"{header}\n",
     ]
-    if getattr(alert, "isbn", None):
-        lines.append(f"ISBN : {alert.isbn}")
+    isbn = getattr(alert, "isbn", None)
+    if isbn:
+        lines.append(f"ISBN : <code>{html.escape(isbn)}</code>")
 
     lines.extend([
-        f"Prix max : {format_cents_to_euros(alert.max_item_price_cents)}",
-        f"Inclus : {', '.join(alert.include_keywords)}",
+        f"Statut : {status_text}",
+        f"Prix maximum : {format_cents_to_euros(alert.max_item_price_cents)}",
+        f"États acceptés : {format_conditions_full(alert.accepted_conditions)}",
+        f"Mots-clés inclus : {', '.join(html.escape(kw) for kw in alert.include_keywords)}",
     ])
     if alert.exclude_keywords:
-        lines.append(f"Exclus : {', '.join(alert.exclude_keywords)}")
+        excluded = ", ".join(html.escape(kw) for kw in alert.exclude_keywords)
+        lines.append(f"Mots-clés exclus : {excluded}")
     if alert.variants:
-        lines.append(f"Variantes : {', '.join(alert.variants)}")
-    if alert.accepted_conditions:
-        lines.append(f"États : {', '.join(alert.accepted_conditions)}")
-
-    lines.append(f"Statut : {status_emoji}")
+        lines.append(f"Variantes : {', '.join(html.escape(v) for v in alert.variants)}")
 
     if alert.vinted_search_url:
         lines.append(f'\nLien : <a href="{alert.vinted_search_url}">Consulter la recherche</a>')
