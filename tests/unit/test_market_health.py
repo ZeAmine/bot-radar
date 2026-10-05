@@ -158,3 +158,149 @@ async def test_a_silent_redis_does_not_silence_the_signal():
         assert await notify_stale_certified_lows(MagicMock()) == 1
 
     assert len(sent) == 1
+
+
+# --- Source de cotation muette depuis 48 h ---
+
+
+@pytest.mark.asyncio
+async def test_a_silent_provider_is_reported_once_per_window():
+    """Une source qui cesse de répondre ne se signale pas d'elle-même."""
+    now = datetime.now(UTC)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            market_health.MarketPriceRepository,
+            "find_silent_providers",
+            AsyncMock(return_value=[("momox", now - timedelta(hours=50))]),
+        )
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        client = MagicMock()
+        client.set = AsyncMock(side_effect=[True, False])
+        mp.setattr(market_health, "get_redis_client", lambda: client)
+
+        first = await market_health.notify_silent_providers(MagicMock())
+        second = await market_health.notify_silent_providers(MagicMock())
+
+    assert first == 1
+    assert second == 0
+    assert len(sent) == 1
+    assert "momox" in sent[0]
+    assert "48 h" in sent[0]
+    # L'âge de la dernière réponse se dit en heures : c'est ce qui a changé.
+    assert "50 h" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_every_provider_answered_means_no_message():
+    """Une base saine ne doit jamais notifier."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            market_health.MarketPriceRepository,
+            "find_silent_providers",
+            AsyncMock(return_value=[]),
+        )
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        count = await market_health.notify_silent_providers(MagicMock())
+
+    assert count == 0
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_broken_silent_check_never_breaks_the_refresh():
+    """Le contrôle surveille le job ; il ne doit pas pouvoir le faire tomber."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            market_health.MarketPriceRepository,
+            "find_silent_providers",
+            AsyncMock(side_effect=RuntimeError("base injoignable")),
+        )
+
+        assert await market_health.notify_silent_providers(MagicMock()) == 0
+
+
+# --- Alertes de fin de passe ---
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_pass_is_reported():
+    """Une passe tronquée par le plafond de durée doit se voir, pas se taire."""
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(5, 12, mode_label="complet (12 livres)")
+
+    assert len(sent) == 1
+    assert "5/12" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_a_complete_pass_says_nothing():
+    """Le succès n'est pas une notification."""
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(12, 12, mode_label="complet (12 livres)")
+        await market_health.notify_no_prices_found(0, 0, mode_label="complet (0 livres)")
+        await market_health.notify_no_prices_found(12, 3, mode_label="complet (12 livres)")
+        await market_health.notify_high_error_ratio(12, 2, mode_label="complet (12 livres)")
+
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_pass_without_any_price_is_reported():
+    """Trois semaines de cotes muettes se sont passées sans qu'aucun signal ne parte."""
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_no_prices_found(10, 0, mode_label="complet (10 livres)")
+
+    assert len(sent) == 1
+    assert "0 cote" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_a_high_error_ratio_is_reported_with_a_meaningful_minimum():
+    """Un ratio sur deux livres n'a aucun sens : trois erreurs au minimum."""
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        # 1 erreur sur 2 livres : ratio élevé mais nombre trop faible.
+        await market_health.notify_high_error_ratio(2, 1, mode_label="complet (2 livres)")
+        # 4 erreurs sur 6 livres : au-dessus des deux seuils.
+        await market_health.notify_high_error_ratio(6, 4, mode_label="complet (6 livres)")
+
+    assert len(sent) == 1
+    assert "4/6" in sent[0]

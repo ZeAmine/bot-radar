@@ -789,6 +789,16 @@ class BookMetadataService:
                 logger.warning("BNF SRU returned status %d", resp.status_code)
                 return [], f"statut HTTP {resp.status_code}"
 
+            # Le `XMLParser` de la C de CPython ne prend que `target` et `encoding` :
+            # `resolve_entities` comme `forbid_entities` y lèvent un TypeError, qui
+            # transformait chaque réponse de la BNF en « autorité muette » — 11 tests
+            # rouges et `mypy app` en erreur. Ce parseur refuse déjà les entités
+            # externes (`undefined entity`) ; ce qui reste possible est la déclaration
+            # d'entités internes, alors un document qui en déclare une n'est pas lu.
+            if b"<!DOCTYPE" in resp.content:
+                logger.warning("Réponse SRU BNF écartée : elle déclare uneDOCTYPE")
+                return [], "DOCTYPE déclaré dans la réponse"
+
             root = ET.fromstring(resp.content)
             for record in root.findall(".//{http://www.loc.gov/zing/srw/}recordData"):
                 titles = [t.text for t in record.findall(

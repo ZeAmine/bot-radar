@@ -1,5 +1,6 @@
 """Tests d'intégration pour les routes internes GET /api/v1/internal/*."""
 
+import os
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 
@@ -21,9 +22,15 @@ from app.main import app
 
 @pytest.fixture
 async def internal_test_db() -> AsyncGenerator[AsyncSession, None]:
-    """Base SQLite en mémoire peuplée pour les tests des routes internes."""
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    """Base de test peuplée (PostgreSQL si TEST_DATABASE_URL, sinon SQLite)."""
+    engine = create_async_engine(
+        os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:"),
+        echo=False,
+    )
     async with engine.begin() as conn:
+        # Base PostgreSQL de CI partagée : remise à zéro du
+        # schéma avant chaque test (SQLite mémoire est neuf).
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
     session_maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)

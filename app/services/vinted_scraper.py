@@ -176,10 +176,10 @@ class VintedSessionManager:
 
     async def refresh_session(self, client: httpx.AsyncClient | None = None) -> bool:
         """Obtient des cookies et jetons Vinted frais via une requête propre isolée."""
-        now = time.time()
-        if now - self.last_attempt < 15:
-            return False
         async with self._lock:
+            now = time.time()
+            if now - self.last_attempt < 15:
+                return False
             self.last_attempt = time.time()
             try:
                 # Si un client persistant est fourni, vider son jar anti-cookies périmés

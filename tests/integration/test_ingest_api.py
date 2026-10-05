@@ -1,5 +1,6 @@
 """Tests d'intégration pour l'endpoint d'ingestion POST /api/v1/ingest/listings."""
 
+import os
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -16,13 +17,18 @@ from app.main import app
 
 @pytest.fixture
 async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Crée une base SQLite asynchrone en mémoire pour les tests d'intégration."""
+    """Crée une base de test asynchrone (PostgreSQL si TEST_DATABASE_URL, sinon SQLite)."""
     test_engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:"),
         echo=False,
     )
 
     async with test_engine.begin() as conn:
+        # La base PostgreSQL de CI est partagée et persistante : sans
+        # cette remise à zéro, le deuxième test recrée les mêmes lignes
+        # (catégories) et viole la contrainte unique. SQLite mémoire est
+        # neuf par construction ; drop_all y est un no-op sans danger.
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
     session_maker = async_sessionmaker(

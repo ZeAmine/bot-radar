@@ -11,6 +11,7 @@ passe par le comparateur JSON de SQLAlchemy, qui rend `JSON_EXTRACT` là où
 PostgreSQL rend `->>`. Le comportement testé est le même des deux côtés.
 """
 
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -35,8 +36,13 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 async def session() -> AsyncSession:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    engine = create_async_engine(
+        os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    )
     async with engine.begin() as conn:
+        # Base PostgreSQL de CI partagée : remise à zéro du
+        # schéma avant chaque test (SQLite mémoire est neuf).
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     async with maker() as s:

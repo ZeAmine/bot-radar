@@ -265,7 +265,7 @@ Ce que l’API accepte, vérifié par aller-retour `PUT` puis `GET` :
 
 Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
 
-Révision Alembic actuelle attendue : `0005_correct_historical_low` (correction des cotes 1 an, ADR-019). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
+Révision Alembic actuelle attendue : `0006_composite_indexes_for_alert_and_cache_queries` (index composites alertes/cache). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
 
 ## IA
 

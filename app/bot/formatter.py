@@ -2,6 +2,7 @@ import html
 
 from app.core.constants import AlertStatus, ItemCondition
 from app.db.models.alert import Alert
+from app.utils.price import format_cents
 
 # Abréviations d'états pour les cartes compactes. Présentation pure : c'est pourquoi
 # elles vivent ici et non dans app/core, où seuls les libellés d'ItemCondition font foi.
@@ -26,11 +27,14 @@ def format_conditions_short(conditions: list[str] | None) -> str:
 
 
 def format_cents_to_euros(cents: int | None) -> str:
-    """Formate un montant en centimes en euros (ex: 1500 -> '15,00 €')."""
+    """Formate un montant en centimes en euros (ex: 1500 -> '15,00 €').
+
+    Dépend du helper canonique : seul le cas ``None`` — « non défini » — est
+    propre à l'affichage d'une alerte qui n'a pas de seuil.
+    """
     if cents is None:
         return "non défini"
-    euros = cents / 100
-    return f"{euros:.2f} €".replace(".", ",")
+    return format_cents(cents)
 
 
 def format_alert_recap(

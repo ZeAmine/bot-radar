@@ -391,9 +391,9 @@ async def test_handle_view_market_details_success():
 
     mock_session = AsyncMock()
     with (
-        patch("app.bot.handlers.callbacks.ListingRepository") as mock_l_cls,
-        patch("app.bot.handlers.callbacks.BookRepository") as mock_b_cls,
-        patch("app.bot.handlers.callbacks.MarketPriceRepository") as mock_m_cls,
+        patch("app.use_cases.view_market_details.ListingRepository") as mock_l_cls,
+        patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
+        patch("app.use_cases.view_market_details.MarketPriceRepository") as mock_m_cls,
     ):
         mock_l = MagicMock()
         mock_l.get_by_id = AsyncMock(return_value=mock_listing)
@@ -452,9 +452,9 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
 
     mock_session = AsyncMock()
     with (
-        patch("app.bot.handlers.callbacks.ListingRepository") as mock_l_cls,
-        patch("app.bot.handlers.callbacks.BookRepository") as mock_b_cls,
-        patch("app.bot.handlers.callbacks.MarketPriceRepository") as mock_m_cls,
+        patch("app.use_cases.view_market_details.ListingRepository") as mock_l_cls,
+        patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
+        patch("app.use_cases.view_market_details.MarketPriceRepository") as mock_m_cls,
     ):
         mock_l = MagicMock()
         mock_l.get_by_id = AsyncMock(return_value=mock_listing)

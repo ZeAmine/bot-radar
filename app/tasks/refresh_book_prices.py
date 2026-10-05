@@ -30,7 +30,13 @@ from app.services.book_market_pricing import (
     persist_market_result,
     pricing_stat,
 )
-from app.services.market_health import notify_stale_certified_lows
+from app.services.market_health import (
+    notify_high_error_ratio,
+    notify_incomplete_refresh,
+    notify_no_prices_found,
+    notify_silent_providers,
+    notify_stale_certified_lows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +130,7 @@ async def _run_wave(
 
 
 async def _report_stale_certs(session: AsyncSession | None) -> None:
-    """Signale les cotes que plus aucun relevé ne nourrit.
+    """Signale les cotes que plus aucun relevé ne nourrit et les sources muettes.
 
     Le contrôle tourne dans sa propre session quand la passe en a utilisé une :
     celle-ci peut être en fin de vie après des centaines de livres, et une alerte
@@ -132,9 +138,11 @@ async def _report_stale_certs(session: AsyncSession | None) -> None:
     """
     if session is not None:
         await notify_stale_certified_lows(session)
+        await notify_silent_providers(session)
         return
     async with AsyncSessionLocal() as health_session:
         await notify_stale_certified_lows(health_session)
+        await notify_silent_providers(health_session)
 
 
 async def refresh_book_prices_task(
@@ -210,5 +218,19 @@ async def refresh_book_prices_task(
     # c'est ce qui s'est produit pendant trois semaines. Le signal part ici, une
     # fois par jour au plus, et jamais au prix du rafraîchissement.
     await _report_stale_certs(session)
+
+    # Alertes de fin de passe : une passe incomplète, sans cote ou trop erronée
+    # ne doit pas passer sous le radar. Ces alertes ne bloquent jamais le
+    # rafraîchissement.
+    total_books = len(books)
+    await notify_incomplete_refresh(
+        stats["processed"], total_books, mode_label=mode_label
+    )
+    await notify_no_prices_found(
+        stats["processed"], stats["available"], mode_label=mode_label
+    )
+    await notify_high_error_ratio(
+        stats["processed"], stats["errors"], mode_label=mode_label
+    )
 
     return stats

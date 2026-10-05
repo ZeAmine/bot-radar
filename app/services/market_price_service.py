@@ -32,6 +32,7 @@ from app.domain.rules.market_offer import (
     normalize_secondhand_condition,
 )
 from app.services.price_calculator import calculate_estimated_total
+from app.utils.price import format_cents
 
 if TYPE_CHECKING:
     from app.services.tome_extractor import TomeMatchResult
@@ -47,11 +48,6 @@ try:
     _PARIS_TZ: ZoneInfo = ZoneInfo("Europe/Paris")
 except Exception:  # pragma: no cover - fuseau absent sur l'image de prod
     _PARIS_TZ = UTC  # type: ignore[assignment]
-
-
-def format_cents(cents: int) -> str:
-    """Formate des centimes en euros."""
-    return f"{cents / 100:.2f} €".replace(".", ",")
 
 
 def _positive(value: int | float | None) -> int | None:
