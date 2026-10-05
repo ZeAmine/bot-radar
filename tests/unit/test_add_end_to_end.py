@@ -1049,20 +1049,21 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
 
 
 @pytest.mark.asyncio
-async def test_series_alert_announces_no_market_price_it_will_never_have():
-    """Une alerte de série n'a pas de livre : la confirmation n'annonce aucune cote.
+async def test_series_alert_starts_book_resolution_at_creation():
+    """Une série sans ISBN déclenche la résolution de l'ouvrage dès la création.
 
     Une série surveillée par son nom n'a aucune fiche tant qu'aucun tome n'a été
-    identifié dans une annonce. Annoncer « cote en cours de calcul » ferait
-    attendre une ligne que rien ne produira avant bien des alertes. Comme une
-    alerte produit, la série part donc avec son seul récap : aucune ligne de prix,
-    et surtout aucune demande de cotation.
+    identifié : sans cette résolution, sa première annonce partait sans aucune ligne
+    de cote. La résolution part par le **nom de l'alerte** (+ auteur), et cote le
+    livre qu'elle lie — la prochaine annonce aura de quoi comparer. La confirmation,
+    elle, n'annonce toujours aucune cote : il n'y a encore rien à coter.
     """
     repos = _repositories("9782369904151")
     state = DraftState()
     state.data = {
         "category_slug": "bd_comics",
         "name": "Blacksad",
+        "author": "Juan Díaz Canales",
         "isbn": None,
         "include_keywords": ["blacksad"],
         "max_item_price_cents": 1500,
@@ -1077,17 +1078,27 @@ async def test_series_alert_announces_no_market_price_it_will_never_have():
     confirm_callback.message = confirm_message
     confirm_callback.answer = AsyncMock()
 
-    patches = _patched(repos, MagicMock(), MagicMock())
-    for entered in patches:
-        entered.start()
-    try:
-        await save_alert(confirm_callback, state, db_user, db_session)
-    finally:
-        for entered in reversed(patches):
-            entered.stop()
+    with patch(
+        "app.use_cases.ingest_listing.link_book_from_bnf", new_callable=AsyncMock
+    ) as bnf:
+        patches = _patched(repos, MagicMock(), MagicMock())
+        for entered in patches:
+            entered.start()
+        try:
+            await save_alert(confirm_callback, state, db_user, db_session)
+            await _drain(repos["tasks"])
+        finally:
+            for entered in reversed(patches):
+                entered.stop()
 
     repos["book_repo"].create.assert_not_called()
+    # La cotation se déclenche dans la résolution de fond, pas directement ici.
     repos["schedule_pricing"].assert_not_called()
+    bnf.assert_awaited_once()
+    args, kwargs = bnf.call_args
+    assert args[0] == "Blacksad"
+    assert kwargs.get("author") == "Juan Díaz Canales"
+
     confirmation = confirm_message.edit_text.call_args[0][0]
     assert "✅ <b>Alerte créée</b>" in confirmation
     assert "<b>Titre :</b> Blacksad" in confirmation

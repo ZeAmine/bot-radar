@@ -73,7 +73,7 @@ async def test_handle_status_day_active():
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
         assert "État du service" in text
-        assert "Scanner Vinted : 🟢 <b>Active</b>" in text
+        assert "<b>Scanner Vinted :</b> 🟢 <b>Active</b>" in text
         assert "scan -" in text
         assert "00:00 - 07:00" in text
         assert "<b>Alertes actives (10) :</b>" in text
@@ -82,11 +82,11 @@ async def test_handle_status_day_active():
         # Percentiles interpolés (sémantique `percentile_cont`) sur [0,98 ; 4,09] s :
         # p50 = 2,535 s et p95 = 3,9345 s.
         assert "<b>Latence</b>" in text
-        assert "Détection → alerte : <b>2535 ms</b>" in text
-        assert "Cadence de scrutation : <b>17.4 s</b>" in text
-        assert "📚 Livres : <b>5</b>" in text
-        assert "💻 Électronique : <b>3</b>" in text
-        assert "🎮 Jeux Vidéo : <b>2</b>" in text
+        assert "<b>Détection → alerte :</b> 2535 ms" in text
+        assert "<b>Cadence de scrutation :</b> 17.4 s" in text
+        assert "📚 <b>Livres :</b> 5" in text
+        assert "💻 <b>Électronique :</b> 3" in text
+        assert "🎮 <b>Jeux Vidéo :</b> 2" in text
 
 
 @pytest.mark.asyncio
@@ -121,8 +121,8 @@ async def test_handle_status_cooldown():
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
         assert "En pause anti-blocage (palier #2)" in text
-        assert "Motif : Blocage Cloudflare (403)" in text
-        assert "Reprise dans : <b>4 min" in text
+        assert "<b>Motif :</b> Blocage Cloudflare (403)" in text
+        assert "<b>Reprise dans :</b> 4 min" in text
         assert "à 11:35" in text
 
 
@@ -146,7 +146,7 @@ async def test_handle_status_night_mode():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "Scanner Vinted : <b>Mode nuit</b>" in text
+        assert "<b>Scanner Vinted :</b> <b>Mode nuit</b>" in text
         assert "Aucune alerte active" in text
 
 
@@ -193,7 +193,7 @@ async def test_handle_status_ai_active():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "Moteur IA (un-modele-choisi) : 🟢 <b>Actif</b>" in text
+        assert "<b>Moteur IA</b> (un-modele-choisi) : 🟢 <b>Actif</b>" in text
         assert "latence" not in text
         assert "115ms" not in text
 
@@ -225,7 +225,7 @@ async def test_handle_status_ai_error():
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
         assert (
-            "Moteur IA (un-modele-choisi) : 🔴 <b>Indisponible</b> "
+            "<b>Moteur IA</b> (un-modele-choisi) : 🔴 <b>Indisponible</b> "
             "(Clé API invalide ou refusée)"
             in text
         )

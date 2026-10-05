@@ -516,3 +516,155 @@ async def test_bd_resolution_schedules_bnf_without_awaiting_it(mock_db: AsyncMoc
     assert scheduled.call_args.kwargs["name"] == f"bnf_link_{alert.id}"
 
 
+@pytest.mark.asyncio
+async def test_bd_alert_without_a_resolvable_book_announces_the_search(
+    mock_db: AsyncMock,
+) -> None:
+    """Sans livre résolu, l'alerte annonce la recherche, jamais le silence."""
+    from app.services.market_price_service import SEARCHING_BOOK_LINE
+
+    mock_send_alert = AsyncMock(return_value=True)
+    scheduled: list[str] = []
+
+    def _close_task(coro, **_kwargs):
+        scheduled.append(_kwargs.get("name", ""))
+        coro.close()
+        return MagicMock()
+
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal"),
+        patch("app.use_cases.ingest_listing.safe_create_task", side_effect=_close_task),
+        patch("app.use_cases.ingest_listing.schedule_book_pricing"),
+    ):
+        use_case = ProcessListingUseCase(db=mock_db)
+        _listing, mock_repo, alert, _book = _bd_scenario(None)
+        alert.alert_books = []
+        use_case.listing_repo = mock_repo
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-123",
+            url="https://vinted.fr/item-123",
+            title="Blacksad - Tome 6",
+            category_slug="bd_comics",
+            item_price_cents=1400,
+        )
+        await use_case.execute(payload, raw_payload={})
+
+    mock_send_alert.assert_awaited_once()
+    _, kwargs = mock_send_alert.call_args
+    assert kwargs["market_comparison_line"] == SEARCHING_BOOK_LINE
+    # La ligne dit vrai : la résolution de fond part bien pour cet ouvrage.
+    assert any(name.startswith("bd_catalog_") for name in scheduled)
+
+
+class _FakeSession:
+    """Session simulée dont le contexte asynchrone est réutilisé par les deux tests."""
+
+    async def __aenter__(self) -> AsyncMock:
+        return AsyncMock()
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_catalog_resolution_prices_the_book_it_links() -> None:
+    """La résolution de fond cote, après commit, le livre qu'elle vient de lier."""
+    from app.use_cases import ingest_listing as mod
+
+    book = MagicMock()
+    book.id = uuid.uuid4()
+
+    with (
+        patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
+        patch.object(
+            mod.ProcessListingUseCase,
+            "_resolve_bd_market_comparison",
+            new=AsyncMock(return_value=book),
+        ),
+        patch.object(mod, "BookRepository") as repo_cls,
+        patch.object(mod, "has_usable_price", return_value=False),
+        patch.object(mod, "schedule_book_pricing") as schedule,
+    ):
+        repo_cls.return_value.get_by_id = AsyncMock(
+            return_value=MagicMock(market_cache=None)
+        )
+        await mod._link_bd_catalog_background(
+            alert_id=uuid.uuid4(),
+            alert_name="Blacksad",
+            alert_isbn=None,
+            listing_title="Blacksad - Tome 6",
+            listing_description=None,
+            listing_isbn13=None,
+        )
+
+    schedule.assert_called_once_with(book.id, reason="bd_resolved")
+
+
+@pytest.mark.asyncio
+async def test_catalog_resolution_leaves_an_already_priced_book_alone() -> None:
+    """Un livre déjà coté n'est pas recoté : la résolution ne cote que les manquants."""
+    from app.use_cases import ingest_listing as mod
+
+    book = MagicMock()
+    book.id = uuid.uuid4()
+
+    with (
+        patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
+        patch.object(
+            mod.ProcessListingUseCase,
+            "_resolve_bd_market_comparison",
+            new=AsyncMock(return_value=book),
+        ),
+        patch.object(mod, "BookRepository") as repo_cls,
+        patch.object(mod, "has_usable_price", return_value=True),
+        patch.object(mod, "schedule_book_pricing") as schedule,
+    ):
+        repo_cls.return_value.get_by_id = AsyncMock(
+            return_value=MagicMock(market_cache=MagicMock())
+        )
+        await mod._link_bd_catalog_background(
+            alert_id=uuid.uuid4(),
+            alert_name="Blacksad",
+            alert_isbn=None,
+            listing_title="Blacksad - Tome 6",
+            listing_description=None,
+            listing_isbn13=None,
+        )
+
+    schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> None:
+    """La BNF est interrogée par nom d'alerte (+ auteur), jamais par titre d'annonce."""
+    from app.use_cases import ingest_listing as mod
+
+    meta = MagicMock(isbn13="9782369904151", author="Un Auteur", publisher="Un Éditeur")
+    book = MagicMock()
+    book.id = uuid.uuid4()
+
+    with (
+        patch("app.services.book_metadata_service.BookMetadataService") as service_cls,
+        patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
+        patch.object(mod, "BookRepository") as repo_cls,
+        patch.object(mod, "BookCatalogService"),
+        patch.object(mod, "schedule_book_pricing") as schedule,
+    ):
+        service_cls.return_value.lookup_by_title_and_author = AsyncMock(return_value=meta)
+        repo_cls.return_value.get_by_isbn13 = AsyncMock(return_value=book)
+        repo_cls.return_value.link_alert_to_book = AsyncMock()
+
+        await mod.link_book_from_bnf("The Grocery", uuid.uuid4(), author="Un Auteur")
+
+    service_cls.return_value.lookup_by_title_and_author.assert_awaited_once_with(
+        "The Grocery par Un Auteur"
+    )
+    schedule.assert_called_once_with(book.id, reason="bnf_link")
+
+
