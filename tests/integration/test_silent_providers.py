@@ -29,6 +29,9 @@ async def session() -> AsyncSession:
         os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
     )
     async with engine.begin() as conn:
+        # Base PostgreSQL de CI partagée : remise à zéro du
+        # schéma avant chaque test (SQLite mémoire est neuf).
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     async with maker() as s:

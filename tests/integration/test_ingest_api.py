@@ -24,6 +24,11 @@ async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
     )
 
     async with test_engine.begin() as conn:
+        # La base PostgreSQL de CI est partagée et persistante : sans
+        # cette remise à zéro, le deuxième test recrée les mêmes lignes
+        # (catégories) et viole la contrainte unique. SQLite mémoire est
+        # neuf par construction ; drop_all y est un no-op sans danger.
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
     session_maker = async_sessionmaker(

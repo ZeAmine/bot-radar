@@ -28,6 +28,9 @@ async def internal_test_db() -> AsyncGenerator[AsyncSession, None]:
         echo=False,
     )
     async with engine.begin() as conn:
+        # Base PostgreSQL de CI partagée : remise à zéro du
+        # schéma avant chaque test (SQLite mémoire est neuf).
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
     session_maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
