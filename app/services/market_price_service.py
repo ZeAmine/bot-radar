@@ -44,6 +44,11 @@ MAX_PARTNERS_SHOWN = 5
 # dire que la cote arrive que laisser croire qu'il n'y a pas de prix.
 PENDING_COTE_LINE = "Cote d'occasion en cours de calcul…"
 
+# Ligne affichée quand aucun livre n'est encore identifié pour l'alerte : la
+# résolution (catalogue, puis BNF) tourne en arrière-plan. Sans elle, l'alerte
+# partait sans aucun bloc de cote, ce qui se lisait comme une absence de prix.
+SEARCHING_BOOK_LINE = "🔎 Recherche de l'ouvrage en cours…"
+
 try:
     _PARIS_TZ: ZoneInfo = ZoneInfo("Europe/Paris")
 except Exception:  # pragma: no cover - fuseau absent sur l'image de prod

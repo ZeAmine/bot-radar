@@ -49,8 +49,8 @@ async def handle_status(message: Message, db_session: Any) -> None:
             rem_s = rem_sec % 60
             poller_status = (
                 f"🟡 <b>En pause anti-blocage (palier #{consecutive})</b>\n"
-                f"Motif : {reason}\n"
-                f"Reprise dans : <b>{rem_m} min {rem_s:02d}s</b> (à {resume_time})"
+                f"<b>Motif :</b> {reason}\n"
+                f"<b>Reprise dans :</b> {rem_m} min {rem_s:02d}s (à {resume_time})"
             )
         else:
             poller_status = "🟡 <b>Fin de pause : reprise du scan imminente</b>"
@@ -78,15 +78,15 @@ async def handle_status(message: Message, db_session: Any) -> None:
     # valeurs restent mesurées et disponibles en base — seul l'affichage change.
     latency = await StatsRepository(db_session).get_notification_latency_ms(days=7)
     if latency["count"] and latency["p50_ms"] is not None:
-        latency_line = f"Détection → alerte : <b>{latency['p50_ms']} ms</b>"
+        latency_line = f"<b>Détection → alerte :</b> {latency['p50_ms']} ms"
     else:
-        latency_line = "Détection → alerte : Indisponible"
+        latency_line = "<b>Détection → alerte :</b> Indisponible"
 
     cycle_p50 = (poller_data or {}).get("cycle_gap_p50_s")
     if cycle_p50:
-        cadence_line = f"Cadence de scrutation : <b>{cycle_p50:g} s</b>"
+        cadence_line = f"<b>Cadence de scrutation :</b> {cycle_p50:g} s"
     else:
-        cadence_line = "Cadence de scrutation : Indisponible"
+        cadence_line = "<b>Cadence de scrutation :</b> Indisponible"
 
     cat_counts = await StatsRepository(db_session).count_active_alerts_by_category()
 
@@ -94,7 +94,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
 
     cat_lines = []
     for _slug, label, emoji, count in cat_counts:
-        cat_lines.append(f"{emoji} {label} : <b>{count}</b>")
+        cat_lines.append(f"{emoji} <b>{label} :</b> {count}")
 
     cat_summary = "Aucune alerte active" if not cat_lines else "\n".join(cat_lines)
 
@@ -116,10 +116,10 @@ async def handle_status(message: Message, db_session: Any) -> None:
 
     text = (
         "<b>État du service</b>\n\n"
-        f"Heure locale : {time_str} ({tz_label})\n"
-        f"Scanner Vinted : {poller_status}\n"
-        f"Moteur IA ({ai_info.model}) : {ai_status}\n"
-        f"Plage de veille : {night_hours_info}\n\n"
+        f"<b>Heure locale :</b> {time_str} ({tz_label})\n"
+        f"<b>Scanner Vinted :</b> {poller_status}\n"
+        f"<b>Moteur IA</b> ({ai_info.model}) : {ai_status}\n"
+        f"<b>Plage de veille :</b> {night_hours_info}\n\n"
         "<b>Latence</b>\n"
         f"{latency_line}\n"
         f"{cadence_line}\n\n"

@@ -93,15 +93,15 @@ class StatisticsService:
 
         return (
             f"{TITLE_STATS}\n"
-            f"{FIELD_PERIOD} : {days} derniers jours\n\n"
-            f"Alertes actives : {active_alerts}{cat_breakdown}\n"
-            f"Annonces reçues : {received_listings}\n"
-            f"Annonces correspondant à une alerte : {matched_listings}{match_rate}\n"
-            f"Alertes envoyées : {sent_notifications}\n\n"
-            f"Catégorie la plus active : {top_category_display}\n\n"
+            f"<b>{FIELD_PERIOD} :</b> {days} derniers jours\n\n"
+            f"<b>Alertes actives :</b> {active_alerts}{cat_breakdown}\n"
+            f"<b>Annonces reçues :</b> {received_listings}\n"
+            f"<b>Annonces correspondant à une alerte :</b> {matched_listings}{match_rate}\n"
+            f"<b>Alertes envoyées :</b> {sent_notifications}\n\n"
+            f"<b>Catégorie la plus active :</b> {top_category_display}\n\n"
             f"Alertes les plus déclenchées :\n"
             f"{top_alerts_text}\n\n"
             f"Comparaisons de prix (livres) :\n"
-            f"• Disponibles : {bd_available}\n"
-            f"• Indisponibles : {bd_unavailable}"
+            f"• <b>Disponibles :</b> {bd_available}\n"
+            f"• <b>Indisponibles :</b> {bd_unavailable}"
         )

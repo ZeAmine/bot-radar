@@ -168,16 +168,16 @@ async def test_statistics_service_formatting(stats_session: AsyncSession):
     msg = await service.get_formatted_stats(days=7)
 
     assert "📊 Statistiques" in msg
-    assert "Période : 7 derniers jours" in msg
-    assert "Alertes actives : 2 (📚 1 • 💻 1)" in msg
-    assert "Annonces reçues : 3" in msg
-    assert "Annonces correspondant à une alerte : 3 (100,0 %)" in msg
-    assert "Alertes envoyées : 2" in msg
-    assert "Catégorie la plus active : 📚 Livres" in msg
+    assert "<b>Période :</b> 7 derniers jours" in msg
+    assert "<b>Alertes actives :</b> 2 (📚 1 • 💻 1)" in msg
+    assert "<b>Annonces reçues :</b> 3" in msg
+    assert "<b>Annonces correspondant à une alerte :</b> 3 (100,0 %)" in msg
+    assert "<b>Alertes envoyées :</b> 2" in msg
+    assert "<b>Catégorie la plus active :</b> 📚 Livres" in msg
     assert "• 📚 <b>Alerte Batman</b> : 2 alertes" in msg
     assert "Comparaisons de prix (livres) :" in msg
-    assert "Disponibles : 1" in msg
-    assert "Indisponibles : 0" in msg
+    assert "• <b>Disponibles :</b> 1" in msg
+    assert "• <b>Indisponibles :</b> 0" in msg
 
 
 @pytest.mark.asyncio
@@ -197,6 +197,6 @@ async def test_statistics_formatting_empty_period():
     msg = StatisticsService.format_stats_message(empty_data)
 
     assert "📊 Statistiques" in msg
-    assert "Période : 30 derniers jours" in msg
+    assert "<b>Période :</b> 30 derniers jours" in msg
     assert "Aucune alerte déclenchée sur la période" in msg
     assert "Aucune" in msg
