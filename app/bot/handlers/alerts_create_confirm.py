@@ -78,6 +78,17 @@ async def _end_draft_without_recap(callback: CallbackQuery) -> None:
         await callback.message.edit_text(DRAFT_GONE_MESSAGE, reply_markup=EMPTY_KEYBOARD)
 
 
+# `save_alert` n'agit que dans l'état `confirm_creation`. Le bouton, lui, survit à
+# l'état dans l'historique : après une création, une annulation ou une session
+# perdue. Sans ce filet, aucun handler ne répondait au callback et Telegram faisait
+# tourner le bouton indéfiniment. On acquitte sans réécrire le message : un second
+# appui suit souvent une création réussie, et éditer effacerait la confirmation.
+@router.callback_query(F.data == "alert_create_confirm")
+async def stale_alert_create_confirm(callback: CallbackQuery) -> None:
+    """Acquitte un « Créer l'alerte » périmé, pour que le bouton cesse de tourner."""
+    await callback.answer(DRAFT_GONE_MESSAGE)
+
+
 @router.callback_query(F.data == "alert_create_cancel")
 async def cancel_alert_creation(callback: CallbackQuery, state: FSMContext) -> None:
     """Annule la création de l'alerte via bouton inline."""
