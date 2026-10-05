@@ -401,3 +401,45 @@ async def test_a_high_error_ratio_is_reported_with_a_meaningful_minimum():
 
     assert len(sent) == 1
     assert "4/6" in sent[0]
+
+
+# --- Diagnostic : avec quelle cote une alerte BD part-elle ? ---
+
+
+def test_classify_sent_cote_state_names_the_three_outcomes():
+    """La mesure doit distinguer une cote chiffrée des deux lignes d'attente."""
+    from app.services.market_health import classify_sent_cote_state
+    from app.services.market_price_service import PENDING_COTE_LINE, SEARCHING_BOOK_LINE
+
+    assert classify_sent_cote_state("<b>Prix bas constaté :</b> 19,98 €") == "real"
+    assert classify_sent_cote_state(PENDING_COTE_LINE) == "pending"
+    assert classify_sent_cote_state(SEARCHING_BOOK_LINE) == "searching"
+    # Une ligne absente est un livre dont la cote manque, pas une recherche qui n'a pas lieu.
+    assert classify_sent_cote_state(None) == "pending"
+
+
+@pytest.mark.asyncio
+async def test_recording_a_cote_state_counts_it_without_raising():
+    """La mesure incrémente le bon compteur, et les trois états sont lisibles."""
+    client = MagicMock()
+    client.incr = AsyncMock()
+    client.mget = AsyncMock(return_value=["5", None, "2"])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(market_health, "get_redis_client", lambda: client)
+        await market_health.record_sent_cote_state("real")
+        counts = await market_health.read_sent_cote_states()
+
+    assert client.incr.await_args.args[0].endswith(":real")
+    assert counts == {"real": 5, "pending": 0, "searching": 2}
+
+
+@pytest.mark.asyncio
+async def test_a_silent_redis_loses_the_measure_not_the_alert():
+    """Un Redis muet ne doit jamais faire échouer le chemin d'ingestion."""
+    client = MagicMock()
+    client.incr = AsyncMock(side_effect=RuntimeError("redis down"))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(market_health, "get_redis_client", lambda: client)
+        await market_health.record_sent_cote_state("searching")

@@ -99,6 +99,65 @@ async def test_lookup_by_title_and_author_mocked():
         assert "death bringer" in res.recommended_variants
 
 
+async def test_lookup_series_notices_keeps_the_tomes_and_drops_the_lookalikes():
+    """Une série expose ses tomes, pas les ouvrages voisins qui partagent un mot."""
+    service = BookMetadataService()
+    records = [
+        BookMetadata(
+            title="Blacksad", author="Juan Díaz Canales",
+            isbn13="9782205049504", source=AUTORITE_BNF,
+        ),
+        BookMetadata(
+            title="Blacksad Tome 2", author="Juan Díaz Canales",
+            isbn13="9782205049696", source=AUTORITE_BNF,
+        ),
+        BookMetadata(
+            title="Blacksad Tome 3", author="Juan Díaz Canales",
+            isbn13="9782205051484", source=AUTORITE_BNF,
+        ),
+        # Même préfixe de titre, autre auteur : ce n'est pas un tome de la série.
+        BookMetadata(
+            title="Blacksad : la bande dessinée noire", author="Un Autre",
+            isbn13="9780000000002", source=AUTORITE_BNF,
+        ),
+        BookMetadata(
+            title="Une tout autre série", author="Un Autre",
+            isbn13="9780000000019", source=AUTORITE_BNF,
+        ),
+    ]
+    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+        notices = await service.lookup_series_notices(
+            "Blacksad", author_hint="Juan Diaz Canales"
+        )
+
+    assert [notice.title for notice in notices] == [
+        "Blacksad",
+        "Blacksad Tome 2",
+        "Blacksad Tome 3",
+    ]
+
+
+async def test_lookup_series_notices_is_bounded_and_deduplicates_isbns():
+    """Un ISBN n'est rattaché qu'une fois, et la série reste bornée."""
+    service = BookMetadataService()
+    records = [
+        BookMetadata(
+            title=f"Blacksad Tome {index}", author="Juan Díaz Canales",
+            isbn13=f"97822050514{index:02d}", source=AUTORITE_BNF,
+        )
+        for index in range(1, 9)
+    ]
+    records.append(records[0])  # doublon d'ISBN
+
+    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+        notices = await service.lookup_series_notices("Blacksad", limit=3)
+        empty = await service.lookup_series_notices("   ")
+
+    assert len(notices) == 3
+    assert len({notice.isbn13 for notice in notices}) == 3
+    assert empty == []
+
+
 # --- Cas réel : « La couleur des choses » de Martin Panchaud ---------------------
 # Deux éditions BNF pour le même titre, et un ISBN réel attribué à un AUTRE ouvrage
 # du même éditeur (« Keeping two »), le type d'erreur produite par un LLM.

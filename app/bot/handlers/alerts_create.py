@@ -288,18 +288,20 @@ def _get_book_repo(session: Any) -> Any:
     return getattr(alerts_mod, "BookRepository", BookRepository)(session)
 
 
-def _schedule_bnf_link(*, alert_id: uuid.UUID, name: str, author: str | None) -> None:
-    """Déclenche la résolution de l'ouvrage d'une alerte sans ISBN, dès sa création.
+def _schedule_series_resolution(
+    *, alert_id: uuid.UUID, name: str, author: str | None
+) -> None:
+    """Déclenche la résolution d'une série sans ISBN, dès sa création.
 
     Une série surveillée par son nom n'a aucune fiche tant qu'aucun tome n'a été
-    identifié : sa première annonce partait donc sans ligne de cote. La même
-    résolution que celle du chemin d'alerte part ici, par le **nom de l'alerte**,
-    et cote le livre qu'elle lie — la prochaine annonce aura de quoi comparer.
+    identifié : sa première annonce partait donc sans ligne de cote. La résolution
+    part par le **nom de l'alerte**, demande à la BNF les notices de la série
+    (`series=True`) et cote chaque tome lié — la prochaine annonce aura de quoi comparer.
     """
-    from app.use_cases.ingest_listing import link_book_from_bnf
+    from app.use_cases.ingest_listing import link_books_from_bnf
 
     safe_create_task(
-        link_book_from_bnf(name, alert_id, author=author),
+        link_books_from_bnf(name, alert_id, author=author, series=True),
         name=f"bnf_link_{alert_id}",
     )
 
@@ -819,8 +821,8 @@ async def save_alert(
             schedule_book_pricing(book.id, reason="alert_created")
         else:
             # Série sans ISBN : rien à coter encore. On lance la résolution par le nom
-            # de l'alerte, pour que le premier tome identifié soit coté avant l'annonce.
-            _schedule_bnf_link(alert_id=alert.id, name=name, author=author)
+            # de l'alerte, pour que les tomes identifiés soient cotés avant l'annonce.
+            _schedule_series_resolution(alert_id=alert.id, name=name, author=author)
 
         price_str = format_price_cents(max_price)
 

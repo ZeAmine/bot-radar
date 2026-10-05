@@ -562,6 +562,57 @@ async def test_bd_alert_without_a_resolvable_book_announces_the_search(
     assert any(name.startswith("bd_catalog_") for name in scheduled)
 
 
+@pytest.mark.asyncio
+async def test_bd_alert_records_the_cote_state_it_shipped(mock_db: AsyncMock) -> None:
+    """La mesure porte sur l'état réellement transmis, et part après l'envoi."""
+    from app.use_cases import ingest_listing as mod
+
+    mock_send_alert = AsyncMock(return_value=True)
+    seen_states: list[str] = []
+    scheduled: list[str] = []
+
+    async def _noop() -> None:
+        return None
+
+    def _record(state: str) -> object:
+        seen_states.append(state)
+        return _noop()
+
+    def _capture(coro, **_kwargs):
+        scheduled.append(_kwargs.get("name", ""))
+        coro.close()
+        return MagicMock()
+
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal"),
+        patch.object(mod, "record_sent_cote_state", new=MagicMock(side_effect=_record)),
+        patch.object(mod, "safe_create_task", side_effect=_capture),
+        patch.object(mod, "schedule_book_pricing"),
+    ):
+        use_case = ProcessListingUseCase(db=mock_db)
+        _listing, mock_repo, _alert, _book = _bd_scenario(None)
+        use_case.listing_repo = mock_repo
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-123",
+            url="https://vinted.fr/item-123",
+            title="Blacksad - Tome 6",
+            category_slug="bd_comics",
+            item_price_cents=1400,
+        )
+        await use_case.execute(payload, raw_payload={})
+
+    # Livre lié sans cote : l'alerte a annoncé « cote en cours », et c'est cet état
+    # qui est mesuré.
+    assert seen_states == ["pending"]
+    assert any(name.startswith("cote_state_") for name in scheduled)
+
+
 class _FakeSession:
     """Session simulée dont le contexte asynchrone est réutilisé par les deux tests."""
 
@@ -659,12 +710,72 @@ async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> N
         service_cls.return_value.lookup_by_title_and_author = AsyncMock(return_value=meta)
         repo_cls.return_value.get_by_isbn13 = AsyncMock(return_value=book)
         repo_cls.return_value.link_alert_to_book = AsyncMock()
+        repo_cls.return_value.get_by_id = AsyncMock(
+            return_value=MagicMock(market_cache=None)
+        )
 
-        await mod.link_book_from_bnf("The Grocery", uuid.uuid4(), author="Un Auteur")
+        await mod.link_books_from_bnf("The Grocery", uuid.uuid4(), author="Un Auteur")
 
     service_cls.return_value.lookup_by_title_and_author.assert_awaited_once_with(
         "The Grocery par Un Auteur"
     )
     schedule.assert_called_once_with(book.id, reason="bnf_link")
+
+
+@pytest.mark.asyncio
+async def test_bnf_link_for_a_series_links_and_prices_every_tome() -> None:
+    """`series=True` lie chaque tome de la série et ne cote que ceux sans cote."""
+    from app.db.models.book_market_cache import BookMarketCache
+    from app.use_cases import ingest_listing as mod
+
+    priced = MagicMock(isbn13="9782369900011", author="A", publisher="P")
+    already_priced = MagicMock(isbn13="9782369900028", author="A", publisher="P")
+    books = {}
+    for notice in (priced, already_priced):
+        book = MagicMock()
+        book.id = uuid.uuid4()
+        books[notice.isbn13] = book
+
+    def _get_isbn(isbn13: str) -> object:
+        return books.get(isbn13)
+
+    with (
+        patch("app.services.book_metadata_service.BookMetadataService") as service_cls,
+        patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
+        patch.object(mod, "BookRepository") as repo_cls,
+        patch.object(mod, "BookCatalogService"),
+        patch.object(mod, "schedule_book_pricing") as schedule,
+    ):
+        service_cls.return_value.lookup_series_notices = AsyncMock(
+            return_value=[priced, already_priced]
+        )
+        repo_cls.return_value.get_by_isbn13 = AsyncMock(side_effect=_get_isbn)
+        repo_cls.return_value.link_alert_to_book = AsyncMock()
+        usable_cache = BookMarketCache(
+            id=uuid.uuid4(),
+            book_id=books[already_priced.isbn13].id,
+            lowest_delivered_price_cents=1200,
+            comparison_status=ComparisonStatus.AVAILABLE,
+            historical_low_1y_cents=1000,
+        )
+        repo_cls.return_value.get_by_id = AsyncMock(
+            side_effect=lambda book_id: MagicMock(
+                market_cache=(
+                    None
+                    if book_id == books[priced.isbn13].id
+                    else usable_cache
+                )
+            )
+        )
+
+        await mod.link_books_from_bnf(
+            "Blacksad", uuid.uuid4(), author="A", series=True
+        )
+
+    service_cls.return_value.lookup_series_notices.assert_awaited_once_with(
+        "Blacksad", author_hint="A"
+    )
+    # Un seul tome est coté : celui qui n'avait pas de cote utilisable.
+    schedule.assert_called_once_with(books[priced.isbn13].id, reason="bnf_link")
 
 
