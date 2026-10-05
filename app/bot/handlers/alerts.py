@@ -26,7 +26,6 @@ from app.bot.handlers.alerts_create_confirm import (
     edit_alert_creation_prompt,
     handle_cancel_command,
     prompt_new_price,
-    restart_from_scratch,
 )
 
 # Ré-export des aides et formateurs
@@ -128,7 +127,6 @@ __all__ = [
     "edit_alert_creation_prompt",
     "prompt_new_price",
     "back_to_recap",
-    "restart_from_scratch",
     # View
     "CATEGORY_ARG_MAP",
     "show_alerts",
