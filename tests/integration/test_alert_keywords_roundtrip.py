@@ -112,16 +112,22 @@ async def _write_alert(
 async def test_an_exclusion_qualified_by_the_title_survives_the_database(
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
-    """« deep it coffret » ne contient pas le titre : il doit être relu tel quel."""
+    """« deep it coffret » ne contient pas le titre : il doit être relu tel quel.
+
+    Le qualificatif de l'exemple était « deep it tome 1 » : depuis l'ADR-029, un
+    qualificatif qui n'est qu'un **numéro de tome** ajouté au titre est retiré, parce
+    qu'il ferait taire le tome visé. La forme décrite ici est donc « deep it tomes »,
+    sans numéro — celle qu'ADR-027 protège et qu'ADR-029 laisse intacte.
+    """
     name = "Deep It"
-    # Cas réel de l'incident : des qualificatifs qui éliminent des tomes entiers, à
+    # Cas réel de l'incident : des qualificatifs qui éliminent des lots entiers, à
     # côté des termes que la règle refuse — un chiffre nu et un caractère seul.
     # « hs », lui, est volontairement gardé : une exclusion de deux lettres tranche
     # encore quelque chose, et la règle le dit.
     exclusions = [
         "deep it coffret",
         "deep it intégrale",
-        "deep it tome 1",
+        "deep it tomes",
         "hs",
         "1",
         "x",
@@ -140,9 +146,33 @@ async def test_an_exclusion_qualified_by_the_title_survives_the_database(
     assert stored.exclude_keywords == [
         "deep it coffret",
         "deep it intégrale",
-        "deep it tome 1",
+        "deep it tomes",
         "hs",
     ]
+
+
+async def test_an_exclusion_that_only_adds_a_volume_number_is_never_stored(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    """Le titre plus un numéro n'atteint pas la base : il ferait taire le tome visé.
+
+    Forme relevée en production sur `/add Absolute Martian Manhunter, 10€` : le prompt
+    demandait « 3 à 6 » exclusions, donc le moteur a collé un numéro au titre. La règle
+    tombe à l'écriture ; ce test vérifie qu'aucune ne survit au chemin réel d'écriture.
+    """
+    name = "Deep It"
+    exclusions = ["deep it #1", "deep it tome 2", "deep it vol 3", "deep it coffret"]
+
+    async with session_maker() as write_session:
+        alert_id = await _write_alert(
+            write_session, name=name, exclude_keywords=exclusions
+        )
+
+    async with session_maker() as read_session:
+        stored = await AlertRepository(read_session).get_by_id(alert_id)
+
+    assert stored is not None
+    assert stored.exclude_keywords == ["deep it coffret"]
 
 
 async def test_the_reloaded_exclusions_are_not_cleaned_a_second_time(

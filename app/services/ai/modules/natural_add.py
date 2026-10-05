@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.constants import STANDARD_CONDITIONS, CategorySlug
-from app.domain.rules.series_detection import detect_series
+from app.domain.rules.series_detection import SeriesSignal
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import (
     NaturalAddPayload,
@@ -66,6 +66,12 @@ SYSTEM_PROMPT = (
     "ce qui l'accompagne, ce qui contredit la recherche). N'écris pas une liste "
     "de goodies génériques qui conviendrait à n'importe quel livre : si tu n'as "
     "rien de spécifique en tête, réponds une liste vide.\n"
+    "  Au plus 3 exclusions. Une liste vide est une réponse attendue : mieux vaut "
+    "aucune exclusion qu'une exclusion de remplissage.\n"
+    "  INTERDIT : une exclusion obtenue en collant un numéro au titre "
+    "(« … #2 », « … 2 »). Le numéro d'un tome n'est pas un mot du titre : "
+    "l'exclusion ne désigne alors aucune confusion. Si le titre que tu rends ne "
+    "porte aucun numéro, ne nomme aucun numéro de tome.\n"
     '- "max_price_cents": Prix max en centimes '
     "(ex: 35€ -> 3500, 7€ -> 700, null si non spécifié).\n"
     '- "conditions": Liste des états parmi : ["Neuf avec étiquette", '
@@ -92,6 +98,10 @@ class _ResolvedWork:
     isbn_note: str | None = None
     edition_alternatives: list[EditionAlternative] = field(default_factory=list)
     work_choices: list[WorkAlternative] = field(default_factory=list)
+    # Ce que la résolution a pu prouver sur la nature de l'œuvre. Vide quand aucune
+    # résolution n'a eu lieu (série déjà annoncée, ISBN explicitement saisi, produit
+    # non littéraire) : une preuve ne s'invente pas faute d'avoir cherché.
+    series: SeriesSignal = field(default_factory=SeriesSignal)
 
 
 class NaturalAddModule(BaseAIModule):
@@ -194,13 +204,10 @@ class NaturalAddModule(BaseAIModule):
             book = resolved.book
 
             # La résolution peut révéler une œuvre numérotée que le moteur n'avait pas
-            # vue : la notice porte un tome alors que la demande n'en visait aucun.
-            # L'ISBN est alors écarté, sinon il verrouillerait l'alerte sur ce volume —
-            # et les mots-clés du récap seraient ceux de ce volume, pas de la série.
-            series = detect_series(
-                query_title=clean_name,
-                notices=[resolved.book.title] if resolved.book else [],
-            )
+            # vue — y compris par une notice voisine qu'elle n'a pas retenue. L'ISBN
+            # est alors écarté, sinon il verrouillerait l'alerte sur ce volume, et les
+            # mots-clés du récap seraient ceux de ce volume, pas de la série.
+            series = resolved.series
             if series.is_series:
                 is_series = True
 
@@ -260,6 +267,9 @@ class NaturalAddModule(BaseAIModule):
         rattache rien : ni ISBN, ni auteur, ni éditeur. Renvoyer la fiche du roman
         erreur comme confirmée contaminerait le matching, l'URL de recherche et la cote
         de marché, et survivrait à une correction d'ISBN.
+
+        Un ISBN explicitement saisi par l'utilisateur nomme un tome : la détection de
+        série ne le remplace pas, elle ne s'applique qu'à une résolution par titre.
         """
         if category != CategorySlug.BD_COMICS.value or is_series or not title:
             return _ResolvedWork()
@@ -320,6 +330,9 @@ class NaturalAddModule(BaseAIModule):
                 book=resolution.best,
                 isbn_note=provenance_note(resolution.best),
                 edition_alternatives=resolution.editions(),
+                # La nature de l'œuvre se lit sur toute la résolution, notices voisines
+                # comprises : la retenue ne porte pas toujours le numéro qui la trahit.
+                series=resolution.series_signal(title),
             )
 
         if typed_isbn:

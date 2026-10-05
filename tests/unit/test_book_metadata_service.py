@@ -415,6 +415,47 @@ async def test_openlibrary_fallback_exposes_other_french_editions_only():
 
 
 @pytest.mark.asyncio
+async def test_openlibrary_fallback_keeps_the_numbered_notice_it_sets_aside():
+    """Le document « Vol. 2 » n'est ni édition ni homonyme : il ne doit pas disparaître.
+
+    Il porte la preuve que la notice retenue décrit une œuvre numérotée. Sans lui,
+    `resolve_for_alert` rendait une résolution où rien ne trahissait la série — l'alerte
+    partait avec l'ISBN d'un tome.
+    """
+    volume_1 = {
+        "title": "Absolute Martian Manhunter",
+        "author_name": ["Deniz Camp"],
+        "publisher": ["DC Comics"],
+        "first_publish_year": 2025,
+        "isbn": ["9781799505204"],
+    }
+    volume_2 = {
+        "title": "Absolute Martian Manhunter, Vol. 2",
+        "author_name": ["Deniz Camp"],
+        "publisher": ["DC Comics"],
+        "first_publish_year": 2026,
+        "isbn": ["9781799510871"],
+    }
+    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[volume_1, volume_2])
+    service = BookMetadataService(http_client=client)
+
+    resolution = await service.resolve_for_alert("Absolute Martian Manhunter")
+
+    assert resolution is not None
+    assert resolution.best.title == "Absolute Martian Manhunter"
+    assert resolution.alternatives == []
+    assert resolution.other_works == []
+    assert resolution.notice_titles == (
+        "Absolute Martian Manhunter",
+        "Absolute Martian Manhunter, Vol. 2",
+    )
+
+    signal = resolution.series_signal("Absolute Martian Manhunter")
+    assert signal.is_series is True
+    assert signal.volumes == ("Tome 2",)
+
+
+@pytest.mark.asyncio
 async def test_openlibrary_verifies_isbn_unknown_to_bnf():
     """Le repli applique le même garde-fou de titre que la BNF."""
     client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
@@ -680,6 +721,8 @@ async def test_resolve_input_returns_a_resolution_for_a_typed_isbn():
     assert resolution is not None
     assert resolution.best.isbn13 == "9782369903086"
     assert resolution.is_ambiguous is False
+    # Un ISBN nomme un tome : rien à détecter, et l'alerte garde son code.
+    assert resolution.notice_titles == ()
 
 
 def test_ambiguity_note_only_speaks_when_nothing_is_confirmed():

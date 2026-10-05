@@ -9,7 +9,11 @@ from app.core.constants import (
     AlertStatus,
 )
 from app.db.models.alert import Alert
-from app.domain.rules.keyword_hygiene import is_degenerate_exclusion, is_degenerate_variant
+from app.domain.rules.keyword_hygiene import (
+    is_degenerate_exclusion,
+    is_degenerate_variant,
+    names_only_a_volume,
+)
 from app.utils.text import contains_keyword, contains_normalized_keyword, normalize_text
 
 
@@ -251,16 +255,23 @@ def usable_variants(alert_variants: list[str] | None, alert_isbn: str | None) ->
     ]
 
 
-def usable_exclusions(alert_exclusions: list[str] | None) -> list[str]:
-    """Exclusions capables de trancher : ni chiffre nu, ni lettre seule.
+def usable_exclusions(
+    alert_exclusions: list[str] | None, alert_title: str | None = None
+) -> list[str]:
+    """Exclusions capables de trancher : ni chiffre nu, ni lettre seule, ni numéro collé.
 
     Équivalent de `usable_variants` en lecture : une exclusion « 1 » stockée par une
-    ancienne version ne peut plus rejeter toute annonce contenant un chiffre.
+    ancienne version ne peut plus rejeter toute annonce contenant un chiffre. Le titre
+    de l'alerte, quand il est fourni, écarte en plus l'exclusion qui n'est que le titre
+    plus un numéro de tome (« … #2 ») : elle tairait le tome voisin d'une série
+    surveillée, sans qu'aucune migration ne soit nécessaire pour la rattraper.
     """
     return [
         exclusion
         for exclusion in (alert_exclusions or [])
-        if exclusion and not is_degenerate_exclusion(exclusion)
+        if exclusion
+        and not is_degenerate_exclusion(exclusion)
+        and not (alert_title and names_only_a_volume(exclusion, alert_title))
     ]
 
 
@@ -564,7 +575,7 @@ def evaluate_listing_against_alert(
 
     # Vérification des mots-clés exclus configurés par l'utilisateur (avec extension multilingue)
     expanded_user_excludes = expand_exclusions_multilingual(
-        usable_exclusions(alert.exclude_keywords)
+        usable_exclusions(alert.exclude_keywords, alert.name)
     )
     user_hit = first_matching_exclusion(searchable_text, expanded_user_excludes)
     if user_hit:
