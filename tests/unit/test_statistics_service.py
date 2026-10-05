@@ -168,14 +168,14 @@ async def test_statistics_service_formatting(stats_session: AsyncSession):
     msg = await service.get_formatted_stats(days=7)
 
     assert "Statistiques BotRadar (7 derniers jours)" in msg
-    assert "Alertes actives :</b> 2 (📚 1 • 💻 1)" in msg
-    assert "Annonces reçues :</b> 3" in msg
-    assert "Annonces matchées :</b> 3 <i>(100.0%)</i>" in msg
-    assert "Alertes Telegram envoyées :</b> 2" in msg
-    assert "Catégorie la plus active :</b> 📚 Livres" in msg
-    assert "• 📚 <b>Alerte Batman</b> : 2 alerte(s)" in msg
+    assert "Alertes actives : 2 (📚 1 • 💻 1)" in msg
+    assert "Annonces reçues : 3" in msg
+    assert "Annonces correspondant à une alerte : 3 (100.0%)" in msg
+    assert "Alertes Telegram envoyées : 2" in msg
+    assert "Catégorie la plus active : 📚 Livres" in msg
+    assert "• 📚 <b>Alerte Batman</b> : 2 alertes" in msg
     assert "Disponibles : 1" in msg
-    assert "Indisponibles / sans offre : 0" in msg
+    assert "Indisponibles : 0" in msg
 
 
 @pytest.mark.asyncio
@@ -195,5 +195,5 @@ async def test_statistics_formatting_empty_period():
     msg = StatisticsService.format_stats_message(empty_data)
 
     assert "Statistiques BotRadar (30 derniers jours)" in msg
-    assert "<i>Aucune alerte déclenchée sur la période</i>" in msg
+    assert "Aucune alerte déclenchée sur la période" in msg
     assert "Aucune" in msg

@@ -56,11 +56,6 @@ class StatisticsService:
             if cat_parts:
                 cat_breakdown = f" ({' • '.join(cat_parts)})"
 
-        match_rate_str = ""
-        if received_listings > 0:
-            pct = (matched_listings / received_listings) * 100
-            match_rate_str = f" <i>({pct:.1f}%)</i>"
-
         top_alerts = data.get("top_alerts", [])
         bd_available = data.get("bd_comparisons_available", 0)
         bd_unavailable = data.get("bd_comparisons_unavailable", 0)
@@ -76,23 +71,30 @@ class StatisticsService:
                     prefix = ""
                     name = item[0]
                     count = item[1]
+                plural = "s" if count > 1 else ""
                 top_alerts_lines.append(
-                    f"• {prefix}<b>{html.escape(str(name))}</b> : {count} alerte(s)")
+                    f"• {prefix}<b>{html.escape(str(name))}</b> : {count} alerte{plural}")
         else:
-            top_alerts_lines.append("• <i>Aucune alerte déclenchée sur la période</i>")
+            top_alerts_lines.append("Aucune alerte déclenchée sur la période")
 
         top_alerts_text = "\n".join(top_alerts_lines)
 
+        match_rate = (
+            f" ({(matched_listings / received_listings) * 100:.1f}%)"
+            if received_listings > 0
+            else ""
+        )
+
         return (
             f"📊 <b>Statistiques BotRadar ({days} derniers jours)</b>\n\n"
-            f"🔔 <b>Alertes actives :</b> {active_alerts}{cat_breakdown}\n"
-            f"📥 <b>Annonces reçues :</b> {received_listings}\n"
-            f"🎯 <b>Annonces matchées :</b> {matched_listings}{match_rate_str}\n"
-            f"💬 <b>Alertes Telegram envoyées :</b> {sent_notifications}\n\n"
-            f"🏷️ <b>Catégorie la plus active :</b> {top_category_display}\n\n"
-            f"🏆 <b>Top alertes déclenchées :</b>\n"
+            f"Alertes actives : {active_alerts}{cat_breakdown}\n"
+            f"Annonces reçues : {received_listings}\n"
+            f"Annonces correspondant à une alerte : {matched_listings}{match_rate}\n"
+            f"Alertes Telegram envoyées : {sent_notifications}\n\n"
+            f"Catégorie la plus active : {top_category_display}\n\n"
+            f"Alertes les plus déclenchées :\n"
             f"{top_alerts_text}\n\n"
-            f"📚 <b>Comparaisons de prix Livres :</b>\n"
+            f"Comparaisons de prix Livres :\n"
             f"• Disponibles : {bd_available}\n"
-            f"• Indisponibles / sans offre : {bd_unavailable}"
+            f"• Indisponibles : {bd_unavailable}"
         )

@@ -62,12 +62,11 @@ logger = logging.getLogger(__name__)
 
 # Pied de la confirmation de création, identique pour toutes les catégories. Une seule
 # formulation : les deux branches (livre et produit) annoncent la même chose, donc elles
-# ne peuvent pas diverger. La promesse « 24/24 » a été retirée — elle décrit une
-# interrogation continue que le bot ne fait pas : les balises reviennent à chaque
-# passage du poller ou à chaque création d'alerte.
+# ne peuvent pas diverger. Le pied décrit le mécanisme réel — une annonce éligible
+# déclenche une alerte au prochain passage du poller — sans promettre d'instantanéité
+# ni de surveillance permanente.
 _CONFIRMATION_FOOTER = (
-    "⚡ <i>Vous recevrez une notification instantanée "
-    "dès qu'une offre éligible apparaît.</i>"
+    "Les annonces correspondant à ces critères déclencheront une alerte Telegram."
 )
 
 
@@ -610,12 +609,12 @@ async def process_max_price_input(
             existing.max_item_price_cents = price_cents
             await db_session.commit()
             await state.clear()
-            new_price_str = f"{price_cents / 100:.2f} €".replace(".", ",")
+            new_price_str = format_price_cents(price_cents)
             await message.answer(
-                f"✅ <b>Prix max mis à jour !</b>\n\n"
+                f"✅ <b>Prix maximum mis à jour</b>\n\n"
                 f"📚 <b>{html.escape(existing.name)}</b>\n"
-                f"🎯 <b>Nouveau prix max :</b> {new_price_str}\n\n"
-                f"⚡ <i>L'alerte existante a été actualisée sans créer de doublon.</i>"
+                f"Nouveau prix maximum : {new_price_str}\n\n"
+                "L'alerte existante a été actualisée sans créer de doublon."
             )
             return
 

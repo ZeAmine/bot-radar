@@ -877,8 +877,7 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         assert "24/24" not in confirmation
         # Le pied conservé.
         assert confirmation.endswith(
-            "⚡ <i>Vous recevrez une notification instantanée "
-            "dès qu'une offre éligible apparaît.</i>"
+            "Les annonces correspondant à ces critères déclencheront une alerte Telegram."
         )
 
         # La confirmation reprend la fiche, même ordre et mêmes émojis que le récap.
