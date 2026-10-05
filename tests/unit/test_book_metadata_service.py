@@ -1,6 +1,7 @@
 """Tests unitaires pour le service BookMetadataService (parsing, BNF SRU, recommandations)."""
 
 import urllib.parse
+import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -833,3 +834,148 @@ async def test_verdict_refuse_un_isbn_malforme_sans_appeler_personne():
     assert verdict.outcome == "inconnu"
     assert verdict.panne is None
     assert service.http_client.requetes == [], "aucun appel réseau pour une saisie invalide"
+
+
+# --- Le garde-fou « fail-closed » de la réponse SRU ------------------------------
+#
+# Le `XMLParser` de la C de CPython ne prend que `target` et `encoding` :
+# `resolve_entities` comme `forbid_entities` y lèvent un TypeError. Ce qu'il
+# n'expose pas non plus, c'est une poignée pour dire au parseur « n'accepte
+# aucune entité ». Ce qui reste possible est donc une *déclaration* d'entité
+# dans le sous-ensemble interne du document — et expat l'honore : sans le garde,
+# un `&isbn;` déclaré par la réponse devient un ISBN que la BNF aurait « confirmé ».
+# Le garde refuse donc le document entier, et le dit : un refus sans motif se
+# lirait comme une absence de notice.
+
+
+def _sru(record: str, doctype: str = "") -> bytes:
+    """Enveloppe SRU d'un seul record, avec une DOCTYPE facultative.
+
+    Volontairement distincte de `SRU_HEADER` : une DOCTYPE doit se placer entre
+    la déclaration XML et l'élément racine, donc après le `?>`.
+    """
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f"{doctype}"
+        '<srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/">'
+        f"<srw:numberOfRecords>1</srw:numberOfRecords><srw:records>{record}"
+        "</srw:records></srw:searchRetrieveResponse>"
+    ).encode()
+
+
+class _ClientSRUFige:
+    """Le SRU renvoie toujours le même octet ; le repli répond « aucun ouvrage »."""
+
+    def __init__(self, contenu: bytes) -> None:
+        self.contenu = contenu
+        self.requetes: list[str] = []
+
+    async def get(self, url: str, **_kwargs: object) -> _FakeResponse:
+        self.requetes.append(url)
+        if "openlibrary.org" in url:
+            return _FakeResponse(payload={"numFound": 0, "docs": []})
+        return _FakeResponse(content=self.contenu)
+
+
+_PANNE_DOCTYPE = "DOCTYPE déclaré dans la réponse"
+
+
+@pytest.mark.asyncio
+async def test_reponse_sru_sans_doctype_est_toujours_lue():
+    """Le garde écarte un document qui déclare une DOCTYPE, et rien d'autre.
+
+    Un garde qui refuse tout resterait invisible sur le cas précédent : sans cette
+    lecture, une réponse parfaitement normale finirait écartée en silence.
+    """
+    service = BookMetadataService(
+        http_client=_ClientSRUFige(_sru(PANCHAUD_EDITION_2022))
+    )
+
+    notices, panne = await service._bnf_records("bib.isbn adj \"9782369903086\"")
+
+    assert [notice.isbn13 for notice in notices] == ["9782369903086"]
+    assert panne is None, "une réponse lisible n'est pas une panne"
+
+
+@pytest.mark.asyncio
+async def test_entite_interne_declenchee_est_ecartee_et_annoncee_comme_panne():
+    """Une entité interne déclarée par la réponse n'est jamais développée.
+
+    C'est le cas qui tuerait la garde : expat développe ce `&isbn;` sans rien
+    demander, et la notice qui en sort porte un ISBN que personne n'a lu dans la
+    réponse. Le garde rend une liste vide *et* le motif, parce qu'une liste vide
+    sans motif dirait « la BNF ignore cet ISBN » — une accusation.
+    """
+    charge = _sru(
+        PANCHAUD_EDITION_2022.replace("9782369903086", "&isbn;"),
+        doctype=(
+            '<!DOCTYPE srw:searchRetrieveResponse ['
+            '<!ENTITY isbn "9782369903086">'
+            "]>"
+        ),
+    )
+    service = BookMetadataService(http_client=_ClientSRUFige(charge))
+
+    notices, panne = await service._bnf_records("bib.isbn adj \"9782369903086\"")
+
+    assert notices == [], "aucune notice ne sort d'un document qui déclare ses entités"
+    assert panne == _PANNE_DOCTYPE
+    assert ET.fromstring(charge) is not None, "le parseur nu, lui, aurait développé &isbn;"
+
+
+@pytest.mark.asyncio
+async def test_entite_externe_ne_lit_pas_le_fichier_local_et_le_signale(tmp_path):
+    """Un `SYSTEM file://…` ne fait entrer aucun octet du disque, et se voit.
+
+    Le parseur de la C refuse déjà l'entité externe (`undefined entity`), mais par
+    accident d'implémentation, pas par contrat : le jour où un vrai durcissement
+    (un parseur dédié, une liste blanche) le remplace, c'est cette assertion qui tient la
+    ligne. Le motif est exigé ici parce qu'un `ParseError` brut, lui, ne dit rien
+ de la décision — il dirait seulement que quelque chose a échoué.
+    """
+    contenu_local = "9782369903062 CONTENU LOCAL QUI NE DOIT PAS FUIR"
+    fichier = tmp_path / "secret.txt"
+    fichier.write_text(contenu_local, encoding="utf-8")
+    charge = _sru(
+        PANCHAUD_EDITION_2022.replace("9782369903086", "&fuite;"),
+        doctype=(
+            "<!DOCTYPE srw:searchRetrieveResponse ["
+            f'<!ENTITY fuite SYSTEM "{fichier.as_uri()}">'
+            "]>"
+        ),
+    )
+    service = BookMetadataService(http_client=_ClientSRUFige(charge))
+
+    notices, panne = await service._bnf_records("bib.isbn adj \"9782369903086\"")
+
+    assert notices == []
+    assert panne == _PANNE_DOCTYPE
+    assert contenu_local not in (panne or "")
+    assert all(contenu_local not in (notice.isbn13 or "") for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_une_doctype_ne_peut_pas_confirmer_un_isbn():
+    """Ce que l'appelant public rend : un silence motivé, jamais une confirmation.
+
+    Le garde protège le parseur ; il doit aussi protéger l'interface. Un verdict
+    `confirme` fondé sur un ISBN développé par la réponse ferait figer une
+    identité d'ouvrage pour l'éternité d'une alerte, et `inconnu` accuserait
+    l'autorité de l'ignorer alors qu'elle n'a pas été lue.
+    """
+    charge = _sru(
+        PANCHAUD_EDITION_2022.replace("9782369903086", "&isbn;"),
+        doctype=(
+            '<!DOCTYPE srw:searchRetrieveResponse ['
+            '<!ENTITY isbn "9782369903086">'
+            "]>"
+        ),
+    )
+    service = BookMetadataService(http_client=_ClientSRUFige(charge))
+
+    verdict = await service.consult_authorities("9782369903086")
+
+    assert verdict.notice is None
+    assert verdict.outcome == "silence", "une réponse écartée n'est pas une absence de notice"
+    assert verdict.panne == _PANNE_DOCTYPE
+    assert verdict.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY), "le repli a bien été tenté"
