@@ -146,7 +146,7 @@ def test_comparator_with_historical_low_1y():
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
-    assert "Derniere MAJ :" in card
+    assert "Dernière mise à jour :" in card
 
 
 def test_comparator_no_historical_low_falls_back_to_live_market_price():
@@ -323,7 +323,7 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
     # Limite stricte de 5 offres (Ebay qui est la 6e valide ne doit pas être affichée)
     assert "Ebay" not in card
 
-    assert "Derniere MAJ :" in card
+    assert "Dernière mise à jour :" in card
 
 
 def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_partners():

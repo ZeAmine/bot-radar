@@ -201,11 +201,11 @@ def test_get_alerts_list_keyboard():
     assert len(rows) == 4
     assert len(rows[0]) == 5
     assert len(rows[1]) == 2
-    assert rows[2][0].text == "Suivant ➡️"
+    assert rows[2][0].text == "Suivant →"
     assert rows[2][0].callback_data == "al_list_page:tech:1"
-    assert rows[3][0].text == "📁 Catégories"
+    assert rows[3][0].text == "Catégories"
     assert rows[3][0].callback_data == "al_list_cat_menu"
-    assert rows[3][1].text == "❌ Fermer"
+    assert rows[3][1].text == "Fermer"
     assert rows[3][1].callback_data == "al_close"
 
 

@@ -1,4 +1,4 @@
-"""Service de calcul du montant total estimé d'une annonce (Prix TTC précis)."""
+"""Service de calcul du montant total estimé d'une annonce (article, protection et port)."""
 
 # Frais standards constatés sur Vinted France
 DEFAULT_PROTECTION_FIXED_CENTS: int = 70  # 0,70 € fixe
@@ -46,9 +46,12 @@ def format_price_summary(
 ) -> str:
     """Formate la ligne d'affichage du prix pour Telegram.
 
+    Le total inclut protection acheteur et port : ce n'est jamais un montant réel
+    fourni par Vinted, il est donc toujours présenté comme une estimation.
+
     Exemples :
-    - "💵 Prix : 15,00 € (19,33 € TTC)"
-    - "💵 Prix : 15,00 € (TTC à confirmer)" (si total inconnu et fallback désactivé)
+    - "Prix : 15,00 € — Total estimé : 19,33 € (protection et port inclus)"
+    - "Prix : 15,00 €" (si le total est inconnu et le repli désactivé)
     """
     item_euros = f"{item_price_cents / 100:.2f} €".replace(".", ",")
     total_cents = estimated_total_cents
@@ -61,6 +64,6 @@ def format_price_summary(
 
     if total_cents is not None:
         total_euros = f"{total_cents / 100:.2f} €".replace(".", ",")
-        return f"💵 Prix : {item_euros} ({total_euros} TTC)"
+        return f"Prix : {item_euros} — Total estimé : {total_euros} (protection et port inclus)"
 
-    return f"💵 Prix : {item_euros} (TTC à confirmer)"
+    return f"Prix : {item_euros}"

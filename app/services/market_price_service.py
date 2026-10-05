@@ -42,7 +42,7 @@ MAX_PARTNERS_SHOWN = 5
 
 # Ligne affichée quand le livre est identifié mais pas encore côté : mieux vaut
 # dire que la cote arrive que laisser croire qu'il n'y a pas de prix.
-PENDING_COTE_LINE = "⏳ <i>Cote d'occasion en cours de calcul…</i>"
+PENDING_COTE_LINE = "Cote d'occasion en cours de calcul…"
 
 try:
     _PARIS_TZ: ZoneInfo = ZoneInfo("Europe/Paris")
@@ -530,7 +530,8 @@ class MarketPriceService:
                 continue
             lines.append(f"• {clean_tome_display_title(book.title)} : {format_cents(price_cents)}")
 
-        lines.append(f"\nDerniere MAJ : {MarketPriceService._latest_checked_at(target_books)}")
+        latest = MarketPriceService._latest_checked_at(target_books)
+        lines.append(f"\nDernière mise à jour : {latest}")
         return "\n".join(lines)
 
     @staticmethod
@@ -540,13 +541,14 @@ class MarketPriceService:
         lines = MarketPriceService._header(
             f"🆕 Vinted : {format_cents(vinted_total) if vinted_total else 'à confirmer'}"
         )
-        lines.append("<i>Annonce sans tome précis détecté.</i>\n")
+        lines.append("Annonce sans tome précis détecté.\n")
         lines.append("<b>Cotes par tome (plus bas connu) :</b>")
         series_lines = MarketPriceService._series_books_lines(books_in_series, None)
         # Un tome sans cote est une cote en attente, pas une cote absente : un
         # titre suivi d'une section vide se lisait comme un panneau mort.
         lines.extend(series_lines or [PENDING_COTE_LINE])
-        lines.append(f"\nDerniere MAJ : {MarketPriceService._latest_checked_at(books_in_series)}")
+        latest = MarketPriceService._latest_checked_at(books_in_series)
+        lines.append(f"\nDernière mise à jour : {latest}")
         return "\n".join(lines)
 
     @staticmethod
@@ -573,8 +575,8 @@ class MarketPriceService:
             lines.append(f"📉 Prix bas constaté : {format_cents(reference_cents)}")
             if not partners:
                 lines.append(
-                    "<i>(Cote d'occasion basée sur le plus bas prix "
-                    "que nous avons pu constater)</i>"
+                    "(Cote d'occasion basée sur le plus bas prix "
+                    "que nous avons pu constater)"
                 )
 
         if partners:
@@ -590,7 +592,7 @@ class MarketPriceService:
                 lines.append(f"• {merchant} : {format_cents(total_cents)} ({condition})")
         elif not is_historical:
             lines.append(
-                "<i>(Aucune offre d'occasion comparable en stock chez nos partenaires.)</i>"
+                "(Aucune offre d'occasion comparable en stock chez nos partenaires.)"
             )
 
         if len(books_in_series) > 1:
@@ -605,7 +607,7 @@ class MarketPriceService:
         if best_url:
             lines.append(f'\nLien : <a href="{best_url}">Consulter l\'offre</a>')
 
-        lines.append(f"\nDerniere MAJ : {_format_checked_at(cache.checked_at)}")
+        lines.append(f"\nDernière mise à jour : {_format_checked_at(cache.checked_at)}")
         return "\n".join(lines)
 
     @staticmethod

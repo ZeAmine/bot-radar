@@ -1,5 +1,6 @@
 """Flux d'affichage et de consultation des alertes (/show, /list)."""
 
+import html
 import logging
 import uuid
 from typing import Any
@@ -83,7 +84,7 @@ async def show_alerts(
         matched_alerts = await alert_repo.search_by_user(db_user.id, query=query, limit=10)
         if not matched_alerts:
             await message.answer(
-                f"❌ Aucune alerte trouvée correspondant à « <b>{query}</b> ».\n\n"
+                f"⚠️ Aucune alerte trouvée correspondant à « <b>{html.escape(query)}</b> ».\n\n"
                 "Tape /show pour faire défiler toutes tes alertes ou /add pour en créer une."
             )
             return
@@ -101,19 +102,18 @@ async def show_alerts(
         buttons = [
             [
                 InlineKeyboardButton(
-                    text=f"{a.name} ({'Actif' if a.status == AlertStatus.ACTIVE else 'En pause'})",
+                    text=f"{a.name} ({'Active' if a.status == AlertStatus.ACTIVE else 'En pause'})",
                     callback_data=f"al_view:{a.id}",
                 )
             ]
             for a in matched_alerts
         ]
         buttons.append(
-            [InlineKeyboardButton(text="📋 Toutes mes alertes", callback_data="al_page:0")]
+            [InlineKeyboardButton(text="Liste des alertes", callback_data="al_page:0")]
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         await message.answer(
-            f"🔍 <b>{len(matched_alerts)} alertes correspondent à « {query} » :</b>\n\n"
-            "Clique sur celle que tu souhaites consulter :",
+            f"{len(matched_alerts)} alertes correspondent à « {html.escape(query)} » :",
             reply_markup=keyboard,
         )
         return
@@ -250,7 +250,7 @@ async def show_list_categories(
     counts = await alert_repo.count_by_user_grouped_by_category(db_user.id)
 
     text = (
-        "📋 <b>Vos alertes surveillées</b>\n\nChoisissez une catégorie pour afficher vos alertes :"
+        "📁 <b>Catégories</b>\n\nChoisis une catégorie pour afficher tes alertes :"
     )
     keyboard = get_list_category_selection_keyboard(active_categories, counts, total_count)
 

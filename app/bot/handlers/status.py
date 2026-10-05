@@ -49,11 +49,11 @@ async def handle_status(message: Message, db_session: Any) -> None:
             rem_s = rem_sec % 60
             poller_status = (
                 f"🟡 <b>En pause anti-blocage (palier #{consecutive})</b>\n"
-                f"   └  ⚠️ Motif : {reason}\n"
-                f"   └  ⏳ Reprise dans : <b>{rem_m} min {rem_s:02d}s</b> (à {resume_time})"
+                f"Motif : {reason}\n"
+                f"Reprise dans : <b>{rem_m} min {rem_s:02d}s</b> (à {resume_time})"
             )
         else:
-            poller_status = "🟡 <b>Fin de pause : reprise imminente du scan...</b>"
+            poller_status = "🟡 <b>Fin de pause : reprise du scan imminente</b>"
     elif poller_data and poller_data.get("status") == "active":
         last_poll = poller_data.get("last_poll_at", 0)
         elapsed = max(0, int(now.timestamp() - last_poll))
@@ -76,20 +76,20 @@ async def handle_status(message: Message, db_session: Any) -> None:
     latency = await StatsRepository(db_session).get_notification_latency_ms(days=7)
     if latency["count"] and latency["p50_ms"] is not None:
         latency_line = (
-            f"   └  Détection → alerte : <b>{latency['p50_ms']} ms</b> "
+            f"Détection → alerte : <b>{latency['p50_ms']} ms</b> "
             f"(p50, p95 {latency['p95_ms']} ms — {latency['count']} alertes / 7 j)"
         )
     else:
-        latency_line = "   └  Détection → alerte : <i>aucune alerte mesurée</i>"
+        latency_line = "Détection → alerte : aucune alerte mesurée"
 
     cycle_p50 = (poller_data or {}).get("cycle_gap_p50_s")
     cycle_p90 = (poller_data or {}).get("cycle_gap_p90_s")
     if cycle_p50:
         cadence_line = (
-            f"   └  Cadence de scrutation : <b>{cycle_p50:g} s</b> (p50, p90 {cycle_p90:g} s)"
+            f"Cadence de scrutation : <b>{cycle_p50:g} s</b> (p50, p90 {cycle_p90:g} s)"
         )
     else:
-        cadence_line = "   └  Cadence de scrutation : <i>mesure en cours…</i>"
+        cadence_line = "Cadence de scrutation : mesure en cours…"
 
     cat_counts = await StatsRepository(db_session).count_active_alerts_by_category()
 
@@ -97,9 +97,9 @@ async def handle_status(message: Message, db_session: Any) -> None:
 
     cat_lines = []
     for _slug, label, emoji, count in cat_counts:
-        cat_lines.append(f"   └  {emoji} {label} : <b>{count}</b>")
+        cat_lines.append(f"{emoji} {label} : <b>{count}</b>")
 
-    cat_summary = "   └  <i>Aucune alerte active</i>" if not cat_lines else "\n".join(cat_lines)
+    cat_summary = "Aucune alerte active" if not cat_lines else "\n".join(cat_lines)
 
     night_hours_info = (
         f"{settings.NIGHT_MODE_START_HOUR:02d}:00 - {settings.NIGHT_MODE_END_HOUR:02d}:00"
@@ -111,24 +111,24 @@ async def handle_status(message: Message, db_session: Any) -> None:
     if ai_info.status == "active":
         ai_status = "🟢 <b>Actif</b>"
     elif ai_info.status == "disabled":
-        ai_status = "⏸️ <b>Désactivé</b>"
+        ai_status = "<b>Désactivé</b>"
     elif ai_info.status == "unconfigured":
-        ai_status = "⚪ <b>Non configuré</b> (clé API manquante)"
+        ai_status = "<b>Non configuré</b> (clé API manquante)"
     else:
         ai_status = f"🔴 <b>Indisponible</b> ({ai_info.message})"
 
     text = (
-        "📡  <b>État du Service</b>\n\n"
-        f"🕒 <b>Heure locale</b> : {time_str} ({tz_label})\n"
-        f"🔍 <b>Scanner Vinted</b> : {poller_status}\n"
-        f"🤖 <b>Moteur IA ({ai_info.model})</b> : {ai_status}\n"
-        f"🌙 <b>Plage de veille</b> : {night_hours_info}\n\n"
-        "⏱ <b>Latence</b>\n"
+        "<b>État du service</b>\n\n"
+        f"Heure locale : {time_str} ({tz_label})\n"
+        f"Scanner Vinted : {poller_status}\n"
+        f"Moteur IA ({ai_info.model}) : {ai_status}\n"
+        f"Plage de veille : {night_hours_info}\n\n"
+        "<b>Latence</b>\n"
         f"{latency_line}\n"
         f"{cadence_line}\n\n"
-        f"🎯 <b>Alertes actives ({total_active}) :</b>\n"
+        f"<b>Alertes actives ({total_active}) :</b>\n"
         f"{cat_summary}\n\n"
-        "💡 <i>Utilisez /list pour voir le détail ou /add pour en créer une.</i>"
+        "Utilise /list pour le détail ou /add pour en créer une."
     )
 
     await message.answer(text)

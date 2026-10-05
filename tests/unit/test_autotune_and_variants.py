@@ -88,7 +88,7 @@ async def test_handle_create_ai_variants():
         last_text = callback.message.edit_text.call_args[0][0]
         assert "Variantes :" in last_text
         assert "onepiece" in last_text
-        assert "Exclus :" in last_text
+        assert "Mots-clés exclus :" in last_text
         assert "figurine" in last_text
 
 
@@ -241,7 +241,7 @@ async def test_handle_autotune_with_dislikes():
         # Doit envoyer le message de chargement puis le résultat final
         assert message.answer.call_count == 2
         text = message.answer.call_args[0][0]
-        assert "Auto-Tuning : « One Piece »" in text
+        assert "Auto-tuning : « One Piece »" in text
         assert "figurine, t-shirt" in text
         assert await get_pending_tuning(alert.id) == ["figurine", "t-shirt"]
 
@@ -268,7 +268,7 @@ async def test_handle_autotune_multiple_alerts_menu():
 
         message.answer.assert_called_once()
         text, kwargs = message.answer.call_args[0][0], message.answer.call_args[1]
-        assert "Sélectionnez l'alerte à analyser" in text
+        assert "Sélectionne l'alerte à analyser" in text
         kb = kwargs["reply_markup"]
         assert len(kb.inline_keyboard) == 3
         assert "Watchmen (1 faux positif)" in kb.inline_keyboard[0][0].text
@@ -308,7 +308,7 @@ async def test_handle_autotune_with_target_query():
 
         assert message.answer.call_count == 2
         text = message.answer.call_args[0][0]
-        assert "Auto-Tuning : « Watchmen »" in text
+        assert "Auto-tuning : « Watchmen »" in text
         assert "gardiens" in text
 
 
@@ -564,7 +564,7 @@ async def test_process_autotune_zero_dislikes_callback():
         last_call_args = callback.message.edit_text.call_args
         last_text = last_call_args[0][0]
         assert "Aucun faux positif enregistré pour cette alerte" in last_text
-        assert "[👎 Faux positif]" in last_text
+        assert "Faux positif" in last_text
         kb = last_call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == "ai_tune_hub"
         assert kb.inline_keyboard[1][0].callback_data == f"al_edit:{alert.id}"
@@ -704,7 +704,7 @@ async def test_show_autotune_hub():
         await show_autotune_hub(callback, user_id, db_session)
         callback.message.edit_text.assert_called_once()
         text = callback.message.edit_text.call_args[0][0]
-        assert "Sélectionnez l'alerte à analyser" in text
+        assert "Sélectionne l'alerte à analyser" in text
         kb = callback.message.edit_text.call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == f"ai_tune_select:{alert1.id}"
         assert kb.inline_keyboard[1][0].callback_data == "ai_tune_close"
@@ -719,7 +719,7 @@ async def test_show_autotune_hub():
         await show_autotune_hub(callback, user_id, db_session)
         callback.message.edit_text.assert_called_once()
         text = callback.message.edit_text.call_args[0][0]
-        assert "Toutes vos alertes sont propres" in text
+        assert "Aucun faux positif signalé pour le moment" in text
         kb = callback.message.edit_text.call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == "ai_tune_close"
 
@@ -782,7 +782,7 @@ async def test_handle_tune_edit():
         state.update_data.assert_called_once_with(tuning_alert_id=str(alert.id))
         callback.message.edit_text.assert_called_once()
         text = callback.message.edit_text.call_args[0][0]
-        assert "Personnaliser les exclusions" in text
+        assert "Mots-clés exclus" in text
         assert "<code>figurine, tome 1</code>" in text
         kb = callback.message.edit_text.call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == f"ai_tune_back_sug:{alert.id}"
@@ -817,7 +817,7 @@ async def test_handle_tune_back_to_suggestion():
         state.clear.assert_called_once()
         callback.message.edit_text.assert_called_once()
         text = callback.message.edit_text.call_args[0][0]
-        assert "Nouvelles exclusions suggérées :" in text
+        assert "Mots-clés exclus suggérés :" in text
         assert "figurine, tome 1" in text
         kb = callback.message.edit_text.call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == f"ai_tune_apply:{alert.id}"
@@ -854,7 +854,7 @@ async def test_handle_custom_exclusions_input_valid():
         state.clear.assert_called_once()
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "Nouvelles exclusions à appliquer (personnalisées) :" in text
+        assert "Mots-clés exclus à appliquer (personnalisés) :" in text
         assert "figurine, tome 2, coffret" in text
         kb = message.answer.call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == f"ai_tune_apply:{alert_id}"
@@ -930,7 +930,7 @@ async def test_handle_create_ai_variants_recovers_from_a_stalled_engine():
     assert "L'IA n'a pas répondu" not in (stored["keyword_note"] or "")
 
     last_text = callback.message.edit_text.call_args[0][0]
-    assert "✨ <b>Variantes :</b> onepiece" in last_text
+    assert "<b>Variantes :</b> onepiece" in last_text
     keyboard = callback.message.edit_text.call_args[1]["reply_markup"]
     assert not any(
         button.callback_data == "alert_create_ai_variants"

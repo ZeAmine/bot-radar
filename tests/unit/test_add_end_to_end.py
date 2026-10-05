@@ -325,9 +325,9 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
         bnf.verify_isbn.assert_awaited_once_with(ISBN_AUTRE_LIVRE, "La couleur des choses")
 
         recap = _recap_text(loading_message)
-        assert "🔢 <b>ISBN :</b> <code>9782369903086</code>" in recap
-        assert "📌 <b>Titre :</b> La couleur des choses" in recap
-        assert "🏢 <b>Éditeur :</b> Çà et là" in recap
+        assert "<b>ISBN :</b> <code>9782369903086</code>" in recap
+        assert "<b>Titre :</b> La couleur des choses" in recap
+        assert "<b>Éditeur :</b> Çà et là" in recap
         # L'ISBN n'apparaît qu'une fois : plus de ligne dédiée redondante.
         assert recap.count("9782369903086") == 1
         assert ISBN_AUTRE_LIVRE not in recap
@@ -358,7 +358,7 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
             in switch_recap
         )
         # La bascule met à jour la fiche et l'édition décrite, pas le clavier.
-        assert "🏢 <b>Éditeur :</b> Editions çà et là" in switch_recap
+        assert "<b>Éditeur :</b> Editions çà et là" in switch_recap
         switch_keyboard = switch_message.edit_text.call_args[1]["reply_markup"]
         assert [
             button.text
@@ -390,7 +390,7 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
         )
 
         confirmation = confirm_message.edit_text.call_args[0][0]
-        assert "ISBN :</b> <code>9782369904151</code>" in confirmation
+        assert "ISBN : <code>9782369904151</code>" in confirmation
         # Le livre vient d'être créé : sa cote est annoncée, pas encore chiffrée.
         assert PENDING_COTE_LINE in confirmation
     finally:
@@ -450,7 +450,7 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
 
             # 1. Sans confirmation BNF, l'alerte part en surveillance par titre.
             recap = _recap_text(loading_message)
-            assert "🔢 <b>ISBN :</b> <i>non confirmé par la BNF</i>" in recap
+            assert "<b>ISBN :</b> À confirmer" in recap
             assert "surveillance par titre" in recap
             assert not _edition_buttons(loading_message)
 
@@ -473,7 +473,7 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
             ]
 
             typed_answer = typed_message.answer.call_args[0][0]
-            assert "🔢 <b>ISBN :</b> <code>9782369903086</code>" in typed_answer
+            assert "<b>ISBN :</b> <code>9782369903086</code>" in typed_answer
             assert (
                 "📖 <b>Édition suivie :</b> 2022 · Çà et là · 224 p. · 24 cm"
                 in typed_answer
@@ -485,7 +485,7 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
             #    sans eux, la recherche repart seule en arrière-plan.
             await _drain(repos["tasks"])
             recap_answer = typed_message.answer.call_args[0][0]
-            assert "🔑 <b>Inclus :</b> La couleur des choses" in recap_answer
+            assert "<b>Mots-clés inclus :</b> La couleur des choses" in recap_answer
 
             # 5. Création sur l'ISBN saisi, avec l'URL Vinted par ISBN.
             confirm_message = MagicMock(spec=Message)
@@ -545,7 +545,7 @@ async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_wor
         assert state.data["publisher"] is None
         assert state.data["edition_alternatives"] == []
         typed_answer = typed_message.answer.call_args[0][0]
-        assert "🔢 <b>ISBN :</b> <code>" + ISBN_INCONNU + "</code>" in typed_answer
+        assert "<b>ISBN :</b> <code>" + ISBN_INCONNU + "</code>" in typed_answer
         assert "ISBN saisi, non confirmé par la BNF" in typed_answer
         assert "Martin Panchaud" not in typed_answer
         await _drain(repos["tasks"])
@@ -652,7 +652,7 @@ async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
             await _drain(repos["tasks"])
 
             recap = _recap_text(loading_message)
-            assert "🔢 <b>ISBN :</b> <i>non confirmé par la BNF</i>" in recap
+            assert "<b>ISBN :</b> À confirmer" in recap
             # La note est échappée par le récap : on compare sur un fragment sans apostrophe.
             assert "est aussi le titre" in recap
             assert "surveillance par titre" in recap
@@ -683,9 +683,9 @@ async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
             assert state.data["publisher"] == "Éditions du Chêne"
 
             switch_recap = switch_message.edit_text.call_args[0][0]
-            assert "🔢 <b>ISBN :</b> <code>9782810206087</code>" in switch_recap
-            assert "✍️ <b>Auteur :</b> Nef" in switch_recap
-            assert "🏢 <b>Éditeur :</b> Éditions du Chêne" in switch_recap
+            assert "<b>ISBN :</b> <code>9782810206087</code>" in switch_recap
+            assert "<b>Auteur :</b> Nef" in switch_recap
+            assert "<b>Éditeur :</b> Éditions du Chêne" in switch_recap
             assert "9782214080627" not in switch_recap
             # L'œuvre est choisie : les propositions d'homonymes disparaissent.
             assert not _work_buttons(switch_message.edit_text.call_args[1]["reply_markup"])
@@ -723,7 +723,7 @@ async def test_add_end_to_end_typed_isbn_beats_model_proposal():
         bnf.verify_isbn.assert_awaited_once_with("9782369903086", "La couleur des choses")
 
         recap = _recap_text(loading_message)
-        assert "🔢 <b>ISBN :</b> <code>9782369903086</code>" in recap
+        assert "<b>ISBN :</b> <code>9782369903086</code>" in recap
         assert ISBN_AUTRE_LIVRE not in recap
     finally:
         for entered in reversed(patches):
@@ -778,7 +778,7 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
         # La carte est celle du brouillon : un titre unique, aucun en-tête de parcours.
         # C'est ce qui permet de la ré-afficher à l'identique après un changement
         # d'édition.
-        assert recap.startswith(f"{RECAP_TITLE}\n\n🔢 <b>ISBN :</b> <code>9782369903086</code>")
+        assert recap.startswith(f"{RECAP_TITLE}\n\n<b>ISBN :</b> <code>9782369903086</code>")
         assert not any(banner in recap for banner in ROUTE_BANNERS)
     finally:
         for entered in reversed(patches):
@@ -810,13 +810,9 @@ async def test_add_natural_add_applies_variants_without_asking_for_a_click():
         await _drain(repos["tasks"])
 
         recap = _recap_text(loading_message)
-        assert "✨ <b>Variantes :</b> couleurdeschoses" in recap
-        assert "🚫 <b>Exclus :</b> keeping two" in recap
-        assert "Confirmer la création de cette alerte ?" in recap
-        assert (
-            "<i>Clique sur « Créer l'alerte » pour valider "
-            "ou « Modifier » pour ajuster.</i>" in recap
-        )
+        assert "<b>Variantes :</b> couleurdeschoses" in recap
+        assert "<b>Mots-clés exclus :</b> keeping two" in recap
+        assert "Valide les critères ci-dessus avant de créer l'alerte." in recap
 
         keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
         assert [
@@ -881,18 +877,20 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         assert "24/24" not in confirmation
         # Le pied conservé.
         assert confirmation.endswith(
-            "⚡ <i>Vous recevrez une notification instantanée "
-            "dès qu'une offre éligible apparaît.</i>"
+            "Les annonces correspondant à ces critères déclencheront une alerte Telegram."
         )
 
         # La confirmation reprend la fiche, même ordre et mêmes émojis que le récap.
-        assert confirmation.startswith("✅ <b>Alerte créée avec succès !</b>\n\n🔢 <b>ISBN :</b>")
-        assert "📌 <b>Titre :</b> La couleur des choses" in confirmation
-        assert f"✍️ <b>Auteur :</b> {BNF_EDITION.author}" in confirmation
-        assert f"🏢 <b>Éditeur :</b> {BNF_EDITION.publisher}" in confirmation
-        assert "🎯 <b>Prix max :</b> 12,00 €" in confirmation
-        # Les états abrégés, comme sur la carte de récap.
-        assert "🏷️ <b>États :</b> NAE, NSE, TBE" in confirmation
+        assert confirmation.startswith("✅ <b>Alerte créée</b>")
+        assert "Titre : La couleur des choses" in confirmation
+        assert f"Auteur : {BNF_EDITION.author}" in confirmation
+        assert f"Éditeur : {BNF_EDITION.publisher}" in confirmation
+        assert "Prix maximum : 12,00 €" in confirmation
+        # Les états complets, libellés du référentiel ItemCondition.
+        conditions_ligne = (
+            "États acceptés : Neuf avec étiquette, Neuf sans étiquette, Très bon état"
+        )
+        assert conditions_ligne in confirmation
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -946,9 +944,9 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
         # champ de mots-clés encore affiché. Les variantes et exclusions restent
         # vérifiées ci-dessus, sur ce qui atteint réellement la ligne créée.
         confirmation = confirm_message.edit_text.call_args[0][0]
-        assert f"🔑 <b>Inclus :</b> {', '.join(create_kwargs['include_keywords'])}" in confirmation
-        assert "✨ <b>Variantes :</b>" not in confirmation
-        assert "🚫 <b>Exclus :</b>" not in confirmation
+        assert f"Mots-clés inclus : {', '.join(create_kwargs['include_keywords'])}" in confirmation
+        assert "Variantes :" not in confirmation
+        assert "<b>Mots-clés exclus :</b>" not in confirmation
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -1004,11 +1002,9 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
         # Et rien d'autre : même structure, aucun bandeau, même pied de confirmation.
         for text in (recap, switch_recap):
             assert text.startswith(RECAP_TITLE)
-            assert "🔢 <b>ISBN :</b>" in text
+            assert "ISBN :" in text
             assert text.endswith(
-                "\n\nConfirmer la création de cette alerte ?\n\n"
-                "<i>Clique sur « Créer l'alerte » pour valider "
-                "ou « Modifier » pour ajuster.</i>"
+                "\n\nValide les critères ci-dessus avant de créer l'alerte."
             )
             for banner in ROUTE_BANNERS:
                 assert banner not in text
@@ -1019,7 +1015,7 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
         assert recap_kb == switch_kb
 
         # La note de la recherche de variantes survit au changement d'édition.
-        assert "Confirmer la création de cette alerte ?" in switch_recap
+        assert "Valide les critères ci-dessus" in switch_recap
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -1066,8 +1062,8 @@ async def test_series_alert_announces_no_market_price_it_will_never_have():
     repos["book_repo"].create.assert_not_called()
     repos["schedule_pricing"].assert_not_called()
     confirmation = confirm_message.edit_text.call_args[0][0]
-    assert "✅ <b>Alerte créée avec succès !</b>" in confirmation
-    assert "📌 <b>Titre :</b> Blacksad" in confirmation
+    assert "✅ <b>Alerte créée</b>" in confirmation
+    assert "Titre : Blacksad" in confirmation
     assert PENDING_COTE_LINE not in confirmation
     assert "Prix du marché" not in confirmation
     assert "Prix bas constaté" not in confirmation

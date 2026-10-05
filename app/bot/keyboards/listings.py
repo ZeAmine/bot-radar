@@ -20,7 +20,7 @@ def get_listing_alert_keyboard(
     - Ligne 2 : [📊 Prix du marché] (si BD/Comics)
     - Ligne 3 (Ligne 2 si hors-BD) : [👎 Faux positif] (ou [✅ Signalé]) et [💬 Négocier]
     """
-    row1 = [InlineKeyboardButton(text="🔗 Annonce", url=listing_url)]
+    row1 = [InlineKeyboardButton(text="Voir l'annonce", url=listing_url)]
 
     dislike_btn = (
         InlineKeyboardButton(
@@ -57,14 +57,14 @@ def get_dislike_confirmation_keyboard(
     category_slug: str,
 ) -> InlineKeyboardMarkup:
     """Clavier demandant confirmation avant d'enregistrer un faux positif."""
-    row1 = [InlineKeyboardButton(text="🔗 Annonce", url=listing_url)]
+    row1 = [InlineKeyboardButton(text="Voir l'annonce", url=listing_url)]
 
     row_confirm = [
         InlineKeyboardButton(
-            text="⚠️ Confirmer ?", callback_data=f"confirm_dislike:{listing_id}"
+            text="Confirmer le signalement", callback_data=f"confirm_dislike:{listing_id}"
         ),
         InlineKeyboardButton(
-            text="❌ Annuler", callback_data=f"cancel_dislike:{listing_id}"
+            text="Annuler", callback_data=f"cancel_dislike:{listing_id}"
         ),
     ]
 

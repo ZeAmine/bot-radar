@@ -10,9 +10,9 @@ router = Router(name="start_router")
 
 START_TEXT = (
     "👋 Bienvenue sur BotRadar.\n\n"
-    "Je centralise tes alertes de bonnes affaires.\n"
-    "Je peux filtrer les annonces reçues, calculer leur total estimé et comparer "
-    "les BD/Comics avec le meilleur prix occasion connu.\n\n"
+    "Je détecte des annonces Vinted et je t'envoie une alerte.\n"
+    "Je filtre les annonces selon tes critères, calcule le total estimé "
+    "(protection et port inclus) et compare les BD au prix d'occasion connu.\n\n"
     "Utilise /add pour créer ta première alerte."
 )
 

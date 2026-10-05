@@ -1,4 +1,3 @@
-import html
 import logging
 from typing import Any
 
@@ -6,6 +5,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
 from app.bot.keyboards.listings import get_listing_alert_keyboard
+from app.bot.labels import escape_html, join_list
 from app.core.config import settings
 from app.core.tasks import safe_create_task
 from app.db.models.listing import Listing
@@ -21,25 +21,30 @@ def build_listing_caption(
     market_comparison_line: str | None = None,
     alert_keywords: list[str] | None = None,
 ) -> str:
-    """Construit la légende textuelle de l'alerte d'annonce selon le format demandé."""
+    """Construit la légende de l'alerte d'annonce, dans l'ordre de la charte.
+
+    Ordre : titre, prix et total estimé, état, bloc de comparaison si applicable,
+    mots-clés déclencheurs si disponibles. Les informations absentes ne produisent
+    pas de bloc vide.
+    """
     raw_condition = listing.condition or ""
     condition_text = (
         CONDITION_ALIASES.get(raw_condition.lower(), raw_condition)
         if raw_condition
-        else "Non précisé"
+        else "Non renseigné"
     )
     price_line = format_price_summary(
         item_price_cents=listing.item_price_cents,
         estimated_total_cents=listing.estimated_total_cents,
     )
 
-    safe_title = html.escape(listing.title)
-    safe_condition = html.escape(condition_text)
+    safe_title = escape_html(listing.title)
+    safe_condition = escape_html(condition_text)
 
     lines: list[str] = [
         f"🆕 <b>{safe_title}</b>",
-        f"🏷 État : {safe_condition}",
         price_line,
+        f"État : {safe_condition}",
     ]
 
     if market_comparison_line and market_comparison_line not in (
@@ -50,9 +55,8 @@ def build_listing_caption(
         lines.append(market_comparison_line)
 
     if alert_keywords:
-        keywords_str = ", ".join(html.escape(kw) for kw in alert_keywords)
         lines.append("")
-        lines.append(f"🔍 Mots-clés : {keywords_str}")
+        lines.append(f"Mots-clés : {join_list(alert_keywords)}")
 
     return "\n".join(lines)
 

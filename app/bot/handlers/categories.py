@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 router = Router(name="categories_router")
 
 CATEGORIES_TEXT = (
-    "📂 Catégories disponibles :\n\n"
-    "📚 Livres\n💻 Électronique\n🎮 Jeux Vidéo\n👕 Vêtements"
+    "📁 <b>Catégories</b>\n\n"
+    "Catégories prises en charge par BotRadar :"
 )
 
 
@@ -28,7 +28,7 @@ async def handle_categories(message: Message, db_session: Any | None = None) -> 
             active_cats = await repo.get_all_active()
             if active_cats:
                 lines = [f"{c.emoji or '📦'} {c.label}" for c in active_cats]
-                text = "📂 Catégories disponibles :\n\n" + "\n".join(lines)
+                text = "📁 <b>Catégories</b>\n\n" + "\n".join(lines)
                 await message.answer(text)
                 return
         except Exception as exc:

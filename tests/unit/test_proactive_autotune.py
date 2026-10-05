@@ -342,7 +342,7 @@ async def test_handle_tune_dismiss_callback():
         callback.answer.assert_awaited_once_with("Suggestion ignorée.")
         callback.message.edit_text.assert_awaited_once()
         args, _ = callback.message.edit_text.call_args
-        assert "Suggestion d'Auto-Tuning ignorée" in args[0]
+        assert "Suggestion d'auto-tuning ignorée" in args[0]
 
 
 def test_schedule_proactive_autotune_check_launches_task():

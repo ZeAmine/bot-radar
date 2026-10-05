@@ -72,21 +72,21 @@ async def test_handle_status_day_active():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "État du Service" in text
-        assert "🔍 <b>Scanner Vinted</b> : 🟢 <b>Active</b>" in text
+        assert "État du service" in text
+        assert "Scanner Vinted : 🟢 <b>Active</b>" in text
         assert "scan -" in text
         assert "00:00 - 07:00" in text
-        assert "🎯 <b>Alertes actives (10) :</b>" in text
+        assert "<b>Alertes actives (10) :</b>" in text
         # La section « Latence » rend les deux mesures : le délai que l'application
         # contrôle, et la cadence qui reste la seule part réellement réductible.
         # Percentiles interpolés (sémantique `percentile_cont`) sur [0,98 ; 4,09] s :
         # p50 = 2,535 s et p95 = 3,9345 s.
-        assert "⏱ <b>Latence</b>" in text
+        assert "<b>Latence</b>" in text
         assert "Détection → alerte : <b>2535 ms</b> (p50, p95 3934 ms — 2 alertes / 7 j)" in text
         assert "Cadence de scrutation : <b>17.4 s</b> (p50, p90 35.1 s)" in text
-        assert "   └  📚 Livres : <b>5</b>" in text
-        assert "   └  💻 Électronique : <b>3</b>" in text
-        assert "   └  🎮 Jeux Vidéo : <b>2</b>" in text
+        assert "📚 Livres : <b>5</b>" in text
+        assert "💻 Électronique : <b>3</b>" in text
+        assert "🎮 Jeux Vidéo : <b>2</b>" in text
 
 
 @pytest.mark.asyncio
@@ -146,7 +146,7 @@ async def test_handle_status_night_mode():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "🔍 <b>Scanner Vinted</b> : <b>Mode nuit</b>" in text
+        assert "Scanner Vinted : <b>Mode nuit</b>" in text
         assert "Aucune alerte active" in text
 
 
@@ -193,7 +193,7 @@ async def test_handle_status_ai_active():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "🤖 <b>Moteur IA (un-modele-choisi)</b> : 🟢 <b>Actif</b>" in text
+        assert "Moteur IA (un-modele-choisi) : 🟢 <b>Actif</b>" in text
         assert "latence" not in text
         assert "115ms" not in text
 
@@ -225,7 +225,7 @@ async def test_handle_status_ai_error():
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
         assert (
-            "🤖 <b>Moteur IA (un-modele-choisi)</b> : 🔴 <b>Indisponible</b> "
+            "Moteur IA (un-modele-choisi) : 🔴 <b>Indisponible</b> "
             "(Clé API invalide ou refusée)"
             in text
         )

@@ -291,7 +291,7 @@ async def test_save_alert_tech_creates_alert_without_books():
     # Le message de confirmation doit contenir le récapitulatif sans ISBN
     callback.message.edit_text.assert_called_once()
     conf_text = callback.message.edit_text.call_args[0][0]
-    assert "Alerte créée avec succès" in conf_text
+    assert "Alerte créée" in conf_text
     assert "Raspberry Pi 4" in conf_text
     assert "50,00 €" in conf_text
 
@@ -323,7 +323,7 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     callback.message.edit_text.assert_called_once()
     call_args = callback.message.edit_text.call_args
     prompt_text, kwargs = call_args[0][0], call_args[1]
-    assert "Modification de l'alerte" in prompt_text
+    assert "Modifier l'alerte" in prompt_text
     kb = kwargs["reply_markup"]
     assert "10,00 €" in str(kb.inline_keyboard)
     actions = [btn[0].callback_data for btn in kb.inline_keyboard]
@@ -508,9 +508,9 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     assert edited_text.startswith(f"{RECAP_TITLE}\n\n")
     for banner in ("Alerte configurée en langage naturel", "Modification enregistrée"):
         assert banner not in edited_text
-    assert "🔢 <b>ISBN :</b> <code>9782012101333</code>" in edited_text
-    assert "📌 <b>Titre :</b> Asterix tome 1" in edited_text
-    assert "🎯 <b>Prix max :</b> 10,00 €" in edited_text
+    assert "<b>ISBN :</b> <code>9782012101333</code>" in edited_text
+    assert "<b>Titre :</b> Asterix tome 1" in edited_text
+    assert "<b>Prix maximum :</b> 10,00 €" in edited_text
     assert state.state is AlertCreationState.confirm_creation
     # Le moteur n'a pas répondu : le récap le dit plutôt que de laisser croire à un avis.
     assert "L'IA n'a pas répondu après une relance" in edited_text
@@ -743,7 +743,7 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
     assert "9782369903086" in edited_text
     # La provenance secondaire de l'ISBN reste signalée dans la carte compacte.
     assert "Source OpenLibrary (repli BNF)" in edited_text
-    assert "🔢 <b>ISBN :</b> <code>9782369903086</code>" in edited_text
+    assert "<b>ISBN :</b> <code>9782369903086</code>" in edited_text
     # Exclusions du parsing puis celles ancrées sur la fiche, sans doublon
     assert "roman poche" in edited_text
     assert "keeping two" in edited_text
@@ -785,7 +785,7 @@ async def test_start_add_alert_natural_add_warns_when_isbn_unconfirmed():
         await _drain(tasks)
 
     edited_text = loading_message.edit_text.call_args[0][0]
-    assert "non confirmé par la BNF" in edited_text
+    assert "À confirmer" in edited_text
     assert "surveillance par titre" in edited_text
 
 
@@ -1024,8 +1024,8 @@ async def test_select_alert_creation_edition_switches_isbn():
     state.set_state.assert_awaited_with(AlertCreationState.confirm_creation)
 
     text = message.edit_text.call_args[0][0]
-    assert "🏢 <b>Éditeur :</b> Futuropolis" in text
-    assert "🔢 <b>ISBN :</b> <code>9782369904151</code>" in text
+    assert "<b>Éditeur :</b> Futuropolis" in text
+    assert "<b>ISBN :</b> <code>9782369904151</code>" in text
     # Sans millésime ni format, la ligne « Édition suivie » n'aurait rien de plus à dire
     # que « 🏢 Éditeur » : elle est omise plutôt que dupliquée.
     assert "Édition suivie" not in text
