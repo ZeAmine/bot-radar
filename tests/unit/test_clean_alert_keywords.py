@@ -174,7 +174,14 @@ async def test_run_reports_changes_without_writing_by_default():
     """En mode rapport, `run` sort en 1 et n'ouvre aucune session."""
     alert = make_alert(variants=FAMILY)
     args = argparse.Namespace(
-        apply=False, dry_run=False, json=False, limit=None, include_inactive=False
+        apply=False,
+        dry_run=False,
+        diff=False,
+        yes=False,
+        only_degenerate=False,
+        json=False,
+        limit=None,
+        include_inactive=False,
     )
 
     with patch.object(cck, "read_alerts", AsyncMock(return_value=[alert])):
@@ -190,7 +197,14 @@ async def test_run_apply_cleans_and_returns_clean():
     alert = make_alert(variants=FAMILY, exclusions=["1"])
     session = _FakeSession({str(alert.id): alert})
     args = argparse.Namespace(
-        apply=True, dry_run=False, json=False, limit=None, include_inactive=False
+        apply=True,
+        dry_run=False,
+        diff=True,
+        yes=False,
+        only_degenerate=False,
+        json=False,
+        limit=None,
+        include_inactive=False,
     )
 
     with (
@@ -203,3 +217,173 @@ async def test_run_apply_cleans_and_returns_clean():
     assert alert.variants == []
     assert alert.exclude_keywords == []
     assert session.committed is True
+
+
+def test_the_diff_motives_every_removal():
+    """Un diff qui ne dit pas pourquoi ne se relit pas : chaque retrait porte son motif."""
+    alert = make_alert(
+        variants=["absolute martian manhunter 2a", "9782864971412"],
+        exclusions=["1", "x"],
+    )
+
+    plan = cck.plan_cleanup(alert)
+    motives = {r.term: r.reason for r in plan.removals}
+
+    assert motives["absolute martian manhunter 2a"] == cck.REASON_ENUMERATION
+    assert motives["9782864971412"] == cck.REASON_ISBN
+    assert motives["1"] == cck.REASON_BARE_TOKEN
+    assert motives["x"] == cck.REASON_BARE_TOKEN
+
+
+def test_the_diff_shows_the_lists_around_each_removal():
+    """Le rapport détaillé donne les deux listes, pas seulement ce qui disparaît."""
+    alert = make_alert(
+        variants=[*FAMILY],
+        exclusions=["coffret vide", "1"],
+    )
+
+    report = cck.render(
+        [cck.plan_cleanup(alert)], apply=False, cleaned_le=INSTANT, diff=True
+    )
+
+    assert "exclusions : 2 → 1" in report
+    assert "avant : coffret vide, 1" in report
+    assert "après : coffret vide" in report
+    assert f"{cck.RED}-1{cck.RESET}  {cck.DIM}{cck.REASON_BARE_TOKEN}{cck.RESET}" in report
+
+
+def test_only_degenerate_never_consults_the_title():
+    """En portée restreinte, un terme que seul le titre écartait reste en place.
+
+    C'est la promesse du mode. « coffret » tient dans le titre « Deep It Coffret »,
+    donc il rejetterait l'annonce cible elle-même et le mode complet l'écarte ; la
+    portée restreinte s'en abstient, parce que ce jugement dépend du titre.
+    """
+    alert = make_alert(
+        name="Deep It Coffret",
+        exclusions=["coffret", "deep it intégrale", "1", "x"],
+    )
+
+    complete = cck.plan_cleanup(alert)
+    restricted = cck.plan_cleanup(alert, only_degenerate=True)
+
+    assert complete.exclusions_removed == ["coffret", "1", "x"]
+    assert restricted.exclusions_removed == ["1", "x"]
+    assert restricted.exclusions_after == ("coffret", "deep it intégrale")
+
+
+def test_only_degenerate_still_removes_a_term_degenerate_on_its_own():
+    """Le titre n'est consulté que pour les jugements qui en dépendent vraiment."""
+    alert = make_alert(
+        variants=["absolute martian manhunter 2a", "9782864971412"],
+        exclusions=["1"],
+    )
+
+    plan = cck.plan_cleanup(alert, only_degenerate=True)
+
+    assert plan.variants_after == ()
+    assert plan.exclusions_after == ()
+    assert all(removal.is_degenerate for removal in plan.removals)
+
+
+def test_only_degenerate_does_not_deduplicate():
+    """Deux termes identiques restent deux : un rejeu n'a pas à réordonner la liste."""
+    alert = make_alert(name="Deep It", exclusions=["coffret", "coffret", "1"])
+
+    plan = cck.plan_cleanup(alert, only_degenerate=True)
+
+    assert plan.exclusions_after == ("coffret", "coffret")
+    assert plan.exclusions_removed == ["1"]
+
+
+async def test_apply_refuses_to_write_a_diff_that_was_never_read():
+    """`--apply` seul se refuse : on n'écrit pas ce qu'on n'a pas relu."""
+    alert = make_alert(variants=FAMILY)
+    args = argparse.Namespace(
+        apply=True,
+        dry_run=False,
+        diff=False,
+        yes=False,
+        only_degenerate=False,
+        json=False,
+        limit=None,
+        include_inactive=False,
+    )
+
+    with (
+        patch.object(cck, "read_alerts", AsyncMock(return_value=[alert])),
+        patch.object(cck, "AsyncSessionLocal") as session_local,
+    ):
+        code = await cck.run(args)
+
+    assert code == cck.EXIT_ERROR
+    # Aucune lecture, donc surtout aucune écriture.
+    session_local.assert_not_called()
+    assert alert.variants == FAMILY
+
+
+async def test_yes_writes_without_the_diff():
+    """`--yes` est la seule porte de sortie, et elle engage l'appelant."""
+    alert = make_alert(variants=FAMILY, exclusions=["1"])
+    session = _FakeSession({str(alert.id): alert})
+    args = argparse.Namespace(
+        apply=True,
+        dry_run=False,
+        diff=False,
+        yes=True,
+        only_degenerate=False,
+        json=False,
+        limit=None,
+        include_inactive=False,
+    )
+
+    with (
+        patch.object(cck, "read_alerts", AsyncMock(return_value=[alert])),
+        patch.object(cck, "AsyncSessionLocal", lambda: session),
+    ):
+        code = await cck.run(args)
+
+    assert code == cck.EXIT_CLEAN
+    assert alert.variants == []
+    assert alert.exclude_keywords == []
+    assert session.committed is True
+
+
+async def test_run_restricts_the_write_to_degenerate_terms():
+    """`run` propage la portée restreinte jusque dans l'écriture."""
+    alert = make_alert(name="Deep It", exclusions=["deep it coffret", "1"])
+    session = _FakeSession({str(alert.id): alert})
+    args = argparse.Namespace(
+        apply=True,
+        dry_run=False,
+        diff=True,
+        yes=False,
+        only_degenerate=True,
+        json=False,
+        limit=None,
+        include_inactive=False,
+    )
+
+    with (
+        patch.object(cck, "read_alerts", AsyncMock(return_value=[alert])),
+        patch.object(cck, "AsyncSessionLocal", lambda: session),
+    ):
+        code = await cck.run(args)
+
+    assert code == cck.EXIT_CLEAN
+    assert alert.exclude_keywords == ["deep it coffret"]
+
+
+def test_as_json_carries_the_motifs():
+    """La sortie machine est motivée comme l'écran, et dit la portée qu'elle a jouée."""
+    alert = make_alert(variants=FAMILY, exclusions=["1"])
+
+    payload = json.loads(
+        cck.as_json([cck.plan_cleanup(alert, only_degenerate=True)], apply=False,
+                    cleaned_le=INSTANT)
+    )
+
+    assert payload["portee"] == "degenere"
+    motifs = payload["alertes"][0]["motifs"]
+    assert {m["terme"]: m["raison"] for m in motifs}["1"] == cck.REASON_BARE_TOKEN
+    assert all(m["degenere"] for m in motifs)
