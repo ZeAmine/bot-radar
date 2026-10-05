@@ -78,20 +78,29 @@ def is_degenerate_exclusion(value: str) -> bool:
     return stripped.isdigit() or len(stripped) < 2
 
 
-def _keep_term(value: str, title: str) -> bool:
-    """Règles communes aux variantes et aux exclusions.
+def _repeats_the_title(value: str, title: str) -> bool:
+    """Le terme et le titre se recouvrent, dans un sens ou dans l'autre.
 
-    Un terme ne doit ni répéter le titre recherché — il bloquerait ou vaudrait
-    l'annonce cible elle-même — ni porter un code d'ouvrage : ce serait l'identité
-    d'un autre livre.
+    Règle de la **variante**. Une variante est une porte d'entrée : un terme qui
+    reprend le titre, en tout ou en partie, n'ajoute rien à la veille — le mot-clé
+    d'inclusion valide déjà ces annonces-là.
     """
-    normalized_title = normalize_text(title)
     normalized_term = normalize_text(value)
-    if not normalized_term:
-        return False
-    if normalized_term in normalized_title or normalized_title in normalized_term:
-        return False
-    return not carries_isbn_like(value)
+    normalized_title = normalize_text(title)
+    return normalized_term in normalized_title or normalized_title in normalized_term
+
+
+def _swallows_the_title(value: str, title: str) -> bool:
+    """Le terme tient *dans* le titre, sans rien y ajouter.
+
+    Règle de l'**exclusion**, et elle est volontairement plus étroite que celle de la
+    variante. Une exclusion est une porte de sortie : « deep it coffret » précise le
+    titre (« Deep It »), c'est la forme normale d'un rejet utile, et la confondre avec
+    un simple recouvrement la supprimait en silence. Une exclusion *plus étroite* que
+    le titre (« couleur des choses » pour « La couleur des choses »), elle, rejetterait
+    l'annonce cible elle-même : celle-là doit tomber.
+    """
+    return normalize_text(value) in normalize_text(title)
 
 
 def _clean_values(
@@ -100,8 +109,12 @@ def _clean_values(
     *,
     max_size: int,
     is_degenerate: Callable[[str], bool],
+    title_rule: Callable[[str, str], bool],
 ) -> list[str]:
     """Applique les règles communes, rejette les dégénérés, déduplique, plafonne.
+
+    `title_rule` est le seul point où les deux familles divergent : ce qui rend une
+    variante inutile ne rend pas une exclusion dangereuse, et l'inverse est vrai aussi.
 
     La déduplication porte sur la forme **normalisée** : deux écritures qui ne
     diffèrent que par un accent ou un espace sont la même variante, et les garder
@@ -113,7 +126,9 @@ def _clean_values(
         value = str(raw).strip().lower()
         if not value or len(value) > _MAX_TERM_LENGTH:
             continue
-        if not _keep_term(value, title):
+        if not normalize_text(value) or carries_isbn_like(value):
+            continue
+        if title_rule(value, title):
             continue
         if is_degenerate(value):
             continue
@@ -132,22 +147,29 @@ def sanitize_variants(values: list[str] | None, title: str) -> list[str]:
 
     Un titre à numéro est la source de l'explosion : le moteur décline le numéro au
     lieu d'écrire le titre. Le suffixe collé au chiffre (`is_degenerate_variant`) est
-    le signal qui la coupe ; un terme qui répète le titre est déjà écarté par
-    `_keep_term`. Reste à plafonner.
+    le signal qui la coupe ; un terme qui répète le titre est écarté par
+    `_repeats_the_title`. Reste à plafonner.
     """
     return _clean_values(
         values,
         title,
         max_size=MAX_VARIANTS,
         is_degenerate=is_degenerate_variant,
+        title_rule=_repeats_the_title,
     )
 
 
 def sanitize_exclusions(values: list[str] | None, title: str) -> list[str]:
-    """Exclusions qui tranchent réellement : ni chiffre nu, ni lettre seule, plafonnées."""
+    """Exclusions qui tranchent réellement : ni chiffre nu, ni lettre seule, plafonnées.
+
+    Le titre n'est consulté que pour écarter une exclusion qui tient *dans* lui
+    (`_swallows_the_title`) — celle-là tairait l'annonce cible. Une exclusion qui le
+    précise, elle, est conservée : c'est la forme normale d'un rejet.
+    """
     return _clean_values(
         values,
         title,
         max_size=MAX_EXCLUSIONS,
         is_degenerate=is_degenerate_exclusion,
+        title_rule=_swallows_the_title,
     )

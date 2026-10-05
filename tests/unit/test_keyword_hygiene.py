@@ -89,6 +89,25 @@ def test_exclusions_numeric_and_single_char_are_dropped():
     assert is_degenerate_exclusion("hs") is False
 
 
+def test_exclusion_qualified_by_the_title_survives():
+    """Une exclusion se qualifie par le titre : « deep it coffret » écarte les intégrales.
+
+    Le titre ne se juge pas de la même façon selon la famille. Une variante qui le
+    reprend n'apporte rien ; une exclusion qui le précise est la forme normale d'un
+    rejet utile. Seule une exclusion *plus étroite* que le titre doit tomber, sinon
+    elle rejette l'annonce cible elle-même.
+    """
+    title = "Deep It"
+    exclusions = ["deep it coffret", "deep it intégrale", "coffret"]
+
+    assert sanitize_exclusions(exclusions, title) == exclusions
+
+    # Le même terme, du côté des variantes, répète le titre : il est écarté.
+    assert sanitize_variants(["deep it coffret"], title) == []
+    # Une exclusion qui tient dans le titre tairait l'annonce cible.
+    assert sanitize_exclusions(["deep"], title) == []
+
+
 def test_exclusions_cap_is_preserved():
     """Le plafond d'exclusions ne bouge pas."""
     many = [f"exclusion {index}" for index in range(10)]
