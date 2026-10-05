@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aiogram.types import Message
+from sqlalchemy.exc import MissingGreenlet
 
 from app.bot.handlers.alerts_create import save_alert, start_add_alert
 from app.bot.handlers.alerts_create_confirm import (
@@ -172,11 +173,34 @@ def _message_with_recap(command: str) -> tuple[FakeMessage, MagicMock]:
     return message, loading_message
 
 
-def _repositories(isbn13: str, *, already_catalogued: bool = False) -> dict:
+class _UnloadedBook:
+    """Livre tel que `BookRepository.create` le renvoie : `market_cache` non chargé.
+
+    Un accès paresseux lève en session async ; reproduire ce comportement est le
+    seul moyen de verrouiller le défaut « alerte créée, aucune confirmation ».
+    """
+
+    def __init__(self, isbn13: str) -> None:
+        self.id = uuid.uuid4()
+        self.isbn13 = isbn13
+
+    @property
+    def market_cache(self) -> object:
+        raise MissingGreenlet("greenlet_spawn has not been called")
+
+
+def _repositories(
+    isbn13: str,
+    *,
+    already_catalogued: bool = False,
+    lazy_created_book: bool = False,
+) -> dict:
     """Repositories simulées et spies pour `save_alert`.
 
     `already_catalogued` décrit un livre déjà au catalogue et déjà coté : c'est le
     seul cas où la confirmation peut afficher une prix sans attendre les marchands.
+    `lazy_created_book` décrit le livre qui vient d'être créé : `create` rend un objet
+    dont `market_cache` n'est pas chargé, et `get_by_id` le relit comme en production.
     """
     book = MagicMock()
     book.id = uuid.uuid4()
@@ -186,9 +210,11 @@ def _repositories(isbn13: str, *, already_catalogued: bool = False) -> dict:
     alert = MagicMock()
     alert.id = uuid.uuid4()
 
+    created = _UnloadedBook(isbn13) if lazy_created_book else book
     book_repo = MagicMock()
     book_repo.get_by_isbn13 = AsyncMock(return_value=book if already_catalogued else None)
-    book_repo.create = AsyncMock(return_value=book)
+    book_repo.create = AsyncMock(return_value=created)
+    book_repo.get_by_id = AsyncMock(return_value=book)
     book_repo.link_alert_to_book = AsyncMock()
 
     alert_repo = MagicMock()
@@ -338,7 +364,7 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
         buttons = _edition_buttons(loading_message)
         assert [button.text for button in buttons] == [
             "1️⃣ Çà et là - 2022",
-            "2️⃣ Editions çà et là",
+            "2️⃣ çà et là",
         ]
 
         # 2. L'utilisateur choisit l'autre édition avant de valider.
@@ -365,7 +391,7 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
             for row in switch_keyboard.inline_keyboard
             for button in row
             if button.callback_data.startswith("al_create_edition")
-        ] == ["1️⃣ Çà et là - 2022", "2️⃣ Editions çà et là"]
+        ] == ["1️⃣ Çà et là - 2022", "2️⃣ çà et là"]
 
         # 3. Création : l'ISBN choisi pilote l'URL Vinted, le livre et la cote.
         confirm_message = MagicMock(spec=Message)
@@ -654,8 +680,7 @@ async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
             recap = _recap_text(loading_message)
             assert "<b>ISBN :</b> À confirmer" in recap
             # La note est échappée par le récap : on compare sur un fragment sans apostrophe.
-            assert "est aussi le titre" in recap
-            assert "surveillance par titre" in recap
+            assert "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre." in recap
             # Aucune donnée du roman : ni l'ISBN, ni l'auteur, ni l'éditeur.
             assert "9782214080627" not in recap
             assert "Rosemonde Ahou de Saintange" not in recap
@@ -663,9 +688,11 @@ async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
 
             keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
             buttons = _work_buttons(keyboard)
+            # Un bouton tient le nom de famille et le millésime : l'éditeur complet
+            # ne discrimine pas deux homonymes et se faisait tronquer par Telegram.
             assert [button.text for button in buttons] == [
-                "1️⃣ Rosemonde Ahou de Saintange · 1989 · La Pensée universelle",
-                "2️⃣ Nef · 2025 · Éditions du Chêne",
+                "1️⃣ Saintange · 1989",
+                "2️⃣ Nef · 2025",
             ]
 
             # L'utilisateur désigne la BD : la fiche bascule sur elle.
@@ -1065,3 +1092,97 @@ async def test_series_alert_announces_no_market_price_it_will_never_have():
     assert PENDING_COTE_LINE not in confirmation
     assert "Prix du marché" not in confirmation
     assert "Prix bas constaté" not in confirmation
+
+
+@pytest.mark.asyncio
+async def test_a_just_created_book_still_gets_its_confirmation():
+    """Un livre neuf n'a pas de cache chargé : la confirmation ne doit pas en dépendre.
+
+    `BookRepository.create` rend un objet dont `market_cache` n'est pas chargé. Le
+    lire levait `MissingGreenlet` **après** le commit et le vidage du brouillon :
+    l'alerte existait, mais aucune confirmation n'était jamais envoyée. La lecture
+    passe donc par `get_by_id`, qui charge la relation.
+    """
+    repos = _repositories("9782369903086", lazy_created_book=True)
+    state = DraftState()
+    state.data = {
+        "category_slug": "bd_comics",
+        "name": "Le démon de la colline au loup",
+        "isbn": "9782369903086",
+        "author": "Nicolas Fébule",
+        "include_keywords": ["le démon de la colline au loup"],
+        "max_item_price_cents": 2000,
+    }
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    confirm_message = MagicMock(spec=Message)
+    confirm_message.edit_text = AsyncMock()
+    confirm_callback = MagicMock()
+    confirm_callback.data = "alert_create_confirm"
+    confirm_callback.message = confirm_message
+    confirm_callback.answer = AsyncMock()
+
+    patches = _patched(repos, MagicMock(), MagicMock())
+    for entered in patches:
+        entered.start()
+    try:
+        await save_alert(confirm_callback, state, db_user, db_session)
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+    confirmation = confirm_message.edit_text.call_args[0][0]
+    assert "✅ <b>Alerte créée</b>" in confirmation
+    assert "Titre : Le démon de la colline au loup" in confirmation
+    assert PENDING_COTE_LINE in confirmation
+    # Le livre de la confirmation est relu par son id, jamais l'objet rendu par `create`.
+    repos["book_repo"].get_by_id.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_returning_to_a_draft_that_is_gone_never_shows_a_default_recap():
+    """Un brouillon vidé ne se relit pas comme une création en cours.
+
+    Après une création, l'état est vidé ; l'ancien clavier restait affiché et
+    « ← Retour au récapitulatif » re-rendait « Titre : Alerte » sans aucune donnée.
+    """
+    from app.bot.handlers.alerts_create_confirm import DRAFT_GONE_MESSAGE, back_to_recap
+
+    state = DraftState()
+    message = MagicMock(spec=Message)
+    message.edit_text = AsyncMock()
+    callback = MagicMock()
+    callback.data = "al_create_edit:back"
+    callback.message = message
+    callback.answer = AsyncMock()
+
+    await back_to_recap(callback, state)
+
+    text = message.edit_text.call_args[0][0]
+    assert text == DRAFT_GONE_MESSAGE
+    assert "Titre :" not in text
+    keyboard = message.edit_text.call_args[1]["reply_markup"]
+    assert keyboard.inline_keyboard == []
+
+
+@pytest.mark.asyncio
+async def test_edit_menu_on_a_gone_draft_says_it_is_finished():
+    """« Modifier » sur un brouillon vidé ne propose pas un menu sans objet."""
+    from app.bot.handlers.alerts_create_confirm import (
+        DRAFT_GONE_MESSAGE,
+        edit_alert_creation_prompt,
+    )
+
+    state = DraftState()
+    message = MagicMock(spec=Message)
+    message.edit_text = AsyncMock()
+    callback = MagicMock()
+    callback.data = "alert_create_edit"
+    callback.message = message
+    callback.answer = AsyncMock()
+
+    await edit_alert_creation_prompt(callback, state)
+
+    assert message.edit_text.call_args[0][0] == DRAFT_GONE_MESSAGE
+    assert message.edit_text.call_args[1]["reply_markup"].inline_keyboard == []

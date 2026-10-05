@@ -2,6 +2,7 @@
 
 import html
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -206,14 +207,62 @@ def build_edition_choices(resolution: Any) -> list[dict[str, Any]]:
     return [edition.model_dump() for edition in resolution.editions()]
 
 
+# Formules d'édition qui ne distinguent rien par elles-mêmes : les retirer donne
+# « Beauvi… » là où la notice écrit « les Éditions de Beauvi… ».
+_PUBLISHER_NOISE = (
+    "les éditions de ",
+    "les éditions ",
+    "éditions de ",
+    "éditions ",
+    "editions de ",
+    "editions ",
+    "édition de ",
+    "édition ",
+    "edition ",
+    "les ",
+    "l'",
+    "de ",
+    "d'",
+)
+# Un bouton Telegram tient ~30 caractères utiles ; au-delà il se fait tronquer
+# n'importe où. On coupe nous-mêmes, sur un espace, jamais au milieu d'un mot.
+_PUBLISHER_LABEL_MAX = 20
+
+
+def _short_person(name: str | None) -> str:
+    """« Nicolas Fébule » -> « Fébule » : un bouton n'a la place que d'un nom.
+
+    Le prénom est le premier sacrifié : sur des homonymes, c'est le nom de famille
+    qui distingue les auteurs, et deux libellés identiques retombent sur l'ISBN.
+    """
+    parts = [part for part in re.split(r"\s+", (name or "").strip()) if part]
+    return parts[-1] if parts else ""
+
+
+def _short_publisher(publisher: str | None) -> str:
+    """« les Éditions de Beauvi… » -> « Beauvi… » : le nom propre, sans la formule."""
+    text = (publisher or "").strip()
+    lowered = text.casefold()
+    for prefix in _PUBLISHER_NOISE:
+        if lowered.startswith(prefix):
+            text = text[len(prefix) :].strip()
+            lowered = text.casefold()
+    if len(text) > _PUBLISHER_LABEL_MAX:
+        head = text[: _PUBLISHER_LABEL_MAX - 1]
+        if " " in head:
+            head = head.rsplit(" ", 1)[0]
+        text = head.rstrip() + "…"
+    return text
+
+
 def _edition_button_text(edition: dict[str, Any]) -> str:
     """« Çà et là - 2022 » : l'éditeur d'abord, puis le millésime.
 
     L'éditeur prime parce qu'il distingue le plus souvent les éditions concurrentes
-    d'une même œuvre (« Éditions poches » contre « Album ») ; le millésime le suit
-    quand la BNF le donne.
+    d'une même œuvre (« poches » contre « album ») ; le millésime le suit quand la
+    BNF le donne. Le libellé est réduit : un bouton se lit d'un coup d'œil.
     """
-    publisher = str(edition.get("publisher") or "").strip()
+    publisher = _short_publisher(edition.get("publisher"))
     year = edition.get("publication_year")
     if publisher and year:
         return f"{publisher} - {year}"
@@ -286,17 +335,23 @@ def build_work_labels(work_choices: list[dict[str, Any]] | None) -> list[str]:
 
 
 def _work_button_text(work: dict[str, Any]) -> str:
-    """« Nef · 2025 · Éditions du Chêne », chaque partie seulement si elle existe."""
+    """« Nef · 2025 » : le nom de famille puis le millésime, chaque partie si connue.
+
+    L'auteur prime : c'est lui qui distingue deux ouvrages de même titre. L'éditeur
+    ne prend sa place qu'à défaut d'auteur — il ne sert alors qu'à ne pas laisser un
+    bouton vide, et reste réduit comme celui d'une édition.
+    """
     parts: list[str] = []
-    author = str(work.get("author") or "").strip()
+    author = _short_person(work.get("author"))
     if author:
         parts.append(author)
     year = work.get("publication_year")
     if year:
         parts.append(str(year))
-    publisher = str(work.get("publisher") or "").strip()
-    if publisher:
-        parts.append(publisher)
+    if not author:
+        publisher = _short_publisher(work.get("publisher"))
+        if publisher:
+            parts.append(publisher)
     return " · ".join(parts)
 
 

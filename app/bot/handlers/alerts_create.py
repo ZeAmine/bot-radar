@@ -739,13 +739,19 @@ async def save_alert(
             # 1. One-Shot ou tome spécifique : Persistance définitive de l'ISBN en base
             book = await book_repo.get_by_isbn13(isbn)
             if not book:
-                book = await book_repo.create(
+                created = await book_repo.create(
                     title=name,
                     normalized_title=normalize_text(name),
                     isbn13=isbn,
                     author=author,
                     publisher=publisher,
                 )
+                # `create` rend un objet dont `market_cache` n'est pas chargé : la
+                # confirmation lit cette relation (`format_cote_lines`) après le commit,
+                # et une lecture paresseuse y lèverait en async. On relit le livre comme
+                # le ferait `get_by_isbn13`, pour que la confirmation n'ait qu'un chemin,
+                # que le livre soit nouveau ou déjà au catalogue.
+                book = await book_repo.get_by_id(created.id)
 
             # 2. Création de l'alerte liée à l'ISBN
             vinted_url = f"https://www.vinted.fr/catalog?search_start_type=item_page_isbn&search_text={isbn}&order=newest_first"

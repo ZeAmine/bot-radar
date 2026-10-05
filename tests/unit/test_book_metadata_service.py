@@ -50,6 +50,9 @@ def test_clean_bnf_helpers():
     # Créateurs
     assert clean_bnf_creator("Moreau, Jérémie (1987-....). Auteur du texte") == "Jérémie Moreau"
     assert clean_bnf_creator("Legrand, Ismaël (Auteur du texte)") == "Ismaël Legrand"
+    # Rôle BNF non parenthésé : il ne doit pas coller au nom jusqu'aux boutons.
+    assert clean_bnf_creator("Fébule, Nicolas. Auteur du texte") == "Nicolas Fébule"
+    assert clean_bnf_creator("Develle, Jeanne. Auteur du texte") == "Jeanne Develle"
 
     # Éditeurs
     assert clean_bnf_publisher("Éditions Delcourt (Paris)") == "Éditions Delcourt"
@@ -633,8 +636,16 @@ def test_ambiguity_note_only_speaks_when_nothing_is_confirmed():
     )
     note = ambiguity_note(homonyms)
     assert note is not None
-    assert "aussi le titre d'une autre œuvre" in note
-    assert "surveillance par titre" in note
+    assert note == "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre."
+
+    many = BookResolution(
+        best=BookMetadata(title="L'Insensé", author="Manu Larcenet", isbn13="9782406101963"),
+        other_works=[
+            BookMetadata(title="L'Insensé", author="Nicolas Fébule", isbn13="9782810206087"),
+            BookMetadata(title="L'Insensé", author="Morgan Sportes", isbn13="9782246482017"),
+        ],
+    )
+    assert ambiguity_note(many) == "⚠️ « L'Insensé » : 2 autres ouvrages portent ce titre."
 
     conflict = BookResolution(
         best=BookMetadata(title="Les Enfants perdus", author="Rosemonde", isbn13="9782214080627"),

@@ -480,6 +480,30 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
         assert 1 <= len(btn.callback_data.encode()) <= 64, btn.callback_data
 
 
+def test_market_panel_is_routed_for_both_entry_and_back_to_all_tomes():
+    """« ← Tous les tomes » porte `market_details:` : le filtre doit le router.
+
+    Le panneau n'était enregistré que pour `market:`. Le retour « Tous les tomes »
+    ne désignait donc aucun handler et le bouton restait mort.
+    """
+    from unittest.mock import MagicMock
+
+    from app.bot.handlers import callbacks
+
+    def routed_for(data: str) -> list[str]:
+        event = MagicMock()
+        event.data = data
+        return [
+            handler.callback.__name__
+            for handler in callbacks.router.callback_query.handlers
+            for filter_obj in handler.filters
+            if filter_obj.magic is not None and filter_obj.callback(event)
+        ]
+
+    assert "handle_view_market_details" in routed_for("market:abc")
+    assert "handle_view_market_details" in routed_for("market_details:abc")
+
+
 def test_market_tome_ref_round_trip():
     """La référence encodée se relit exactement : c'est elle qui désigne le tome cliqué."""
     from app.bot.handlers.callbacks import _decode_tome_ref, _encode_tome_ref

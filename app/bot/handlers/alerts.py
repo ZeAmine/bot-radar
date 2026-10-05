@@ -22,6 +22,7 @@ from app.bot.handlers.alerts_create import (
 from app.bot.handlers.alerts_create_confirm import (
     back_to_recap,
     cancel_alert_creation,
+    cancel_router,
     edit_alert_creation_prompt,
     handle_cancel_command,
     prompt_new_price,
@@ -85,8 +86,11 @@ from app.db.repositories.market_price_repo import MarketPriceRepository
 # Ré-export des utilitaires ISBN
 from app.utils.isbn import extract_clean_isbn, isbn10_to_isbn13
 
-# Routeur principal d'agrégation
+# Routeur principal d'agrégation. L'annulation est incluse en premier : elle doit
+# être arbitrée avant tout handler d'état qui accepte du texte libre, sinon `/cancel`
+# serait consommé comme un titre.
 router = Router(name="alerts_router")
+router.include_router(cancel_router)
 router.include_router(alerts_create_router)
 router.include_router(alerts_view_router)
 router.include_router(alerts_manage_router)
@@ -94,6 +98,7 @@ router.include_router(alerts_manage_router)
 __all__ = [
     # Router
     "router",
+    "cancel_router",
     "alerts_create_router",
     "alerts_view_router",
     "alerts_manage_router",

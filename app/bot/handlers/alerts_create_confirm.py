@@ -4,7 +4,7 @@ import html
 import logging
 from typing import cast
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -38,8 +38,16 @@ from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger("radar.alerts_create_confirm")
 
-@router.message(Command("cancel", "annuler"), StateFilter("*"))
-@router.message(
+# L'annulation vit sur son propre routeur, inclus **avant** celui de la création.
+# La saisie d'un titre est un handler d'état qui accepte tout texte ; enregistré
+# avant, il absorbait `/cancel` comme un titre et lançait une recherche BNF sur le
+# mot « cancel ». Le routeur dédié rend l'annulation prioritaire quel que soit
+# l'ordre d'import des modules.
+cancel_router = Router(name="alerts_cancel")
+
+
+@cancel_router.message(Command("cancel", "annuler"), StateFilter("*"))
+@cancel_router.message(
     F.text.casefold().in_({"/cancel", "/annuler", "cancel", "annuler"}),
     StateFilter("*"),
 )
@@ -52,6 +60,22 @@ async def handle_cancel_command(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     await message.answer("❌ Opération annulée avec succès.")
+
+
+# Brouillon vidé (alerte déjà créée, session expirée) : re-rendre un récap par
+# défaut afficherait « Titre : Alerte » et des critères vides, que l'utilisateur
+# lirait comme une création en cours. On le dit, et on retire le clavier qui n'a
+# plus d'objet.
+DRAFT_GONE_MESSAGE = (
+    "ℹ️ Cette création est terminée. Utilise /add pour créer une nouvelle alerte."
+)
+EMPTY_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[])
+
+
+async def _end_draft_without_recap(callback: CallbackQuery) -> None:
+    """Referme une création dont le brouillon a disparu, sans récap par défaut."""
+    if callback.message and hasattr(callback.message, "edit_text"):
+        await callback.message.edit_text(DRAFT_GONE_MESSAGE, reply_markup=EMPTY_KEYBOARD)
 
 
 @router.callback_query(F.data == "alert_create_cancel")
@@ -174,6 +198,9 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
     """Affiche le menu complet de modification des informations d'alerte."""
     await callback.answer()
     data = await state.get_data()
+    if not data.get("category_slug"):
+        await _end_draft_without_recap(callback)
+        return
     name = data.get("name")
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
     isbn = data.get("isbn")
@@ -472,6 +499,9 @@ async def back_to_recap(callback: CallbackQuery, state: FSMContext) -> None:
     """Retourne directement au récapitulatif avec les boutons de confirmation."""
     await callback.answer()
     data = await state.get_data()
+    if not data.get("category_slug"):
+        await _end_draft_without_recap(callback)
+        return
     await state.set_state(AlertCreationState.confirm_creation)
 
     recap_text, keyboard = build_creation_recap(data)

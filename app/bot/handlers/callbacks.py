@@ -124,11 +124,17 @@ def _decode_tome_ref(data: str | None) -> tuple[uuid.UUID, uuid.UUID] | None:
 
 
 @router.callback_query(F.data.startswith("market:"))
+@router.callback_query(F.data.startswith("market_details:"))
 async def handle_view_market_details(
     callback: CallbackQuery,
     db_session: Any,
 ) -> None:
-    """Affiche le panneau détaillé du prix du marché pour l'annonce BD sélectionnée."""
+    """Affiche le panneau détaillé du prix du marché pour l'annonce BD sélectionnée.
+
+    `market_details:` est le retour « ← Tous les tomes » : il réaffiche la liste des
+    tomes en éditant le message en place. Sans ce filtre, le bouton du panneau de
+    série ne routait vers aucun handler et restait mort.
+    """
     try:
         await _show_market_details(callback, db_session)
     except Exception as exc:
