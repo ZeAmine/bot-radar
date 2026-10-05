@@ -26,6 +26,7 @@ from app.services.book_catalog_service import BookCatalogService
 from app.services.book_market_pricing import schedule_book_pricing
 from app.services.market_price_service import (
     PENDING_COTE_LINE,
+    SEARCHING_BOOK_LINE,
     MarketPriceService,
     has_usable_price,
 )
@@ -34,13 +35,25 @@ from app.services.telegram_service import send_listing_alert
 logger = logging.getLogger("radar.use_cases.ingest_listing")
 
 
-async def _link_book_from_bnf(title: str, alert_id: uuid.UUID) -> None:
-    """Associe un ISBN BNF à l'alerte sans retarder l'envoi Telegram."""
+async def link_book_from_bnf(
+    title: str,
+    alert_id: uuid.UUID,
+    author: str | None = None,
+) -> None:
+    """Associe un ISBN BNF à l'alerte sans retarder l'envoi Telegram.
+
+    L'entrée est le **nom de l'alerte** (l'œuvre surveillée), pas le titre brut de
+    l'annonce : « The Grocery : l'intégrale » n'est pas une notice, « The Grocery »
+    en est une. Le repli BNF échouait précisément là et laissait le livre sans ISBN.
+    L'auteur, quand il est connu, accompagne le titre ; `lookup_by_title_and_author`
+    attend la forme « Titre par Auteur ».
+    """
     from app.db.session import AsyncSessionLocal
     from app.services.book_metadata_service import BookMetadataService
 
+    query = f"{title} par {author}" if author else title
     try:
-        meta = await BookMetadataService().lookup_by_title_and_author(title)
+        meta = await BookMetadataService().lookup_by_title_and_author(query)
         if not meta or not meta.isbn13:
             return
         book_id_val: uuid.UUID | None = None
@@ -132,12 +145,32 @@ async def _link_bd_catalog_background(
         },
     )()
     alert = type("AlertRef", (), {"id": alert_id, "name": alert_name, "isbn": alert_isbn})()
+    book_id: uuid.UUID | None = None
+    needs_price = False
     try:
         async with AsyncSessionLocal() as session:
-            await ProcessListingUseCase(session)._resolve_bd_market_comparison(listing, alert)
+            book = await ProcessListingUseCase(session)._resolve_bd_market_comparison(
+                listing, alert
+            )
+            if book is not None:
+                book_id = book.id
+                # Le livre lié peut venir d'un `add_book` dont `market_cache` n'est pas
+                # chargé : on le relit par le dépôt (qui précharge la relation) avant
+                # de décider s'il faut le coter.
+                loaded = await BookRepository(session).get_by_id(book.id)
+                needs_price = loaded is not None and not has_usable_price(
+                    loaded.market_cache
+                )
             await session.commit()
     except Exception as exc:
         logger.debug("Liaison catalogue BD différée ignorée pour %s : %s", alert_id, exc)
+        return
+
+    # La résolution de fond cote le livre qu'elle vient de lier. La cotation part
+    # après le commit : une cote lancée plus tôt ouvrirait une session qui ne verrait
+    # pas encore le livre, et le job glissant finirait par être le seul à le coter.
+    if book_id is not None and needs_price:
+        schedule_book_pricing(book_id, reason="bd_resolved")
 
 
 def _alert_has_telegram_chat(alert: Any) -> bool:
@@ -219,6 +252,13 @@ class ProcessListingUseCase:
                 if not catalog_ready:
                     market_line, catalog_ready, resolved_book = (
                         await self._comparison_from_catalog_isbn(listing, alert)
+                    )
+                # Aucune alerte BD ne part sans bloc de cote : livre identifié → cote
+                # en cours ; sinon → recherche de l'ouvrage en cours (la résolution
+                # de fond va réellement la lancer, cf. `if not catalog_ready`).
+                if market_line is None:
+                    market_line = (
+                        PENDING_COTE_LINE if catalog_ready else SEARCHING_BOOK_LINE
                     )
             pending_sends.append(
                 (alert, match_result, market_line, catalog_ready, resolved_book)
@@ -340,32 +380,37 @@ class ProcessListingUseCase:
         )
         return line or _pending_cote_line(book), True, book
 
-    async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> str | None:
-        """Résout le livre en local. La recherche BNF part en tâche de fond."""
+    async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> Book | None:
+        """Résout le livre en local. La recherche BNF part en tâche de fond.
+
+        Rend le livre lié (ou ``None``) et non une ligne : c'est l'appelant qui, une
+        fois la transaction commitée, déclenche sa cotation. Le faire ici ouvrirait
+        une session avant le commit, qui ne verrait pas encore le livre.
+        """
         book_repo = BookRepository(self.db)
         catalog_service = BookCatalogService(self.db)
 
         book = None
-        books_in_series = None
         tome_result = None
 
         if not alert.isbn:
-            resolved_book, books_in_series, tome_result = (
-                await book_repo.resolve_book_for_listing(
-                    alert_id=alert.id,
-                    alert_name=alert.name,
-                    listing_title=listing.title,
-                    listing_description=listing.description,
-                )
+            book, _books_in_series, tome_result = await book_repo.resolve_book_for_listing(
+                alert_id=alert.id,
+                alert_name=alert.name,
+                listing_title=listing.title,
+                listing_description=listing.description,
             )
-            book = resolved_book
 
             if not book:
                 discovered_isbn = listing.isbn13
                 has_lot = bool(tome_result and tome_result.is_lot and tome_result.lot_tomes)
                 if not discovered_isbn and not has_lot:
                     safe_create_task(
-                        _link_book_from_bnf(listing.title, alert.id),
+                        link_book_from_bnf(
+                            alert.name,
+                            alert.id,
+                            author=getattr(alert, "author", None),
+                        ),
                         name=f"bnf_link_{alert.id}",
                     )
 
@@ -390,9 +435,4 @@ class ProcessListingUseCase:
                 if book:
                     await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
 
-        return MarketPriceService.get_comparison_summary(
-            listing=listing,
-            book=book,
-            books_in_series=books_in_series,
-            tome_result=tome_result,
-        )
+        return book

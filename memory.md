@@ -7,7 +7,7 @@ Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs po
 ## Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-022, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-023, dette différée).
 
 ---
 
@@ -305,6 +305,15 @@ Ces points ont été décrits comme de la dette à ne pas toucher. Le code dit a
   3. **Un avertissement est en italique et isolé par une ligne vide.** La note d'identité (ISBN) passe **au-dessus** de l'ISBN ; la note du moteur IA vit dans son propre bloc sous les critères. `_keyword_note` rend le texte nu et le rendu applique l'italique : deux notes ne peuvent plus porter deux styles.
 - **Raison** : un libellé gras guide l'œil vers la donnée, une consigne en italique ne se confond pas avec une valeur, un avertissement isolé se lit. Aucune de ces trois pertes ne faisait échouer un test — elles ne se voient qu'à l'écran, ce qui est précisément pourquoi elles ont besoin d'un verrou.
 - **Conséquence assumée** : `format_alert_recap` n'était appelé que par les tests (jamais rendu à l'écran) ; il est supprimé avec son test plutôt que mis au gras. Le bouton « Supprimer » perd son emoji `🗑`, seule icône de sa rangée : l'action se lit dans son libellé `BTN_DELETE`, pas dans un pictogramme orphelin.
+
+### ADR-023 : Une alerte BD ne part jamais sans bloc de cote
+- **Contexte** : des alertes BD (« The Grocery », « Loba Loca ») partaient sans aucune ligne de cote. Diagnostic lecture seule en production, sur les 113 alertes BD actives : **0 sans livre, 0 livre lié mais cote inutilisable, 112 à cote utilisable** — mais ce constat est un état au repos. Le silence est un **instant d'envoi** : quand aucun livre n'est résoluble en synchrone, `comparison_line_from_loaded_books` et `_comparison_from_catalog_isbn` rendaient `(None, False, None)`, et `build_listing_caption` n'écrit rien pour une ligne absente. Le job glissant cotait ensuite le livre, masquant la cause dans la base.
+- **Décision** : trois garanties sur le chemin d'alerte BD.
+  1. **Un bloc de cote est toujours présent.** Livre identifié → `PENDING_COTE_LINE` (« cote en cours ») ; aucun livre résoluble → `SEARCHING_BOOK_LINE` (« recherche de l'ouvrage en cours… »), et la résolution de fond est réellement lancée (`if not catalog_ready`). Le libellé ne promet rien de faux : il suit ce que le code va faire.
+  2. **La résolution de fond cote le livre qu'elle lie.** `_link_bd_catalog_background` déclenche `schedule_book_pricing(..., reason="bd_resolved")` **après le commit** — une cote lancée avant ouvrirait une session qui ne verrait pas encore le livre, et seul le job glissant finirait par le coter.
+  3. **La BNF est interrogée par nom d'alerte (+ auteur), jamais par titre d'annonce.** « The Grocery : l'intégrale » n'est pas une notice ; « The Grocery » en est une. `link_book_from_bnf` devient public et partagé : `alerts_create.save_alert` l'appelle dès la création d'une alerte série sans ISBN, pour que le premier tome identifié soit coté avant l'annonce.
+- **Raison** : le silence se lisait comme « pas de prix », alors qu'un ouvrage peut avoir un prix et une cote en cours. Une ligne qui dit « je cherche » vaut mieux qu'un bloc absent, et une recherche annoncée doit réellement tourner.
+- **Conséquence assumée** : `/status` et `/stats` gardaient des libellés de champ en romain (et, sur `/status`, des valeurs en gras) — alignés sur la charte par la même occasion, le changement restant local à ces écrans. La première annonce d'une série sans ISBN peut encore partir avec « recherche en cours » : la résolution BNF est asynchrone et ne bloque jamais l'envoi (invariant n°1).
 
 ---
 
