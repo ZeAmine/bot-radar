@@ -22,6 +22,12 @@ SERIES_TITLE = "Absolute Martian Manhunter"
 ISBN_VOLUME_1 = "9781799505204"
 ISBN_VOLUME_2 = "9781799510871"
 
+# Cas BNF réel : les deux tomes ne se distinguent que par un numéro caché après le
+# sous-titre, que `clean_bnf_title` coupe. Le titre de base est le même des deux côtés.
+MANUEL_TITLE = "Manuel du cuisinier amateur"
+ISBN_MANUEL_1 = "9782812321344"
+ISBN_MANUEL_2 = "9782812321689"
+
 # --- Règle pure -----------------------------------------------------------------
 
 
@@ -258,6 +264,51 @@ async def test_creation_builds_a_series_alert_without_isbn():
     # utilisé : l'alerte n'a pas d'identifiant, mais elle ne fait pas croire à un oubli.
     recap = recap_from_state(stored)
     assert stored["series_note"] in recap
+    assert "<b>ISBN :</b> non utilisé — série multi-tomes" in recap
+    assert "<code>" not in recap, "aucun ISBN ne doit être rendu"
+
+
+def _manuel_resolution() -> object:
+    """La résolution BNF réelle de « Manuel du cuisinier amateur » : deux tomes.
+
+    Le titre de base ne porte aucun numéro — c'est `volume_title` qui le retient, après
+    que `clean_bnf_title` a coupé le sous-titre. Les deux notices sont donc éditions
+    « alternatives » du même titre, et c'est la détection de série qui doit trancher.
+    """
+    from app.services.book_metadata_service import BookResolution
+
+    tome_1 = _notice(MANUEL_TITLE, ISBN_MANUEL_1)
+    tome_1.volume_title = f"{MANUEL_TITLE} Tome 1"
+    tome_2 = _notice(MANUEL_TITLE, ISBN_MANUEL_2)
+    tome_2.volume_title = f"{MANUEL_TITLE} Tome 2"
+    return BookResolution(
+        best=tome_1,
+        alternatives=[tome_2],
+        notice_titles=(tome_1.volume_title, tome_2.volume_title),
+    )
+
+
+@pytest.mark.asyncio
+async def test_creation_builds_a_series_alert_from_tomes_hidden_in_the_subtitle():
+    """Tome 1 + tome 2 sous un même titre : alerte de série, sans ISBN.
+
+    C'est le cas réel « Manuel du cuisinier amateur » : deux notices BNF, même titre,
+    même éditeur, seul le numéro de tome — coupé avec le sous-titre — les distingue.
+    """
+    from app.bot.handlers.alerts_helpers import recap_from_state
+
+    stored = await _lookup(MANUEL_TITLE, _manuel_resolution())
+
+    assert stored["is_series"] is True
+    assert stored["isbn"] is None
+    assert stored["name"] == MANUEL_TITLE
+    assert stored["series_note"] == (
+        "Série multi-tomes détectée (Tome 1, Tome 2) — veille sur tous les tomes, sans ISBN."
+    )
+    # Plus de tomes proposés comme éditions concurrentes : ce seraient deux volumes.
+    assert stored["edition_alternatives"] == []
+
+    recap = recap_from_state(stored)
     assert "<b>ISBN :</b> non utilisé — série multi-tomes" in recap
     assert "<code>" not in recap, "aucun ISBN ne doit être rendu"
 

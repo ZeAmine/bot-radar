@@ -358,7 +358,7 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
         assert recap.count("9782369903086") == 1
         assert ISBN_AUTRE_LIVRE not in recap
         assert (
-            "📖 <b>Édition suivie :</b> 2022 · Çà et là · 224 p. · 24 cm" in recap
+            "<b>Édition :</b> 2022 · Çà et là · 224 p. · 24 cm" in recap
         )
 
         buttons = _edition_buttons(loading_message)
@@ -380,7 +380,7 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
         assert state.data["isbn"] == "9782369904151"
         switch_recap = switch_message.edit_text.call_args[0][0]
         assert (
-            "📖 <b>Édition suivie :</b> Editions çà et là · 224 p. · 19 cm"
+            "<b>Édition :</b> Editions çà et là · 224 p. · 19 cm"
             in switch_recap
         )
         # La bascule met à jour la fiche et l'édition décrite, pas le clavier.
@@ -501,7 +501,7 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
             typed_answer = typed_message.answer.call_args[0][0]
             assert "<b>ISBN :</b> <code>9782369903086</code>" in typed_answer
             assert (
-                "📖 <b>Édition suivie :</b> 2022 · Çà et là · 224 p. · 24 cm"
+                "<b>Édition :</b> 2022 · Çà et là · 224 p. · 24 cm"
                 in typed_answer
             )
             # La note de provenance de l'ancien ISBN ne survit pas à la correction.
@@ -1024,7 +1024,7 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
         # Le contenu a bien changé — c'est l'édition suivie qui diffère.
         assert switch_recap != recap
         assert "<code>9782369904151</code>" in switch_recap
-        assert "📖 <b>Édition suivie :</b> Editions çà et là · 224 p. · 19 cm" in switch_recap
+        assert "<b>Édition :</b> Editions çà et là · 224 p. · 19 cm" in switch_recap
 
         # Et rien d'autre : même structure, aucun bandeau, même pied de confirmation.
         for text in (recap, switch_recap):

@@ -76,6 +76,7 @@ FIELD_STATUS = "Statut"
 FIELD_TITLE = "Titre"
 FIELD_AUTHOR = "Auteur"
 FIELD_PUBLISHER = "Éditeur"
+FIELD_EDITION = "Édition"
 FIELD_PERIOD = "Période"
 FIELD_PRICE = "Prix"
 # Le total qui suit le prix n'a pas de libellé : « TTC » suffit, et il tient la
