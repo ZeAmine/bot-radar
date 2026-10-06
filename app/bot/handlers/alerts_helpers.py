@@ -629,6 +629,30 @@ def format_alerts_list_text(
     return "\n".join(lines)
 
 
+async def _begin_bibliographic_search(state: FSMContext) -> int:
+    """Réserve un jeton d'ordre pour une recherche bibliographique inline.
+
+    Deux saisies rapprochées lancent deux recherches concurrentes : sans jeton, la
+    plus lente écrirait son brouillon après la plus récente — l'écran montrerait
+    l'œuvre de la première alors que l'utilisateur a déjà tapé la seconde. Le jeton
+    est monotone, donc seul le dernier écrivain est légitime.
+    """
+    current = await state.get_data()
+    token = int(current.get("search_token") or 0) + 1
+    await state.update_data(search_token=token)
+    return token
+
+
+async def _search_still_current(state: FSMContext, token: int) -> bool:
+    """Le jeton est-il encore le dernier émis ? Sinon, la réponse est périmée.
+
+    Un jeton absent (état qui ne persiste pas) ne bloque rien : on ne peut pas
+    conclure, et bloquer l'écran sur un doute serait pire que l'écrire.
+    """
+    current = int((await state.get_data()).get("search_token") or 0)
+    return current == 0 or current == token
+
+
 def _work_choice_to_dict(choice: BookWorkChoice) -> dict[str, Any]:
     """Un choix d'œuvre du contrat en dictionnaire stockable dans le FSM."""
     return {
@@ -1079,6 +1103,9 @@ async def process_bd_query_lookup(
 
     status_msg = await target_msg.answer("🔍 Recherche automatique de l'œuvre...")
 
+    # Jeton d'ordre : une saisie plus récente invalide cette réponse si elle arrive après.
+    token = await _begin_bibliographic_search(state)
+
     # Détection de la forme de la saisie (ISBN ou titre) — même règle que
     # l'ancien `resolve_input`, mais sans seconde logique de résolution.
     raw_digits = re.sub(r"[^0-9X]", "", clean_query.upper())
@@ -1095,6 +1122,11 @@ async def process_bd_query_lookup(
     except InvalidIsbnError:
         # ISBN mal formé : la carte « non identifiée » actuelle, sans appel réseau
         result = None
+
+    if not await _search_still_current(state, token):
+        # Une saisie plus récente a pris la main : ce brouillon n'a plus à s'écrire.
+        logger.info("Recherche bibliographique « %s » périmée : écran inchangé.", clean_query)
+        return
 
     if result is None or result.status == BookSearchStatus.NOT_FOUND:
         # Aucune source ne connaît ce titre — un livre sorti la semaine dernière n'est

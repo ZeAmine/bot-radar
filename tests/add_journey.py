@@ -98,6 +98,12 @@ def patched(repos: dict, bnf: MagicMock, client: MagicMock):
             "app.services.ai.modules.natural_add.BookSearchUseCase",
             fake_book_search(bnf),
         ),
+        # Les callbacks de sélection (œuvre, édition) revalident leur ISBN : ils
+        # consomment le même cas d'usage, dans leur propre module.
+        patch(
+            "app.bot.handlers.alerts_create_confirm.BookSearchUseCase",
+            fake_book_search(bnf),
+        ),
         patch(
             "app.bot.handlers.alerts_create.keyword_variants_module."
             "generate_variants_and_exclusions",
