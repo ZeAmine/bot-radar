@@ -216,7 +216,6 @@ class NaturalAddModule(BaseAIModule):
                 category_slug=category,
                 isbn13=None if series.is_series else resolved.isbn13,
                 is_series=is_series,
-                series_volumes=list(series.volumes),
                 author=author,
                 publisher=publisher,
                 include_keywords=clean_includes or [clean_name],

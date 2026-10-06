@@ -251,20 +251,30 @@ async def test_creation_builds_a_series_alert_without_isbn():
     assert stored["isbn"] is None
     # Le titre de l'alerte est celui de la série, pas celui d'un volume.
     assert stored["name"] == SERIES_TITLE
-    assert stored["series_note"] == (
-        "Série multi-tomes détectée (Tome 2) — veille sur tous les tomes, sans ISBN."
-    )
+    # L'indication n'est plus une donnée du brouillon : elle se dérive de `is_series`,
+    # donc deux rendus de la même fiche ne peuvent pas se contredire.
+    assert "series_note" not in stored
     # Les mots-clés portent sur la série : « … vol 2 » ne verrait jamais le tome 3.
     assert stored["include_keywords"] == ["absolute martian manhunter"]
     assert "absolute martian manhunter vol 2" not in stored["include_keywords"]
     # Pas d'éditions concurrentes : ce seraient celles d'un tome.
     assert stored["edition_alternatives"] == []
 
-    # Le récap réellement affiché porte la trouvaille, et dit que l'ISBN n'est pas
-    # utilisé : l'alerte n'a pas d'identifiant, mais elle ne fait pas croire à un oubli.
+    # Le récap réellement affiché porte l'indication, hors de la liste des informations
+    # et en italique : l'alerte n'a pas d'identifiant, mais elle ne fait pas croire à un
+    # oubli. Les tomes repérés ne sont plus énumérés, et la ligne ISBN a disparu — elle
+    # répétait la même phrase que l'indication.
+    from app.bot.handlers.alerts_helpers import RECAP_TITLE
+
     recap = recap_from_state(stored)
-    assert stored["series_note"] in recap
-    assert "<b>ISBN :</b> non utilisé — série multi-tomes" in recap
+    lines = recap.splitlines()
+    assert lines[0] == RECAP_TITLE
+    assert lines[1] == ""
+    assert lines[2] == "<i>Série multi-tomes (veille sur tous les tomes)</i>"
+    assert lines[3] == ""
+    assert lines[4].startswith("<b>Titre :</b>")
+    assert "<b>ISBN :</b>" not in recap
+    assert "introuvable" not in recap
     assert "<code>" not in recap, "aucun ISBN ne doit être rendu"
 
 
@@ -302,14 +312,15 @@ async def test_creation_builds_a_series_alert_from_tomes_hidden_in_the_subtitle(
     assert stored["is_series"] is True
     assert stored["isbn"] is None
     assert stored["name"] == MANUEL_TITLE
-    assert stored["series_note"] == (
-        "Série multi-tomes détectée (Tome 1, Tome 2) — veille sur tous les tomes, sans ISBN."
-    )
+    assert "series_note" not in stored
     # Plus de tomes proposés comme éditions concurrentes : ce seraient deux volumes.
     assert stored["edition_alternatives"] == []
 
+    # Le cas réel de la capture : deux tomes, et une seule indication — sans énumération.
     recap = recap_from_state(stored)
-    assert "<b>ISBN :</b> non utilisé — série multi-tomes" in recap
+    assert "<i>Série multi-tomes (veille sur tous les tomes)</i>" in recap
+    assert "Tome 1, Tome 2" not in recap
+    assert "<b>ISBN :</b>" not in recap
     assert "<code>" not in recap, "aucun ISBN ne doit être rendu"
 
 
@@ -321,4 +332,4 @@ async def test_creation_keeps_the_isbn_when_the_query_names_a_tome():
     assert stored["is_series"] is False
     assert stored["isbn"] == ISBN_VOLUME_2
     assert stored["name"] == f"{SERIES_TITLE} Vol. 2"
-    assert stored["series_note"] is None
+    assert "series_note" not in stored

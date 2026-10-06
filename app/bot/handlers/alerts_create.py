@@ -21,7 +21,6 @@ from app.bot.handlers.alerts_helpers import (
     process_bd_query_lookup,
     process_tech_or_clothes_query,
     render_existing_alert_response,
-    series_note_for,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
 from app.bot.labels import format_conditions, format_price_cents
@@ -392,9 +391,6 @@ async def start_add_alert(
                 "category_slug": parsed.category_slug,
                 "isbn": parsed.isbn13,
                 "is_series": parsed.is_series,
-                "series_note": (
-                    series_note_for(parsed.series_volumes) if parsed.is_series else None
-                ),
                 "author": parsed.author,
                 "publisher": parsed.publisher,
                 "include_keywords": parsed.include_keywords or [parsed.name],

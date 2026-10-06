@@ -407,7 +407,6 @@ async def test_natural_add_detects_the_series_the_notice_reveals():
     assert res is not None
     assert res.is_series is True
     assert res.isbn13 is None
-    assert res.series_volumes == ["Tome 2"]
     # Ce serait l'édition d'un tome, pas de la série.
     assert res.edition_alternatives == []
     # La provenance de l'ISBN abandonné ne s'affiche pas sous une alerte sans ISBN.
@@ -465,7 +464,6 @@ async def test_natural_add_reads_the_series_from_the_real_fallback_resolution():
     assert res is not None
     assert res.is_series is True
     assert res.isbn13 is None
-    assert res.series_volumes == ["Tome 2"]
     assert res.name == "Absolute Martian Manhunter"
 
 
@@ -497,7 +495,6 @@ async def test_natural_add_keeps_the_isbn_when_a_tome_is_requested():
     assert res is not None
     assert res.is_series is False
     assert res.isbn13 == "9781799510871"
-    assert res.series_volumes == []
 
 
 @pytest.mark.asyncio
