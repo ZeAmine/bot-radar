@@ -1191,14 +1191,17 @@ async def test_the_draft_note_stays_on_the_recap_and_never_reaches_the_confirmat
 
     C'est la seule information que le récap et la confirmation ne partagent pas, et elle
     l'est par décision : la note renvoie au bouton « ✨ Variantes & Exclusions IA », qui
-    n'est plus sous la carte une fois l'alerte créée, et elle peut parler d'une alerte à
-    créer. La carte, elle, reste la même — la confirmation écarte une donnée du
-    brouillon, elle ne réécrit pas son rendu.
+    n'est plus sous la carte une fois l'alerte créée. La carte, elle, reste la même — la
+    confirmation écarte une donnée du brouillon, elle ne réécrit pas son rendu.
+
+    La note est celle que le code produit pour un moteur muet, pas une copie de son
+    texte : une phrase recopiée ici continuerait de passer alors que le récap affiche
+    autre chose.
     """
-    note = (
-        "⚠️ L'IA n'a pas répondu après une relance : cette alerte sera créée sans "
-        "variante ni exclusion. Appuie sur « ✨ Variantes & Exclusions IA » pour réessayer."
-    )
+    from app.bot.handlers.alerts_helpers import keyword_note
+
+    note = keyword_note(KeywordVariantsOutcome.unanswered())
+    assert note is not None
     repos = _repositories(BNF_EDITION.isbn13)
     state = DraftState()
     state.data = {

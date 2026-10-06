@@ -48,6 +48,7 @@ from app.db.models.alert import Alert
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
+from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
@@ -182,6 +183,43 @@ def _join_escaped(values: list[str]) -> str:
     « Recherche IA en cours » parce que Telegram rejoue l'update.
     """
     return ", ".join(html.escape(str(value)) for value in values)
+
+
+def keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
+    """Ligne discrète expliquant ce que la recherche de mots-clés n'a pas trouvé.
+
+    Cinq fins possibles, cinq libellés distincts : la carte ne doit jamais laisser
+    croire qu'une liste vide est un avis du moteur alors que personne n'a été interrogé
+    — ni qu'une exclusion manquante est un oubli quand elle est une décision.
+
+    Le texte est rendu en italique par `creation_card` (charte, règle 3) : c'est un
+    avertissement, jamais une information du livre. La mise en forme vit donc dans le
+    rendu, pas ici : deux notes ne peuvent pas porter deux styles.
+
+    Deux écrans l'affichent — le récap de `/add` et la reprise d'une alerte dont l'ISBN
+    vient de changer — et aucun n'en a sa propre copie : le verdict d'une même fin ne
+    doit pas dépendre du geste qui l'a déclenchée.
+    """
+    if not outcome.answered:
+        # La relance a déjà eu lieu : ce n'est plus de la lenteur mais un échec. Le
+        # bouton reste sous la carte, c'est donc lui qu'on nomme, pas « Modifier ».
+        return (
+            "⚠️ L'IA n'a pas répondu après une relance : aucune variante ni exclusion "
+            "n'a été ajoutée. Appuie sur « ✨ Variantes & Exclusions IA » pour réessayer."
+        )
+    # ⚠️ et non 🔎 : ce n'est pas une observation en passant mais un manque, et la carte
+    # le place en tête avec les autres avertissements. Le repérage d'un ouvrage
+    # (« … identifié ») garde sa loupe : lui ne signale rien.
+    if outcome.is_empty:
+        return (
+            "⚠️ L'IA n'a trouvé aucune variante ni exclusion pertinente : "
+            "rien n'a été ajouté."
+        )
+    if not outcome.exclusions:
+        return "⚠️ L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage."
+    if not outcome.variants:
+        return "⚠️ L'IA n'a trouvé aucune variante de frappe pour cet ouvrage."
+    return None
 
 
 def creation_card(
