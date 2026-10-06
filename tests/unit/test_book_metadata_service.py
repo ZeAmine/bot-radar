@@ -5,11 +5,15 @@ import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic import SecretStr
 
+from app.core.config import settings
 from app.core.constants import MatchConfidence
 from app.services.book_metadata_service import (
     AUTORITE_BNF,
+    AUTORITE_GOOGLE_BOOKS,
     AUTORITE_OPENLIBRARY,
+    GOOGLE_BOOKS_SOURCE_NOTE,
     OPENLIBRARY_SOURCE_NOTE,
     BookMetadata,
     BookMetadataService,
@@ -313,6 +317,29 @@ OPENLIBRARY_DOC = {
     "language": ["fre"],
     "isbn": ["9782369903086", "2369903082", "9782072909207", "9780261102217"],
 }
+# Volume Google Books : la notice porte ses deux identifiants, dont un ISBN-10 que
+# `isbn_from_identifier` doit savoir convertir pour que le code demandé soit reconnu.
+GOOGLE_BOOKS_ITEM = {
+    "volumeInfo": {
+        "title": "Dailycieux",
+        "authors": ["Whoogy's"],
+        "publisher": "Éditions du Chêne",
+        "publishedDate": "2026-09-23",
+        "pageCount": 240,
+        "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9782812322495"}],
+    }
+}
+
+GOOGLE_BOOKS_ITEM_AUTRE = {
+    "volumeInfo": {
+        "title": "Dailycieux",
+        "authors": ["Whoogy's"],
+        "publisher": "Éditions du Chêne",
+        "publishedDate": "2026-09-23",
+        "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9780000000019"}],
+    }
+}
+
 OPENLIBRARY_HOBBIT_DOC = {
     "title": "The Hobbit",
     "author_name": ["J. R. R. Tolkien"],
@@ -334,7 +361,7 @@ class _FakeResponse:
 
 
 class _FakeCatalogueClient:
-    """Émule le SRU BNF et l'API Search d'OpenLibrary, et journalise les URL demandées."""
+    """Émule le SRU BNF, l'API Search d'OpenLibrary et l'API Volumes de Google Books."""
 
     def __init__(
         self,
@@ -343,6 +370,7 @@ class _FakeCatalogueClient:
         openlibrary_status: int = 200,
         bnf_panne_sur: str | None = None,
         bnf_records: list[str] | None = None,
+        google_books_items: list[dict[str, object]] | None = None,
     ) -> None:
         self.queries: list[str] = []
         self.bnf_empty = bnf_empty
@@ -350,13 +378,25 @@ class _FakeCatalogueClient:
         self.openlibrary_docs = openlibrary_docs
         self.openlibrary_status = openlibrary_status
         self.bnf_records = BNF_RECORDS if bnf_records is None else bnf_records
+        self.google_books_items = google_books_items
+        self.google_books_queries: list[str] = []
 
     @property
     def openlibrary_queries(self) -> list[str]:
         return [url for url in self.queries if "openlibrary.org" in url]
 
-    async def get(self, url: str, **_kwargs: object) -> _FakeResponse:
+    async def get(self, url: str, **kwargs: object) -> _FakeResponse:
         self.queries.append(url)
+        params = kwargs.get("params")
+        params = params if isinstance(params, dict) else {}
+
+        if "googleapis.com" in url:
+            # Google Books reçoit sa requête en paramètre séparé, pas dans l'URL.
+            self.google_books_queries.append(str(params.get("q", "")))
+            items = self.google_books_items
+            if items is None:
+                return _FakeResponse(payload={"totalItems": 0})
+            return _FakeResponse(payload={"totalItems": len(items), "items": items})
 
         if "openlibrary.org" in url:
             if self.openlibrary_status != 200:
@@ -1327,3 +1367,171 @@ async def test_bnf_never_confirms_an_isbn_and_openlibrary_does():
     assert verdict.notice is not None
     assert verdict.notice.source == AUTORITE_OPENLIBRARY
     assert provenance_note(verdict.notice) == OPENLIBRARY_SOURCE_NOTE
+
+
+# ---------------------------------------------------------------------------
+# Troisieme source : Google Books n'entre qu'apres les deux autres (ADR-033)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _cle_google_books_absente(monkeypatch):
+    """La clé vient de l'environnement : aucun test ne dépend de celle du poste.
+
+    `Settings` lit `.env` : sans cette remise à zéro, poser `GOOGLE_BOOKS_API_KEY`
+    sur une machine ferait basculer les verdicts d'autorités attendus ici — `consulted`
+    gagnerait une troisième entrée — et les tests diraient le contraire du code. Les
+    tests de la troisième source redéfinissent la clé dans leur propre corps.
+    """
+    monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr(""))
+
+
+@pytest.mark.asyncio
+async def test_google_books_is_the_last_resort_and_names_its_provenance(monkeypatch):
+    """La troisième source ne parle qu'après les deux autres, et dit d'où elle vient."""
+    monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
+    client = _FakeCatalogueClient(
+        bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM]
+    )
+    service = BookMetadataService(http_client=client)
+
+    resolution = await service.resolve_for_alert("Dailycieux", "Whoogy's")
+
+    assert resolution is not None
+    assert resolution.best.source == AUTORITE_GOOGLE_BOOKS
+    assert resolution.best.title == "Dailycieux"
+    assert resolution.best.author == "Whoogy's"
+    assert resolution.best.publisher == "Éditions du Chêne"
+    assert resolution.best.isbn13 == "9782812322495"
+    assert resolution.best.publication_year == 2026
+    assert resolution.best.format_detail == "240 p."
+    assert provenance_note(resolution.best) == GOOGLE_BOOKS_SOURCE_NOTE
+    # Les deux premières ont été tentées, et avant elle.
+    assert client.openlibrary_queries != []
+    assert client.google_books_queries
+    assert "Dailycieux" in client.google_books_queries[0]
+
+
+@pytest.mark.asyncio
+async def test_google_books_is_not_consulted_without_a_key():
+    """Sans clé, la source n'existe pas — et elle n'est pas annoncée comme consultée."""
+    client = _FakeCatalogueClient(
+        bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM]
+    )
+    service = BookMetadataService(http_client=client)
+
+    assert await service.resolve_for_alert("Dailycieux", "Whoogy's") is None
+
+    verdict = await service.consult_authorities("9782812322495")
+
+    assert verdict.confirme is False
+    assert verdict.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
+    assert client.google_books_queries == []
+
+
+@pytest.mark.asyncio
+async def test_google_books_confirms_an_isbn_the_two_others_ignore(monkeypatch):
+    """Le livre trop récent pour la BNF et OpenLibrary est tranché par la troisième.
+
+    C'est le cas réel qui a motivé cette source : `Dailycieux`, sorti deux semaines
+    plus tôt, absent des deux catalogues et de tous les annuaires d'EAN libres.
+    """
+    monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
+    client = _FakeCatalogueClient(
+        bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM]
+    )
+    service = BookMetadataService(http_client=client)
+
+    verdict = await service.consult_authorities("9782812322495")
+
+    assert verdict.confirme is True
+    assert verdict.consulted == (
+        AUTORITE_BNF,
+        AUTORITE_OPENLIBRARY,
+        AUTORITE_GOOGLE_BOOKS,
+    )
+    assert verdict.notice is not None
+    assert verdict.notice.source == AUTORITE_GOOGLE_BOOKS
+    assert provenance_note(verdict.notice) == GOOGLE_BOOKS_SOURCE_NOTE
+
+
+@pytest.mark.asyncio
+async def test_a_bnf_contradiction_is_never_overridden_by_google_books(monkeypatch):
+    """La BNF fait autorité : une contradiction suffit, la troisième n'est pas consultée."""
+    monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
+    client = _FakeCatalogueClient(google_books_items=[GOOGLE_BOOKS_ITEM])
+    service = BookMetadataService(http_client=client)
+
+    assert await service.verify_isbn("9782369903062", "La couleur des choses") is None
+    assert client.google_books_queries == []
+
+
+@pytest.mark.asyncio
+async def test_a_google_notice_must_carry_the_code_it_answers(monkeypatch):
+    """Une requête par ISBN ne prouve rien : seule une notice qui porte le code confirme.
+
+    Google agrège plusieurs éditions dans une même notice : accepter la notice rendue
+    sans lire ses identifiants ferait confirmer un code que la donnée ne soutient pas.
+    La règle vaut pour la BNF comme pour ses deux replis.
+    """
+    monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
+    client = _FakeCatalogueClient(
+        bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM_AUTRE]
+    )
+    service = BookMetadataService(http_client=client)
+
+    verdict = await service.consult_authorities("9782812322495")
+
+    assert verdict.confirme is False
+    assert verdict.consulted == (
+        AUTORITE_BNF,
+        AUTORITE_OPENLIBRARY,
+        AUTORITE_GOOGLE_BOOKS,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_google_notice_of_another_title_is_not_retained(monkeypatch):
+    """Une notice voisine ne remplace pas l'œuvre demandée, même en dernier recours."""
+    monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
+    autre = {
+        "volumeInfo": {
+            "title": "Blacksad",
+            "authors": ["Juan Díaz Canales"],
+            "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9782205049504"}],
+        }
+    }
+    client = _FakeCatalogueClient(
+        bnf_empty=True, openlibrary_docs=[], google_books_items=[autre]
+    )
+    service = BookMetadataService(http_client=client)
+
+    assert await service.resolve_for_alert("Dailycieux", None) is None
+    assert client.google_books_queries
+
+
+@pytest.mark.asyncio
+async def test_the_third_source_fires_only_after_both_others_in_the_same_resolution(
+    monkeypatch,
+):
+    """L'ordre des requêtes **émises**, pas seulement le verdict annoncé.
+
+    `consulted` est une tuple construite par le service : elle pourrait nommer une
+    autorité qu'il n'a pas interrogée. Ce test lit la séquence réellement envoyée au
+    client HTTP — BNF, puis OpenLibrary, puis Google Books — sur la même résolution.
+    """
+    monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
+    client = _FakeCatalogueClient(
+        bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM]
+    )
+    service = BookMetadataService(http_client=client)
+
+    assert await service.resolve_for_alert("Dailycieux", "Whoogy's") is not None
+
+    def premier(fragment: str) -> int:
+        return next(i for i, url in enumerate(client.queries) if fragment in url)
+
+    bnf = premier("catalogue.bnf.fr")
+    openlibrary = premier("openlibrary.org")
+    google = premier("googleapis.com")
+    assert bnf < openlibrary < google

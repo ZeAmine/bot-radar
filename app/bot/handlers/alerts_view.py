@@ -16,7 +16,7 @@ from app.bot.keyboards.alerts import (
     get_alerts_list_keyboard,
     get_list_category_selection_keyboard,
 )
-from app.bot.labels import STATUS_ACTIVE, STATUS_PAUSED
+from app.bot.labels import BTN_ALERTS_LIST, STATUS_ACTIVE, STATUS_PAUSED
 from app.core.constants import AlertStatus, CategorySlug
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
@@ -113,7 +113,7 @@ async def show_alerts(
             for a in matched_alerts
         ]
         buttons.append(
-            [InlineKeyboardButton(text="Liste des alertes", callback_data="al_page:0")]
+            [InlineKeyboardButton(text=BTN_ALERTS_LIST, callback_data="al_page:0")]
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         await message.answer(

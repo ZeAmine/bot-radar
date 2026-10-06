@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # Chasse-aux-livres (Session utilisateur pour historique 1 an /rest/jcd)
     CHASSE_AUX_LIVRES_DUIH: str | None = None
 
+    # Troisième source d'identification d'un ouvrage, après la BNF et OpenLibrary
+    # (ADR-033). Optionnelle : vide, la source n'est ni interrogée ni annoncée. Elle
+    # n'est donc **pas** dans `validate_production_secrets()` — l'app démarre sans.
+    GOOGLE_BOOKS_API_KEY: SecretStr = SecretStr("")
+
     # Planification
     PRICE_REFRESH_TIMES: str = "07:00,19:00"
 

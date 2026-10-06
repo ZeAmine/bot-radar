@@ -86,6 +86,13 @@ class NaturalAddResult(BaseModel):
         default=None,
         description="Information d'édition à afficher (autre ISBN connu / ISBN non confirmé)",
     )
+    book_unidentified: bool = Field(
+        default=False,
+        description=(
+            "True quand aucune autorité n'a identifié l'ouvrage : le récap le dit en "
+            "tête et montre les trous de la fiche"
+        ),
+    )
     book_context: BookContext | None = Field(
         default=None,
         description="Fiche BNF de l'ouvrage, à injecter dans la génération de mots-clés",
