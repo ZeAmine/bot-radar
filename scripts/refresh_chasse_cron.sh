@@ -4,23 +4,27 @@
 #
 # Chemin, dans l'ordre :
 #   1. Âge de la dernière observation certifiée en base. Si elle a moins de
-#      CHASSE_STALE_HOURS heures, le jeton vit encore : rien à faire, le
-#      navigateur ne se lance même pas.
-#   2. Sinon : capture d'un jeton neuf (Chromium piloté par Playwright),
-#      validation contre la série 1 an, injection via l'API interne. Jamais de
-#      jeton poussé sans validation — un jeton « installé » qui ne rend rien
-#      reprendrait le silence qu'on cherche à éviter.
-#   3. Si la passe headless échoue et que `xvfb-run` est installé, seconde
-#      passe en headful sous serveur X virtuel.
+#      CHASSE_STALE_HOURS heures, le jeton vit encore : rien à faire, la
+#      connexion n'a même pas lieu.
+#   2. Sinon : connexion au compte Chasse-aux-livres (POST /login, sans
+#      captcha — ADR-036), lecture de data-duih, validation contre la série
+#      1 an, injection via l'API interne. Jamais de jeton poussé sans
+#      validation — un jeton « installé » qui ne rend rien reprendrait le
+#      silence qu'on cherche à éviter.
+#
+# Identifiants : CHASSE_ACCOUNT_EMAIL / CHASSE_ACCOUNT_PASSWORD, depuis
+# l'environnement ou ${CHASSE_ACCOUNT_ENV:-~/chasse-refresh/account.env}
+# (chmod 600, **hors dépôt** : jamais committé, jamais journalisé — on en
+# extrait les deux clés sans exécuter le fichier, même prudence que .env).
 #
 # Filets :
 #   - Toute incertitude (base injoignable, réponse illisible, compteur cassé)
-#     déclenche le renouvellement : un doute coûte une visite au site, jamais
-#     une cote figée.
-#   - Un verrou empêche deux passes simultanées ; un délai maximum sort un
-#     Chromium pendu du chemin.
-#   - Le journal tourne au-delà de 1 Mo. Ni le jeton, ni INTERNAL_API_TOKEN
-#     n'y figurent jamais.
+#     déclenche le renouvellement : un doute coûte une connexion au site,
+#     jamais une cote figée.
+#   - Un verrou empêche deux passes simultanées ; un délai maximum sort une
+#     requête pendue du chemin.
+#   - Le journal tourne au-delà de 1 Mo. Ni le jeton, ni INTERNAL_API_TOKEN,
+#     ni les identifiants du compte n'y figurent jamais.
 #   - Une passe ratée n'est pas muette : sans nouvelle observation certifiée,
 #     l'alerte « Cotes de marché figées » revient sous 7 jours — c'est le
 #     voyant d'échec du cron, en plus du journal.
@@ -28,15 +32,17 @@
 # Rétention assumée : un jeton qui meurt peut rester mort jusqu'à ~35 h, le
 # temps que l'âge dépasse le seuil au passage suivant (les filets d'alerte à
 # 48 h et 7 j restent en place). Baisser CHASSE_STALE_HOURS resserre ce délai
-# au prix d'une visite navigateur plus fréquente.
+# au prix d'une connexion plus fréquente.
 #
 # Usage      : ./scripts/refresh_chasse_cron.sh
 # Crontab    : 0 2 * * * /home/ubuntu/bot-radar/scripts/refresh_chasse_cron.sh
 #              (heure du serveur, UTC : 02:00 UTC = 03:00/04:00 en France)
 # Codes      : 0 = à jour ou renouvelé ; 1 = validation/injection refusée ;
-#              2 = capture impossible ; 124 = délai dépassé.
+#              2 = capture impossible (identifiants, site, Python) ;
+#              124 = délai dépassé.
 # Réglages   : CHASSE_STALE_HOURS (24), CHASSE_HOME (~/chasse-refresh),
 #              CHASSE_VENV (~/chasse-refresh/.venv), CHASSE_CAPTURE_TIMEOUT (300),
+#              CHASSE_ACCOUNT_ENV (~/chasse-refresh/account.env),
 #              POSTGRES_CONTAINER/USER/DB (radar_postgres/radar_user/radar_db).
 # ==============================================================================
 
@@ -114,8 +120,7 @@ log "Observation certifiée de ${age_hours} h (seuil ${STALE_HOURS} h) : renouve
 # --- 2. Prérequis ------------------------------------------------------------
 if [ ! -x "${VENV_PYTHON}" ]; then
     log "ERREUR : Python d'environnement absent (${VENV_PYTHON})."
-    log "  python3 -m venv ${VENV} && ${VENV}/bin/pip install -e ${ROOT_DIR} playwright"
-    log "  ${VENV}/bin/playwright install --with-deps chromium"
+    log "  python3 -m venv ${VENV} && ${VENV}/bin/pip install -e ${ROOT_DIR}"
     exit 2
 fi
 
@@ -143,38 +148,47 @@ if [ -z "${INTERNAL_API_TOKEN:-}" ]; then
     exit 2
 fi
 
-# --- 3. Capture --------------------------------------------------------------
-# La sortie du script Python rejoint le même journal ; il ne rapporte que des
-# longueurs de jeton, jamais la valeur.
-capture() {
-    timeout -k 30 "${CAPTURE_TIMEOUT}" "$@" >> "${LOG_FILE}" 2>&1
+# Les identifiants du compte vivent hors dépôt, dans un fichier qui n'est
+# pas exécuté : on en extrait les deux clés comme pour .env, sans jamais les
+# journaliser. Une variable déjà présente (passage manuel) prime sur le fichier.
+ACCOUNT_ENV="${CHASSE_ACCOUNT_ENV:-${BASE_DIR}/account.env}"
+read_account_key() {
+    local line
+    line="$(grep -E "^$1=" "${ACCOUNT_ENV}" 2>/dev/null | head -n 1 || true)"
+    line="${line#*=}"
+    line="${line#\"}"; line="${line%\"}"; line="${line#\'}"; line="${line%\'}"
+    printf '%s' "$line"
 }
+if [ -z "${CHASSE_ACCOUNT_EMAIL:-}" ] && [ -f "${ACCOUNT_ENV}" ]; then
+    CHASSE_ACCOUNT_EMAIL="$(read_account_key CHASSE_ACCOUNT_EMAIL)"
+fi
+if [ -z "${CHASSE_ACCOUNT_PASSWORD:-}" ] && [ -f "${ACCOUNT_ENV}" ]; then
+    CHASSE_ACCOUNT_PASSWORD="$(read_account_key CHASSE_ACCOUNT_PASSWORD)"
+fi
+if [ -z "${CHASSE_ACCOUNT_EMAIL:-}" ] || [ -z "${CHASSE_ACCOUNT_PASSWORD:-}" ]; then
+    log "ERREUR : identifiants du compte Chasse absents (variables ou ${ACCOUNT_ENV}) : connexion impossible, abandon avant la tentative."
+    log "  Creer ${ACCOUNT_ENV} (chmod 600, hors depot) avec CHASSE_ACCOUNT_EMAIL=… et CHASSE_ACCOUNT_PASSWORD=…"
+    exit 2
+fi
+export CHASSE_ACCOUNT_EMAIL CHASSE_ACCOUNT_PASSWORD
+
+# --- 3. Connexion ------------------------------------------------------------
+# La sortie du script Python rejoint le même journal ; il ne rapporte que des
+# longueurs de jeton, jamais la valeur — ni les identifiants.
 
 rc=0
-capture "${VENV_PYTHON}" "${SCRIPT_DIR}/refresh_chasse_token.py" \
-    --api-url "http://127.0.0.1:8000" || rc=$?
+timeout -k 30 "${CAPTURE_TIMEOUT}" "${VENV_PYTHON}" "${SCRIPT_DIR}/refresh_chasse_token.py" \
+    --api-url "http://127.0.0.1:8000" >> "${LOG_FILE}" 2>&1 || rc=$?
 
 case "${rc}" in
-    0) ;;
+    0)
+        log "Terminé : jeton renouvelé et validé."
+        ;;
     124)
-        log "Délai de ${CAPTURE_TIMEOUT} s dépassé : pas de seconde tentative (Chromium peut traîner)."
+        log "Délai de ${CAPTURE_TIMEOUT} s dépassé : nouvelle tentative à la passe suivante."
         ;;
     *)
-        if command -v xvfb-run >/dev/null 2>&1; then
-            log "Passe headless en échec (code ${rc}) : nouvelle tentative en headful sous Xvfb."
-            rc=0
-            capture xvfb-run -a "${VENV_PYTHON}" "${SCRIPT_DIR}/refresh_chasse_token.py" \
-                --api-url "http://127.0.0.1:8000" --headful || rc=$?
-        else
-            log "Passe headless en échec (code ${rc}) et xvfb-run absent :"
-            log "  sudo apt-get install -y xvfb   (active la seconde tentative en headful)"
-        fi
+        log "Terminé en échec (code ${rc})."
         ;;
 esac
-
-if [ "${rc}" -eq 0 ]; then
-    log "Terminé : jeton renouvelé et validé."
-else
-    log "Terminé en échec (code ${rc})."
-fi
 exit "${rc}"

@@ -10,10 +10,12 @@ existantes restent figées sur un chiffre de septembre.
 
 Comment le jeton s'obtient
 -------------------------
-Le site ne le délivre qu'à un vrai navigateur : ouvrir chasse-aux-livres.fr,
-laisser le défi se résoudre, puis lire le cookie ``duih`` (DevTools ▸ Application ▸
-Cookies, ou la console : ``document.cookie``). Le site expose aussi cette valeur
-dans l'attribut ``data-duih`` de la balise ``<html>``.
+Le site le délivre à un vrai navigateur qui a passé le défi — ou à une
+session membre, ce que ``scripts/refresh_chasse_token.py`` fait seul par
+connexion au compte (ADR-036). À la main : ouvrir chasse-aux-livres.fr,
+laisser le défi se résoudre, puis lire le cookie ``duih`` (DevTools ▸
+Application ▸ Cookies, ou la console : ``document.cookie``). Le site expose
+aussi cette valeur dans l'attribut ``data-duih`` de la balise ``<html>``.
 
 Ce script ne pretend pas automatiser un défi JavaScript. Il fait ce qui est
 vérifiable : il **valide** le jeton avant de l'injecter, en interrogeant le même
@@ -46,6 +48,9 @@ from app.providers.base import extract_best_historical_low  # noqa: E402
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# httpx journalise chaque URL complète en INFO — dont /rest/jcd qui porte le
+# duih. Le secret ne doit atteindre aucun journal, ici comme dans le cron.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("radar.sync_chasse_session")
 
 # Ouvrages-sondes : la validation doit prouver que la série 1 an répond, sur un
