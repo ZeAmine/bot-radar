@@ -1508,3 +1508,30 @@ async def test_a_google_notice_of_another_title_is_not_retained(monkeypatch):
 
     assert await service.resolve_for_alert("Dailycieux", None) is None
     assert client.google_books_queries
+
+
+@pytest.mark.asyncio
+async def test_the_third_source_fires_only_after_both_others_in_the_same_resolution(
+    monkeypatch,
+):
+    """L'ordre des requêtes **émises**, pas seulement le verdict annoncé.
+
+    `consulted` est une tuple construite par le service : elle pourrait nommer une
+    autorité qu'il n'a pas interrogée. Ce test lit la séquence réellement envoyée au
+    client HTTP — BNF, puis OpenLibrary, puis Google Books — sur la même résolution.
+    """
+    monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
+    client = _FakeCatalogueClient(
+        bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM]
+    )
+    service = BookMetadataService(http_client=client)
+
+    assert await service.resolve_for_alert("Dailycieux", "Whoogy's") is not None
+
+    def premier(fragment: str) -> int:
+        return next(i for i, url in enumerate(client.queries) if fragment in url)
+
+    bnf = premier("catalogue.bnf.fr")
+    openlibrary = premier("openlibrary.org")
+    google = premier("googleapis.com")
+    assert bnf < openlibrary < google
