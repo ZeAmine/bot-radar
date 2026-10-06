@@ -25,7 +25,11 @@ from app.core.config import settings
 from app.core.constants import MatchConfidence, ProviderQueryStatus
 from app.core.http_client import get_shared_http_client
 from app.domain.rules.series_detection import SeriesSignal, detect_series
-from app.providers.google_books import GoogleBooksClient, GoogleVolume
+from app.providers.google_books import (
+    GoogleBooksClient,
+    GoogleVolume,
+    ProviderQueryResult,
+)
 from app.utils.isbn import (
     is_valid_isbn,
     isbn10_to_isbn13,
@@ -274,6 +278,68 @@ class IsbnVerdict:
     def autorite(self) -> str | None:
         """L'autorité qui a tranché, telle que sa notice la déclare ; sinon aucune."""
         return self.notice.source if self.a_tranche and self.notice is not None else None
+
+
+# Types de recherche distingués par les tentatives : `title` est la requête
+# `bib.title`, `title_anywhere` son élargissement, `free` le repli libre Google
+# (sans opérateur), `isbn` toute recherche par code. Un repli libre n'existe
+# que pour Google, jamais pour un ISBN seul.
+BibliographicSearchType = Literal["isbn", "title", "title_anywhere", "free"]
+
+
+@dataclass(frozen=True)
+class ProviderAttempt:
+    """Une interrogation réellement tentée auprès d'une autorité.
+
+    Un provider n'est compté comme consulté que si une requête est
+    effectivement partie, même en échec : `disabled` (clé absente) n'apparaît
+    donc jamais ici. `has_results` dit si la réponse brute contenait des
+    éléments, avant parsing, scoring et filtrage. `error_code` est un code
+    contrôlé (`timeout`, `http_429`, …), jamais un message d'exception.
+    """
+
+    provider: str
+    search_type: BibliographicSearchType
+    status: ProviderQueryStatus
+    has_results: bool
+    error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class BibliographicReport:
+    """Enveloppe d'une recherche : le résultat métier et les tentatives réelles.
+
+    `BookResolution` n'a pas à représenter une absence totale de candidat :
+    `resolution=None` + `attempts` le fait. Un rapport = un chemin : `title`
+    porte une résolution (éventuellement `None`), `isbn` porte toujours un
+    verdict — les deux ne se mélangent jamais.
+    """
+
+    kind: Literal["title", "isbn"]
+    resolution: BookResolution | None = None
+    verdict: IsbnVerdict | None = None
+    attempts: tuple[ProviderAttempt, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.kind == "title" and self.verdict is not None:
+            raise ValueError("un rapport titre porte une résolution, pas de verdict")
+        if self.kind == "isbn" and (self.verdict is None or self.resolution is not None):
+            raise ValueError("un rapport ISBN porte un verdict, jamais de résolution")
+
+
+def _attempt(
+    provider: str,
+    search_type: BibliographicSearchType,
+    result: ProviderQueryResult[Any],
+) -> ProviderAttempt:
+    """Une tentative depuis un résultat typé : statut, brut et code contrôlé."""
+    return ProviderAttempt(
+        provider=provider,
+        search_type=search_type,
+        status=result.status,
+        has_results=result.has_results,
+        error_code=result.error_code,
+    )
 
 
 OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
@@ -661,28 +727,54 @@ class BookMetadataService:
         ordre — un appelant ne peut donc pas annoncer des autorités qu'il n'a pas
         interrogées, ni taire un troisième repli le jour où il entre en scène.
         """
+        report = await self.consult_authorities_report(isbn)
+        assert report.verdict is not None
+        return report.verdict
+
+    async def consult_authorities_report(self, isbn: str) -> BibliographicReport:
+        """Mêmes décisions que `consult_authorities`, tentatives réelles en plus.
+
+        Chaque autorité réellement interrogée — y compris en échec — laisse une
+        tentative ; une source non configurée n'en laisse aucune. Les verdicts
+        rendus sont identiques à la méthode historique, qui y délègue.
+        """
         clean_isbn = normalize_isbn(isbn)
         if not clean_isbn or not is_valid_isbn(clean_isbn):
             # Un code mal formé n'a été soumis à personne : le dire « inconnu »
             # accuserait une autorité de l'ignorer.
-            return IsbnVerdict(outcome="inconnu")
+            return BibliographicReport(
+                kind="isbn", verdict=IsbnVerdict(outcome="inconnu")
+            )
 
-        records, panne = await self._bnf_records(f'bib.isbn adj "{clean_isbn}"')
-        if records:
-            return IsbnVerdict(
-                outcome="confirme",
-                notice=self._attach_recommendations(records[0]),
-                consulted=(AUTORITE_BNF,),
+        attempts: list[ProviderAttempt] = []
+        bnf_result, panne = await self._bnf_records_result(
+            f'bib.isbn adj "{clean_isbn}"'
+        )
+        attempts.append(_attempt(AUTORITE_BNF, "isbn", bnf_result))
+        if bnf_result.items:
+            return BibliographicReport(
+                kind="isbn",
+                verdict=IsbnVerdict(
+                    outcome="confirme",
+                    notice=self._attach_recommendations(bnf_result.items[0]),
+                    consulted=(AUTORITE_BNF,),
+                ),
+                attempts=tuple(attempts),
             )
 
         consulted: tuple[str, ...] = (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
-        fallback = await self._openlibrary_works({"isbn": clean_isbn})
-        if fallback:
-            return IsbnVerdict(
-                outcome="silence" if panne else "confirme",
-                notice=fallback[0].meta,
-                consulted=consulted,
-                panne=panne,
+        ol_works, ol_result = await self._openlibrary_works({"isbn": clean_isbn})
+        attempts.append(_attempt(AUTORITE_OPENLIBRARY, "isbn", ol_result))
+        if ol_works:
+            return BibliographicReport(
+                kind="isbn",
+                verdict=IsbnVerdict(
+                    outcome="silence" if panne else "confirme",
+                    notice=ol_works[0].meta,
+                    consulted=consulted,
+                    panne=panne,
+                ),
+                attempts=tuple(attempts),
             )
 
         # Troisième autorité, quand elle est configurée : un livre publié il y a deux
@@ -691,20 +783,31 @@ class BookMetadataService:
         google_client = self._google_books_client()
         if google_client.is_configured:
             consulted = (*consulted, AUTORITE_GOOGLE_BOOKS)
-            notice = await self._google_books_notice_by_isbn(google_client, clean_isbn)
+            notice, google_result = await self._google_books_notice_result(
+                google_client, clean_isbn
+            )
+            attempts.append(_attempt(AUTORITE_GOOGLE_BOOKS, "isbn", google_result))
             if notice is not None:
-                return IsbnVerdict(
-                    outcome="silence" if panne else "confirme",
-                    notice=notice,
-                    consulted=consulted,
-                    panne=panne,
+                return BibliographicReport(
+                    kind="isbn",
+                    verdict=IsbnVerdict(
+                        outcome="silence" if panne else "confirme",
+                        notice=notice,
+                        consulted=consulted,
+                        panne=panne,
+                    ),
+                    attempts=tuple(attempts),
                 )
 
         # Aucune autorité n'a rien nommé : sans `panne`, ce serait un verdict.
-        return IsbnVerdict(
-            outcome="silence" if panne else "inconnu",
-            consulted=consulted,
-            panne=panne,
+        return BibliographicReport(
+            kind="isbn",
+            verdict=IsbnVerdict(
+                outcome="silence" if panne else "inconnu",
+                consulted=consulted,
+                panne=panne,
+            ),
+            attempts=tuple(attempts),
         )
 
     async def verify_isbn(self, isbn13: str, expected_title: str) -> BookMetadata | None:
@@ -757,21 +860,40 @@ class BookMetadataService:
         auteurs différents, `is_ambiguous` est vrai et l'appelant ne rattache rien — il
         propose le choix. Seule une concordance d'auteur tranche l'homonymie.
         """
-        if not title.strip():
-            return None
+        return (await self.resolve_for_alert_report(title, author_hint)).resolution
 
+    async def resolve_for_alert_report(
+        self, title: str, author_hint: str | None = None
+    ) -> BibliographicReport:
+        """Mêmes décisions que `resolve_for_alert`, tentatives réelles en plus.
+
+        Chaque requête réellement partie — y compris en échec — laisse une
+        tentative, dans l'ordre d'exécution : la panne BNF d'un chemin titre
+        n'est plus indiscernable d'une absence. Le retour historique
+        (`resolve_for_alert`, utilisé par Telegram dans ce lot) est inchangé
+        et y délègue : seule la lecture du rapport (nouveau contrat) distingue
+        un repli pendant une panne d'une identification confirmée.
+        """
+        if not title.strip():
+            return BibliographicReport(kind="title")
+
+        attempts: list[ProviderAttempt] = []
         clean_title_q = clean_title_query(title)
-        records = await self._query_bnf_sru(
+        bnf_result, _panne = await self._bnf_records_result(
             f'bib.title all "{clean_title_q}"',
             author_hint=author_hint,
             title_hint=clean_title_q,
         )
+        attempts.append(_attempt(AUTORITE_BNF, "title", bnf_result))
+        records = list(bnf_result.items)
         if not records and author_hint:
-            records = await self._query_bnf_sru(
+            anywhere_result, _anywhere_panne = await self._bnf_records_result(
                 f'bib.anywhere all "{clean_title_q}"',
                 author_hint=author_hint,
                 title_hint=clean_title_q,
             )
+            attempts.append(_attempt(AUTORITE_BNF, "title_anywhere", anywhere_result))
+            records = list(anywhere_result.items)
 
         candidates = [
             record
@@ -781,10 +903,25 @@ class BookMetadataService:
         if not candidates:
             # La BNF n'a rien rendu : les deux replis, dans l'ordre, et le premier qui
             # nomme l'ouvrage s'arrête. Chacun rend sa provenance au récap.
-            fallback = await self._resolve_via_openlibrary(title, author_hint)
-            if fallback is not None:
-                return fallback
-            return await self._resolve_via_google_books(title, author_hint)
+            ol_resolution, ol_attempt = await self._resolve_via_openlibrary(
+                title, author_hint
+            )
+            attempts.append(ol_attempt)
+            if ol_resolution is not None:
+                return BibliographicReport(
+                    kind="title",
+                    resolution=ol_resolution,
+                    attempts=tuple(attempts),
+                )
+            google_resolution, google_attempts = await self._resolve_via_google_books(
+                title, author_hint
+            )
+            attempts.extend(google_attempts)
+            return BibliographicReport(
+                kind="title",
+                resolution=google_resolution,
+                attempts=tuple(attempts),
+            )
 
         candidates = self._prefer_author_hint(candidates, author_hint)
         best = self._attach_recommendations(candidates[0])
@@ -796,19 +933,23 @@ class BookMetadataService:
         other_works = [
             record for record in candidates[1:] if self._is_homonym(record, best, title)
         ][:MAX_ALTERNATIVE_EDITIONS]
-        return BookResolution(
-            best=best,
-            alternatives=alternatives,
-            other_works=other_works,
-            author_hint_match=self._author_hint_match(best, author_hint),
-            # La preuve d'une série est portée par le titre qui garde son numéro de
-            # tome : la notice retenue ne l'a pas toujours, le sous-titre peut le
-            # cacher.
-            notice_titles=tuple(
-                dict.fromkeys(
-                    record.volume_title or record.title for record in candidates
-                )
+        return BibliographicReport(
+            kind="title",
+            resolution=BookResolution(
+                best=best,
+                alternatives=alternatives,
+                other_works=other_works,
+                author_hint_match=self._author_hint_match(best, author_hint),
+                # La preuve d'une série est portée par le titre qui garde son numéro de
+                # tome : la notice retenue ne l'a pas toujours, le sous-titre peut le
+                # cacher.
+                notice_titles=tuple(
+                    dict.fromkeys(
+                        record.volume_title or record.title for record in candidates
+                    )
+                ),
             ),
+            attempts=tuple(attempts),
         )
 
     @staticmethod
@@ -905,10 +1046,10 @@ class BookMetadataService:
         if records:
             return self._attach_recommendations(records[0])
 
-        fallback = await self._resolve_via_openlibrary(clean_title_q, author_cand)
+        fallback, _ol_attempt = await self._resolve_via_openlibrary(clean_title_q, author_cand)
         if fallback is not None:
             return fallback.best
-        google = await self._resolve_via_google_books(clean_title_q, author_cand)
+        google, _google_attempts = await self._resolve_via_google_books(clean_title_q, author_cand)
         return google.best if google else None
 
     async def lookup_series_notices(
@@ -990,6 +1131,26 @@ class BookMetadataService:
         Le second élément est ce qui manque à une liste vide pour être une réponse :
         sans lui, `[]` dit aussi bien « la BNF ignore cet ISBN » que « la requête a
         échoué », et l'appelant qui doit rendre compte ne peut pas trancher.
+        Libellés historiques préservés à l'identique (voir `_bnf_records_result`).
+        """
+        result, panne = await self._bnf_records_result(cql_query, author_hint, title_hint)
+        return list(result.items), panne
+
+    async def _bnf_records_result(
+        self,
+        cql_query: str,
+        author_hint: str | None = None,
+        title_hint: str | None = None,
+    ) -> tuple[ProviderQueryResult[BookMetadata], str | None]:
+        """Notices SRU typées, et le libellé historique de panne éventuelle.
+
+        Même requête, même parsing, même scoring que le chemin historique : seuls
+        s'ajoutent le statut typé et `has_results` (blocs `recordData` reçus,
+        avant tout tri). Les libellés de panne reprennent les expressions
+        historiques à l'identique — le contrat neuf (`error_code`) ne porte,
+        lui, que des codes contrôlés, jamais de message d'exception. Les logs
+        ne portent que des noms de classes : l'URL SRU contient la saisie
+        utilisateur, qui n'a rien à y faire.
         """
         params = {
             "version": "1.2",
@@ -1000,7 +1161,6 @@ class BookMetadataService:
         }
         url = f"{self.BNF_SRU_URL}?{urllib.parse.urlencode(params)}"
 
-        results: list[tuple[float, BookMetadata]] = []
         try:
             client = self.http_client or get_shared_http_client()
             resp = await client.get(
@@ -1008,22 +1168,72 @@ class BookMetadataService:
                 timeout=self.timeout_seconds,
                 headers={"User-Agent": "BotRadar/1.0"},
             )
-            if resp.status_code != 200:
-                logger.warning("BNF SRU returned status %d", resp.status_code)
-                return [], f"statut HTTP {resp.status_code}"
+        except (httpx.TimeoutException, TimeoutError) as exc:
+            logger.warning("BNF SRU : délai dépassé (%s)", type(exc).__name__)
+            return (
+                ProviderQueryResult(
+                    status=ProviderQueryStatus.TIMEOUT, error_code="timeout"
+                ),
+                f"{type(exc).__name__}: {exc}",
+            )
+        except Exception as exc:
+            logger.warning("BNF SRU : requête en échec (%s)", type(exc).__name__)
+            return (
+                ProviderQueryResult(
+                    status=ProviderQueryStatus.UNAVAILABLE,
+                    error_code=type(exc).__name__,
+                ),
+                f"{type(exc).__name__}: {exc}",
+            )
 
-            # Le `XMLParser` de la C de CPython ne prend que `target` et `encoding` :
-            # `resolve_entities` comme `forbid_entities` y lèvent un TypeError, qui
-            # transformait chaque réponse de la BNF en « autorité muette » — 11 tests
-            # rouges et `mypy app` en erreur. Ce parseur refuse déjà les entités
-            # externes (`undefined entity`) ; ce qui reste possible est la déclaration
-            # d'entités internes, alors un document qui en déclare une n'est pas lu.
+        if resp.status_code in (401, 403):
+            logger.warning("BNF SRU : authentification refusée (%d)", resp.status_code)
+            return (
+                ProviderQueryResult(
+                    status=ProviderQueryStatus.UNAUTHORIZED,
+                    error_code=f"http_{resp.status_code}",
+                ),
+                f"statut HTTP {resp.status_code}",
+            )
+        if resp.status_code == 429:
+            logger.warning("BNF SRU : quota dépassé (429)")
+            return (
+                ProviderQueryResult(
+                    status=ProviderQueryStatus.RATE_LIMITED, error_code="http_429"
+                ),
+                "statut HTTP 429",
+            )
+        if resp.status_code != 200:
+            logger.warning("BNF SRU returned status %d", resp.status_code)
+            return (
+                ProviderQueryResult(
+                    status=ProviderQueryStatus.UNAVAILABLE,
+                    error_code=f"http_{resp.status_code}",
+                ),
+                f"statut HTTP {resp.status_code}",
+            )
+
+        # Le `XMLParser` de la C de CPython ne prend que `target` et `encoding` :
+        # `resolve_entities` comme `forbid_entities` y lèvent un TypeError, qui
+        # transformait chaque réponse de la BNF en « autorité muette » — 11 tests
+        # rouges et `mypy app` en erreur. Ce parseur refuse déjà les entités
+        # externes (`undefined entity`) ; ce qui reste possible est la déclaration
+        # d'entités internes, alors un document qui en déclare une n'est pas lu.
+        try:
             if _declares_doctype(resp.content):
                 logger.warning("Réponse SRU BNF écartée : elle déclare une DOCTYPE")
-                return [], "DOCTYPE déclaré dans la réponse"
-
+                return (
+                    ProviderQueryResult(
+                        status=ProviderQueryStatus.INVALID_RESPONSE,
+                        error_code="doctype_declared",
+                    ),
+                    "DOCTYPE déclaré dans la réponse",
+                )
             root = ET.fromstring(resp.content)
-            for record in root.findall(".//{http://www.loc.gov/zing/srw/}recordData"):
+            raw_records = root.findall(".//{http://www.loc.gov/zing/srw/}recordData")
+            has_results = len(raw_records) > 0
+            results: list[tuple[float, BookMetadata]] = []
+            for record in raw_records:
                 titles = [t.text for t in record.findall(
                     ".//{http://purl.org/dc/elements/1.1/}title") if t.text]
                 creators = [c.text for c in record.findall(
@@ -1111,33 +1321,58 @@ class BookMetadataService:
                     volume_title=volume_title,
                 )
                 results.append((score, meta))
-
+        except ET.ParseError as exc:
+            logger.warning("BNF SRU : XML illisible (%s)", type(exc).__name__)
+            return (
+                ProviderQueryResult(
+                    status=ProviderQueryStatus.INVALID_RESPONSE,
+                    error_code="invalid_xml",
+                ),
+                f"{type(exc).__name__}: {exc}",
+            )
         except Exception as exc:
-            logger.warning("Erreur lors de la requête BNF SRU (%s) : %s", cql_query, exc)
-            return [], f"{type(exc).__name__}: {exc}"
+            logger.warning("BNF SRU : réponse inexploitable (%s)", type(exc).__name__)
+            return (
+                ProviderQueryResult(
+                    status=ProviderQueryStatus.UNAVAILABLE,
+                    error_code=type(exc).__name__,
+                    has_results=has_results,
+                ),
+                f"{type(exc).__name__}: {exc}",
+            )
 
         results.sort(key=lambda x: x[0], reverse=True)
-        return [item[1] for item in results], None
+        notices = [item[1] for item in results]
+        return (
+            ProviderQueryResult(
+                status=ProviderQueryStatus.SUCCESS,
+                items=tuple(notices),
+                has_results=has_results,
+            ),
+            None,
+        )
 
     async def _resolve_via_openlibrary(
         self, title: str, author_hint: str | None = None
-    ) -> BookResolution | None:
+    ) -> tuple[BookResolution | None, ProviderAttempt]:
         """Résolution de repli : OpenLibrary ne répond que si la BNF n'a rien donné.
 
         La confiance est moindre (`MEDIUM`) et la provenance est remontée jusqu'au
         récap Telegram : l'utilisateur doit savoir que l'ISBN vient d'une autre source.
+        La tentative décrit la requête réellement partie, même en échec.
         """
         params: dict[str, str] = {"title": title}
         if author_hint:
             params["author"] = author_hint
 
-        works = await self._openlibrary_works(params)
+        works, docs_result = await self._openlibrary_works(params)
+        attempt = _attempt(AUTORITE_OPENLIBRARY, "title", docs_result)
         candidates = [
             work for work in works
             if title_similarity(work.meta.title, title) >= TITLE_SIMILARITY_MIN
         ]
         if not candidates:
-            return None
+            return None, attempt
 
         best = candidates[0].meta
         alternatives = [
@@ -1160,7 +1395,7 @@ class BookMetadataService:
             notice_titles=tuple(
                 dict.fromkeys(work.meta.title for work in candidates)
             ),
-        )
+        ), attempt
 
     def _google_books_client(self) -> GoogleBooksClient:
         """Le client de la troisième autorité, construit depuis la configuration.
@@ -1179,7 +1414,7 @@ class BookMetadataService:
 
     async def _resolve_via_google_books(
         self, title: str, author_hint: str | None = None
-    ) -> BookResolution | None:
+    ) -> tuple[BookResolution | None, tuple[ProviderAttempt, ...]]:
         """Dernier repli d'une résolution par titre, après la BNF et OpenLibrary.
 
         Même contrat que `_resolve_via_openlibrary` : confiance `MEDIUM`, provenance
@@ -1188,16 +1423,20 @@ class BookMetadataService:
         recherche libre (titre + auteur, sans opérateur) fournit des candidats
         supplémentaires — soumis aux mêmes filtres, jamais confirmés d'office.
         Toute autre issue (panne, quota, refus) vaut absence de candidats, comme
-        avant : les décisions globales ne changent pas dans ce lot.
+        avant : les décisions globales ne changent pas dans ce lot. Chaque requête
+        réellement partie laisse sa tentative, le repli libre seulement s'il part.
         """
         client = self._google_books_client()
         if not client.is_configured:
-            return None
+            return None, ()
 
+        attempts: list[ProviderAttempt] = []
         targeted = await client.search_by_title_result(title, author_hint)
+        attempts.append(_attempt(AUTORITE_GOOGLE_BOOKS, "title", targeted))
         volumes = list(targeted.items)
         if targeted.status == ProviderQueryStatus.SUCCESS and not volumes:
             fallback = await client.search_free_result(title, author_hint)
+            attempts.append(_attempt(AUTORITE_GOOGLE_BOOKS, "free", fallback))
             if fallback.status == ProviderQueryStatus.SUCCESS:
                 volumes = list(fallback.items)
         candidates = [
@@ -1210,7 +1449,7 @@ class BookMetadataService:
             if title_similarity(meta.title, title) >= TITLE_SIMILARITY_MIN
         ]
         if not candidates:
-            return None
+            return None, tuple(attempts)
 
         # Google classe par pertinence, pas par titre : c'est la similarité qui décide
         # ici, comme partout ailleurs, pour qu'une notice voisine ne passe pas devant
@@ -1235,7 +1474,7 @@ class BookMetadataService:
             notice_titles=tuple(
                 dict.fromkeys(meta.title for meta in candidates)
             ),
-        )
+        ), tuple(attempts)
 
     async def _google_books_notice_by_isbn(
         self, client: GoogleBooksClient, isbn: str
@@ -1248,11 +1487,21 @@ class BookMetadataService:
         n'appuie. C'est la même règle que pour la BNF et OpenLibrary. Pas de
         repli libre ici : un ISBN seul ne fait pas une requête libre fiable.
         """
+        notice, _result = await self._google_books_notice_result(client, isbn)
+        return notice
+
+    async def _google_books_notice_result(
+        self, client: GoogleBooksClient, isbn: str
+    ) -> tuple[BookMetadata | None, ProviderQueryResult[GoogleVolume]]:
+        """Notice attestant ce code, et le résultat typé de la requête partie."""
         result = await client.search_by_isbn_result(isbn)
         for volume in result.items:
             if isbn in volume.isbns:
-                return self._attach_recommendations(self._google_volume_notice(volume))
-        return None
+                return (
+                    self._attach_recommendations(self._google_volume_notice(volume)),
+                    result,
+                )
+        return None, result
 
     @staticmethod
     def _google_volume_notice(volume: GoogleVolume) -> BookMetadata:
@@ -1268,9 +1517,12 @@ class BookMetadataService:
             format_detail=f"{volume.page_count} p." if volume.page_count else None,
         )
 
-    async def _openlibrary_works(self, params: dict[str, str]) -> list[_OpenLibraryWork]:
-        """Notices OpenLibrary correspondant à une recherche, triées par pertinence."""
-        docs = await self._query_openlibrary(params)
+    async def _openlibrary_works(
+        self, params: dict[str, str]
+    ) -> tuple[list[_OpenLibraryWork], ProviderQueryResult[dict[str, Any]]]:
+        """Notices OpenLibrary triées par pertinence, et le résultat typé brut."""
+        result = await self._query_openlibrary_result(params)
+        docs = result.items
         title_hint = params.get("title")
         author_hint = params.get("author")
         expected_isbn = normalize_isbn(params.get("isbn"))
@@ -1292,10 +1544,21 @@ class BookMetadataService:
             scored.append((score, work))
 
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [work for _score, work in scored]
+        return [work for _score, work in scored], result
 
     async def _query_openlibrary(self, params: dict[str, str]) -> list[dict[str, Any]]:
         """Interroge l'API Search d'OpenLibrary (aucune clé, aucune dépendance)."""
+        return list((await self._query_openlibrary_result(params)).items)
+
+    async def _query_openlibrary_result(
+        self, params: dict[str, str]
+    ) -> ProviderQueryResult[dict[str, Any]]:
+        """Documents OpenLibrary typés : statut distingué d'une liste vide.
+
+        Même requête et même lecture qu'avant : seuls s'ajoutent le statut et
+        `has_results` (documents bruts reçus, avant construction des notices).
+        Les logs ne portent que des noms de classes, comme côté Google.
+        """
         query = {
             **params,
             "fields": self.OPENLIBRARY_FIELDS,
@@ -1309,18 +1572,57 @@ class BookMetadataService:
                 timeout=self.timeout_seconds,
                 headers={"User-Agent": "BotRadar/1.0"},
             )
-            if resp.status_code != 200:
-                logger.warning("OpenLibrary a renvoyé le statut %d", resp.status_code)
-                return []
-            payload = resp.json()
+        except (httpx.TimeoutException, TimeoutError):
+            logger.warning("OpenLibrary : délai dépassé")
+            return ProviderQueryResult(
+                status=ProviderQueryStatus.TIMEOUT, error_code="timeout"
+            )
         except Exception as exc:
-            logger.warning("Erreur lors de la requête OpenLibrary : %s", exc)
-            return []
+            logger.warning("OpenLibrary : requête en échec (%s)", type(exc).__name__)
+            return ProviderQueryResult(
+                status=ProviderQueryStatus.UNAVAILABLE,
+                error_code=type(exc).__name__,
+            )
+        if resp.status_code in (401, 403):
+            logger.warning("OpenLibrary : authentification refusée (%d)", resp.status_code)
+            return ProviderQueryResult(
+                status=ProviderQueryStatus.UNAUTHORIZED,
+                error_code=f"http_{resp.status_code}",
+            )
+        if resp.status_code == 429:
+            logger.warning("OpenLibrary : quota dépassé (429)")
+            return ProviderQueryResult(
+                status=ProviderQueryStatus.RATE_LIMITED, error_code="http_429"
+            )
+        if resp.status_code != 200:
+            logger.warning("OpenLibrary a renvoyé le statut %d", resp.status_code)
+            return ProviderQueryResult(
+                status=ProviderQueryStatus.UNAVAILABLE,
+                error_code=f"http_{resp.status_code}",
+            )
+        try:
+            payload = resp.json()
+        except Exception:
+            logger.warning("OpenLibrary : charge utile JSON illisible")
+            return ProviderQueryResult(
+                status=ProviderQueryStatus.INVALID_RESPONSE, error_code="invalid_json"
+            )
 
         docs = payload.get("docs") if isinstance(payload, dict) else None
         if not isinstance(docs, list):
-            return []
-        return [doc for doc in docs if isinstance(doc, dict)]
+            if isinstance(payload, dict) and payload.get("numFound", 0) == 0:
+                return ProviderQueryResult(status=ProviderQueryStatus.SUCCESS)
+            logger.warning("OpenLibrary : structure de réponse inattendue")
+            return ProviderQueryResult(
+                status=ProviderQueryStatus.INVALID_RESPONSE,
+                error_code="unexpected_structure",
+            )
+        items = tuple(doc for doc in docs if isinstance(doc, dict))
+        return ProviderQueryResult(
+            status=ProviderQueryStatus.SUCCESS,
+            items=items,
+            has_results=len(docs) > 0,
+        )
 
     def _build_openlibrary_work(
         self, doc: dict[str, Any], expected_isbn: str | None

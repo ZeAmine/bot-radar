@@ -345,13 +345,17 @@ async def test_panne_bnf_est_unavailable_pas_inconnu() -> None:
 @pytest.mark.asyncio
 async def test_cas_usage_titre_delegue_sans_base_ni_llm() -> None:
     """Le cas d'usage ne connaît que le service : ni dépôt, ni moteur IA."""
+    from app.services.book_metadata_service import BibliographicReport
+
     service = AsyncMock(spec=BookMetadataService)
-    service.resolve_for_alert.return_value = BookResolution(best=_notice())
+    service.resolve_for_alert_report.return_value = BibliographicReport(
+        kind="title", resolution=BookResolution(best=_notice())
+    )
     cas_usage = BookSearchUseCase(service=service)
 
     resultat = await cas_usage.search_by_title("La couleur des choses", "Panchaud")
 
-    service.resolve_for_alert.assert_awaited_once_with(
+    service.resolve_for_alert_report.assert_awaited_once_with(
         "La couleur des choses", "Panchaud"
     )
     assert resultat.status == BookSearchStatus.FOUND
