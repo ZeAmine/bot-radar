@@ -44,6 +44,7 @@ async def test_refresh_book_prices_task_success():
         mock_market_repo = MagicMock()
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
+        mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
         # Le dépôt simulé rend la cote qu'il viendrait d'écrire : la passe la relit
         # pour ventiler ses statistiques.
         mock_market_repo.update_or_create_cache = AsyncMock(
@@ -101,6 +102,7 @@ async def test_refresh_book_prices_task_incremental():
         mock_market_repo = MagicMock()
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
+        mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
         mock_market_repo.update_or_create_cache = AsyncMock()
 
         mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
@@ -142,6 +144,7 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
         mock_market_repo = MagicMock()
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
+        mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
         mock_market_repo.update_or_create_cache = AsyncMock()
         # Un silence réseau n'empêche pas de borner une cote surestimée (ADR-019).
         mock_market_repo.clamp_historical_low_by_observations = AsyncMock(return_value=500)
@@ -184,6 +187,7 @@ async def test_refresh_processes_several_books_in_one_wave():
         mock_market_repo = MagicMock()
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
+        mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
         mock_market_repo.update_or_create_cache = AsyncMock()
 
         mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
@@ -232,6 +236,7 @@ async def _passe_sans_offres(
     market_repo = MagicMock()
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
+    market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
     market_repo.update_or_create_cache = AsyncMock(return_value=None)
 
     mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: book_repo)

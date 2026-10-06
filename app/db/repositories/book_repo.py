@@ -187,13 +187,20 @@ class BookRepository:
         return books[0]
 
     async def get_all_books_for_alert(self, alert_id: uuid.UUID) -> list[Book]:
-        """Charge tous les livres associés à une alerte avec leurs caches de marché préchargés."""
+        """Charge tous les livres associés à une alerte avec leurs caches de marché préchargés.
+
+        ``populate_existing`` force la relecture des objets déjà présents dans
+        l'identity map : après une écriture de cote dans la même session, leur
+        relation ``market_cache`` serait sinon périmée, et un total de série
+        calculé dessus ignorerait la cote qui vient d'être écrite.
+        """
         stmt = (
             select(Book)
             .join(AlertBook, Book.id == AlertBook.book_id)
             .options(*self._BOOK_CACHE_LOAD)
             .where(AlertBook.alert_id == alert_id)
             .order_by(Book.title.asc())
+            .execution_options(populate_existing=True)
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

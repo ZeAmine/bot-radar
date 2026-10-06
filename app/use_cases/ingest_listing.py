@@ -380,6 +380,24 @@ class ProcessListingUseCase:
 
         # Toutes les alertes sont parties : la cote des livres qui en sont dépourvus
         # peut enfin partir chez les marchands, pour que la prochaine l'affiche.
+        # Pour une série (alerte BD sans ISBN), pas seulement le tome que l'annonce
+        # a désigné : **chaque** volume lié sans cote exploitable part en cotation.
+        # C'est la garantie E1 — le prix bas de chaque volume finit en base sans
+        # attendre le job glissant — et elle ne retarde rien, l'envoi est fini.
+        # `alert_books` est chargé en eager par `get_active_alerts_by_category`
+        # pour les BD : la boucle ne rouvre aucune session.
+        if listing.category_slug == CategorySlug.BD_COMICS.value:
+            for alert, _match_result, _line, _ready, _book in pending_sends:
+                if getattr(alert, "isbn", None):
+                    continue
+                links = getattr(alert, "alert_books", None)
+                if not isinstance(links, list):
+                    continue
+                for link in links:
+                    linked = getattr(link, "book", None)
+                    if linked is not None and not has_usable_price(linked.market_cache):
+                        books_to_price.add(linked.id)
+
         for book_id in books_to_price:
             schedule_book_pricing(book_id, reason="alert_sent")
 

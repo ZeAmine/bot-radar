@@ -367,6 +367,138 @@ async def test_handle_market_tome_select():
 
 
 @pytest.mark.asyncio
+async def test_market_tome_view_keeps_the_tome_selection_when_series_has_several():
+    """E5 : depuis un tome, les autres tomes restent sélectionnables — pas de cul-de-sac.
+
+    Le panneau d'un tome résolu n'affichait que « Tous les tomes » : impossible de
+    passer directement d'un tome à un autre sans revenir à la liste.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from aiogram.types import CallbackQuery, Message
+
+    from app.bot.handlers.callbacks import _encode_tome_ref, handle_market_tome_select
+
+    listing_id = uuid.uuid4()
+    book_id = uuid.uuid4()
+    other_book_id = uuid.uuid4()
+
+    mock_listing = MagicMock()
+    mock_listing.id = listing_id
+    mock_listing.estimated_total_cents = 778
+    mock_listing.item_price_cents = 400
+
+    mock_book = _create_mock_book("Blacksad — Tome 1 (Quelque part entre les ombres)", 470)
+    mock_book.id = book_id
+    other_book = _create_mock_book("Blacksad — Tome 2 (Arctic-Nation)", 899)
+    other_book.id = other_book_id
+
+    mock_callback = MagicMock(spec=CallbackQuery)
+    mock_callback.data = _encode_tome_ref(listing_id, book_id)
+    mock_msg = MagicMock(spec=Message)
+    mock_msg.edit_text = AsyncMock()
+    mock_callback.message = mock_msg
+    mock_callback.answer = AsyncMock()
+
+    mock_session = AsyncMock()
+    with (
+        patch("app.bot.handlers.callbacks.ListingRepository") as mock_l_repo_cls,
+        patch("app.bot.handlers.callbacks.BookRepository") as mock_b_repo_cls,
+    ):
+        mock_l_repo = MagicMock()
+        mock_l_repo.get_by_id = AsyncMock(return_value=mock_listing)
+        mock_l_repo.get_alert_for_listing = AsyncMock(
+            return_value=MagicMock(isbn=None, name="Blacksad", series_total_cents=None)
+        )
+        mock_l_repo_cls.return_value = mock_l_repo
+
+        mock_b_repo = MagicMock()
+        mock_b_repo.get_by_id = AsyncMock(return_value=mock_book)
+        mock_b_repo.get_all_books_for_alert = AsyncMock(return_value=[mock_book, other_book])
+        mock_b_repo_cls.return_value = mock_b_repo
+
+        await handle_market_tome_select(mock_callback, mock_session)
+
+        keyboard = mock_msg.edit_text.call_args[1]["reply_markup"]
+        tome_buttons = [
+            btn
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if (btn.callback_data or "").startswith("market_tome:")
+        ]
+        assert len(tome_buttons) == 2, "tous les tomes restent accessibles"
+        assert any(
+            btn.callback_data == f"market_details:{listing_id}"
+            for row in keyboard.inline_keyboard
+            for btn in row
+        )
+
+
+@pytest.mark.asyncio
+async def test_series_panel_offers_tome_selection_even_when_the_tome_is_resolved():
+    """E5 : le panneau d'un tome résolu propose quand même la sélection par tome.
+
+    Avant E5, les boutons n'apparaissaissaient que quand le tome n'était pas
+    identifié (`not book`) : un tome résolu fermait la série au lieu de l'ouvrir.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from aiogram.types import CallbackQuery, Message
+
+    from app.bot.handlers.callbacks import handle_view_market_details
+
+    listing_id = uuid.uuid4()
+
+    mock_listing = MagicMock(id=listing_id, estimated_total_cents=1198, title="Blast Tome 2")
+    tome1 = _create_mock_book("Blast — Tome 1 (Grasse Carcasse)", 509)
+    tome2 = _create_mock_book("Blast — Tome 2 (L'Apocalypse selon Saint Jacky)", 899)
+    books = [tome1, tome2]
+
+    mock_msg = MagicMock(spec=Message)
+    mock_msg.reply = AsyncMock()
+    mock_msg.html_text = ""
+
+    mock_callback = MagicMock(spec=CallbackQuery)
+    mock_callback.data = f"market:{listing_id}"
+    mock_callback.message = mock_msg
+    mock_callback.answer = AsyncMock()
+
+    mock_session = AsyncMock()
+    with (
+        patch("app.use_cases.view_market_details.ListingRepository") as mock_l_cls,
+        patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
+        patch("app.use_cases.view_market_details.MarketPriceRepository") as mock_m_cls,
+    ):
+        mock_l = MagicMock()
+        mock_l.get_by_id = AsyncMock(return_value=mock_listing)
+        mock_l.get_alert_for_listing = AsyncMock(
+            return_value=MagicMock(isbn=None, name="Blast", series_total_cents=None)
+        )
+        mock_l_cls.return_value = mock_l
+
+        mock_b = MagicMock()
+        # Le tome est résolu par le texte de l'annonce — la série reste ouverte.
+        mock_b.resolve_book_for_listing = AsyncMock(return_value=(tome2, books, None))
+        mock_b_cls.return_value = mock_b
+
+        mock_m = MagicMock()
+        mock_m.get_latest_snapshot = AsyncMock(return_value=None)
+        mock_m_cls.return_value = mock_m
+
+        await handle_view_market_details(mock_callback, mock_session)
+
+    mock_msg.reply.assert_called_once()
+    keyboard = mock_msg.reply.call_args[1]["reply_markup"]
+    tome_buttons = [
+        btn
+        for row in keyboard.inline_keyboard
+        for btn in row
+        if (btn.callback_data or "").startswith("market_tome:")
+    ]
+    assert len(tome_buttons) == 2, "un tome résolu n'a pas fermé la série"
+
+
+@pytest.mark.asyncio
 async def test_handle_view_market_details_success():
     """Vérifie l'ouverture normale du panneau de marché lors du clic sur le bouton d'alerte."""
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -426,8 +558,9 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
     """Le panneau d'une série doit parsser : un callback_data trop long fait rejeter le message.
 
     Telegram plafonne `callback_data` à 64 octets et rejette alors le message entier
-    (BUTTON_DATA_INVALID). Ces boutons n'existent que lorsque le tome n'est pas
-    identifié, c'est-à-dire précisément quand l'utilisateur a besoin du panneau.
+    (BUTTON_DATA_INVALID). Depuis E5, les boutons par tome figurent sur **tout**
+    panneau de série (résolu ou non) : la contrainte de longueur touche donc chaque
+    vue, pas seulement la série muette.
     """
     from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -458,7 +591,9 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
     ):
         mock_l = MagicMock()
         mock_l.get_by_id = AsyncMock(return_value=mock_listing)
-        mock_l.get_alert_for_listing = AsyncMock(return_value=MagicMock(isbn=None, name="Blast"))
+        mock_l.get_alert_for_listing = AsyncMock(
+            return_value=MagicMock(isbn=None, name="Blast", series_total_cents=None)
+        )
         mock_l_cls.return_value = mock_l
 
         mock_b = MagicMock()

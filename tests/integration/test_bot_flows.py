@@ -465,6 +465,162 @@ async def test_back_to_all_tomes_lists_the_real_tomes_and_a_tome_still_opens(dri
     assert len(reopened) == len(books)
 
 
+# --------------------------------------------------------------------------- E4 : total de série
+
+
+async def _seed_series_without_prices(db_session) -> tuple[Alert, list[Book]]:
+    """Alerte série (sans ISBN) + deux volumes liés, sans aucune cote en base."""
+    user = await _add_user(db_session)
+    category = (
+        await db_session.execute(
+            select(Category).where(Category.slug == CategorySlug.BD_COMICS.value)
+        )
+    ).scalar_one()
+
+    alert = Alert(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        category_id=category.id,
+        name="Série X",
+        isbn=None,
+        include_keywords=["serie x"],
+        exclude_keywords=[],
+        variants=[],
+        max_item_price_cents=5000,
+        accepted_conditions=None,
+        status=AlertStatus.ACTIVE,
+    )
+    db_session.add(alert)
+    await db_session.flush()
+
+    books: list[Book] = []
+    for number in (1, 2):
+        book = Book(
+            id=uuid.uuid4(),
+            title=f"Série X — Tome {number}",
+            normalized_title=f"serie x tome {number}",
+            isbn13=f"97800000000{number:02d}",
+        )
+        db_session.add(book)
+        await db_session.flush()
+        db_session.add(AlertBook(alert_id=alert.id, book_id=book.id))
+        books.append(book)
+
+    await db_session.commit()
+    return alert, books
+
+
+@pytest.mark.asyncio
+async def test_price_write_recomputes_the_series_total(db_session):
+    """E4 : chaque écriture de cote réécrit le total de série de l'alerte.
+
+    Le total n'est jamais recomposé à l'affichage : il suit les cotes parce qu'il
+    est réécrit là où elles le sont (`persist_market_result`, chemin unique).
+    """
+    from app.core.constants import MatchConfidence
+    from app.services.book_market_pricing import BookPricingResult, persist_market_result
+
+    alert, books = await _seed_series_without_prices(db_session)
+    assert alert.series_total_cents is None
+
+    # Premier volume coté : le total ne porte que sur ce qui est connu.
+    await persist_market_result(
+        db_session,
+        books[0].id,
+        BookPricingResult(
+            offers=[],
+            lowest_delivered_price_cents=500,
+            best_provider_name="test",
+            best_source_url=None,
+            confidence=MatchConfidence.HIGH,
+            comparison_status=ComparisonStatus.AVAILABLE,
+            cache_duration_hours=24,
+            historical_low_1y_cents=300,
+        ),
+    )
+    await db_session.commit()
+    await db_session.refresh(alert)
+    assert alert.series_total_cents == 300
+
+    # Second volume coté : le total s'étend à la série connue.
+    await persist_market_result(
+        db_session,
+        books[1].id,
+        BookPricingResult(
+            offers=[],
+            lowest_delivered_price_cents=700,
+            best_provider_name="test",
+            best_source_url=None,
+            confidence=MatchConfidence.HIGH,
+            comparison_status=ComparisonStatus.AVAILABLE,
+            cache_duration_hours=24,
+            historical_low_1y_cents=450,
+        ),
+    )
+    await db_session.commit()
+    await db_session.refresh(alert)
+    assert alert.series_total_cents == 750
+
+
+@pytest.mark.asyncio
+async def test_single_book_alert_has_no_series_total(db_session):
+    """E4 : une alerte à un seul livre n'est pas une série — son total reste NULL."""
+    from app.core.constants import MatchConfidence
+    from app.services.book_market_pricing import BookPricingResult, persist_market_result
+
+    user = await _add_user(db_session)
+    category = (
+        await db_session.execute(
+            select(Category).where(Category.slug == CategorySlug.BD_COMICS.value)
+        )
+    ).scalar_one()
+
+    alert = Alert(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        category_id=category.id,
+        name="One Shot",
+        isbn="9780000000001",
+        include_keywords=["one shot"],
+        exclude_keywords=[],
+        variants=[],
+        max_item_price_cents=2000,
+        accepted_conditions=None,
+        status=AlertStatus.ACTIVE,
+    )
+    db_session.add(alert)
+    await db_session.flush()
+
+    book = Book(
+        id=uuid.uuid4(),
+        title="One Shot",
+        normalized_title="one shot",
+        isbn13="9780000000001",
+    )
+    db_session.add(book)
+    await db_session.flush()
+    db_session.add(AlertBook(alert_id=alert.id, book_id=book.id))
+    await db_session.commit()
+
+    await persist_market_result(
+        db_session,
+        book.id,
+        BookPricingResult(
+            offers=[],
+            lowest_delivered_price_cents=400,
+            best_provider_name="test",
+            best_source_url=None,
+            confidence=MatchConfidence.HIGH,
+            comparison_status=ComparisonStatus.AVAILABLE,
+            cache_duration_hours=24,
+            historical_low_1y_cents=350,
+        ),
+    )
+    await db_session.commit()
+    await db_session.refresh(alert)
+    assert alert.series_total_cents is None
+
+
 # --------------------------------------------------------------------------- filet global
 
 
