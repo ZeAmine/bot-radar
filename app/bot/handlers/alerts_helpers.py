@@ -92,6 +92,15 @@ RECAP_FOOTER = "<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"
 SERIES_INDICATION = "Série multi-tomes (veille sur tous les tomes)"
 
 
+# Pied de l'écran « prix maximum » : la carte montre ce qui est déjà posé — l'identité
+# de l'œuvre et les critères de veille — et la seule chose qui manque est le montant.
+# C'est une consigne, donc en italique (charte, règle 2), et elle est écrite une fois
+# pour les deux chemins qui demandent ce prix.
+PRICE_PROMPT_FOOTER = (
+    "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
+)
+
+
 def series_indication_block() -> list[str]:
     """L'indication de série telle qu'un écran la colle : en italique, puis sa ligne vide.
 
@@ -956,29 +965,15 @@ async def process_bd_query_lookup(
         await status_msg.edit_text(recap_text, reply_markup=keyboard)
         return
 
-    # Demander le prix max
+    # Demander le prix max : la même carte que le récap, dont le montant est la seule
+    # pièce manquante. L'écran ne construit plus ses lignes d'identité à la main — ni
+    # le titre, ni l'auteur, ni l'éditeur, ni l'ISBN, ni les critères : il lit le
+    # brouillon qu'il vient d'écrire, donc ce qu'il montre est ce qu'il créera. Les
+    # libellés viennent de `labels`, et un état absent se dit « Non renseigné » plutôt
+    # que « Non trouvé » : le prix n'est pas encore demandé, il n'est pas introuvable.
     await state.set_state(AlertCreationState.waiting_for_max_price)
-    identity_lines = [f"📚 <b>{html.escape(name)}</b>"]
-    if series.is_series:
-        # Une série n'affiche pas d'ISBN : c'est le choix, pas un oubli.
-        identity_lines.append(f"📖 {SERIES_INDICATION}")
-    identity_lines.append(f"✍️ <b>{FIELD_AUTHOR} :</b> {html.escape(meta.author or 'Non spécifié')}")
-    if not series.is_series:
-        identity_lines.append(
-            f"🏢 <b>{FIELD_PUBLISHER} :</b> {html.escape(meta.publisher or 'Non spécifié')}"
-        )
-        identity_lines.append(
-            f"🔢 <b>{FIELD_ISBN} :</b> <code>{meta.isbn13 or 'Non trouvé'}</code>"
-        )
-    prompt = (
-        "\n".join(identity_lines)
-        + "\n\n"
-        + f"🔑 <b>Inclus :</b> {', '.join(includes)}\n"
-        + f"🚫 <b>Exclus :</b> {', '.join(excludes)}\n"
-        + "💎 <b>États :</b> Neuf avec étiquette, Neuf sans étiquette, Très bon état\n\n"
-        + "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
-    )
-    await status_msg.edit_text(prompt)
+    draft = await state.get_data()
+    await status_msg.edit_text(creation_card(draft, footer=PRICE_PROMPT_FOOTER))
 
 
 async def process_tech_or_clothes_query(
@@ -998,8 +993,6 @@ async def process_tech_or_clothes_query(
     clean_query, inline_price_cents = extract_inline_price_and_clean_query(query_str)
 
     cat_slug_enum = CategorySlug(category_slug)
-    cat_emoji = CATEGORY_EMOJIS.get(cat_slug_enum, "🎯")
-    cat_label = CATEGORY_LABELS.get(cat_slug_enum, "Produit")
 
     # Garde anti-doublon : Vérifier si ce produit est déjà surveillé
     if db_user:
@@ -1062,15 +1055,11 @@ async def process_tech_or_clothes_query(
             await target_msg.answer(recap_text, reply_markup=keyboard)
         return
 
-    # Demander le prix max
+    # Demander le prix max : la même carte que le récap, écrite à partir du brouillon
+    # qu'on vient de poser. Le bandeau `🎯 … (Tech)` disparaît comme sur la confirmation
+    # (ADR-032) : l'écran annonce la fiche, pas le chemin qui y mène.
     await state.set_state(AlertCreationState.waiting_for_max_price)
-    prompt = (
-        f"{cat_emoji} <b>{html.escape(clean_query)}</b> ({cat_label})\n\n"
-        f"🔑 <b>Inclus :</b> {', '.join(includes)}\n"
-        f"🚫 <b>Exclus :</b> {', '.join(default_excludes)}\n"
-        f"💎 <b>États :</b> {', '.join(default_conditions)}\n\n"
-        "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
-    )
+    prompt = creation_card(await state.get_data(), footer=PRICE_PROMPT_FOOTER)
     if isinstance(event, CallbackQuery) and event.message and hasattr(event.message, "edit_text"):
         await event.message.edit_text(prompt)
     else:

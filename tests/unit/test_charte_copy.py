@@ -7,7 +7,10 @@ fait échouer ici, ce qui est exactement le but.
 """
 
 import inspect
+import pathlib
 import uuid
+
+import pytest
 
 from app.bot.handlers.autotune import _autotune_back_keyboard, _autotune_header
 from app.bot.handlers.help import HELP_TEXT
@@ -438,23 +441,38 @@ def test_a_recap_that_is_not_a_series_stays_exactly_as_it_was():
 
 
 # ---------------------------------------------------------------------------
-# Libellés de charte : labels.py est la source unique, aucun handler ne les recopie
+# Libellés de charte : labels.py est la source unique, aucun écran ne les recopie
 # ---------------------------------------------------------------------------
 
 
-def _handler_text_literals() -> list[tuple[str, int, str]]:
-    """Littéraux de texte rendus par les handlers, docstrings exclues.
+# Les écrans dont la charte relit les littéraux : handlers, fiche d'alerte, claviers
+# et légende d'annonce. Le formatter et les claviers échappaient au verrou, qui ne
+# lisait que `handlers` — `keyboards/alerts.py` réécrivait dès lors les sept libellés
+# du menu d'édition, exactement la dérive que le verrou devait empêcher.
+_SCREEN_SOURCES = (
+    pathlib.Path("app/bot/handlers"),
+    pathlib.Path("app/bot/formatter.py"),
+    pathlib.Path("app/bot/keyboards"),
+    pathlib.Path("app/services/telegram_service.py"),
+)
+
+
+def _screen_text_literals() -> list[tuple[str, int, str]]:
+    """Littéraux de texte rendus par les écrans, docstrings exclues.
 
     Un libellé cité dans une docstring ne s'affiche nulle part : le verrou doit
     porter sur ce que l'utilisateur lit, pas sur le source entier. Les balises
     sont retirées avant comparaison pour que `<b>ISBN :</b>` se lise « ISBN : ».
     """
     import ast
-    import pathlib
     import re
 
+    paths: list[pathlib.Path] = []
+    for source in _SCREEN_SOURCES:
+        paths.extend(sorted(source.rglob("*.py")) if source.is_dir() else [source])
+
     literals: list[tuple[str, int, str]] = []
-    for path in sorted(pathlib.Path("app/bot/handlers").rglob("*.py")):
+    for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         docstrings: set[int] = set()
         for node in ast.walk(tree):
@@ -474,13 +492,13 @@ def _handler_text_literals() -> list[tuple[str, int, str]]:
                 and id(node) not in docstrings
             ):
                 literals.append(
-                    (path.name, node.lineno, re.sub(r"<[^>]+>", "", node.value))
+                    (str(path.as_posix()), node.lineno, re.sub(r"<[^>]+>", "", node.value))
                 )
     return literals
 
 
-def test_no_charte_label_is_hardcoded_in_a_handler():
-    """Un libellé de charte vient de `labels` : aucun handler ne le recopie en dur.
+def test_no_charte_label_is_hardcoded_in_a_screen():
+    """Un libellé de charte vient de `labels` : aucun écran ne le recopie en dur.
 
     Deux façons de dériver, une seule règle de détection : le libellé **tel quel**
     (un bouton du clavier d'édition, un titre d'écran de saisie) ou le libellé suivi
@@ -489,6 +507,10 @@ def test_no_charte_label_is_hardcoded_in_a_handler():
     réécrits en dur au même endroit — et non une liste recopiée : un libellé ajouté
     à `labels.py` est protégé dès sa naissance, et un écran qui réécrirait
     « Mots-clés exclus » échoue ici au lieu de dériver silencieusement.
+
+    Le périmètre est **tous** les écrans, pas les handlers seuls : la fiche, les
+    claviers et la légende d'annonce portent les mêmes libellés, et un verrou qui
+    n'en couvre qu'une partie laisse les autres recopier en les croyant protégés.
     """
     import re
 
@@ -502,7 +524,7 @@ def test_no_charte_label_is_hardcoded_in_a_handler():
     assert charte_labels, "labels n'expose aucun FIELD_/STATUS_ : le verrou ne verrouille rien"
 
     violations = []
-    for file_name, line, text in _handler_text_literals():
+    for file_name, line, text in _screen_text_literals():
         for name, label in charte_labels.items():
             if text.strip() == label or re.search(re.escape(label) + r"\s*:", text):
                 violations.append(
@@ -510,7 +532,7 @@ def test_no_charte_label_is_hardcoded_in_a_handler():
                 )
 
     assert not violations, (
-        "Libellé(s) de charte recopié(s) en dur dans un handler — "
+        "Libellé(s) de charte recopié(s) en dur dans un écran — "
         "importer depuis app.bot.labels :\n" + "\n".join(violations)
     )
 
@@ -628,3 +650,115 @@ def test_a_card_without_an_identifier_stays_silent_on_both_screens():
         creation_card(draft, header=ALERT_CREATED_TITLE, footer=_CONFIRMATION_FOOTER),
     ):
         assert "<b>ISBN :</b>" not in card
+
+
+# ---------------------------------------------------------------------------
+# Ecran « prix maximum » : il lit la carte, il n'ecrit plus ses lignes
+# d'identite a la main.
+# ---------------------------------------------------------------------------
+
+
+async def _price_screen_text(kind: str) -> tuple[str, dict]:
+    """Joue une recherche jusqu'a l'ecran de prix, rend `(texte envoye, brouillon)`.
+
+    Le brouillon est relu par l'ecran lui-meme (`state.get_data`), pas reconstruit ici :
+    ce que le test compare est exactement ce que l'utilisateur liera. La recherche BD
+    publie d'abord un message d'etat puis l'edite ; un produit repond directement.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from aiogram.types import Message
+
+    from app.bot.handlers.alerts_helpers import (
+        process_bd_query_lookup,
+        process_tech_or_clothes_query,
+    )
+    from app.services.book_metadata_service import BookMetadata, BookResolution
+
+    state_data: dict = {}
+
+    async def _update_data(**kwargs):
+        state_data.update(kwargs)
+
+    async def _get_data() -> dict:
+        return dict(state_data)
+
+    state = AsyncMock()
+    state.update_data = _update_data
+    state.get_data = _get_data
+    state.set_state = AsyncMock()
+
+    message = MagicMock(spec=Message)
+    status = MagicMock(spec=Message)
+    status.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=status)
+
+    category_repo = MagicMock()
+    category_repo.get_by_slug = AsyncMock(return_value=MagicMock(id=uuid.uuid4()))
+
+    def _record(call: "AsyncMock") -> str:
+        call.assert_called_once()
+        return call.call_args[0][0]
+
+    if kind == "bd":
+        meta = BookMetadata(
+            title="La couleur des choses",
+            author="Martin Panchaud",
+            publisher="Çà et là",
+            isbn13="9782205089752",
+            recommended_includes=["la couleur des choses"],
+            recommended_excludes=["coffret"],
+            recommended_variants=[],
+        )
+        service = MagicMock()
+        service.resolve_input = AsyncMock(return_value=BookResolution(best=meta))
+        with (
+            patch(
+                "app.bot.handlers.alerts_helpers.BookMetadataService", return_value=service
+            ),
+            patch("app.bot.handlers.alerts.CategoryRepository", return_value=category_repo),
+        ):
+            await process_bd_query_lookup(message, state, "la couleur des choses", AsyncMock())
+        text = _record(status.edit_text)
+    else:
+        with patch("app.bot.handlers.alerts.CategoryRepository", return_value=category_repo):
+            await process_tech_or_clothes_query(
+                message, state, "Raspberry Pi 4", "tech", AsyncMock()
+            )
+        text = _record(message.answer)
+
+    return text, dict(state_data)
+
+
+@pytest.mark.asyncio
+async def test_the_price_screen_reads_the_creation_card():
+    """L'ecran de prix est la carte de creation : il ne construit plus ses lignes.
+
+    Il ecrivait `<b>Auteur :</b>`, `<b>ISBN :</b>` et les criteres a la main, avec ses
+    propres emojis et ses propres libelles (`Inclus`, `Exclus`, `Etats`) : le libelle
+    d'un champ pouvait donc diverger de celui du recap qui suivait, un ecran plus bas.
+    Le verrou compare le rendu entier a la carte, pas une ligne — une information
+    ajoutée a `creation_card` apparait ici, et un ecran reintroduit echoue.
+    """
+    from app.bot.handlers.alerts_helpers import PRICE_PROMPT_FOOTER, creation_card
+
+    rendered, draft = await _price_screen_text("bd")
+
+    assert rendered == creation_card(draft, footer=PRICE_PROMPT_FOOTER)
+    # Les lignes d'identite ecrites a la main ont disparu au profit de la carte.
+    assert "✍️" not in rendered
+    assert "🔢" not in rendered
+    assert "🔑 <b>Inclus :</b>" not in rendered
+    assert "<b>Auteur :</b> Martin Panchaud" in rendered
+
+
+@pytest.mark.asyncio
+async def test_the_price_screen_of_a_product_reads_the_same_card():
+    """Un produit n'a pas de ligne d'ISBN, et son prix vient de la meme carte."""
+    from app.bot.handlers.alerts_helpers import PRICE_PROMPT_FOOTER, creation_card
+
+    rendered, draft = await _price_screen_text("tech")
+
+    assert rendered == creation_card(draft, footer=PRICE_PROMPT_FOOTER)
+    assert "<b>ISBN :</b>" not in rendered
+    assert "🎯" not in rendered

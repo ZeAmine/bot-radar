@@ -5,7 +5,18 @@ from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.labels import BTN_DELETE, CONDITION_SHORT
+from app.bot.labels import (
+    BTN_DELETE,
+    CONDITION_SHORT,
+    FIELD_CONDITIONS,
+    FIELD_EXCLUDE_KEYWORDS,
+    FIELD_INCLUDE_KEYWORDS,
+    FIELD_ISBN,
+    FIELD_MAX_PRICE,
+    FIELD_NAME,
+    FIELD_TITLE,
+    FIELD_VARIANTS,
+)
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
 from app.db.models.alert import Alert
 from app.db.models.category import Category
@@ -265,13 +276,13 @@ def get_alert_edit_fields_keyboard(
     """Retourne la liste des champs modifiables adaptée à la catégorie de l'alerte."""
     if category_slug == CategorySlug.BD_COMICS.value:
         fields = [
-            ("Titre", "name"),
-            ("ISBN", "isbn"),
-            ("Prix maximum", "max_price"),
-            ("Mots-clés inclus", "include_keywords"),
-            ("Mots-clés exclus", "exclude_keywords"),
-            ("Variantes", "variants"),
-            ("États acceptés", "conditions"),
+            (FIELD_TITLE, "name"),
+            (FIELD_ISBN, "isbn"),
+            (FIELD_MAX_PRICE, "max_price"),
+            (FIELD_INCLUDE_KEYWORDS, "include_keywords"),
+            (FIELD_EXCLUDE_KEYWORDS, "exclude_keywords"),
+            (FIELD_VARIANTS, "variants"),
+            (FIELD_CONDITIONS, "conditions"),
         ]
     elif category_slug in (
         CategorySlug.TECH.value,
@@ -286,18 +297,18 @@ def get_alert_edit_fields_keyboard(
             name_label = "Nom du vêtement"
         fields = [
             (name_label, "name"),
-            ("Prix maximum", "max_price"),
-            ("Mots-clés inclus", "include_keywords"),
-            ("Mots-clés exclus", "exclude_keywords"),
-            ("États acceptés", "conditions"),
+            (FIELD_MAX_PRICE, "max_price"),
+            (FIELD_INCLUDE_KEYWORDS, "include_keywords"),
+            (FIELD_EXCLUDE_KEYWORDS, "exclude_keywords"),
+            (FIELD_CONDITIONS, "conditions"),
         ]
     else:
         fields = [
-            ("Nom", "name"),
-            ("Prix maximum", "max_price"),
-            ("Mots-clés inclus", "include_keywords"),
-            ("Mots-clés exclus", "exclude_keywords"),
-            ("États acceptés", "conditions"),
+            (FIELD_NAME, "name"),
+            (FIELD_MAX_PRICE, "max_price"),
+            (FIELD_INCLUDE_KEYWORDS, "include_keywords"),
+            (FIELD_EXCLUDE_KEYWORDS, "exclude_keywords"),
+            (FIELD_CONDITIONS, "conditions"),
         ]
 
     # Ajout des actions intelligentes IA
