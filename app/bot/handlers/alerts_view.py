@@ -16,6 +16,7 @@ from app.bot.keyboards.alerts import (
     get_alerts_list_keyboard,
     get_list_category_selection_keyboard,
 )
+from app.bot.labels import STATUS_ACTIVE, STATUS_PAUSED
 from app.core.constants import AlertStatus, CategorySlug
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
@@ -102,7 +103,10 @@ async def show_alerts(
         buttons = [
             [
                 InlineKeyboardButton(
-                    text=f"{a.name} ({'Active' if a.status == AlertStatus.ACTIVE else 'En pause'})",
+                    text=(
+                        f"{a.name} "
+                        f"({STATUS_ACTIVE if a.status == AlertStatus.ACTIVE else STATUS_PAUSED})"
+                    ),
                     callback_data=f"al_view:{a.id}",
                 )
             ]

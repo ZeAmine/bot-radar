@@ -287,12 +287,17 @@ async def test_save_alert_tech_creates_alert_without_books():
     mock_book_repo.create.assert_not_called()
     mock_book_repo.link_alert_to_book.assert_not_called()
 
-    # Le message de confirmation doit contenir le récapitulatif sans ISBN
+    # Le message de confirmation est la carte de récap relue, avec son propre en-tête :
+    # mêmes libellés de champ, et aucune ligne ISBN — un produit n'a pas d'identifiant à
+    # trouver, sa catégorie le dit. Le bandeau de catégorie du message précédent, lui,
+    # n'appartient pas à la carte.
     callback.message.edit_text.assert_called_once()
     conf_text = callback.message.edit_text.call_args[0][0]
     assert "Alerte créée" in conf_text
-    assert "Raspberry Pi 4" in conf_text
+    assert "<b>Titre :</b> Raspberry Pi 4" in conf_text
     assert "50,00 €" in conf_text
+    assert "<b>ISBN :</b>" not in conf_text
+    assert "(Électronique)" not in conf_text
 
 
 @pytest.mark.asyncio

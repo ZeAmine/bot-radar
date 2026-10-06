@@ -18,6 +18,14 @@ from app.bot.handlers.alerts_helpers import (
     realign_draft_to_isbn,
 )
 from app.bot.keyboards.alerts import get_conditions_toggle_keyboard
+from app.bot.labels import (
+    FIELD_CONDITIONS,
+    FIELD_EXCLUDE_KEYWORDS,
+    FIELD_INCLUDE_KEYWORDS,
+    FIELD_ISBN,
+    FIELD_MAX_PRICE,
+    FIELD_VARIANTS,
+)
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     STANDARD_CONDITIONS,
@@ -228,25 +236,31 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
     # Pour les BD/Comics ou si un ISBN est présent
     if category_slug == CategorySlug.BD_COMICS.value or isbn:
         buttons.append(
-            [InlineKeyboardButton(text="ISBN", callback_data="al_create_edit:isbn")]
+            [InlineKeyboardButton(text=FIELD_ISBN, callback_data="al_create_edit:isbn")]
         )
 
     buttons.extend([
-        [InlineKeyboardButton(text="Prix maximum", callback_data="al_create_edit:price")],
+        [InlineKeyboardButton(text=FIELD_MAX_PRICE, callback_data="al_create_edit:price")],
         [
             InlineKeyboardButton(
-                text="Mots-clés inclus", callback_data="al_create_edit:include_keywords"
+                text=FIELD_INCLUDE_KEYWORDS,
+                callback_data="al_create_edit:include_keywords",
             )
         ],
         [
             InlineKeyboardButton(
-                text="Mots-clés exclus", callback_data="al_create_edit:exclude_keywords"
+                text=FIELD_EXCLUDE_KEYWORDS,
+                callback_data="al_create_edit:exclude_keywords",
             )
         ],
-        [InlineKeyboardButton(text="Variantes", callback_data="al_create_edit:variants")],
         [
             InlineKeyboardButton(
-                text="États acceptés", callback_data="al_create_edit:conditions"
+                text=FIELD_VARIANTS, callback_data="al_create_edit:variants"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=FIELD_CONDITIONS, callback_data="al_create_edit:conditions"
             )
         ],
         [
@@ -303,7 +317,7 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
     field_labels = {
         "name": ("Nom / Titre", data.get("name", ""), "Envoie le nouveau nom / titre :"),
         "isbn": (
-            "ISBN",
+            FIELD_ISBN,
             data.get("isbn", "") or "",
             "Envoie le nouvel ISBN (10 ou 13 chiffres, ou /skip pour retirer) :",
         ),
@@ -315,17 +329,17 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
             "Envoie le nouveau prix max en € (ex: 15 ou 25) :",
         ),
         "include_keywords": (
-            "Mots-clés inclus",
+            FIELD_INCLUDE_KEYWORDS,
             ", ".join(data.get("include_keywords", [])),
             "Envoie les mots-clés séparés par des virgules :",
         ),
         "exclude_keywords": (
-            "Mots-clés exclus",
+            FIELD_EXCLUDE_KEYWORDS,
             ", ".join(data.get("exclude_keywords", [])),
             "Envoie les exclusions séparées par des virgules (ou /skip pour effacer) :",
         ),
         "variants": (
-            "Variantes",
+            FIELD_VARIANTS,
             ", ".join(data.get("variants", [])),
             "Envoie les variantes séparées par des virgules (ou /skip pour effacer) :",
         ),

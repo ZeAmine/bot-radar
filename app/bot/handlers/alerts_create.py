@@ -15,20 +15,18 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
-    _join_escaped,
+    ALERT_CREATED_TITLE,
     build_creation_recap,
+    creation_card,
     extract_inline_price_and_clean_query,
     process_bd_query_lookup,
     process_tech_or_clothes_query,
     render_existing_alert_response,
-    series_indication_block,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
-from app.bot.labels import format_conditions, format_price_cents
+from app.bot.labels import format_price_cents
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
-    CATEGORY_EMOJIS,
-    CATEGORY_LABELS,
     DEFAULT_BD_CONDITIONS,
     DEFAULT_CLOTHES_CONDITIONS,
     DEFAULT_GAMING_CONDITIONS,
@@ -728,9 +726,6 @@ async def save_alert(
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
     name = data.get("name") or "Alerte"
     isbn = data.get("isbn")
-    # Même source que le récap : le drapeau du brouillon, pas une déduction sur l'ISBN
-    # absent. La confirmation est le récap relu, elle ne peut pas le contredire.
-    is_series = data.get("is_series", False)
     author = data.get("author")
     publisher = data.get("publisher")
     includes = data.get("include_keywords", [])
@@ -753,6 +748,21 @@ async def save_alert(
         )
     )
     cat_id_str = data.get("category_id")
+
+    # Le brouillon tel qu'il vient d'être écrit : la confirmation relit la carte de
+    # récap, mais sur les valeurs réellement enregistrées — les listes passées par le
+    # nettoyeur, pas celles du moteur. `is_series` suit, et c'est le même drapeau que
+    # celui du récap : les deux écrans ne peuvent pas se contredire. La note du
+    # brouillon, elle, reste au brouillon : elle peut nommer le bouton « ✨ Variantes &
+    # Exclusions IA » et parler d'une alerte à créer — or ce bouton n'est plus sous la
+    # carte, et l'alerte est créée.
+    stored_draft = {
+        **data,
+        "exclude_keywords": excludes,
+        "variants": variants,
+        "selected_conditions": conditions,
+        "keyword_note": None,
+    }
 
     # 1. Catégorie
     category_repo = _get_category_repo(db_session)
@@ -833,29 +843,6 @@ async def save_alert(
             # de l'alerte, pour que les tomes identifiés soient cotés avant l'annonce.
             _schedule_series_resolution(alert_id=alert.id, name=name, author=author)
 
-        price_str = format_price_cents(max_price)
-
-        # La confirmation reprend la carte de récap — même ordre, mêmes libellés — : ce
-        # qui vient d'être validé se relit ligne pour ligne. Les mots-clés sont
-        # échappés comme dans le récap : ils viennent du moteur IA, et un `<b>` glissé
-        # dedans ferait rejeter tout le message par Telegram.
-        lines = ["✅ <b>Alerte créée</b>\n"]
-        # L'indication passe avant les informations, comme dans le récap : c'est la
-        # même carte relue, donc la même place et la même forme.
-        if is_series:
-            lines.extend(series_indication_block())
-        if isbn:
-            lines.append(f"<b>ISBN :</b> <code>{html.escape(isbn)}</code>")
-        lines.append(f"<b>Titre :</b> {html.escape(name)}")
-        if author:
-            lines.append(f"<b>Auteur :</b> {html.escape(author)}")
-        if publisher:
-            lines.append(f"<b>Éditeur :</b> {html.escape(publisher)}")
-        lines.append("")
-        lines.append(f"<b>Prix maximum :</b> {price_str}")
-        lines.append(f"<b>États acceptés :</b> {html.escape(format_conditions(conditions))}")
-        lines.append(f"<b>Mots-clés inclus :</b> {_join_escaped(includes)}\n")
-
         # La cote déjà connue est affichée telle quelle ; sinon la confirmation
         # annonce qu'elle arrive, plutôt que de laisser croire qu'il n'y a pas de prix.
         # Une alerte de série n'a pas encore de livre tant qu'aucun tome n'a été
@@ -864,12 +851,16 @@ async def save_alert(
         # et `historical_low_at` est réécrit à chaque rafraîchissement de la cote —
         # elle daterait du moment de la création, pas du prix constaté.
         cote_lines = format_cote_lines(book)
-        if cote_lines or book is not None:
-            lines.extend(cote_lines or [PENDING_COTE_LINE])
-            lines.append("")
-
-        lines.append(_CONFIRMATION_FOOTER)
-        resp_text = "\n".join(lines)
+        resp_text = creation_card(
+            stored_draft,
+            header=ALERT_CREATED_TITLE,
+            footer=_CONFIRMATION_FOOTER,
+            extra_lines=(
+                (cote_lines or [PENDING_COTE_LINE])
+                if (cote_lines or book is not None)
+                else None
+            ),
+        )
     else:
         # Tech ou Vêtements (sans livre ni cote de livres)
         vinted_url = (
@@ -891,27 +882,14 @@ async def save_alert(
         await db_session.commit()
         await state.clear()
 
-        cat_slug_enum = CategorySlug(category_slug)
-        cat_emoji = CATEGORY_EMOJIS.get(cat_slug_enum, "🎯")
-        cat_label = CATEGORY_LABELS.get(cat_slug_enum, "Produit")
-        price_str = format_price_cents(max_price)
-        cond_str = format_conditions(conditions)
-
-        lines = [
-            "✅ <b>Alerte créée</b>\n",
-            f"{cat_emoji} <b>{html.escape(name)}</b> ({cat_label})",
-            "",
-            f"<b>Prix maximum :</b> {price_str}",
-            f"<b>États acceptés :</b> {html.escape(cond_str)}",
-            f"<b>Mots-clés inclus :</b> {_join_escaped(includes)}",
-        ]
-        if variants:
-            lines.append(f"<b>Variantes :</b> {_join_escaped(variants)}")
-        if excludes:
-            lines.append(f"<b>Mots-clés exclus :</b> {_join_escaped(excludes)}")
-        lines.append("")
-        lines.append(_CONFIRMATION_FOOTER)
-        resp_text = "\n".join(lines)
+        # Même carte que le récap, avec son propre en-tête : un produit se relit comme
+        # un livre, à la ligne d'identifiant près, qu'il n'a pas — sa catégorie dit
+        # qu'il n'a rien à y trouver.
+        resp_text = creation_card(
+            stored_draft,
+            header=ALERT_CREATED_TITLE,
+            footer=_CONFIRMATION_FOOTER,
+        )
 
     vinted_btn = InlineKeyboardMarkup(
         inline_keyboard=[

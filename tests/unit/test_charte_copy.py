@@ -435,3 +435,196 @@ def test_a_recap_that_is_not_a_series_stays_exactly_as_it_was():
     assert "<b>ISBN :</b> <code>9782205089752</code>" in recap
     # Seule la consigne finale porte l'italique.
     assert recap.count("<i>") == 1
+
+
+# ---------------------------------------------------------------------------
+# Libellés de charte : labels.py est la source unique, aucun handler ne les recopie
+# ---------------------------------------------------------------------------
+
+
+def _handler_text_literals() -> list[tuple[str, int, str]]:
+    """Littéraux de texte rendus par les handlers, docstrings exclues.
+
+    Un libellé cité dans une docstring ne s'affiche nulle part : le verrou doit
+    porter sur ce que l'utilisateur lit, pas sur le source entier. Les balises
+    sont retirées avant comparaison pour que `<b>ISBN :</b>` se lise « ISBN : ».
+    """
+    import ast
+    import pathlib
+    import re
+
+    literals: list[tuple[str, int, str]] = []
+    for path in sorted(pathlib.Path("app/bot/handlers").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings: set[int] = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body:
+                first = body[0]
+                if (
+                    isinstance(first, ast.Expr)
+                    and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)
+                ):
+                    docstrings.add(id(first.value))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
+                literals.append(
+                    (path.name, node.lineno, re.sub(r"<[^>]+>", "", node.value))
+                )
+    return literals
+
+
+def test_no_charte_label_is_hardcoded_in_a_handler():
+    """Un libellé de charte vient de `labels` : aucun handler ne le recopie en dur.
+
+    Deux façons de dériver, une seule règle de détection : le libellé **tel quel**
+    (un bouton du clavier d'édition, un titre d'écran de saisie) ou le libellé suivi
+    de son séparateur (« ISBN : », « Statut : ») dans une ligne rendue. Le verrou
+    lit les libellés du module — `FIELD_*` et `STATUS_*`, les statuts s'étant révélés
+    réécrits en dur au même endroit — et non une liste recopiée : un libellé ajouté
+    à `labels.py` est protégé dès sa naissance, et un écran qui réécrirait
+    « Mots-clés exclus » échoue ici au lieu de dériver silencieusement.
+    """
+    import re
+
+    import app.bot.labels as labels
+
+    charte_labels = {
+        name: value
+        for name, value in vars(labels).items()
+        if name.startswith(("FIELD_", "STATUS_")) and isinstance(value, str)
+    }
+    assert charte_labels, "labels n'expose aucun FIELD_/STATUS_ : le verrou ne verrouille rien"
+
+    violations = []
+    for file_name, line, text in _handler_text_literals():
+        for name, label in charte_labels.items():
+            if text.strip() == label or re.search(re.escape(label) + r"\s*:", text):
+                violations.append(
+                    f"{file_name}:{line} — {name} {label!r} écrit en dur : {text.strip()[:60]!r}"
+                )
+
+    assert not violations, (
+        "Libellé(s) de charte recopié(s) en dur dans un handler — "
+        "importer depuis app.bot.labels :\n" + "\n".join(violations)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Récap et confirmation : une seule carte, donc aucun des deux écrans ne peut
+# taire un cas que l'autre affiche — la ligne d'édition, l'identifiant introuvable.
+# ---------------------------------------------------------------------------
+
+
+def _creation_draft(**overrides):
+    """Brouillon minimal, avec des valeurs neutres sauf celles fournies."""
+    draft = {
+        "name": "La couleur des choses",
+        "author": "Martin Panchaud",
+        "publisher": "Çà et là",
+        "isbn": None,
+        "isbn_note": None,
+        "is_series": False,
+        "category_slug": "bd_comics",
+        "edition_alternatives": None,
+        "max_item_price_cents": 1200,
+        "selected_conditions": ["Très bon état"],
+        "include_keywords": ["la couleur des choses"],
+        "exclude_keywords": [],
+        "variants": None,
+        "keyword_note": None,
+    }
+    draft.update(overrides)
+    return draft
+
+
+def test_the_confirmation_is_the_recap_reread_from_the_same_construction():
+    """Un seul texte pour les deux écrans : en-tête, pied et bloc de cote exceptés.
+
+    La confirmation écrivait ses lignes à la main, donc elle avait laissé derrière elle
+    la ligne d'édition et l'identifiant introuvable — deux cas que le récap affichait et
+    qu'elle taisait. Le corps est désormais le même objet ; le verrou compare le corps
+    entier, pas une ligne, pour qu'une information ajoutée à un écran s'ajoute à l'autre.
+    """
+    from app.bot.handlers.alerts_create import _CONFIRMATION_FOOTER
+    from app.bot.handlers.alerts_helpers import (
+        ALERT_CREATED_TITLE,
+        RECAP_FOOTER,
+        RECAP_TITLE,
+        creation_card,
+    )
+    from app.services.market_price_service import PENDING_COTE_LINE
+
+    draft = _creation_draft(
+        isbn="9782369903086",
+        edition_alternatives=[
+            {
+                "isbn13": "9782369903086",
+                "publication_year": 2022,
+                "publisher": "Çà et là",
+                "format_detail": "1 vol. (224 p.) ; 24 cm",
+            },
+            {
+                "isbn13": "9782369904151",
+                "publisher": "Éditions poches",
+                "format_detail": "1 vol. (224 p.) ; 19 cm",
+            },
+        ],
+    )
+
+    recap = creation_card(draft)
+    confirmation = creation_card(
+        draft,
+        header=ALERT_CREATED_TITLE,
+        footer=_CONFIRMATION_FOOTER,
+        extra_lines=[PENDING_COTE_LINE],
+    )
+
+    recap_lines = recap.splitlines()
+    confirm_lines = confirmation.splitlines()
+    assert recap_lines[0] == RECAP_TITLE
+    assert confirm_lines[0] == ALERT_CREATED_TITLE
+    # Le récap ferme sur ["", pied] ; la confirmation sur ["", cote, "", pied].
+    assert recap_lines[2:-2] == confirm_lines[2:-4]
+    # La ligne d'édition, que la confirmation avait perdue, est dans le corps partagé.
+    assert "<b>Édition :</b> 2022 · Çà et là · 224 p. · 24 cm" in recap_lines
+    # Le bloc de cote n'appartient qu'à la confirmation.
+    assert confirm_lines[-3] == PENDING_COTE_LINE
+    assert PENDING_COTE_LINE not in recap
+    assert recap_lines[-1] == RECAP_FOOTER
+    assert confirm_lines[-1] == _CONFIRMATION_FOOTER
+
+
+def test_the_unfound_identifier_is_announced_by_both_screens():
+    """« introuvable » est une information : aucun des deux écrans ne peut la taire."""
+    from app.bot.handlers.alerts_create import _CONFIRMATION_FOOTER
+    from app.bot.handlers.alerts_helpers import ALERT_CREATED_TITLE, creation_card
+
+    draft = _creation_draft(isbn=None)
+    line = "<b>ISBN :</b> introuvable — la BNF ne catalogue pas cet ouvrage"
+
+    assert line in creation_card(draft)
+    assert line in creation_card(
+        draft, header=ALERT_CREATED_TITLE, footer=_CONFIRMATION_FOOTER
+    )
+
+
+def test_a_card_without_an_identifier_stays_silent_on_both_screens():
+    """Un produit n'a pas d'identifiant à trouver : les deux écrans se taisent pareil."""
+    from app.bot.handlers.alerts_create import _CONFIRMATION_FOOTER
+    from app.bot.handlers.alerts_helpers import ALERT_CREATED_TITLE, creation_card
+
+    draft = _creation_draft(
+        isbn=None, category_slug="tech", author=None, publisher=None
+    )
+
+    for card in (
+        creation_card(draft),
+        creation_card(draft, header=ALERT_CREATED_TITLE, footer=_CONFIRMATION_FOOTER),
+    ):
+        assert "<b>ISBN :</b>" not in card

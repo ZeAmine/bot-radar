@@ -243,7 +243,7 @@ def test_resolution_signal_stays_silent_on_an_ambiguous_resolution():
 @pytest.mark.asyncio
 async def test_creation_builds_a_series_alert_without_isbn():
     """La saisie ne vise aucun tome : le brouillon surveille la série, et le récap le dit."""
-    from app.bot.handlers.alerts_helpers import recap_from_state
+    from app.bot.handlers.alerts_helpers import creation_card
 
     stored = await _lookup(SERIES_TITLE, _series_resolution())
 
@@ -266,7 +266,7 @@ async def test_creation_builds_a_series_alert_without_isbn():
     # répétait la même phrase que l'indication.
     from app.bot.handlers.alerts_helpers import RECAP_TITLE
 
-    recap = recap_from_state(stored)
+    recap = creation_card(stored)
     lines = recap.splitlines()
     assert lines[0] == RECAP_TITLE
     assert lines[1] == ""
@@ -305,7 +305,7 @@ async def test_creation_builds_a_series_alert_from_tomes_hidden_in_the_subtitle(
     C'est le cas réel « Manuel du cuisinier amateur » : deux notices BNF, même titre,
     même éditeur, seul le numéro de tome — coupé avec le sous-titre — les distingue.
     """
-    from app.bot.handlers.alerts_helpers import recap_from_state
+    from app.bot.handlers.alerts_helpers import creation_card
 
     stored = await _lookup(MANUEL_TITLE, _manuel_resolution())
 
@@ -317,7 +317,7 @@ async def test_creation_builds_a_series_alert_from_tomes_hidden_in_the_subtitle(
     assert stored["edition_alternatives"] == []
 
     # Le cas réel de la capture : deux tomes, et une seule indication — sans énumération.
-    recap = recap_from_state(stored)
+    recap = creation_card(stored)
     assert "<i>Série multi-tomes (veille sur tous les tomes)</i>" in recap
     assert "Tome 1, Tome 2" not in recap
     assert "<b>ISBN :</b>" not in recap

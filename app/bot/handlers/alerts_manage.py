@@ -24,6 +24,12 @@ from app.bot.keyboards.alerts import (
     get_edit_category_selection_keyboard,
     get_edit_conditions_keyboard,
 )
+from app.bot.labels import (
+    FIELD_EXCLUDE_KEYWORDS,
+    FIELD_INCLUDE_KEYWORDS,
+    FIELD_ISBN,
+    FIELD_VARIANTS,
+)
 from app.bot.states.alert_creation import AlertEditState
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
 from app.db.models.user import User
@@ -378,18 +384,18 @@ async def prompt_new_field_value(
 
     labels = {
         "name": ("Nom / Titre", "Colle dans la zone de texte, modifie et envoie :"),
-        "isbn": ("ISBN", "Colle dans la zone de texte, modifie et envoie :"),
+        "isbn": (FIELD_ISBN, "Colle dans la zone de texte, modifie et envoie :"),
         "url": ("Lien Vinted", "Colle dans la zone de texte, modifie et envoie :"),
         "include_keywords": (
-            "Mots-clés inclus",
+            FIELD_INCLUDE_KEYWORDS,
             "Colle dans la zone de texte, modifie et envoie :",
         ),
         "exclude_keywords": (
-            "Mots-clés exclus",
+            FIELD_EXCLUDE_KEYWORDS,
             "Colle dans la zone de texte, modifie et envoie (ou /skip pour tout effacer) :",
         ),
         "variants": (
-            "Variantes",
+            FIELD_VARIANTS,
             "Colle dans la zone de texte, modifie et envoie (ou /skip pour tout effacer) :",
         ),
         "max_price": (
