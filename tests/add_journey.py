@@ -1,16 +1,14 @@
-"""Harnais de parcours `/add` : les fausses frontières, partagées par les tests.
+"""Le câblage du parcours `/add` : les espions, et les patchs qui les installent.
 
-Jouer un parcours de création d'alerte de bout en bout demande de simuler tout ce que
-le produit interroge — le moteur IA, la BNF, l'agrégateur de marché, les repositories —
-et de piloter ce que le handler croit faire en arrière-plan. Ce fichier porte ces
-simulations **une fois** : un test de parcours les enchaîne, un test de copie y branche
-les mêmes handlers pour regarder l'écran. Deux copies de ces fausses frontières
-donneraient deux chaînes légèrement différentes, donc deux vérités sur ce que
-l'utilisateur lit.
+Un test de parcours ne remplace pas les frontières une à une — il branche **toutes**
+celles que la chaîne traverse, au même endroit, pour qu'aucune ne parte en réseau ni
+n'atteigne la base. C'est ce que fait `patched()` : la liste des noms de production
+remplacés, et les espions qui les remplacent. Les doubles eux-mêmes vivent dans
+`tests/add_fakes.py` ; les tâches de fond que le handler croit lancer sont retenues
+ici, pour que le test décide quand elles tournent.
 
 Un module partagé, pas un module de test importé par un autre : ce fichier ne collecte
 rien (`python_files = ["test_*.py"]`) et ne doit rien savoir des tests qui l'utilisent.
-Il suit `tests/fakes_llm.py`, déjà partagé de la même façon.
 """
 
 from __future__ import annotations
@@ -18,169 +16,8 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
-from aiogram.types import Message
-from sqlalchemy.exc import MissingGreenlet
-
-from app.core.constants import ComparisonStatus
-from app.db.models.book_market_cache import BookMarketCache
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
-from app.services.book_metadata_service import (
-    BookMetadata,
-    BookMetadataService,
-    BookResolution,
-    IsbnVerdict,
-)
-
-# Bandeaux de parcours qui ont disparu au profit d'un titre unique : leur présence
-# signalerait que la carte redeviendrait dépendante du chemin qui l'a produite.
-ROUTE_BANNERS = (
-    "Alerte configurée en langage naturel",
-    "Modification enregistrée",
-    "Aucune modification",
-)
-
-# Édition de référence de l'œuvre demandée, confirmée par la BNF.
-BNF_EDITION = BookMetadata(
-    title="La couleur des choses",
-    author="Martin Panchaud",
-    publisher="Çà et là",
-    isbn13="9782369903086",
-    publication_year=2022,
-    format_detail="1 vol. (224 p.) : ill. en coul. ; 24 cm",
-)
-# Autre édition de la même œuvre : c'est celle-là que l'utilisateur va choisir.
-BNF_ALTERNATIVE = BookMetadata(
-    title="La couleur des choses",
-    author="Martin Panchaud",
-    publisher="Editions çà et là",
-    isbn13="9782369904151",
-    format_detail="1 vol. (224 p.) ; 19 cm",
-)
-# ISBN bien formé et réel, mais qui désigne « Keeping two » de Jordan Crane.
-ISBN_AUTRE_LIVRE = "9782369903062"
-# ISBN bien formé, absent de la BNF : un ouvrage paru la semaine dernière.
-ISBN_INCONNU = "9782810206087"
-
-
-class DraftState:
-    """Fausse FSM : conserve le brouillon comme le vrai contexte en production."""
-
-    def __init__(self) -> None:
-        self.data: dict = {}
-        self.state = None
-
-    async def clear(self) -> None:
-        self.data = {}
-        self.state = None
-
-    async def get_data(self) -> dict:
-        return dict(self.data)
-
-    async def set_state(self, state) -> None:
-        self.state = state
-
-    async def update_data(self, data: dict | None = None, **kwargs) -> None:
-        self.data.update(data or {})
-        self.data.update(kwargs)
-
-
-class FakeMessage(MagicMock):
-    """Message Telegram reconnu par `isinstance`."""
-
-    __class__ = Message
-
-
-def deepseek_payload(**overrides) -> dict:
-    """Réponse du moteur IA pour `/add` : elle propose l'ISBN d'un autre livre."""
-    payload = {
-        "name": "La couleur des choses",
-        "category_slug": "bd_comics",
-        "isbn13": ISBN_AUTRE_LIVRE,
-        "author": "Martin Panchaud",
-        "publisher": "Çà et là",
-        "include_keywords": ["La couleur des choses"],
-        "exclude_keywords": [],
-        "max_price_cents": 1200,
-        "is_series": False,
-    }
-    payload.update(overrides)
-    return payload
-
-
-def fake_deepseek(payload: dict) -> MagicMock:
-    """Moteur IA simulé : il rend le JSON fourni, sans ouvrir de connexion."""
-    client = MagicMock()
-    client.is_configured = True
-    client.generate_json = AsyncMock(return_value=payload)
-    return client
-
-
-def fake_bnf(
-    resolution: BookResolution | None,
-    verified_isbn: str | None = None,
-    conflicting_isbn: str | None = None,
-) -> MagicMock:
-    """BNF simulée : seul l'ISBN explicitement déclaré reçoit un verdict."""
-    confirmed = verified_isbn == BNF_EDITION.isbn13
-    bnf = MagicMock(spec=BookMetadataService)
-    bnf.resolve_for_alert = AsyncMock(return_value=resolution)
-    bnf.verify_isbn = AsyncMock(return_value=BNF_EDITION if confirmed else None)
-    if conflicting_isbn:
-        verdict = IsbnVerdict(
-            outcome="contradiction",
-            notice=BookMetadata(title="Keeping two", author="Jordan Crane"),
-        )
-    else:
-        verdict = (
-            IsbnVerdict(outcome="confirme", notice=BNF_EDITION)
-            if confirmed
-            else IsbnVerdict(outcome="inconnu")
-        )
-    bnf.confirm_isbn_for_title = AsyncMock(return_value=verdict)
-    bnf.lookup_by_isbn = AsyncMock(return_value=BNF_EDITION)
-    return bnf
-
-
-def cached_market_price() -> BookMarketCache:
-    """Cote déjà en base pour un ouvrage du catalogue : prix du jour et plus bas 1 an."""
-    return BookMarketCache(
-        id=uuid.uuid4(),
-        book_id=uuid.uuid4(),
-        lowest_delivered_price_cents=1800,
-        best_provider_name="Momox",
-        comparison_status=ComparisonStatus.AVAILABLE,
-        historical_low_1y_cents=1650,
-    )
-
-
-def message_with_recap(command: str) -> tuple[FakeMessage, MagicMock]:
-    """Message `/add` et son message d'attente, tous deux observables."""
-    message = FakeMessage()
-    message.text = command
-    message.chat.id = 12345
-    message.bot = MagicMock()
-    message.bot.send_chat_action = AsyncMock()
-
-    loading_message = MagicMock()
-    loading_message.edit_text = AsyncMock()
-    message.answer = AsyncMock(return_value=loading_message)
-    return message, loading_message
-
-
-class UnloadedBook:
-    """Livre tel que `BookRepository.create` le renvoie : `market_cache` non chargé.
-
-    Un accès paresseux lève en session async ; reproduire ce comportement est le
-    seul moyen de verrouiller le défaut « alerte créée, aucune confirmation ».
-    """
-
-    def __init__(self, isbn13: str) -> None:
-        self.id = uuid.uuid4()
-        self.isbn13 = isbn13
-
-    @property
-    def market_cache(self) -> object:
-        raise MissingGreenlet("greenlet_spawn has not been called")
+from tests.add_fakes import UnloadedBook, cached_market_price
 
 
 def repositories(
@@ -289,69 +126,3 @@ def patched(repos: dict, bnf: MagicMock, client: MagicMock):
         patch("app.bot.handlers.alerts.BookRepository", return_value=repos["book_repo"]),
         patch("app.bot.handlers.alerts.CategoryRepository", return_value=repos["category_repo"]),
     )
-
-
-def recap_text(loading_message: MagicMock) -> str:
-    """Le récap publié par le message d'attente, après ses éditions successives."""
-    return loading_message.edit_text.call_args[0][0]
-
-
-def edition_buttons(loading_message: MagicMock) -> list:
-    """Boutons de bascule d'édition proposés par un clavier de récap."""
-    keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
-    return [
-        button
-        for row in keyboard.inline_keyboard
-        for button in row
-        if button.callback_data.startswith("al_create_edition")
-    ]
-
-
-def work_buttons(keyboard) -> list:
-    """Boutons d'œuvres homonymes proposés par un clavier de récap."""
-    return [
-        button
-        for row in keyboard.inline_keyboard
-        for button in row
-        if button.callback_data.startswith("al_create_work")
-    ]
-
-
-def incoming_message(texte: str) -> FakeMessage:
-    """Message entrant du parcours, avec ses réponses observables."""
-    message = FakeMessage()
-    message.text = texte
-    message.answer = AsyncMock(return_value=MagicMock(spec=Message))
-    message.answer.return_value.edit_text = AsyncMock()
-    return message
-
-
-def confirm_press() -> tuple[MagicMock, MagicMock]:
-    """Callback « Créer l'alerte » et le message qu'il édite, observables."""
-    message = MagicMock(spec=Message)
-    message.edit_text = AsyncMock()
-    callback = MagicMock()
-    callback.data = "alert_create_confirm"
-    callback.message = message
-    callback.answer = AsyncMock()
-    return callback, message
-
-
-def index_of_line(lines: list[str], prefix: str) -> int:
-    """Index de la première ligne qui commence par `prefix`."""
-    return next(index for index, line in enumerate(lines) if line.startswith(prefix))
-
-
-async def open_isbn_edit_field(state: DraftState) -> None:
-    """Ouvre le champ ISBN du menu ✏️ Modifier, comme le fait le bouton du récap."""
-    from app.bot.handlers.alerts_create_confirm import handle_create_edit_choice
-
-    menu_message = MagicMock(spec=Message)
-    menu_message.edit_text = AsyncMock()
-    menu_callback = MagicMock()
-    menu_callback.data = "al_create_edit:isbn"
-    menu_callback.message = menu_message
-    menu_callback.answer = AsyncMock()
-
-    await handle_create_edit_choice(menu_callback, state)
-    assert state.data["current_edit_field"] == "isbn"

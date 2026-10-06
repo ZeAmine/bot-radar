@@ -51,26 +51,23 @@ from app.services.ai.schemas import NegotiationResult
 from app.services.book_metadata_service import BookResolution
 from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceService
 from app.services.price_calculator import format_price_summary
+from app.services.telegram_service import build_listing_caption
 
 # Le harnais de parcours : les écrans de copie sont joués par les vrais handlers, jamais
-# par un appel direct à `creation_card`. Les simulations vivent dans `tests/add_journey.py`,
-# un module partagé et non un module de test : les dupliquer ici donnerait deux chaînes
-# légèrement différentes, donc deux vérités sur ce que l'utilisateur lit.
-from tests.add_journey import (
+# par un appel direct à `creation_card`. Les simulations sont partagées — doubles dans
+# `tests/add_fakes.py`, câblage dans `tests/add_journey.py`, écrans dans `tests/screens.py`
+# — et jamais recopiées ici : deux copies donneraient deux chaînes légèrement
+# différentes, donc deux vérités sur ce que l'utilisateur lit.
+from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
     DraftState,
-    confirm_press,
     deepseek_payload,
-    defer_task,
-    drain,
     fake_bnf,
     fake_deepseek,
-    incoming_message,
-    message_with_recap,
-    patched,
-    repositories,
 )
+from tests.add_journey import defer_task, drain, patched, repositories
+from tests.screens import confirm_press, incoming_message, message_with_recap
 
 
 def test_help_screen_leads_with_the_charte_title():
@@ -371,6 +368,47 @@ async def test_the_alert_sent_to_telegram_bolds_labels_and_leaves_values_roman()
     assert "<b>blacksad</b>" not in caption
 
 
+def _caption_renders(root: pathlib.Path) -> list[str]:
+    """Appels au rendu de la légende d'annonce écrits sous `root`, chemin:ligne.
+
+    Un **appel**, pas une mention. Le nom est suivi jusque dans le source — sous son
+    nom importé (alias compris), derrière son module (`telegram_service.…`), ou sous le
+    nom qu'on lui a donné en l'important — et c'est l'invocation qui compte : un
+    commentaire ou une docstring qui le nomment ne rendent rien. Lire le source par
+    contenance de chaîne confondait les deux, dans un fichier dont tous les autres
+    verrous lisent l'arbre syntaxique.
+
+    Le nom cherché vient de la fonction elle-même, pas d'un littéral recopié : un
+    renommage du rendu suit, au lieu de laisser le verrou surveiller un nom mort.
+    """
+    import ast
+
+    renderer = build_listing_caption.__name__
+    renders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # Les noms sous lesquels ce module tient le rendu. Un `import … as ts` ne le
+        # nomme pas ici : il le laisse derrière son module, que l'on regarde aussi.
+        imported = {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+            if alias.name == renderer
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            called = node.func
+            if isinstance(called, ast.Name) and called.id in imported:
+                renders.append(f"{path.as_posix()}:{node.lineno} — {called.id}()")
+            elif isinstance(called, ast.Attribute) and called.attr == renderer:
+                renders.append(
+                    f"{path.as_posix()}:{node.lineno} — {ast.unparse(called)}()"
+                )
+    return renders
+
+
 def test_no_screen_renders_the_listing_caption():
     """La légende d'annonce n'a qu'un rendu, et il n'est pas dans un écran.
 
@@ -380,11 +418,7 @@ def test_no_screen_renders_the_listing_caption():
     part réellement sur Telegram, et c'est l'alerte qui porte la copie que l'utilisateur
     lit en premier.
     """
-    renders = [
-        path.as_posix()
-        for path in sorted(pathlib.Path("app/bot").rglob("*.py"))
-        if "build_listing_caption" in path.read_text(encoding="utf-8")
-    ]
+    renders = _caption_renders(pathlib.Path("app/bot"))
 
     assert not renders, (
         "La légende d'annonce est rendue par `send_listing_alert`, sur le chemin "
