@@ -59,6 +59,7 @@ from app.db.session import AsyncSessionLocal
 from app.domain.rules.listing_match import carries_foreign_isbn
 from app.services.book_metadata_service import (
     AUTORITE_BNF,
+    AUTORITE_GOOGLE_BOOKS,
     AUTORITE_OPENLIBRARY,
     SAME_WORK_TITLE_SIMILARITY_MIN,
     TITLE_SIMILARITY_MIN,
@@ -86,7 +87,14 @@ VARIANTE_ISBN_ETRANGER = "variante_isbn_etranger"
 
 # Seuls les libellés sont ici : les identifiants viennent du service, et la liste des
 # autorités réellement interrogées vient du verdict, qui l'écrit en faisant les appels.
-LIBELLE_AUTORITE = {AUTORITE_BNF: "la BNF", AUTORITE_OPENLIBRARY: "OpenLibrary"}
+# La troisième source a son libellé ici comme les deux autres : le dict est indexé par
+# le slug que le verdict porte, donc l'oublier rendrait le rapport muet sur l'autorité
+# qui vient pourtant de répondre.
+LIBELLE_AUTORITE = {
+    AUTORITE_BNF: "la BNF",
+    AUTORITE_OPENLIBRARY: "OpenLibrary",
+    AUTORITE_GOOGLE_BOOKS: "Google Books",
+}
 
 GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
 

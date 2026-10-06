@@ -20,9 +20,12 @@ Trois règles de mise en forme, valables sur **tous** les écrans :
    confirmation. L'italique sépare ce que le bot demande de ce que le bot
    affirme — le lecteur ne confond plus une consigne avec une donnée.
 3. **Un avertissement est en italique et isolé par une ligne vide.**
-   Ambiguïté d'ISBN, moteur IA muet : la note vit dans son propre bloc, jamais
-   collée entre deux informations du livre. Deux avertissements ne se composent
-   pas de deux styles : tous portent l'italique.
+   Ambiguïté d'ISBN, moteur IA muet, ouvrage que personne n'identifie : les
+   avertissements vivent **ensemble**, dans un seul bloc en tête de carte, jamais
+   collés entre deux informations du livre — et jamais dispersés en haut et en bas
+   de l'écran, ce qui obligeait à faire l'aller-retour pour savoir ce qui manque.
+   Deux avertissements ne se composent pas de deux styles : tous portent l'italique,
+   et deux notes voisines ne se séparent pas d'une ligne vide.
    Une **indication** sur ce que l'alerte surveille — une série multi-tomes — suit
    la même forme : italique, isolée, et **hors de la liste des informations**,
    sous le titre de l'écran. Elle dit *pourquoi* l'identifiant est omis ; elle

@@ -306,6 +306,42 @@ async def test_natural_add_without_verifiable_isbn_falls_back_to_title():
     assert res.book_context is None
     assert res.isbn_note is not None
     assert "BNF" in res.isbn_note
+    # Le modèle a soumis un code, donc l'ouvrage n'est pas « non identifié » : la note
+    # d'identité dit ce qui a été tenté, et la carte n'ajoute pas son avertissement.
+    assert res.book_unidentified is False
+
+
+@pytest.mark.asyncio
+async def test_natural_add_flags_a_work_no_authority_identifies():
+    """Rien n'a répondu : le brouillon porte le fait, pour que la carte puisse le dire.
+
+    Le cas réel — `/add whoogys dailycieux, 30€` — produisait une carte avec un titre et
+    rien d'autre : ni auteur, ni éditeur, ni ISBN, sans un mot d'explication. L'absence
+    de données ne permet pas de déduire qu'une recherche a eu lieu : le module le dit.
+    """
+    mock_client = FakeLLM(
+        text={
+            "name": "Whoogys Dailycieux",
+            "category_slug": "bd_comics",
+            "is_series": False,
+            "include_keywords": ["Whoogys Dailycieux"],
+        }
+    )
+
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(return_value=None)
+    bnf.verify_isbn = AsyncMock(return_value=None)
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
+    ):
+        res = await natural_add_module.parse_prompt("whoogys dailycieux, 30€")
+
+    assert res is not None
+    assert res.book_unidentified is True
+    assert res.isbn13 is None
+    assert res.author is None
+    assert res.publisher is None
 
 
 @pytest.mark.asyncio

@@ -102,6 +102,11 @@ class _ResolvedWork:
     # résolution n'a eu lieu (série déjà annoncée, ISBN explicitement saisi, produit
     # non littéraire) : une preuve ne s'invente pas faute d'avoir cherché.
     series: SeriesSignal = field(default_factory=SeriesSignal)
+    # Une recherche de titre a été menée et **aucune** source n'a rien rendu : ni
+    # notice, ni ISBN. Ce n'est pas la même chose qu'un ouvrage hors du périmètre du
+    # catalogue (un produit, une série) — là, personne n'a cherché. Le récap ne peut
+    # pas déduire ce fait de l'absence de données : il le faut explicite.
+    unidentified: bool = False
 
 
 class NaturalAddModule(BaseAIModule):
@@ -224,6 +229,7 @@ class NaturalAddModule(BaseAIModule):
                 conditions=valid_conditions,
                 explanation=payload.explanation,
                 isbn_note=None if series.is_series else resolved.isbn_note,
+                book_unidentified=False if series.is_series else resolved.unidentified,
                 edition_alternatives=(
                     [] if series.is_series else resolved.edition_alternatives
                 ),
@@ -346,7 +352,9 @@ class NaturalAddModule(BaseAIModule):
                     f"Aucun ISBN confirmé par la BNF pour « {title} » : surveillance par titre"
                 )
             )
-        return _ResolvedWork()
+        # Ni notice, ni ISBN d'aucune sorte : l'ouvrage n'est pas identifié, et c'est
+        # un fait à dire à l'utilisateur — pas un vide à afficher.
+        return _ResolvedWork(unidentified=True)
 
 
 natural_add_module = NaturalAddModule()

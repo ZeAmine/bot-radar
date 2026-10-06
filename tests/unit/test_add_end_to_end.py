@@ -1172,9 +1172,7 @@ async def test_a_missing_identifier_is_told_in_the_confirmation_too():
                 entered.stop()
 
     confirmation = confirm_message.edit_text.call_args[0][0]
-    assert (
-        "<b>ISBN :</b> introuvable — la BNF ne catalogue pas cet ouvrage" in confirmation
-    )
+    assert "<b>ISBN :</b> introuvable" in confirmation
     assert "<b>Titre :</b> Dailyeux" in confirmation
     assert PENDING_COTE_LINE not in confirmation
     repos["book_repo"].create.assert_not_called()

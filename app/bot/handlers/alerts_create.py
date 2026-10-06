@@ -211,15 +211,18 @@ def _keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
             "sans variante ni exclusion. Appuie sur « ✨ Variantes & Exclusions IA » "
             "pour réessayer."
         )
+    # ⚠️ et non 🔎 : ce n'est pas une observation en passant mais un manque, et la carte
+    # le place en tête avec les autres avertissements. Le repérage d'un ouvrage
+    # (« … identifié ») garde sa loupe : lui ne signale rien.
     if outcome.is_empty:
         return (
-            "🔎 L'IA n'a trouvé aucune variante ni exclusion pertinente : "
+            "⚠️ L'IA n'a trouvé aucune variante ni exclusion pertinente : "
             "rien n'a été ajouté."
         )
     if not outcome.exclusions:
-        return "🔎 L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage."
+        return "⚠️ L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage."
     if not outcome.variants:
-        return "🔎 L'IA n'a trouvé aucune variante de frappe pour cet ouvrage."
+        return "⚠️ L'IA n'a trouvé aucune variante de frappe pour cet ouvrage."
     return None
 
 
@@ -398,6 +401,8 @@ async def start_add_alert(
                 "max_item_price_cents": parsed.max_price_cents,
                 "selected_conditions": parsed.conditions,
                 "isbn_note": parsed.isbn_note,
+                # L'ouvrage n'est identifié par personne : la carte le dit en tête.
+                "book_unidentified": parsed.book_unidentified,
                 "book_context": (
                     parsed.book_context.model_dump() if parsed.book_context else None
                 ),
