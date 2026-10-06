@@ -1,7 +1,8 @@
 """Tests unitaires pour le workflow de modification épuré d'alertes (/edit)."""
 
+import contextlib
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -19,6 +20,8 @@ from app.core.constants import AlertStatus, CategorySlug
 from app.db.models.alert import Alert
 from app.db.models.category import Category
 from app.db.models.user import User
+from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
+from app.services.book_metadata_service import BookMetadata
 
 
 def test_get_cancel_edit_keyboard():
@@ -341,6 +344,7 @@ async def test_save_edited_field_value_accepts_isbn_matching_alert():
             title="La couleur des choses", author="Martin Panchaud", isbn13="9782369903086"
         )
     )
+    tasks: list = []
 
     with (
         patch("app.bot.handlers.alerts_manage._get_alert_repo", return_value=repo_mock),
@@ -353,11 +357,18 @@ async def test_save_edited_field_value_accepts_isbn_matching_alert():
             "app.db.repositories.market_price_repo.MarketPriceRepository",
             return_value=AsyncMock(),
         ),
+        # L'alerte n'avait aucun ISBN : en poser un change d'ouvrage, donc la
+        # recherche de mots-clés repart en arrière-plan (couverte par les parcours
+        # dédiés plus bas).
+        patch("app.bot.handlers.alerts_manage.safe_create_task", new=_capture_task(tasks)),
     ):
         await save_edited_field_value(message, state=state, db_user=user, db_session=session)
 
     assert mock_alert.isbn == "9782369903086"
     session.commit.assert_awaited_once()
+    assert len(tasks) == 1
+    for coro, _name in tasks:
+        coro.close()
 
 
 @pytest.mark.asyncio
@@ -385,3 +396,375 @@ async def test_handle_edit_condition_toggle():
 
     session.commit.assert_awaited_once()
     callback.answer.assert_awaited()
+
+
+# ---------------------------------------------------------------------------------
+# Parcours « Modifier → ISBN » : changer d'ouvrage rend ses mots-clés à l'alerte.
+#
+# Ces tests traversent les vrais handlers (`prompt_new_field_value` puis
+# `save_edited_field_value`) et ne simulent que les frontières : la notice, le moteur,
+# la base et la tâche de fond. Ils verrouillent trois cas — l'alerte portait déjà les
+# mots-clés du moteur, une recherche était encore en vol quand l'ouvrage a changé une
+# seconde fois, et le nouvel ISBN ne donne rien à personne.
+# ---------------------------------------------------------------------------------
+
+ANCIEN_ISBN = "9782369903086"
+NOUVEL_ISBN = "9782369904151"
+ANCIENNES_VARIANTES = ["couleurdeschose"]
+ANCIENNES_EXCLUSIONS = ["coffret"]
+NOUVELLES_VARIANTES = ["couleurdeschoses"]
+NOUVELLES_EXCLUSIONS = ["keeping two"]
+
+
+class _EditState:
+    """Fausse FSM de l'écran « Modifier » : le champ ouvert et ce qui y a été saisi."""
+
+    def __init__(self) -> None:
+        self.data: dict = {}
+        self.state = None
+
+    async def get_data(self) -> dict:
+        return dict(self.data)
+
+    async def update_data(self, data: dict | None = None, **kwargs) -> None:
+        self.data.update(data or {})
+        self.data.update(kwargs)
+
+    async def set_state(self, state) -> None:
+        self.state = state
+
+    async def clear(self) -> None:
+        self.data = {}
+        self.state = None
+
+
+class _BackgroundSession:
+    """Session de la tâche de fond : seul l'écriture des mots-clés est observée."""
+
+    def __init__(self) -> None:
+        self.commit = AsyncMock()
+
+    async def __aenter__(self) -> "_BackgroundSession":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _capture_task(tasks: list):
+    """Remplace `safe_create_task` : la coroutine attend d'être jouée par le test."""
+
+    def _run(coro, name=None):
+        tasks.append((coro, name))
+        return None
+
+    return _run
+
+
+async def _drain(tasks: list) -> None:
+    """Joue la recherche de fond, comme le ferait la boucle d'événements."""
+    for coro, _name in tasks:
+        await coro
+    tasks.clear()
+
+
+@contextlib.contextmanager
+def _frontieres(patches: list):
+    """Active toutes les frontières simulées du parcours, et les rend à la fin."""
+    with contextlib.ExitStack() as stack:
+        for entered in patches:
+            stack.enter_context(entered)
+        yield
+
+
+def _notice(title: str = "La couleur des choses", isbn13: str = NOUVEL_ISBN) -> BookMetadata:
+    """Notice que les autorités rendent pour le nouvel ISBN."""
+    return BookMetadata(
+        title=title,
+        author="Martin Panchaud",
+        publisher="Editions çà et là",
+        isbn13=isbn13,
+    )
+
+
+def _isbn_journey(
+    *,
+    isbn: str | None,
+    variants: list[str],
+    exclusions: list[str],
+    notice: BookMetadata | None,
+    outcome: KeywordVariantsOutcome,
+) -> dict:
+    """Une alerte telle qu'elle est en base, et les frontières du parcours d'édition.
+
+    L'alerte est le vrai objet que le handler modifie : ses `variants` et
+    `exclude_keywords` sont donc ce qui sera persisté, pas une copie de test.
+    """
+    alert = MagicMock(
+        spec=Alert,
+        id=uuid.uuid4(),
+        isbn=isbn,
+        status=AlertStatus.ACTIVE,
+        category=MagicMock(spec=Category, slug=CategorySlug.BD_COMICS.value, emoji="📚"),
+        max_item_price_cents=1200,
+        include_keywords=["La couleur des choses"],
+        exclude_keywords=list(exclusions),
+        variants=list(variants),
+        vinted_search_url="https://www.vinted.fr/catalog?search_text=ancien",
+        accepted_conditions=None,
+    )
+    # `name=` en argument de `MagicMock` nomme le mock, ce n'est pas l'attribut : le
+    # titre de l'alerte est lu par le nettoyeur de mots-clés et par la carte.
+    alert.name = "La couleur des choses"
+    alert_repo = AsyncMock()
+    alert_repo.get_by_id.return_value = alert
+    alert_repo.count_by_user.return_value = 1
+
+    book_repo = AsyncMock()
+    book_repo.get_by_isbn13.return_value = MagicMock(id=uuid.uuid4())
+
+    words = AsyncMock(return_value=outcome)
+    tasks: list = []
+
+    card_message = AsyncMock()
+    message = AsyncMock()
+    message.answer = AsyncMock(return_value=card_message)
+
+    state = _EditState()
+    user = MagicMock(spec=User, id=uuid.uuid4())
+
+    return {
+        "alert": alert,
+        "words": words,
+        "tasks": tasks,
+        "state": state,
+        "user": user,
+        "message": message,
+        "card_message": card_message,
+        "db_session": AsyncMock(),
+        "patches": [
+            patch(
+                "app.bot.handlers.alerts_manage._get_alert_repo", return_value=alert_repo
+            ),
+            patch(
+                "app.bot.handlers.alerts_manage.AsyncSessionLocal",
+                return_value=_BackgroundSession(),
+            ),
+            patch(
+                "app.bot.handlers.alerts_manage.safe_create_task",
+                new=_capture_task(tasks),
+            ),
+            patch("app.bot.handlers.alerts_manage.schedule_book_pricing"),
+            patch(
+                "app.bot.handlers.alerts_manage.keyword_variants_module."
+                "generate_variants_and_exclusions",
+                new=words,
+            ),
+            patch(
+                "app.services.book_metadata_service.BookMetadataService.lookup_by_isbn",
+                new=AsyncMock(return_value=notice),
+            ),
+            patch(
+                "app.db.repositories.book_repo.BookRepository", return_value=book_repo
+            ),
+        ],
+    }
+
+
+async def _open_isbn_field(journey: dict) -> None:
+    """Ouvre le champ ISBN par le bouton « Modifier », comme le vrai clavier."""
+    callback = MagicMock()
+    callback.data = f"ed_f:{journey['alert'].id}:isbn"
+    callback.message = AsyncMock()
+    callback.answer = AsyncMock()
+
+    await prompt_new_field_value(
+        callback,
+        state=journey["state"],
+        db_user=journey["user"],
+        db_session=journey["db_session"],
+    )
+    assert journey["state"].data["edit_field"] == "isbn"
+
+
+async def _type_isbn(journey: dict, isbn: str) -> None:
+    """Enregistre la valeur saisie dans le champ ISBN ouvert."""
+    journey["message"].text = isbn
+    await save_edited_field_value(
+        journey["message"],
+        state=journey["state"],
+        db_user=journey["user"],
+        db_session=journey["db_session"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_changing_the_isbn_from_edit_replaces_the_previous_works_keywords():
+    """L'alerte gardait les variantes de l'ouvrage précédent : la recherche les remplace.
+
+    L'ancien ISBN avait laissé ses variantes et ses exclusions, raisonnées sur sa fiche.
+    Changer d'ouvrage les invalide : elles partent avec lui dans le même commit, et le
+    moteur en propose d'autres pour le nouvel ouvrage — celui-ci, pas l'ancien.
+    """
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=ANCIENNES_VARIANTES,
+        exclusions=ANCIENNES_EXCLUSIONS,
+        notice=_notice(),
+        outcome=KeywordVariantsOutcome(
+            variants=NOUVELLES_VARIANTES,
+            exclusions=NOUVELLES_EXCLUSIONS,
+            answered=True,
+        ),
+    )
+
+    with _frontieres(journey["patches"]):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN)
+
+        # Les mots-clés de l'ancien ouvrage ne survivent pas à l'enregistrement.
+        assert journey["alert"].isbn == NOUVEL_ISBN
+        assert journey["alert"].variants == []
+        assert journey["alert"].exclude_keywords == []
+
+        await _drain(journey["tasks"])
+
+    # Ceux du nouvel ouvrage sont écrits, à partir de sa fiche : la recherche a été
+    # posée sur l'ISBN affiché, pas sur celui qui vient d'être remplacé.
+    assert journey["alert"].variants == NOUVELLES_VARIANTES
+    assert journey["alert"].exclude_keywords == NOUVELLES_EXCLUSIONS
+    args, kwargs = journey["words"].await_args
+    assert args[0] == "La couleur des choses"
+    assert kwargs["category_slug"] == CategorySlug.BD_COMICS.value
+    assert kwargs["context"].isbn13 == NOUVEL_ISBN
+    assert kwargs["context"].author == "Martin Panchaud"
+    # Le moteur a répondu : il n'y a rien à expliquer, et donc rien à envoyer.
+    journey["card_message"].answer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_search_in_flight_never_lands_on_a_work_that_changed_again():
+    """Pendant la recherche, l'ouvrage change encore : la réponse ne s'écrit pas.
+
+    L'utilisateur peut corriger l'ISBN deux fois de suite. La première réponse décrit
+    alors un livre que l'alerte ne surveille plus : l'écrire écraserait les mots-clés du
+    second — et l'alerte matcherait sur le premier.
+    """
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=ANCIENNES_VARIANTES,
+        exclusions=ANCIENNES_EXCLUSIONS,
+        notice=_notice(),
+        outcome=KeywordVariantsOutcome(
+            variants=NOUVELLES_VARIANTES,
+            exclusions=NOUVELLES_EXCLUSIONS,
+            answered=True,
+        ),
+    )
+
+    with _frontieres(journey["patches"]):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN)
+        # Second changement d'ouvrage, avant que la première recherche ait répondu.
+        journey["alert"].isbn = "9782070413775"
+
+        await _drain(journey["tasks"])
+
+    assert NOUVELLES_VARIANTES[0] not in journey["alert"].variants
+    assert journey["alert"].exclude_keywords == []
+    journey["card_message"].answer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_variants_left_awaiting_confirmation_do_not_survive_the_change():
+    """Les variantes proposées mais pas encore validées portaient sur l'ancien ouvrage.
+
+    La proposition attend un clic. Le changement d'ISBN la rend caduque : le bouton doit
+    répondre qu'elle a expiré plutôt que d'écrire les variantes du livre précédent sur le
+    nouveau.
+    """
+    from app.bot.handlers.autotune import get_pending_variants, save_pending_variants
+
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=ANCIENNES_VARIANTES,
+        exclusions=ANCIENNES_EXCLUSIONS,
+        notice=_notice(),
+        outcome=KeywordVariantsOutcome(
+            variants=NOUVELLES_VARIANTES,
+            exclusions=NOUVELLES_EXCLUSIONS,
+            answered=True,
+        ),
+    )
+    save_pending_variants(journey["alert"].id, ANCIENNES_VARIANTES)
+
+    with _frontieres(journey["patches"]):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN)
+
+    assert get_pending_variants(journey["alert"].id) == []
+
+
+@pytest.mark.asyncio
+async def test_a_new_isbn_that_nobody_knows_leaves_the_alert_mute_and_says_so():
+    """Le nouvel ISBN n'est dans aucun catalogue : le moteur cherche sur le titre.
+
+    L'alerte garde l'ISBN saisi — personne ne prouve qu'il désigne un autre ouvrage —,
+    elle perd les mots-clés de l'ancien, et le silence du moteur se dit au lieu de se
+    lire comme un avis rendu (ADR-005).
+    """
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=ANCIENNES_VARIANTES,
+        exclusions=ANCIENNES_EXCLUSIONS,
+        notice=None,
+        outcome=KeywordVariantsOutcome.unanswered(),
+    )
+
+    with _frontieres(journey["patches"]):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN)
+        await _drain(journey["tasks"])
+
+    assert journey["alert"].isbn == NOUVEL_ISBN
+    assert journey["alert"].variants == []
+    assert journey["alert"].exclude_keywords == []
+    # Aucune fiche n'est disponible : la recherche part quand même, sur le titre.
+    args, kwargs = journey["words"].await_args
+    assert args[0] == "La couleur des choses"
+    assert kwargs["context"] is None
+    note = journey["card_message"].answer.call_args[0][0]
+    assert note.startswith("<i>")
+    assert note.endswith("</i>")
+    assert "L'IA n'a pas répondu après une relance" in note
+    assert "aucune variante ni exclusion n'a été ajoutée" in note
+
+
+@pytest.mark.asyncio
+async def test_re_entering_the_same_isbn_leaves_the_keywords_alone():
+    """Ressaisir le même ISBN ne change pas d'ouvrage : rien n'est jeté, rien ne repart.
+
+    Le déclencheur est le **changement** d'ouvrage, pas l'enregistrement du champ :
+    corriger un prix ou reconfirmer le même ISBN effacerait sinon des mots-clés qui
+    décrivent toujours l'ouvrage surveillé.
+    """
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=ANCIENNES_VARIANTES,
+        exclusions=ANCIENNES_EXCLUSIONS,
+        notice=_notice(isbn13=ANCIEN_ISBN),
+        outcome=KeywordVariantsOutcome(
+            variants=NOUVELLES_VARIANTES,
+            exclusions=NOUVELLES_EXCLUSIONS,
+            answered=True,
+        ),
+    )
+
+    with _frontieres(journey["patches"]):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, ANCIEN_ISBN)
+
+    assert journey["alert"].variants == ANCIENNES_VARIANTES
+    assert journey["alert"].exclude_keywords == ANCIENNES_EXCLUSIONS
+    assert journey["tasks"] == []
+    journey["words"].assert_not_awaited()

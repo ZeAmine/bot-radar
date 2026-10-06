@@ -19,6 +19,7 @@ from app.bot.handlers.alerts_helpers import (
     build_creation_recap,
     creation_card,
     extract_inline_price_and_clean_query,
+    keyword_note,
     process_bd_query_lookup,
     process_tech_or_clothes_query,
     render_existing_alert_response,
@@ -40,10 +41,7 @@ from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.category_repo import CategoryRepository
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
-from app.services.ai.modules.keyword_variants import (
-    KeywordVariantsOutcome,
-    keyword_variants_module,
-)
+from app.services.ai.modules.keyword_variants import keyword_variants_module
 from app.services.ai.modules.natural_add import natural_add_module
 from app.services.ai.schemas import BookContext
 from app.services.alert_service import (
@@ -192,40 +190,6 @@ def relaunch_keyword_search(
     )
 
 
-def _keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
-    """Ligne discrète expliquant ce que la recherche n'a pas trouvé.
-
-    Cinq fins possibles, cinq libellés distincts : le récap ne doit jamais laisser
-    croire qu'une liste vide est un avis du moteur alors que personne n'a été interrogé
-    — ni qu'une exclusion manquante est un oubli quand elle est une décision.
-
-    Le texte est rendu en italique par `format_semi_auto_recap` (charte, règle 3) :
-    c'est un avertissement, jamais une information du livre. La mise en forme vit
-    donc dans le rendu, pas ici : deux notes ne peuvent pas porter deux styles.
-    """
-    if not outcome.answered:
-        # La relance a déjà eu lieu : ce n'est plus de la lenteur mais un échec. Le
-        # bouton reste sous la carte, c'est donc lui qu'on nomme, pas « Modifier ».
-        return (
-            "⚠️ L'IA n'a pas répondu après une relance : cette alerte sera créée "
-            "sans variante ni exclusion. Appuie sur « ✨ Variantes & Exclusions IA » "
-            "pour réessayer."
-        )
-    # ⚠️ et non 🔎 : ce n'est pas une observation en passant mais un manque, et la carte
-    # le place en tête avec les autres avertissements. Le repérage d'un ouvrage
-    # (« … identifié ») garde sa loupe : lui ne signale rien.
-    if outcome.is_empty:
-        return (
-            "⚠️ L'IA n'a trouvé aucune variante ni exclusion pertinente : "
-            "rien n'a été ajouté."
-        )
-    if not outcome.exclusions:
-        return "⚠️ L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage."
-    if not outcome.variants:
-        return "⚠️ L'IA n'a trouvé aucune variante de frappe pour cet ouvrage."
-    return None
-
-
 async def _search_keywords_in_background(
     *,
     loading_msg: Message | bool,
@@ -265,7 +229,7 @@ async def _search_keywords_in_background(
         ),
         # La note et l'état de la recherche voyagent avec le brouillon : changer
         # d'édition ou de prix plus tard ne doit pas les perdre au re-rendu.
-        "keyword_note": _keyword_note(outcome),
+        "keyword_note": keyword_note(outcome),
         "keywords_finalized": finalized,
     }
     await state.update_data(
@@ -702,7 +666,7 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
         "exclude_keywords": sanitize_exclusions(
             _merge_keywords(data.get("exclude_keywords"), outcome.exclusions), name
         ),
-        "keyword_note": _keyword_note(outcome),
+        "keyword_note": keyword_note(outcome),
         "keywords_finalized": finalized,
     }
     await state.update_data(

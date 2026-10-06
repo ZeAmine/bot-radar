@@ -14,8 +14,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.bot.formatter import format_alert_card
+from app.bot.handlers.alerts_helpers import keyword_note
 from app.bot.handlers.alerts_view import show_alerts, view_single_alert
-from app.bot.handlers.autotune import save_pending_variants
+from app.bot.handlers.autotune import pop_pending_variants, save_pending_variants
 from app.bot.keyboards.alerts import (
     get_alert_card_keyboard,
     get_alert_edit_fields_keyboard,
@@ -34,10 +35,14 @@ from app.bot.labels import (
 )
 from app.bot.states.alert_creation import AlertEditState
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
+from app.core.tasks import safe_create_task
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
+from app.db.session import AsyncSessionLocal
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
+from app.services.ai.modules.keyword_variants import keyword_variants_module
+from app.services.ai.schemas import BookContext, book_context_from
 from app.services.alert_service import (
     AlertServiceError,
     parse_comma_separated_list,
@@ -45,6 +50,7 @@ from app.services.alert_service import (
     validate_and_parse_vinted_url,
 )
 from app.services.book_market_pricing import schedule_book_pricing
+from app.services.book_metadata_service import BookMetadata
 from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger(__name__)
@@ -503,33 +509,81 @@ async def handle_edit_condition_all(
     await _show_conditions_menu(callback, alert)
 
 
-async def _lookup_conflicting_isbn(isbn13: str, alert_name: str) -> str | None:
-    """Message d'erreur si la BNF rattache cet ISBN à un autre ouvrage que l'alerte.
+async def _lookup_isbn_notice(isbn13: str) -> BookMetadata | None:
+    """Notice que les autorités rendent pour cet ISBN, None si personne n'en a une.
 
-    Renvoie None quand l'ISBN est inconnu de la BNF (pas de preuve de conflit) ou quand
-    la BNF est injoignable : la saisie de l'utilisateur ne doit jamais être bloquée par
-    une panne réseau.
+    L'ISBN inconnu et la panne réseau se lisent pareil : aucun des deux ne prouve une
+    contradiction, et la saisie de l'utilisateur ne doit jamais être bloquée par le
+    second. La notice sert deux fois — au filet anti-mauvais ISBN, et à la fiche sur
+    laquelle le moteur raisonne — donc elle est demandée **une** fois.
     """
-    from app.services.book_metadata_service import (
-        TITLE_SIMILARITY_MIN,
-        BookMetadataService,
-        title_similarity,
-    )
+    from app.services.book_metadata_service import BookMetadataService
 
     try:
-        meta = await BookMetadataService().lookup_by_isbn(isbn13)
+        return await BookMetadataService().lookup_by_isbn(isbn13)
     except Exception as exc:
         logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", isbn13, exc)
         return None
 
-    if not meta or title_similarity(meta.title, alert_name) >= TITLE_SIMILARITY_MIN:
+
+def _conflicting_isbn_message(
+    notice: BookMetadata | None,
+    isbn13: str,
+    alert_name: str,
+) -> str | None:
+    """Message d'erreur si la notice rattache cet ISBN à un autre ouvrage que l'alerte."""
+    from app.services.book_metadata_service import TITLE_SIMILARITY_MIN, title_similarity
+
+    if notice is None or title_similarity(notice.title, alert_name) >= TITLE_SIMILARITY_MIN:
         return None
 
-    real_author = f" de {meta.author}" if meta.author else ""
+    real_author = f" de {notice.author}" if notice.author else ""
     return (
-        f"Cet ISBN ({isbn13}) correspond à « {meta.title} »{real_author}, "
+        f"Cet ISBN ({isbn13}) correspond à « {notice.title} »{real_author}, "
         f"pas à « {alert_name} »."
     )
+
+
+async def _refresh_alert_keywords(
+    alert_id: uuid.UUID,
+    *,
+    expected_isbn: str,
+    name: str,
+    category_slug: str,
+    book_context: BookContext | None,
+    target: Message,
+) -> None:
+    """Rend à une alerte les mots-clés de l'ouvrage qu'elle surveille désormais.
+
+    Appelée en arrière-plan après un changement d'ISBN. Les variantes et exclusions de
+    l'ouvrage précédent ont été retirées **avant** le commit : sans cette recherche,
+    l'alerte resterait muette jusqu'à ce que l'utilisateur pense à rappuyer sur le
+    bouton. Le verdict est annoncé tel quel — un moteur muet ne peut pas se lire comme
+    un avis rendu (`keyword_note`).
+
+    L'écriture est gardée par l'ISBN qui l'a déclenchée : si l'alerte en porte un autre,
+    la réponse décrit un ouvrage déjà remplacé et repart sans être écrite.
+    """
+    outcome = await keyword_variants_module.generate_variants_and_exclusions(
+        name, category_slug=category_slug, context=book_context
+    )
+
+    async with AsyncSessionLocal() as session:
+        alert = await _get_alert_repo(session).get_by_id(alert_id)
+        if alert is None or alert.isbn != expected_isbn:
+            logger.info(
+                "Mots-clés de « %s » non écrits : l'alerte ne porte plus l'ISBN %s.",
+                name,
+                expected_isbn,
+            )
+            return
+        alert.variants = sanitize_variants(outcome.variants, name)
+        alert.exclude_keywords = sanitize_exclusions(outcome.exclusions, name)
+        await session.commit()
+
+    note = keyword_note(outcome)
+    if note:
+        await target.answer(f"<i>{note}</i>", parse_mode="HTML")
 
 
 @router.message(AlertEditState.waiting_for_new_value)
@@ -554,6 +608,11 @@ async def save_edited_field_value(
 
     try:
         book_to_price: uuid.UUID | None = None
+        # L'ISBN retenu quand il remplace celui de l'alerte : c'est le seul cas où les
+        # mots-clés de l'ouvrage précédent doivent partir, et donc le seul où la
+        # recherche du moteur est relancée.
+        replaced_isbn: str | None = None
+        new_work_context: BookContext | None = None
         if field in ("exclude_keywords", "include_keywords", "variants"):
             if raw_text.lower() == "/skip" or raw_text in ("-", "aucun", "aucune"):
                 parsed = []
@@ -598,11 +657,29 @@ async def save_edited_field_value(
                     raise AlertServiceError(
                         "ISBN invalide : 10 ou 13 chiffres avec une clé de contrôle correcte."
                     )
-                # Filet anti-mauvais ISBN : la BNF doit rattacher ce code à CETTE œuvre.
-                # Une panne réseau ne bloque pas la saisie (aucune preuve de conflit).
-                conflicting = await _lookup_conflicting_isbn(clean_isbn, alert.name)
+                # Filet anti-mauvais ISBN : la notice doit rattacher ce code à CETTE
+                # œuvre. Une panne réseau ne bloque pas la saisie (aucune preuve de
+                # conflit).
+                notice = await _lookup_isbn_notice(clean_isbn)
+                conflicting = _conflicting_isbn_message(notice, clean_isbn, alert.name)
                 if conflicting:
                     raise AlertServiceError(conflicting)
+                # Changer d'ISBN, c'est changer d'ouvrage : les variantes et les
+                # exclusions ont été raisonnées sur la fiche précédente, et une
+                # variante suffit à contourner la contrainte d'inclusion. Elles
+                # partent dans le même commit que l'ISBN, et la recherche repart
+                # après — l'alerte ne peut pas les garder pour un livre qu'elle ne
+                # surveille plus.
+                if alert.isbn != clean_isbn:
+                    replaced_isbn = clean_isbn
+                    new_work_context = book_context_from(notice) if notice else None
+                    alert.variants = []
+                    alert.exclude_keywords = []
+                    # Une proposition de variantes encore en attente de confirmation
+                    # décrit l'ouvrage précédent : l'appliquer après ce changement
+                    # ferait matcher l'alerte sur l'ancien livre. Le bouton de la
+                    # proposition le dit alors (« Les suggestions ont expiré. »).
+                    pop_pending_variants(alert.id)
                 alert.isbn = clean_isbn
                 # Nettoyer d'éventuels ISBN numériques résiduels dans les mots-clés
                 alert.include_keywords = [
@@ -657,7 +734,7 @@ async def save_edited_field_value(
 
         await message.answer("✅ Modification enregistrée.")
         card_text = format_alert_card(alert, current_index=0, total_count=total_count)
-        await message.answer(
+        card_message = await message.answer(
             card_text,
             reply_markup=get_alert_card_keyboard(
                 alert.id,
@@ -667,6 +744,21 @@ async def save_edited_field_value(
                 category_slug=cat_slug,
             ),
         )
+
+        if replaced_isbn is not None:
+            # Après le commit, comme la cote : la tâche ouvrira sa propre session et
+            # doit trouver l'alerte déjà sur son nouvel ISBN.
+            safe_create_task(
+                _refresh_alert_keywords(
+                    alert.id,
+                    expected_isbn=replaced_isbn,
+                    name=alert.name,
+                    category_slug=cat_slug,
+                    book_context=new_work_context,
+                    target=card_message,
+                ),
+                name=f"alert-keywords-{alert.id}",
+            )
     except AlertServiceError as exc:
         await message.answer(f"⚠️ {exc}\nRéessaie (ou /cancel pour annuler) :")
 

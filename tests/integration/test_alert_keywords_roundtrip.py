@@ -17,22 +17,35 @@ tronque, une colonne mal typée ou un commit absent se verraient ici.
 
 Sur SQLite comme sur PostgreSQL : la colonne est un `JSON` avec une variante
 `JSONB`, donc les deux chemins s'exercent.
+
+Le même aller-retour couvre le changement d'ISBN depuis « Modifier » : les mots-clés
+de l'ouvrage précédent partent dans le commit du handler, et la recherche de fond —
+qui ouvre sa **propre** session — écrit ceux du nouveau. Un commit oublié ou une tâche
+qui écrit ailleurs ne se verraient nulle part ailleurs : les tests de parcours simulent
+ces deux frontières-là.
 """
 
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.bot.handlers.alerts_manage import (
+    prompt_new_field_value,
+    save_edited_field_value,
+)
 from app.core.constants import CategorySlug
 from app.db.base import Base
 from app.db.models.category import Category
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
+from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
+from app.services.book_metadata_service import BookMetadata
 
 pytestmark = pytest.mark.asyncio
 
@@ -200,6 +213,195 @@ async def test_the_reloaded_exclusions_are_not_cleaned_a_second_time(
         # Nettoyeur relu, sur la forme relue de la base.
         assert sanitize_exclusions(list(stored.exclude_keywords), stored.name) == reloaded
         assert sanitize_variants(list(stored.variants), stored.name) == list(stored.variants)
+
+
+# ---------------------------------------------------------------------------------
+# Changer d'ISBN depuis « Modifier » : les mots-clés de l'ouvrage précédent partent,
+# ceux du nouveau sont cherchés puis écrits — dans la base, pas seulement en mémoire.
+# ---------------------------------------------------------------------------------
+
+ANCIEN_ISBN = "9782369903086"
+NOUVEL_ISBN = "9782369904151"
+
+
+class _EditState:
+    """Fausse FSM de l'écran « Modifier » : le champ ISBN ouvert."""
+
+    def __init__(self) -> None:
+        self.data: dict = {}
+        self.state = None
+
+    async def get_data(self) -> dict:
+        return dict(self.data)
+
+    async def update_data(self, data: dict | None = None, **kwargs) -> None:
+        self.data.update(data or {})
+        self.data.update(kwargs)
+
+    async def set_state(self, state) -> None:
+        self.state = state
+
+    async def clear(self) -> None:
+        self.data = {}
+
+
+def _capture_task(tasks: list):
+    """Remplace `safe_create_task` : la recherche est retenue, puis jouée par le test."""
+
+    def _run(coro, name=None):
+        tasks.append((coro, name))
+        return None
+
+    return _run
+
+
+async def _edit_the_isbn(
+    session_maker: async_sessionmaker[AsyncSession],
+    alert_id: uuid.UUID,
+    isbn: str,
+    *,
+    notice: BookMetadata | None,
+    outcome: KeywordVariantsOutcome,
+) -> AsyncMock:
+    """Joue « Modifier → ISBN → enregistrer », puis la recherche de fond.
+
+    Les frontières réseau sont simulées — notice et moteur — mais la base, les
+    repositories et les commits sont les vrais : l'ordre des gestes est déjà verrouillé
+    par les tests de parcours, ce qui se vérifie ici est l'écriture.
+    """
+    tasks: list = []
+    state = _EditState()
+    card_message = AsyncMock()
+    message = AsyncMock()
+    message.answer = AsyncMock(return_value=card_message)
+    callback = AsyncMock()
+    callback.data = f"ed_f:{alert_id}:isbn"
+    callback.message = AsyncMock()
+
+    async with session_maker() as session:
+        user = await session.scalar(
+            select(User).where(User.telegram_user_id == TEST_TELEGRAM_USER_ID)
+        )
+        assert user is not None
+        with (
+            # La tâche de fond ouvre sa propre session : elle doit écrire dans la base
+            # du test, et non dans celle d'un processus sans base.
+            patch("app.bot.handlers.alerts_manage.AsyncSessionLocal", new=session_maker),
+            # Ici la recherche doit vraiment **tourner** : elle est retenue, puis jouée,
+            # comme la boucle d'événements le ferait après le retour du handler.
+            patch(
+                "app.bot.handlers.alerts_manage.safe_create_task",
+                new=_capture_task(tasks),
+            ),
+            patch("app.bot.handlers.alerts_manage.schedule_book_pricing"),
+            patch(
+                "app.bot.handlers.alerts_manage.keyword_variants_module."
+                "generate_variants_and_exclusions",
+                new=AsyncMock(return_value=outcome),
+            ),
+            patch(
+                "app.services.book_metadata_service.BookMetadataService.lookup_by_isbn",
+                new=AsyncMock(return_value=notice),
+            ),
+        ):
+            await prompt_new_field_value(
+                callback, state=state, db_user=user, db_session=session
+            )
+            message.text = isbn
+            await save_edited_field_value(
+                message, state=state, db_user=user, db_session=session
+            )
+            for coro, _name in tasks:
+                await coro
+
+    return card_message
+
+
+async def test_changing_the_isbn_replaces_the_keywords_left_by_the_previous_work(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    """L'ancien ouvrage avait laissé ses mots-clés : le nouveau les remplace, en base.
+
+    Le défaut tenait à un commit oublié ou à une tâche écrivant ailleurs aussi sûrement
+    qu'à un ordre de gestes inversé. La valeur écrite est donc relue dans une session
+    neuve : ce qui est lu vient de la colonne.
+    """
+    async with session_maker() as write_session:
+        alert_id = await _write_alert(
+            write_session,
+            name="La couleur des choses",
+            exclude_keywords=["coffret"],
+            variants=["couleurdeschose"],
+        )
+        alert = await AlertRepository(write_session).get_by_id(alert_id)
+        assert alert is not None
+        alert.isbn = ANCIEN_ISBN
+        await write_session.commit()
+
+    await _edit_the_isbn(
+        session_maker,
+        alert_id,
+        NOUVEL_ISBN,
+        notice=BookMetadata(
+            title="La couleur des choses",
+            author="Martin Panchaud",
+            publisher="Editions çà et là",
+            isbn13=NOUVEL_ISBN,
+        ),
+        outcome=KeywordVariantsOutcome(
+            variants=["couleurdeschoses"],
+            exclusions=["keeping two"],
+            answered=True,
+        ),
+    )
+
+    async with session_maker() as read_session:
+        stored = await AlertRepository(read_session).get_by_id(alert_id)
+
+    assert stored is not None
+    assert stored.isbn == NOUVEL_ISBN
+    assert stored.variants == ["couleurdeschoses"]
+    assert stored.exclude_keywords == ["keeping two"]
+    assert "search_text=" + NOUVEL_ISBN in stored.vinted_search_url
+
+
+async def test_a_new_isbn_that_nobody_knows_leaves_the_alert_mute_and_says_so(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    """Aucune notice, moteur muet : l'alerte n'a plus aucun mot-clé et le dit.
+
+    L'ISBN saisi est gardé — personne ne prouve qu'il désigne un autre ouvrage —, les
+    mots-clés de l'ancien partent, et le silence du moteur est annoncé à l'utilisateur
+    au lieu de se lire comme un avis rendu (ADR-005).
+    """
+    async with session_maker() as write_session:
+        alert_id = await _write_alert(
+            write_session,
+            name="La couleur des choses",
+            exclude_keywords=["coffret"],
+            variants=["couleurdeschose"],
+        )
+        alert = await AlertRepository(write_session).get_by_id(alert_id)
+        assert alert is not None
+        alert.isbn = ANCIEN_ISBN
+        await write_session.commit()
+
+    card_message = await _edit_the_isbn(
+        session_maker,
+        alert_id,
+        NOUVEL_ISBN,
+        notice=None,
+        outcome=KeywordVariantsOutcome.unanswered(),
+    )
+
+    async with session_maker() as read_session:
+        stored = await AlertRepository(read_session).get_by_id(alert_id)
+
+    assert stored is not None
+    assert stored.isbn == NOUVEL_ISBN
+    assert stored.variants == []
+    assert stored.exclude_keywords == []
+    assert "L'IA n'a pas répondu après une relance" in card_message.answer.call_args[0][0]
 
 
 async def test_an_empty_title_does_not_wipe_the_exclusions_on_the_way_in(
