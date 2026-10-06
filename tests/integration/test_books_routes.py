@@ -5,7 +5,10 @@ Seul le test ISBN-invalide exerce le vrai cas d'usage, qui rejette avant
 tout appel fournisseur (méthodes du service verrouillées en échec).
 """
 
+import subprocess
+import sys
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -302,8 +305,6 @@ async def test_reponse_sans_cle_ni_brut(
     books_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Clé factice configurée : ni elle ni aucune charge brute ne sortent."""
-    from app.use_cases.book_search import result_from_isbn_verdict
-
     monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("CLE-FACTICE-LOT3"))
     _use_case_moque(
         monkeypatch,
@@ -321,3 +322,89 @@ async def test_reponse_sans_cle_ni_brut(
     assert "CLE-FACTICE-LOT3" not in res.text
     assert "key=" not in res.text
     assert "industryIdentifiers" not in res.text
+
+
+def _methodes_par_chemin(application: Any) -> dict[str, set[str]]:
+    """Chemins + méthodes, en dépliant les routeurs inclus (FastAPI récent)."""
+    trouves: dict[str, set[str]] = {}
+    for route in application.routes:
+        conteneur = getattr(route, "original_router", route)
+        for sous_route in getattr(conteneur, "routes", (conteneur,)):
+            chemin = getattr(sous_route, "path", "")
+            methodes = set(getattr(sous_route, "methods", set()) or set())
+            if chemin:
+                trouves[chemin] = methodes
+    return trouves
+
+
+def test_demarrage_a_froid_sans_erreur_import() -> None:
+    """Un processus neuf importe l'application et la construit, sans réseau."""
+    racine = Path(__file__).resolve().parents[2]
+    code = (
+        "from app.main import create_app; "
+        "from tests.integration.test_books_routes import _methodes_par_chemin; "
+        "chemins = _methodes_par_chemin(create_app()); "
+        "assert chemins.get('/api/v1/books/search') == {'GET'}, sorted(chemins); "
+        "assert chemins.get('/api/v1/books/isbn/{isbn}') == {'GET'}; "
+        "print('demarrage-ok')"
+    )
+    termine = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=racine,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert termine.returncode == 0, termine.stderr
+    assert "demarrage-ok" in termine.stdout
+
+
+def test_routes_enregistrees_sur_application_neuve() -> None:
+    """Les deux endpoints existent dans une application construite ici même."""
+    from app.main import create_app
+
+    trouves = _methodes_par_chemin(create_app())
+    assert trouves["/api/v1/books/search"] == {"GET"}
+    assert trouves["/api/v1/books/isbn/{isbn}"] == {"GET"}
+
+
+@pytest.mark.asyncio
+async def test_limite_de_debit_refuse_au_dela_du_quota(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """31 requêtes en une minute : les 30 premières passent, la 31e est refusée."""
+    from app.api.middlewares.security import rate_limiter
+    from app.use_cases.book_search import result_from_isbn_verdict
+
+    rate_limiter.reset_for_test()
+    monkeypatch.setattr(rate_limiter, "_redis_pool_factory", lambda: None)
+    monkeypatch.setattr(rate_limiter, "_redis_client", None)
+    faux = _use_case_moque(
+        monkeypatch, resultat=result_from_isbn_verdict(_verdict_confirme())
+    )
+    # `ASGITransport` présente 127.0.0.1 par défaut, que le middleware exempte
+    # (comme en local) : une IP non exempte exerce la vraie limitation.
+    token = settings.INTERNAL_API_TOKEN.get_secret_value()
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("10.99.0.1", 50000)),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as client:
+        statuts = [
+            (
+                await client.get("/api/v1/books/search", params={"title": "Blacksad"})
+            ).status_code
+            for _ in range(31)
+        ]
+
+        assert statuts[:30] == [200] * 30
+        assert statuts[30] == 429
+        assert faux.search_by_title.await_count == 30
+
+        refusee = await client.get(
+            "/api/v1/books/search", params={"title": "Blacksad"}
+        )
+    assert refusee.status_code == 429
+    assert refusee.headers.get("Retry-After") is not None
+    assert "patienter" in refusee.json()["detail"]
