@@ -7,7 +7,7 @@ from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
-from app.services.market_price_service import MarketPriceService
+from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceService
 from app.services.tome_extractor import TomeMatchResult
 
 
@@ -549,4 +549,137 @@ def test_details_card_escapes_offer_link():
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "https://recyclivre.com/livre?a=1&amp;b=2" in card
     assert "?a=1&b=2" not in card
+
+
+# --------------------------------------------------------------------------- E4 : totaux
+
+
+def _tome_book(title: str, price_cents: int | None) -> Book:
+    """Un tome de série avec (ou sans) cote en base."""
+    book = Book(
+        id=uuid.uuid4(),
+        title=title,
+        normalized_title=title.lower(),
+        isbn13=None,
+    )
+    if price_cents is None:
+        book.market_cache = None
+        return book
+    now = datetime.now(UTC)
+    book.market_cache = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=book.id,
+        lowest_delivered_price_cents=price_cents,
+        best_provider_name="test",
+        best_source_url=None,
+        confidence=MatchConfidence.HIGH,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=now,
+        expires_at=now + timedelta(hours=24),
+        historical_low_1y_cents=price_cents,
+    )
+    return book
+
+
+def test_series_card_shows_every_volume_and_the_persisted_total():
+    """E4 : la série liste chaque tome, signale les muets, et affiche le total persisté.
+
+    Un tome sans cote ne disparaît plus : il compte dans la ligne « en cours de
+    cote ». Le total affiché est celui de l'alerte, jamais recomposé ici.
+    """
+    books = [
+        _tome_book("Blast — Tome 1", 500),
+        _tome_book("Blast — Tome 2", 700),
+        _tome_book("Blast — Tome 3", None),
+    ]
+    listing = create_listing(estimated_total_cents=1500)
+
+    card = MarketPriceService.format_market_details_card(
+        listing, None, books, None, None, series_total_cents=1200
+    )
+
+    assert "Tome 1 : 5,00 €" in card
+    assert "Tome 2 : 7,00 €" in card
+    assert "⏳ 1 tome(s) en cours de cote…" in card
+    assert "<b>Total de la série :</b> ~12,00 € (2/3 tomes)" in card
+
+
+def test_series_card_without_persisted_total_omits_the_total_line():
+    """E4 : sans total en base, la ligne est absente — jamais un total recomposé."""
+    books = [_tome_book("Blast — Tome 1", 500), _tome_book("Blast — Tome 2", 700)]
+    listing = create_listing(estimated_total_cents=1500)
+
+    card = MarketPriceService.format_market_details_card(listing, None, books)
+
+    assert "Total de la série" not in card
+
+
+def test_lot_card_shows_the_total_only_when_every_tome_is_priced():
+    """E4 : le prix de lot n'existe que si tous ses tomes sont cotés.
+
+    Un total partiel serait un cumul fictif : le vendeur vend le lot entier, pas
+    la moitié que nous aurions su coter.
+    """
+    books = [_tome_book("Blast — Tome 1", 500), _tome_book("Blast — Tome 2", 700)]
+    listing = create_listing(estimated_total_cents=1500)
+    tome_result = TomeMatchResult(is_lot=True, lot_tomes=[1, 2], confidence="high")
+
+    card = MarketPriceService.format_market_details_card(
+        listing, None, books, tome_result, None
+    )
+    assert "<b>Total du lot :</b> ~12,00 €" in card
+
+    # Un tome sans cote : pas de prix de lot, les cotes par tome restent.
+    books[1].market_cache = None
+    card = MarketPriceService.format_market_details_card(
+        listing, None, books, tome_result, None
+    )
+    assert "Total du lot" not in card
+    assert "Tome 1 : 5,00 €" in card
+
+
+def test_lot_card_without_any_price_announces_the_pending_cote():
+    """E4 : un lot dont aucun tome n'est coté annonce l'attente, pas un panneau vide."""
+    books = [_tome_book("Blast — Tome 1", None), _tome_book("Blast — Tome 2", None)]
+    listing = create_listing(estimated_total_cents=1500)
+    tome_result = TomeMatchResult(is_lot=True, lot_tomes=[1, 2], confidence="high")
+
+    card = MarketPriceService.format_market_details_card(
+        listing, None, books, tome_result, None
+    )
+    assert PENDING_COTE_LINE in card
+    assert "Total du lot" not in card
+
+
+def test_single_book_card_carries_the_series_total():
+    """E4 : le tome résolu affiche aussi le total de sa série — il en fait partie."""
+    current = _tome_book("Blast — Tome 2", 700)
+    books = [_tome_book("Blast — Tome 1", 500), current]
+    listing = create_listing(estimated_total_cents=1500)
+
+    card = MarketPriceService.format_market_details_card(
+        listing, current, books, None, None, series_total_cents=1200
+    )
+
+    assert "Autres tomes de la série" in card
+    assert "<b>Total de la série :</b> ~12,00 €" in card
+
+
+def test_series_reference_total_ignores_an_integral_when_tomes_are_numbered():
+    """E4 : l'intégrale ne double pas la série — le total somme ce qui est listé."""
+    from app.services.market_price_service import series_reference_total
+
+    books = [
+        _tome_book("Blacksad — Intégrale", 900),
+        _tome_book("Blacksad — Tome 1", 500),
+        _tome_book("Blacksad — Tome 2", 700),
+    ]
+    assert series_reference_total(books) == 1200
+
+    # Sans tome numéroté, tout compte : il n'y a rien à dédoublonner.
+    unnumbered = [_tome_book("Blacksad — Intégrale", 900), _tome_book("Blacksad — Hors série", 300)]
+    assert series_reference_total(unnumbered) == 1200
+
+    # Aucune cote : pas de total — un zéro se lirait comme une série gratuite.
+    assert series_reference_total([_tome_book("Blast — Tome 1", None)]) is None
 

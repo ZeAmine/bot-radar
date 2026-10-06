@@ -101,9 +101,14 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_chasse_session_never_echoes_the_token(
-    internal_client: AsyncClient, fake_redis: dict[str, str]
+    internal_client: AsyncClient,
+    fake_redis: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """Le jeton va et vient : seule sa longueur sort, sinon il finit dans un log."""
+    # Le test porte sur la voie Redis : l'environnement local ne doit pas décider du
+    # résultat — `source` vaut « env » dès que le réglage porte un jeton.
+    monkeypatch.setattr(settings, "CHASSE_AUX_LIVRES_DUIH", "")
     res = await internal_client.post(
         "/api/v1/internal/chasse/session",
         json={"duih": "jeton-ultra-secret-0123456789"},

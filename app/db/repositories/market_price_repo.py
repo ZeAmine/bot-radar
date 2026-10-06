@@ -72,6 +72,24 @@ class MarketPriceRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_alert_ids_linked_to_book(self, book_id: uuid.UUID) -> list[uuid.UUID]:
+        """Alertes qui portent un livre venu d'être coté — pour leur total de série."""
+        stmt = select(AlertBook.alert_id).where(AlertBook.book_id == book_id).distinct()
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def set_series_total(self, alert_id: uuid.UUID, total_cents: int | None) -> None:
+        """Écrit le total de série persisté d'une alerte, sans commit.
+
+        ``NULL`` dit « aucune cote exploitable dans la série », jamais « total zéro » :
+        un zéro se lirait comme une série dont les tomes ne valent rien.
+        """
+        alert = await self.session.get(Alert, alert_id)
+        if alert is None:
+            return
+        alert.series_total_cents = total_cents
+        await self.session.flush()
+
     async def get_historical_low_1y(self, book_id: uuid.UUID) -> int | None:
         """Calcule le prix le plus bas constaté sur les 365 derniers jours
         à partir des données certifiées stockées dans les snapshots (raw_payload).

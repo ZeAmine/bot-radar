@@ -243,6 +243,74 @@ def _match_lot_books(books: list[Book], lot_tomes: list[int]) -> list[Book]:
     ]
 
 
+def _listable_series_books(books: list[Book]) -> list[Book]:
+    """Tomes qui figurent réellement dans le déroulé d'une série.
+
+    Dès qu'un tome porte un numéro, une fiche sans numéro (intégrale, hors-série)
+    double la série entière : elle disparaît du déroulé — et du total, qui doit
+    sommer exactement ce que l'écran montre.
+    """
+    numbered = [b for b in books if extract_tome_number_from_title(b.title) is not None]
+    return numbered if numbered else list(books)
+
+
+def series_reference_total(books: list[Book]) -> int | None:
+    """Total de série : somme des prix de référence des tomes listables.
+
+    La somme ne porte que sur ce qui est connu — une somme vide n'est pas un
+    total mais l'absence d'un total, d'où ``NULL``. C'est cette fonction, et elle
+    seule, qui définit le total : `persist_market_result` l'appelle à chaque
+    écriture de cote, et l'écran affiche la valeur ainsi persistée.
+    """
+    known = [
+        price_cents
+        for book in _listable_series_books(books)
+        if (price_cents := reference_price(book.market_cache)[0]) is not None
+    ]
+    return sum(known) if known else None
+
+
+def _lot_reference_total(matched: list[Book]) -> int | None:
+    """Prix de lot : la somme des tomes appariés, seulement s'ils sont tous cotés.
+
+    Un total partiel serait un cumul fictif : le vendeur vend le lot entier, pas
+    la moitié que nous aurions su coter. Sans appariement complet, il n'y a pas
+    de prix de lot — le panneau affiche alors les cotes par tome.
+    """
+    if not matched:
+        return None
+    known = [
+        price_cents
+        for book in matched
+        if (price_cents := reference_price(book.market_cache)[0]) is not None
+    ]
+    if len(known) != len(matched):
+        return None
+    return sum(known)
+
+
+def _pending_tome_count_line(books: list[Book]) -> str | None:
+    """Ligne « n tomes en cours de cote » : un tome sans prix doit se voir.
+
+    Cacher un tome muet faisait lire une série de7 tomes comme une série de5 —
+    le silence passait pour l'inventaire complet de la série.
+    """
+    unpriced = sum(
+        1 for book in _listable_series_books(books) if reference_price(book.market_cache)[0] is None
+    )
+    if not unpriced:
+        return None
+    return f"⏳ {unpriced} tome(s) en cours de cote…"
+
+
+def _series_total_line(total_cents: int, books: list[Book]) -> str:
+    """Ligne « Total de série », avec la couverture réelle des tomes cotés."""
+    listed = _listable_series_books(books)
+    priced = sum(1 for book in listed if reference_price(book.market_cache)[0] is not None)
+    coverage = f" ({priced}/{len(listed)} tomes)" if priced < len(listed) else ""
+    return f"<b>Total de la série :</b> ~{format_cents(total_cents)}{coverage}"
+
+
 def _lot_label(
     expected_count: int,
     priced_count: int,
@@ -480,8 +548,14 @@ class MarketPriceService:
         books_in_series: list[Book] | None = None,
         tome_result: "TomeMatchResult | None" = None,
         latest_snapshot: Any = None,
+        series_total_cents: int | None = None,
     ) -> str:
-        """Génère le texte complet du panneau callback « Prix du marché »."""
+        """Génère le texte complet du panneau callback « Prix du marché ».
+
+        `series_total_cents` est le total **persisté** sur l'alerte : l'écran ne
+        le recalcule jamais, il affiche ce que la dernière écriture de cote a mis
+        en base. ``NULL`` se traduit par une ligne absente, pas par zéro.
+        """
         books_in_series = books_in_series or []
 
         # Résolution de repli : un tome non résolu mais une série d'un seul livre.
@@ -495,9 +569,13 @@ class MarketPriceService:
         if not book and books_in_series:
             if tome_result and tome_result.is_lot:
                 return MarketPriceService._lot_card(books_in_series, tome_result.lot_tomes)
-            return MarketPriceService._series_card(listing, books_in_series)
+            return MarketPriceService._series_card(
+                listing, books_in_series, series_total_cents
+            )
 
-        return MarketPriceService._single_book_card(book, books_in_series, latest_snapshot)
+        return MarketPriceService._single_book_card(
+            book, books_in_series, latest_snapshot, series_total_cents
+        )
 
     @staticmethod
     def _header(title: str) -> list[str]:
@@ -510,13 +588,8 @@ class MarketPriceService:
         fallback_price: int | None = None,
     ) -> list[str]:
         """Lignes « tome : prix » d'une série, tome courant mis en gras."""
-        has_numbered_tomes = any(
-            extract_tome_number_from_title(book.title) is not None for book in books
-        )
         lines: list[str] = []
-        for book in _sort_series_books(books):
-            if has_numbered_tomes and extract_tome_number_from_title(book.title) is None:
-                continue
+        for book in _sort_series_books(_listable_series_books(books)):
             is_current = _is_same_book(book, current_book)
             price_cents, _ = reference_price(book.market_cache)
             if price_cents is None and is_current:
@@ -538,24 +611,50 @@ class MarketPriceService:
 
     @staticmethod
     def _lot_card(books_in_series: list[Book], lot_tomes: list[int] | None) -> str:
-        """Panneau d'un lot : cote de chaque tome identifié, jamais un cumul fictif."""
+        """Panneau d'un lot : les cotes par tome, et le prix du lot quand il se forme.
+
+        Le prix du lot n'apparaît que si **tous** ses tomes sont cotés : sans
+        total complet, il n'y a pas de prix de lot — le panneau affiche les cotes
+        par tome, jamais un cumul fictif sur la moitié d'un lot.
+        """
         matched = _match_lot_books(books_in_series, lot_tomes or [])
         target_books = matched or books_in_series
 
         lines = MarketPriceService._header("<b>Cote par tome (plus bas connu) :</b>")
+        shown = False
         for book in _sort_series_books(target_books):
             price_cents, _ = reference_price(book.market_cache)
             if price_cents is None:
                 continue
             lines.append(f"• {clean_tome_display_title(book.title)} : {format_cents(price_cents)}")
+            shown = True
+
+        pending = _pending_tome_count_line(target_books)
+        if shown and pending:
+            lines.append(pending)
+        elif not shown:
+            lines.append(PENDING_COTE_LINE)
+
+        lot_total = _lot_reference_total(matched)
+        if lot_total is not None:
+            lines.append(f"<b>Total du lot :</b> ~{format_cents(lot_total)}")
 
         latest = MarketPriceService._latest_checked_at(target_books)
         lines.append(f"\n<b>Dernière mise à jour :</b> {latest}")
         return "\n".join(lines)
 
     @staticmethod
-    def _series_card(listing: Listing, books_in_series: list[Book]) -> str:
-        """Panneau d'une série sans tome résolu : les cotes de tous ses tomes."""
+    def _series_card(
+        listing: Listing,
+        books_in_series: list[Book],
+        series_total_cents: int | None = None,
+    ) -> str:
+        """Panneau d'une série sans tome résolu : les cotes de tous ses tomes.
+
+        Chaque tome figure — coté avec son prix, muet avec une mention explicite —
+        et le total persisté ferme la liste. Un tome absent se lisait comme un
+        tome qui n'existe pas.
+        """
         vinted_total = _vinted_total_cents(listing)
         lines = MarketPriceService._header(
             f"🆕 <b>Vinted :</b> "
@@ -567,6 +666,11 @@ class MarketPriceService:
         # Un tome sans cote est une cote en attente, pas une cote absente : un
         # titre suivi d'une section vide se lisait comme un panneau mort.
         lines.extend(series_lines or [PENDING_COTE_LINE])
+        pending = _pending_tome_count_line(books_in_series)
+        if series_lines and pending:
+            lines.append(pending)
+        if series_total_cents is not None:
+            lines.append(_series_total_line(series_total_cents, books_in_series))
         latest = MarketPriceService._latest_checked_at(books_in_series)
         lines.append(f"\n<b>Dernière mise à jour :</b> {latest}")
         return "\n".join(lines)
@@ -576,6 +680,7 @@ class MarketPriceService:
         book: Book | None,
         books_in_series: list[Book],
         latest_snapshot: Any,
+        series_total_cents: int | None = None,
     ) -> str:
         """Panneau d'un tome résolu : cote 1 an, comparatif par boutique, série."""
         cache = book.market_cache if book else None
@@ -621,6 +726,11 @@ class MarketPriceService:
             if len(series_lines) > 1:
                 lines.append("\n<b>Autres tomes de la série :</b>")
                 lines.extend(series_lines)
+
+        # Le total de série ferme le contexte : un tome isolé ne dit pas à lui
+        # seul ce que vaut la collection — sa valeur est en base, dans l'alerte.
+        if series_total_cents is not None and len(books_in_series) > 1:
+            lines.append(_series_total_line(series_total_cents, books_in_series))
 
         best_url = MarketPriceService._best_offer_url(cache, partners)
         if best_url:

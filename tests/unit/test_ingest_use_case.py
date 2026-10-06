@@ -415,6 +415,170 @@ async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> No
 
 
 @pytest.mark.asyncio
+async def test_series_alert_prices_every_linked_volume_after_the_send(mock_db: AsyncMock) -> None:
+    """E1 : une alerte série cote chaque volume lié sans prix, pas seulement le tome résolu.
+
+    Sans cette garantie, un volume dont la cotation a échoué à la création restait
+    muet jusqu'au job glissant — le prix bas de chaque volume n'était pas en base.
+    """
+    calls: list[str] = []
+
+    async def _send(**_kwargs: object) -> bool:
+        calls.append("send")
+        return True
+
+    def _schedule(book_id: object, *, reason: str) -> None:
+        calls.append(f"price:{reason}:{book_id}")
+
+    mock_send_alert = AsyncMock(side_effect=_send)
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal"),
+        patch(
+            "app.use_cases.ingest_listing.schedule_book_pricing",
+            side_effect=_schedule,
+        ) as schedule,
+    ):
+        use_case = ProcessListingUseCase(db=mock_db)
+        _mock_listing, mock_repo, alert, book = _bd_scenario(None)
+        # Un second volume lié à la même alerte série, sans cote.
+        sibling = MagicMock()
+        sibling.id = uuid.uuid4()
+        sibling.title = "Blacksad - Tome 5"
+        sibling.market_cache = None
+        alert.alert_books = [MagicMock(book=book), MagicMock(book=sibling)]
+        use_case.listing_repo = mock_repo
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-123",
+            url="https://vinted.fr/item-123",
+            title="Blacksad - Tome 6",
+            category_slug="bd_comics",
+            item_price_cents=1400,
+        )
+        await use_case.execute(payload, raw_payload={})
+
+    # Les deux volumes sont cotés, après l'envoi.
+    assert f"price:alert_sent:{book.id}" in calls
+    assert f"price:alert_sent:{sibling.id}" in calls
+    assert calls.index("send") < calls.index(f"price:alert_sent:{sibling.id}")
+    assert schedule.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_series_alert_does_not_reprice_a_priced_sibling(mock_db: AsyncMock) -> None:
+    """E1 : un volume déjà coté n'est pas recoté — la garantie ne doit pas doubler le travail."""
+    from app.db.models.book_market_cache import BookMarketCache
+
+    calls: list[str] = []
+
+    async def _send(**_kwargs: object) -> bool:
+        calls.append("send")
+        return True
+
+    def _schedule(book_id: object, *, reason: str) -> None:
+        calls.append(f"price:{reason}:{book_id}")
+
+    mock_send_alert = AsyncMock(side_effect=_send)
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal"),
+        patch(
+            "app.use_cases.ingest_listing.schedule_book_pricing",
+            side_effect=_schedule,
+        ) as schedule,
+    ):
+        use_case = ProcessListingUseCase(db=mock_db)
+        _mock_listing, mock_repo, alert, book = _bd_scenario(None)
+        # Un second volume lié, déjà coté.
+        sibling = MagicMock()
+        sibling.id = uuid.uuid4()
+        sibling.title = "Blacksad - Tome 5"
+        sibling.market_cache = BookMarketCache(
+            id=uuid.uuid4(),
+            book_id=sibling.id,
+            lowest_delivered_price_cents=800,
+            comparison_status=ComparisonStatus.AVAILABLE,
+            historical_low_1y_cents=750,
+        )
+        alert.alert_books = [MagicMock(book=book), MagicMock(book=sibling)]
+        use_case.listing_repo = mock_repo
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-123",
+            url="https://vinted.fr/item-123",
+            title="Blacksad - Tome 6",
+            category_slug="bd_comics",
+            item_price_cents=1400,
+        )
+        await use_case.execute(payload, raw_payload={})
+
+    # Seul le tome résolu (sans cote) est coté.
+    assert f"price:alert_sent:{book.id}" in calls
+    assert f"price:alert_sent:{sibling.id}" not in calls
+    assert schedule.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_isbn_alert_does_not_price_siblings(mock_db: AsyncMock) -> None:
+    """E1 : une alerte ISBN ne déclenche pas la couverture de série — elle n'a pas de série."""
+    calls: list[str] = []
+
+    async def _send(**_kwargs: object) -> bool:
+        calls.append("send")
+        return True
+
+    def _schedule(book_id: object, *, reason: str) -> None:
+        calls.append(f"price:{reason}:{book_id}")
+
+    mock_send_alert = AsyncMock(side_effect=_send)
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal"),
+        patch(
+            "app.use_cases.ingest_listing.schedule_book_pricing",
+            side_effect=_schedule,
+        ) as schedule,
+    ):
+        use_case = ProcessListingUseCase(db=mock_db)
+        _mock_listing, mock_repo, alert, book = _bd_scenario(None)
+        # Alerte ISBN : pas de couverture de série.
+        alert.isbn = "9782205078054"
+        sibling = MagicMock()
+        sibling.id = uuid.uuid4()
+        sibling.title = "Blacksad - Tome 5"
+        sibling.market_cache = None
+        alert.alert_books = [MagicMock(book=book), MagicMock(book=sibling)]
+        use_case.listing_repo = mock_repo
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-123",
+            url="https://vinted.fr/item-123",
+            title="Blacksad - Tome 6",
+            category_slug="bd_comics",
+            item_price_cents=1400,
+        )
+        await use_case.execute(payload, raw_payload={})
+
+    # Seul le livre résolu est coté — l'alerte ISBN n'a pas de série à couvrir.
+    assert f"price:alert_sent:{book.id}" in calls
+    assert f"price:alert_sent:{sibling.id}" not in calls
+    assert schedule.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_mark_notified_commits_before_the_next_send(mock_db: AsyncMock) -> None:
     """La première alerte est horodatée même si l'envoi suivant lève."""
     first = MagicMock()

@@ -497,6 +497,8 @@ class BookSearchUseCase:
         """
         clean_isbn = normalize_isbn(isbn)
         if not clean_isbn or not is_valid_isbn(clean_isbn):
-            raise ValueError(f"ISBN invalide : {isbn.strip()} — aucun provider interrogé.")
+            raise InvalidIsbnError(
+                f"ISBN invalide : {isbn.strip()} — aucun provider interrogé."
+            )
         report = await self._service.consult_authorities_report(isbn)
         return result_from_verdict_report(report, expected_title)

@@ -89,11 +89,13 @@ def test_extract_best_historical_low_returns_minimum():
 
 
 @pytest.mark.asyncio
-async def test_ebay_browse_valid_offer():
+async def test_ebay_browse_valid_offer(monkeypatch: pytest.MonkeyPatch):
     """Vérifie le parsing d'une offre eBay valide avec prix et port connus."""
     provider = EbayBrowseProvider()
-    settings.EBAY_CLIENT_ID = "dummy_id"
-    settings.EBAY_CLIENT_SECRET = MagicMock(get_secret_value=lambda: "dummy_secret")
+    monkeypatch.setattr(settings, "EBAY_CLIENT_ID", "dummy_id")
+    monkeypatch.setattr(
+        settings, "EBAY_CLIENT_SECRET", MagicMock(get_secret_value=lambda: "dummy_secret")
+    )
 
     oauth_response = httpx.Response(200, json={"access_token": "mock_token", "expires_in": 7200})
     search_response = httpx.Response(
@@ -130,8 +132,14 @@ async def test_ebay_browse_valid_offer():
 
 
 @pytest.mark.asyncio
-async def test_ebay_browse_reject_unknown_shipping_or_currency():
+async def test_ebay_browse_reject_unknown_shipping_or_currency(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """Vérifie le rejet strict des offres avec devise non-EUR ou port inconnu."""
+    monkeypatch.setattr(settings, "EBAY_CLIENT_ID", "dummy_id")
+    monkeypatch.setattr(
+        settings, "EBAY_CLIENT_SECRET", MagicMock(get_secret_value=lambda: "dummy_secret")
+    )
     provider = EbayBrowseProvider()
     provider._cached_token = "valid_token"
     provider._token_expires_at = 9999999999.0
@@ -157,15 +165,29 @@ async def test_ebay_browse_reject_unknown_shipping_or_currency():
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
         mock_get.return_value = search_response
         offers = await provider.get_offers(isbn13="9782205078054", title="Blacksad")
+        # La requête a bien eu lieu : sans identifiants, `get_offers` rend [] au
+        # premier garde, et le rejet qu'on veut prouver ne serait pas exercé.
+        mock_get.assert_called_once()
         assert len(offers) == 0
 
 
 @pytest.mark.asyncio
-async def test_ebay_browse_error_handling():
+async def test_ebay_browse_error_handling(monkeypatch: pytest.MonkeyPatch):
     """Vérifie le fallback silencieux en cas d'erreur de réseau ou OAuth."""
+    monkeypatch.setattr(settings, "EBAY_CLIENT_ID", "dummy_id")
+    monkeypatch.setattr(
+        settings, "EBAY_CLIENT_SECRET", MagicMock(get_secret_value=lambda: "dummy_secret")
+    )
     provider = EbayBrowseProvider()
-    with patch("httpx.AsyncClient.post", side_effect=httpx.ConnectTimeout("Timeout")):
+    with patch(
+        "httpx.AsyncClient.post",
+        new_callable=AsyncMock,
+        side_effect=httpx.ConnectTimeout("Timeout"),
+    ) as mock_post:
         offers = await provider.get_offers(isbn13="9782205078054", title="Blacksad")
+        # Le OAuth a bien été tenté : sans identifiants, le premier garde rend []
+        # sans jamais joindre le réseau, et le fallback ne serait pas exercé.
+        mock_post.assert_called_once()
         assert offers == []
 
 
