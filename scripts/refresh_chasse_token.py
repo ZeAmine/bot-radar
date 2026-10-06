@@ -15,11 +15,20 @@ Repli gracieux (approche A)
 - Playwright absent du venv : le script l'annonce avec la commande d'installation
   et sort en 2, sans casser quoi que ce soit.
 - Défi non résolu dans le délai : il renvoie à la méthode manuelle (copier le
-  cookie depuis un vrai navigateur), qui reste toujours valable.
+  cookie depuis un vrai navigateur), qui reste toujours valable. La passe
+  cron `scripts/refresh_chasse_cron.sh` tente alors une seconde passe en
+  headful sous Xvfb avant d'abandonner.
 - Un jeton capturé mais inutile est rejeté par la validation, exactement comme
   en manuel : jamais d'« installé » qui ne rendrait rien.
 
-Le jeton n'est jamais journalisé : seule sa longueur est rapportée.
+Le jeton n'est jamais journalisé : seule sa longueur l'est, avec sa source
+(attribut ``data-duih`` ou cookie), ce qui distingue un défi passé d'un cookie
+d'entrée sans valeur.
+
+Codes de sortie (lus par le cron) :
+    0 = jeton injecté (ou rien à faire avec --print-only)
+    1 = jeton capturé mais refusé par la validation, ou injection échouée
+    2 = capture impossible (Playwright absent, défi non résolu, token interne manquant)
 
 Usage :
     python scripts/refresh_chasse_token.py                   # capture, valide, injecte
@@ -49,6 +58,23 @@ SITE_URL = "https://www.chasse-aux-livres.fr/"
 CHALLENGE_TIMEOUT_SECONDS = 45.0
 POLL_INTERVAL_SECONDS = 1.0
 
+# Deux signaux mécaniques trahissent le pilote avant même le défi : le flag
+# `webdriver` et des langues absentes. On les retire à l'exécution des pages.
+# On n'emprunte rien d'autre — une empreinte surfaite se détecte aussi, et le
+# site ne doit rien voir d'autre qu'un navigateur français normal.
+STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['fr-FR', 'fr', 'en-US', 'en']});
+"""
+
+# Fenêtre et fuseau d'un visiteur de France : le défi se juge aussi là-dessus.
+CONTEXT_OPTIONS = {
+    "viewport": {"width": 1280, "height": 800},
+    "locale": "fr-FR",
+    "timezone_id": "Europe/Paris",
+}
+LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled"]
+
 
 def extract_duih(html_attr: str | None, cookies: list[dict]) -> str | None:
     """Retire le jeton de l'attribut ``data-duih`` ou du cookie ``duih``.
@@ -70,6 +96,7 @@ def extract_duih(html_attr: str | None, cookies: list[dict]) -> str | None:
 async def capture_token(headful: bool) -> str | None:
     """Ouvre le site, attend la résolution du défi, renvoie le jeton ou ``None``."""
     try:
+        from playwright.async_api import Error as PlaywrightError
         from playwright.async_api import async_playwright
     except ImportError:
         logger.error(
@@ -80,23 +107,46 @@ async def capture_token(headful: bool) -> str | None:
         return None
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=not headful)
+        browser = await playwright.chromium.launch(
+            headless=not headful, args=LAUNCH_ARGS
+        )
         try:
-            page = await browser.new_page()
-            await page.goto(SITE_URL, wait_until="domcontentloaded")
+            context = await browser.new_context(**CONTEXT_OPTIONS)
+            await context.add_init_script(STEALTH_INIT_SCRIPT)
+            page = await context.new_page()
 
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + CHALLENGE_TIMEOUT_SECONDS
-            while loop.time() < deadline:
-                html_attr = await page.get_attribute("html", "data-duih")
-                cookies = await page.context.cookies(SITE_URL)
-                token = extract_duih(html_attr, cookies)
-                if token:
-                    logger.info(
-                        "Défi résolu, jeton capturé (%s caractères).", len(token)
-                    )
-                    return token
-                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            try:
+                await page.goto(SITE_URL, wait_until="domcontentloaded")
+
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + CHALLENGE_TIMEOUT_SECONDS
+                while loop.time() < deadline:
+                    html_attr = await page.get_attribute("html", "data-duih")
+                    cookies = await page.context.cookies(SITE_URL)
+                    token = extract_duih(html_attr, cookies)
+                    if token:
+                        source = (
+                            "attribut data-duih"
+                            if html_attr and html_attr.strip()
+                            else "cookie duih"
+                        )
+                        logger.info(
+                            "Défi résolu, jeton capturé (%s caractères, source : %s).",
+                            len(token),
+                            source,
+                        )
+                        return token
+                    await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            except PlaywrightError as exc:
+                # Page fermée, naviguée ailleurs ou navigation refusée : on le
+                # dit précisément plutôt que de raconter un délai dépassé.
+                logger.error(
+                    "Navigation ou défi interrompu (%s) : %s — nouvelle tentative "
+                    "à la passe suivante.",
+                    type(exc).__name__,
+                    exc,
+                )
+                return None
 
             logger.error(
                 "Défi non résolu en %.0f s. Reprenez à la main : ouvrez %s dans "
