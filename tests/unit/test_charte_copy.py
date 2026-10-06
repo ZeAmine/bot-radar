@@ -503,10 +503,15 @@ def test_no_charte_label_is_hardcoded_in_a_screen():
     Deux façons de dériver, une seule règle de détection : le libellé **tel quel**
     (un bouton du clavier d'édition, un titre d'écran de saisie) ou le libellé suivi
     de son séparateur (« ISBN : », « Statut : ») dans une ligne rendue. Le verrou
-    lit les libellés du module — `FIELD_*` et `STATUS_*`, les statuts s'étant révélés
-    réécrits en dur au même endroit — et non une liste recopiée : un libellé ajouté
-    à `labels.py` est protégé dès sa naissance, et un écran qui réécrirait
-    « Mots-clés exclus » échoue ici au lieu de dériver silencieusement.
+    lit les libellés du module — `FIELD_*`, `STATUS_*` et `BTN_*`, les statuts puis
+    les boutons s'étant révélés réécrits en dur au même endroit — et non une liste
+    recopiée : un libellé ajouté à `labels.py` est protégé dès sa naissance, et un
+    écran qui réécrirait « Mots-clés exclus » échoue ici au lieu de dériver
+    silencieusement.
+
+    Un bouton n'a ni séparateur ni casse imposée : sa seule forme est son texte
+    exact, et c'est aussi par lui qu'il dérive. « ← Retour » écrit à quatre endroits
+    ne se répare qu'à quatre endroits — le verrou lui rend une source unique.
 
     Le périmètre est **tous** les écrans, pas les handlers seuls : la fiche, les
     claviers et la légende d'annonce portent les mêmes libellés, et un verrou qui
@@ -519,9 +524,11 @@ def test_no_charte_label_is_hardcoded_in_a_screen():
     charte_labels = {
         name: value
         for name, value in vars(labels).items()
-        if name.startswith(("FIELD_", "STATUS_")) and isinstance(value, str)
+        if name.startswith(("FIELD_", "STATUS_", "BTN_")) and isinstance(value, str)
     }
-    assert charte_labels, "labels n'expose aucun FIELD_/STATUS_ : le verrou ne verrouille rien"
+    assert charte_labels, (
+        "labels n'expose aucun FIELD_/STATUS_/BTN_ : le verrou ne verrouille rien"
+    )
 
     violations = []
     for file_name, line, text in _screen_text_literals():
