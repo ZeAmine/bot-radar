@@ -553,14 +553,21 @@ async def test_resolve_for_alert_does_not_call_a_lookalike_a_homonym():
 
 @pytest.mark.asyncio
 async def test_resolve_for_alert_keeps_same_work_editions_out_of_homonyms():
-    """Deux éditions d'un même auteur ne sont jamais des œuvres homonymes."""
-    service = BookMetadataService()
+    """Deux éditions d'un même auteur ne sont jamais des œuvres homonymes.
+
+    Le double rend les notices réelles de la BNF pour cette requête (les deux
+    éditions Panchaud, deux ouvrages voisins au titre proche, un livre du même
+    éditeur) : les homonymes se jugent sur le titre **exactement** demandé, donc
+    aucun d'eux ne doit se retrouver dans `other_works`.
+    """
+    service = BookMetadataService(http_client=FakeBnFClient())
 
     resolution = await service.resolve_for_alert("La couleur des choses", "Martin Panchaud")
 
     assert resolution is not None
     assert resolution.other_works == []
     assert resolution.is_ambiguous is False
+    assert resolution.best.isbn13 == "9782369903086"
 
 
 @pytest.mark.asyncio

@@ -224,9 +224,26 @@ def _edition_resolution() -> BookResolution:
 
 
 def _bnf_stub(resolution: BookResolution | None) -> MagicMock:
-    """Cas d'usage simulé : mappe la résolution figée via les adaptateurs réels."""
+    """Cas d'usage simulé, fidèle aux deux chemins du contrat.
+
+    `search_by_title` mappe la résolution figée ; `search_by_isbn` (la revalidation
+    d'un choix d'œuvre/édition) ne confirme que les ISBN que cette résolution porte
+    réellement — tout autre code rend `not_found`, comme une autorité qui ne le
+    connaît pas.
+    """
+    from app.domain.enums import BookSearchStatus
     from app.services.book_metadata_service import BibliographicReport
-    from app.use_cases.book_search import result_from_report
+    from app.use_cases.book_search import (
+        BookSearchResult,
+        result_from_report,
+    )
+
+    notices = (
+        [resolution.best, *resolution.alternatives, *resolution.other_works]
+        if resolution is not None
+        else []
+    )
+    known = {notice.isbn13: notice for notice in notices if notice.isbn13}
 
     service = MagicMock()
 
@@ -235,10 +252,19 @@ def _bnf_stub(resolution: BookResolution | None) -> MagicMock:
             BibliographicReport(kind="title", resolution=resolution), query_title=title
         )
 
+    async def _search_by_isbn(isbn: str, expected_title: str | None = None):
+        notice = known.get(isbn)
+        if notice is None:
+            return BookSearchResult(status=BookSearchStatus.NOT_FOUND)
+        return result_from_report(
+            BibliographicReport(
+                kind="title", resolution=BookResolution(best=notice)
+            ),
+            query_title=expected_title or notice.title,
+        )
+
     service.search_by_title = AsyncMock(side_effect=_search_by_title)
-    service.search_by_isbn = AsyncMock(
-        return_value=result_from_report(BibliographicReport(kind="title", resolution=resolution))
-    )
+    service.search_by_isbn = AsyncMock(side_effect=_search_by_isbn)
     return service
 
 
@@ -259,6 +285,10 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
 
     with (
         patch("app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=bnf),
+        # Le clic sur une édition revalide son ISBN depuis le Lot 4 : ce chemin vit dans
+        # `alerts_create_confirm` et doit recevoir le même double, sinon le test dépend
+        # d'un vrai appel à la BNF.
+        patch("app.bot.handlers.alerts_create_confirm.BookSearchUseCase", return_value=bnf),
         # La cotation part en arrière-plan après la confirmation : un test ne doit pas
         # atteindre les marchands, ni laisser une tâche en vol à sa fermeture.
         patch("app.bot.handlers.alerts_create.schedule_book_pricing") as pricing,
