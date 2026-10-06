@@ -104,11 +104,18 @@ async def test_every_probe_is_tried_before_refusing_a_token():
 
 
 @pytest.mark.asyncio
-async def test_validation_restores_the_configured_token():
-    """Essayer un jeton ne doit pas laisser l'environnement de production modifié."""
+async def test_validation_restores_the_configured_token(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Essayer un jeton ne doit pas laisser l'environnement de production modifié.
+
+    La valeur de départ est posée par `monkeypatch` : une mutation directe du singleton
+    `settings` survivrait au test et déciderait du résultat des suivants (le `source`
+    de l'endpoint Chasse, notamment), selon l'ordre de passage.
+    """
     from app.core.config import settings
 
-    settings.CHASSE_AUX_LIVRES_DUIH = "celui-de-l-env"
+    monkeypatch.setattr(settings, "CHASSE_AUX_LIVRES_DUIH", "celui-de-l-env")
     provider = MagicMock()
     provider.return_value.get_offers = AsyncMock(return_value=[])
 
