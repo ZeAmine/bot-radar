@@ -22,6 +22,9 @@ from app.bot.handlers.alerts_create_confirm import (
     select_alert_creation_work,
 )
 from app.bot.handlers.alerts_helpers import (
+    _begin_bibliographic_search,
+    _bump_search_token,
+    _search_still_current,
     draft_updates_from_search,
     process_bd_query_lookup,
     realign_draft_to_isbn,
@@ -185,9 +188,13 @@ def _state(data: dict[str, Any]) -> AsyncMock:
         stored.update(payload or {})
         stored.update(kwargs)
 
+    async def _clear() -> None:
+        stored.clear()
+
     state = AsyncMock()
     state.get_data = AsyncMock(side_effect=_get)
     state.update_data = AsyncMock(side_effect=_update)
+    state.clear = AsyncMock(side_effect=_clear)
     state.set_state = AsyncMock()
     state._stored = stored
     return state
@@ -332,6 +339,177 @@ async def test_realignement_isbn_partial_ne_remplit_pas_la_fiche() -> None:
     assert realignment.updates["isbn"] == "9782369903086"
     assert realignment.updates["author"] is None
     assert realignment.updates["book_context"] is None
+
+
+def test_generation_des_mots_cles_ignore_l_auteur_et_les_candidats() -> None:
+    """Seul le titre décide : aucun auteur ni ISBN de candidat ne devient un filtre."""
+    from app.services.book_metadata_service import generate_recommended_keywords
+
+    assert generate_recommended_keywords("Blacksad", "Canales") == (
+        generate_recommended_keywords("Blacksad", None)
+    )
+    assert generate_recommended_keywords("Blacksad", "Un Auteur Inconnu") == (
+        generate_recommended_keywords("Blacksad", None)
+    )
+
+    # Le `partial` porte un candidat (auteur + ISBN) : rien de tout cela n'entre dans
+    # les critères, qui ne dérivent que du titre demandé.
+    updates = draft_updates_from_search(_partial_repli_panne(), query_title="Blacksad")
+    assert updates["include_keywords"] == generate_recommended_keywords("Blacksad", None)[0]
+    assert all("9782369903086" not in kw for kw in updates["include_keywords"])
+    assert all("canales" not in kw for kw in updates["include_keywords"])
+
+
+@pytest.mark.parametrize(
+    "resultat",
+    [_partial_sans_isbn(), _partial_repli_panne(), _ambiguous(), _unavailable(),
+     BookSearchResult(status=BookSearchStatus.NOT_FOUND)],
+)
+def test_transition_depuis_found_efface_l_identite_confirmee(resultat: BookSearchResult) -> None:
+    """Un statut non confirmé efface l'ISBN, auteur, éditeur, éditions et BookContext.
+
+    Le brouillon qui portait une identité confirmée repasse par la projection : tout
+    ce qui avait été attaché par `found` disparaît, et rien ne peut être persisté
+    puisque l'ISBN est `None` (seul `found` le remplit).
+    """
+    ancien = {
+        "name": "La couleur des choses",
+        "isbn": "9782369903086",
+        "author": "Martin Panchaud",
+        "publisher": "Çà et là",
+        "edition_alternatives": [{"isbn13": "9782369904151"}],
+        "book_context": {"title": "La couleur des choses"},
+        "include_keywords": ["la couleur des choses"],
+    }
+    fusion = {**ancien, **draft_updates_from_search(resultat, query_title="Autre chose")}
+
+    assert fusion["isbn"] is None
+    assert fusion["author"] is None
+    assert fusion["publisher"] is None
+    assert fusion["edition_alternatives"] == []
+    assert fusion["book_context"] is None
+    assert metadata_from_result(resultat) is None, "aucune persistance bibliographique"
+
+
+@pytest.mark.asyncio
+async def test_jeton_invalide_par_changement_de_categorie() -> None:
+    """Changer de catégorie périme la recherche en vol."""
+    from app.bot.handlers.alerts_create import handle_category_selected
+
+    state = _state({"inline_query": None})
+    callback = _callback("add_cat:tech")
+    callback.message.edit_text = AsyncMock()
+
+    token_avant = await _bump_search_token(state)
+    await handle_category_selected(callback, state, AsyncMock(), MagicMock(id=uuid.uuid4()))
+
+    assert state._stored["search_token"] > token_avant, "le jeton a été incrémenté"
+    assert not await _search_still_current(state, token_avant)
+
+
+@pytest.mark.asyncio
+async def test_jeton_invalide_par_annulation_ou_creation() -> None:
+    """Un état vidé (annulation, création terminée) périme la recherche en vol."""
+    state = _state({})
+    token = await _begin_bibliographic_search(state)
+    assert await _search_still_current(state, token)
+
+    await state.clear()  # ce que font l'annulation et `save_alert` après le commit
+
+    assert not await _search_still_current(state, token)
+
+
+@pytest.mark.asyncio
+async def test_callback_ancien_ne_touche_pas_un_autre_brouillon() -> None:
+    """Un index venu d'un autre brouillon est refusé, et le brouillon courant intact."""
+    courant = _state(
+        {
+            "name": "Autre œuvre",
+            "work_choices": [{"isbn13": "9782810206087", "title": "Nef"}],
+            "isbn": None,
+        }
+    )
+    callback = _callback("al_create_work:3")  # index valide dans l'ancien brouillon
+
+    await select_alert_creation_work(callback, courant)
+
+    assert "Œuvre inconnue" in callback.answer.call_args[0][0]
+    assert courant._stored.get("isbn") is None
+
+
+@pytest.mark.asyncio
+async def test_jeton_invalide_par_nouvelle_recherche() -> None:
+    """Deux recherches successives : seule la dernière peut écrire."""
+    state = _state({})
+    premier = await _begin_bibliographic_search(state)
+    second = await _begin_bibliographic_search(state)
+
+    assert not await _search_still_current(state, premier)
+    assert await _search_still_current(state, second)
+
+
+def test_generation_des_mots_cles_restreint_pas_plus_le_matching() -> None:
+    """Pour un `found` (toujours avec ISBN), les critères valent ceux d'avant.
+
+    La projection dérive les mots-clés du titre confirmé ; l'ancienne branche prenait
+    `notice.recommended_includes`, calculés par la **même** fonction. On le prouve par
+    le matcher lui-même : un `found` porte toujours un ISBN, et sous cette condition
+    les deux jeux d'inclusions acceptent et refusent les mêmes annonces.
+    """
+    from types import SimpleNamespace
+
+    from app.domain.enums import AlertStatus
+    from app.domain.rules.listing_match import evaluate_listing_against_alert
+    from app.services.book_metadata_service import generate_recommended_keywords
+
+    def _alert(includes: list[str]):  # noqa: ANN202 - fabrique locale
+        return SimpleNamespace(
+            status=AlertStatus.ACTIVE,
+            category=SimpleNamespace(slug="bd_comics"),
+            max_item_price_cents=999_999,
+            name="La couleur des choses",
+            isbn="9782369903086",
+            include_keywords=includes,
+            variants=[],
+            exclude_keywords=[],
+            accepted_conditions=[],
+        )
+
+    ancien = []  # ce que la branche OpenLibrary attachait avant (aucune recommandation)
+    nouveau = list(generate_recommended_keywords("La couleur des choses", None)[0])
+
+    def _match(annonce: str, includes: list[str]) -> bool:
+        return evaluate_listing_against_alert(
+            alert=_alert(includes),
+            listing_category_slug="bd_comics",
+            listing_normalized_title=annonce,
+            listing_normalized_description=None,
+            listing_condition=None,
+            listing_item_price_cents=2000,
+        ).is_match
+
+    for annonce in (
+        "La couleur des choses",
+        "Couleur des choses",
+        "Coffret La couleur des choses",
+        "La couleur des choses - edition integrale",
+    ):
+        assert _match(annonce, ancien) == _match(annonce, nouveau), annonce
+
+
+def test_repli_pendant_panne_ne_verrouille_plus_le_matching_sur_l_isbn() -> None:
+    """Conséquence assumée de T9 : l'alerte matche par titre, plus par un code non confirmé.
+
+    Avant, un repli pendant une panne BNF partait avec l'ISBN du repli et matchait par
+    code. Désormais `partial` ne rattache aucun ISBN : l'alerte matche sur les termes du
+    titre demandé. C'est le prix de ne jamais confirmer une identité que la BNF n'a pas
+    donnée — et il est visible ici, pas seulement dans l'ADR.
+    """
+    updates = draft_updates_from_search(_partial_repli_panne(), query_title="Blacksad")
+
+    assert updates["isbn"] is None, "aucun code non confirmé n'est attaché"
+    assert updates["include_keywords"] == ["blacksad"], "le titre pilote le matching"
+    assert updates["work_choices"], "le candidat reste consultable, sans faire foi"
 
 
 def test_natural_add_applique_la_meme_politique_que_la_saisie_manuelle() -> None:

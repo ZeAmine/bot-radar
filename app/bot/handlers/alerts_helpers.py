@@ -637,6 +637,16 @@ async def _begin_bibliographic_search(state: FSMContext) -> int:
     l'œuvre de la première alors que l'utilisateur a déjà tapé la seconde. Le jeton
     est monotone, donc seul le dernier écrivain est légitime.
     """
+    return await _bump_search_token(state)
+
+
+async def _bump_search_token(state: FSMContext) -> int:
+    """Invalide toute recherche en vol : le prochain écrivain sera le seul légitime.
+
+    Appelé au départ d'une recherche, mais aussi par tout geste qui rebat les cartes
+    du brouillon — changement de catégorie, saisie hors livres — pour qu'une réponse
+    tardive ne s'écrive pas dans un écran qui ne l'attend plus.
+    """
     current = await state.get_data()
     token = int(current.get("search_token") or 0) + 1
     await state.update_data(search_token=token)
@@ -644,13 +654,14 @@ async def _begin_bibliographic_search(state: FSMContext) -> int:
 
 
 async def _search_still_current(state: FSMContext, token: int) -> bool:
-    """Le jeton est-il encore le dernier émis ? Sinon, la réponse est périmée.
+    """Le jeton est-il encore celui de cette recherche ?
 
-    Un jeton absent (état qui ne persiste pas) ne bloque rien : on ne peut pas
-    conclure, et bloquer l'écran sur un doute serait pire que l'écrire.
+    Un état vidé (annulation, création terminée) a perdu son jeton : la réponse
+    tardive est alors périmée, comme si une autre saisie l'avait remplacée. C'est
+    ce qui empêche un brouillon abandonné de ressusciter.
     """
     current = int((await state.get_data()).get("search_token") or 0)
-    return current == 0 or current == token
+    return current == token
 
 
 def _work_choice_to_dict(choice: BookWorkChoice) -> dict[str, Any]:
@@ -1231,6 +1242,10 @@ async def process_tech_or_clothes_query(
     target_msg = event.message if isinstance(event, CallbackQuery) else event
     if not target_msg:
         return
+
+    # Une saisie hors livres rebat les cartes du brouillon : toute recherche
+    # bibliographique encore en vol devient périmée.
+    await _bump_search_token(state)
 
     # Vérifier si un prix inline était fourni en fin de saisie (ex: "pi 4 50€" ou "titre 50")
     clean_query, inline_price_cents = extract_inline_price_and_clean_query(query_str)

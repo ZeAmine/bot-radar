@@ -43,8 +43,17 @@ async def test_process_bd_query_lookup_stores_competing_editions():
             return resolution
 
     state = AsyncMock()
-    state.get_data = AsyncMock(return_value={})
-    state.update_data = AsyncMock()
+    persisted: dict = {}
+
+    async def _get() -> dict:
+        return dict(persisted)
+
+    async def _update(payload=None, **kwargs):
+        persisted.update(payload or {})
+        persisted.update(kwargs)
+
+    state.get_data = AsyncMock(side_effect=_get)
+    state.update_data = AsyncMock(side_effect=_update)
     state.set_state = AsyncMock()
     message = MagicMock(spec=Message)
     message.answer = AsyncMock(return_value=MagicMock(spec=Message))
@@ -65,7 +74,7 @@ async def test_process_bd_query_lookup_stores_competing_editions():
     ):
         await process_bd_query_lookup(message, state, "la couleur des choses", AsyncMock())
 
-    stored = state.update_data.call_args.kwargs
+    stored = dict(persisted)
     assert [edition["isbn13"] for edition in stored["edition_alternatives"]] == [
         "9782369903086",
         "9782369904151",
