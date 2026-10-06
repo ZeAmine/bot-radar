@@ -10,9 +10,8 @@ est le contrat produit de l'ADR-014 puis ADR-017 :
 - l'ISBN finalement retenu est celui qui pilote Vinted, le matching et la cote ;
 - un ISBN saisi à la main prime, même quand le modèle en propose un autre.
 
-Le harnais du parcours `/add` est partagé, jamais importé d'un module de test : les
-doubles et leurs données dans `tests/add_fakes.py`, leur câblage et les espions dans
-`tests/add_journey.py`, la lecture de ce qu'un écran publie dans `tests/screens.py`.
+Le harnais (doubles, câblage, lecture des écrans) est partagé : `tests/add_fakes.py`,
+`tests/add_journey.py`, `tests/screens.py`.
 """
 
 import uuid
@@ -35,14 +34,15 @@ from tests.add_fakes import (
     ISBN_AUTRE_LIVRE,
     ISBN_INCONNU,
     DraftState,
-    FakeMessage,
     deepseek_payload,
     fake_bnf,
     fake_deepseek,
 )
 from tests.add_journey import drain, patched, repositories
 from tests.screens import (
+    confirm_press,
     edition_buttons,
+    incoming_message,
     message_with_recap,
     open_isbn_edit_field,
     recap_text,
@@ -122,12 +122,7 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
         ] == ["1️⃣ Çà et là - 2022", "2️⃣ çà et là"]
 
         # 3. Création : l'ISBN choisi pilote l'URL Vinted, le livre et la cote.
-        confirm_message = MagicMock(spec=Message)
-        confirm_message.edit_text = AsyncMock()
-        confirm_callback = MagicMock()
-        confirm_callback.data = "alert_create_confirm"
-        confirm_callback.message = confirm_message
-        confirm_callback.answer = AsyncMock()
+        confirm_callback, confirm_message = confirm_press()
 
         await save_alert(confirm_callback, state, db_user, db_session)
 
@@ -203,9 +198,7 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
 
             # 3. Saisie du bon ISBN : toute la fiche d'identité est réécrite par la
             #    notice qui l'atteste, et la liste d'éditions est réalignée.
-            typed_message = FakeMessage()
-            typed_message.text = "9782369903086"
-            typed_message.answer = AsyncMock()
+            typed_message = incoming_message("9782369903086")
             await process_creation_edit_input(typed_message, state)
 
             assert state.data["isbn"] == "9782369903086"
@@ -232,12 +225,7 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
             assert "<b>Mots-clés inclus :</b> La couleur des choses" in recap_answer
 
             # 5. Création sur l'ISBN saisi, avec l'URL Vinted par ISBN.
-            confirm_message = MagicMock(spec=Message)
-            confirm_message.edit_text = AsyncMock()
-            confirm_callback = MagicMock()
-            confirm_callback.data = "alert_create_confirm"
-            confirm_callback.message = confirm_message
-            confirm_callback.answer = AsyncMock()
+            confirm_callback, confirm_message = confirm_press()
 
             await save_alert(confirm_callback, state, db_user, db_session)
 
@@ -278,9 +266,7 @@ async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_wor
         await drain(repos["tasks"])
 
         await open_isbn_edit_field(state)
-        typed_message = FakeMessage()
-        typed_message.text = ISBN_INCONNU
-        typed_message.answer = AsyncMock()
+        typed_message = incoming_message(ISBN_INCONNU)
         await process_creation_edit_input(typed_message, state)
 
         assert state.data["isbn"] == ISBN_INCONNU
@@ -324,9 +310,7 @@ async def test_add_typed_isbn_of_another_book_is_refused():
             await drain(repos["tasks"])
 
             await open_isbn_edit_field(state)
-            typed_message = FakeMessage()
-            typed_message.text = ISBN_AUTRE_LIVRE
-            typed_message.answer = AsyncMock()
+            typed_message = incoming_message(ISBN_AUTRE_LIVRE)
             await process_creation_edit_input(typed_message, state)
 
             # Le brouillon garde l'ISBN d'avant : rien n'a été changé.

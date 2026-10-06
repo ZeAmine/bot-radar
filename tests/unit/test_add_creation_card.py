@@ -7,9 +7,8 @@ série), ce qui redescend du brouillon dans la ligne créée, et ce qu'elle ne r
 pas après coup (livre neuf, brouillon sans nom, identifiant absent). La mise en forme
 ligne à ligne est relue par `tests/unit/test_charte_copy.py`.
 
-Le harnais du parcours `/add` est partagé, jamais importé d'un module de test : les
-doubles et leurs données dans `tests/add_fakes.py`, leur câblage et les espions dans
-`tests/add_journey.py`, la lecture de ce qu'un écran publie dans `tests/screens.py`.
+Le harnais (doubles, câblage, lecture des écrans) est partagé : `tests/add_fakes.py`,
+`tests/add_journey.py`, `tests/screens.py`.
 """
 
 import uuid
@@ -35,7 +34,7 @@ from tests.add_fakes import (
     fake_deepseek,
 )
 from tests.add_journey import drain, patched, repositories
-from tests.screens import message_with_recap, recap_text
+from tests.screens import confirm_press, message_with_recap, recap_text
 
 
 @pytest.mark.asyncio
@@ -164,12 +163,7 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         await start_add_alert(message, state, db_session, db_user)
         await drain(repos["tasks"])
 
-        confirm_message = MagicMock(spec=Message)
-        confirm_message.edit_text = AsyncMock()
-        confirm_callback = MagicMock()
-        confirm_callback.data = "alert_create_confirm"
-        confirm_callback.message = confirm_message
-        confirm_callback.answer = AsyncMock()
+        confirm_callback, confirm_message = confirm_press()
 
         await save_alert(confirm_callback, state, db_user, db_session)
         confirmation = confirm_message.edit_text.call_args[0][0]
@@ -183,7 +177,6 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         assert "Chasse" not in confirmation
         assert "Surveillance active" not in confirmation
         assert "24/24" not in confirmation
-        # Le pied conservé.
         assert confirmation.endswith(
             "<i>Les annonces correspondant à ces critères déclencheront une alerte "
             "Telegram.</i>"
@@ -228,12 +221,7 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
         await start_add_alert(message, state, db_session, db_user)
         await drain(repos["tasks"])
 
-        confirm_message = MagicMock(spec=Message)
-        confirm_message.edit_text = AsyncMock()
-        confirm_callback = MagicMock()
-        confirm_callback.data = "alert_create_confirm"
-        confirm_callback.message = confirm_message
-        confirm_callback.answer = AsyncMock()
+        confirm_callback, confirm_message = confirm_press()
 
         await save_alert(confirm_callback, state, db_user, db_session)
 
@@ -362,12 +350,7 @@ async def test_series_alert_starts_book_resolution_at_creation():
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    confirm_message = MagicMock(spec=Message)
-    confirm_message.edit_text = AsyncMock()
-    confirm_callback = MagicMock()
-    confirm_callback.data = "alert_create_confirm"
-    confirm_callback.message = confirm_message
-    confirm_callback.answer = AsyncMock()
+    confirm_callback, confirm_message = confirm_press()
 
     with patch(
         "app.use_cases.ingest_listing.link_books_from_bnf", new_callable=AsyncMock
@@ -431,12 +414,7 @@ async def test_a_missing_identifier_is_told_in_the_confirmation_too():
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    confirm_message = MagicMock(spec=Message)
-    confirm_message.edit_text = AsyncMock()
-    confirm_callback = MagicMock()
-    confirm_callback.data = "alert_create_confirm"
-    confirm_callback.message = confirm_message
-    confirm_callback.answer = AsyncMock()
+    confirm_callback, confirm_message = confirm_press()
 
     with patch("app.use_cases.ingest_listing.link_books_from_bnf", new_callable=AsyncMock):
         patches = patched(repos, MagicMock(), MagicMock())
@@ -490,12 +468,7 @@ async def test_the_draft_note_stays_on_the_recap_and_never_reaches_the_confirmat
     recap, _keyboard = build_creation_recap(state.data)
     assert note in recap
 
-    confirm_message = MagicMock(spec=Message)
-    confirm_message.edit_text = AsyncMock()
-    confirm_callback = MagicMock()
-    confirm_callback.data = "alert_create_confirm"
-    confirm_callback.message = confirm_message
-    confirm_callback.answer = AsyncMock()
+    confirm_callback, confirm_message = confirm_press()
 
     patches = patched(repos, MagicMock(), MagicMock())
     for entered in patches:
@@ -536,12 +509,7 @@ async def test_the_card_names_the_alert_exactly_as_the_row_is_named(draft_name):
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    confirm_message = MagicMock(spec=Message)
-    confirm_message.edit_text = AsyncMock()
-    confirm_callback = MagicMock()
-    confirm_callback.data = "alert_create_confirm"
-    confirm_callback.message = confirm_message
-    confirm_callback.answer = AsyncMock()
+    confirm_callback, confirm_message = confirm_press()
 
     # Le récap, affiché juste avant la validation, dit déjà le nom qui sera enregistré.
     recap, _keyboard = build_creation_recap(state.data)
@@ -583,12 +551,7 @@ async def test_a_just_created_book_still_gets_its_confirmation():
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    confirm_message = MagicMock(spec=Message)
-    confirm_message.edit_text = AsyncMock()
-    confirm_callback = MagicMock()
-    confirm_callback.data = "alert_create_confirm"
-    confirm_callback.message = confirm_message
-    confirm_callback.answer = AsyncMock()
+    confirm_callback, confirm_message = confirm_press()
 
     patches = patched(repos, MagicMock(), MagicMock())
     for entered in patches:

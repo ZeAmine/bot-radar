@@ -1,40 +1,28 @@
 """Tests d'intégration pour les routes internes GET /api/v1/internal/*."""
 
-import os
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db
 from app.core.config import settings
 from app.core.constants import AlertStatus, ComparisonStatus, MatchConfidence
-from app.db.base import Base
 from app.db.models.alert import Alert
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.category import Category
 from app.db.models.user import User
 from app.main import app
+from tests.database import fresh_database
 
 
 @pytest.fixture
 async def internal_test_db() -> AsyncGenerator[AsyncSession, None]:
-    """Base de test peuplée (PostgreSQL si TEST_DATABASE_URL, sinon SQLite)."""
-    engine = create_async_engine(
-        os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:"),
-        echo=False,
-    )
-    async with engine.begin() as conn:
-        # Base PostgreSQL de CI partagée : remise à zéro du
-        # schéma avant chaque test (SQLite mémoire est neuf).
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_maker() as session:
+    """Base de test peuplée (PostgreSQL si la CI la rejoue, sinon SQLite)."""
+    async with fresh_database(replayed_on_postgres=True) as (session, _maker):
         user = User(telegram_user_id=12345, is_allowed=True)
         cat = Category(slug="bd_comics", label="BD", emoji="📚", is_active=True)
         session.add_all([user, cat])
@@ -65,8 +53,6 @@ async def internal_test_db() -> AsyncGenerator[AsyncSession, None]:
         session.add(cache)
         await session.commit()
         yield session
-
-    await engine.dispose()
 
 
 @pytest.fixture

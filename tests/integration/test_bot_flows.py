@@ -9,7 +9,6 @@ casserait le test au lieu de passer inaperçu.
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -30,7 +29,7 @@ from aiogram.types import (
     User as TgUser,
 )
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers import alerts, callbacks
 from app.bot.handlers.alerts_create_confirm import DRAFT_GONE_MESSAGE
@@ -39,7 +38,6 @@ from app.bot.middlewares.unhandled_callbacks import (
     UnconsumedCallbackMiddleware,
 )
 from app.core.constants import AlertStatus, CategorySlug, ComparisonStatus
-from app.db.base import Base
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
 from app.db.models.book import Book
@@ -49,6 +47,7 @@ from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
 from app.services.book_metadata_service import BookMetadata, BookResolution
+from tests.database import fresh_database
 
 BOT_TOKEN = "123456789:AAG_ci_test_dummy_token_abc123"
 CHAT_ID = 4242
@@ -61,16 +60,7 @@ TG_USER_ID = 4242
 @pytest.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Base réelle (PostgreSQL en CI, SQLite sinon), catégories amorcées."""
-    engine = create_async_engine(
-        os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:"),
-        echo=False,
-    )
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
-    maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    async with maker() as session:
+    async with fresh_database(replayed_on_postgres=True) as (session, _maker):
         session.add(
             Category(
                 id=uuid.uuid4(),
@@ -82,7 +72,6 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         )
         await session.commit()
         yield session
-    await engine.dispose()
 
 
 @pytest.fixture

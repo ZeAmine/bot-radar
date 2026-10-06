@@ -25,27 +25,26 @@ qui écrit ailleurs ne se verraient nulle part ailleurs : les tests de parcours 
 ces deux frontières-là.
 """
 
-import os
 import uuid
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot.handlers.alerts_manage import (
     prompt_new_field_value,
     save_edited_field_value,
 )
 from app.core.constants import CategorySlug
-from app.db.base import Base
 from app.db.models.category import Category
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.book_metadata_service import BookMetadata
+from tests.database import fresh_database
 
 pytestmark = pytest.mark.asyncio
 
@@ -54,41 +53,29 @@ TEST_TELEGRAM_USER_ID = 424242
 
 @pytest.fixture
 async def session_maker() -> AsyncGenerator[async_sessionmaker[AsyncSession], None]:
-    """Fabrique de sessions sur une base neuve : PostgreSQL si demandée, sinon SQLite.
+    """Fabrique de sessions sur une base neuve : PostgreSQL si la CI la rejoue, sinon SQLite.
 
     Elle rend une **fabrique** et non une session : le test doit relire dans une
     session qui n'a rien partagé avec celle qui écrit, sinon il ne prouve que
     Python.
     """
-    engine = create_async_engine(
-        os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-    )
-    async with engine.begin() as conn:
-        # La base PostgreSQL de CI est partagée et persistante : sans cette remise à
-        # zéro, l'unicité de `telegram_user_id` et de `slug` viole au deuxième test.
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+    async with fresh_database(replayed_on_postgres=True) as (_session, maker):
+        # L'identité de l'alerte est posée par une session qui se ferme ensuite.
+        async with maker() as seeding:
+            seeding.add(
+                User(telegram_user_id=TEST_TELEGRAM_USER_ID, is_allowed=True),
+            )
+            seeding.add(
+                Category(
+                    slug=CategorySlug.BD_COMICS.value,
+                    label="BD & Comics",
+                    emoji="📚",
+                    is_active=True,
+                ),
+            )
+            await seeding.commit()
 
-    maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-
-    # L'identité de l'alerte est posée par une session qui se ferme ensuite.
-    async with maker() as seeding:
-        seeding.add(
-            User(telegram_user_id=TEST_TELEGRAM_USER_ID, is_allowed=True),
-        )
-        seeding.add(
-            Category(
-                slug=CategorySlug.BD_COMICS.value,
-                label="BD & Comics",
-                emoji="📚",
-                is_active=True,
-            ),
-        )
-        await seeding.commit()
-
-    yield maker
-
-    await engine.dispose()
+        yield maker
 
 
 async def _write_alert(

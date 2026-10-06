@@ -11,17 +11,16 @@ passe par le comparateur JSON de SQLAlchemy, qui rend `JSON_EXTRACT` là où
 PostgreSQL rend `->>`. Le comportement testé est le même des deux côtés.
 """
 
-import os
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import AlertStatus, CategorySlug
-from app.db.base import Base
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
 from app.db.models.book import Book
@@ -30,24 +29,15 @@ from app.db.models.category import Category
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.db.models.user import User
 from app.db.repositories.market_price_repo import MarketPriceRepository
+from tests.database import fresh_database
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-async def session() -> AsyncSession:
-    engine = create_async_engine(
-        os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-    )
-    async with engine.begin() as conn:
-        # Base PostgreSQL de CI partagée : remise à zéro du
-        # schéma avant chaque test (SQLite mémoire est neuf).
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    async with maker() as s:
-        yield s
-    await engine.dispose()
+async def session() -> AsyncGenerator[AsyncSession, None]:
+    async with fresh_database(replayed_on_postgres=True) as (session, _maker):
+        yield session
 
 
 async def _book_with_cached_low(

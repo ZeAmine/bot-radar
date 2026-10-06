@@ -35,11 +35,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
 from app.core.constants import AlertStatus
-from app.db.base import Base
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
 from app.db.models.book import Book
@@ -51,6 +50,7 @@ from app.schemas.listing import ListingIngestPayload
 from app.services.book_metadata_service import BookMetadata, BookMetadataService
 from app.use_cases import ingest_listing
 from app.use_cases.ingest_listing import ProcessListingUseCase
+from tests.database import fresh_database
 
 # ---------------------------------------------------------------- scorers fixés
 SERIES_NAME = "The Grocery"
@@ -177,12 +177,7 @@ async def series_db() -> AsyncGenerator[tuple[AsyncSession, async_sessionmaker],
     C'est précisément l'alerte qui partsait sans cote : aucun ISBN, aucun tome
     dans le catalogue. Le chemin mesuré est donc celui de la résolution complète.
     """
-    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_maker() as session:
+    async with fresh_database(replayed_on_postgres=False) as (session, session_maker):
         category = Category(slug="bd_comics", label="BD & Comics", emoji="📚", is_active=True)
         session.add(category)
         await session.flush()
@@ -206,8 +201,6 @@ async def series_db() -> AsyncGenerator[tuple[AsyncSession, async_sessionmaker],
         await session.commit()
 
         yield session, session_maker
-
-    await engine.dispose()
 
 
 

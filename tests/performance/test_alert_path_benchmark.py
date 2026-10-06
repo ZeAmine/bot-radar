@@ -32,11 +32,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.constants import AlertStatus, ComparisonStatus, MatchConfidence
-from app.db.base import Base
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
 from app.db.models.book import Book
@@ -46,6 +45,7 @@ from app.db.models.user import User
 from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import ListingIngestPayload
 from app.use_cases.ingest_listing import ProcessListingUseCase
+from tests.database import fresh_database
 
 # ---------------------------------------------------------------- scorers fixés
 N_BD_ALERTS = 40
@@ -93,12 +93,7 @@ async def benchmark_db() -> AsyncGenerator[AsyncSession, None]:
     - 1 alerte BD avec ISBN lié à un livre du catalogue + cache de marché frais ;
     - 40 alertes tech actives (catégorie différente, sortie immédiate du matcher).
     """
-    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_maker() as session:
+    async with fresh_database(replayed_on_postgres=False) as (session, _maker):
         cat_bd = Category(slug="bd_comics", label="BD & Comics", emoji="📚", is_active=True)
         cat_tech = Category(slug="tech", label="Électronique", emoji="💻", is_active=True)
         session.add_all([cat_bd, cat_tech])
@@ -184,8 +179,6 @@ async def benchmark_db() -> AsyncGenerator[AsyncSession, None]:
         await session.commit()
 
         yield session
-
-    await engine.dispose()
 
 
 def _make_payload(iteration: int | None) -> ListingIngestPayload:

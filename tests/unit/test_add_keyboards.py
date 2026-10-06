@@ -6,9 +6,8 @@ la sienne. Les écrans dégénérés ensuite : « Modifier » et « Retour au r�
 sur un brouillon vidé disent qu'il est terminé, au lieu de proposer un menu sans objet
 ou de re-rendre une carte par défaut.
 
-Le harnais du parcours `/add` est partagé, jamais importé d'un module de test : les
-doubles et leurs données dans `tests/add_fakes.py`, leur câblage et les espions dans
-`tests/add_journey.py`, la lecture de ce qu'un écran publie dans `tests/screens.py`.
+Le harnais (doubles, câblage, lecture des écrans) est partagé : `tests/add_fakes.py`,
+`tests/add_journey.py`, `tests/screens.py`.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
