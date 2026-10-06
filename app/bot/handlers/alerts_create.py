@@ -21,6 +21,7 @@ from app.bot.handlers.alerts_helpers import (
     process_bd_query_lookup,
     process_tech_or_clothes_query,
     render_existing_alert_response,
+    series_indication_block,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
 from app.bot.labels import format_conditions, format_price_cents
@@ -727,6 +728,9 @@ async def save_alert(
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
     name = data.get("name") or "Alerte"
     isbn = data.get("isbn")
+    # Même source que le récap : le drapeau du brouillon, pas une déduction sur l'ISBN
+    # absent. La confirmation est le récap relu, elle ne peut pas le contredire.
+    is_series = data.get("is_series", False)
     author = data.get("author")
     publisher = data.get("publisher")
     includes = data.get("include_keywords", [])
@@ -836,6 +840,10 @@ async def save_alert(
         # échappés comme dans le récap : ils viennent du moteur IA, et un `<b>` glissé
         # dedans ferait rejeter tout le message par Telegram.
         lines = ["✅ <b>Alerte créée</b>\n"]
+        # L'indication passe avant les informations, comme dans le récap : c'est la
+        # même carte relue, donc la même place et la même forme.
+        if is_series:
+            lines.extend(series_indication_block())
         if isbn:
             lines.append(f"<b>ISBN :</b> <code>{html.escape(isbn)}</code>")
         lines.append(f"<b>Titre :</b> {html.escape(name)}")

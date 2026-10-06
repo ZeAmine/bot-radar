@@ -1056,7 +1056,10 @@ async def test_series_alert_starts_book_resolution_at_creation():
     identifié : sans cette résolution, sa première annonce partait sans aucune ligne
     de cote. La résolution part par le **nom de l'alerte** (+ auteur), et cote le
     livre qu'elle lie — la prochaine annonce aura de quoi comparer. La confirmation,
-    elle, n'annonce toujours aucune cote : il n'y a encore rien à coter.
+    elle, n'annonce toujours aucune cote : il n'y a encore rien à coter. Elle relit en
+    revanche la carte de récap telle quelle, indication de série comprise : c'est le
+    même drapeau du brouillon qui décide, donc les deux écrans ne peuvent pas se
+    contredire.
     """
     repos = _repositories("9782369904151")
     state = DraftState()
@@ -1065,6 +1068,7 @@ async def test_series_alert_starts_book_resolution_at_creation():
         "name": "Blacksad",
         "author": "Juan Díaz Canales",
         "isbn": None,
+        "is_series": True,
         "include_keywords": ["blacksad"],
         "max_item_price_cents": 1500,
     }
@@ -1104,6 +1108,15 @@ async def test_series_alert_starts_book_resolution_at_creation():
     confirmation = confirm_message.edit_text.call_args[0][0]
     assert "✅ <b>Alerte créée</b>" in confirmation
     assert "<b>Titre :</b> Blacksad" in confirmation
+    # La confirmation reprend le récap ligne pour ligne : l'indication de série est la
+    # même phrase, à la même place — sous le titre, en italique, isolée.
+    confirm_lines = confirmation.splitlines()
+    assert confirm_lines[0] == "✅ <b>Alerte créée</b>"
+    assert confirm_lines[1] == ""
+    assert confirm_lines[2] == "<i>Série multi-tomes (veille sur tous les tomes)</i>"
+    assert confirm_lines[3] == ""
+    assert confirm_lines[4].startswith("<b>Titre :</b>")
+    assert "<b>ISBN :</b>" not in confirmation
     assert PENDING_COTE_LINE not in confirmation
     assert "Prix du marché" not in confirmation
     assert "Prix bas constaté" not in confirmation
