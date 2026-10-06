@@ -21,9 +21,11 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel
 
+from app.core.config import settings
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
 from app.domain.rules.series_detection import SeriesSignal, detect_series
+from app.providers.google_books import GoogleBooksClient, GoogleVolume
 from app.utils.isbn import (
     is_valid_isbn,
     isbn10_to_isbn13,
@@ -52,9 +54,11 @@ FRENCH_ISBN_PREFIXES = ("9782", "979")
 
 # Identifiants des autorités, tels que `BookMetadata.source` les déclare. Les possède
 # le service qui les interroge : un appelant qui les recopierait finirait par annoncer
-# « ni la BNF ni OpenLibrary » le jour où un troisième repli entre en scène.
+# « ni la BNF ni OpenLibrary » le jour où un troisième repli entre en scène — ce qui est
+# arrivé (ADR-033).
 AUTORITE_BNF = "bnf"
 AUTORITE_OPENLIBRARY = "openlibrary"
+AUTORITE_GOOGLE_BOOKS = "google_books"
 
 _TITLE_QUERY_ALLOWED_CHARS = r"[^a-zA-Z0-9\sàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ-]"
 
@@ -273,11 +277,20 @@ class IsbnVerdict:
 
 
 OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
+GOOGLE_BOOKS_SOURCE_NOTE = "Source Google Books (repli BNF)"
+
+# Provenance par autorité secondaire. Une table plutôt qu'un cas particulier : la
+# troisième source a montré qu'un `if` unique se contentait de taire la suivante, et
+# une notice de repli affichée sans sa provenance se lit comme une confirmation BNF.
+PROVENANCE_NOTES: dict[str, str] = {
+    AUTORITE_OPENLIBRARY: OPENLIBRARY_SOURCE_NOTE,
+    AUTORITE_GOOGLE_BOOKS: GOOGLE_BOOKS_SOURCE_NOTE,
+}
 
 
 def provenance_note(meta: BookMetadata) -> str | None:
     """Signale au récap une donnée d'identité issue d'une autorité secondaire."""
-    return OPENLIBRARY_SOURCE_NOTE if meta.source == AUTORITE_OPENLIBRARY else None
+    return PROVENANCE_NOTES.get(meta.source)
 
 
 def ambiguity_note(resolution: BookResolution) -> str | None:
@@ -662,7 +675,7 @@ class BookMetadataService:
                 consulted=(AUTORITE_BNF,),
             )
 
-        consulted = (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
+        consulted: tuple[str, ...] = (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
         fallback = await self._openlibrary_works({"isbn": clean_isbn})
         if fallback:
             return IsbnVerdict(
@@ -671,7 +684,23 @@ class BookMetadataService:
                 consulted=consulted,
                 panne=panne,
             )
-        # OpenLibrary n'a rien donné non plus : sans `panne`, ce serait un verdict.
+
+        # Troisième autorité, quand elle est configurée : un livre publié il y a deux
+        # semaines n'est dans aucun catalogue national (ADR-028), et c'est précisément
+        # le cas que ce repli sert. Elle n'est nommée « consultée » que si elle l'a été.
+        google_client = self._google_books_client()
+        if google_client.is_configured:
+            consulted = (*consulted, AUTORITE_GOOGLE_BOOKS)
+            notice = await self._google_books_notice_by_isbn(google_client, clean_isbn)
+            if notice is not None:
+                return IsbnVerdict(
+                    outcome="silence" if panne else "confirme",
+                    notice=notice,
+                    consulted=consulted,
+                    panne=panne,
+                )
+
+        # Aucune autorité n'a rien nommé : sans `panne`, ce serait un verdict.
         return IsbnVerdict(
             outcome="silence" if panne else "inconnu",
             consulted=consulted,
@@ -750,7 +779,12 @@ class BookMetadataService:
             if title_similarity(record.title, title) >= TITLE_SIMILARITY_MIN
         ]
         if not candidates:
-            return await self._resolve_via_openlibrary(title, author_hint)
+            # La BNF n'a rien rendu : les deux replis, dans l'ordre, et le premier qui
+            # nomme l'ouvrage s'arrête. Chacun rend sa provenance au récap.
+            fallback = await self._resolve_via_openlibrary(title, author_hint)
+            if fallback is not None:
+                return fallback
+            return await self._resolve_via_google_books(title, author_hint)
 
         candidates = self._prefer_author_hint(candidates, author_hint)
         best = self._attach_recommendations(candidates[0])
@@ -872,7 +906,10 @@ class BookMetadataService:
             return self._attach_recommendations(records[0])
 
         fallback = await self._resolve_via_openlibrary(clean_title_q, author_cand)
-        return fallback.best if fallback else None
+        if fallback is not None:
+            return fallback.best
+        google = await self._resolve_via_google_books(clean_title_q, author_cand)
+        return google.best if google else None
 
     async def lookup_series_notices(
         self,
@@ -1123,6 +1160,100 @@ class BookMetadataService:
             notice_titles=tuple(
                 dict.fromkeys(work.meta.title for work in candidates)
             ),
+        )
+
+    def _google_books_client(self) -> GoogleBooksClient:
+        """Le client de la troisième autorité, construit depuis la configuration.
+
+        Sans clé, `is_configured` est faux : la source n'est pas interrogée, et elle
+        n'est donc jamais annoncée comme consultée. La clé vient de la configuration
+        et pas d'un paramètre, parce que le service est le seul à savoir quelles
+        autorités il interroge.
+        """
+        return GoogleBooksClient(
+            api_key=settings.GOOGLE_BOOKS_API_KEY.get_secret_value(),
+            # Le client du service, pas un second : les tests injectent le leur, et un
+            # service qui se servirait du client partagé ignorerait l'injection.
+            http_client=self.http_client,
+        )
+
+    async def _resolve_via_google_books(
+        self, title: str, author_hint: str | None = None
+    ) -> BookResolution | None:
+        """Dernier repli d'une résolution par titre, après la BNF et OpenLibrary.
+
+        Même contrat que `_resolve_via_openlibrary` : confiance `MEDIUM`, provenance
+        remontée jusqu'au récap, et aucune notice retenue si le titre ne correspond pas.
+        """
+        client = self._google_books_client()
+        if not client.is_configured:
+            return None
+
+        volumes = await client.search_by_title(title, author_hint)
+        candidates = [
+            self._attach_recommendations(self._google_volume_notice(volume))
+            for volume in volumes
+        ]
+        candidates = [
+            meta
+            for meta in candidates
+            if title_similarity(meta.title, title) >= TITLE_SIMILARITY_MIN
+        ]
+        if not candidates:
+            return None
+
+        # Google classe par pertinence, pas par titre : c'est la similarité qui décide
+        # ici, comme partout ailleurs, pour qu'une notice voisine ne passe pas devant
+        # l'œuvre demandée.
+        candidates.sort(key=lambda meta: title_similarity(meta.title, title), reverse=True)
+        best = candidates[0]
+        alternatives = [
+            candidate
+            for candidate in candidates[1 : 1 + MAX_ALTERNATIVE_EDITIONS]
+            if self._is_same_work(candidate, best)
+        ]
+        other_works = [
+            candidate
+            for candidate in candidates[1:]
+            if self._is_homonym(candidate, best, title)
+        ][:MAX_ALTERNATIVE_EDITIONS]
+        return BookResolution(
+            best=best,
+            alternatives=alternatives,
+            other_works=other_works,
+            author_hint_match=self._author_hint_match(best, author_hint),
+            notice_titles=tuple(
+                dict.fromkeys(meta.title for meta in candidates)
+            ),
+        )
+
+    async def _google_books_notice_by_isbn(
+        self, client: GoogleBooksClient, isbn: str
+    ) -> BookMetadata | None:
+        """Notice attestant **réellement** ce code, ou rien.
+
+        Une requête `isbn:` ne garantit pas que la notice rendue porte le code demandé
+        (une œuvre agrège plusieurs éditions) : un repli ne confirme que ce qu'il lit,
+        et un code absent de la notice rendrait une confirmation qu'aucune donnée
+        n'appuie. C'est la même règle que pour la BNF et OpenLibrary.
+        """
+        for volume in await client.search_by_isbn(isbn):
+            if isbn in volume.isbns:
+                return self._attach_recommendations(self._google_volume_notice(volume))
+        return None
+
+    @staticmethod
+    def _google_volume_notice(volume: GoogleVolume) -> BookMetadata:
+        """Une notice Google Books, et sa provenance déclarée."""
+        return BookMetadata(
+            title=volume.title,
+            author=volume.author,
+            publisher=volume.publisher,
+            isbn13=volume.isbn13,
+            source=AUTORITE_GOOGLE_BOOKS,
+            confidence=MatchConfidence.MEDIUM,
+            publication_year=volume.publication_year,
+            format_detail=f"{volume.page_count} p." if volume.page_count else None,
         )
 
     async def _openlibrary_works(self, params: dict[str, str]) -> list[_OpenLibraryWork]:

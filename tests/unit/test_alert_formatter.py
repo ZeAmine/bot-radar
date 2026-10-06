@@ -215,11 +215,13 @@ def test_recap_says_an_unfound_isbn_instead_of_saying_nothing():
     """L'absence d'ISBN est une information : elle s'affiche.
 
     La ligne disparaissait, et le récap laissait croire à un oubli plutôt qu'à un
-    ouvrage que l'autorité ne catalogue pas — le cas même de la capture remontée.
+    ouvrage qu'aucune autorité ne catalogue — le cas même de la capture remontée.
+    Elle ne nomme plus la BNF : depuis la troisième source (ADR-033), elle n'est plus
+    la seule à avoir été interrogée, et l'avertissement de tête porte le *pourquoi*.
     """
     recap = _recap(isbn=None, isbn_note=None)
 
-    assert "<b>ISBN :</b> introuvable — la BNF ne catalogue pas cet ouvrage" in recap
+    assert "<b>ISBN :</b> introuvable" in recap
 
 
 def test_recap_keeps_the_series_indication_out_of_the_information_list():

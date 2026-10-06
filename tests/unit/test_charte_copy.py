@@ -338,19 +338,20 @@ def test_instruction_text_is_italic():
     assert _CONFIRMATION_FOOTER.endswith("</i>")
 
 
-def test_both_warnings_are_italic_and_the_identity_one_leads_above_the_isbn():
-    """Règle 3 : les deux avertissements sont en italique, isolés, au-dessus de l'ISBN.
+def test_the_two_warnings_share_one_block_above_the_information_list():
+    """Règle 3 : les avertissements sont en italique, **groupés** en tête de carte.
 
-    L'avertissement d'identité était collé entre l'ISBN et le titre, donc invisible,
-    et en romain tandis que la note du moteur était en italique. Deux avertissements,
-    un seul style et une seule place : la référence.
+    Ils ont d'abord vécu à deux endroits — l'identité au-dessus de l'ISBN, le moteur tout
+    en bas sous les critères — et l'esprit devait faire l'aller-retour entre le haut et
+    le bas de la carte pour savoir ce qui manquait. Côte à côte, un seul style, une seule
+    place : le bloc de notes se lit d'un coup, et c'est lui qui ouvre la carte.
     """
     import html
 
     from app.bot.handlers.alerts_helpers import RECAP_TITLE, format_semi_auto_recap
 
     isbn_note = "⚠️ « L'Âge d'or » : 3 autres ouvrages portent ce titre."
-    keyword_note = "🔎 L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage."
+    keyword_note = "⚠️ L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage."
     recap = format_semi_auto_recap(
         title="L'Âge d'or",
         author=None,
@@ -369,18 +370,110 @@ def test_both_warnings_are_italic_and_the_identity_one_leads_above_the_isbn():
     escaped_keyword_note = f"<i>{keyword_note}</i>"
 
     lines = recap.splitlines()
-    assert escaped_isbn_note in lines
-    assert escaped_keyword_note in lines
-    # L'avertissement d'identité précède l'ISBN, et rien ne le colle à lui.
-    note_index = lines.index(escaped_isbn_note)
-    isbn_index = next(i for i, line in enumerate(lines) if line.startswith("<b>ISBN :</b>"))
-    assert note_index < isbn_index
     assert lines[0] == RECAP_TITLE
-    assert lines[note_index - 1] == ""
-    assert lines[note_index + 1] == ""
-    # La note du moteur est isolée des critères qu'elle commente.
-    keyword_index = lines.index(escaped_keyword_note)
-    assert lines[keyword_index - 1] == ""
+    assert lines[1] == ""
+    # Les deux avertissements se suivent : aucune ligne vide ne les sépare.
+    assert lines[2] == escaped_isbn_note
+    assert lines[3] == escaped_keyword_note
+    # Une seule ligne vide sépare le bloc de notes de la liste des informations…
+    assert lines[4] == ""
+    assert lines[5].startswith("<b>ISBN :</b>")
+    # … et la note du moteur n'est plus reléguée sous les critères qu'elle commente.
+    assert recap.count(escaped_keyword_note) == 1
+    price_index = next(
+        index for index, line in enumerate(lines) if line.startswith("<b>Prix maximum :</b>")
+    )
+    assert lines.index(escaped_keyword_note) < price_index
+
+
+def test_the_information_list_has_no_blank_line_before_the_max_price():
+    """L'identité et les critères de veille se suivent : une seule liste, d'un trait.
+
+    Le blanc qui séparait « Auteur » de « Prix maximum » coupait la fiche en deux blocs
+    et laissait croire que le prix n'appartenait pas aux mêmes informations que l'auteur.
+    La carte se lit maintenant de haut en bas, sans fausse frontière — et l'écran
+    « Alerte créée », qui lit la même construction, en hérite sans rien demander.
+    """
+    from app.bot.handlers.alerts_helpers import format_semi_auto_recap
+
+    recap = format_semi_auto_recap(
+        title="La couleur des choses",
+        author="Martin Panchaud",
+        publisher="Çà et là",
+        isbn="9782205089752",
+        max_price_cents=1200,
+        include_keywords=["la couleur des choses"],
+        exclude_keywords=[],
+    )
+    lines = recap.splitlines()
+
+    author_index = next(
+        index for index, line in enumerate(lines) if line.startswith("<b>Auteur :</b>")
+    )
+    price_index = next(
+        index for index, line in enumerate(lines) if line.startswith("<b>Prix maximum :</b>")
+    )
+    assert price_index == author_index + 2
+    assert lines[author_index + 1].startswith("<b>Éditeur :</b>")
+
+
+def test_an_unidentified_work_is_announced_first_and_its_holes_are_shown():
+    """Personne ne connaît l'ouvrage : la carte le dit en tête, et montre les trous.
+
+    Le cas réel — un livre sorti la semaine dernière, absent de tous les catalogues —
+    affichait `Titre :` et rien d'autre : ni auteur, ni éditeur, ni ISBN, sans un mot
+    pour l'expliquer. L'absence se lisait comme un oubli de la carte. Elle devient un
+    avertissement en tête, et les lignes manquantes disent « Non renseigné ».
+    """
+    from app.bot.handlers.alerts_helpers import UNIDENTIFIED_WORK_NOTE, creation_card
+
+    recap = creation_card(
+        {
+            "name": "Dailycieux",
+            "category_slug": "bd_comics",
+            "author": None,
+            "publisher": None,
+            "isbn": None,
+            "isbn_note": None,
+            "book_unidentified": True,
+            "max_item_price_cents": 3000,
+            "include_keywords": ["dailycieux"],
+            "exclude_keywords": [],
+        }
+    )
+    lines = recap.splitlines()
+
+    assert lines[2] == f"<i>{UNIDENTIFIED_WORK_NOTE}</i>"
+    assert "<b>ISBN :</b> introuvable" in lines
+    assert "<b>Auteur :</b> Non renseigné" in lines
+    assert "<b>Éditeur :</b> Non renseigné" in lines
+    assert "<b>Titre :</b> Dailycieux" in lines
+
+
+def test_a_product_never_claims_a_hole_it_could_not_have():
+    """Hors livres, il n'y a rien à trouver : aucun trou n'est annoncé.
+
+    Un produit n'a ni ISBN ni auteur : déclarer ses champs « Non renseigné » inventerait
+    une attente que la carte n'a jamais eue.
+    """
+    from app.bot.handlers.alerts_helpers import creation_card
+
+    recap = creation_card(
+        {
+            "name": "Raspberry Pi 4",
+            "category_slug": "tech",
+            "author": None,
+            "publisher": None,
+            "isbn": None,
+            "max_item_price_cents": 5000,
+            "include_keywords": ["raspberry", "pi", "4"],
+            "exclude_keywords": [],
+        }
+    )
+
+    assert "Non renseigné" not in recap
+    assert "<b>ISBN :</b>" not in recap
+    assert "<b>Auteur :</b>" not in recap
 
 
 def test_series_indication_lives_outside_the_information_list():
@@ -630,12 +723,16 @@ def test_the_confirmation_is_the_recap_reread_from_the_same_construction():
 
 
 def test_the_unfound_identifier_is_announced_by_both_screens():
-    """« introuvable » est une information : aucun des deux écrans ne peut la taire."""
+    """« introuvable » est une information : aucun des deux écrans ne peut la taire.
+
+    La ligne ne nomme plus d'autorité : la BNF n'est plus la seule à avoir été
+    interrogée (ADR-033), et le *pourquoi* vit désormais dans l'avertissement de tête.
+    """
     from app.bot.handlers.alerts_create import _CONFIRMATION_FOOTER
     from app.bot.handlers.alerts_helpers import ALERT_CREATED_TITLE, creation_card
 
     draft = _creation_draft(isbn=None)
-    line = "<b>ISBN :</b> introuvable — la BNF ne catalogue pas cet ouvrage"
+    line = "<b>ISBN :</b> introuvable"
 
     assert line in creation_card(draft)
     assert line in creation_card(
