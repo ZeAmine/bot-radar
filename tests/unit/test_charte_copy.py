@@ -7,6 +7,7 @@ fait échouer ici, ce qui est exactement le but.
 """
 
 import inspect
+import pathlib
 import uuid
 
 from app.bot.handlers.autotune import _autotune_back_keyboard, _autotune_header
@@ -438,23 +439,38 @@ def test_a_recap_that_is_not_a_series_stays_exactly_as_it_was():
 
 
 # ---------------------------------------------------------------------------
-# Libellés de charte : labels.py est la source unique, aucun handler ne les recopie
+# Libellés de charte : labels.py est la source unique, aucun écran ne les recopie
 # ---------------------------------------------------------------------------
 
 
-def _handler_text_literals() -> list[tuple[str, int, str]]:
-    """Littéraux de texte rendus par les handlers, docstrings exclues.
+# Les écrans dont la charte relit les littéraux : handlers, fiche d'alerte, claviers
+# et légende d'annonce. Le formatter et les claviers échappaient au verrou, qui ne
+# lisait que `handlers` — `keyboards/alerts.py` réécrivait dès lors les sept libellés
+# du menu d'édition, exactement la dérive que le verrou devait empêcher.
+_SCREEN_SOURCES = (
+    pathlib.Path("app/bot/handlers"),
+    pathlib.Path("app/bot/formatter.py"),
+    pathlib.Path("app/bot/keyboards"),
+    pathlib.Path("app/services/telegram_service.py"),
+)
+
+
+def _screen_text_literals() -> list[tuple[str, int, str]]:
+    """Littéraux de texte rendus par les écrans, docstrings exclues.
 
     Un libellé cité dans une docstring ne s'affiche nulle part : le verrou doit
     porter sur ce que l'utilisateur lit, pas sur le source entier. Les balises
     sont retirées avant comparaison pour que `<b>ISBN :</b>` se lise « ISBN : ».
     """
     import ast
-    import pathlib
     import re
 
+    paths: list[pathlib.Path] = []
+    for source in _SCREEN_SOURCES:
+        paths.extend(sorted(source.rglob("*.py")) if source.is_dir() else [source])
+
     literals: list[tuple[str, int, str]] = []
-    for path in sorted(pathlib.Path("app/bot/handlers").rglob("*.py")):
+    for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         docstrings: set[int] = set()
         for node in ast.walk(tree):
@@ -474,13 +490,13 @@ def _handler_text_literals() -> list[tuple[str, int, str]]:
                 and id(node) not in docstrings
             ):
                 literals.append(
-                    (path.name, node.lineno, re.sub(r"<[^>]+>", "", node.value))
+                    (str(path.as_posix()), node.lineno, re.sub(r"<[^>]+>", "", node.value))
                 )
     return literals
 
 
-def test_no_charte_label_is_hardcoded_in_a_handler():
-    """Un libellé de charte vient de `labels` : aucun handler ne le recopie en dur.
+def test_no_charte_label_is_hardcoded_in_a_screen():
+    """Un libellé de charte vient de `labels` : aucun écran ne le recopie en dur.
 
     Deux façons de dériver, une seule règle de détection : le libellé **tel quel**
     (un bouton du clavier d'édition, un titre d'écran de saisie) ou le libellé suivi
@@ -489,6 +505,10 @@ def test_no_charte_label_is_hardcoded_in_a_handler():
     réécrits en dur au même endroit — et non une liste recopiée : un libellé ajouté
     à `labels.py` est protégé dès sa naissance, et un écran qui réécrirait
     « Mots-clés exclus » échoue ici au lieu de dériver silencieusement.
+
+    Le périmètre est **tous** les écrans, pas les handlers seuls : la fiche, les
+    claviers et la légende d'annonce portent les mêmes libellés, et un verrou qui
+    n'en couvre qu'une partie laisse les autres recopier en les croyant protégés.
     """
     import re
 
@@ -502,7 +522,7 @@ def test_no_charte_label_is_hardcoded_in_a_handler():
     assert charte_labels, "labels n'expose aucun FIELD_/STATUS_ : le verrou ne verrouille rien"
 
     violations = []
-    for file_name, line, text in _handler_text_literals():
+    for file_name, line, text in _screen_text_literals():
         for name, label in charte_labels.items():
             if text.strip() == label or re.search(re.escape(label) + r"\s*:", text):
                 violations.append(
@@ -510,7 +530,7 @@ def test_no_charte_label_is_hardcoded_in_a_handler():
                 )
 
     assert not violations, (
-        "Libellé(s) de charte recopié(s) en dur dans un handler — "
+        "Libellé(s) de charte recopié(s) en dur dans un écran — "
         "importer depuis app.bot.labels :\n" + "\n".join(violations)
     )
 
