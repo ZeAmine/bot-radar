@@ -44,3 +44,17 @@ class ItemCondition(StrEnum):
     VERY_GOOD = "Très bon état"
     GOOD = "Bon état"
     SATISFACTORY = "Satisfaisant"
+
+
+class BookSearchStatus(StrEnum):
+    """Statut normalisé d'une recherche bibliographique (Lot 0).
+
+    Ne remplace pas les verdicts métier (`IsbnVerdict`, `BookResolution`) :
+    `app/use_cases/book_search.py` définit le passage explicite de l'un à l'autre.
+    """
+
+    FOUND = "found"
+    AMBIGUOUS = "ambiguous"
+    NOT_FOUND = "not_found"
+    PARTIAL = "partial"
+    UNAVAILABLE = "unavailable"
