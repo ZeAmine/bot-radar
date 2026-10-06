@@ -13,11 +13,10 @@ est le contrat produit de l'ADR-014 puis ADR-017 :
 
 import html
 import uuid
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiogram.types import Message
-from sqlalchemy.exc import MissingGreenlet
 
 from app.bot.handlers.alerts_create import (
     handle_category_selected,
@@ -27,305 +26,41 @@ from app.bot.handlers.alerts_create import (
     start_add_alert,
 )
 from app.bot.handlers.alerts_create_confirm import (
-    handle_create_edit_choice,
     process_creation_edit_input,
     select_alert_creation_edition,
     select_alert_creation_work,
 )
 from app.bot.handlers.alerts_helpers import RECAP_TITLE, build_creation_recap
-from app.core.constants import ComparisonStatus
-from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.user import User
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
-from app.services.book_metadata_service import (
-    BookMetadata,
-    BookMetadataService,
-    BookResolution,
-    IsbnVerdict,
-)
+from app.services.book_metadata_service import BookMetadata, BookResolution
 from app.services.market_price_service import PENDING_COTE_LINE
 
-# Bandeaux de parcours qui ont disparu au profit d'un titre unique : leur présence
-# signalerait que la carte redeviendrait dépendante du chemin qui l'a produite.
-ROUTE_BANNERS = (
-    "Alerte configurée en langage naturel",
-    "Modification enregistrée",
-    "Aucune modification",
+# Le harnais de parcours vit dans `tests/add_journey.py` : un module partagé, jamais un
+# module de test importé par un autre. Les simulations n'y sont écrites qu'une fois.
+from tests.add_journey import (
+    BNF_ALTERNATIVE,
+    BNF_EDITION,
+    ISBN_AUTRE_LIVRE,
+    ISBN_INCONNU,
+    ROUTE_BANNERS,
+    DraftState,
+    FakeMessage,
+    confirm_press,
+    deepseek_payload,
+    drain,
+    edition_buttons,
+    fake_bnf,
+    fake_deepseek,
+    incoming_message,
+    index_of_line,
+    message_with_recap,
+    open_isbn_edit_field,
+    patched,
+    recap_text,
+    repositories,
+    work_buttons,
 )
-
-# Édition de référence de l'œuvre demandée, confirmée par la BNF.
-BNF_EDITION = BookMetadata(
-    title="La couleur des choses",
-    author="Martin Panchaud",
-    publisher="Çà et là",
-    isbn13="9782369903086",
-    publication_year=2022,
-    format_detail="1 vol. (224 p.) : ill. en coul. ; 24 cm",
-)
-# Autre édition de la même œuvre : c'est celle-là que l'utilisateur va choisir.
-BNF_ALTERNATIVE = BookMetadata(
-    title="La couleur des choses",
-    author="Martin Panchaud",
-    publisher="Editions çà et là",
-    isbn13="9782369904151",
-    format_detail="1 vol. (224 p.) ; 19 cm",
-)
-# ISBN bien formé et réel, mais qui désigne « Keeping two » de Jordan Crane.
-ISBN_AUTRE_LIVRE = "9782369903062"
-# ISBN bien formé, absent de la BNF : un ouvrage paru la semaine dernière.
-ISBN_INCONNU = "9782810206087"
-
-
-class DraftState:
-    """Fausse FSM : conserve le brouillon comme le vrai contexte en production."""
-
-    def __init__(self) -> None:
-        self.data: dict = {}
-        self.state = None
-
-    async def clear(self) -> None:
-        self.data = {}
-        self.state = None
-
-    async def get_data(self) -> dict:
-        return dict(self.data)
-
-    async def set_state(self, state) -> None:
-        self.state = state
-
-    async def update_data(self, data: dict | None = None, **kwargs) -> None:
-        self.data.update(data or {})
-        self.data.update(kwargs)
-
-
-class FakeMessage(MagicMock):
-    """Message Telegram recognized par `isinstance`."""
-
-    __class__ = Message
-
-
-def _deepseek_payload(**overrides) -> dict:
-    """Réponse DeepSeek du `/add` : elle propose l'ISBN d'un autre livre."""
-    payload = {
-        "name": "La couleur des choses",
-        "category_slug": "bd_comics",
-        "isbn13": ISBN_AUTRE_LIVRE,
-        "author": "Martin Panchaud",
-        "publisher": "Çà et là",
-        "include_keywords": ["La couleur des choses"],
-        "exclude_keywords": [],
-        "max_price_cents": 1200,
-        "is_series": False,
-    }
-    payload.update(overrides)
-    return payload
-
-
-def _fake_deepseek(payload: dict) -> MagicMock:
-    client = MagicMock()
-    client.is_configured = True
-    client.generate_json = AsyncMock(return_value=payload)
-    return client
-
-
-def _fake_bnf(
-    resolution: BookResolution | None,
-    verified_isbn: str | None = None,
-    conflicting_isbn: str | None = None,
-) -> MagicMock:
-    """BNF simulée : seul l'ISBN explicitement déclaré reçoit un verdict."""
-    confirmed = verified_isbn == BNF_EDITION.isbn13
-    bnf = MagicMock(spec=BookMetadataService)
-    bnf.resolve_for_alert = AsyncMock(return_value=resolution)
-    bnf.verify_isbn = AsyncMock(return_value=BNF_EDITION if confirmed else None)
-    if conflicting_isbn:
-        verdict = IsbnVerdict(
-            outcome="contradiction",
-            notice=BookMetadata(title="Keeping two", author="Jordan Crane"),
-        )
-    else:
-        verdict = (
-            IsbnVerdict(outcome="confirme", notice=BNF_EDITION)
-            if confirmed
-            else IsbnVerdict(outcome="inconnu")
-        )
-    bnf.confirm_isbn_for_title = AsyncMock(return_value=verdict)
-    bnf.lookup_by_isbn = AsyncMock(return_value=BNF_EDITION)
-    return bnf
-
-
-def _cached_market_price() -> BookMarketCache:
-    """Cote déjà en base pour un ouvrage du catalogue : prix du jour et plus bas 1 an."""
-    return BookMarketCache(
-        id=uuid.uuid4(),
-        book_id=uuid.uuid4(),
-        lowest_delivered_price_cents=1800,
-        best_provider_name="Momox",
-        comparison_status=ComparisonStatus.AVAILABLE,
-        historical_low_1y_cents=1650,
-    )
-
-
-def _message_with_recap(command: str) -> tuple[FakeMessage, MagicMock]:
-    """Message `/add` et son message d'attente, tous deux observables."""
-    message = FakeMessage()
-    message.text = command
-    message.chat.id = 12345
-    message.bot = MagicMock()
-    message.bot.send_chat_action = AsyncMock()
-
-    loading_message = MagicMock()
-    loading_message.edit_text = AsyncMock()
-    message.answer = AsyncMock(return_value=loading_message)
-    return message, loading_message
-
-
-class _UnloadedBook:
-    """Livre tel que `BookRepository.create` le renvoie : `market_cache` non chargé.
-
-    Un accès paresseux lève en session async ; reproduire ce comportement est le
-    seul moyen de verrouiller le défaut « alerte créée, aucune confirmation ».
-    """
-
-    def __init__(self, isbn13: str) -> None:
-        self.id = uuid.uuid4()
-        self.isbn13 = isbn13
-
-    @property
-    def market_cache(self) -> object:
-        raise MissingGreenlet("greenlet_spawn has not been called")
-
-
-def _repositories(
-    isbn13: str,
-    *,
-    already_catalogued: bool = False,
-    lazy_created_book: bool = False,
-) -> dict:
-    """Repositories simulées et spies pour `save_alert`.
-
-    `already_catalogued` décrit un livre déjà au catalogue et déjà coté : c'est le
-    seul cas où la confirmation peut afficher une prix sans attendre les marchands.
-    `lazy_created_book` décrit le livre qui vient d'être créé : `create` rend un objet
-    dont `market_cache` n'est pas chargé, et `get_by_id` le relit comme en production.
-    """
-    book = MagicMock()
-    book.id = uuid.uuid4()
-    book.isbn13 = isbn13
-    book.market_cache = _cached_market_price() if already_catalogued else None
-
-    alert = MagicMock()
-    alert.id = uuid.uuid4()
-
-    created = _UnloadedBook(isbn13) if lazy_created_book else book
-    book_repo = MagicMock()
-    book_repo.get_by_isbn13 = AsyncMock(return_value=book if already_catalogued else None)
-    book_repo.create = AsyncMock(return_value=created)
-    book_repo.get_by_id = AsyncMock(return_value=book)
-    book_repo.link_alert_to_book = AsyncMock()
-
-    alert_repo = MagicMock()
-    alert_repo.create = AsyncMock(return_value=alert)
-    alert_repo.find_existing = AsyncMock(return_value=None)
-
-    category_repo = MagicMock()
-    category_repo.get_by_id = AsyncMock()
-    category_repo.get_by_slug = AsyncMock(return_value=MagicMock(id=uuid.uuid4()))
-
-    return {
-        "book_repo": book_repo,
-        "alert_repo": alert_repo,
-        "category_repo": category_repo,
-        # La cotation part en arrière-plan après la création : le handler ne fait
-        # que la demander, elle est vérifiée dans son propre module.
-        "schedule_pricing": MagicMock(),
-        # La recherche des variantes part en arrière-plan : le test la déclenche lui-même.
-        "tasks": [],
-    }
-
-
-def _defer_task(holder: list) -> object:
-    """Remplace `safe_create_task` : retient la coroutine pour que le test la pilote."""
-
-    def _run(coro, name=None):
-        holder.append((coro, name))
-        return None
-
-    return _run
-
-
-async def _drain(tasks: list) -> None:
-    """Exécute la recherche de fond retenue, comme le ferait la boucle d'événements."""
-    for coro, _name in tasks:
-        await coro
-    tasks.clear()
-
-
-def _patched(repos: dict, bnf: MagicMock, client: MagicMock):
-    """Patches de toutes les frontières du flux `/add`."""
-    return (
-        patch(
-            "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
-            new_callable=PropertyMock,
-            return_value=True,
-        ),
-        patch("app.services.ai.modules.natural_add.natural_add_module.client", client),
-        patch(
-            "app.services.ai.modules.natural_add.BookMetadataService",
-            return_value=bnf,
-        ),
-        patch(
-            "app.bot.handlers.alerts_create.keyword_variants_module."
-            "generate_variants_and_exclusions",
-            new_callable=AsyncMock,
-            return_value=KeywordVariantsOutcome(
-                variants=["couleurdeschoses"],
-                exclusions=["keeping two"],
-                answered=True,
-            ),
-        ),
-        patch(
-            "app.bot.handlers.alerts_create.safe_create_task",
-            new=_defer_task(repos["tasks"]),
-        ),
-        patch("app.bot.handlers.alerts_create.BookRepository", return_value=repos["book_repo"]),
-        patch("app.bot.handlers.alerts_create.AlertRepository", return_value=repos["alert_repo"]),
-        patch(
-            "app.bot.handlers.alerts_create.CategoryRepository",
-            return_value=repos["category_repo"],
-        ),
-        patch(
-            "app.bot.handlers.alerts_create.schedule_book_pricing",
-            new=repos["schedule_pricing"],
-        ),
-        patch("app.bot.handlers.alerts.AlertRepository", return_value=repos["alert_repo"]),
-        patch("app.bot.handlers.alerts.BookRepository", return_value=repos["book_repo"]),
-        patch("app.bot.handlers.alerts.CategoryRepository", return_value=repos["category_repo"]),
-    )
-
-
-def _recap_text(loading_message: MagicMock) -> str:
-    return loading_message.edit_text.call_args[0][0]
-
-
-def _edition_buttons(loading_message: MagicMock) -> list:
-    keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
-    return [
-        button
-        for row in keyboard.inline_keyboard
-        for button in row
-        if button.callback_data.startswith("al_create_edition")
-    ]
-
-
-def _work_buttons(keyboard) -> list:
-    """Boutons d'œuvres homonymes proposés par un clavier de récap."""
-    return [
-        button
-        for row in keyboard.inline_keyboard
-        for button in row
-        if button.callback_data.startswith("al_create_work")
-    ]
 
 
 @pytest.mark.asyncio
@@ -336,28 +71,28 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
     voulue → création de l'alerte avec l'ISBN choisi, l'URL Vinted ISBN et la cote.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    bnf = _fake_bnf(resolution)
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_ALTERNATIVE.isbn13)
+    bnf = fake_bnf(resolution)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_ALTERNATIVE.isbn13)
 
-    message, loading_message = _message_with_recap(
+    message, loading_message = message_with_recap(
         "/add la couleur des choses. Max 12 €"
     )
     state = DraftState()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    patches = _patched(repos, bnf, client)
+    patches = patched(repos, bnf, client)
     for entered in patches:
         entered.start()
     try:
         await start_add_alert(message, state, db_session, db_user)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
 
         # 1. L'ISBN du modèle est refusé : la BNF le rattache à un autre ouvrage.
         bnf.verify_isbn.assert_awaited_once_with(ISBN_AUTRE_LIVRE, "La couleur des choses")
 
-        recap = _recap_text(loading_message)
+        recap = recap_text(loading_message)
         assert "<b>ISBN :</b> <code>9782369903086</code>" in recap
         assert "<b>Titre :</b> La couleur des choses" in recap
         assert "<b>Éditeur :</b> Çà et là" in recap
@@ -368,7 +103,7 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
             "<b>Édition :</b> 2022 · Çà et là · 224 p. · 24 cm" in recap
         )
 
-        buttons = _edition_buttons(loading_message)
+        buttons = edition_buttons(loading_message)
         assert [button.text for button in buttons] == [
             "1️⃣ Çà et là - 2022",
             "2️⃣ çà et là",
@@ -434,19 +169,6 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
             entered.stop()
 
 
-async def _open_isbn_edit_field(state: DraftState) -> None:
-    """Ouvre le champ ISBN du menu ✏️ Modifier, comme le fait le bouton du récap."""
-    menu_message = MagicMock(spec=Message)
-    menu_message.edit_text = AsyncMock()
-    menu_callback = MagicMock()
-    menu_callback.data = "al_create_edit:isbn"
-    menu_callback.message = menu_message
-    menu_callback.answer = AsyncMock()
-
-    await handle_create_edit_choice(menu_callback, state)
-    assert state.data["current_edit_field"] == "isbn"
-
-
 @pytest.mark.asyncio
 async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
     """Aucun ISBN confirmé : l'utilisateur saisit le bon et l'alerte part dessus.
@@ -455,43 +177,43 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
     récap en alerte → menu ✏️ Modifier → champ ISBN → saisie du bon ISBN →
     récap à jour → création sur cet ISBN.
     """
-    bnf = _fake_bnf(resolution=None)
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13)
+    bnf = fake_bnf(resolution=None)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_EDITION.isbn13)
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
 
-    message, loading_message = _message_with_recap(
+    message, loading_message = message_with_recap(
         "/add la couleur des choses. Max 12 €"
     )
     state = DraftState()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    patches = _patched(repos, bnf, client)
+    patches = patched(repos, bnf, client)
     with (
         patch(
             "app.bot.handlers.alerts_helpers.BookMetadataService",
-            return_value=_fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
+            return_value=fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
         ),
         patch(
             "app.services.book_metadata_service.BookMetadataService",
-            return_value=_fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
+            return_value=fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
         ),
     ):
         for entered in patches:
             entered.start()
         try:
             await start_add_alert(message, state, db_session, db_user)
-            await _drain(repos["tasks"])
+            await drain(repos["tasks"])
 
             # 1. Sans confirmation BNF, l'alerte part en surveillance par titre.
-            recap = _recap_text(loading_message)
+            recap = recap_text(loading_message)
             assert "<b>ISBN :</b> À confirmer" in recap
             assert "surveillance par titre" in recap
-            assert not _edition_buttons(loading_message)
+            assert not edition_buttons(loading_message)
 
             # 2. L'utilisateur corrige via le menu de modification.
-            await _open_isbn_edit_field(state)
+            await open_isbn_edit_field(state)
 
             # 3. Saisie du bon ISBN : toute la fiche d'identité est réécrite par la
             #    notice qui l'atteste, et la liste d'éditions est réalignée.
@@ -519,7 +241,7 @@ async def test_add_end_to_end_user_types_correct_isbn_when_model_is_wrong():
 
             # 4. Les mots-clés de l'ancien ouvrage sont recalculés : le récap repart
             #    sans eux, la recherche repart seule en arrière-plan.
-            await _drain(repos["tasks"])
+            await drain(repos["tasks"])
             recap_answer = typed_message.answer.call_args[0][0]
             assert "<b>Mots-clés inclus :</b> La couleur des choses" in recap_answer
 
@@ -556,20 +278,20 @@ async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_wor
     le code que l'utilisateur vient de saisir.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(ISBN_INCONNU)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(ISBN_INCONNU)
 
-    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
 
-    patches = _patched(repos, _fake_bnf(resolution), client)
+    patches = patched(repos, fake_bnf(resolution), client)
     for entered in patches:
         entered.start()
     try:
         await start_add_alert(message, state)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
 
-        await _open_isbn_edit_field(state)
+        await open_isbn_edit_field(state)
         typed_message = FakeMessage()
         typed_message.text = ISBN_INCONNU
         typed_message.answer = AsyncMock()
@@ -584,7 +306,7 @@ async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_wor
         assert "<b>ISBN :</b> <code>" + ISBN_INCONNU + "</code>" in typed_answer
         assert "ISBN saisi, non confirmé par la BNF" in typed_answer
         assert "Martin Panchaud" not in typed_answer
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -598,24 +320,24 @@ async def test_add_typed_isbn_of_another_book_is_refused():
     celui-ci à la place de l'autre.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_EDITION.isbn13)
 
-    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
 
-    patches = _patched(repos, _fake_bnf(resolution), client)
+    patches = patched(repos, fake_bnf(resolution), client)
     with patch(
         "app.bot.handlers.alerts_helpers.BookMetadataService",
-        return_value=_fake_bnf(resolution, conflicting_isbn=ISBN_AUTRE_LIVRE),
+        return_value=fake_bnf(resolution, conflicting_isbn=ISBN_AUTRE_LIVRE),
     ):
         for entered in patches:
             entered.start()
         try:
             await start_add_alert(message, state)
-            await _drain(repos["tasks"])
+            await drain(repos["tasks"])
 
-            await _open_isbn_edit_field(state)
+            await open_isbn_edit_field(state)
             typed_message = FakeMessage()
             typed_message.text = ISBN_AUTRE_LIVRE
             typed_message.answer = AsyncMock()
@@ -660,7 +382,7 @@ async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
             )
         ],
     )
-    client = _fake_deepseek(
+    client = fake_deepseek(
         {
             "name": "Les Enfants perdus",
             "category_slug": "bd_comics",
@@ -670,24 +392,24 @@ async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
             "is_series": False,
         }
     )
-    repos = _repositories("9782810206087")
+    repos = repositories("9782810206087")
 
-    message, loading_message = _message_with_recap("/add les enfants perdus. Max 12 €")
+    message, loading_message = message_with_recap("/add les enfants perdus. Max 12 €")
     state = DraftState()
 
-    patches = _patched(repos, _fake_bnf(homonym), client)
+    patches = patched(repos, fake_bnf(homonym), client)
     # Le choix d'une œuvre réinterroge la BNF pour ses éditions concurrentes.
     with patch(
         "app.bot.handlers.alerts_helpers.BookMetadataService",
-        return_value=_fake_bnf(homonym),
+        return_value=fake_bnf(homonym),
     ):
         for entered in patches:
             entered.start()
         try:
             await start_add_alert(message, state)
-            await _drain(repos["tasks"])
+            await drain(repos["tasks"])
 
-            recap = _recap_text(loading_message)
+            recap = recap_text(loading_message)
             assert "<b>ISBN :</b> À confirmer" in recap
             # La note est échappée par le récap : on compare sur un fragment sans apostrophe.
             assert "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre." in recap
@@ -697,7 +419,7 @@ async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
             assert "La Pensée universelle" not in recap
 
             keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
-            buttons = _work_buttons(keyboard)
+            buttons = work_buttons(keyboard)
             # Un bouton tient le nom de famille et le millésime : l'éditeur complet
             # ne discrimine pas deux homonymes et se faisait tronquer par Telegram.
             assert [button.text for button in buttons] == [
@@ -725,10 +447,10 @@ async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
             assert "<b>Éditeur :</b> Éditions du Chêne" in switch_recap
             assert "9782214080627" not in switch_recap
             # L'œuvre est choisie : les propositions d'homonymes disparaissent.
-            assert not _work_buttons(switch_message.edit_text.call_args[1]["reply_markup"])
+            assert not work_buttons(switch_message.edit_text.call_args[1]["reply_markup"])
 
             # Les mots-clés sont recalculés sur la fiche choisie, en arrière-plan.
-            await _drain(repos["tasks"])
+            await drain(repos["tasks"])
             assert state.data["keywords_finalized"] is True
         finally:
             for entered in reversed(patches):
@@ -739,27 +461,27 @@ async def test_add_end_to_end_homonym_title_attaches_nothing_until_chosen():
 async def test_add_end_to_end_typed_isbn_beats_model_proposal():
     """Un ISBN saisi dans la commande prime sur celui proposé par le modèle."""
     resolution = BookResolution(best=BNF_ALTERNATIVE)
-    bnf = _fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13)
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13)
+    bnf = fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_EDITION.isbn13)
 
-    message, loading_message = _message_with_recap(
+    message, loading_message = message_with_recap(
         "/add 9782369903086 la couleur des choses max 12€"
     )
     state = DraftState()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    patches = _patched(repos, bnf, client)
+    patches = patched(repos, bnf, client)
     for entered in patches:
         entered.start()
     try:
         await start_add_alert(message, state, db_session, db_user)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
 
         bnf.verify_isbn.assert_awaited_once_with("9782369903086", "La couleur des choses")
 
-        recap = _recap_text(loading_message)
+        recap = recap_text(loading_message)
         assert "<b>ISBN :</b> <code>9782369903086</code>" in recap
         assert ISBN_AUTRE_LIVRE not in recap
     finally:
@@ -775,14 +497,14 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
     cours au lieu d'un silence entre la recherche et le récap.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    bnf = _fake_bnf(resolution)
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13)
+    bnf = fake_bnf(resolution)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_EDITION.isbn13)
 
-    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
 
-    patches = _patched(repos, bnf, client)
+    patches = patched(repos, bnf, client)
     for entered in patches:
         entered.start()
     try:
@@ -797,7 +519,7 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
             loading_message.edit_text.await_args[0][0]
         )
 
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
 
         # Deux éditions successives : le jalon, puis le récap final.
         assert loading_message.edit_text.await_count == 2
@@ -811,7 +533,7 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
             button.text for row in milestone_kb.inline_keyboard for button in row
         ] == ["🔍 Variantes & exclusions en cours..."]
 
-        recap = _recap_text(loading_message)
+        recap = recap_text(loading_message)
         # La carte est celle du brouillon : un titre unique, aucun en-tête de parcours.
         # C'est ce qui permet de la ré-afficher à l'identique après un changement
         # d'édition.
@@ -830,23 +552,23 @@ async def test_add_natural_add_applies_variants_without_asking_for_a_click():
     que le brouillon ne contienne déjà, et qu'il douterait de l'automatisme.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    bnf = _fake_bnf(resolution)
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13)
+    bnf = fake_bnf(resolution)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_EDITION.isbn13)
 
-    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
 
-    patches = _patched(repos, bnf, client)
+    patches = patched(repos, bnf, client)
     for entered in patches:
         entered.start()
     try:
         await start_add_alert(message, state, AsyncMock(), User(
             id=uuid.uuid4(), telegram_user_id=123
         ))
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
 
-        recap = _recap_text(loading_message)
+        recap = recap_text(loading_message)
         assert "<b>Variantes :</b> couleurdeschoses" in recap
         assert "<b>Mots-clés exclus :</b> keeping two" in recap
         assert "Valide les critères ci-dessus avant de créer l'alerte." in recap
@@ -877,21 +599,21 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
     la confirmation n'affiche donc que ce qui est déjà en base.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    bnf = _fake_bnf(resolution)
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13, already_catalogued=True)
+    bnf = fake_bnf(resolution)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_EDITION.isbn13, already_catalogued=True)
 
-    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    patches = _patched(repos, bnf, client)
+    patches = patched(repos, bnf, client)
     for entered in patches:
         entered.start()
     try:
         await start_add_alert(message, state, db_session, db_user)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
 
         confirm_message = MagicMock(spec=Message)
         confirm_message.edit_text = AsyncMock()
@@ -941,21 +663,21 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
     d'IA payé puis perdu, sans que rien ne le signale.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    bnf = _fake_bnf(resolution)
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13)
+    bnf = fake_bnf(resolution)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_EDITION.isbn13)
 
-    message, _loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    message, _loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    patches = _patched(repos, bnf, client)
+    patches = patched(repos, bnf, client)
     for entered in patches:
         entered.start()
     try:
         await start_add_alert(message, state, db_session, db_user)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
 
         confirm_message = MagicMock(spec=Message)
         confirm_message.edit_text = AsyncMock()
@@ -1005,23 +727,23 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
     en-tête de parcours autour.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    bnf = _fake_bnf(resolution)
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13)
+    bnf = fake_bnf(resolution)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_EDITION.isbn13)
 
-    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    patches = _patched(repos, bnf, client)
+    patches = patched(repos, bnf, client)
     for entered in patches:
         entered.start()
     try:
         await start_add_alert(message, state, db_session, db_user)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
 
-        recap = _recap_text(loading_message)
+        recap = recap_text(loading_message)
         assert recap == build_creation_recap(state.data)[0]
 
         # L'utilisateur bascule sur l'autre édition.
@@ -1077,7 +799,7 @@ async def test_series_alert_starts_book_resolution_at_creation():
     même drapeau du brouillon qui décide, donc les deux écrans ne peuvent pas se
     contredire.
     """
-    repos = _repositories("9782369904151")
+    repos = repositories("9782369904151")
     state = DraftState()
     state.data = {
         "category_slug": "bd_comics",
@@ -1101,12 +823,12 @@ async def test_series_alert_starts_book_resolution_at_creation():
     with patch(
         "app.use_cases.ingest_listing.link_books_from_bnf", new_callable=AsyncMock
     ) as bnf:
-        patches = _patched(repos, MagicMock(), MagicMock())
+        patches = patched(repos, MagicMock(), MagicMock())
         for entered in patches:
             entered.start()
         try:
             await save_alert(confirm_callback, state, db_user, db_session)
-            await _drain(repos["tasks"])
+            await drain(repos["tasks"])
         finally:
             for entered in reversed(patches):
                 entered.stop()
@@ -1147,7 +869,7 @@ async def test_a_missing_identifier_is_told_in_the_confirmation_too():
     qu'une construction, donc les deux écrans portent la même ligne — et aucun livre
     n'ayant été créé, il n'y a rien à coter.
     """
-    repos = _repositories("")
+    repos = repositories("")
     state = DraftState()
     state.data = {
         "category_slug": "bd_comics",
@@ -1168,12 +890,12 @@ async def test_a_missing_identifier_is_told_in_the_confirmation_too():
     confirm_callback.answer = AsyncMock()
 
     with patch("app.use_cases.ingest_listing.link_books_from_bnf", new_callable=AsyncMock):
-        patches = _patched(repos, MagicMock(), MagicMock())
+        patches = patched(repos, MagicMock(), MagicMock())
         for entered in patches:
             entered.start()
         try:
             await save_alert(confirm_callback, state, db_user, db_session)
-            await _drain(repos["tasks"])
+            await drain(repos["tasks"])
         finally:
             for entered in reversed(patches):
                 entered.stop()
@@ -1202,7 +924,7 @@ async def test_the_draft_note_stays_on_the_recap_and_never_reaches_the_confirmat
 
     note = keyword_note(KeywordVariantsOutcome.unanswered())
     assert note is not None
-    repos = _repositories(BNF_EDITION.isbn13)
+    repos = repositories(BNF_EDITION.isbn13)
     state = DraftState()
     state.data = {
         "category_slug": "bd_comics",
@@ -1226,7 +948,7 @@ async def test_the_draft_note_stays_on_the_recap_and_never_reaches_the_confirmat
     confirm_callback.message = confirm_message
     confirm_callback.answer = AsyncMock()
 
-    patches = _patched(repos, MagicMock(), MagicMock())
+    patches = patched(repos, MagicMock(), MagicMock())
     for entered in patches:
         entered.start()
     try:
@@ -1253,7 +975,7 @@ async def test_the_card_names_the_alert_exactly_as_the_row_is_named(draft_name):
     alerte nommée « Alerte ». La carte décrit la ligne qui vient d'être écrite : elle suit
     le même repli, et le récap comme la confirmation disent le nom enregistré.
     """
-    repos = _repositories(BNF_EDITION.isbn13)
+    repos = repositories(BNF_EDITION.isbn13)
     state = DraftState()
     state.data = {
         "category_slug": "bd_comics",
@@ -1276,7 +998,7 @@ async def test_the_card_names_the_alert_exactly_as_the_row_is_named(draft_name):
     recap, _keyboard = build_creation_recap(state.data)
     assert "<b>Titre :</b> Alerte" in recap
 
-    patches = _patched(repos, MagicMock(), MagicMock())
+    patches = patched(repos, MagicMock(), MagicMock())
     for entered in patches:
         entered.start()
     try:
@@ -1299,7 +1021,7 @@ async def test_a_just_created_book_still_gets_its_confirmation():
     l'alerte existait, mais aucune confirmation n'était jamais envoyée. La lecture
     passe donc par `get_by_id`, qui charge la relation.
     """
-    repos = _repositories("9782369903086", lazy_created_book=True)
+    repos = repositories("9782369903086", lazy_created_book=True)
     state = DraftState()
     state.data = {
         "category_slug": "bd_comics",
@@ -1319,7 +1041,7 @@ async def test_a_just_created_book_still_gets_its_confirmation():
     confirm_callback.message = confirm_message
     confirm_callback.answer = AsyncMock()
 
-    patches = _patched(repos, MagicMock(), MagicMock())
+    patches = patched(repos, MagicMock(), MagicMock())
     for entered in patches:
         entered.start()
     try:
@@ -1396,30 +1118,6 @@ async def test_edit_menu_on_a_gone_draft_says_it_is_finished():
 # ---------------------------------------------------------------------------
 
 
-def _message(texte: str) -> FakeMessage:
-    """Message entrant du parcours, avec ses réponses observables."""
-    message = FakeMessage()
-    message.text = texte
-    message.answer = AsyncMock(return_value=MagicMock(spec=Message))
-    message.answer.return_value.edit_text = AsyncMock()
-    return message
-
-
-def _confirmation_message() -> tuple[MagicMock, MagicMock]:
-    """Callback « Créer l'alerte » et le message qu'il édite, observables."""
-    message = MagicMock(spec=Message)
-    message.edit_text = AsyncMock()
-    callback = MagicMock()
-    callback.data = "alert_create_confirm"
-    callback.message = message
-    callback.answer = AsyncMock()
-    return callback, message
-
-
-def _index_dune_ligne(lines: list[str], prefixe: str) -> int:
-    return next(index for index, line in enumerate(lines) if line.startswith(prefixe))
-
-
 @pytest.mark.asyncio
 async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirmation():
     """Capture 1, demande d'origine : les deux avertissements en tête, côte à côte.
@@ -1451,7 +1149,7 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
         publication_year=2025,
     )
     homonyme = BookResolution(best=roman, other_works=[bande])
-    client = _fake_deepseek(
+    client = fake_deepseek(
         {
             "name": "Les Enfants perdus",
             "category_slug": "bd_comics",
@@ -1463,8 +1161,8 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
             "is_series": False,
         }
     )
-    repos = _repositories(ISBN_INCONNU)
-    message, loading_message = _message_with_recap("/add les enfants perdus neyef, 12€")
+    repos = repositories(ISBN_INCONNU)
+    message, loading_message = message_with_recap("/add les enfants perdus neyef, 12€")
     state = DraftState()
 
     # L'avertissement d'ambiguïté produit par l'autorité (contrat d'ADR-028, déjà
@@ -1472,7 +1170,7 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     note_bnf = "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre."
     note_ia = "⚠️ L'IA n'a trouvé aucune variante de frappe pour cet ouvrage."
 
-    patches = _patched(repos, _fake_bnf(homonyme), client)
+    patches = patched(repos, fake_bnf(homonyme), client)
     # Le moteur apporte des exclusions mais aucune variante de frappe : c'est la
     # deuxième ligne de la capture.
     keywords = patch(
@@ -1488,7 +1186,7 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     keywords.start()
     try:
         await start_add_alert(message, state)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
     finally:
         keywords.stop()
         for entered in reversed(patches):
@@ -1503,6 +1201,11 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     # Les deux avertissements se suivent : aucun blanc ne les sépare.
     assert lines[2] == f"<i>{html.escape(note_bnf)}</i>"
     assert lines[3] == f"<i>{note_ia}</i>"
+    # … et chacune **une seule fois**. Elles ont d'abord vécu sous les critères, et la
+    # demande était de ne plus avoir à faire l'aller-retour. Un second passage en bas de
+    # carte laisserait ce bloc-ci intact : seule l'unicité dit qu'il n'y en a pas deux.
+    assert recap.count(f"<i>{html.escape(note_bnf)}</i>") == 1
+    assert recap.count(f"<i>{note_ia}</i>") == 1
     # … et un seul blanc les sépare de la liste des informations.
     assert lines[4] == ""
     assert lines[5].startswith("<b>ISBN :</b>")
@@ -1512,7 +1215,7 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     assert "Non renseigné" not in recap
 
     # « supprime l'espace entre auteur et prix maximum »
-    prix = _index_dune_ligne(lines, "<b>Prix maximum :</b>")
+    prix = index_of_line(lines, "<b>Prix maximum :</b>")
     assert lines[prix - 1] != "", "aucune ligne vide avant « Prix maximum »"
     assert lines[prix - 1].startswith("<b>")
 
@@ -1523,17 +1226,17 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     # « Alerte créée » relit la même carte : les **deux** avertissements, à la même
     # place. Le verdict du moteur a été rendu : il ne nomme aucun bouton et ne parle
     # d'aucune création à venir, donc rien ne justifie de le taire ici.
-    confirm_callback, confirm_message = _confirmation_message()
+    confirm_callback, confirm_message = confirm_press()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
-    confirmation_repos = _repositories(ISBN_INCONNU)
-    patches = _patched(confirmation_repos, MagicMock(), MagicMock())
+    confirmation_repos = repositories(ISBN_INCONNU)
+    patches = patched(confirmation_repos, MagicMock(), MagicMock())
     for entered in patches:
         entered.start()
     try:
         await save_alert(confirm_callback, state, db_user, AsyncMock())
         # La création programme la liaison BNF : la laisser pendante ferait d'une
         # coroutine jamais attendue un avertissement qui pollue les tests voisins.
-        await _drain(confirmation_repos["tasks"])
+        await drain(confirmation_repos["tasks"])
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -1545,10 +1248,12 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     # Le même bloc de notes, dans le même ordre, séparé de la liste par un seul blanc.
     assert confirm_lines[2] == f"<i>{html.escape(note_bnf)}</i>"
     assert confirm_lines[3] == f"<i>{note_ia}</i>"
+    assert confirmation.count(f"<i>{html.escape(note_bnf)}</i>") == 1
+    assert confirmation.count(f"<i>{note_ia}</i>") == 1
     assert confirm_lines[4] == ""
     assert confirm_lines[5].startswith("<b>ISBN :</b>")
     assert "Non renseigné" not in confirmation
-    prix = _index_dune_ligne(confirm_lines, "<b>Prix maximum :</b>")
+    prix = index_of_line(confirm_lines, "<b>Prix maximum :</b>")
     assert confirm_lines[prix - 1] != "", "aucune ligne vide avant « Prix maximum »"
     assert "🔎" not in confirmation
 
@@ -1580,7 +1285,7 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     alert_repo.find_existing = AsyncMock(return_value=None)
 
     # 1. `/add` sans rien d'autre : le bot demande la catégorie.
-    depart = _message("/add")
+    depart = incoming_message("/add")
     await start_add_alert(depart, state)
     assert "Choisis la catégorie" in depart.answer.call_args[0][0]
 
@@ -1594,7 +1299,7 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     assert "Alerte Livres & BD" in choix.message.edit_text.call_args[0][0]
 
     # 3. Il tape le titre : aucune source ne le connaît, la carte s'ouvre sur le prix.
-    saisie = _message("whoogys dailycieux")
+    saisie = incoming_message("whoogys dailycieux")
     with (
         patch(
             "app.bot.handlers.alerts_helpers.BookMetadataService", return_value=_Service()
@@ -1609,7 +1314,7 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     assert "<b>Auteur :</b> Non renseigné" in ecran_prix
 
     # 4. Il donne son prix maximum : le récap se pose, prêt à valider.
-    prix_saisi = _message("30")
+    prix_saisi = incoming_message("30")
     await process_max_price_input(prix_saisi, state, db_session)
 
     recap = prix_saisi.answer.call_args[0][0]
@@ -1624,14 +1329,14 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     assert "🔎" not in recap
 
     # 5. « Créer l'alerte » : la confirmation dit la même chose, et l'alerte existe.
-    confirm_callback, confirm_message = _confirmation_message()
-    repos = _repositories(ISBN_INCONNU)
-    patches = _patched(repos, MagicMock(), MagicMock())
+    confirm_callback, confirm_message = confirm_press()
+    repos = repositories(ISBN_INCONNU)
+    patches = patched(repos, MagicMock(), MagicMock())
     for entered in patches:
         entered.start()
     try:
         await save_alert(confirm_callback, state, db_user, db_session)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -1719,7 +1424,7 @@ async def test_the_three_keyword_verdicts_warn_instead_of_observing():
         lines = recap.splitlines()
         index_note = next(i for i, line in enumerate(lines) if attendu in line)
         assert lines[index_note].startswith("<i>⚠️")
-        assert index_note < _index_dune_ligne(lines, "<b>ISBN :</b>")
+        assert index_note < index_of_line(lines, "<b>ISBN :</b>")
 
 
 @pytest.mark.asyncio
@@ -1734,13 +1439,13 @@ async def test_the_confirmation_drops_the_engines_plea_but_keeps_its_verdict():
     un verdict rendu, lui, se relit partout. Ce test tient la frontière entre les deux.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    client = _fake_deepseek(_deepseek_payload())
-    repos = _repositories(BNF_EDITION.isbn13)
+    client = fake_deepseek(deepseek_payload())
+    repos = repositories(BNF_EDITION.isbn13)
 
-    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
 
-    patches = _patched(repos, _fake_bnf(resolution), client)
+    patches = patched(repos, fake_bnf(resolution), client)
     plea = patch(
         "app.bot.handlers.alerts_create.keyword_variants_module."
         "generate_variants_and_exclusions",
@@ -1752,7 +1457,7 @@ async def test_the_confirmation_drops_the_engines_plea_but_keeps_its_verdict():
     plea.start()
     try:
         await start_add_alert(message, state)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
     finally:
         plea.stop()
         for entered in reversed(patches):
@@ -1763,15 +1468,15 @@ async def test_the_confirmation_drops_the_engines_plea_but_keeps_its_verdict():
     # Le moteur n'a pas répondu : la recherche n'est pas définitive.
     assert state.data["keywords_finalized"] is False
 
-    confirm_callback, confirm_message = _confirmation_message()
+    confirm_callback, confirm_message = confirm_press()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
-    confirm_repos = _repositories(BNF_EDITION.isbn13)
-    patches = _patched(confirm_repos, MagicMock(), MagicMock())
+    confirm_repos = repositories(BNF_EDITION.isbn13)
+    patches = patched(confirm_repos, MagicMock(), MagicMock())
     for entered in patches:
         entered.start()
     try:
         await save_alert(confirm_callback, state, db_user, AsyncMock())
-        await _drain(confirm_repos["tasks"])
+        await drain(confirm_repos["tasks"])
     finally:
         for entered in reversed(patches):
             entered.stop()
