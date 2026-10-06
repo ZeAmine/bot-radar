@@ -263,6 +263,8 @@ def test_charte_documents_its_three_rendering_rules():
     assert "libellé de champ est gras" in docstring
     assert "instruction, d'exemple ou d'aide est en italique" in docstring
     assert "avertissement est en italique et isolé" in docstring
+    # L'indication suit la même règle, et dit pourquoi elle n'est pas une information.
+    assert "hors de la liste des informations" in docstring
 
 
 def test_field_labels_are_bold_and_values_stay_roman():
@@ -376,3 +378,60 @@ def test_both_warnings_are_italic_and_the_identity_one_leads_above_the_isbn():
     # La note du moteur est isolée des critères qu'elle commente.
     keyword_index = lines.index(escaped_keyword_note)
     assert lines[keyword_index - 1] == ""
+
+
+def test_series_indication_lives_outside_the_information_list():
+    """Règle 3, cas de l'indication : une série se dit hors de la liste des informations.
+
+    La phrase était rendue en romain, coincée entre `Titre :` et `Auteur :` — elle se
+    lisait comme une donnée de l'ouvrage. Elle est désormais une indication : italique,
+    isolée par une ligne vide, au-dessus de la première ligne de champ. La ligne ISBN,
+    elle, a disparu pour une série : `non utilisé — série multi-tomes` répétait la même
+    phrase une seconde fois, à la mauvaise place.
+    """
+    from app.bot.handlers.alerts_helpers import (
+        RECAP_TITLE,
+        SERIES_INDICATION,
+        format_semi_auto_recap,
+    )
+
+    recap = format_semi_auto_recap(
+        title="Manuel du cuisinier amateur",
+        author="Whoogy's",
+        publisher="Chêne",
+        isbn=None,
+        max_price_cents=4000,
+        include_keywords=["Manuel du cuisinier amateur"],
+        exclude_keywords=["coffret"],
+        is_series=True,
+    )
+    lines = recap.splitlines()
+
+    assert lines[0] == RECAP_TITLE
+    assert lines[1] == ""
+    assert lines[2] == f"<i>{SERIES_INDICATION}</i>"
+    assert lines[3] == ""
+    assert lines[4].startswith("<b>Titre :</b>")
+    assert "<b>ISBN :</b>" not in recap
+    # La phrase du produit, verrouillée mot pour mot : c'est la copie que l'utilisateur lit.
+    assert SERIES_INDICATION == "Série multi-tomes (veille sur tous les tomes)"
+
+
+def test_a_recap_that_is_not_a_series_stays_exactly_as_it_was():
+    """Hors série, la carte ne change pas : aucune indication, et l'italique du pied seul."""
+    from app.bot.handlers.alerts_helpers import format_semi_auto_recap
+
+    recap = format_semi_auto_recap(
+        title="La couleur des choses",
+        author="Martin Panchaud",
+        publisher="Çà et là",
+        isbn="9782205089752",
+        max_price_cents=1200,
+        include_keywords=["La couleur des choses"],
+        exclude_keywords=[],
+    )
+
+    assert "série" not in recap.lower()
+    assert "<b>ISBN :</b> <code>9782205089752</code>" in recap
+    # Seule la consigne finale porte l'italique.
+    assert recap.count("<i>") == 1

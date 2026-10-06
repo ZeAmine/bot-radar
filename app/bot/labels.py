@@ -23,6 +23,10 @@ Trois règles de mise en forme, valables sur **tous** les écrans :
    Ambiguïté d'ISBN, moteur IA muet : la note vit dans son propre bloc, jamais
    collée entre deux informations du livre. Deux avertissements ne se composent
    pas de deux styles : tous portent l'italique.
+   Une **indication** sur ce que l'alerte surveille — une série multi-tomes — suit
+   la même forme : italique, isolée, et **hors de la liste des informations**,
+   sous le titre de l'écran. Elle dit *pourquoi* l'identifiant est omis ; elle
+   n'est pas une donnée de fiche et ne prend donc pas rang avec elles.
 """
 
 import html

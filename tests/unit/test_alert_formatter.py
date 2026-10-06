@@ -222,12 +222,24 @@ def test_recap_says_an_unfound_isbn_instead_of_saying_nothing():
     assert "<b>ISBN :</b> introuvable — la BNF ne catalogue pas cet ouvrage" in recap
 
 
-def test_recap_distinguishes_a_series_that_chooses_not_to_use_one():
-    """Une série surveillée par son titre n'a pas d'ISBN : ce n'est pas un défaut."""
-    recap = _recap(isbn=None, is_series=True)
+def test_recap_keeps_the_series_indication_out_of_the_information_list():
+    """Une série n'a pas d'ISBN : l'indication le dit, dans son propre bloc.
 
-    assert "<b>ISBN :</b> non utilized" not in recap
-    assert "<b>ISBN :</b> non utilisé — série multi-tomes" in recap
+    L'ancien récap portait `non utilisé — série multi-tomes` dans la liste des
+    informations — la même phrase que l'indication, une deuxième fois, à un endroit qui
+    la faisait lire comme une donnée de l'ouvrage. La phrase n'apparaît plus qu'une
+    fois, en italique, juste sous le titre de la carte.
+    """
+    recap = _recap(isbn=None, is_series=True)
+    lines = recap.splitlines()
+
+    assert lines[0] == RECAP_TITLE
+    assert lines[1] == ""
+    assert lines[2] == "<i>Série multi-tomes (veille sur tous les tomes)</i>"
+    assert lines[3] == ""
+    assert lines[4].startswith("<b>Titre :</b>")
+    assert recap.count("Série multi-tomes") == 1
+    assert "<b>ISBN :</b>" not in recap
     assert "introuvable" not in recap
 
 

@@ -3,7 +3,6 @@
 import html
 import logging
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,32 +68,15 @@ logger = logging.getLogger(__name__)
 # fiche restent identiques.
 RECAP_TITLE = "➕ <b>Créer une alerte</b>"
 
-# Ligne d'une série que le moteur a reconnue lui-même, sans numéro de tome à énumérer.
-DEFAULT_SERIES_LINE = "Série multi-tomes — surveillance par tome"
-
-# Au-delà, la ligne de récap deviendrait un pavé : on annonce le compte.
-MAX_LISTED_VOLUMES = 6
-
-
-def series_note_for(volumes: Sequence[str]) -> str:
-    """Ligne de récap d'une série : les tomes repérés, et l'ISBN volontairement omis.
-
-    Les deux chemins d'ajout — saisie manuelle et `/add` en langage naturel —
-    l'utilisent, donc ils disent la même chose. La liste est bornée : un pavé de vingt
-    tomes ne se lit pas, et le compte suffit à décider.
-    """
-    if not volumes:
-        return DEFAULT_SERIES_LINE
-    if len(volumes) > MAX_LISTED_VOLUMES:
-        listed = ", ".join(volumes[:MAX_LISTED_VOLUMES])
-        return (
-            f"Série multi-tomes détectée — {len(volumes)} tomes repérés ({listed}, …) "
-            "— veille sur tous les tomes, sans ISBN."
-        )
-    return (
-        f"Série multi-tomes détectée ({', '.join(volumes)}) "
-        "— veille sur tous les tomes, sans ISBN."
-    )
+# Indication d'une série : ce que l'alerte surveille, non une information du livre.
+# C'est une phrase, pas une donnée de fiche : elle rend la disparition de l'identifiant
+# intelligible (« l'ISBN est omis, et voici pourquoi »), donc elle vit **hors** de la
+# liste des informations — sous le titre de la carte, en italique et isolée par une
+# ligne vide (charte, règle 3). Une seule phrase, sans énumérer les tomes repérés : la
+# liste des notices rendues par l'autorité n'est pas une information d'alerte, et un
+# pavé de tomes ne se lit pas. Elle se dérive de `is_series`, jamais d'une donnée
+# portée par le brouillon.
+SERIES_INDICATION = "Série multi-tomes (veille sur tous les tomes)"
 
 
 def _get_alert_repo(session: Any) -> Any:
@@ -170,7 +152,6 @@ def format_semi_auto_recap(
     conditions: list[str] | None = None,
     variants: list[str] | None = None,
     is_series: bool = False,
-    series_note: str | None = None,
     isbn_note: str | None = None,
     edition_alternatives: list[dict[str, Any]] | None = None,
     keyword_note: str | None = None,
@@ -184,12 +165,13 @@ def format_semi_auto_recap(
     Les états sont abrégés (`format_conditions`) pour que la carte tienne à l'écran
     sans devenir un pavé.
 
-    Les deux notes — `isbn_note` (provenance d'ISBN douteuse, repli de source) et
-    `keyword_note` (ce que la recherche de mots-clés a ou n'a pas trouvé) — sont des
-    avertissements : en italique, dans leur propre bloc isolé par une ligne vide
-    (charte, règle 3). `isbn_note` passe **au-dessus** de l'ISBN, dont il conditionne
-    la confiance ; collé entre l'identifiant et le titre, il ne se lisait pas.
-    Le pied de confirmation, lui, est une consigne, donc en italique (règle 2).
+    Trois textes vivent **hors** de la liste des informations, en italique et isolés par
+    une ligne vide (charte, règle 3) : `SERIES_INDICATION` (ce que l'alerte surveille),
+    `isbn_note` (provenance d'ISBN douteuse, repli de source) et `keyword_note` (ce que
+    la recherche de mots-clés a ou n'a pas trouvé). `isbn_note` passe **au-dessus** de
+    l'ISBN, dont il conditionne la confiance ; collé entre l'identifiant et le titre, il
+    ne se lisait pas. Le pied de confirmation, lui, est une consigne, donc en italique
+    (règle 2).
     """
     price_str = format_price_cents(max_price_cents)
     cond_display = format_conditions(
@@ -197,32 +179,36 @@ def format_semi_auto_recap(
     )
 
     lines: list[str] = [RECAP_TITLE, ""]
-    # L'avertissement d'identité ouvre la carte, isolé par une ligne vide : il
-    # conditionne la confiance dans l'ISBN qui suit, et n'est donc jamais coincé
-    # entre deux informations du livre.
+    # L'indication de série ouvre la carte, isolée par une ligne vide : elle dit ce que
+    # l'alerte surveille, et pourquoi elle n'a pas d'identifiant à montrer. Sa place
+    # n'est pas dans la liste — elle ne décrit ni le titre, ni l'auteur, ni l'éditeur.
+    if is_series:
+        lines.append(f"<i>{SERIES_INDICATION}</i>")
+        lines.append("")
+    # L'avertissement d'identité suit, isolé de la même façon : il conditionne la
+    # confiance dans l'ISBN qui suit, et n'est donc jamais coincé entre deux
+    # informations du livre.
     if isbn_note:
         lines.append(f"<i>{html.escape(isbn_note)}</i>")
         lines.append("")
 
     # La ligne ISBN est toujours là, même vide. Son absence se confondait avec un
     # oubli, alors qu'elle porte l'information : « cet ouvrage n'a pas d'identifiant »
-    # est justement ce qu'il faut lire avant de valider une alerte. Pour une alerte
-    # qui ne peut pas avoir d'ISBN — un objet, un jeu — la ligne n'a pas de sujet et
-    # ne s'affiche donc pas.
-    if isbn:
-        lines.append(f"<b>{FIELD_ISBN} :</b> <code>{html.escape(isbn)}</code>")
-    elif is_series:
-        lines.append(f"<b>{FIELD_ISBN} :</b> non utilisé — série multi-tomes")
-    elif isbn_note:
-        lines.append(f"<b>{FIELD_ISBN} :</b> À confirmer")
-    elif expects_isbn:
-        lines.append(
-            f"<b>{FIELD_ISBN} :</b> introuvable — la BNF ne catalogue pas cet ouvrage"
-        )
+    # est justement ce qu'il faut lire avant de valider une alerte. Deux exceptions :
+    # une alerte qui ne peut pas avoir d'identifiant — un objet, un jeu — n'a pas de
+    # sujet à traiter, et une série a déjà dit, plus haut, que l'omission est un choix :
+    # `non utilisé — série multi-tomes` répétait la même phrase deux fois.
+    if not is_series:
+        if isbn:
+            lines.append(f"<b>{FIELD_ISBN} :</b> <code>{html.escape(isbn)}</code>")
+        elif isbn_note:
+            lines.append(f"<b>{FIELD_ISBN} :</b> À confirmer")
+        elif expects_isbn:
+            lines.append(
+                f"<b>{FIELD_ISBN} :</b> introuvable — la BNF ne catalogue pas cet ouvrage"
+            )
 
     lines.append(f"<b>{FIELD_TITLE} :</b> {html.escape(title)}")
-    if is_series:
-        lines.append(series_note or DEFAULT_SERIES_LINE)
     if author:
         lines.append(f"<b>{FIELD_AUTHOR} :</b> {html.escape(author)}")
     if publisher:
@@ -462,7 +448,6 @@ def recap_from_state(data: dict[str, Any]) -> str:
         conditions=data.get("selected_conditions"),
         variants=data.get("variants"),
         is_series=data.get("is_series", False),
-        series_note=data.get("series_note"),
         isbn_note=data.get("isbn_note"),
         edition_alternatives=data.get("edition_alternatives"),
         # La note accompagne le brouillon plutôt que l'appel : changer d'édition ou
@@ -883,7 +868,6 @@ async def process_bd_query_lookup(
         selected_conditions=list(DEFAULT_BD_CONDITIONS),
         isbn_note=note,
         is_series=series.is_series,
-        series_note=series_note_for(series.volumes) if series.is_series else None,
         work_choices=(
             [work.model_dump() for work in resolution.work_choices()] if ambiguous else []
         ),
@@ -909,7 +893,7 @@ async def process_bd_query_lookup(
     identity_lines = [f"📚 <b>{html.escape(name)}</b>"]
     if series.is_series:
         # Une série n'affiche pas d'ISBN : c'est le choix, pas un oubli.
-        identity_lines.append(f"📖 {html.escape(series_note_for(series.volumes))}")
+        identity_lines.append(f"📖 {SERIES_INDICATION}")
     identity_lines.append(f"✍️ <b>Auteur :</b> {html.escape(meta.author or 'Non spécifié')}")
     if not series.is_series:
         identity_lines.append(
