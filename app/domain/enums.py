@@ -58,3 +58,21 @@ class BookSearchStatus(StrEnum):
     NOT_FOUND = "not_found"
     PARTIAL = "partial"
     UNAVAILABLE = "unavailable"
+
+
+class ProviderQueryStatus(StrEnum):
+    """Issue typée d'une interrogation de fournisseur (Lot 1 : Google Books).
+
+    Une liste vide ne dit rien seule : `success` + `items=()` est une absence
+    de résultat, tout autre statut est une panne à ne pas confondre avec un
+    vide. Seule la BNF reste une autorité ISBN (ADR-014) : ce statut décrit
+    le transport, jamais une confirmation d'ouvrage.
+    """
+
+    SUCCESS = "success"
+    DISABLED = "disabled"
+    TIMEOUT = "timeout"
+    RATE_LIMITED = "rate_limited"
+    UNAUTHORIZED = "unauthorized"
+    UNAVAILABLE = "unavailable"
+    INVALID_RESPONSE = "invalid_response"

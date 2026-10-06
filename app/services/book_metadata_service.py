@@ -22,7 +22,7 @@ import httpx
 from pydantic import BaseModel
 
 from app.core.config import settings
-from app.core.constants import MatchConfidence
+from app.core.constants import MatchConfidence, ProviderQueryStatus
 from app.core.http_client import get_shared_http_client
 from app.domain.rules.series_detection import SeriesSignal, detect_series
 from app.providers.google_books import GoogleBooksClient, GoogleVolume
@@ -1184,12 +1184,22 @@ class BookMetadataService:
 
         Même contrat que `_resolve_via_openlibrary` : confiance `MEDIUM`, provenance
         remontée jusqu'au récap, et aucune notice retenue si le titre ne correspond pas.
+        Quand la recherche ciblée (`intitle:`) réussit sans rien rendre, une
+        recherche libre (titre + auteur, sans opérateur) fournit des candidats
+        supplémentaires — soumis aux mêmes filtres, jamais confirmés d'office.
+        Toute autre issue (panne, quota, refus) vaut absence de candidats, comme
+        avant : les décisions globales ne changent pas dans ce lot.
         """
         client = self._google_books_client()
         if not client.is_configured:
             return None
 
-        volumes = await client.search_by_title(title, author_hint)
+        targeted = await client.search_by_title_result(title, author_hint)
+        volumes = list(targeted.items)
+        if targeted.status == ProviderQueryStatus.SUCCESS and not volumes:
+            fallback = await client.search_free_result(title, author_hint)
+            if fallback.status == ProviderQueryStatus.SUCCESS:
+                volumes = list(fallback.items)
         candidates = [
             self._attach_recommendations(self._google_volume_notice(volume))
             for volume in volumes
@@ -1235,9 +1245,11 @@ class BookMetadataService:
         Une requête `isbn:` ne garantit pas que la notice rendue porte le code demandé
         (une œuvre agrège plusieurs éditions) : un repli ne confirme que ce qu'il lit,
         et un code absent de la notice rendrait une confirmation qu'aucune donnée
-        n'appuie. C'est la même règle que pour la BNF et OpenLibrary.
+        n'appuie. C'est la même règle que pour la BNF et OpenLibrary. Pas de
+        repli libre ici : un ISBN seul ne fait pas une requête libre fiable.
         """
-        for volume in await client.search_by_isbn(isbn):
+        result = await client.search_by_isbn_result(isbn)
+        for volume in result.items:
             if isbn in volume.isbns:
                 return self._attach_recommendations(self._google_volume_notice(volume))
         return None

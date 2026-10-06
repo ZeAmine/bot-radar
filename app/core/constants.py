@@ -7,6 +7,7 @@ from app.domain.enums import (
     ComparisonStatus,
     ItemCondition,
     MatchConfidence,
+    ProviderQueryStatus,
 )
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "ComparisonStatus",
     "ItemCondition",
     "MatchConfidence",
+    "ProviderQueryStatus",
     "CATEGORY_LABELS",
     "CATEGORY_EMOJIS",
     "STANDARD_CONDITIONS",

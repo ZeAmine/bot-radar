@@ -31,22 +31,24 @@ séparées (jamais fusionnées) ; toute métadonnée inconnue vaut `None`.
 Limitations constatées (non inventées, non déduites) :
 
 - `BookResolution` n'expose ni les autorités consultées ni leurs pannes
-  (`_query_bnf_sru` jette la panne, `_query_openlibrary` et
-  `GoogleBooksClient._fetch` absorbent tout en liste vide). Sur le chemin
-  titre, `consulted` vaut donc `None` (inconnu), jamais une liste déduite de
-  l'ordre théorique BnF -> Open Library -> Google. Ajustement minimal
-  proposé (lot ultérieur) : porter `consulted` / `unavailable` sur
-  `BookResolution`, capter la panne BNF via `_bnf_records` dans le chemin
-  titre, et donner aux replis un résultat fournisseur typé (voir ci-dessous).
+  (la BNF absorbée par `_query_bnf_sru`, OpenLibrary absorbée par
+  `_query_openlibrary`). Sur le chemin titre, `consulted` vaut donc `None`
+  (inconnu), jamais une liste déduite de l'ordre théorique
+  BnF -> Open Library -> Google. Lot 1 : les issues Google sont typées
+  (`ProviderQueryResult`), mais ne remontent pas encore jusqu'ici — une panne
+  Google y reste indiscernable d'une absence. Ajustement proposé (lot
+  ultérieur) : porter `consulted` / `unavailable` sur `BookResolution`,
+  capter la panne BNF via `_bnf_records` dans le chemin titre, et y
+  propager les statuts des replis.
 - Même sur le chemin ISBN, seule la panne BNF est nommée : `unavailable`
   ne cite donc que la BNF quand `panne` est renseigné. Une panne Open Library
-  ou Google y est indiscernable d'une absence de résultat.
-- `GoogleBooksClient._fetch` rend `[]` sur panne (désactivé, timeout, quota,
-  401/403, 5xx confondus). Lot suivant : prévoir un résultat fournisseur
-  distinguant succès avec résultats, succès sans résultat, fournisseur
-  désactivé, timeout, quota dépassé, authentification refusée et erreur
-  fournisseur — sans changer ce comportement ici, car `consult_authorities`
-  et `_resolve_via_google_books` s'appuient aujourd'hui sur « vide = rien ».
+  reste indiscernable d'une absence de résultat.
+- `GoogleBooksClient._fetch_result` distingue le vide d'une panne
+  (`disabled`, `timeout`, `rate_limited`, `unauthorized`, `unavailable`,
+  `invalid_response`, avec `Retry-After` repris seulement s'il est renvoyé).
+  Le repli libre Google n'est tenté qu'après une recherche ciblée réussie
+  mais vide, jamais sur panne, et ses candidats passent les filtres métier
+  existants avant toute retenue.
 
 Garanties du lot : lecture seule (aucune écriture `Book` / `AlertBook`),
 aucun appel LLM, aucun cache bibliographique ajouté, aucune migration, aucun

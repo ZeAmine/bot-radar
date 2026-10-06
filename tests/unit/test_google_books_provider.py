@@ -4,19 +4,38 @@ Le module ne décide de rien — il lit une charge utile et la rend — donc ce 
 verrouiller ici, c'est ce qu'il lit : un code reconnu, une année, une pagination, et
 surtout **l'absence** de clé, qui doit valoir « pas de source » et non « pas de
 réponse ».
+
+Lot 1 : chaque interrogation rend un `ProviderQueryResult` typé. Une liste vide ne
+dit plus rien seule — les tests ci-dessous verrouillent chaque statut, les
+métadonnées étendues (auteurs sans rôles, langue, ebook, `printType` repris tel
+quel) et la compatibilité des méthodes historiques.
 """
 
+import logging
+
+import httpx
 import pytest
 
+from app.domain.enums import ProviderQueryStatus
 from app.providers.google_books import GoogleBooksClient
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict[str, object] | None = None, status_code: int = 200) -> None:
+    def __init__(
+        self,
+        payload: dict[str, object] | None = None,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        json_error: Exception | None = None,
+    ) -> None:
         self.status_code = status_code
+        self.headers = headers or {}
         self._payload = payload or {}
+        self._json_error = json_error
 
     def json(self) -> dict[str, object]:
+        if self._json_error is not None:
+            raise self._json_error
         return self._payload
 
 
@@ -28,17 +47,23 @@ class _FakeHttp:
         payload: dict[str, object] | None = None,
         status_code: int = 200,
         error: Exception | None = None,
+        headers: dict[str, str] | None = None,
+        json_error: Exception | None = None,
     ) -> None:
         self.payload = payload
         self.status_code = status_code
         self.error = error
+        self.headers = headers
+        self.json_error = json_error
         self.requests: list[dict[str, object]] = []
 
     async def get(self, url: str, **kwargs: object) -> _FakeResponse:
         self.requests.append({"url": url, **kwargs})
         if self.error is not None:
             raise self.error
-        return _FakeResponse(self.payload, self.status_code)
+        return _FakeResponse(
+            self.payload, self.status_code, self.headers, self.json_error
+        )
 
 
 def _item(**info: object) -> dict[str, object]:
@@ -169,3 +194,227 @@ async def test_the_shared_project_client_is_used_when_none_is_injected(monkeypat
 
     assert await client.search_by_title("Dailycieux") == []
     assert partage.requests, "le client partagé a porté la requête"
+
+
+def _client(resultat: _FakeHttp) -> GoogleBooksClient:
+    return GoogleBooksClient(api_key="cle-de-test", http_client=resultat)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_disabled_means_no_request_and_no_source():
+    """Clé absente : `disabled`, zéro requête, zéro volume."""
+    http = _FakeHttp(payload={"items": [_item(title="Dailycieux")]})
+    client = GoogleBooksClient(api_key="  ", http_client=http)  # type: ignore[arg-type]
+
+    titre = await client.search_by_title_result("Dailycieux")
+    isbn = await client.search_by_isbn_result("9782812322495")
+    libre = await client.search_free_result("Dailycieux")
+
+    assert titre.status == ProviderQueryStatus.DISABLED
+    assert isbn.status == ProviderQueryStatus.DISABLED
+    assert libre.status == ProviderQueryStatus.DISABLED
+    assert titre.items == isbn.items == libre.items == ()
+    assert http.requests == []
+
+
+@pytest.mark.asyncio
+async def test_success_without_results_is_not_a_failure():
+    """`{"totalItems": 0}` sans `items` : succès vide, pas une panne."""
+    http = _FakeHttp(payload={"totalItems": 0})
+
+    resultat = await _client(http).search_by_title_result("Ouvrage Introuvable")
+
+    assert resultat.status == ProviderQueryStatus.SUCCESS
+    assert resultat.items == ()
+    assert resultat.retry_after_seconds is None
+    assert resultat.error_code is None
+
+
+@pytest.mark.asyncio
+async def test_extended_metadata_keeps_everything_without_inventing_roles():
+    """Tous les auteurs, la langue, l'ebook, le type et la couverture sont lus."""
+    http = _FakeHttp(
+        payload={
+            "totalItems": 1,
+            "items": [
+                _item(
+                    title="Blacksad",
+                    authors=["Juan Díaz Canales", "Juanjo Guarnido"],
+                    publisher="Dargaud",
+                    publishedDate="2000-11",
+                    pageCount=56,
+                    language="fr",
+                    description="Un chat détective.",
+                    categories=["Comics & Graphic Novels"],
+                    printType="BOOK",
+                    industryIdentifiers=[
+                        {"type": "ISBN_10", "identifier": "0306406152"},
+                        {"type": "ISBN_13", "identifier": "9780306406157"},
+                    ],
+                    imageLinks={
+                        "smallThumbnail": "http://exemple/petit.jpg",
+                        "thumbnail": "http://exemple/grand.jpg",
+                    },
+                )
+            ],
+        }
+    )
+
+    resultat = await _client(http).search_by_title_result("Blacksad")
+
+    assert resultat.status == ProviderQueryStatus.SUCCESS
+    (volume,) = resultat.items
+    assert volume.authors == ("Juan Díaz Canales", "Juanjo Guarnido")
+    assert volume.author == "Juan Díaz Canales"
+    assert volume.language == "fr"
+    assert volume.description == "Un chat détective."
+    assert volume.categories == ("Comics & Graphic Novels",)
+    # `BOOK` est repris tel quel : il ne prouve pas une édition papier.
+    assert volume.print_type == "BOOK"
+    assert volume.cover_url == "http://exemple/grand.jpg"
+    assert volume.isbns == ("9780306406157",)
+    assert volume.publication_year == 2000
+
+
+@pytest.mark.asyncio
+async def test_ebook_availability_comes_from_sale_or_access_info():
+    """`has_ebook` ne dit que la disponibilité indiquée, jamais la matière."""
+    vente = _FakeHttp(
+        payload={
+            "items": [
+                {"volumeInfo": {"title": "T1"}, "saleInfo": {"isEbook": True}},
+            ]
+        }
+    )
+    acces = _FakeHttp(
+        payload={
+            "items": [
+                _item(
+                    title="T2",
+                    accessInfo={"epub": {"isAvailable": False}, "pdf": {"isAvailable": True}},
+                )
+            ]
+        },
+    )
+    muet = _FakeHttp(payload={"items": [_item(title="T3")]})
+    negatifs = _FakeHttp(
+        payload={
+            "items": [
+                _item(
+                    title="T4",
+                    accessInfo={"epub": {"isAvailable": False}, "pdf": {"isAvailable": False}},
+                )
+            ]
+        },
+    )
+
+    assert (await _client(vente).search_by_title_result("T")).items[0].has_ebook is True
+    assert (await _client(acces).search_by_title_result("T")).items[0].has_ebook is True
+    assert (await _client(muet).search_by_title_result("T")).items[0].has_ebook is None
+    assert (await _client(negatifs).search_by_title_result("T")).items[0].has_ebook is False
+
+
+@pytest.mark.asyncio
+async def test_timeouts_are_not_empty_answers():
+    """Timeout httpx comme `TimeoutError` nu : `timeout`, jamais `success`."""
+    for erreur in (
+        httpx.TimeoutException("délai dépassé"),
+        TimeoutError("délai dépassé"),
+    ):
+        resultat = await _client(_FakeHttp(error=erreur)).search_by_title_result("T")
+
+        assert resultat.status == ProviderQueryStatus.TIMEOUT
+        assert resultat.items == ()
+        assert resultat.error_code == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_network_errors_are_unavailable():
+    """Une erreur réseau n'est ni un vide ni un timeout : `unavailable`."""
+    erreur = httpx.ConnectError(
+        "connexion refusée",
+        request=httpx.Request("GET", "https://www.googleapis.com/books/v1/volumes"),
+    )
+
+    resultat = await _client(_FakeHttp(error=erreur)).search_by_title_result("T")
+
+    assert resultat.status == ProviderQueryStatus.UNAVAILABLE
+    assert resultat.items == ()
+    assert resultat.error_code == "ConnectError"
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_and_rate_limited_statuses():
+    """401/403 : `unauthorized`. 429 : `rate_limited` + `Retry-After` réel."""
+    for code in (401, 403):
+        resultat = await _client(_FakeHttp(status_code=code)).search_by_title_result("T")
+
+        assert resultat.status == ProviderQueryStatus.UNAUTHORIZED
+        assert resultat.items == ()
+        assert resultat.error_code == f"http_{code}"
+        assert resultat.retry_after_seconds is None
+
+    quota = await _client(
+        _FakeHttp(status_code=429, headers={"Retry-After": "120"})
+    ).search_by_title_result("T")
+    assert quota.status == ProviderQueryStatus.RATE_LIMITED
+    assert quota.retry_after_seconds == 120
+
+    quota_sans_delai = await _client(_FakeHttp(status_code=429)).search_by_title_result("T")
+    assert quota_sans_delai.status == ProviderQueryStatus.RATE_LIMITED
+    # Aucun délai inventé quand Google n'en renvoie pas.
+    assert quota_sans_delai.retry_after_seconds is None
+
+
+@pytest.mark.asyncio
+async def test_server_errors_are_unavailable():
+    """500/502/503/504 : `unavailable`, avec le code en `error_code`."""
+    for code in (500, 502, 503, 504):
+        resultat = await _client(_FakeHttp(status_code=code)).search_by_title_result("T")
+
+        assert resultat.status == ProviderQueryStatus.UNAVAILABLE
+        assert resultat.items == ()
+        assert resultat.error_code == f"http_{code}"
+
+
+@pytest.mark.asyncio
+async def test_invalid_payloads_are_invalid_responses():
+    """JSON illisible ou structure inattendue : `invalid_response`."""
+    illisible = await _client(
+        _FakeHttp(json_error=ValueError("JSON invalide"))
+    ).search_by_title_result("T")
+    assert illisible.status == ProviderQueryStatus.INVALID_RESPONSE
+    assert illisible.error_code == "invalid_json"
+
+    etrange = await _client(
+        _FakeHttp(payload={"items": "pas-une-liste", "totalItems": 3})  # type: ignore[dict-item]
+    ).search_by_title_result("T")
+    assert etrange.status == ProviderQueryStatus.INVALID_RESPONSE
+    assert etrange.error_code == "unexpected_structure"
+
+
+@pytest.mark.asyncio
+async def test_free_search_uses_plain_terms_with_bounded_results():
+    """Le repli libre envoie titre + auteur sans opérateur, borné à 5."""
+    http = _FakeHttp(payload={"totalItems": 0})
+    client = GoogleBooksClient(api_key="cle-de-test", http_client=http)  # type: ignore[arg-type]
+
+    resultat = await client.search_free_result("Blacksad", "Juan Diaz Canales")
+
+    assert resultat.status == ProviderQueryStatus.SUCCESS
+    assert http.requests[0]["params"]["q"] == "Blacksad Juan Diaz Canales"  # type: ignore[index]
+    assert http.requests[0]["params"]["maxResults"] == "5"  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_errors_never_leak_the_key(caplog):
+    """Ni la clé ni l'URL complète dans les logs, même sur panne réseau."""
+    http = _FakeHttp(error=httpx.ConnectError("panne"))
+    client = GoogleBooksClient(api_key="cle-secrete", http_client=http)  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING, logger="radar.google_books"):
+        resultat = await client.search_by_title_result("Dailycieux")
+
+    assert resultat.status == ProviderQueryStatus.UNAVAILABLE
+    assert "cle-secrete" not in caplog.text
+    assert "key=" not in caplog.text

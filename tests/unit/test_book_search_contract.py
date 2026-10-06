@@ -20,6 +20,7 @@ from app.services.book_metadata_service import (
     AUTORITE_BNF,
     AUTORITE_GOOGLE_BOOKS,
     AUTORITE_OPENLIBRARY,
+    GOOGLE_BOOKS_SOURCE_NOTE,
     BookMetadata,
     BookMetadataService,
     BookResolution,
@@ -244,7 +245,7 @@ def test_notice_sans_isbn_est_partielle() -> None:
 
 
 def test_metadonnees_inconnues_restent_nulles() -> None:
-    """Auteur/éditeur inconnus à `None` ; ni langue, ni rôles, ni flag numérique."""
+    """Auteur et éditeur inconnus à `None`, sans langue, rôle ni flag numérique."""
     notice = _notice(author=None, publisher=None, publication_year=None)
     verdict = IsbnVerdict(
         outcome="confirme", notice=notice, consulted=(AUTORITE_BNF,)
@@ -370,3 +371,19 @@ def test_module_sans_dependance_base_ni_llm() -> None:
     assert not any(
         module == "app.db" or module.startswith("app.db.") for module in modules
     ), modules
+
+
+def test_resolution_google_trouvee_porte_sa_provenance() -> None:
+    """Un candidat du repli (libre ou ciblé) : `found`, source Google nommée."""
+    notice = _notice(
+        source=AUTORITE_GOOGLE_BOOKS, confidence=MatchConfidence.MEDIUM
+    )
+    resolution = BookResolution(best=notice)
+
+    resultat = result_from_resolution(resolution)
+
+    assert resultat.status == BookSearchStatus.FOUND
+    assert resultat.provenance == AUTORITE_GOOGLE_BOOKS
+    assert resultat.note == GOOGLE_BOOKS_SOURCE_NOTE
+    assert resultat.reference is not None
+    assert resultat.reference.provenance == AUTORITE_GOOGLE_BOOKS
