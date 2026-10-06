@@ -17,7 +17,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
-from tests.add_fakes import UnloadedBook, cached_market_price
+from tests.add_fakes import UnloadedBook, cached_market_price, fake_book_search
 
 
 def repositories(
@@ -110,8 +110,14 @@ def patched(
         ),
         patch("app.services.ai.modules.natural_add.natural_add_module.client", client),
         patch(
-            "app.services.ai.modules.natural_add.BookMetadataService",
-            return_value=bnf,
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ),
+        # Les callbacks de sélection (œuvre, édition) revalident leur ISBN : ils
+        # consomment le même cas d'usage, dans leur propre module.
+        patch(
+            "app.bot.handlers.alerts_create_confirm.BookSearchUseCase",
+            fake_book_search(bnf),
         ),
         patch(
             "app.bot.handlers.alerts_create.keyword_variants_module."
@@ -125,10 +131,11 @@ def patched(
         ),
         # La vérification d'un ISBN saisi à la main passe par `alerts_helpers`, pas
         # par `natural_add` : sans ce double, le parcours dépend du vrai réseau BNF
-        # (et d'un client HTTP partagé lié à la boucle d'un autre test).
+        # (et d'un client HTTP partagé lié à la boucle d'un autre test). Depuis le
+        # contrat partagé, ce joint est le cas d'usage, pas le service.
         patch(
-            "app.bot.handlers.alerts_helpers.BookMetadataService",
-            return_value=isbn_bnf,
+            "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+            fake_book_search(isbn_bnf),
         ),
         patch(
             "app.bot.handlers.alerts_create.safe_create_task",

@@ -1033,6 +1033,8 @@ async def test_select_alert_creation_edition_switches_isbn():
 
     from app.bot.handlers.alerts_create_confirm import select_alert_creation_edition
     from app.bot.states.alert_creation import AlertCreationState
+    from app.services.book_metadata_service import BookMetadata, BookResolution
+    from tests.add_fakes import fake_bnf, fake_book_search
 
     editions = [
         {"isbn13": "9782369903086", "publisher": "Çà et là"},
@@ -1067,7 +1069,20 @@ async def test_select_alert_creation_edition_switches_isbn():
     callback.message = message
     callback.answer = AsyncMock()
 
-    await select_alert_creation_edition(callback, state)
+    # Le clic revalide l'ISBN choisi : l'autorité doit le connaître pour l'attacher.
+    known = BookResolution(
+        best=BookMetadata(
+            title="La couleur des choses",
+            author="Martin Panchaud",
+            isbn13="9782369903086",
+        ),
+        alternatives=[BookMetadata(title="La couleur des choses", isbn13="9782369904151")],
+    )
+    with patch(
+        "app.bot.handlers.alerts_create_confirm.BookSearchUseCase",
+        fake_book_search(fake_bnf(known)),
+    ):
+        await select_alert_creation_edition(callback, state)
 
     assert stored["isbn"] == "9782369904151"
     assert stored["publisher"] == "Futuropolis"

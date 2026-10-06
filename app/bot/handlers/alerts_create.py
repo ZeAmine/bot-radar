@@ -16,6 +16,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.bot.handlers._alerts_router import router
 from app.bot.handlers.alerts_helpers import (
     ALERT_CREATED_TITLE,
+    _bump_search_token,
     build_creation_recap,
     creation_card,
     extract_inline_price_and_clean_query,
@@ -472,6 +473,10 @@ async def handle_category_selected(
     """Traite la sélection de catégorie et oriente vers le flux adapté."""
     await callback.answer()
     category_slug = callback.data.split(":")[1]  # type: ignore
+
+    # Changer de catégorie rebat les cartes : une recherche bibliographique encore en
+    # vol n'a plus à écrire dans le nouveau brouillon.
+    await _bump_search_token(state)
 
     data = await state.get_data()
     inline_query = data.get("inline_query")

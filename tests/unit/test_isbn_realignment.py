@@ -16,6 +16,7 @@ import pytest
 
 from app.bot.handlers import alerts_helpers
 from app.services.book_metadata_service import BookMetadataService
+from tests.add_fakes import fake_book_search
 
 ISBN_PANNE = "9782369903086"  # la BNF décroche sur ce code
 ISBN_SAIN = "9782072909207"  # la BNF répond « je ne connais pas »
@@ -57,11 +58,16 @@ class _ClientPanneSurUnISBN:
 
 @pytest.fixture
 def autorite(monkeypatch) -> None:
-    """Branche le vrai service sur le client qui décroche, au lieu du réseau."""
+    """Branche le cas d'usage sur le vrai service, avec le client qui décroche.
+
+    `realign_draft_to_isbn` consomme désormais `BookSearchUseCase` : le simuler au
+    niveau du service laisserait passer le mapping (statuts, T9). Ici le service réel
+    tourne, donc le contrat est exercé de bout en bout, sans réseau.
+    """
     monkeypatch.setattr(
         alerts_helpers,
-        "BookMetadataService",
-        lambda: BookMetadataService(http_client=_ClientPanneSurUnISBN()),
+        "BookSearchUseCase",
+        fake_book_search(BookMetadataService(http_client=_ClientPanneSurUnISBN())),
     )
 
 

@@ -33,6 +33,7 @@ from app.core.constants import (
     STANDARD_CONDITIONS,
     CategorySlug,
 )
+from app.domain.enums import BookSearchStatus
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import (
     AlertServiceError,
@@ -40,6 +41,7 @@ from app.services.alert_service import (
     parse_price_to_cents,
 )
 from app.services.book_metadata_service import BookMetadata
+from app.use_cases.book_search import BookSearchUseCase
 from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger("radar.alerts_create_confirm")
@@ -128,6 +130,26 @@ async def select_alert_creation_edition(
         await callback.answer("Édition sans ISBN exploitable.", show_alert=True)
         return
 
+    # Un clic ne confirme pas un ISBN : l'édition repasse par la politique
+    # d'autorité. Le choix d'hier, rejoué aujourd'hui, ne contourne donc jamais un
+    # statut `partial` (repli pendant une panne) ni une contradiction.
+    title = str(data.get("name") or "").strip()
+    try:
+        confirmed = await BookSearchUseCase().search_by_isbn(isbn13, expected_title=title or None)
+    except Exception as exc:
+        logger.debug("Revalidation d'édition impossible pour %s : %s", isbn13, exc)
+        await callback.answer(
+            "Vérification impossible pour l'instant : réessaie dans un moment.",
+            show_alert=True,
+        )
+        return
+    if confirmed.status != BookSearchStatus.FOUND:
+        await callback.answer(
+            "Cette édition n'est pas confirmable pour l'instant : réessaie dans un moment.",
+            show_alert=True,
+        )
+        return
+
     updates: dict[str, object] = {"isbn": isbn13, "is_series": False, "isbn_note": None}
     # L'éditeur et l'année décrits par la BNF suivent l'édition choisie.
     if chosen.get("publisher"):
@@ -170,6 +192,26 @@ async def select_alert_creation_work(
         return
 
     title = str(data.get("name") or chosen.get("title") or "")
+
+    # Lever l'ambiguïté n'est pas confirmer : l'œuvre choisie repasse par la politique
+    # d'autorité. Pendant une panne, aucun callback ne promeut donc un candidat en
+    # `found` — le brouillon reste celui d'une alerte textuelle.
+    try:
+        confirmed = await BookSearchUseCase().search_by_isbn(isbn13, expected_title=title or None)
+    except Exception as exc:
+        logger.debug("Revalidation d'œuvre impossible pour %s : %s", isbn13, exc)
+        await callback.answer(
+            "Vérification impossible pour l'instant : réessaie dans un moment.",
+            show_alert=True,
+        )
+        return
+    if confirmed.status != BookSearchStatus.FOUND:
+        await callback.answer(
+            "Cette œuvre n'est pas confirmable pour l'instant : réessaie dans un moment.",
+            show_alert=True,
+        )
+        return
+
     author = str(chosen.get("author") or "").strip() or None
     chosen_meta = BookMetadata(
         title=str(chosen.get("title") or title),

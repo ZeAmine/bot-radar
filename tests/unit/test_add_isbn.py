@@ -36,6 +36,7 @@ from tests.add_fakes import (
     DraftState,
     deepseek_payload,
     fake_bnf,
+    fake_book_search,
     fake_deepseek,
 )
 from tests.add_journey import drain, patched, repositories
@@ -76,7 +77,9 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
         await drain(repos["tasks"])
 
         # 1. L'ISBN du modèle est refusé : la BNF le rattache à un autre ouvrage.
-        bnf.verify_isbn.assert_awaited_once_with(ISBN_AUTRE_LIVRE, "La couleur des choses")
+        bnf.confirm_isbn_for_title.assert_awaited_once_with(
+            ISBN_AUTRE_LIVRE, "La couleur des choses"
+        )
 
         recap = recap_text(loading_message)
         assert "<b>ISBN :</b> <code>9782369903086</code>" in recap
@@ -171,6 +174,7 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
     db_session = AsyncMock()
 
     patches = patched(
+
         repos,
         bnf,
         client,
@@ -179,6 +183,7 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
     with patch(
         "app.services.book_metadata_service.BookMetadataService",
         return_value=fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
+
     ):
         for entered in patches:
             entered.start()
@@ -258,29 +263,33 @@ async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_wor
     state = DraftState()
 
     patches = patched(repos, fake_bnf(resolution), client)
-    for entered in patches:
-        entered.start()
-    try:
-        await start_add_alert(message, state)
-        await drain(repos["tasks"])
+    with patch(
+        "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+        fake_book_search(fake_bnf(resolution)),
+    ):
+        for entered in patches:
+            entered.start()
+        try:
+            await start_add_alert(message, state)
+            await drain(repos["tasks"])
 
-        await open_isbn_edit_field(state)
-        typed_message = incoming_message(ISBN_INCONNU)
-        await process_creation_edit_input(typed_message, state)
+            await open_isbn_edit_field(state)
+            typed_message = incoming_message(ISBN_INCONNU)
+            await process_creation_edit_input(typed_message, state)
 
-        assert state.data["isbn"] == ISBN_INCONNU
-        # Rien ne rattache plus l'ancien auteur au nouvel ISBN : le récap le dit.
-        assert state.data["author"] is None
-        assert state.data["publisher"] is None
-        assert state.data["edition_alternatives"] == []
-        typed_answer = typed_message.answer.call_args[0][0]
-        assert "<b>ISBN :</b> <code>" + ISBN_INCONNU + "</code>" in typed_answer
-        assert "ISBN saisi, non confirmé par la BNF" in typed_answer
-        assert "Martin Panchaud" not in typed_answer
-        await drain(repos["tasks"])
-    finally:
-        for entered in reversed(patches):
-            entered.stop()
+            assert state.data["isbn"] == ISBN_INCONNU
+            # Rien ne rattache plus l'ancien auteur au nouvel ISBN : le récap le dit.
+            assert state.data["author"] is None
+            assert state.data["publisher"] is None
+            assert state.data["edition_alternatives"] == []
+            typed_answer = typed_message.answer.call_args[0][0]
+            assert "<b>ISBN :</b> <code>" + ISBN_INCONNU + "</code>" in typed_answer
+            assert "ISBN saisi, non confirmé par la BNF" in typed_answer
+            assert "Martin Panchaud" not in typed_answer
+            await drain(repos["tasks"])
+        finally:
+            for entered in reversed(patches):
+                entered.stop()
 
 
 @pytest.mark.asyncio
@@ -298,6 +307,7 @@ async def test_add_typed_isbn_of_another_book_is_refused():
     state = DraftState()
 
     patches = patched(
+
         repos,
         fake_bnf(resolution),
         client,
@@ -308,6 +318,7 @@ async def test_add_typed_isbn_of_another_book_is_refused():
     try:
         await start_add_alert(message, state)
         await drain(repos["tasks"])
+
 
         await open_isbn_edit_field(state)
         typed_message = incoming_message(ISBN_AUTRE_LIVRE)
@@ -346,7 +357,9 @@ async def test_add_typed_isbn_beats_model_proposal():
         await start_add_alert(message, state, db_session, db_user)
         await drain(repos["tasks"])
 
-        bnf.verify_isbn.assert_awaited_once_with("9782369903086", "La couleur des choses")
+        bnf.confirm_isbn_for_title.assert_awaited_once_with(
+            "9782369903086", "La couleur des choses"
+        )
 
         recap = recap_text(loading_message)
         assert "<b>ISBN :</b> <code>9782369903086</code>" in recap

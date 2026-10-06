@@ -138,25 +138,83 @@ def fake_bnf(
     verified_isbn: str | None = None,
     conflicting_isbn: str | None = None,
 ) -> MagicMock:
-    """BNF simulée : seul l'ISBN explicitement déclaré reçoit un verdict."""
-    confirmed = verified_isbn == BNF_EDITION.isbn13
+    """BNF simulée : elle connaît les notices qu'elle a rendues, et rien d'autre.
+
+    Une autorité qui a nommé une œuvre dans sa résolution la connaît : son ISBN y est
+    confirmé. Un ISBN hors de la résolution n'est confirmé que s'il est explicitement
+    déclaré (`verified_isbn`), et `conflicting_isbn` reste le cas de la contradiction.
+    """
+    known: dict[str, BookMetadata] = {}
+    if resolution is not None:
+        for meta in (resolution.best, *resolution.alternatives, *resolution.other_works):
+            if meta.isbn13:
+                known.setdefault(meta.isbn13, meta)
+    if verified_isbn and BNF_EDITION.isbn13:
+        known.setdefault(BNF_EDITION.isbn13, BNF_EDITION)
+
+    def _verdict(isbn: str) -> IsbnVerdict:
+        if conflicting_isbn and isbn == conflicting_isbn:
+            return IsbnVerdict(
+                outcome="contradiction",
+                notice=BookMetadata(title="Keeping two", author="Jordan Crane"),
+            )
+        notice = known.get(isbn)
+        if notice is not None:
+            return IsbnVerdict(outcome="confirme", notice=notice)
+        return IsbnVerdict(outcome="inconnu")
+
     bnf = MagicMock(spec=BookMetadataService)
     bnf.resolve_for_alert = AsyncMock(return_value=resolution)
-    bnf.verify_isbn = AsyncMock(return_value=BNF_EDITION if confirmed else None)
-    if conflicting_isbn:
-        verdict = IsbnVerdict(
-            outcome="contradiction",
-            notice=BookMetadata(title="Keeping two", author="Jordan Crane"),
-        )
-    else:
-        verdict = (
-            IsbnVerdict(outcome="confirme", notice=BNF_EDITION)
-            if confirmed
-            else IsbnVerdict(outcome="inconnu")
-        )
-    bnf.confirm_isbn_for_title = AsyncMock(return_value=verdict)
+    bnf.verify_isbn = AsyncMock(
+        return_value=known.get(verified_isbn) if verified_isbn else None
+    )
+    bnf.confirm_isbn_for_title = AsyncMock(side_effect=lambda isbn, _title=None: _verdict(isbn))
     bnf.lookup_by_isbn = AsyncMock(return_value=BNF_EDITION)
     return bnf
+
+
+def fake_book_search(
+    bnf: MagicMock,
+) -> MagicMock:
+    """Cas d'usage simulé : mappe les verdicts du faux service via les vrais adaptateurs.
+
+    Telegram appelle `BookSearchUseCase` : le simuler au niveau du service laisserait
+    passer le mapping (statuts, `confirmed`, T9, série). Ici, les adaptateurs réels
+    tournent, donc une résolution de série produit bien `is_series=True`.
+    """
+    from app.services.book_metadata_service import (
+        AUTORITE_BNF,
+        BibliographicReport,
+        IsbnVerdict,
+    )
+    from app.use_cases.book_search import result_from_report, result_from_verdict_report
+
+    class _UseCase:
+        async def search_by_title(self, title: str, author_hint: str | None = None):
+            resolution = await bnf.resolve_for_alert(title, author_hint)
+            return result_from_report(
+                BibliographicReport(kind="title", resolution=resolution),
+                query_title=title,
+            )
+
+        async def search_by_isbn(self, isbn: str, expected_title: str | None = None):
+            verdict = await bnf.confirm_isbn_for_title(isbn, expected_title)
+            if not isinstance(verdict, IsbnVerdict):
+                # Service simulé d'un test écrit pour l'ancien joint (`verify_isbn`) :
+                # on dérive le verdict de sa réponse, sans rien changer au code réel.
+                notice = await bnf.verify_isbn(isbn, expected_title or "")
+                verdict = (
+                    IsbnVerdict(
+                        outcome="confirme", notice=notice, consulted=(AUTORITE_BNF,)
+                    )
+                    if notice is not None
+                    else IsbnVerdict(outcome="inconnu", consulted=(AUTORITE_BNF,))
+                )
+            return result_from_verdict_report(
+                BibliographicReport(kind="isbn", verdict=verdict), expected_title
+            )
+
+    return MagicMock(return_value=_UseCase())
 
 
 def cached_market_price() -> BookMarketCache:

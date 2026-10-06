@@ -8,12 +8,14 @@ l'ISBN écarté, le titre de la série, et le récap que l'utilisateur lit vraim
 from __future__ import annotations
 
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiogram.types import Message
 
 from app.domain.rules.series_detection import detect_series
+from tests.add_fakes import fake_book_search
 
 VOLUME_2_TITLE = "Absolute Martian Manhunter Vol. 2"
 SERIES_TITLE = "Absolute Martian Manhunter"
@@ -142,10 +144,21 @@ def _message() -> MagicMock:
 
 
 def _state() -> AsyncMock:
+    """État FSM simulé, **persistant** : une recherche relit son jeton après coup."""
+    stored: dict[str, Any] = {}
+
+    async def _get() -> dict[str, Any]:
+        return dict(stored)
+
+    async def _update(payload: dict | None = None, **kwargs: Any) -> None:
+        stored.update(payload or {})
+        stored.update(kwargs)
+
     state = AsyncMock()
-    state.get_data = AsyncMock(return_value={})
-    state.update_data = AsyncMock()
+    state.get_data = AsyncMock(side_effect=_get)
+    state.update_data = AsyncMock(side_effect=_update)
     state.set_state = AsyncMock()
+    state._stored = stored
     return state
 
 
@@ -159,8 +172,8 @@ async def _lookup(query: str, resolution: object) -> dict:
 
     with (
         patch(
-            "app.bot.handlers.alerts_helpers.BookMetadataService",
-            return_value=_FakeService(resolution),
+            "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+            fake_book_search(_FakeService(resolution)),
         ),
         patch(
             "app.bot.handlers.alerts.CategoryRepository",
@@ -169,7 +182,7 @@ async def _lookup(query: str, resolution: object) -> dict:
     ):
         await process_bd_query_lookup(_message(), state, query, AsyncMock())
 
-    return state.update_data.call_args.kwargs
+    return dict(state._stored)
 
 
 def _notice(title: str, isbn13: str):
