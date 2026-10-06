@@ -209,16 +209,22 @@ class ChasseAuxLivresProvider:
         # sinon la recherche renverrait l'ouvrage d'un autre livre.
         clean_isbn = normalize_search_isbn(isbn13)
         if clean_isbn:
-            offers = await self._search_query(clean_isbn, expected_title=title)
+            offers = await self._search_query(
+                clean_isbn, expected_title=title, expected_isbn=clean_isbn
+            )
             if offers:
                 return offers
 
-        # 2. Repli par Titre (+ auteur éventuel)
+        # 2. Repli par Titre (+ auteur éventuel) : même si la requête part du
+        # titre, l'ISBN attendu accompagne la recherche — un résultat qui
+        # affiche ce code prouve l'identité quoi que dise la graphie (ADR-035).
         if title and len(title.strip()) > 0:
             t_query = title.strip()
             if author:
                 t_query = f"{t_query} {author.strip()}"
-            return await self._search_query(t_query, expected_title=title)
+            return await self._search_query(
+                t_query, expected_title=title, expected_isbn=clean_isbn
+            )
 
         return []
 
@@ -226,6 +232,7 @@ class ChasseAuxLivresProvider:
         self,
         query: str,
         expected_title: str | None = None,
+        expected_isbn: str | None = None,
     ) -> list[MarketOffer]:
         """Exécute une recherche sur Chasse-aux-livres pour une requête donnée."""
         search_encoded = urllib.parse.quote_plus(query)
@@ -291,7 +298,11 @@ class ChasseAuxLivresProvider:
 
                 # Récupération fine et vérifiée des offres partenaires d'occasion
                 deep_offers = await self._try_deep_lookup(
-                    client, d_html, query, expected_title=expected_title
+                    client,
+                    d_html,
+                    query,
+                    expected_title=expected_title,
+                    expected_isbn=expected_isbn,
                 )
                 if deep_offers:
                     return deep_offers
@@ -313,6 +324,7 @@ class ChasseAuxLivresProvider:
         d_html: str,
         query: str,
         expected_title: str | None = None,
+        expected_isbn: str | None = None,
     ) -> list[MarketOffer] | None:
         """Tente une extraction détaillée des offres par boutique
         (eBay, Momox, Rakuten, Fnac, etc.)."""
@@ -342,9 +354,19 @@ class ChasseAuxLivresProvider:
             # Contrôle strict de cohérence du titre (rejet si hors sujet, ex: Ogrest pour Loba Loca)
             # On vérifie contre le titre affiché et contre le slug URL qui
             # contient les sous-titres et collections complètes
-            is_coherent = self.is_title_coherent(expected_title, found_title) or (
+            #
+            # L'ISBN exact prime sur le titre (ADR-035) : quand le résultat
+            # affiche le code même que celui cherché, l'identité est prouvée et
+            # la graphie ne vétote plus — le site orthographie les volumes de
+            # façons très diverses (« 1629, ou l'effrayante histoire… » pour
+            # « Les naufragés du Jakarta T1 »), et un refus ici prive la série
+            # de toute cote alors que le bon livre est sous nos yeux.
+            isbn_proven = bool(expected_isbn) and found_isbn == expected_isbn
+
+            title_coherent = self.is_title_coherent(expected_title, found_title) or (
                 bool(slug_title) and self.is_title_coherent(expected_title, slug_title)
             )
+            is_coherent = isbn_proven or title_coherent
             if expected_title and not is_coherent:
                 logger.warning(
                     "Rejet Chasse-aux-livres pour '%s' : le titre retourné '%s' "
@@ -355,6 +377,14 @@ class ChasseAuxLivresProvider:
                     found_isbn,
                 )
                 return None
+            if isbn_proven and expected_title and not title_coherent:
+                logger.debug(
+                    "Chasse-aux-livres : ISBN %s confirmé malgré des titres divergents "
+                    "('%s' vs '%s') — l'ISBN fait foi.",
+                    found_isbn,
+                    expected_title,
+                    found_title,
+                )
 
             resp_prod = await client.get(product_url, headers=CHASSE_BROWSER_HEADERS)
             if resp_prod.status_code != 200:
