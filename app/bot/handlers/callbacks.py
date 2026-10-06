@@ -15,6 +15,7 @@ from aiogram.types import (
 
 from app.bot.keyboards.listings import get_dislike_confirmation_keyboard
 from app.bot.labels import BTN_CLOSE, escape_html
+from app.db.models.book import Book
 from app.db.models.listing import Listing
 from app.db.repositories.autotune_repo import record_listing_dislike
 from app.db.repositories.book_repo import BookRepository
@@ -120,6 +121,37 @@ def _decode_tome_ref(data: str | None) -> tuple[uuid.UUID, uuid.UUID] | None:
         return None
 
 
+def _tome_selection_rows(
+    listing_id: uuid.UUID,
+    books: list[Book],
+) -> list[list[InlineKeyboardButton]]:
+    """Rangées de boutons « choisir un tome » — une seule implémentation.
+
+    La série présente ses tomes **dès qu'il y en a plus d'un**, quel que soit le
+    panneau qui les affiche : le tome que le texte de l'annonce a désigné est un
+    point de départ, pas un cul-de-sac. Cinq boutons par rangée : au-delà,
+    Telegram refuse la ligne.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for book in books:
+        t_label = clean_tome_display_title(book.title)
+        m = re.search(r"\b(?:tome|t|vol)\s*\.?\s*(\d+)\b", t_label, re.IGNORECASE)
+        btn_text = f"T{m.group(1)}" if m else t_label[:8]
+        current_row.append(
+            InlineKeyboardButton(
+                text=btn_text,
+                callback_data=_encode_tome_ref(listing_id, book.id),
+            )
+        )
+        if len(current_row) == 5:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    return rows
+
+
 @router.callback_query(F.data.startswith("market:"))
 @router.callback_query(F.data.startswith("market_details:"))
 async def handle_view_market_details(
@@ -168,25 +200,13 @@ async def _show_market_details(
         books_in_series=books_in_series,
         tome_result=panel.tome_result,
         latest_snapshot=panel.latest_snapshot,
+        series_total_cents=panel.series_total_cents,
     )
+    # Les tomes se choisissent depuis n'importe quel panneau de la série, résolu
+    # ou non : condition unique `len(books_in_series) > 1` (voir helper).
     tome_buttons: list[list[InlineKeyboardButton]] = []
-    if not book and books_in_series and len(books_in_series) > 1:
-        current_row: list[InlineKeyboardButton] = []
-        for b in books_in_series:
-            t_label = clean_tome_display_title(b.title)
-            m = re.search(r"\b(?:tome|t|vol)\s*\.?\s*(\d+)\b", t_label, re.IGNORECASE)
-            btn_text = f"T{m.group(1)}" if m else t_label[:8]
-            current_row.append(
-                InlineKeyboardButton(
-                    text=btn_text,
-                    callback_data=_encode_tome_ref(listing.id, b.id),
-                )
-            )
-            if len(current_row) == 5:
-                tome_buttons.append(current_row)
-                current_row = []
-        if current_row:
-            tome_buttons.append(current_row)
+    if books_in_series and len(books_in_series) > 1:
+        tome_buttons = _tome_selection_rows(listing.id, books_in_series)
 
     tome_buttons.append([InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel")])
     back_keyboard = InlineKeyboardMarkup(inline_keyboard=tome_buttons)
@@ -257,19 +277,24 @@ async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
         books_in_series=books_in_series,
         tome_result=None,
         latest_snapshot=latest_snap,
+        series_total_cents=alert.series_total_cents if alert else None,
     )
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Tous les tomes",
-                    callback_data=f"market_details:{listing.id}",
-                ),
-                InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel"),
-            ]
+    # Depuis un tome, les autres tomes restent à portée de pouce : la sélection
+    # n'est jamais un cul-de-sac (condition unique `len(books_in_series) > 1`).
+    keyboard_rows: list[list[InlineKeyboardButton]] = []
+    if books_in_series and len(books_in_series) > 1:
+        keyboard_rows = _tome_selection_rows(listing.id, books_in_series)
+    keyboard_rows.append(
+        [
+            InlineKeyboardButton(
+                text="Tous les tomes",
+                callback_data=f"market_details:{listing.id}",
+            ),
+            InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel"),
         ]
     )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
     if isinstance(callback.message, Message):
         await callback.message.edit_text(

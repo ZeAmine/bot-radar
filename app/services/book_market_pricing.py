@@ -34,6 +34,7 @@ from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.db.session import AsyncSessionLocal
 from app.providers.base import MarketOffer, extract_best_historical_low, normalize_search_isbn
 from app.providers.registry import ProviderRegistry
+from app.services.market_price_service import series_reference_total
 from app.utils.price import format_cents
 
 logger = logging.getLogger(__name__)
@@ -153,12 +154,37 @@ async def fetch_offers_for_book(
     )
 
 
+async def _refresh_series_totals(session: AsyncSession, book_id: uuid.UUID) -> None:
+    """Réécrit le total des séries qui portent ce livre — après chaque écriture de cote.
+
+    C'est la **seule** adresse où le total est écrit (invariant : une seule
+    écriture, un seul chemin). Une alerte sans ISBN mais à un seul livre relié
+    n'est pas une série : son total reste ``NULL``, l'écran n'a rien à sommer.
+    """
+    repo = MarketPriceRepository(session)
+    alert_ids = await repo.get_alert_ids_linked_to_book(book_id)
+    if not alert_ids:
+        return
+    book_repo = BookRepository(session)
+    for alert_id in alert_ids:
+        books = await book_repo.get_all_books_for_alert(alert_id)
+        await repo.set_series_total(
+            alert_id,
+            series_reference_total(books) if len(books) > 1 else None,
+        )
+
+
 async def persist_market_result(
     session: AsyncSession,
     book_id: uuid.UUID,
     result: BookPricingResult,
 ) -> BookMarketCache:
-    """Enregistre snapshots et cache consolidé pour un livre, et rend la cote écrite."""
+    """Enregistre snapshots et cache consolidé pour un livre, et rend la cote écrite.
+
+    Chaque sortie de cette fonction réécrit le total des séries du livre : le
+    total affiché n'est jamais recomposé à l'affichage, il suit les cotes parce
+    qu'il est réécrit là où elles le sont.
+    """
     repo = MarketPriceRepository(session)
     for offer in result.offers:
         await repo.save_snapshot(book_id, offer)
@@ -188,9 +214,10 @@ async def persist_market_result(
             now = datetime.now(UTC)
             existing.checked_at = now
             existing.expires_at = now + timedelta(hours=CACHE_HOURS_RESILIENT_REFRESH)
+            await _refresh_series_totals(session, book_id)
             return existing
 
-    return await repo.update_or_create_cache(
+    cache = await repo.update_or_create_cache(
         book_id=book_id,
         lowest_delivered_price_cents=result.lowest_delivered_price_cents,
         best_provider_name=result.best_provider_name,
@@ -200,6 +227,8 @@ async def persist_market_result(
         cache_duration_hours=result.cache_duration_hours,
         historical_low_1y_cents=result.historical_low_1y_cents,
     )
+    await _refresh_series_totals(session, book_id)
+    return cache
 
 
 async def price_book(

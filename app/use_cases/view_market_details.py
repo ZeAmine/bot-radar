@@ -38,7 +38,8 @@ class MarketPanelData:
     ``book`` est le livre **affiché** : celui de l'annonce, ou l'unique tome de
     la série quand le texte n'en a pas désigné. ``None`` signale une série à
     choisir tome par tome — c'est ce cas qui fait apparaître le clavier de
-    sélection.
+    sélection. ``series_total_cents`` est le total de série **lu en base**
+    (jamais recomposé ici) : ``None`` tant qu'aucune écriture de cote ne l'a posé.
     """
 
     listing: Listing
@@ -46,6 +47,7 @@ class MarketPanelData:
     books_in_series: list[Book] | None
     tome_result: TomeMatchResult | None
     latest_snapshot: MarketPriceSnapshot | None
+    series_total_cents: int | None = None
 
 
 class ViewMarketDetailsUseCase:
@@ -107,6 +109,14 @@ class ViewMarketDetailsUseCase:
             target_isbn=target_isbn,
         )
 
+        # Le total vient de l'alerte, et la cotation qui vient peut-être d'avoir
+        # lieu dans `_refresh_price_if_needed` vient de le réécrire dans sa propre
+        # session : on relit plutôt que d'afficher la valeur du début d'entrée.
+        series_total: int | None = None
+        if alert is not None:
+            await self.db.refresh(alert)
+            series_total = alert.series_total_cents
+
         # Un livre non résolu dans une série d'un seul tome est ce tome : le
         # panneau n'a pas besoin d'un choix qui n'en est pas un.
         target_book = book
@@ -128,6 +138,7 @@ class ViewMarketDetailsUseCase:
             books_in_series=books_in_series,
             tome_result=tome_result,
             latest_snapshot=latest_snapshot,
+            series_total_cents=series_total,
         )
 
     async def _resolve_book(

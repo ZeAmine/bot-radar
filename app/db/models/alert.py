@@ -60,6 +60,10 @@ class Alert(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Seuil de prix article seul (hors port et protection)
     max_item_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Total des prix de référence des tomes d'une série (NULL : aucune cote exploitable).
+    # Réécrit à chaque écriture de cote par `persist_market_result` — jamais ailleurs.
+    series_total_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # États acceptés (liste de chaînes ou null si tous acceptés)
     accepted_conditions: Mapped[list[str] | None] = mapped_column(
         JSON().with_variant(JSONB, "postgresql"),

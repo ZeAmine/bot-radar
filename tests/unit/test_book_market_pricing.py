@@ -120,6 +120,7 @@ async def test_price_book_keeps_the_lowest_historical_across_merchants() -> None
     market_repo = MagicMock()
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
+    market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
     market_repo.update_or_create_cache = AsyncMock(return_value=written)
 
     with pytest.MonkeyPatch.context() as mp:
@@ -143,6 +144,7 @@ async def test_price_book_saves_a_silent_book_as_unavailable() -> None:
     market_repo = MagicMock()
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
+    market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
     market_repo.update_or_create_cache = AsyncMock(
         return_value=BookMarketCache(
             id=uuid.uuid4(),
@@ -191,6 +193,7 @@ async def test_persist_keeps_a_fresh_price_when_every_provider_is_silent() -> No
     market_repo = MagicMock()
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=existing)
+    market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
     market_repo.update_or_create_cache = AsyncMock()
 
     with pytest.MonkeyPatch.context() as mp:
