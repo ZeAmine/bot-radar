@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Renouvellement autonome du jeton anti-bot Chasse-aux-livres (ADR-033).
+# Renouvellement autonome du jeton anti-bot Chasse-aux-livres (ADR-034).
 #
 # Chemin, dans l'ordre :
 #   1. Âge de la dernière observation certifiée en base. Si elle a moins de
