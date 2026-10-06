@@ -224,9 +224,21 @@ def _edition_resolution() -> BookResolution:
 
 
 def _bnf_stub(resolution: BookResolution | None) -> MagicMock:
+    """Cas d'usage simulé : mappe la résolution figée via les adaptateurs réels."""
+    from app.services.book_metadata_service import BibliographicReport
+    from app.use_cases.book_search import result_from_report
+
     service = MagicMock()
-    service.resolve_input = AsyncMock(return_value=resolution)
-    service.resolve_for_alert = AsyncMock(return_value=resolution)
+
+    async def _search_by_title(title: str, _author_hint: str | None = None):
+        return result_from_report(
+            BibliographicReport(kind="title", resolution=resolution), query_title=title
+        )
+
+    service.search_by_title = AsyncMock(side_effect=_search_by_title)
+    service.search_by_isbn = AsyncMock(
+        return_value=result_from_report(BibliographicReport(kind="title", resolution=resolution))
+    )
     return service
 
 
@@ -246,7 +258,7 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
     bnf = _bnf_stub(_edition_resolution())
 
     with (
-        patch("app.bot.handlers.alerts_helpers.BookMetadataService", return_value=bnf),
+        patch("app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=bnf),
         # La cotation part en arrière-plan après la confirmation : un test ne doit pas
         # atteindre les marchands, ni laisser une tâche en vol à sa fermeture.
         patch("app.bot.handlers.alerts_create.schedule_book_pricing") as pricing,
@@ -330,7 +342,7 @@ async def test_cancel_at_the_title_step_aborts_without_looking_a_book_up(driver,
     user = await _add_user(db_session)
     bnf = _bnf_stub(_edition_resolution())
 
-    with patch("app.bot.handlers.alerts_helpers.BookMetadataService", return_value=bnf):
+    with patch("app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=bnf):
         await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
         category_data = _buttons_matching(bot, "add_cat:")[0]
         await _feed(bot, dispatcher, _callback_update(category_data, update_id=2), db_session, user)
@@ -340,8 +352,8 @@ async def test_cancel_at_the_title_step_aborts_without_looking_a_book_up(driver,
 
         await _feed(bot, dispatcher, _message_update("/cancel", 3), db_session, user)
 
-    bnf.resolve_input.assert_not_awaited()
-    bnf.resolve_for_alert.assert_not_awaited()
+    bnf.search_by_title.assert_not_awaited()
+    bnf.search_by_title.assert_not_awaited()
     assert "❌ Opération annulée avec succès." in _texts(bot)
     assert await _state_of(bot, dispatcher) is None
     assert (await db_session.execute(select(Alert))).scalar_one_or_none() is None

@@ -18,7 +18,7 @@ from aiogram.types import Message
 from app.bot.handlers.alerts_create import start_add_alert
 from app.bot.handlers.alerts_create_confirm import select_alert_creation_work
 from app.services.book_metadata_service import BookMetadata, BookResolution
-from tests.add_fakes import DraftState, fake_bnf, fake_deepseek
+from tests.add_fakes import DraftState, fake_bnf, fake_book_search, fake_deepseek
 from tests.add_journey import drain, patched, repositories
 from tests.screens import message_with_recap, recap_text, work_buttons
 
@@ -69,8 +69,8 @@ async def test_add_homonym_title_attaches_nothing_until_chosen():
     patches = patched(repos, fake_bnf(homonym), client)
     # Le choix d'une œuvre réinterroge la BNF pour ses éditions concurrentes.
     with patch(
-        "app.bot.handlers.alerts_helpers.BookMetadataService",
-        return_value=fake_bnf(homonym),
+        "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+        fake_book_search(fake_bnf(homonym)),
     ):
         for entered in patches:
             entered.start()

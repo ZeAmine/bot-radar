@@ -36,10 +36,9 @@ async def test_process_bd_query_lookup_stores_competing_editions():
 
     resolution = BookResolution(best=main_meta, alternatives=[other_edition])
 
-    class _Service:
-        async def resolve_input(self, _query):
-            return resolution
+    from tests.add_fakes import fake_book_search
 
+    class _Service:
         async def resolve_for_alert(self, _title, _author_hint=None):
             return resolution
 
@@ -56,7 +55,8 @@ async def test_process_bd_query_lookup_stores_competing_editions():
 
     with (
         patch(
-            "app.bot.handlers.alerts_helpers.BookMetadataService", return_value=_Service()
+            "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+            fake_book_search(_Service()),
         ),
         patch(
             "app.bot.handlers.alerts.CategoryRepository",

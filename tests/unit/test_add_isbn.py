@@ -36,6 +36,7 @@ from tests.add_fakes import (
     DraftState,
     deepseek_payload,
     fake_bnf,
+    fake_book_search,
     fake_deepseek,
 )
 from tests.add_journey import drain, patched, repositories
@@ -173,8 +174,8 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
     patches = patched(repos, bnf, client)
     with (
         patch(
-            "app.bot.handlers.alerts_helpers.BookMetadataService",
-            return_value=fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
+            "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+            fake_book_search(fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13)),
         ),
         patch(
             "app.services.book_metadata_service.BookMetadataService",
@@ -260,8 +261,8 @@ async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_wor
 
     patches = patched(repos, fake_bnf(resolution), client)
     with patch(
-        "app.bot.handlers.alerts_helpers.BookMetadataService",
-        return_value=fake_bnf(resolution),
+        "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+        fake_book_search(fake_bnf(resolution)),
     ):
         for entered in patches:
             entered.start()
@@ -304,8 +305,8 @@ async def test_add_typed_isbn_of_another_book_is_refused():
 
     patches = patched(repos, fake_bnf(resolution), client)
     with patch(
-        "app.bot.handlers.alerts_helpers.BookMetadataService",
-        return_value=fake_bnf(resolution, conflicting_isbn=ISBN_AUTRE_LIVRE),
+        "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+        fake_book_search(fake_bnf(resolution, conflicting_isbn=ISBN_AUTRE_LIVRE)),
     ):
         for entered in patches:
             entered.start()

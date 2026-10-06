@@ -54,12 +54,9 @@ from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
     BookMetadata,
-    BookMetadataService,
-    IsbnVerdict,
     format_edition_fragments,
     generate_recommended_keywords,
     parse_query_title_and_author,
-    provenance_note,
 )
 from app.use_cases.book_search import (
     BookSearchResult,
@@ -793,20 +790,21 @@ async def _resolve_edition_choices(
 ) -> list[dict[str, Any]]:
     """Liste les éditions concurrentes de l'œuvre pour la saisie manuelle.
 
-    Une seule requête BNF supplémentaire : elle ne fait qu'énumérer ce que
-    `resolve_for_alert` a déjà tranché. Un échec réseau ne doit jamais bloquer la
-    création de l'alerte, il prive seulement l'utilisateur du choix.
+    Une seule recherche supplémentaire, par le cas d'usage partagé : elle ne fait
+    qu'énumérer les éditions que le contrat expose. Un échec réseau ne doit jamais
+    bloquer la création de l'alerte, il prive seulement l'utilisateur du choix.
     """
     try:
-        resolution = await BookMetadataService().resolve_for_alert(title, author_hint)
+        result = await BookSearchUseCase().search_by_title(title, author_hint)
     except Exception as exc:
         logger.debug("Éditions concurrentes indisponibles pour « %s » : %s", title, exc)
         return []
-    if resolution is None or resolution.is_ambiguous:
+    if result.status != BookSearchStatus.FOUND:
         # Un titre homonyme n'a pas d'éditions : celles du roman porteraient l'ISBN
-        # d'un autre ouvrage dans le clavier de création.
+        # d'un autre ouvrage dans le clavier de création. Une identité non confirmée
+        # (repli ou notice sans ISBN) n'en propose pas davantage.
         return []
-    return build_edition_choices(resolution)
+    return [_edition_choice_to_dict(edition) for edition in result.editions]
 
 
 @dataclass(frozen=True)
@@ -862,28 +860,30 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
     et une notice de repli n'y vaut jamais confirmation.
     """
     title = str(draft.get("name") or "").strip()
-    service = BookMetadataService()
 
-    verdict = IsbnVerdict(outcome="inconnu")
+    # Consomme le contrat partagé, avec contrôle du titre : une panne BNF ne peut pas
+    # faire passer un repli pour une confirmation (T9), et une contradiction reste un
+    # refus motivé. Aucune décision d'autorité n'est réécrite ici.
     try:
-        verdict = await service.confirm_isbn_for_title(isbn, title or None)
+        result: BookSearchResult | None = await BookSearchUseCase().search_by_isbn(
+            isbn.strip(), expected_title=title or None
+        )
+    except InvalidIsbnError:
+        return IsbnRealignment(
+            conflict="ISBN invalide : 10 ou 13 chiffres avec une clé de contrôle correcte."
+        )
     except Exception as exc:
         logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", isbn, exc)
+        result = None
 
-    # Une seule issue à la fois : la notice n'est une réponse d'autorité que si le
-    # verdict le dit, et la garde rend cette lecture impossible à rater.
-    notice = verdict.notice if verdict.a_tranche else None
-
-    if verdict.outcome == "contradiction" and notice is not None:
-        who = f" de {notice.author}" if notice.author else ""
-        return IsbnRealignment(
-            conflict=(
-                f"Cet ISBN ({isbn}) correspond à « {notice.title} »{who}, pas à « {title} »."
-            )
+    if result is not None and result.status == BookSearchStatus.FOUND:
+        confirmed = result.confirmed
+        meta = BookMetadata(
+            title=confirmed.title if confirmed else title,
+            author=confirmed.author if confirmed else None,
+            publisher=confirmed.publisher if confirmed else None,
+            isbn13=result.reference.isbn13 if result.reference else isbn.strip(),
         )
-
-    if verdict.confirme and notice is not None:
-        meta = notice
         return IsbnRealignment(
             updates={
                 # Le spread vient d'abord : il vide la fiche de l'ouvrage précédent, et
@@ -891,7 +891,7 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
                 **KEYWORDS_FROM_PREVIOUS_WORK,
                 "isbn": isbn,
                 "is_series": False,
-                "isbn_note": provenance_note(meta),
+                "isbn_note": result.note,
                 "author": meta.author,
                 "publisher": meta.publisher,
                 "edition_alternatives": await _resolve_edition_choices(title, meta.author),
@@ -899,11 +899,29 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
             }
         )
 
+    if (
+        result is not None
+        and result.status == BookSearchStatus.NOT_FOUND
+        and result.conflict is not None
+    ):
+        who = f" de {result.conflict.author}" if result.conflict.author else ""
+        return IsbnRealignment(
+            conflict=(
+                f"Cet ISBN ({isbn}) correspond à « {result.conflict.title} »{who}, "
+                f"pas à « {title} »."
+            )
+        )
+
     note = "ISBN saisi, non confirmé par la BNF"
-    if verdict.panne:
+    if result is not None and result.status in (
+        BookSearchStatus.UNAVAILABLE,
+        BookSearchStatus.PARTIAL,
+    ):
         # Le motif ne va pas au brouillon — il est technique ; l'utilisateur, lui, doit
         # savoir qu'une nouvelle tentative a du sens, et qu'aucune autorité n'a tranché.
-        logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", isbn, verdict.panne)
+        logger.warning(
+            "Vérification BNF impossible pour l'ISBN %s : %s", isbn, result.unavailable
+        )
         note = "ISBN saisi, non confirmé : la BNF n'a pas pu être interrogée, réessaie plus tard"
 
     return IsbnRealignment(
