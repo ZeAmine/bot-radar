@@ -36,8 +36,10 @@ def test_verify_webhook_secret():
     assert verify_webhook_secret("wrong_secret") is False
 
 
-def test_is_telegram_user_allowed():
-    settings.TELEGRAM_ALLOWED_USER_IDS = [12345678, 87654321]
+def test_is_telegram_user_allowed(monkeypatch: pytest.MonkeyPatch):
+    # Réglage limité au test : une mutation directe du singleton survivrait au test
+    # et déciderait du résultat des suivants selon l'ordre de passage.
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [12345678, 87654321])
     assert is_telegram_user_allowed(12345678) is True
     assert is_telegram_user_allowed(87654321) is True
     assert is_telegram_user_allowed(99999999) is False
