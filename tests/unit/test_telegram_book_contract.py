@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.handlers.alerts_create_confirm import (
@@ -551,6 +552,103 @@ def test_alertes_textuelles_acceptent_les_deux_formulations() -> None:
         updates = draft_updates_from_search(resultat, query_title="La couleur des choses")
         assert updates["isbn"] is None
         assert updates["include_keywords"] == ["couleur des choses"]
+
+
+@pytest.mark.asyncio
+async def test_clic_sur_l_edition_deja_retenue_ne_leve_pas() -> None:
+    """Re-cliquer l'édition courante : Telegram refuse l'édition identique, pas nous.
+
+    Le handler reconstruit la carte puis l'édite ; quand rien n'a changé, Telegram
+    répond « message is not modified » et levait une exception — journalisée en ERROR
+    alors que la carte affichée était déjà la bonne. On l'ignore, en le disant au
+    niveau DEBUG, et l'ISBN reste celui de l'édition retenue.
+    """
+    editions = [{"isbn13": "9782369903086"}, {"isbn13": "9782369904151"}]
+    state = _state(
+        {"name": "La couleur des choses", "isbn": "9782369903086", "edition_alternatives": editions}
+    )
+    callback = _callback("al_create_edition:0")  # index 0 = l'édition déjà retenue
+    callback.message.edit_text = AsyncMock(
+        side_effect=TelegramBadRequest(
+            method=None,
+            message=(
+                "message is not modified: specified new message content and reply "
+                "markup are exactly the same as a current content"
+            ),
+        )
+    )
+    use_case = _edition_use_case({"9782369903086": "La couleur des choses"})
+
+    with patch(
+        "app.bot.handlers.alerts_create_confirm.BookSearchUseCase", return_value=use_case
+    ):
+        await select_alert_creation_edition(callback, state)  # ne doit pas lever
+
+    assert state._stored["isbn"] == "9782369903086", "l'ISBN retenu ne change pas"
+
+
+@pytest.mark.asyncio
+async def test_une_autre_erreur_telegram_remonte_toujours() -> None:
+    """Seule l'erreur d'édition identique est ignorée : les autres remontent."""
+    editions = [{"isbn13": "9782369903086"}, {"isbn13": "9782369904151"}]
+    state = _state({"name": "T", "isbn": "9782369903086", "edition_alternatives": editions})
+    callback = _callback("al_create_edition:1")
+    callback.message.edit_text = AsyncMock(
+        side_effect=TelegramBadRequest(method=None, message="Bad Request: chat not found")
+    )
+    use_case = _edition_use_case({"9782369904151": "T"})
+
+    with (
+        patch(
+            "app.bot.handlers.alerts_create_confirm.BookSearchUseCase",
+            return_value=use_case,
+        ),
+        pytest.raises(TelegramBadRequest, match="chat not found"),
+    ):
+        await select_alert_creation_edition(callback, state)
+
+
+@pytest.mark.asyncio
+async def test_le_clic_revalide_toujours_l_isbn_meme_identique() -> None:
+    """Le raccourci d'affichage ne retire pas la revalidation de l'ISBN (Lot 4)."""
+    editions = [{"isbn13": "9782369903086"}]
+    state = _state({"name": "T", "isbn": "9782369903086", "edition_alternatives": editions})
+    callback = _callback("al_create_edition:0")
+    callback.message.edit_text = AsyncMock(
+        side_effect=TelegramBadRequest(method=None, message="message is not modified")
+    )
+    use_case = _edition_use_case({"9782369903086": "T"})
+
+    with patch(
+        "app.bot.handlers.alerts_create_confirm.BookSearchUseCase", return_value=use_case
+    ):
+        await select_alert_creation_edition(callback, state)
+
+    use_case.search_by_isbn.assert_awaited()
+
+
+def _edition_use_case(connus: dict[str, str]):  # noqa: ANN202 - fabrique locale
+    """Cas d'usage simulé : ne confirme que les ISBN de la carte."""
+    from app.services.book_metadata_service import BibliographicReport, BookMetadata, BookResolution
+    from app.use_cases.book_search import result_from_report
+
+    faux = AsyncMock()
+
+    async def _search_by_isbn(isbn: str, expected_title: str | None = None):
+        if isbn not in connus:
+            return BookSearchResult(status=BookSearchStatus.NOT_FOUND)
+        return result_from_report(
+            BibliographicReport(
+                kind="title",
+                resolution=BookResolution(
+                    best=BookMetadata(title=connus[isbn], isbn13=isbn, source=AUTORITE_BNF)
+                ),
+            ),
+            query_title=expected_title or connus[isbn],
+        )
+
+    faux.search_by_isbn = AsyncMock(side_effect=_search_by_isbn)
+    return faux
 
 
 def test_natural_add_applique_la_meme_politique_que_la_saisie_manuelle() -> None:

@@ -5,6 +5,7 @@ import logging
 from typing import cast
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -162,7 +163,18 @@ async def select_alert_creation_edition(
 
     if callback.message and hasattr(callback.message, "edit_text"):
         recap_text, keyboard = build_creation_recap(updated_data)
-        await callback.message.edit_text(recap_text, reply_markup=keyboard)
+        try:
+            await callback.message.edit_text(recap_text, reply_markup=keyboard)
+        except TelegramBadRequest as exc:
+            # Cliquer l'édition **déjà retenue** reconstruit une carte identique ; Telegram
+            # refuse alors une édition « sans changement ». Ce n'est pas une panne : la
+            # carte affichée est déjà la bonne, et l'ISBN n'a pas bougé. Toute autre
+            # erreur Telegram (formatage, droits, réseau) doit continuer de remonter.
+            if "message is not modified" not in str(exc):
+                raise
+            logger.debug(
+                "Édition déjà retenue : carte identique, édition Telegram ignorée."
+            )
 
 
 @router.callback_query(F.data.startswith("al_create_work:"))
