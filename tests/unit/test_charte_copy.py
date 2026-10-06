@@ -1,17 +1,48 @@
-"""Verrous de charte sur les écrans qui n'étaient pas encore repris.
+"""Verrous de charte : libellés partagés, et copie observée sur les écrans de création.
 
-Ces tests ne vérifient pas une formulation : ils vérifient qu'un libellé ne peut
-pas dériver d'un écran à l'autre, et qu'une donnée absente ne se déguise pas en
-valeur. Un écran qui réécrit « Mots-clés exclus » ou « Non renseigné » en dur les
-fait échouer ici, ce qui est exactement le but.
+Deux natures de test, et deux seulement.
+
+- Des verrous de **source** : un libellé de charte vit dans `labels` et nulle part
+  ailleurs, la cote ne porte pas d'emoji décoratif. Ils lisent le code, parce que ce
+  qu'ils protègent est justement qu'aucun écran ne réécrive ces textes.
+- Des verrous de **copie observée** : ce que l'utilisateur lit, obtenu en traversant les
+  **vrais handlers**. Le harnais de parcours vit dans `test_add_end_to_end` et n'est pas
+  recopié ici ; un changement de copie qui n'atteint pas l'écran réel ne peut pas passer.
+
+Les mêmes écrans sont relus ligne à ligne par les parcours de `test_add_end_to_end` — les
+deux avertissements en tête et côte à côte, le ⚠️ à la place de la loupe, l'absence de
+blanc avant « Prix maximum », les trous d'identité quand personne n'identifie l'ouvrage.
+Les verrous qui rejouaient ces cas sur une fonction de rendu appelée à la main ont été
+supprimés plutôt que dupliqués : la couverture est la même, elle passe par le parcours.
 """
 
 import inspect
 import pathlib
 import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Le harnais de parcours : les écrans de copie sont joués par les vrais handlers, jamais
+# par un appel direct à `creation_card`. Il vit dans le fichier des parcours `/add` — le
+# dupliquer ici donnerait deux simulations de la même chaîne, donc deux vérités.
+from test_add_end_to_end import (
+    BNF_ALTERNATIVE,
+    BNF_EDITION,
+    DraftState,
+    _confirmation_message,
+    _deepseek_payload,
+    _drain,
+    _fake_bnf,
+    _fake_deepseek,
+    _message,
+    _message_with_recap,
+    _patched,
+    _repositories,
+)
+
+from app.bot.handlers.alerts_create import process_max_price_input, save_alert, start_add_alert
+from app.bot.handlers.alerts_helpers import RECAP_TITLE
 from app.bot.handlers.autotune import _autotune_back_keyboard, _autotune_header
 from app.bot.handlers.help import HELP_TEXT
 from app.bot.keyboards.stats import get_stats_keyboard
@@ -31,8 +62,10 @@ from app.bot.labels import (
     format_price_line,
     period_button,
 )
+from app.db.models.user import User
 from app.services.ai.schemas import NegotiationResult
-from app.services.market_price_service import MarketPriceService
+from app.services.book_metadata_service import BookResolution
+from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceService
 from app.services.price_calculator import format_price_summary
 
 
@@ -288,17 +321,20 @@ def test_field_labels_are_bold_and_values_stay_roman():
 
 
 def test_alert_caption_bolds_labels_and_leaves_values_roman():
-    """L'alerte d'annonce suit la règle 1 : `État` et `Mots-clés` gras, valeurs nues."""
-    import uuid as _uuid
+    """L'alerte d'annonce suit la règle 1 : `État` et `Mots-clés` gras, valeurs nues.
 
+    La légende d'une annonce n'est pas reconstructible depuis un handler : elle
+    assemble la cote et les mots-clés de l'ingestion. La règle de charte se vérifie
+    donc sur le formateur partagé, seul endroit qui l'écrit.
+    """
     from app.core.constants import CategorySlug
     from app.db.models.listing import Listing
     from app.services.telegram_service import build_listing_caption
 
     listing = Listing(
-        id=_uuid.uuid4(),
+        id=uuid.uuid4(),
         source_name="authorized-source",
-        external_id=str(_uuid.uuid4()),
+        external_id=str(uuid.uuid4()),
         url="https://www.example.com/listing-1",
         title="Blacksad — Intégrale",
         normalized_title="blacksad — intégrale",
@@ -316,221 +352,6 @@ def test_alert_caption_bolds_labels_and_leaves_values_roman():
     assert "<b>TBE</b>" not in caption
     assert "<b>Mots-clés :</b> blacksad" in caption
     assert "<b>blacksad</b>" not in caption
-
-
-def test_instruction_text_is_italic():
-    """Les consignes portent l'italique : une instruction n'est pas une donnée."""
-    from app.bot.handlers.alerts_create import _CONFIRMATION_FOOTER
-    from app.bot.handlers.alerts_helpers import format_semi_auto_recap
-
-    recap = format_semi_auto_recap(
-        title="La couleur des choses",
-        author=None,
-        publisher=None,
-        isbn=None,
-        max_price_cents=1200,
-        include_keywords=["la couleur des choses"],
-        exclude_keywords=[],
-    )
-
-    assert recap.rstrip().endswith("<i>Valide les critères ci-dessus avant de créer l'alerte.</i>")
-    assert _CONFIRMATION_FOOTER.startswith("<i>")
-    assert _CONFIRMATION_FOOTER.endswith("</i>")
-
-
-def test_the_two_warnings_share_one_block_above_the_information_list():
-    """Règle 3 : les avertissements sont en italique, **groupés** en tête de carte.
-
-    Ils ont d'abord vécu à deux endroits — l'identité au-dessus de l'ISBN, le moteur tout
-    en bas sous les critères — et l'esprit devait faire l'aller-retour entre le haut et
-    le bas de la carte pour savoir ce qui manquait. Côte à côte, un seul style, une seule
-    place : le bloc de notes se lit d'un coup, et c'est lui qui ouvre la carte.
-    """
-    import html
-
-    from app.bot.handlers.alerts_helpers import RECAP_TITLE, format_semi_auto_recap
-
-    isbn_note = "⚠️ « L'Âge d'or » : 3 autres ouvrages portent ce titre."
-    keyword_note = "⚠️ L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage."
-    recap = format_semi_auto_recap(
-        title="L'Âge d'or",
-        author=None,
-        publisher=None,
-        isbn=None,
-        max_price_cents=1500,
-        include_keywords=["L'Âge d'or"],
-        exclude_keywords=[],
-        isbn_note=isbn_note,
-        keyword_note=keyword_note,
-    )
-
-    # `isbn_note` porte des données de notice, donc échappé ; `keyword_note` est un
-    # libellé interne, rendu tel quel.
-    escaped_isbn_note = f"<i>{html.escape(isbn_note)}</i>"
-    escaped_keyword_note = f"<i>{keyword_note}</i>"
-
-    lines = recap.splitlines()
-    assert lines[0] == RECAP_TITLE
-    assert lines[1] == ""
-    # Les deux avertissements se suivent : aucune ligne vide ne les sépare.
-    assert lines[2] == escaped_isbn_note
-    assert lines[3] == escaped_keyword_note
-    # Une seule ligne vide sépare le bloc de notes de la liste des informations…
-    assert lines[4] == ""
-    assert lines[5].startswith("<b>ISBN :</b>")
-    # … et la note du moteur n'est plus reléguée sous les critères qu'elle commente.
-    assert recap.count(escaped_keyword_note) == 1
-    price_index = next(
-        index for index, line in enumerate(lines) if line.startswith("<b>Prix maximum :</b>")
-    )
-    assert lines.index(escaped_keyword_note) < price_index
-
-
-def test_the_information_list_has_no_blank_line_before_the_max_price():
-    """L'identité et les critères de veille se suivent : une seule liste, d'un trait.
-
-    Le blanc qui séparait « Auteur » de « Prix maximum » coupait la fiche en deux blocs
-    et laissait croire que le prix n'appartenait pas aux mêmes informations que l'auteur.
-    La carte se lit maintenant de haut en bas, sans fausse frontière — et l'écran
-    « Alerte créée », qui lit la même construction, en hérite sans rien demander.
-    """
-    from app.bot.handlers.alerts_helpers import format_semi_auto_recap
-
-    recap = format_semi_auto_recap(
-        title="La couleur des choses",
-        author="Martin Panchaud",
-        publisher="Çà et là",
-        isbn="9782205089752",
-        max_price_cents=1200,
-        include_keywords=["la couleur des choses"],
-        exclude_keywords=[],
-    )
-    lines = recap.splitlines()
-
-    author_index = next(
-        index for index, line in enumerate(lines) if line.startswith("<b>Auteur :</b>")
-    )
-    price_index = next(
-        index for index, line in enumerate(lines) if line.startswith("<b>Prix maximum :</b>")
-    )
-    assert price_index == author_index + 2
-    assert lines[author_index + 1].startswith("<b>Éditeur :</b>")
-
-
-def test_an_unidentified_work_is_announced_first_and_its_holes_are_shown():
-    """Personne ne connaît l'ouvrage : la carte le dit en tête, et montre les trous.
-
-    Le cas réel — un livre sorti la semaine dernière, absent de tous les catalogues —
-    affichait `Titre :` et rien d'autre : ni auteur, ni éditeur, ni ISBN, sans un mot
-    pour l'expliquer. L'absence se lisait comme un oubli de la carte. Elle devient un
-    avertissement en tête, et les lignes manquantes disent « Non renseigné ».
-    """
-    from app.bot.handlers.alerts_helpers import UNIDENTIFIED_WORK_NOTE, creation_card
-
-    recap = creation_card(
-        {
-            "name": "Dailycieux",
-            "category_slug": "bd_comics",
-            "author": None,
-            "publisher": None,
-            "isbn": None,
-            "isbn_note": None,
-            "book_unidentified": True,
-            "max_item_price_cents": 3000,
-            "include_keywords": ["dailycieux"],
-            "exclude_keywords": [],
-        }
-    )
-    lines = recap.splitlines()
-
-    assert lines[2] == f"<i>{UNIDENTIFIED_WORK_NOTE}</i>"
-    assert "<b>ISBN :</b> introuvable" in lines
-    assert "<b>Auteur :</b> Non renseigné" in lines
-    assert "<b>Éditeur :</b> Non renseigné" in lines
-    assert "<b>Titre :</b> Dailycieux" in lines
-
-
-def test_a_product_never_claims_a_hole_it_could_not_have():
-    """Hors livres, il n'y a rien à trouver : aucun trou n'est annoncé.
-
-    Un produit n'a ni ISBN ni auteur : déclarer ses champs « Non renseigné » inventerait
-    une attente que la carte n'a jamais eue.
-    """
-    from app.bot.handlers.alerts_helpers import creation_card
-
-    recap = creation_card(
-        {
-            "name": "Raspberry Pi 4",
-            "category_slug": "tech",
-            "author": None,
-            "publisher": None,
-            "isbn": None,
-            "max_item_price_cents": 5000,
-            "include_keywords": ["raspberry", "pi", "4"],
-            "exclude_keywords": [],
-        }
-    )
-
-    assert "Non renseigné" not in recap
-    assert "<b>ISBN :</b>" not in recap
-    assert "<b>Auteur :</b>" not in recap
-
-
-def test_series_indication_lives_outside_the_information_list():
-    """Règle 3, cas de l'indication : une série se dit hors de la liste des informations.
-
-    La phrase était rendue en romain, coincée entre `Titre :` et `Auteur :` — elle se
-    lisait comme une donnée de l'ouvrage. Elle est désormais une indication : italique,
-    isolée par une ligne vide, au-dessus de la première ligne de champ. La ligne ISBN,
-    elle, a disparu pour une série : `non utilisé — série multi-tomes` répétait la même
-    phrase une seconde fois, à la mauvaise place.
-    """
-    from app.bot.handlers.alerts_helpers import (
-        RECAP_TITLE,
-        SERIES_INDICATION,
-        format_semi_auto_recap,
-    )
-
-    recap = format_semi_auto_recap(
-        title="Manuel du cuisinier amateur",
-        author="Whoogy's",
-        publisher="Chêne",
-        isbn=None,
-        max_price_cents=4000,
-        include_keywords=["Manuel du cuisinier amateur"],
-        exclude_keywords=["coffret"],
-        is_series=True,
-    )
-    lines = recap.splitlines()
-
-    assert lines[0] == RECAP_TITLE
-    assert lines[1] == ""
-    assert lines[2] == f"<i>{SERIES_INDICATION}</i>"
-    assert lines[3] == ""
-    assert lines[4].startswith("<b>Titre :</b>")
-    assert "<b>ISBN :</b>" not in recap
-    # La phrase du produit, verrouillée mot pour mot : c'est la copie que l'utilisateur lit.
-    assert SERIES_INDICATION == "Série multi-tomes (veille sur tous les tomes)"
-
-
-def test_a_recap_that_is_not_a_series_stays_exactly_as_it_was():
-    """Hors série, la carte ne change pas : aucune indication, et l'italique du pied seul."""
-    from app.bot.handlers.alerts_helpers import format_semi_auto_recap
-
-    recap = format_semi_auto_recap(
-        title="La couleur des choses",
-        author="Martin Panchaud",
-        publisher="Çà et là",
-        isbn="9782205089752",
-        max_price_cents=1200,
-        include_keywords=["La couleur des choses"],
-        exclude_keywords=[],
-    )
-
-    assert "série" not in recap.lower()
-    assert "<b>ISBN :</b> <code>9782205089752</code>" in recap
-    # Seule la consigne finale porte l'italique.
-    assert recap.count("<i>") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -725,139 +546,22 @@ def test_no_button_carries_an_arrow():
 
 
 # ---------------------------------------------------------------------------
-# Récap et confirmation : une seule carte, donc aucun des deux écrans ne peut
-# taire un cas que l'autre affiche — la ligne d'édition, l'identifiant introuvable.
+# Copie observee : l'ecran de prix et la confirmation, joues par leurs handlers
+#
+# Les deux ecrans lisent la meme carte de creation, et c'est ce que ces tests
+# regardent — le **message envoye**, jamais le resultat d'une fonction de rendu
+# appelee a la main.
 # ---------------------------------------------------------------------------
 
 
-def _creation_draft(**overrides):
-    """Brouillon minimal, avec des valeurs neutres sauf celles fournies."""
-    draft = {
-        "name": "La couleur des choses",
-        "author": "Martin Panchaud",
-        "publisher": "Çà et là",
-        "isbn": None,
-        "isbn_note": None,
-        "is_series": False,
-        "category_slug": "bd_comics",
-        "edition_alternatives": None,
-        "max_item_price_cents": 1200,
-        "selected_conditions": ["Très bon état"],
-        "include_keywords": ["la couleur des choses"],
-        "exclude_keywords": [],
-        "variants": None,
-        "keyword_note": None,
-    }
-    draft.update(overrides)
-    return draft
+async def _price_screen_text(kind: str) -> tuple[str, AsyncMock]:
+    """Joue une recherche jusqu'a l'ecran de prix, rend `(texte envoye, etat)`.
 
-
-def test_the_confirmation_is_the_recap_reread_from_the_same_construction():
-    """Un seul texte pour les deux écrans : en-tête, pied et bloc de cote exceptés.
-
-    La confirmation écrivait ses lignes à la main, donc elle avait laissé derrière elle
-    la ligne d'édition et l'identifiant introuvable — deux cas que le récap affichait et
-    qu'elle taisait. Le corps est désormais le même objet ; le verrou compare le corps
-    entier, pas une ligne, pour qu'une information ajoutée à un écran s'ajoute à l'autre.
+    L'etat est relu par l'ecran lui-meme (`state.get_data`), pas reconstruit ici :
+    les tests qui enchainent sur la saisie du prix rejouent donc exactement le
+    parcours de l'utilisateur. La recherche BD publie d'abord un message d'etat puis
+    l'edite ; un produit repond directement.
     """
-    from app.bot.handlers.alerts_create import _CONFIRMATION_FOOTER
-    from app.bot.handlers.alerts_helpers import (
-        ALERT_CREATED_TITLE,
-        RECAP_FOOTER,
-        RECAP_TITLE,
-        creation_card,
-    )
-    from app.services.market_price_service import PENDING_COTE_LINE
-
-    draft = _creation_draft(
-        isbn="9782369903086",
-        edition_alternatives=[
-            {
-                "isbn13": "9782369903086",
-                "publication_year": 2022,
-                "publisher": "Çà et là",
-                "format_detail": "1 vol. (224 p.) ; 24 cm",
-            },
-            {
-                "isbn13": "9782369904151",
-                "publisher": "Éditions poches",
-                "format_detail": "1 vol. (224 p.) ; 19 cm",
-            },
-        ],
-    )
-
-    recap = creation_card(draft)
-    confirmation = creation_card(
-        draft,
-        header=ALERT_CREATED_TITLE,
-        footer=_CONFIRMATION_FOOTER,
-        extra_lines=[PENDING_COTE_LINE],
-    )
-
-    recap_lines = recap.splitlines()
-    confirm_lines = confirmation.splitlines()
-    assert recap_lines[0] == RECAP_TITLE
-    assert confirm_lines[0] == ALERT_CREATED_TITLE
-    # Le récap ferme sur ["", pied] ; la confirmation sur ["", cote, "", pied].
-    assert recap_lines[2:-2] == confirm_lines[2:-4]
-    # La ligne d'édition, que la confirmation avait perdue, est dans le corps partagé.
-    assert "<b>Édition :</b> 2022 · Çà et là · 224 p. · 24 cm" in recap_lines
-    # Le bloc de cote n'appartient qu'à la confirmation.
-    assert confirm_lines[-3] == PENDING_COTE_LINE
-    assert PENDING_COTE_LINE not in recap
-    assert recap_lines[-1] == RECAP_FOOTER
-    assert confirm_lines[-1] == _CONFIRMATION_FOOTER
-
-
-def test_the_unfound_identifier_is_announced_by_both_screens():
-    """« introuvable » est une information : aucun des deux écrans ne peut la taire.
-
-    La ligne ne nomme plus d'autorité : la BNF n'est plus la seule à avoir été
-    interrogée (ADR-033), et le *pourquoi* vit désormais dans l'avertissement de tête.
-    """
-    from app.bot.handlers.alerts_create import _CONFIRMATION_FOOTER
-    from app.bot.handlers.alerts_helpers import ALERT_CREATED_TITLE, creation_card
-
-    draft = _creation_draft(isbn=None)
-    line = "<b>ISBN :</b> introuvable"
-
-    assert line in creation_card(draft)
-    assert line in creation_card(
-        draft, header=ALERT_CREATED_TITLE, footer=_CONFIRMATION_FOOTER
-    )
-
-
-def test_a_card_without_an_identifier_stays_silent_on_both_screens():
-    """Un produit n'a pas d'identifiant à trouver : les deux écrans se taisent pareil."""
-    from app.bot.handlers.alerts_create import _CONFIRMATION_FOOTER
-    from app.bot.handlers.alerts_helpers import ALERT_CREATED_TITLE, creation_card
-
-    draft = _creation_draft(
-        isbn=None, category_slug="tech", author=None, publisher=None
-    )
-
-    for card in (
-        creation_card(draft),
-        creation_card(draft, header=ALERT_CREATED_TITLE, footer=_CONFIRMATION_FOOTER),
-    ):
-        assert "<b>ISBN :</b>" not in card
-
-
-# ---------------------------------------------------------------------------
-# Ecran « prix maximum » : il lit la carte, il n'ecrit plus ses lignes
-# d'identite a la main.
-# ---------------------------------------------------------------------------
-
-
-async def _price_screen_text(kind: str) -> tuple[str, dict]:
-    """Joue une recherche jusqu'a l'ecran de prix, rend `(texte envoye, brouillon)`.
-
-    Le brouillon est relu par l'ecran lui-meme (`state.get_data`), pas reconstruit ici :
-    ce que le test compare est exactement ce que l'utilisateur liera. La recherche BD
-    publie d'abord un message d'etat puis l'edite ; un produit repond directement.
-    """
-    from unittest.mock import AsyncMock, MagicMock, patch
-
     from aiogram.types import Message
 
     from app.bot.handlers.alerts_helpers import (
@@ -887,7 +591,7 @@ async def _price_screen_text(kind: str) -> tuple[str, dict]:
     category_repo = MagicMock()
     category_repo.get_by_slug = AsyncMock(return_value=MagicMock(id=uuid.uuid4()))
 
-    def _record(call: "AsyncMock") -> str:
+    def _record(call: AsyncMock) -> str:
         call.assert_called_once()
         return call.call_args[0][0]
 
@@ -918,38 +622,123 @@ async def _price_screen_text(kind: str) -> tuple[str, dict]:
             )
         text = _record(message.answer)
 
-    return text, dict(state_data)
+    return text, state
 
 
 @pytest.mark.asyncio
-async def test_the_price_screen_reads_the_creation_card():
-    """L'ecran de prix est la carte de creation : il ne construit plus ses lignes.
+async def test_the_price_screen_of_a_book_is_the_creation_card_without_the_price():
+    """L'ecran de prix lit la carte : memes lignes, memes libelles, un seul manque.
 
     Il ecrivait `<b>Auteur :</b>`, `<b>ISBN :</b>` et les criteres a la main, avec ses
     propres emojis et ses propres libelles (`Inclus`, `Exclus`, `Etats`) : le libelle
     d'un champ pouvait donc diverger de celui du recap qui suivait, un ecran plus bas.
-    Le verrou compare le rendu entier a la carte, pas une ligne — une information
-    ajoutée a `creation_card` apparait ici, et un ecran reintroduit echoue.
+    Le montant est la seule piece manquante, et c'est la consigne du pied qui le dit.
     """
-    from app.bot.handlers.alerts_helpers import PRICE_PROMPT_FOOTER, creation_card
+    rendered, _etat = await _price_screen_text("bd")
+    lines = rendered.splitlines()
 
-    rendered, draft = await _price_screen_text("bd")
-
-    assert rendered == creation_card(draft, footer=PRICE_PROMPT_FOOTER)
-    # Les lignes d'identite ecrites a la main ont disparu au profit de la carte.
+    assert rendered.startswith(f"{RECAP_TITLE}\n\n")
+    assert "<b>ISBN :</b> <code>9782205089752</code>" in lines
+    assert "<b>Titre :</b> La couleur des choses" in lines
+    assert "<b>Auteur :</b> Martin Panchaud" in lines
+    assert "<b>Éditeur :</b> Çà et là" in lines
+    assert "<b>Mots-clés inclus :</b> la couleur des choses" in lines
+    assert "<b>Mots-clés exclus :</b> coffret" in lines
+    assert lines[-1] == (
+        "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
+    )
+    # Hors serie et ouvrage identifie : la seule indication en italique est la consigne.
+    assert "série" not in rendered.lower()
+    assert rendered.count("<i>") == 1
+    # Les lignes ecrites a la main, avec leurs emojis, ont disparu au profit de la carte.
     assert "✍️" not in rendered
     assert "🔢" not in rendered
     assert "🔑 <b>Inclus :</b>" not in rendered
-    assert "<b>Auteur :</b> Martin Panchaud" in rendered
 
 
 @pytest.mark.asyncio
-async def test_the_price_screen_of_a_product_reads_the_same_card():
-    """Un produit n'a pas de ligne d'ISBN, et son prix vient de la meme carte."""
-    from app.bot.handlers.alerts_helpers import PRICE_PROMPT_FOOTER, creation_card
+async def test_a_product_never_claims_a_hole_it_could_not_have():
+    """Hors livres, il n'y a rien a trouver : aucun trou n'est annonce.
 
-    rendered, draft = await _price_screen_text("tech")
+    Un produit n'a ni ISBN ni auteur. Les deux ecrans du parcours — la demande du prix,
+    puis le recap qui suit la saisie du montant — pourraient inventer cette attente en
+    ecrivant « Non renseigne » sous des champs qui n'ont jamais existe. Le prix, lui,
+    est reellement manquant tant qu'il n'est pas saisi : c'est la seule absence que la
+    carte a le droit de montrer.
+    """
+    ecran_prix, etat = await _price_screen_text("tech")
 
-    assert rendered == creation_card(draft, footer=PRICE_PROMPT_FOOTER)
-    assert "<b>ISBN :</b>" not in rendered
-    assert "🎯" not in rendered
+    assert "<b>Titre :</b> Raspberry Pi 4" in ecran_prix
+    assert "<b>ISBN :</b>" not in ecran_prix
+    assert "<b>Auteur :</b>" not in ecran_prix
+
+    saisie = _message("50")
+    await process_max_price_input(saisie, etat, AsyncMock())
+    recap = saisie.answer.call_args[0][0]
+
+    assert "<b>Prix maximum :</b> 50,00 €" in recap
+    assert "Non renseigné" not in recap
+    assert "<b>ISBN :</b>" not in recap
+    assert "<b>Auteur :</b>" not in recap
+
+
+@pytest.mark.asyncio
+async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
+    """Une seule carte pour les deux ecrans : le corps passe de l'un a l'autre entier.
+
+    La confirmation ecrivait ses lignes a la main, donc elle avait laisse derriere elle
+    la ligne d'edition et l'identifiant introuvable — deux cas que le recap affichait et
+    qu'elle taisait. Le verrou ne nomme aucune de ces lignes : il exige la **liste
+    entiere** des informations du recap, dans le meme ordre, dans la confirmation. Une
+    information ajoutee a un ecran s'ajoute a l'autre, et aucune ne peut manquer d'un
+    cote sans faire echouer ce test.
+    """
+    resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
+    repos = _repositories(BNF_EDITION.isbn13)
+    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    state = DraftState()
+
+    patches = _patched(repos, _fake_bnf(resolution), _fake_deepseek(_deepseek_payload()))
+    for entered in patches:
+        entered.start()
+    try:
+        await start_add_alert(message, state)
+        await _drain(repos["tasks"])
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+    recap = loading_message.edit_text.call_args_list[-1][0][0]
+
+    callback, confirm_message = _confirmation_message()
+    confirm_repos = _repositories(BNF_EDITION.isbn13)
+    patches = _patched(confirm_repos, MagicMock(), MagicMock())
+    for entered in patches:
+        entered.start()
+    try:
+        await save_alert(
+            callback, state, User(id=uuid.uuid4(), telegram_user_id=123), AsyncMock()
+        )
+        await _drain(confirm_repos["tasks"])
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+    confirmation = confirm_message.edit_text.call_args[0][0]
+    recap_lines = recap.splitlines()
+    confirm_lines = confirmation.splitlines()
+
+    assert recap_lines[0] == RECAP_TITLE
+    assert confirm_lines[0] == "✅ <b>Alerte créée</b>"
+    # Le corps, ligne de champ par ligne de champ : le meme, dans le meme ordre.
+    assert [line for line in recap_lines if line.startswith("<b>")] == [
+        line for line in confirm_lines if line.startswith("<b>")
+    ]
+    # Le bloc de cote n'appartient qu'a la confirmation : c'est ce que l'ecran vient de
+    # produire, pas un critere de veille.
+    assert PENDING_COTE_LINE not in recap
+    assert PENDING_COTE_LINE in confirmation
+    # Chaque ecran garde son propre pied : la consigne n'est pas la meme.
+    assert confirmation.endswith(
+        "\n\n<i>Les annonces correspondant à ces critères déclencheront une alerte Telegram.</i>"
+    )

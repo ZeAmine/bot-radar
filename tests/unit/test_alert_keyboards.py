@@ -485,7 +485,7 @@ def test_recap_places_the_edition_line_between_publisher_and_max_price():
     suit avec l'éditeur, avant de lire prix et mots-clés. Le libellé est nu — plus de
     « suivie » ni d'emoji, comme les autres champs de la fiche.
     """
-    from app.bot.handlers.alerts_helpers import format_semi_auto_recap
+    from app.bot.handlers.alerts_helpers import creation_card
 
     editions = [
         {"isbn13": "9782369903086", "publication_year": 2022, "publisher": "Çà et là",
@@ -493,15 +493,18 @@ def test_recap_places_the_edition_line_between_publisher_and_max_price():
         {"isbn13": "9782369904151", "publisher": "Éditions poches",
          "format_detail": "1 vol. (224 p.) ; 19 cm"},
     ]
-    recap = format_semi_auto_recap(
-        title="La couleur des choses",
-        author="Martin Panchaud",
-        publisher="Çà et là",
-        isbn="9782369903086",
-        max_price_cents=1500,
-        include_keywords=["la couleur des choses"],
-        exclude_keywords=[],
-        edition_alternatives=editions,
+    recap = creation_card(
+        {
+            "name": "La couleur des choses",
+            "category_slug": "bd_comics",
+            "author": "Martin Panchaud",
+            "publisher": "Çà et là",
+            "isbn": "9782369903086",
+            "max_item_price_cents": 1500,
+            "include_keywords": ["la couleur des choses"],
+            "exclude_keywords": [],
+            "edition_alternatives": editions,
+        }
     )
 
     lines = recap.splitlines()

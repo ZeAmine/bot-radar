@@ -234,9 +234,7 @@ def creation_card(
     `data` porte les clés du brouillon FSM — `name`, `author`, `publisher`, `isbn`,
     `isbn_note`, `is_series`, `category_slug`, `edition_alternatives`,
     `max_item_price_cents`, `selected_conditions`, `include_keywords`,
-    `exclude_keywords`, `variants`, `keyword_note`, `book_unidentified`. Un appelant qui
-    tient des champs et non un brouillon passe `expects_isbn` explicitement, à la place
-    de `category_slug`.
+    `exclude_keywords`, `variants`, `keyword_note`, `book_unidentified`.
 
     Le récap et la confirmation divergeaient par trois cas — la ligne d'édition,
     l'identifiant introuvable et le bloc de cote — parce que deux blocs de code les
@@ -276,11 +274,10 @@ def creation_card(
     # absente est une information (ADR-028).
     book_unidentified = bool(data.get("book_unidentified"))
     # Une alerte hors livres — un objet, un jeu — n'a pas d'identifiant à trouver : sa
-    # catégorie le dit, et un appelant sans brouillon le dit par `expects_isbn`.
-    expects_isbn = data.get(
-        "expects_isbn",
+    # catégorie le dit, et elle vient du brouillon comme le reste.
+    expects_isbn = (
         data.get("category_slug", CategorySlug.BD_COMICS.value)
-        == CategorySlug.BD_COMICS.value,
+        == CategorySlug.BD_COMICS.value
     )
 
     price_str = format_price_cents(data.get("max_item_price_cents"))
@@ -367,49 +364,6 @@ def creation_card(
     # (charte, règle 2).
     lines.extend(["", footer])
     return "\n".join(lines)
-
-
-def format_semi_auto_recap(
-    title: str,
-    author: str | None,
-    publisher: str | None,
-    isbn: str | None,
-    max_price_cents: int | None,
-    include_keywords: list[str],
-    exclude_keywords: list[str],
-    conditions: list[str] | None = None,
-    variants: list[str] | None = None,
-    is_series: bool = False,
-    isbn_note: str | None = None,
-    edition_alternatives: list[dict[str, Any]] | None = None,
-    keyword_note: str | None = None,
-    expects_isbn: bool = True,
-    book_unidentified: bool = False,
-) -> str:
-    """Le récap rendu depuis des champs explicites, et non depuis un brouillon.
-
-    Même carte que `creation_card` : c'est son seul rendu, donc un appelant qui tient
-    des champs ne peut pas afficher autre chose que l'écran qui lit le brouillon.
-    """
-    return creation_card(
-        {
-            "name": title,
-            "author": author,
-            "publisher": publisher,
-            "isbn": isbn,
-            "isbn_note": isbn_note,
-            "is_series": is_series,
-            "expects_isbn": expects_isbn,
-            "book_unidentified": book_unidentified,
-            "edition_alternatives": edition_alternatives,
-            "max_item_price_cents": max_price_cents,
-            "selected_conditions": conditions,
-            "include_keywords": include_keywords,
-            "exclude_keywords": exclude_keywords,
-            "variants": variants,
-            "keyword_note": keyword_note,
-        }
-    )
 
 
 def build_edition_choices(resolution: Any) -> list[dict[str, Any]]:
