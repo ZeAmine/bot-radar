@@ -10,9 +10,9 @@ from app.core.config import settings
 
 
 @pytest.mark.asyncio
-async def test_auth_middleware_unauthorized_message():
+async def test_auth_middleware_unauthorized_message(monkeypatch: pytest.MonkeyPatch):
     """Vérifie le rejet strict d'un message provenant d'un utilisateur non autorisé."""
-    settings.TELEGRAM_ALLOWED_USER_IDS = [11111111]
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [11111111])
     middleware = AuthMiddleware()
 
     handler = AsyncMock()
@@ -32,9 +32,9 @@ async def test_auth_middleware_unauthorized_message():
 
 
 @pytest.mark.asyncio
-async def test_auth_middleware_unauthorized_callback():
+async def test_auth_middleware_unauthorized_callback(monkeypatch: pytest.MonkeyPatch):
     """Vérifie le rejet d'une action inline provenant d'un utilisateur non autorisé."""
-    settings.TELEGRAM_ALLOWED_USER_IDS = [11111111]
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [11111111])
     middleware = AuthMiddleware()
 
     handler = AsyncMock()
@@ -54,10 +54,10 @@ async def test_auth_middleware_unauthorized_callback():
 
 
 @pytest.mark.asyncio
-async def test_auth_middleware_authorized_user():
+async def test_auth_middleware_authorized_user(monkeypatch: pytest.MonkeyPatch):
     """Vérifie l'accès accordé à un utilisateur autorisé et la transmission au handler."""
     allowed_id = 11111111
-    settings.TELEGRAM_ALLOWED_USER_IDS = [allowed_id]
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [allowed_id])
     middleware = AuthMiddleware()
 
     handler = AsyncMock(return_value="handler_response")
