@@ -79,6 +79,17 @@ RECAP_TITLE = "➕ <b>Créer une alerte</b>"
 SERIES_INDICATION = "Série multi-tomes (veille sur tous les tomes)"
 
 
+def series_indication_block() -> list[str]:
+    """L'indication de série telle qu'un écran la colle : en italique, puis sa ligne vide.
+
+    Deux écrans la rendent — le récap de création et la confirmation d'alerte créée — et
+    la charte (règle 3) demande la même forme des deux côtés. Le bloc est écrit une fois
+    pour qu'aucun des deux ne l'isole à moitié ni ne l'oublie : c'est le même objet
+    affiché deux fois, pas deux phrases qui se ressemblent.
+    """
+    return [f"<i>{SERIES_INDICATION}</i>", ""]
+
+
 def _get_alert_repo(session: Any) -> Any:
     import app.bot.handlers.alerts as alerts_mod
 
@@ -183,8 +194,7 @@ def format_semi_auto_recap(
     # l'alerte surveille, et pourquoi elle n'a pas d'identifiant à montrer. Sa place
     # n'est pas dans la liste — elle ne décrit ni le titre, ni l'auteur, ni l'éditeur.
     if is_series:
-        lines.append(f"<i>{SERIES_INDICATION}</i>")
-        lines.append("")
+        lines.extend(series_indication_block())
     # L'avertissement d'identité suit, isolé de la même façon : il conditionne la
     # confiance dans l'ISBN qui suit, et n'est donc jamais coincé entre deux
     # informations du livre.
