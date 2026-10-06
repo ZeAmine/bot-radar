@@ -1,10 +1,12 @@
-"""Les doubles qui remplacent une frontière du parcours `/add`, et leurs données.
+"""Les doubles qui remplacent une frontière d'un parcours produit, et leurs données.
 
-Jouer une création d'alerte de bout en bout demande de remplacer tout ce que le
-produit interroge — le moteur IA, la BNF, la base — sans jamais ouvrir de connexion.
-Ce fichier porte ces doubles **une fois** : un test de parcours les enchaîne, un test
-de copie regarde l'écran qu'ils font produire. Deux copies donneraient deux chaînes
-légèrement différentes, donc deux vérités sur ce que l'utilisateur lit.
+Deux parcours partagent ce fichier : `/add`, dont les écrans sont édités en place, et
+l'ingestion, dont la légende d'annonce part par `Bot.send_message`/`Bot.send_photo`.
+Les jouer demande de remplacer tout ce que le produit interroge — le moteur IA, la BNF,
+la base, Telegram — sans jamais ouvrir de connexion. Ce fichier porte ces doubles
+**une fois** : un test de parcours les enchaîne, un test de copie regarde l'écran qu'ils
+font produire. Deux copies donneraient deux chaînes légèrement différentes, donc deux
+vérités sur ce que l'utilisateur lit.
 
 Le câblage de ces doubles — quels noms de production sont remplacés, et où — vit dans
 `tests/add_journey.py` ; la lecture de ce qu'un écran a publié, dans `tests/screens.py`.
@@ -167,3 +169,22 @@ def cached_market_price() -> BookMarketCache:
         comparison_status=ComparisonStatus.AVAILABLE,
         historical_low_1y_cents=1650,
     )
+
+
+class FakeTelegramBot:
+    """Bot Telegram de test : il retient ce qui a été remis, sans ouvrir de réseau.
+
+    `Bot.send_message` et `Bot.send_photo` sont la seule sortie du produit vers
+    l'utilisateur : les remplacer laisse la légende se construire pour de vrai, par
+    `build_listing_caption`, et rend lisible **le message** que l'alerte a produit —
+    pas un rendu appelé à la main.
+    """
+
+    def __init__(self) -> None:
+        self.sent_to_telegram: list[dict] = []
+        self.send_message = AsyncMock(side_effect=self._capture)
+        self.send_photo = AsyncMock(side_effect=self._capture)
+
+    async def _capture(self, **kwargs) -> MagicMock:
+        self.sent_to_telegram.append(kwargs)
+        return MagicMock(message_id=len(self.sent_to_telegram))
