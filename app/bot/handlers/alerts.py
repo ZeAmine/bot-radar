@@ -32,7 +32,6 @@ from app.bot.handlers.alerts_create_confirm import (
 from app.bot.handlers.alerts_helpers import (
     extract_inline_price_and_clean_query,
     format_alerts_list_text,
-    format_semi_auto_recap,
     process_bd_query_lookup,
     process_tech_or_clothes_query,
 )
@@ -111,7 +110,6 @@ __all__ = [
     "isbn10_to_isbn13",
     # Helpers
     "extract_inline_price_and_clean_query",
-    "format_semi_auto_recap",
     "format_alerts_list_text",
     "process_bd_query_lookup",
     "process_tech_or_clothes_query",

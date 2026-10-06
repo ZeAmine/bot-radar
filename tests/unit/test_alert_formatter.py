@@ -3,7 +3,7 @@
 import uuid
 
 from app.bot.formatter import format_alert_card, format_cents_to_euros
-from app.bot.handlers.alerts_helpers import RECAP_TITLE, format_semi_auto_recap
+from app.bot.handlers.alerts_helpers import RECAP_TITLE, creation_card
 from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.db.models.category import Category
@@ -100,22 +100,23 @@ def test_format_alerts_list_text():
 
 def _recap(**overrides):
     """Récap minimal, avec des valeurs neutres sauf celles fournies."""
-    payload = {
-        "title": "La couleur des choses",
+    draft = {
+        "name": "La couleur des choses",
         "author": "Martin Panchaud",
         "publisher": "Çà et là",
         "isbn": None,
-        "max_price_cents": 1200,
+        "category_slug": "bd_comics",
+        "max_item_price_cents": 1200,
         "include_keywords": ["La couleur des choses"],
         "exclude_keywords": ["figurine"],
-        "conditions": None,
+        "selected_conditions": None,
         "variants": None,
         "is_series": False,
         "isbn_note": None,
         "edition_alternatives": None,
     }
-    payload.update(overrides)
-    return format_semi_auto_recap(**payload)
+    draft.update(overrides)
+    return creation_card(draft)
 
 
 def test_recap_escapes_model_output():
@@ -144,7 +145,7 @@ def test_recap_escapes_model_output():
 
 def test_recap_escapes_model_conditions():
     """Les états acceptés viennent aussi du modèle : ils sont échappés."""
-    recap = _recap(conditions=["Neuf & scellé", "Très bon <état>"])
+    recap = _recap(selected_conditions=["Neuf & scellé", "Très bon <état>"])
 
     assert "Neuf &amp; scellé" in recap
     assert "Très bon &lt;état&gt;" in recap
@@ -247,6 +248,6 @@ def test_recap_keeps_the_series_indication_out_of_the_information_list():
 
 def test_recap_says_nothing_about_isbn_where_none_can_exist():
     """Un objet n'a pas d'ISBN à chercher : la ligne n'aurait pas de sujet."""
-    recap = _recap(isbn=None, expects_isbn=False)
+    recap = _recap(isbn=None, category_slug="tech")
 
     assert "<b>ISBN :</b>" not in recap
