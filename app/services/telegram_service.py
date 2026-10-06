@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any
 
@@ -14,6 +15,15 @@ from app.services.matcher_service import CONDITION_ALIASES
 from app.services.price_calculator import format_price_summary
 
 logger = logging.getLogger(__name__)
+
+# Limite de légende de `send_photo` : au-delà, Telegram refuse la photo pour la
+# légende, alors que le message texte en accepte 4096. L'information passe avant
+# l'image — jamais l'inverse.
+PHOTO_CAPTION_LIMIT = 1024
+
+# Reprise après un refus de Telegram : le refus porte sur le contenu téléchargé à
+# l'instant, une seconde tentative immédiate reprendrait le même résultat en cache.
+PHOTO_RETRY_DELAY_SECONDS = 1.0
 
 
 def build_listing_caption(
@@ -61,6 +71,38 @@ def build_listing_caption(
     return "\n".join(lines)
 
 
+def _photo_url_for_alert(listing: Listing, caption: str) -> str | None:
+    """Couverture retenue pour l'alerte, ou `None` quand l'alerte part en texte.
+
+    Une image absente, une URL impropre ou une légende trop longue ne font jamais
+    échouer l'envoi : chacun de ces cas est nommé dans les journaux, parce qu'une
+    alerte partie sans image ne doit plus être silencieuse.
+    """
+    if not listing.photos:
+        logger.info("Alerte %s sans photo : aucune couverture, envoi en texte", listing.id)
+        return None
+
+    photo_url = listing.photos[0]
+    if not isinstance(photo_url, str) or not photo_url.startswith("https://"):
+        logger.warning(
+            "Alerte %s : URL de photo invalide (%r), envoi en texte",
+            listing.id,
+            photo_url,
+        )
+        return None
+
+    if len(caption) > PHOTO_CAPTION_LIMIT:
+        logger.error(
+            "Alerte %s : légende de %d caractères (limite photo %d), envoi en texte",
+            listing.id,
+            len(caption),
+            PHOTO_CAPTION_LIMIT,
+        )
+        return None
+
+    return photo_url
+
+
 async def send_listing_alert(
     bot: Bot,
     chat_id: int,
@@ -69,7 +111,13 @@ async def send_listing_alert(
     alert_keywords: list[str] | None = None,
     alert: Any | None = None,
 ) -> bool:
-    """Envoie l'alerte à l'utilisateur Telegram avec photo principale et clavier adapté."""
+    """Envoie l'alerte à l'utilisateur Telegram avec photo principale et clavier adapté.
+
+    La photo est tentée deux fois par URL avant tout repli : Telegram télécharge lui-
+    même le contenu, et un CDN qui renvoie une page HTML à sa place fait échouer la
+    première tentative sans que l'annonce soit en faute. Le repli texte reste garanti —
+    une panne photo ne fait jamais perdre l'alerte.
+    """
     caption = build_listing_caption(
         listing,
         market_comparison_line=market_comparison_line,
@@ -83,19 +131,31 @@ async def send_listing_alert(
 
     sent_msg = None
     try:
-        if listing.photos and len(listing.photos) > 0:
-            try:
-                sent_msg = await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=listing.photos[0],
-                    caption=caption,
-                    reply_markup=keyboard,
-                )
-            except Exception as photo_exc:
-                logger.warning(
-                    "Échec d'envoi de la photo (%s), repli sur message texte: %s",
-                    listing.photos[0],
-                    photo_exc,
+        photo_url = _photo_url_for_alert(listing, caption)
+        if photo_url is not None:
+            for attempt in (1, 2):
+                try:
+                    sent_msg = await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo_url,
+                        caption=caption,
+                        reply_markup=keyboard,
+                    )
+                    break
+                except Exception as photo_exc:
+                    logger.error(
+                        "Échec %d/2 de l'envoi de la photo (listing %s, %s): %s",
+                        attempt,
+                        listing.id,
+                        photo_url,
+                        photo_exc,
+                    )
+                    if attempt == 1:
+                        await asyncio.sleep(PHOTO_RETRY_DELAY_SECONDS)
+            if sent_msg is None:
+                logger.error(
+                    "Photo non envoyée après 2 tentatives (listing %s), repli sur message texte",
+                    listing.id,
                 )
 
         if not sent_msg:
