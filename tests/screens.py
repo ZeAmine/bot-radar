@@ -1,10 +1,10 @@
-"""Ce qu'un écran a publié : les messages entrants, et la lecture de leurs réponses.
+"""Ce qu'un écran a publié : les messages entrants, et la lecture des réponses.
 
 Un test de parcours enchaîne les handlers et regarde ce que l'utilisateur lit. Ce
 fichier porte ce qui permet de le faire sans recopier la mécanique Telegram : fabriquer
 le message qui déclenche un écran, retrouver celui qui vient d'être édité, relever son
-texte et ses boutons. Les doubles de frontière vivent dans `tests/add_fakes.py`, le
-câblage dans `tests/add_journey.py`.
+texte et ses boutons, ou lire la légende d'annonce remise par l'ingestion. Les doubles
+de frontière vivent dans `tests/add_fakes.py`, le câblage dans `tests/add_journey.py`.
 
 Un module partagé, pas un module de test importé par un autre : ce fichier ne collecte
 rien (`python_files = ["test_*.py"]`) et ne doit rien savoir des tests qui l'utilisent.
@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from aiogram.types import Message
 
-from tests.add_fakes import DraftState, FakeMessage
+from tests.add_fakes import DraftState, FakeMessage, FakeTelegramBot
 
 
 def incoming_message(texte: str) -> FakeMessage:
@@ -97,3 +97,13 @@ async def open_isbn_edit_field(state: DraftState) -> None:
 
     await handle_create_edit_choice(menu_callback, state)
     assert state.data["current_edit_field"] == "isbn"
+
+
+def published_caption(bot: FakeTelegramBot) -> str:
+    """Le texte remis à Telegram : la légende de la photo, ou le texte du message.
+
+    Un seul envoi est attendu : deux signaleraient une alerte dupliquée. Le texte
+    accompagne la photo de couverture quand l'annonce en a une, sinon il voyage seul.
+    """
+    (sent,) = bot.sent_to_telegram
+    return sent.get("caption") or sent["text"]
