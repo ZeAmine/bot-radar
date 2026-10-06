@@ -48,10 +48,16 @@ from app.providers.chasse_aux_livres import ChasseAuxLivresProvider  # noqa: E40
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("radar.sync_chasse_session")
 
-# Un ouvrage dont la série 1 an est publique et stable : la validation doit pouvoir
-# se faire sur un titre connu, sinon « aucune offre » ferait passer pour un refus.
-PROBE_ISBN = "9782380463972"
-PROBE_TITLE = "Dead Train T1"
+# Ouvrages-sondes : la validation doit prouver que la série 1 an répond, sur un
+# titre dont elle est connue publiquement — sinon « aucune offre » ferait passer
+# pour un jeton refusé. Une seule sonde serait un point unique de panne : si
+# l'ouvrage disparaît du site, un jeton pourtant valide serait rejeté à chaque
+# passe, c'est-à-dire le silence que ce script existe pour empêcher. La deuxième
+# sonde n'est interrogée que si la première n'a rien rendu.
+PROBE_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ("9782380463972", "Dead Train T1"),
+    ("9782205088168", "Le Monde sans fin"),
+)
 
 
 def read_token(args: argparse.Namespace) -> str:
@@ -63,19 +69,12 @@ def read_token(args: argparse.Namespace) -> str:
     return (os.environ.get("CHASSE_AUX_LIVRES_DUIH") or "").strip()
 
 
-async def validate_token(token: str) -> int | None:
-    """Interroge la série 1 an avec ce jeton. Renvoie le prix bas, ou ``None``.
-
-    La validation passe par le provider lui-même : c'est le seul moyen de savoir
-    que le jeton marche pour nous, avec nos paramètres et notre titre de sonde —
-    pas seulement pour une requête quelconque.
-    """
+async def _probe_series(token: str, isbn13: str, title: str) -> int | None:
+    """Série 1 an d'une sonde donnée, avec ce jeton — config restaurée quoi qu'il arrive."""
     previous = settings.CHASSE_AUX_LIVRES_DUIH
     settings.CHASSE_AUX_LIVRES_DUIH = token
     try:
-        offers = await ChasseAuxLivresProvider().get_offers(
-            isbn13=PROBE_ISBN, title=PROBE_TITLE
-        )
+        offers = await ChasseAuxLivresProvider().get_offers(isbn13=isbn13, title=title)
     except Exception as exc:
         logger.error("Validation impossible (%s) : %s", type(exc).__name__, exc)
         return None
@@ -83,6 +82,24 @@ async def validate_token(token: str) -> int | None:
         settings.CHASSE_AUX_LIVRES_DUIH = previous
 
     return extract_best_historical_low(offers)
+
+
+async def validate_token(token: str) -> int | None:
+    """Interroge la série 1 an avec ce jeton. Renvoie le prix bas, ou ``None``.
+
+    La validation passe par le provider lui-même : c'est le seul moyen de savoir
+    que le jeton marche pour nous, avec nos paramètres et nos titres de sonde —
+    pas seulement pour une requête quelconque. Chaque sonde est essayée à son
+    tour : le refus ne tombe qu'après la dernière, pour qu'une sonde retirée du
+    site ne condamne jamais un jeton valide.
+    """
+    for isbn13, title in PROBE_CANDIDATES:
+        low_cents = await _probe_series(token, isbn13, title)
+        if low_cents is not None:
+            logger.info("Série 1 an confirmée par la sonde %s (%s).", isbn13, title)
+            return low_cents
+        logger.warning("Aucune série pour la sonde %s (%s).", isbn13, title)
+    return None
 
 
 def push_token_to_radar(api_url: str, internal_token: str, token: str) -> bool:

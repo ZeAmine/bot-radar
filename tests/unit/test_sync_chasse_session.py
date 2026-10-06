@@ -64,6 +64,46 @@ async def test_a_token_that_answers_nothing_is_refused():
 
 
 @pytest.mark.asyncio
+async def test_a_silent_probe_falls_back_to_the_next_one():
+    """Une sonde morte ne doit pas condamner un jeton pourtant valide.
+
+    Si l'ouvrage-sonde disparaît du site, la validation échouerait à chaque
+    passe et le cron repousserait un jeton qui marche — le silence reviendrait
+    alors qu'on a précisément le remède en main.
+    """
+    from app.providers.base import MarketOffer
+
+    offer = MarketOffer(
+        provider_name="chasse_aux_livres",
+        item_price_cents=0,
+        shipping_price_cents=None,
+        delivered_price_cents=0,
+        source_url="https://www.chasse-aux-livres.fr/prix/1/x",
+        item_condition="Occasion indisponible",
+        raw_payload={"historical_low_1y_cents": 1290},
+    )
+    provider = MagicMock()
+    provider.return_value.get_offers = AsyncMock(side_effect=[[], [offer]])
+
+    with patch.object(scs, "ChasseAuxLivresProvider", provider):
+        assert await scs.validate_token("un-jeton") == 1290
+
+    assert provider.return_value.get_offers.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_every_probe_is_tried_before_refusing_a_token():
+    """Le refus ne doit tomber qu'après toutes les sondes, jamais après la première."""
+    provider = MagicMock()
+    provider.return_value.get_offers = AsyncMock(return_value=[])
+
+    with patch.object(scs, "ChasseAuxLivresProvider", provider):
+        assert await scs.validate_token("jeton-perime") is None
+
+    assert provider.return_value.get_offers.await_count == len(scs.PROBE_CANDIDATES)
+
+
+@pytest.mark.asyncio
 async def test_validation_restores_the_configured_token():
     """Essayer un jeton ne doit pas laisser l'environnement de production modifié."""
     from app.core.config import settings
