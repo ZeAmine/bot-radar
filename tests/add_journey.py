@@ -85,8 +85,23 @@ async def drain(tasks: list) -> None:
     tasks.clear()
 
 
-def patched(repos: dict, bnf: MagicMock, client: MagicMock):
-    """Patches de toutes les frontières du flux `/add`."""
+def patched(
+    repos: dict,
+    bnf: MagicMock,
+    client: MagicMock,
+    *,
+    isbn_bnf: MagicMock | None = None,
+):
+    """Patches de toutes les frontières du flux `/add`.
+
+    `bnf` sert à la résolution par le moteur IA (`natural_add`) ; `isbn_bnf`,
+    à la vérification d'un ISBN saisi à la main (`alerts_helpers`). Les deux
+    frontières reçoivent le même faux par défaut, mais un parcours qui leur
+    donne des verdicts différents le dit ici plutôt qu'en patch imbriqué —
+    dont l'ordre de démarrage décide du faux qui l'emporte.
+    """
+    if isbn_bnf is None:
+        isbn_bnf = bnf
     return (
         patch(
             "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
@@ -107,6 +122,13 @@ def patched(repos: dict, bnf: MagicMock, client: MagicMock):
                 exclusions=["keeping two"],
                 answered=True,
             ),
+        ),
+        # La vérification d'un ISBN saisi à la main passe par `alerts_helpers`, pas
+        # par `natural_add` : sans ce double, le parcours dépend du vrai réseau BNF
+        # (et d'un client HTTP partagé lié à la boucle d'un autre test).
+        patch(
+            "app.bot.handlers.alerts_helpers.BookMetadataService",
+            return_value=isbn_bnf,
         ),
         patch(
             "app.bot.handlers.alerts_create.safe_create_task",

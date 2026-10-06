@@ -170,16 +170,15 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
 
-    patches = patched(repos, bnf, client)
-    with (
-        patch(
-            "app.bot.handlers.alerts_helpers.BookMetadataService",
-            return_value=fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
-        ),
-        patch(
-            "app.services.book_metadata_service.BookMetadataService",
-            return_value=fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
-        ),
+    patches = patched(
+        repos,
+        bnf,
+        client,
+        isbn_bnf=fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
+    )
+    with patch(
+        "app.services.book_metadata_service.BookMetadataService",
+        return_value=fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13),
     ):
         for entered in patches:
             entered.start()
@@ -298,30 +297,31 @@ async def test_add_typed_isbn_of_another_book_is_refused():
     message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
 
-    patches = patched(repos, fake_bnf(resolution), client)
-    with patch(
-        "app.bot.handlers.alerts_helpers.BookMetadataService",
-        return_value=fake_bnf(resolution, conflicting_isbn=ISBN_AUTRE_LIVRE),
-    ):
-        for entered in patches:
-            entered.start()
-        try:
-            await start_add_alert(message, state)
-            await drain(repos["tasks"])
+    patches = patched(
+        repos,
+        fake_bnf(resolution),
+        client,
+        isbn_bnf=fake_bnf(resolution, conflicting_isbn=ISBN_AUTRE_LIVRE),
+    )
+    for entered in patches:
+        entered.start()
+    try:
+        await start_add_alert(message, state)
+        await drain(repos["tasks"])
 
-            await open_isbn_edit_field(state)
-            typed_message = incoming_message(ISBN_AUTRE_LIVRE)
-            await process_creation_edit_input(typed_message, state)
+        await open_isbn_edit_field(state)
+        typed_message = incoming_message(ISBN_AUTRE_LIVRE)
+        await process_creation_edit_input(typed_message, state)
 
-            # Le brouillon garde l'ISBN d'avant : rien n'a été changé.
-            assert state.data["isbn"] != ISBN_AUTRE_LIVRE
-            refusal = typed_message.answer.call_args[0][0]
-            assert "Keeping two" in refusal
-            assert "Jordan Crane" in refusal
-            assert "Réessaie" in refusal
-        finally:
-            for entered in reversed(patches):
-                entered.stop()
+        # Le brouillon garde l'ISBN d'avant : rien n'a été changé.
+        assert state.data["isbn"] != ISBN_AUTRE_LIVRE
+        refusal = typed_message.answer.call_args[0][0]
+        assert "Keeping two" in refusal
+        assert "Jordan Crane" in refusal
+        assert "Réessaie" in refusal
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
 
 
 @pytest.mark.asyncio
