@@ -1,0 +1,324 @@
+"""Contrat de recherche bibliographique partagé (Lot 0).
+
+Ce module est l'adaptateur minimal entre les méthodes existantes de
+`BookMetadataService` et un contrat de réponse exploitable par de futurs
+endpoints (`GET /api/v1/books/search`, `GET /api/v1/books/isbn/{isbn}`) comme
+par le parcours Telegram. Lot 0 uniquement : aucune route HTTP, aucun fallback
+Google supplémentaire, aucune modification Telegram.
+
+Mapping explicite (les verdicts métier ne sont pas remplacés) :
+
+- recherche par ISBN (`consult_authorities`, `confirm_isbn_for_title`) :
+  - `confirme` (+ titre concordant si attendu) -> `found` ;
+  - `contradiction` -> `not_found` pour le couple demandé, l'ouvrage réel
+    étant exposé en `conflict`, jamais en `reference` ;
+  - `inconnu` -> `not_found` ;
+  - `silence` sans notice -> `unavailable` ;
+  - `silence` avec notice de repli -> `partial` : un candidat existe mais,
+    la BNF n'ayant pas répondu, il ne confirme rien (règle existante
+    préservée : un repli ne confirme jamais pendant une panne BNF).
+- recherche par titre (`resolve_for_alert`) :
+  - résolution non ambiguë avec ISBN -> `found` ;
+  - `is_ambiguous` -> `ambiguous`, œuvres en `works`, aucune édition ;
+  - `None` -> `not_found` ;
+  - notice sans ISBN (cas Google réel) -> `partial`.
+
+Invariants du contrat : `reference` n'est renseignée que sur `found`
+(une identité confirmée se distingue toujours des candidats) ; `conflict`
+n'apparaît que sur `not_found` ; les éditions d'ISBN différents restent
+séparées (jamais fusionnées) ; toute métadonnée inconnue vaut `None`.
+
+Limitations constatées (non inventées, non déduites) :
+
+- `BookResolution` n'expose ni les autorités consultées ni leurs pannes
+  (`_query_bnf_sru` jette la panne, `_query_openlibrary` et
+  `GoogleBooksClient._fetch` absorbent tout en liste vide). Sur le chemin
+  titre, `consulted` vaut donc `None` (inconnu), jamais une liste déduite de
+  l'ordre théorique BnF -> Open Library -> Google. Ajustement minimal
+  proposé (lot ultérieur) : porter `consulted` / `unavailable` sur
+  `BookResolution`, capter la panne BNF via `_bnf_records` dans le chemin
+  titre, et donner aux replis un résultat fournisseur typé (voir ci-dessous).
+- Même sur le chemin ISBN, seule la panne BNF est nommée : `unavailable`
+  ne cite donc que la BNF quand `panne` est renseigné. Une panne Open Library
+  ou Google y est indiscernable d'une absence de résultat.
+- `GoogleBooksClient._fetch` rend `[]` sur panne (désactivé, timeout, quota,
+  401/403, 5xx confondus). Lot suivant : prévoir un résultat fournisseur
+  distinguant succès avec résultats, succès sans résultat, fournisseur
+  désactivé, timeout, quota dépassé, authentification refusée et erreur
+  fournisseur — sans changer ce comportement ici, car `consult_authorities`
+  et `_resolve_via_google_books` s'appuient aujourd'hui sur « vide = rien ».
+
+Garanties du lot : lecture seule (aucune écriture `Book` / `AlertBook`),
+aucun appel LLM, aucun cache bibliographique ajouté, aucune migration, aucun
+secret, aucun changement du chemin de détection des annonces (le cas d'usage
+n'est appelé ni par l'ingestion ni par le matching).
+"""
+
+from dataclasses import dataclass
+
+from app.domain.enums import BookSearchStatus
+from app.services.book_metadata_service import (
+    AUTORITE_BNF,
+    TITLE_SIMILARITY_MIN,
+    BookMetadata,
+    BookMetadataService,
+    BookResolution,
+    IsbnVerdict,
+    ambiguity_note,
+    provenance_note,
+    title_similarity,
+)
+
+
+@dataclass(frozen=True)
+class BookWorkChoice:
+    """Une œuvre candidate, telle qu'une autorité la nomme.
+
+    `provenance` est la source de la notice (niveau notice uniquement) : elle
+    vaut `None` quand elle n'est pas réellement connue, jamais une provenance
+    par champ déduite d'une provenance globale. Les rôles des contributeurs ne
+    sont pas portés : le service ne les préserve pas (un seul nom d'auteur,
+    mentions de rôle retirées). La langue ne figure pas : aucune source lue ici
+    ne la donne de façon fiable, et le préfixe 979 ne prouve aucune langue.
+    Le caractère numérique non plus : `printType` n'est même pas lu, et
+    `printType=BOOK` ne serait pas une preuve d'édition papier.
+    """
+
+    title: str
+    isbn13: str | None = None
+    author: str | None = None
+    publisher: str | None = None
+    publication_year: int | None = None
+    provenance: str | None = None
+
+
+@dataclass(frozen=True)
+class BookEditionChoice:
+    """Une édition d'ISBN donné, jamais fusionnée avec une autre. Champs
+    inconnus à `None` (pas de langue, pas de rôles, pas de flag numérique)."""
+
+    isbn13: str
+    publisher: str | None = None
+    publication_year: int | None = None
+    format_detail: str | None = None
+    provenance: str | None = None
+
+
+@dataclass(frozen=True)
+class BookSearchResult:
+    """Réponse normalisée d'une recherche bibliographique.
+
+    `consulted` nomme les autorités réellement interrogées ; `None` signifie
+    « le service ne l'expose pas sur ce chemin » (recherche par titre, voir
+    les limitations), ce qui n'est pas la même chose que `()` (« personne
+    consulté », code ISBN mal formé). `unavailable` nomme les autorités dont
+    la panne est établie.
+    """
+
+    status: BookSearchStatus
+    works: tuple[BookWorkChoice, ...] = ()
+    editions: tuple[BookEditionChoice, ...] = ()
+    reference: BookEditionChoice | None = None
+    consulted: tuple[str, ...] | None = None
+    unavailable: tuple[str, ...] = ()
+    provenance: str | None = None
+    conflict: BookWorkChoice | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.reference is None) == (self.status == BookSearchStatus.FOUND):
+            raise ValueError("reference n'est renseignée que sur found")
+        if self.conflict is not None and self.status != BookSearchStatus.NOT_FOUND:
+            raise ValueError("conflict n'apparaît que sur not_found")
+
+
+def _work_choice(meta: BookMetadata) -> BookWorkChoice:
+    """Un choix d'œuvre depuis une notice, provenance réelle uniquement."""
+    return BookWorkChoice(
+        title=meta.title,
+        isbn13=meta.isbn13,
+        author=meta.author,
+        publisher=meta.publisher,
+        publication_year=meta.publication_year,
+        provenance=meta.source,
+    )
+
+
+def _edition_choice(meta: BookMetadata, provenance: str | None) -> BookEditionChoice:
+    """Un choix d'édition depuis une notice, sans inventer de provenance."""
+    isbn13 = meta.isbn13
+    assert isbn13 is not None
+    return BookEditionChoice(
+        isbn13=isbn13,
+        publisher=meta.publisher,
+        publication_year=meta.publication_year,
+        format_detail=meta.format_detail,
+        provenance=provenance,
+    )
+
+
+def _sources_by_isbn(resolution: BookResolution) -> dict[str, str]:
+    """Provenance réelle par ISBN, lue sur les notices (pas de déduction)."""
+    sources: dict[str, str] = {}
+    for meta in (resolution.best, *resolution.alternatives, *resolution.other_works):
+        if meta.isbn13 and meta.isbn13 not in sources:
+            sources[meta.isbn13] = meta.source
+    return sources
+
+
+def result_from_resolution(resolution: BookResolution | None) -> BookSearchResult:
+    """Adapte une résolution par titre vers le contrat partagé.
+
+    `None` vaut `not_found` avec `consulted=None` : le service ne dit pas
+    aujourd'hui si c'est une absence ou une panne (limitation documentée en
+    tête de module), et l'adaptateur ne tranche pas à sa place.
+    """
+    if resolution is None:
+        return BookSearchResult(status=BookSearchStatus.NOT_FOUND, consulted=None)
+    if resolution.is_ambiguous:
+        works = tuple(
+            _work_choice(meta) for meta in _choice_metas(resolution) if meta.isbn13
+        )
+        if not works:
+            works = (_work_choice(resolution.best),)
+        return BookSearchResult(
+            status=BookSearchStatus.AMBIGUOUS,
+            works=works,
+            consulted=None,
+            note=ambiguity_note(resolution),
+        )
+    best = resolution.best
+    if not best.isbn13:
+        return BookSearchResult(
+            status=BookSearchStatus.PARTIAL,
+            works=(_work_choice(best),),
+            consulted=None,
+            provenance=best.source,
+            note="Ouvrage nommé sans édition confirmée : la notice ne porte aucun ISBN.",
+        )
+    sources = _sources_by_isbn(resolution)
+    by_isbn = _metas_by_isbn(resolution)
+    editions = tuple(
+        _edition_choice(by_isbn[edition.isbn13], sources.get(edition.isbn13))
+        for edition in resolution.editions()
+    )
+    return BookSearchResult(
+        status=BookSearchStatus.FOUND,
+        editions=editions,
+        reference=editions[0] if editions else None,
+        consulted=None,
+        provenance=best.source,
+        note=provenance_note(best),
+    )
+
+
+def _choice_metas(resolution: BookResolution) -> list[BookMetadata]:
+    """Notices homonymes uniques par ISBN, notice retenue en tête."""
+    seen: set[str] = set()
+    metas: list[BookMetadata] = []
+    for meta in (resolution.best, *resolution.other_works):
+        if not meta.isbn13 or meta.isbn13 in seen:
+            continue
+        seen.add(meta.isbn13)
+        metas.append(meta)
+    return metas
+
+
+def _metas_by_isbn(resolution: BookResolution) -> dict[str, BookMetadata]:
+    """Notices d'une même œuvre indexées par ISBN, référence en tête."""
+    by_isbn: dict[str, BookMetadata] = {}
+    for meta in (resolution.best, *resolution.alternatives):
+        if meta.isbn13 and meta.isbn13 not in by_isbn:
+            by_isbn[meta.isbn13] = meta
+    return by_isbn
+
+
+def result_from_isbn_verdict(
+    verdict: IsbnVerdict, expected_title: str | None = None
+) -> BookSearchResult:
+    """Adapte un verdict ISBN vers le contrat partagé.
+
+    `expected_title` rejoue le contrôle de titre au même seuil que
+    `confirm_isbn_for_title` : un ISBN rattaché à un autre ouvrage vaut
+    `not_found` pour le couple demandé, avec l'ouvrage réel en `conflict`.
+    Aucun titre de référence n'est exigé pour une recherche par ISBN seul.
+    """
+    notice = verdict.notice
+    contradicts = verdict.outcome == "contradiction" or (
+        verdict.outcome == "confirme"
+        and notice is not None
+        and bool(expected_title)
+        and title_similarity(notice.title, expected_title) < TITLE_SIMILARITY_MIN
+    )
+    if verdict.outcome == "confirme" and not contradicts and notice is not None:
+        reference = _edition_choice(notice, notice.source)
+        return BookSearchResult(
+            status=BookSearchStatus.FOUND,
+            editions=(reference,),
+            reference=reference,
+            consulted=verdict.consulted,
+            provenance=notice.source,
+            note=provenance_note(notice),
+        )
+    if contradicts and notice is not None:
+        author = notice.author or "un auteur non renseigné"
+        return BookSearchResult(
+            status=BookSearchStatus.NOT_FOUND,
+            consulted=verdict.consulted,
+            conflict=_work_choice(notice),
+            note=(
+                f"Cet ISBN désigne « {notice.title} » de {author}, "
+                "pas l'ouvrage demandé."
+            ),
+        )
+    if verdict.outcome == "silence":
+        if notice is None:
+            return BookSearchResult(
+                status=BookSearchStatus.UNAVAILABLE,
+                consulted=verdict.consulted,
+                unavailable=(AUTORITE_BNF,),
+                note=f"Autorité indisponible : {verdict.panne}",
+            )
+        return BookSearchResult(
+            status=BookSearchStatus.PARTIAL,
+            works=(_work_choice(notice),),
+            consulted=verdict.consulted,
+            unavailable=(AUTORITE_BNF,),
+            provenance=notice.source,
+            note=(
+                "Candidat de repli sans valeur de confirmation : "
+                "la BNF n'a pas répondu."
+            ),
+        )
+    return BookSearchResult(
+        status=BookSearchStatus.NOT_FOUND, consulted=verdict.consulted
+    )
+
+
+class BookSearchUseCase:
+    """Orchestration de recherche partagée (futurs endpoints et Telegram).
+
+    Lecture seule : le cas d'usage interroge le service bibliographique et
+    mappe son résultat. Il n'écrit ni `Book` ni `AlertBook`, n'appelle aucun
+    LLM, ne pose aucun cache, et n'est branché sur aucun chemin d'alerte.
+    """
+
+    def __init__(self, service: BookMetadataService | None = None) -> None:
+        self._service = service or BookMetadataService()
+
+    async def search_by_title(
+        self, title: str, author_hint: str | None = None
+    ) -> BookSearchResult:
+        """Recherche par titre (+ indice d'auteur), adaptée au contrat."""
+        resolution = await self._service.resolve_for_alert(title, author_hint)
+        return result_from_resolution(resolution)
+
+    async def search_by_isbn(
+        self, isbn: str, expected_title: str | None = None
+    ) -> BookSearchResult:
+        """Recherche d'une édition par ISBN, adaptée au contrat."""
+        if expected_title:
+            verdict = await self._service.confirm_isbn_for_title(isbn, expected_title)
+        else:
+            verdict = await self._service.consult_authorities(isbn)
+        return result_from_isbn_verdict(verdict, expected_title)

@@ -2,6 +2,7 @@
 
 from app.domain.enums import (
     AlertStatus,
+    BookSearchStatus,
     CategorySlug,
     ComparisonStatus,
     ItemCondition,
@@ -10,6 +11,7 @@ from app.domain.enums import (
 
 __all__ = [
     "AlertStatus",
+    "BookSearchStatus",
     "CategorySlug",
     "ComparisonStatus",
     "ItemCondition",
