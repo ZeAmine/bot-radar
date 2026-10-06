@@ -407,6 +407,52 @@ async def test_free_search_uses_plain_terms_with_bounded_results():
 
 
 @pytest.mark.asyncio
+async def test_ebook_needs_explicit_availability_flags():
+    """Seuls `isAvailable` booléens comptent : objet présent, aperçu ou texte ne suffisent pas."""
+    sans_indicateur = _FakeHttp(
+        payload={"items": [_item(title="T1", accessInfo={"epub": {}})]}
+    )
+    apercu_seul = _FakeHttp(
+        payload={
+            "items": [
+                _item(
+                    title="T2",
+                    accessInfo={
+                        "viewability": "PARTIAL",
+                        "textToSpeechPermission": "ALLOWED",
+                    },
+                )
+            ]
+        },
+    )
+    chaine_non_booleenne = _FakeHttp(
+        payload={
+            "items": [_item(title="T3", accessInfo={"pdf": {"isAvailable": "yes"}})]
+        },
+    )
+    lien_apercu = _FakeHttp(
+        payload={
+            "items": [
+                {
+                    "volumeInfo": {"title": "T4"},
+                    "previewLink": "http://exemple/apercu",
+                }
+            ]
+        },
+    )
+
+    muet = await _client(sans_indicateur).search_by_title_result("T")
+    partiel = await _client(apercu_seul).search_by_title_result("T")
+    texte = await _client(chaine_non_booleenne).search_by_title_result("T")
+    apercu = await _client(lien_apercu).search_by_title_result("T")
+
+    assert muet.items[0].has_ebook is None
+    assert partiel.items[0].has_ebook is None
+    assert texte.items[0].has_ebook is None
+    assert apercu.items[0].has_ebook is None
+
+
+@pytest.mark.asyncio
 async def test_errors_never_leak_the_key(caplog):
     """Ni la clé ni l'URL complète dans les logs, même sur panne réseau."""
     http = _FakeHttp(error=httpx.ConnectError("panne"))
@@ -417,4 +463,28 @@ async def test_errors_never_leak_the_key(caplog):
 
     assert resultat.status == ProviderQueryStatus.UNAVAILABLE
     assert "cle-secrete" not in caplog.text
+    assert "key=" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_even_url_bearing_errors_never_leak_the_key(caplog):
+    """Même si l'exception porte l'URL avec clé, seul le nom de classe est loggé."""
+    cle = "CLE-FACTICE-XYZ"
+    requete = httpx.Request(
+        "GET", f"https://www.googleapis.com/books/v1/volumes?q=x&key={cle}"
+    )
+    http = _FakeHttp(error=httpx.ConnectError("panne", request=requete))
+
+    def _avec_cle(faux_http: _FakeHttp) -> GoogleBooksClient:
+        return GoogleBooksClient(api_key=cle, http_client=faux_http)  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING, logger="radar.google_books"):
+        delai = await _avec_cle(http).search_by_title_result("T")
+        quota = await _avec_cle(_FakeHttp(status_code=429)).search_by_title_result("T")
+        serveur = await _avec_cle(_FakeHttp(status_code=500)).search_by_title_result("T")
+
+    assert delai.status == ProviderQueryStatus.UNAVAILABLE
+    assert quota.status == ProviderQueryStatus.RATE_LIMITED
+    assert serveur.status == ProviderQueryStatus.UNAVAILABLE
+    assert cle not in caplog.text
     assert "key=" not in caplog.text

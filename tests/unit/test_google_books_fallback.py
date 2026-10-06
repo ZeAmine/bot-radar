@@ -15,6 +15,7 @@ from app.services.book_metadata_service import (
     AUTORITE_BNF,
     AUTORITE_GOOGLE_BOOKS,
     AUTORITE_OPENLIBRARY,
+    BookMetadata,
     BookMetadataService,
 )
 
@@ -250,6 +251,39 @@ async def test_panne_google_isbn_laisse_le_verdict_inchange(
         AUTORITE_OPENLIBRARY,
         AUTORITE_GOOGLE_BOOKS,
     )
+
+
+@pytest.mark.asyncio
+async def test_has_ebook_false_ne_bloque_pas_l_identification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`has_ebook=False` n'est ni un rejet ni une preuve papier : titre/auteur/ISBN décident."""
+    http = _HttpSimule(
+        libre={
+            "items": [
+                {
+                    "volumeInfo": {
+                        "title": "Blacksad",
+                        "authors": ["Juan Díaz Canales"],
+                        "industryIdentifiers": [
+                            {"type": "ISBN_13", "identifier": ISBN_VALIDE_A}
+                        ],
+                    },
+                    "accessInfo": {
+                        "epub": {"isAvailable": False},
+                        "pdf": {"isAvailable": False},
+                    },
+                }
+            ]
+        }
+    )
+    service = _service(http, monkeypatch)
+
+    resolution = await service.resolve_for_alert("Blacksad", "Juan Diaz Canales")
+
+    assert resolution is not None
+    assert resolution.best.isbn13 == ISBN_VALIDE_A
+    assert "has_ebook" not in BookMetadata.__dataclass_fields__
 
 
 def test_statuts_google_exposes_au_service() -> None:
