@@ -654,7 +654,47 @@ def test_market_tome_ref_round_trip():
     assert _decode_tome_ref("market_tome:pas-du-base64:non-plus") is None
 
 
-def test_series_card_shows_pending_line_when_no_tome_is_priced():
+def test_series_card_distingue_une_absence_constatee_d_une_cote_en_cours():
+    """Un tome dont la passe a conclu à l'absence d'offre ne compte plus dans l'attente.
+
+    Les deux comptes portent sur les mêmes tomes sans prix, mais ne disent pas la
+    même chose : l'un attend une cote, l'autre l'a déjà eue.
+    """
+    priced = _create_mock_book("Blast — Tome 1 (Grasse Carcasse)", 500)
+    waiting = _create_mock_book("Blast — Tome 2 (L'Apocalypse selon Saint Jacky)", None)
+    waiting.market_cache = None
+    settled = _create_mock_book("Blast — Tome 3 (La Vallée des larmes)", None)
+    settled.market_cache = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=settled.id,
+        comparison_status=ComparisonStatus.UNAVAILABLE,
+        checked_at=datetime(2026, 10, 6, 9, 30, tzinfo=UTC),
+    )
+    listing = Listing(
+        source_name="vinted",
+        external_id="blast",
+        url="https://vinted.fr",
+        title="Blast de Manu Larcenet",
+        normalized_title="blast de manu larcenet",
+        category_slug="bd_comics",
+        item_price_cents=800,
+        estimated_total_cents=1198,
+    )
+
+    card = MarketPriceService.format_market_details_card(
+        listing=listing,
+        book=None,
+        books_in_series=[priced, waiting, settled],
+        tome_result=None,
+    )
+
+    assert "⏳ 1 tome(s) en cours de cote…" in card
+    assert "🔍 1 tome(s) sans aucune offre trouvée." in card
+    # L'attente générique n'existe plus : chaque silence a son compte.
+    assert PENDING_COTE_LINE not in card
+
+
+def test_series_card_counts_every_unpriced_tome_when_none_is_priced():
     """Sans aucune cote en base, le panneau annonce une attente au lieu d'être vide."""
     books = [
         _create_mock_book("Blast — Tome 1 (Grasse Carcasse)", None),
@@ -680,7 +720,7 @@ def test_series_card_shows_pending_line_when_no_tome_is_priced():
         tome_result=None,
     )
     assert "Cotes par tome" in card
-    assert PENDING_COTE_LINE in card
+    assert "⏳ 2 tome(s) en cours de cote…" in card
     # Le total Vinted reste affiché : c'est la seule information fiable ici.
     assert "11,98 €" in card
 
