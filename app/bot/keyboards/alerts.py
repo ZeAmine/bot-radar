@@ -6,7 +6,18 @@ from typing import Any
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.labels import (
+    BTN_ALERTS_LIST,
+    BTN_BACK,
+    BTN_CANCEL,
+    BTN_CATEGORIES,
+    BTN_CLOSE,
+    BTN_CREATE,
     BTN_DELETE,
+    BTN_EDIT,
+    BTN_NEXT,
+    BTN_PAUSE,
+    BTN_PREVIOUS,
+    BTN_RESUME,
     CONDITION_SHORT,
     FIELD_CONDITIONS,
     FIELD_EXCLUDE_KEYWORDS,
@@ -100,12 +111,12 @@ def get_alert_confirmation_keyboard(
         ])
 
     rows.append(
-        [InlineKeyboardButton(text="Créer l'alerte", callback_data="alert_create_confirm")]
+        [InlineKeyboardButton(text=BTN_CREATE, callback_data="alert_create_confirm")]
     )
     rest = [
         [
-            InlineKeyboardButton(text="Modifier", callback_data="alert_create_edit"),
-            InlineKeyboardButton(text="Annuler", callback_data="alert_create_cancel"),
+            InlineKeyboardButton(text=BTN_EDIT, callback_data="alert_create_edit"),
+            InlineKeyboardButton(text=BTN_CANCEL, callback_data="alert_create_cancel"),
         ],
     ]
     if show_variants_btn:
@@ -192,7 +203,7 @@ def _build_category_selection_keyboard(
     buttons.append(
         [
             InlineKeyboardButton(
-                text="Fermer",
+                text=BTN_CLOSE,
                 callback_data="al_close",
             )
         ]
@@ -226,11 +237,11 @@ def get_alert_card_keyboard(
     category_slug: str = "all",
 ) -> InlineKeyboardMarkup:
     """Retourne le clavier pour une carte d'alerte individuelle dans /show et /edit."""
-    pause_text = "Mettre en pause" if status == AlertStatus.ACTIVE else "Réactiver"
+    pause_text = BTN_PAUSE if status == AlertStatus.ACTIVE else BTN_RESUME
     pause_action = "pause" if status == AlertStatus.ACTIVE else "resume"
 
     row_actions = [
-        InlineKeyboardButton(text="Modifier", callback_data=f"al_edit:{alert_id}"),
+        InlineKeyboardButton(text=BTN_EDIT, callback_data=f"al_edit:{alert_id}"),
         InlineKeyboardButton(text=pause_text, callback_data=f"al_{pause_action}:{alert_id}"),
         InlineKeyboardButton(text=BTN_DELETE, callback_data=f"al_del:{alert_id}"),
     ]
@@ -242,13 +253,13 @@ def get_alert_card_keyboard(
     if current_page > 0:
         row_nav.append(
             InlineKeyboardButton(
-                text="← Précédent", callback_data=f"{page_prefix}:{current_page - 1}"
+                text=BTN_PREVIOUS, callback_data=f"{page_prefix}:{current_page - 1}"
             )
         )
     if current_page < total_pages - 1:
         row_nav.append(
             InlineKeyboardButton(
-                text="Suivant →", callback_data=f"{page_prefix}:{current_page + 1}"
+                text=BTN_NEXT, callback_data=f"{page_prefix}:{current_page + 1}"
             )
         )
 
@@ -260,9 +271,9 @@ def get_alert_card_keyboard(
     inline_keyboard.append(
         [
             InlineKeyboardButton(
-                text="Liste des alertes", callback_data=f"al_list_cat:{category_slug}:{list_page}"
+                text=BTN_ALERTS_LIST, callback_data=f"al_list_cat:{category_slug}:{list_page}"
             ),
-            InlineKeyboardButton(text="Catégories", callback_data="ed_cat_menu"),
+            InlineKeyboardButton(text=BTN_CATEGORIES, callback_data="ed_cat_menu"),
         ]
     )
 
@@ -319,7 +330,7 @@ def get_alert_edit_fields_keyboard(
         [InlineKeyboardButton(text=label, callback_data=f"ed_f:{alert_id}:{field}")]
         for label, field in fields
     ]
-    buttons.append([InlineKeyboardButton(text="← Retour", callback_data=f"al_view:{alert_id}")])
+    buttons.append([InlineKeyboardButton(text=BTN_BACK, callback_data=f"al_view:{alert_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -385,7 +396,7 @@ def get_delete_confirmation_keyboard(alert_id: uuid.UUID) -> InlineKeyboardMarku
                     callback_data=f"al_del_confirm:{alert_id}",
                 )
             ],
-            [InlineKeyboardButton(text="Annuler", callback_data=f"al_view:{alert_id}")],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data=f"al_view:{alert_id}")],
         ]
     )
 
@@ -425,13 +436,13 @@ def get_alerts_list_keyboard(
     if current_page > 0:
         nav_row.append(
             InlineKeyboardButton(
-                text="← Précédent", callback_data=f"{page_prefix}:{current_page - 1}"
+                text=BTN_PREVIOUS, callback_data=f"{page_prefix}:{current_page - 1}"
             )
         )
     if current_page < total_pages - 1:
         nav_row.append(
             InlineKeyboardButton(
-                text="Suivant →", callback_data=f"{page_prefix}:{current_page + 1}"
+                text=BTN_NEXT, callback_data=f"{page_prefix}:{current_page + 1}"
             )
         )
     if nav_row:
@@ -440,8 +451,8 @@ def get_alerts_list_keyboard(
     # Ligne d'actions globales : retour au choix de catégorie ou fermer
     buttons.append(
         [
-            InlineKeyboardButton(text="Catégories", callback_data="al_list_cat_menu"),
-            InlineKeyboardButton(text="Fermer", callback_data="al_close"),
+            InlineKeyboardButton(text=BTN_CATEGORIES, callback_data="al_list_cat_menu"),
+            InlineKeyboardButton(text=BTN_CLOSE, callback_data="al_close"),
         ]
     )
 

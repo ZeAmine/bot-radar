@@ -19,6 +19,8 @@ from app.bot.handlers.alerts_helpers import (
 )
 from app.bot.keyboards.alerts import get_conditions_toggle_keyboard
 from app.bot.labels import (
+    BTN_BACK_TO_MENU,
+    BTN_BACK_TO_RECAP,
     FIELD_CONDITIONS,
     FIELD_EXCLUDE_KEYWORDS,
     FIELD_INCLUDE_KEYWORDS,
@@ -265,7 +267,7 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
         ],
         [
             InlineKeyboardButton(
-                text="← Retour au récapitulatif", callback_data="al_create_edit:back"
+                text=BTN_BACK_TO_RECAP, callback_data="al_create_edit:back"
             )
         ],
     ])
@@ -302,7 +304,7 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
         )
         keyboard = get_conditions_toggle_keyboard(selected)
         keyboard.inline_keyboard.append([
-            InlineKeyboardButton(text="← Retour au menu", callback_data="al_create_edit:menu")
+            InlineKeyboardButton(text=BTN_BACK_TO_MENU, callback_data="al_create_edit:menu")
         ])
         if callback.message and hasattr(callback.message, "edit_text"):
             await callback.message.edit_text(text, reply_markup=keyboard)
@@ -364,10 +366,10 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← Retour au menu", callback_data="al_create_edit:menu")],
+            [InlineKeyboardButton(text=BTN_BACK_TO_MENU, callback_data="al_create_edit:menu")],
             [
                 InlineKeyboardButton(
-                    text="← Retour au récapitulatif", callback_data="al_create_edit:back"
+                    text=BTN_BACK_TO_RECAP, callback_data="al_create_edit:back"
                 )
             ],
         ]
@@ -395,7 +397,7 @@ async def handle_creation_condition_toggle(callback: CallbackQuery, state: FSMCo
     await callback.answer()
     keyboard = get_conditions_toggle_keyboard(selected)
     keyboard.inline_keyboard.append([
-        InlineKeyboardButton(text="← Retour au menu", callback_data="al_create_edit:menu")
+        InlineKeyboardButton(text=BTN_BACK_TO_MENU, callback_data="al_create_edit:menu")
     ])
     if callback.message and hasattr(callback.message, "edit_reply_markup"):
         await callback.message.edit_reply_markup(reply_markup=keyboard)

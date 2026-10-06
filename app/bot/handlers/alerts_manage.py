@@ -25,6 +25,7 @@ from app.bot.keyboards.alerts import (
     get_edit_conditions_keyboard,
 )
 from app.bot.labels import (
+    BTN_BACK,
     FIELD_EXCLUDE_KEYWORDS,
     FIELD_INCLUDE_KEYWORDS,
     FIELD_ISBN,
@@ -337,7 +338,7 @@ async def prompt_new_field_value(
                     ],
                     [
                         InlineKeyboardButton(
-                            text="← Retour",
+                            text=BTN_BACK,
                             callback_data=f"al_edit:{alert.id}",
                         )
                     ],
