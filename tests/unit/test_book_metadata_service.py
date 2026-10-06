@@ -7,7 +7,8 @@ import pytest
 from pydantic import SecretStr
 
 from app.core.config import settings
-from app.core.constants import MatchConfidence
+from app.core.constants import MatchConfidence, ProviderQueryStatus
+from app.providers.google_books import ProviderQueryResult
 from app.services.book_metadata_service import (
     AUTORITE_BNF,
     AUTORITE_GOOGLE_BOOKS,
@@ -463,13 +464,34 @@ def _homonym_records() -> list[BookMetadata]:
     ]
 
 
+def _typed_bnf(
+    records: list[BookMetadata],
+) -> tuple[ProviderQueryResult[BookMetadata], None]:
+    """Joint typé moqué : mêmes notices, succès avec brut, sans panne."""
+    return (
+        ProviderQueryResult(
+            status=ProviderQueryStatus.SUCCESS,
+            items=tuple(records),
+            has_results=bool(records),
+        ),
+        None,
+    )
+
+
+def _mock_bnf_typed(service, records):
+    """Patch du joint BNF typé pour `resolve_for_alert` (contexte `with`)."""
+    return patch.object(
+        service, "_bnf_records_result", new=AsyncMock(return_value=_typed_bnf(records))
+    )
+
+
 @pytest.mark.asyncio
 async def test_resolve_for_alert_exposes_homonyms_instead_of_choosing_silently():
     """Deux œuvres de même titre : aucune n'est confirmée, les deux sont proposées."""
     service = BookMetadataService()
     records = _homonym_records()
 
-    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+    with _mock_bnf_typed(service, records):
         resolution = await service.resolve_for_alert("Les Enfants perdus")
 
     assert resolution is not None
@@ -489,7 +511,7 @@ async def test_resolve_for_alert_author_hint_designs_the_homonym():
     service = BookMetadataService()
     records = _homonym_records()
 
-    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+    with _mock_bnf_typed(service, records):
         resolution = await service.resolve_for_alert("Les Enfants perdus", "Nef")
 
     assert resolution is not None
@@ -506,7 +528,7 @@ async def test_resolve_for_alert_author_hint_contradicted_by_the_only_record():
     service = BookMetadataService()
     records = _homonym_records()[:1]
 
-    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+    with _mock_bnf_typed(service, records):
         resolution = await service.resolve_for_alert("Les Enfants perdus", "Nef")
 
     assert resolution is not None
@@ -521,7 +543,7 @@ async def test_resolve_for_alert_does_not_call_a_lookalike_a_homonym():
     service = BookMetadataService()
     records = _homonym_records()
 
-    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+    with _mock_bnf_typed(service, records):
         resolution = await service.resolve_for_alert("Les enfants perdus tome 2")
 
     assert resolution is not None

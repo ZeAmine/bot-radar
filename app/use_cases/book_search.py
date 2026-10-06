@@ -1,54 +1,44 @@
-"""Contrat de recherche bibliographique partagé (Lot 0).
+"""Contrat de recherche bibliographique partagé (Lots 0 à 2).
 
 Ce module est l'adaptateur minimal entre les méthodes existantes de
 `BookMetadataService` et un contrat de réponse exploitable par de futurs
 endpoints (`GET /api/v1/books/search`, `GET /api/v1/books/isbn/{isbn}`) comme
-par le parcours Telegram. Lot 0 uniquement : aucune route HTTP, aucun fallback
-Google supplémentaire, aucune modification Telegram.
+par le parcours Telegram. Aucune route HTTP, aucun changement Telegram.
 
 Mapping explicite (les verdicts métier ne sont pas remplacés) :
 
-- recherche par ISBN (`consult_authorities`, `confirm_isbn_for_title`) :
+- recherche par ISBN (`consult_authorities_report`) :
   - `confirme` (+ titre concordant si attendu) -> `found` ;
   - `contradiction` -> `not_found` pour le couple demandé, l'ouvrage réel
     étant exposé en `conflict`, jamais en `reference` ;
-  - `inconnu` -> `not_found` ;
+  - `inconnu`, toutes recherches réussies -> `not_found` ;
+  - `inconnu` avec une tentative en échec -> `unavailable` ;
   - `silence` sans notice -> `unavailable` ;
   - `silence` avec notice de repli -> `partial` : un candidat existe mais,
     la BNF n'ayant pas répondu, il ne confirme rien (règle existante
     préservée : un repli ne confirme jamais pendant une panne BNF).
-- recherche par titre (`resolve_for_alert`) :
-  - résolution non ambiguë avec ISBN -> `found` ;
+- recherche par titre (`resolve_for_alert_report`) :
+  - résolution non ambiguë avec ISBN, BNF répondante -> `found` ;
+  - résolution non ambiguë issue d'un repli pendant une panne BNF ->
+    `partial` (correction T9 : le retour historique, lui, la présente comme
+    identifiée — comportement Telegram inchangé dans ce lot, ADR intacts) ;
   - `is_ambiguous` -> `ambiguous`, œuvres en `works`, aucune édition ;
-  - `None` -> `not_found` ;
+  - `None`, toutes recherches réussies -> `not_found` ;
+  - `None` avec une tentative en échec -> `unavailable` ;
   - notice sans ISBN (cas Google réel) -> `partial`.
 
 Invariants du contrat : `reference` n'est renseignée que sur `found`
 (une identité confirmée se distingue toujours des candidats) ; `conflict`
 n'apparaît que sur `not_found` ; les éditions d'ISBN différents restent
 séparées (jamais fusionnées) ; toute métadonnée inconnue vaut `None`.
+Un ISBN mal formé est rejeté (`ValueError`) avant tout appel réseau, jamais
+représenté par `not_found` ; le chemin historique garde `inconnu`.
 
-Limitations constatées (non inventées, non déduites) :
-
-- `BookResolution` n'expose ni les autorités consultées ni leurs pannes
-  (la BNF absorbée par `_query_bnf_sru`, OpenLibrary absorbée par
-  `_query_openlibrary`). Sur le chemin titre, `consulted` vaut donc `None`
-  (inconnu), jamais une liste déduite de l'ordre théorique
-  BnF -> Open Library -> Google. Lot 1 : les issues Google sont typées
-  (`ProviderQueryResult`), mais ne remontent pas encore jusqu'ici — une panne
-  Google y reste indiscernable d'une absence. Ajustement proposé (lot
-  ultérieur) : porter `consulted` / `unavailable` sur `BookResolution`,
-  capter la panne BNF via `_bnf_records` dans le chemin titre, et y
-  propager les statuts des replis.
-- Même sur le chemin ISBN, seule la panne BNF est nommée : `unavailable`
-  ne cite donc que la BNF quand `panne` est renseigné. Une panne Open Library
-  reste indiscernable d'une absence de résultat.
-- `GoogleBooksClient._fetch_result` distingue le vide d'une panne
-  (`disabled`, `timeout`, `rate_limited`, `unauthorized`, `unavailable`,
-  `invalid_response`, avec `Retry-After` repris seulement s'il est renvoyé).
-  Le repli libre Google n'est tenté qu'après une recherche ciblée réussie
-  mais vide, jamais sur panne, et ses candidats passent les filtres métier
-  existants avant toute retenue.
+Observabilité (Lot 2) : chaque rapport porte ses `attempts` (provider, type
+de recherche, statut, brut vide ou non, code contrôlé). `consulted` en
+dérive (ordre réel, sans doublons) ; `unavailable` nomme les échecs établis.
+Un provider désactivé n'est ni consulté ni en panne. `has_results` vient des
+éléments bruts reçus, avant parsing, scoring et filtrage.
 
 Garanties du lot : lecture seule (aucune écriture `Book` / `AlertBook`),
 aucun appel LLM, aucun cache bibliographique ajouté, aucune migration, aucun
@@ -56,20 +46,23 @@ secret, aucun changement du chemin de détection des annonces (le cas d'usage
 n'est appelé ni par l'ingestion ni par le matching).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from app.domain.enums import BookSearchStatus
+from app.domain.enums import BookSearchStatus, ProviderQueryStatus
 from app.services.book_metadata_service import (
     AUTORITE_BNF,
     TITLE_SIMILARITY_MIN,
+    BibliographicReport,
     BookMetadata,
     BookMetadataService,
     BookResolution,
     IsbnVerdict,
+    ProviderAttempt,
     ambiguity_note,
     provenance_note,
     title_similarity,
 )
+from app.utils.isbn import is_valid_isbn, normalize_isbn
 
 
 @dataclass(frozen=True)
@@ -110,11 +103,12 @@ class BookEditionChoice:
 class BookSearchResult:
     """Réponse normalisée d'une recherche bibliographique.
 
-    `consulted` nomme les autorités réellement interrogées ; `None` signifie
-    « le service ne l'expose pas sur ce chemin » (recherche par titre, voir
-    les limitations), ce qui n'est pas la même chose que `()` (« personne
-    consulté », code ISBN mal formé). `unavailable` nomme les autorités dont
-    la panne est établie.
+    `consulted` nomme les autorités réellement interrogées, dans l'ordre réel
+    et sans doublons ; `()` signifie « personne » (ISBN mal formé, titre vide),
+    jamais « inconnu ». `unavailable` nomme les autorités dont l'échec est
+    établi. `attempts` porte les tentatives (provider, type de recherche,
+    statut, brut vide ou non, code contrôlé) ; `consulted=None` ne survit que
+    dans les adaptateurs purs historiques sans rapport.
     """
 
     status: BookSearchStatus
@@ -126,6 +120,7 @@ class BookSearchResult:
     provenance: str | None = None
     conflict: BookWorkChoice | None = None
     note: str | None = None
+    attempts: tuple[ProviderAttempt, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.reference is None) == (self.status == BookSearchStatus.FOUND):
@@ -297,6 +292,126 @@ def result_from_isbn_verdict(
     )
 
 
+def _consulted_from(attempts: tuple[ProviderAttempt, ...]) -> tuple[str, ...]:
+    """Autorités réellement interrogées, ordre réel, sans doublons."""
+    seen: list[str] = []
+    for attempt in attempts:
+        if attempt.provider not in seen:
+            seen.append(attempt.provider)
+    return tuple(seen)
+
+
+def _failed_from(attempts: tuple[ProviderAttempt, ...]) -> tuple[str, ...]:
+    """Autorités dont l'échec est établi (un désactivé n'est jamais en échec)."""
+    return tuple(
+        provider
+        for provider in _consulted_from(attempts)
+        if any(
+            attempt.provider == provider
+            and attempt.status != ProviderQueryStatus.SUCCESS
+            for attempt in attempts
+        )
+    )
+
+
+def _bnf_failed(attempts: tuple[ProviderAttempt, ...]) -> bool:
+    """La BNF a-t-elle manqué au moins une requête tentée ?"""
+    return any(
+        attempt.provider == AUTORITE_BNF
+        and attempt.status != ProviderQueryStatus.SUCCESS
+        for attempt in attempts
+    )
+
+
+def result_from_report(report: BibliographicReport) -> BookSearchResult:
+    """Chemin titre depuis un rapport : décisions existantes + règle T9.
+
+    Le retour historique (`resolve_for_alert`, Telegram dans ce lot) accepte
+    un repli pendant une panne BNF comme une identification. Le nouveau
+    contrat, lui, ne confirme jamais dans ce cas : candidat non ambigu vers
+    `partial` (`reference=None`), homonymes vers `ambiguous`, rien vers
+    `unavailable`. Les ADR d'autorité sont inchangés : c'est la lecture du
+    rapport qui diffère, pas le service.
+    """
+    attempts = report.attempts
+    consulted = _consulted_from(attempts)
+    failed = _failed_from(attempts)
+    resolution = report.resolution
+    if resolution is None:
+        if failed:
+            return BookSearchResult(
+                status=BookSearchStatus.UNAVAILABLE,
+                consulted=consulted,
+                unavailable=failed,
+                attempts=attempts,
+                note="Aucun candidat exploitable et une autorité n'a pas répondu.",
+            )
+        return BookSearchResult(
+            status=BookSearchStatus.NOT_FOUND,
+            consulted=consulted,
+            attempts=attempts,
+        )
+    base = result_from_resolution(resolution)
+    if (
+        base.status == BookSearchStatus.FOUND
+        and _bnf_failed(attempts)
+        and resolution.best.source != AUTORITE_BNF
+    ):
+        best = resolution.best
+        return BookSearchResult(
+            status=BookSearchStatus.PARTIAL,
+            works=(_work_choice(best),),
+            consulted=consulted,
+            unavailable=failed,
+            provenance=best.source,
+            attempts=attempts,
+            note=(
+                "Candidat de repli sans valeur de confirmation : "
+                "la BNF n'a pas répondu. Le retour historique de "
+                "resolve_for_alert le présente, lui, comme identifié "
+                "(comportement Telegram inchangé dans ce lot)."
+            ),
+        )
+    return replace(base, consulted=consulted, unavailable=failed, attempts=attempts)
+
+
+def result_from_verdict_report(
+    report: BibliographicReport, expected_title: str | None = None
+) -> BookSearchResult:
+    """Chemin ISBN depuis un rapport : verdict intact, contexte réel attaché.
+
+    Un `not_found` sans aucun candidat (ni `reference`, ni `works`, ni
+    `conflict`) ne prend jamais le pas sur des tentatives en échec : il vaut
+    alors `unavailable`. Une contradiction explicite reste distincte d'une
+    panne, et une identité confirmée reste `found`, échecs secondaires ou pas.
+    """
+    verdict = report.verdict
+    assert verdict is not None
+    base = result_from_isbn_verdict(verdict, expected_title)
+    consulted = _consulted_from(report.attempts)
+    failed = _failed_from(report.attempts)
+    if (
+        base.status == BookSearchStatus.NOT_FOUND
+        and not base.works
+        and base.conflict is None
+        and failed
+    ):
+        return replace(
+            base,
+            status=BookSearchStatus.UNAVAILABLE,
+            consulted=consulted,
+            unavailable=failed,
+            attempts=report.attempts,
+            note="Aucun candidat exploitable et une autorité n'a pas répondu.",
+        )
+    return replace(
+        base,
+        consulted=consulted,
+        unavailable=failed,
+        attempts=report.attempts,
+    )
+
+
 class BookSearchUseCase:
     """Orchestration de recherche partagée (futurs endpoints et Telegram).
 
@@ -312,15 +427,20 @@ class BookSearchUseCase:
         self, title: str, author_hint: str | None = None
     ) -> BookSearchResult:
         """Recherche par titre (+ indice d'auteur), adaptée au contrat."""
-        resolution = await self._service.resolve_for_alert(title, author_hint)
-        return result_from_resolution(resolution)
+        report = await self._service.resolve_for_alert_report(title, author_hint)
+        return result_from_report(report)
 
     async def search_by_isbn(
         self, isbn: str, expected_title: str | None = None
     ) -> BookSearchResult:
-        """Recherche d'une édition par ISBN, adaptée au contrat."""
-        if expected_title:
-            verdict = await self._service.confirm_isbn_for_title(isbn, expected_title)
-        else:
-            verdict = await self._service.consult_authorities(isbn)
-        return result_from_isbn_verdict(verdict, expected_title)
+        """Recherche d'une édition par ISBN, adaptée au contrat.
+
+        Un code mal formé est rejeté explicitement avant tout appel réseau :
+        il ne vaut jamais `not_found`. Le comportement historique
+        (`consult_authorities` → `inconnu`) est préservé pour ses appelants.
+        """
+        clean_isbn = normalize_isbn(isbn)
+        if not clean_isbn or not is_valid_isbn(clean_isbn):
+            raise ValueError(f"ISBN invalide : {isbn.strip()} — aucun provider interrogé.")
+        report = await self._service.consult_authorities_report(isbn)
+        return result_from_verdict_report(report, expected_title)

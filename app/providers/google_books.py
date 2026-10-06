@@ -50,13 +50,17 @@ class ProviderQueryResult[T]:
 
     `retry_after_seconds` ne reprend que le `Retry-After` réellement renvoyé
     (aucun délai inventé) ; `error_code` nomme la panne sans jamais porter la
-    clé API, l'URL complète ni de charge utile brute.
+    clé API, l'URL complète ni de charge utile brute. `has_results` dit si la
+    réponse brute contenait des éléments, avant parsing, scoring et filtrage :
+    des notices brutes toutes rejetées ne sont pas un vide (`True` + `items`
+    vide), et une réponse invalide n'est pas un succès vide (`False`).
     """
 
     items: tuple[T, ...] = ()
     status: ProviderQueryStatus = ProviderQueryStatus.SUCCESS
     retry_after_seconds: int | None = None
     error_code: str | None = None
+    has_results: bool = False
 
 
 @dataclass(frozen=True)
@@ -233,6 +237,7 @@ class GoogleBooksClient:
             return ProviderQueryResult(
                 status=ProviderQueryStatus.SUCCESS,
                 items=tuple(volume for volume in volumes if volume is not None),
+                has_results=len(items) > 0,
             )
         if (
             isinstance(payload, dict)
