@@ -1,6 +1,5 @@
 """Tests unitaires pour le service BookMetadataService (parsing, BNF SRU, recommandations)."""
 
-import urllib.parse
 import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock, patch
 
@@ -31,6 +30,18 @@ from app.services.book_metadata_service import (
     provenance_note,
     same_author,
     title_similarity,
+)
+from tests.fakes_catalogue import (
+    BNF_MANUEL_TOMES,
+    BNF_RECORD_TEMPLATE,
+    GOOGLE_BOOKS_ITEM,
+    GOOGLE_BOOKS_ITEM_AUTRE,
+    OPENLIBRARY_DOC,
+    OPENLIBRARY_HOBBIT_DOC,
+    PANCHAUD_EDITION_2022,
+    FakeBnFClient,
+    FakeCatalogueClient,
+    FakeResponse,
 )
 
 
@@ -195,242 +206,6 @@ async def test_lookup_series_notices_is_bounded_and_deduplicates_isbns():
     assert empty == []
 
 
-# --- Cas réel : « La couleur des choses » de Martin Panchaud ---------------------
-# Deux éditions BNF pour le même titre, et un ISBN réel attribué à un AUTRE ouvrage
-# du même éditeur (« Keeping two »), le type d'erreur produite par un LLM.
-BNF_RECORD_TEMPLATE = """<srw:record>
-<srw:recordSchema>dc</srw:recordSchema>
-<srw:recordData>
-<oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/"
- xmlns:dc="http://purl.org/dc/elements/1.1/">
-  <dc:identifier>http://catalogue.bnf.fr/ark:/12148/cb{ark}</dc:identifier>
-  <dc:title>{title}</dc:title>
-  <dc:creator>{creator}</dc:creator>
-  <dc:publisher>{publisher}</dc:publisher>
-  {date}<dc:format>{fmt}</dc:format>
-  <dc:identifier>ISBN {isbn}</dc:identifier>
-</oai_dc:dc>
-</srw:recordData>
-</srw:record>"""
-
-SRU_HEADER = (
-    '<?xml version="1.0" encoding="UTF-8"?>'
-    '<srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/">'
-    "<srw:numberOfRecords>{count}</srw:numberOfRecords><srw:records>{records}"
-    "</srw:records></srw:searchRetrieveResponse>"
-)
-
-PANCHAUD_EDITION_2022 = BNF_RECORD_TEMPLATE.format(
-    ark="471036825",
-    title="La couleur des choses / Martin Panchaud",
-    creator="Panchaud, Martin (1982-....). Auteur du texte",
-    publisher="Çà et là (Bussy-Saint-Georges)",
-    date="<dc:date>2022</dc:date>",
-    fmt="1 vol. (224 p.) : ill. en coul. ; 24 cm",
-    isbn="9782369903086",
-)
-PANCHAUD_EDITION_19CM = BNF_RECORD_TEMPLATE.format(
-    ark="48753868c",
-    title="La couleur des choses",
-    creator="Panchaud, Martin (Auteur du texte)",
-    publisher="Editions çà et là (Bussy-Saint-Georges)",
-    date="",
-    fmt="1 vol. (224 p.) ; 19 cm",
-    isbn="9782369904151",
-)
-OTHER_BOOK_SAME_PUBLISHER = BNF_RECORD_TEMPLATE.format(
-    ark="471351310",
-    title="Keeping two",
-    creator="Crane, Jordan (1973-....). Auteur du texte",
-    publisher="Çà et là (Bussy-Saint-Georges)",
-    date="<dc:date>2022</dc:date>",
-    fmt="1 vol. (non paginé [ca 320] p.) : ill. ; 22 cm",
-    isbn="9782369903062",
-)
-# Ouvrages voisins partageant les mêmes mots : ne doivent jamais être retenus.
-LOOKALIKE_DE_LA_COULEUR = BNF_RECORD_TEMPLATE.format(
-    ark="911991356",
-    title="De la couleur des choses",
-    creator="Casabianca, François de (1973-....). Auteur du texte",
-    publisher="éditions de l'Amitié",
-    date="<dc:date>2009</dc:date>",
-    fmt="1 vol. (95 p.) : ill. en coul. ; 21 cm",
-    isbn="9782911991356",
-)
-LOOKALIKE_CLEMENCE = BNF_RECORD_TEMPLATE.format(
-    ark="2010020834",
-    title="Clémence et la couleur des choses",
-    creator="Develle, Jeanne. Auteur du texte",
-    publisher="Flammarion",
-    date="<dc:date>1975</dc:date>",
-    fmt="1 vol. (114 p.-[3] f. de pl.) : ill. ; 17 cm",
-    isbn="9782010020834",
-)
-
-BNF_RECORDS = [
-    PANCHAUD_EDITION_2022,
-    PANCHAUD_EDITION_19CM,
-    LOOKALIKE_DE_LA_COULEUR,
-    LOOKALIKE_CLEMENCE,
-    OTHER_BOOK_SAME_PUBLISHER,
-]
-
-# Réponse BNF réelle pour « Manuel du cuisinier amateur » (Whoogy's). La notice de
-# référence, sans sous-titre, n'a pas d'ISBN et est donc écartée : les deux candidats
-# sont les tomes, que seul le numéro perdu après le « : » distingue.
-BNF_MANUEL_TOMES = [
-    BNF_RECORD_TEMPLATE.format(
-        ark="471752286",
-        title=(
-            "Manuel du cuisinier amateur : 150 recettes et techniques. Tome 1"
-            " / par Whoogy's ; photographies de Maurine Toussaint"
-        ),
-        creator="Whoogy's. Auteur du texte",
-        publisher="Chêne (Vanves)",
-        date="<dc:date>2022</dc:date>",
-        fmt="1 vol. (258 p.) : ill. en coul. ; 27 cm",
-        isbn="9782812321344",
-    ),
-    BNF_RECORD_TEMPLATE.format(
-        ark="47567143s",
-        title=(
-            "Manuel du cuisinier amateur : 150 recettes et techniques. Tome 2"
-            " / par Whoogy's ; photographies de Maurine Toussaint"
-        ),
-        creator="Whoogy's. Auteur du texte",
-        publisher="Chêne (Vanves)",
-        date="<dc:date>2024</dc:date>",
-        fmt="1 vol. (256 p.) : ill. en coul. ; 27 cm",
-        isbn="9782812321689",
-    ),
-]
-
-
-# Document OpenLibrary : un même document regroupe toutes les éditions de l'œuvre,
-# y compris une traduction anglaise (9780261102217) qui ne doit pas être retenue.
-OPENLIBRARY_DOC = {
-    "title": "La couleur des choses",
-    "author_name": ["Martin Panchaud (Auteur du texte)"],
-    "publisher": ["Ça et là"],
-    "first_publish_year": 2022,
-    "number_of_pages_median": 236,
-    "language": ["fre"],
-    "isbn": ["9782369903086", "2369903082", "9782072909207", "9780261102217"],
-}
-# Volume Google Books : la notice porte ses deux identifiants, dont un ISBN-10 que
-# `isbn_from_identifier` doit savoir convertir pour que le code demandé soit reconnu.
-GOOGLE_BOOKS_ITEM = {
-    "volumeInfo": {
-        "title": "Dailycieux",
-        "authors": ["Whoogy's"],
-        "publisher": "Éditions du Chêne",
-        "publishedDate": "2026-09-23",
-        "pageCount": 240,
-        "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9782812322495"}],
-    }
-}
-
-GOOGLE_BOOKS_ITEM_AUTRE = {
-    "volumeInfo": {
-        "title": "Dailycieux",
-        "authors": ["Whoogy's"],
-        "publisher": "Éditions du Chêne",
-        "publishedDate": "2026-09-23",
-        "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9780000000019"}],
-    }
-}
-
-OPENLIBRARY_HOBBIT_DOC = {
-    "title": "The Hobbit",
-    "author_name": ["J. R. R. Tolkien"],
-    "publisher": ["Allen & Unwin"],
-    "first_publish_year": 1937,
-    "isbn": ["9780261102217"],
-}
-
-
-class _FakeResponse:
-    def __init__(self, content: bytes = b"", payload: dict[str, object] | None = None,
-                 status_code: int = 200) -> None:
-        self.status_code = status_code
-        self.content = content
-        self._payload = payload or {}
-
-    def json(self) -> dict[str, object]:
-        return self._payload
-
-
-class _FakeCatalogueClient:
-    """Émule le SRU BNF, l'API Search d'OpenLibrary et l'API Volumes de Google Books."""
-
-    def __init__(
-        self,
-        bnf_empty: bool = False,
-        openlibrary_docs: list[dict[str, object]] | None = None,
-        openlibrary_status: int = 200,
-        bnf_panne_sur: str | None = None,
-        bnf_records: list[str] | None = None,
-        google_books_items: list[dict[str, object]] | None = None,
-    ) -> None:
-        self.queries: list[str] = []
-        self.bnf_empty = bnf_empty
-        self.bnf_panne_sur = bnf_panne_sur
-        self.openlibrary_docs = openlibrary_docs
-        self.openlibrary_status = openlibrary_status
-        self.bnf_records = BNF_RECORDS if bnf_records is None else bnf_records
-        self.google_books_items = google_books_items
-        self.google_books_queries: list[str] = []
-
-    @property
-    def openlibrary_queries(self) -> list[str]:
-        return [url for url in self.queries if "openlibrary.org" in url]
-
-    async def get(self, url: str, **kwargs: object) -> _FakeResponse:
-        self.queries.append(url)
-        params = kwargs.get("params")
-        params = params if isinstance(params, dict) else {}
-
-        if "googleapis.com" in url:
-            # Google Books reçoit sa requête en paramètre séparé, pas dans l'URL.
-            self.google_books_queries.append(str(params.get("q", "")))
-            items = self.google_books_items
-            if items is None:
-                return _FakeResponse(payload={"totalItems": 0})
-            return _FakeResponse(payload={"totalItems": len(items), "items": items})
-
-        if "openlibrary.org" in url:
-            if self.openlibrary_status != 200:
-                return _FakeResponse(status_code=self.openlibrary_status)
-            docs = self.openlibrary_docs
-            if docs is None:
-                params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-                requested = params.get("isbn")
-                docs = (
-                    [{**OPENLIBRARY_DOC, "isbn": requested}]
-                    if requested
-                    else [OPENLIBRARY_DOC]
-                )
-            return _FakeResponse(payload={"numFound": len(docs), "docs": docs})
-
-        if self.bnf_panne_sur and self.bnf_panne_sur in url:
-            raise TimeoutError("délai dépassé")
-
-        if self.bnf_empty:
-            return _FakeResponse(SRU_HEADER.format(count=0, records="").encode("utf-8"))
-
-        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["query"][0]
-        matched = [
-            record
-            for record in self.bnf_records
-            if f'"{record.split("ISBN ")[1].split("<")[0]}"' in query
-        ] or self.bnf_records
-        payload = SRU_HEADER.format(count=len(matched), records="".join(matched))
-        return _FakeResponse(payload.encode("utf-8"))
-
-
-_FakeBnFClient = _FakeCatalogueClient
-
-
 def test_title_similarity_ignores_case_accents_and_subtitle():
     """Le suffixe d'auteur BNF ne doit pas faire tomber la similarité de titre."""
     assert title_similarity("La couleur des choses", "la Couleur des Choses") == 1.0
@@ -450,7 +225,7 @@ def test_same_author_compares_significant_words():
 @pytest.mark.asyncio
 async def test_verify_isbn_rejects_isbn_belonging_to_another_book():
     """Un ISBN valide mais attribué à un autre ouvrage est refusé (piège du LLM)."""
-    service = BookMetadataService(http_client=_FakeBnFClient())
+    service = BookMetadataService(http_client=FakeBnFClient())
 
     assert await service.verify_isbn("9782369903062", "La couleur des choses") is None
     # Le bon ISBN passe et renvoie la notice qui l'atteste
@@ -471,7 +246,7 @@ async def test_resolve_for_alert_prefers_dated_edition_and_lists_alternatives():
     Les ouvrages voisins qui partagent les mêmes mots (« De la couleur des choses »)
     ne doivent pas être proposés comme éditions alternatives.
     """
-    service = BookMetadataService(http_client=_FakeBnFClient())
+    service = BookMetadataService(http_client=FakeBnFClient())
 
     resolution = await service.resolve_for_alert("La couleur des choses", "Martin Panchaud")
     assert resolution is not None
@@ -483,7 +258,7 @@ async def test_resolve_for_alert_prefers_dated_edition_and_lists_alternatives():
 @pytest.mark.asyncio
 async def test_resolve_for_alert_rejects_unrelated_records():
     """Une recherche sans rapport ne doit jamais produire d'ISBN."""
-    service = BookMetadataService(http_client=_FakeBnFClient())
+    service = BookMetadataService(http_client=FakeBnFClient())
 
     assert await service.resolve_for_alert("One Piece", "Oda Eiichiro") is None
     assert await service.resolve_for_alert("   ") is None
@@ -497,7 +272,7 @@ async def test_resolve_for_alert_sees_a_series_when_the_tome_number_hides_in_the
     identiques, l'écran les proposait comme deux éditions, et l'alerte partait avec
     l'ISBN du tome 1.
     """
-    client = _FakeCatalogueClient(bnf_records=list(BNF_MANUEL_TOMES))
+    client = FakeCatalogueClient(bnf_records=list(BNF_MANUEL_TOMES))
     service = BookMetadataService(http_client=client)
 
     resolution = await service.resolve_for_alert("Manuel du cuisinier amateur")
@@ -516,7 +291,7 @@ async def test_resolve_for_alert_sees_a_series_when_the_tome_number_hides_in_the
 @pytest.mark.asyncio
 async def test_openlibrary_fallback_resolves_book_absent_from_bnf():
     """Un ouvrage absent de la BNF est résolu via OpenLibrary, en confiance réduite."""
-    client = _FakeCatalogueClient(bnf_empty=True)
+    client = FakeCatalogueClient(bnf_empty=True)
     service = BookMetadataService(http_client=client)
 
     resolution = await service.resolve_for_alert("La couleur des choses", "Martin Panchaud")
@@ -533,7 +308,7 @@ async def test_openlibrary_fallback_resolves_book_absent_from_bnf():
 @pytest.mark.asyncio
 async def test_openlibrary_fallback_exposes_other_french_editions_only():
     """Les autres éditions francophone du document deviennent des alternatives."""
-    client = _FakeCatalogueClient(bnf_empty=True)
+    client = FakeCatalogueClient(bnf_empty=True)
     service = BookMetadataService(http_client=client)
 
     resolution = await service.resolve_for_alert("La couleur des choses")
@@ -563,7 +338,7 @@ async def test_openlibrary_fallback_keeps_the_numbered_notice_it_sets_aside():
         "first_publish_year": 2026,
         "isbn": ["9781799510871"],
     }
-    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[volume_1, volume_2])
+    client = FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[volume_1, volume_2])
     service = BookMetadataService(http_client=client)
 
     resolution = await service.resolve_for_alert("Absolute Martian Manhunter")
@@ -585,7 +360,7 @@ async def test_openlibrary_fallback_keeps_the_numbered_notice_it_sets_aside():
 @pytest.mark.asyncio
 async def test_openlibrary_verifies_isbn_unknown_to_bnf():
     """Le repli applique le même garde-fou de titre que la BNF."""
-    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
+    client = FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
     verified = await service.verify_isbn("9782369903086", "La couleur des choses")
@@ -600,7 +375,7 @@ async def test_openlibrary_verifies_isbn_unknown_to_bnf():
 @pytest.mark.asyncio
 async def test_bnf_contradiction_is_never_overridden_by_openlibrary():
     """La BNF fait autorité : une contradiction suffit, OpenLibrary n'est pas consulté."""
-    client = _FakeCatalogueClient(openlibrary_docs=[OPENLIBRARY_DOC])
+    client = FakeCatalogueClient(openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
     assert await service.verify_isbn("9782369903062", "La couleur des choses") is None
@@ -610,7 +385,7 @@ async def test_bnf_contradiction_is_never_overridden_by_openlibrary():
 @pytest.mark.asyncio
 async def test_openlibrary_not_queried_when_bnf_answers():
     """Aucun coût réseau supplémentaire quand la BNF a déjà résolu l'ouvrage."""
-    client = _FakeCatalogueClient()
+    client = FakeCatalogueClient()
     service = BookMetadataService(http_client=client)
 
     resolution = await service.resolve_for_alert("La couleur des choses", "Martin Panchaud")
@@ -622,7 +397,7 @@ async def test_openlibrary_not_queried_when_bnf_answers():
 @pytest.mark.asyncio
 async def test_openlibrary_failure_degrades_to_title_search():
     """Une panne d'OpenLibrary ne bloque jamais : l'alerte part sans ISBN."""
-    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_status=503)
+    client = FakeCatalogueClient(bnf_empty=True, openlibrary_status=503)
     service = BookMetadataService(http_client=client)
 
     assert await service.resolve_for_alert("La couleur des choses") is None
@@ -632,7 +407,7 @@ async def test_openlibrary_failure_degrades_to_title_search():
 @pytest.mark.asyncio
 async def test_openlibrary_lookup_by_isbn_fallback():
     """`/addisbn` et la détection de conflit de `/edit` profitent aussi du repli."""
-    service = BookMetadataService(http_client=_FakeCatalogueClient(bnf_empty=True))
+    service = BookMetadataService(http_client=FakeCatalogueClient(bnf_empty=True))
 
     meta = await service.lookup_by_isbn("9782369903086")
     assert meta is not None
@@ -640,7 +415,7 @@ async def test_openlibrary_lookup_by_isbn_fallback():
 
     # Un code inconnu des deux côtés ne remonte rien
     inconnu = BookMetadataService(
-        http_client=_FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[])
+        http_client=FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[])
     )
     assert await inconnu.lookup_by_isbn("9780000000002") is None
 
@@ -648,7 +423,7 @@ async def test_openlibrary_lookup_by_isbn_fallback():
 @pytest.mark.asyncio
 async def test_openlibrary_returns_the_requested_isbn_even_in_english():
     """Quand l'utilisateur saisit un ISBN, c'est lui qui fait foi, pas la préférence FR."""
-    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_HOBBIT_DOC])
+    client = FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_HOBBIT_DOC])
     service = BookMetadataService(http_client=client)
 
     verified = await service.verify_isbn("9780261102217", "The Hobbit")
@@ -774,7 +549,7 @@ async def test_confirm_ne_confirme_pas_une_panne_meme_si_le_repli_repond():
     brouillon de création se réalignait sur elle, auteur et éditeur compris, comme si la
     BNF avait validé l'ISBN.
     """
-    client = _FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
+    client = FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
     verdict = await service.confirm_isbn_for_title("9782369903086", "La couleur des choses")
@@ -788,7 +563,7 @@ async def test_confirm_ne_confirme_pas_une_panne_meme_si_le_repli_repond():
 @pytest.mark.asyncio
 async def test_confirm_accepte_le_repli_quand_la_bnf_a_repondu():
     """Le contraste exact : ici la BNF a répondu, le repli reste un repli."""
-    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
+    client = FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
     verdict = await service.confirm_isbn_for_title("9782369903086", "La couleur des choses")
@@ -801,7 +576,7 @@ async def test_confirm_accepte_le_repli_quand_la_bnf_a_repondu():
 @pytest.mark.asyncio
 async def test_verify_isbn_ne_valide_pas_un_repli_obtenu_pendant_une_panne():
     """`verify_isbn` est cette fonction-là : elle ne doit rien confirmer de plus."""
-    client = _FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
+    client = FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
     assert await service.verify_isbn("9782369903086", "La couleur des choses") is None
@@ -814,7 +589,7 @@ async def test_confirm_isbn_for_title_separates_conflict_from_absence():
     Les confondre, c'est refuser une saisie valide parce que le réseau a tremblé, ou
     accepter l'ISBN d'un autre livre.
     """
-    service = BookMetadataService(http_client=_FakeBnFClient())
+    service = BookMetadataService(http_client=FakeBnFClient())
 
     confirmed = await service.confirm_isbn_for_title("9782369903086", "La couleur des choses")
     assert confirmed.confirme is True
@@ -827,7 +602,7 @@ async def test_confirm_isbn_for_title_separates_conflict_from_absence():
 
     # Une BNF qui ne connaît pas ce code : personne ne le connaît, personne ne le contredit.
     muet = BookMetadataService(
-        http_client=_FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[])
+        http_client=FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[])
     )
     unknown = await muet.confirm_isbn_for_title("9782810206087", "Les Enfants perdus")
     assert unknown.outcome == "inconnu"
@@ -841,7 +616,7 @@ async def test_confirm_isbn_for_title_separates_conflict_from_absence():
 @pytest.mark.asyncio
 async def test_resolve_input_returns_a_resolution_for_a_typed_isbn():
     """Une saisie en ISBN nomme un ouvrage : elle n'est pas ambiguë."""
-    service = BookMetadataService(http_client=_FakeBnFClient())
+    service = BookMetadataService(http_client=FakeBnFClient())
 
     resolution = await service.resolve_input("9782369903086")
 
@@ -955,7 +730,7 @@ async def test_verdict_conserve_la_panne_meme_si_le_repli_repond():
     cet ISBN » : deux verdicts strictement identiques, dont le rapport tirait la même
     conclusion — un repli légitime, alors que personne n'avait tranché.
     """
-    client = _FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
+    client = FakeCatalogueClient(bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
     verdict = await service.consult_authorities("9782369903086")
@@ -970,7 +745,7 @@ async def test_verdict_conserve_la_panne_meme_si_le_repli_repond():
 @pytest.mark.asyncio
 async def test_verdict_repli_sans_panne_quand_la_bnf_a_repondu():
     """Le contraste exact : ici la BNF a répondu, le repli est un repli."""
-    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
+    client = FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
     verdict = await service.consult_authorities("9782369903086")
@@ -985,7 +760,7 @@ async def test_verdict_repli_sans_panne_quand_la_bnf_a_repondu():
 async def test_lookup_by_isbn_rend_la_notice_meme_apres_une_panne():
     """La façade ne bouge pas : `/add` et `/edit` continuent de voir le repli."""
     service = BookMetadataService(
-        http_client=_FakeCatalogueClient(
+        http_client=FakeCatalogueClient(
             bnf_panne_sur="bib.isbn", openlibrary_docs=[OPENLIBRARY_DOC]
         )
     )
@@ -1052,13 +827,13 @@ async def test_les_autorites_consultees_suivent_les_appels_effectifs():
     OpenLibrary ». Ici, elle est écrite au moment où les appels sont faits, dans
     l'ordre où ils ont lieu.
     """
-    client = _FakeCatalogueClient()
+    client = FakeCatalogueClient()
     trouve = await BookMetadataService(http_client=client).consult_authorities("9782369903086")
 
     assert trouve.consulted == (AUTORITE_BNF,)
     assert client.openlibrary_queries == [], "le repli n'a pas eu lieu : il n'est pas nommé"
 
-    repli_client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
+    repli_client = FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
     repli = await BookMetadataService(http_client=repli_client).consult_authorities(
         "9782369903086"
     )
@@ -1113,11 +888,11 @@ class _ClientSRUFige:
         self.contenu = contenu
         self.requetes: list[str] = []
 
-    async def get(self, url: str, **_kwargs: object) -> _FakeResponse:
+    async def get(self, url: str, **_kwargs: object) -> FakeResponse:
         self.requetes.append(url)
         if "openlibrary.org" in url:
-            return _FakeResponse(payload={"numFound": 0, "docs": []})
-        return _FakeResponse(content=self.contenu)
+            return FakeResponse(payload={"numFound": 0, "docs": []})
+        return FakeResponse(content=self.contenu)
 
 
 _PANNE_DOCTYPE = "DOCTYPE déclaré dans la réponse"
@@ -1357,7 +1132,7 @@ async def test_bnf_never_confirms_an_isbn_and_openlibrary_does():
     et c'est dit comme tel au récap. Un jour où la BNF expose un point d'entrée par
     ISBN, ce test est celui qui doit changer.
     """
-    client = _FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
+    client = FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[OPENLIBRARY_DOC])
     service = BookMetadataService(http_client=client)
 
     verdict = await service.consult_authorities("9782369903086")
@@ -1390,7 +1165,7 @@ def _cle_google_books_absente(monkeypatch):
 async def test_google_books_is_the_last_resort_and_names_its_provenance(monkeypatch):
     """La troisième source ne parle qu'après les deux autres, et dit d'où elle vient."""
     monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
-    client = _FakeCatalogueClient(
+    client = FakeCatalogueClient(
         bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM]
     )
     service = BookMetadataService(http_client=client)
@@ -1415,7 +1190,7 @@ async def test_google_books_is_the_last_resort_and_names_its_provenance(monkeypa
 @pytest.mark.asyncio
 async def test_google_books_is_not_consulted_without_a_key():
     """Sans clé, la source n'existe pas — et elle n'est pas annoncée comme consultée."""
-    client = _FakeCatalogueClient(
+    client = FakeCatalogueClient(
         bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM]
     )
     service = BookMetadataService(http_client=client)
@@ -1437,7 +1212,7 @@ async def test_google_books_confirms_an_isbn_the_two_others_ignore(monkeypatch):
     plus tôt, absent des deux catalogues et de tous les annuaires d'EAN libres.
     """
     monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
-    client = _FakeCatalogueClient(
+    client = FakeCatalogueClient(
         bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM]
     )
     service = BookMetadataService(http_client=client)
@@ -1459,7 +1234,7 @@ async def test_google_books_confirms_an_isbn_the_two_others_ignore(monkeypatch):
 async def test_a_bnf_contradiction_is_never_overridden_by_google_books(monkeypatch):
     """La BNF fait autorité : une contradiction suffit, la troisième n'est pas consultée."""
     monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
-    client = _FakeCatalogueClient(google_books_items=[GOOGLE_BOOKS_ITEM])
+    client = FakeCatalogueClient(google_books_items=[GOOGLE_BOOKS_ITEM])
     service = BookMetadataService(http_client=client)
 
     assert await service.verify_isbn("9782369903062", "La couleur des choses") is None
@@ -1475,7 +1250,7 @@ async def test_a_google_notice_must_carry_the_code_it_answers(monkeypatch):
     La règle vaut pour la BNF comme pour ses deux replis.
     """
     monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
-    client = _FakeCatalogueClient(
+    client = FakeCatalogueClient(
         bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM_AUTRE]
     )
     service = BookMetadataService(http_client=client)
@@ -1501,7 +1276,7 @@ async def test_a_google_notice_of_another_title_is_not_retained(monkeypatch):
             "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9782205049504"}],
         }
     }
-    client = _FakeCatalogueClient(
+    client = FakeCatalogueClient(
         bnf_empty=True, openlibrary_docs=[], google_books_items=[autre]
     )
     service = BookMetadataService(http_client=client)
@@ -1521,7 +1296,7 @@ async def test_the_third_source_fires_only_after_both_others_in_the_same_resolut
     client HTTP — BNF, puis OpenLibrary, puis Google Books — sur la même résolution.
     """
     monkeypatch.setattr(settings, "GOOGLE_BOOKS_API_KEY", SecretStr("cle-de-test"))
-    client = _FakeCatalogueClient(
+    client = FakeCatalogueClient(
         bnf_empty=True, openlibrary_docs=[], google_books_items=[GOOGLE_BOOKS_ITEM]
     )
     service = BookMetadataService(http_client=client)

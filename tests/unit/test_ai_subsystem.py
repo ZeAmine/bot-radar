@@ -18,8 +18,8 @@ from app.services.book_metadata_service import (
     BookMetadataService,
     BookResolution,
 )
+from tests.fakes_catalogue import FakeCatalogueClient
 from tests.fakes_llm import FakeLLM, FlakyLLM
-from tests.unit.test_book_metadata_service import _FakeCatalogueClient
 
 PANCHAUD_EDITION = BookMetadata(
     title="La couleur des choses",
@@ -468,7 +468,7 @@ async def test_natural_add_reads_the_series_from_the_real_fallback_resolution():
             "include_keywords": ["Absolute Martian Manhunter"],
         }
     )
-    http = _FakeCatalogueClient(
+    http = FakeCatalogueClient(
         bnf_empty=True,
         openlibrary_docs=[
             {

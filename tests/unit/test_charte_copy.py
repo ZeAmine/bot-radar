@@ -6,8 +6,10 @@ Deux natures de test, et deux seulement.
   ailleurs, la cote ne porte pas d'emoji décoratif. Ils lisent le code, parce que ce
   qu'ils protègent est justement qu'aucun écran ne réécrive ces textes.
 - Des verrous de **copie observée** : ce que l'utilisateur lit, obtenu en traversant les
-  **vrais handlers**. Le harnais de parcours vit dans `test_add_end_to_end` et n'est pas
-  recopié ici ; un changement de copie qui n'atteint pas l'écran réel ne peut pas passer.
+  **vrais handlers** — ou le producteur réel quand il n'y a pas de handler, comme la
+  légende d'annonce, qui naît à l'ingestion. Les simulations viennent de
+  `tests/add_journey.py`, jamais recopiées ici ; un changement de copie qui n'atteint pas
+  l'écran réel ne peut pas passer.
 
 Les mêmes écrans sont relus ligne à ligne par les parcours de `test_add_end_to_end` — les
 deux avertissements en tête et côte à côte, le ⚠️ à la place de la loupe, l'absence de
@@ -22,24 +24,6 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# Le harnais de parcours : les écrans de copie sont joués par les vrais handlers, jamais
-# par un appel direct à `creation_card`. Il vit dans le fichier des parcours `/add` — le
-# dupliquer ici donnerait deux simulations de la même chaîne, donc deux vérités.
-from test_add_end_to_end import (
-    BNF_ALTERNATIVE,
-    BNF_EDITION,
-    DraftState,
-    _confirmation_message,
-    _deepseek_payload,
-    _drain,
-    _fake_bnf,
-    _fake_deepseek,
-    _message,
-    _message_with_recap,
-    _patched,
-    _repositories,
-)
 
 from app.bot.handlers.alerts_create import process_max_price_input, save_alert, start_add_alert
 from app.bot.handlers.alerts_helpers import RECAP_TITLE
@@ -67,6 +51,26 @@ from app.services.ai.schemas import NegotiationResult
 from app.services.book_metadata_service import BookResolution
 from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceService
 from app.services.price_calculator import format_price_summary
+
+# Le harnais de parcours : les écrans de copie sont joués par les vrais handlers, jamais
+# par un appel direct à `creation_card`. Les simulations vivent dans `tests/add_journey.py`,
+# un module partagé et non un module de test : les dupliquer ici donnerait deux chaînes
+# légèrement différentes, donc deux vérités sur ce que l'utilisateur lit.
+from tests.add_journey import (
+    BNF_ALTERNATIVE,
+    BNF_EDITION,
+    DraftState,
+    confirm_press,
+    deepseek_payload,
+    defer_task,
+    drain,
+    fake_bnf,
+    fake_deepseek,
+    incoming_message,
+    message_with_recap,
+    patched,
+    repositories,
+)
 
 
 def test_help_screen_leads_with_the_charte_title():
@@ -320,17 +324,22 @@ def test_field_labels_are_bold_and_values_stay_roman():
     assert "<b>TTC</b>" not in line
 
 
-def test_alert_caption_bolds_labels_and_leaves_values_roman():
+@pytest.mark.asyncio
+async def test_the_alert_sent_to_telegram_bolds_labels_and_leaves_values_roman():
     """L'alerte d'annonce suit la règle 1 : `État` et `Mots-clés` gras, valeurs nues.
 
-    La légende d'une annonce n'est pas reconstructible depuis un handler : elle
-    assemble la cote et les mots-clés de l'ingestion. La règle de charte se vérifie
-    donc sur le formateur partagé, seul endroit qui l'écrit.
+    La légende est relue **telle qu'elle part** : `send_listing_alert` est son seul
+    producteur — le chemin d'ingestion — et c'est le texte qu'il remet à Telegram qui
+    est comparé ici. Aucun handler n'en rend (le verrou suivant le tient), donc il n'y a
+    pas de chaîne d'écran à traverser ; la copie n'est pas pour autant jugée sur un
+    rendu appelé à la main.
     """
     from app.core.constants import CategorySlug
     from app.db.models.listing import Listing
-    from app.services.telegram_service import build_listing_caption
+    from app.services.telegram_service import send_listing_alert
 
+    bot = MagicMock()
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
     listing = Listing(
         id=uuid.uuid4(),
         source_name="authorized-source",
@@ -343,15 +352,44 @@ def test_alert_caption_bolds_labels_and_leaves_values_roman():
         estimated_total_cents=1369,
         condition="Très bon état",
         raw_payload={},
-    )
-    caption = build_listing_caption(
-        listing, market_comparison_line=None, alert_keywords=["blacksad"]
+        photos=[],
     )
 
+    # L'enrichissement IA n'est pas le sujet de ce verrou : sa coroutine est seulement
+    # retenue, puis refermée sans être jouée.
+    postponed: list = []
+    with patch("app.services.telegram_service.safe_create_task", new=defer_task(postponed)):
+        sent = await send_listing_alert(bot, 12345, listing, alert_keywords=["blacksad"])
+    for coro, _nom in postponed:
+        coro.close()
+
+    assert sent is True
+    caption = bot.send_message.call_args.kwargs["text"]
     assert "<b>État :</b> TBE" in caption
     assert "<b>TBE</b>" not in caption
     assert "<b>Mots-clés :</b> blacksad" in caption
     assert "<b>blacksad</b>" not in caption
+
+
+def test_no_screen_renders_the_listing_caption():
+    """La légende d'annonce n'a qu'un rendu, et il n'est pas dans un écran.
+
+    C'est la raison pour laquelle le verrou ci-dessus passe par `send_listing_alert` :
+    il n'existe aucune chaîne de handler qui produise cette légende, et il ne doit pas
+    en exister — un écran qui en rendrait une seconde la ferait diverger de celle qui
+    part réellement sur Telegram, et c'est l'alerte qui porte la copie que l'utilisateur
+    lit en premier.
+    """
+    renders = [
+        path.as_posix()
+        for path in sorted(pathlib.Path("app/bot").rglob("*.py"))
+        if "build_listing_caption" in path.read_text(encoding="utf-8")
+    ]
+
+    assert not renders, (
+        "La légende d'annonce est rendue par `send_listing_alert`, sur le chemin "
+        "d'ingestion : aucun écran ne doit en écrire une seconde —\n" + "\n".join(renders)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -672,7 +710,7 @@ async def test_a_product_never_claims_a_hole_it_could_not_have():
     assert "<b>ISBN :</b>" not in ecran_prix
     assert "<b>Auteur :</b>" not in ecran_prix
 
-    saisie = _message("50")
+    saisie = incoming_message("50")
     await process_max_price_input(saisie, etat, AsyncMock())
     recap = saisie.answer.call_args[0][0]
 
@@ -694,32 +732,32 @@ async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
     cote sans faire echouer ce test.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    repos = _repositories(BNF_EDITION.isbn13)
-    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    repos = repositories(BNF_EDITION.isbn13)
+    message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
 
-    patches = _patched(repos, _fake_bnf(resolution), _fake_deepseek(_deepseek_payload()))
+    patches = patched(repos, fake_bnf(resolution), fake_deepseek(deepseek_payload()))
     for entered in patches:
         entered.start()
     try:
         await start_add_alert(message, state)
-        await _drain(repos["tasks"])
+        await drain(repos["tasks"])
     finally:
         for entered in reversed(patches):
             entered.stop()
 
     recap = loading_message.edit_text.call_args_list[-1][0][0]
 
-    callback, confirm_message = _confirmation_message()
-    confirm_repos = _repositories(BNF_EDITION.isbn13)
-    patches = _patched(confirm_repos, MagicMock(), MagicMock())
+    callback, confirm_message = confirm_press()
+    confirm_repos = repositories(BNF_EDITION.isbn13)
+    patches = patched(confirm_repos, MagicMock(), MagicMock())
     for entered in patches:
         entered.start()
     try:
         await save_alert(
             callback, state, User(id=uuid.uuid4(), telegram_user_id=123), AsyncMock()
         )
-        await _drain(confirm_repos["tasks"])
+        await drain(confirm_repos["tasks"])
     finally:
         for entered in reversed(patches):
             entered.stop()
