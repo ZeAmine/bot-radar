@@ -175,7 +175,7 @@ Sans demande **explicite** de l’utilisateur :
 - [`scripts/vinted_autobuy.user.js`](scripts/vinted_autobuy.user.js)
 - [`scripts/sync_vinted_session.py`](scripts/sync_vinted_session.py)
 - Formules de `price_calculator.py` / comparaison marché (une offre sans port ≠ total « article seul »).
-- [`app/providers/chasse_aux_livres.py`](app/providers/chasse_aux_livres.py) — cookies et anti-bot. Son filtrage d'occasion et sa validation de titre s'appuient désormais sur [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) et `title_similarity` (ADR-016) : ne pas y réintroduire de dictionnaire d'œuvres figé.
+- [`app/providers/chasse_aux_livres.py`](app/providers/chasse_aux_livres.py) — cookies et anti-bot. Son filtrage d'occasion et sa validation de titre s'appuient désormais sur [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) et `title_similarity` (ADR-016) : ne pas y réintroduire de dictionnaire d'œuvres figé. L'ISBN affiché exactement égal à celui de l'alerte prime sur ce veto (`expected_isbn` → `isbn_proven`, ADR-035) : ne pas le replacer sous le titre, ni affaiblir `TITLE_COHERENCE_MIN` pour compenser.
 
 Les scripts ne sont importés par `app/` qu’à dessein. `python-dotenv` sert à `scripts/local_vinted_poller.py`, pas au runtime Docker.
 

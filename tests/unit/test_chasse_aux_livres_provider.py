@@ -245,6 +245,106 @@ async def test_chasse_aux_livres_title_mismatch_rejected():
 
 
 @pytest.mark.asyncio
+async def test_isbn_exact_prime_sur_un_titre_incoherent():
+    """L'ISBN exact rend le titre inutile : l'identité est déjà prouvée (ADR-035).
+
+    Réalité constatée : le site orthographie « 1629, ou l'effrayante histoire
+    des naufragés du Jakarta » là où l'alerte demande « Les naufragés du
+    Jakarta T1 » — similarité 0,59 sous le seuil 0,72, et la cote ne partait
+    jamais alors que le bon livre était sous nos yeux.
+    """
+    provider, slept = _recording_provider()
+
+    resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+    # MOCK_REST_JSON affiche l'ISBN cherché (9791095670568) mais un titre
+    # sans rapport avec l'ouvrage demandé.
+    resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
+    resp_prod = httpx.Response(200, text=MOCK_PROD_HTML)
+    resp_lookup = httpx.Response(200, json=MOCK_LOOKUP_JSON)
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [resp_search, resp_rest, resp_prod, resp_lookup]
+
+        offers = await provider.get_offers(
+            isbn13="9791095670568", title="Les naufragés du Jakarta T1"
+        )
+
+    assert len(offers) == 1
+    assert offers[0].delivered_price_cents == 1499
+    # La preuve suffit du premier coup : aucun repli par titre nécessaire.
+    assert _search_call_count(mock_get) == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_titre_incoherent_rejette_sans_preuve_isbn():
+    """Sans correspondance d'ISBN, le veto de titre reste strictement en place.
+
+    Le filet d'ADR-016 ne doit pas disparaître derrière la preuve ISBN :
+    un résultat affichant un AUTRE code que celui cherché reste rejeté,
+    y compris sur le repli par titre.
+    """
+    provider, slept = _recording_provider()
+
+    resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+    resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        # ISBN recherché valide mais différent de celui affiché (…568). Le veto
+        # tombe avant la fiche produit : aucune réponse produit/lookup n'est
+        # consommée, en fournir masquerait un flux devenu faux.
+        mock_get.side_effect = [resp_search, resp_rest, resp_search, resp_rest]
+
+        offers = await provider.get_offers(
+            isbn13="9782344045084", title="Les naufragés du Jakarta T1"
+        )
+
+    assert offers == []
+    # Recherche ISBN puis repli titre : les deux sont allées jusqu'au veto,
+    # aucune n'a été avortée par une réponse manquante.
+    assert _search_call_count(mock_get) == 2
+    assert mock_get.call_count == 4
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_repli_par_titre_accepte_sur_preuve_isbn():
+    """Le repli par titre profite aussi de la preuve ISBN (ADR-035).
+
+    La recherche par ISBN peut tomber sur un résultat vide ; le repli par
+    titre retrouve la même fiche, dont l'ISBN affiché coïncide avec celui
+    de l'alerte — l'identité est prouvée même si la graphie diverge.
+    """
+    provider, slept = _recording_provider()
+
+    resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+    resp_rest_empty = httpx.Response(200, json={"d": ""})
+    resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
+    resp_prod = httpx.Response(200, text=MOCK_PROD_HTML)
+    resp_lookup = httpx.Response(200, json=MOCK_LOOKUP_JSON)
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        # ISBN : page de recherche sans résultat. Titre : résultat complet.
+        mock_get.side_effect = [
+            resp_search,
+            resp_rest_empty,
+            resp_search,
+            resp_rest,
+            resp_prod,
+            resp_lookup,
+        ]
+
+        offers = await provider.get_offers(
+            isbn13="9791095670568", title="Les naufragés du Jakarta T1"
+        )
+
+    assert len(offers) == 1
+    assert offers[0].delivered_price_cents == 1499
+    assert _search_call_count(mock_get) == 2
+    assert slept == []
+
+
+@pytest.mark.asyncio
 async def test_chasse_aux_livres_strict_used_filtering():
     """Vérifie que si seules des offres neuves sont retournées,
     aucune offre d'occasion n'est inventée."""
