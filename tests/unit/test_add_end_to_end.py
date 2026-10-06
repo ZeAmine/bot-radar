@@ -1235,6 +1235,54 @@ async def test_the_draft_note_stays_on_the_recap_and_never_reaches_the_confirmat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("draft_name", [None, ""])
+async def test_the_card_names_the_alert_exactly_as_the_row_is_named(draft_name):
+    """Un brouillon sans nom ne fait pas tomber la confirmation, et ne ment pas sur le nom.
+
+    `save_alert` enregistre « Alerte » quand le brouillon n'en porte aucun ; la carte, elle,
+    lisait la clé brute — le repli de `dict.get` ne couvre que la clé absente. Un nom nul
+    levait donc dans `html.escape`, et un nom vide annonçait `Titre :` sans titre sous une
+    alerte nommée « Alerte ». La carte décrit la ligne qui vient d'être écrite : elle suit
+    le même repli, et le récap comme la confirmation disent le nom enregistré.
+    """
+    repos = _repositories(BNF_EDITION.isbn13)
+    state = DraftState()
+    state.data = {
+        "category_slug": "bd_comics",
+        "name": draft_name,
+        "isbn": BNF_EDITION.isbn13,
+        "include_keywords": ["la couleur des choses"],
+        "max_item_price_cents": 1200,
+    }
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    confirm_message = MagicMock(spec=Message)
+    confirm_message.edit_text = AsyncMock()
+    confirm_callback = MagicMock()
+    confirm_callback.data = "alert_create_confirm"
+    confirm_callback.message = confirm_message
+    confirm_callback.answer = AsyncMock()
+
+    # Le récap, affiché juste avant la validation, dit déjà le nom qui sera enregistré.
+    recap, _keyboard = build_creation_recap(state.data)
+    assert "<b>Titre :</b> Alerte" in recap
+
+    patches = _patched(repos, MagicMock(), MagicMock())
+    for entered in patches:
+        entered.start()
+    try:
+        await save_alert(confirm_callback, state, db_user, db_session)
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+    assert repos["alert_repo"].create.call_args.kwargs["name"] == "Alerte"
+    confirmation = confirm_message.edit_text.call_args[0][0]
+    assert "<b>Titre :</b> Alerte" in confirmation
+
+
+@pytest.mark.asyncio
 async def test_a_just_created_book_still_gets_its_confirmation():
     """Un livre neuf n'a pas de cache chargé : la confirmation ne doit pas en dépendre.
 

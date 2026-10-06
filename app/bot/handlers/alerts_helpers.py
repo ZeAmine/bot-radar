@@ -191,7 +191,11 @@ def creation_card(
     l'œuvre (l'édition surveillée comprise, quand il y a un choix à faire), puis les
     critères de veille, les notes du brouillon, et enfin le bloc d'issue avant le pied.
     """
-    title = data.get("name", "Alerte")
+    # Le nom que l'alerte portera réellement : `save_alert` retombe sur « Alerte » quand
+    # le brouillon n'en porte aucun, et la carte doit annoncer ce nom-là. Le défaut de
+    # `dict.get` ne couvre que la clé absente — un nom vide ou nul passait au rendu tel
+    # quel, et `html.escape` levait dessus.
+    title = data.get("name") or "Alerte"
     author = data.get("author")
     publisher = data.get("publisher")
     isbn = data.get("isbn")
