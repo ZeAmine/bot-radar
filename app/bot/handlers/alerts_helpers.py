@@ -48,17 +48,24 @@ from app.db.models.alert import Alert
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
+from app.domain.enums import BookSearchStatus
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
+    BookMetadata,
     BookMetadataService,
     IsbnVerdict,
-    ambiguity_note,
     format_edition_fragments,
     generate_recommended_keywords,
     parse_query_title_and_author,
     provenance_note,
+)
+from app.use_cases.book_search import (
+    BookSearchResult,
+    BookSearchUseCase,
+    BookWorkChoice,
+    InvalidIsbnError,
 )
 from app.utils.isbn import extract_clean_isbn
 
@@ -625,6 +632,162 @@ def format_alerts_list_text(
     return "\n".join(lines)
 
 
+def _work_choice_to_dict(choice: BookWorkChoice) -> dict[str, Any]:
+    """Un choix d'œuvre du contrat en dictionnaire stockable dans le FSM."""
+    return {
+        "isbn13": choice.isbn13,
+        "title": choice.title,
+        "author": choice.author,
+        "publisher": choice.publisher,
+        "publication_year": choice.publication_year,
+    }
+
+
+def _edition_choice_to_dict(edition: Any) -> dict[str, Any]:
+    """Une édition du contrat en dictionnaire stockable dans le FSM."""
+    return {
+        "isbn13": edition.isbn13,
+        "publisher": edition.publisher,
+        "publication_year": edition.publication_year,
+        "format_detail": edition.format_detail,
+    }
+
+
+def draft_updates_from_search(
+    result: BookSearchResult,
+    *,
+    query_title: str,
+    category_id: str = "",
+    category_slug: str = CategorySlug.BD_COMICS.value,
+) -> dict[str, Any]:
+    """Projette un `BookSearchResult` en clés brouillon, en une passe.
+
+    C'est la **seule** interprétation du contrat pour la création : tous les
+    chemins (saisie manuelle, natural_add, réalignement) passent ici, donc
+    aucun ne peut diverger sur ce qu'est une identité confirmée.
+
+    Règles :
+    - `found` seul attache un ISBN et remplit les champs confirmés ;
+    - `ambiguous` propose des œuvres sans rien rattacher ;
+    - `partial` affiche le candidat en lecture seule (work_choices) sans
+      alimenter les champs confirmés, le BookContext ni la persistance ;
+    - `not_found` / `unavailable` laissent l'identité vide, avec un avertissement
+      distinct selon le motif réel.
+    """
+    confirmed = result.confirmed
+    is_found = result.status == BookSearchStatus.FOUND and confirmed is not None
+    is_ambiguous = result.status == BookSearchStatus.AMBIGUOUS
+    # Une série l'emporte sur l'identité : l'alerte surveille l'œuvre entière, pas le
+    # tome que la notice a pu nommer. Elle porte donc le titre demandé, et pas d'ISBN.
+    is_series = result.is_series
+
+    if is_series:
+        includes, _excludes, _variants = generate_recommended_keywords(query_title, None)
+        return {
+            "category_id": category_id,
+            "category_slug": category_slug,
+            "name": query_title,
+            "isbn": None,
+            "author": None,
+            "publisher": None,
+            "include_keywords": includes,
+            "exclude_keywords": [],
+            "variants": [],
+            "selected_conditions": list(DEFAULT_BD_CONDITIONS),
+            "isbn_note": None,
+            "is_series": True,
+            "work_choices": [],
+            "edition_alternatives": [],
+            "book_context": None,
+            "book_unidentified": False,
+        }
+
+    if is_found:
+        assert confirmed is not None
+        name = confirmed.title
+        includes, excludes, variants = generate_recommended_keywords(
+            name, confirmed.author
+        )
+        return {
+            "category_id": category_id,
+            "category_slug": category_slug,
+            "name": name,
+            "isbn": result.reference.isbn13 if result.reference else None,
+            "author": confirmed.author,
+            "publisher": confirmed.publisher,
+            "include_keywords": includes,
+            "exclude_keywords": excludes,
+            "variants": variants,
+            "selected_conditions": list(DEFAULT_BD_CONDITIONS),
+            "isbn_note": result.note,
+            "is_series": False,
+            "work_choices": [],
+            "edition_alternatives": [
+                _edition_choice_to_dict(edition) for edition in result.editions
+            ],
+            "book_context": None,
+            "book_unidentified": False,
+        }
+
+    if is_ambiguous:
+        name = query_title
+        includes, _excludes, _variants = generate_recommended_keywords(name, None)
+        return {
+            "category_id": category_id,
+            "category_slug": category_slug,
+            "name": name,
+            "isbn": None,
+            "author": None,
+            "publisher": None,
+            "include_keywords": includes,
+            "exclude_keywords": [],
+            "variants": [],
+            "selected_conditions": list(DEFAULT_BD_CONDITIONS),
+            "isbn_note": result.note,
+            "is_series": False,
+            "work_choices": [_work_choice_to_dict(work) for work in result.works],
+            "edition_alternatives": [],
+            "book_context": None,
+            "book_unidentified": False,
+        }
+
+    # not_found / unavailable / partial : alerte textuelle, jamais d'ISBN
+    name = query_title
+    includes, excludes, variants = generate_recommended_keywords(name, None)
+    if result.status == BookSearchStatus.PARTIAL:
+        note = (
+            "Livre repéré, mais aucune édition avec ISBN n'a pu être confirmée."
+            if result.works and result.works[0].isbn13 is None
+            else "Vérification bibliographique incomplète : ISBN non rattaché pour l'instant."
+        )
+    elif result.status == BookSearchStatus.UNAVAILABLE:
+        note = "Vérification impossible pour l'instant. Tu peux créer l'alerte à partir du titre."
+    else:
+        note = None
+    return {
+        "category_id": category_id,
+        "category_slug": category_slug,
+        "name": name,
+        "isbn": None,
+        "author": None,
+        "publisher": None,
+        "include_keywords": includes,
+        "exclude_keywords": excludes,
+        "variants": variants,
+        "selected_conditions": list(DEFAULT_BD_CONDITIONS),
+        "isbn_note": note,
+        "is_series": False,
+        "work_choices": (
+            [_work_choice_to_dict(work) for work in result.works]
+            if result.status == BookSearchStatus.PARTIAL
+            else []
+        ),
+        "edition_alternatives": [],
+        "book_context": None,
+        "book_unidentified": result.status == BookSearchStatus.NOT_FOUND,
+    }
+
+
 async def _resolve_edition_choices(
     title: str, author_hint: str | None
 ) -> list[dict[str, Any]]:
@@ -903,10 +1066,24 @@ async def process_bd_query_lookup(
 
     status_msg = await target_msg.answer("🔍 Recherche automatique de l'œuvre...")
 
-    service = BookMetadataService()
-    resolution = await service.resolve_input(clean_query)
+    # Détection de la forme de la saisie (ISBN ou titre) — même règle que
+    # l'ancien `resolve_input`, mais sans seconde logique de résolution.
+    raw_digits = re.sub(r"[^0-9X]", "", clean_query.upper())
+    is_isbn_form = len(raw_digits) in (10, 13) and (
+        raw_digits.isdigit() or raw_digits.endswith("X")
+    )
 
-    if resolution is None:
+    try:
+        if is_isbn_form:
+            result = await BookSearchUseCase().search_by_isbn(clean_query)
+        else:
+            query_title, author_hint = parse_query_title_and_author(clean_query)
+            result = await BookSearchUseCase().search_by_title(query_title, author_hint)
+    except InvalidIsbnError:
+        # ISBN mal formé : la carte « non identifiée » actuelle, sans appel réseau
+        result = None
+
+    if result is None or result.status == BookSearchStatus.NOT_FOUND:
         # Aucune source ne connaît ce titre — un livre sorti la semaine dernière n'est
         # dans aucun catalogue. Le cul-de-sac « aucune œuvre trouvée » obligeait à
         # deviner un titre que les autorités connaissent, c'est-à-dire à renoncer alors
@@ -917,25 +1094,12 @@ async def process_bd_query_lookup(
         query_title = parse_query_title_and_author(clean_query)[0]
         category_repo = _get_category_repo(db_session)
         category = await category_repo.get_by_slug(CategorySlug.BD_COMICS.value)
-        includes, excludes, variants = generate_recommended_keywords(query_title, None)
-        await state.update_data(
+        updates = draft_updates_from_search(
+            BookSearchResult(status=BookSearchStatus.NOT_FOUND),
+            query_title=query_title,
             category_id=str(category.id) if category else "",
-            category_slug=CategorySlug.BD_COMICS.value,
-            name=query_title,
-            isbn=None,
-            author=None,
-            publisher=None,
-            include_keywords=includes,
-            exclude_keywords=excludes,
-            variants=variants,
-            selected_conditions=list(DEFAULT_BD_CONDITIONS),
-            isbn_note=None,
-            is_series=False,
-            work_choices=[],
-            edition_alternatives=[],
-            book_context=None,
-            book_unidentified=True,
         )
+        await state.update_data(**updates)
 
         if inline_price_cents is not None:
             await state.update_data(max_item_price_cents=inline_price_cents)
@@ -950,27 +1114,20 @@ async def process_bd_query_lookup(
         )
         return
 
-    meta = resolution.best
-    # Un titre homonyme ne nomme aucun ouvrage : on n'en retient aucun, et les œuvres
-    # trouvées sont proposées au choix. Même règle que le `/add` en langage naturel.
-    ambiguous = resolution.is_ambiguous
-    note = ambiguity_note(resolution) if ambiguous else None
-    # Une notice qui porte un numéro de tome alors que la saisie n'en demande aucun
-    # décrit un volume, pas l'œuvre : c'est la preuve d'une série. Rien de neuf n'est
-    # interrogé — tout est déjà dans la résolution qu'on tient en main.
-    query_title = parse_query_title_and_author(clean_query)[0]
-    # Toute la résolution est consultée, pas seulement la notice retenue : la preuve
-    # d'une série est souvent dans la notice voisine, celle qui porte le numéro.
-    series = resolution.series_signal(query_title)
-
-    # GARDE ANTI-DOUBLON APRÈS RÉSOLUTION BNF. Une série n'a pas d'ISBN : c'est le
+    # GARDE ANTI-DOUBLON APRÈS RÉSOLUTION. Une série n'a pas d'ISBN : c'est le
     # titre qui la dédouble, sinon deux volumes seraient deux alertes.
-    if db_user and not ambiguous:
+    if db_user and result.status != BookSearchStatus.AMBIGUOUS:
         alert_repo = _get_alert_repo(db_session)
         existing = await alert_repo.find_existing(
             db_user.id,
-            isbn=None if series.is_series else meta.isbn13,
-            title=query_title if series.is_series else meta.title,
+            isbn=None if result.is_series else (
+                result.reference.isbn13 if result.reference else None
+            ),
+            title=(
+                parse_query_title_and_author(clean_query)[0]
+                if result.is_series
+                else (result.confirmed.title if result.confirmed else clean_query)
+            ),
         )
         if existing:
             await render_existing_alert_response(
@@ -985,44 +1142,23 @@ async def process_bd_query_lookup(
     # Catégorie BD & Comics par défaut
     category_repo = _get_category_repo(db_session)
     category = await category_repo.get_by_slug(CategorySlug.BD_COMICS.value)
-    cat_id_str = str(category.id) if category else ""
-
-    # Une alerte de série porte le titre demandé, pas celui d'un volume : l'inclusion
-    # dérivée de « … vol 2 » ne verrait jamais le tome 3. Les mots-clés sont donc
-    # recalculés sur le titre de la série, en CPU, sans requête supplémentaire.
-    if series.is_series:
-        name = query_title
-        includes, excludes, variants = generate_recommended_keywords(query_title, meta.author)
-    else:
-        name = meta.title
-        includes = meta.recommended_includes
-        excludes = [] if ambiguous else meta.recommended_excludes
-        variants = [] if ambiguous else meta.recommended_variants
-
-    await state.update_data(
-        category_id=cat_id_str,
-        category_slug=CategorySlug.BD_COMICS.value,
-        name=name,
-        isbn=None if (ambiguous or series.is_series) else meta.isbn13,
-        author=None if ambiguous else meta.author,
-        publisher=None if ambiguous else meta.publisher,
-        include_keywords=includes,
-        exclude_keywords=excludes,
-        variants=variants,
-        selected_conditions=list(DEFAULT_BD_CONDITIONS),
-        isbn_note=note,
-        is_series=series.is_series,
-        work_choices=(
-            [work.model_dump() for work in resolution.work_choices()] if ambiguous else []
-        ),
-        # Les éditions concurrentes sont celles de la résolution qu'on tient déjà en
-        # main : une seconde requête BNF n'ajouterait rien, et les homonymes d'un
-        # titre ambigu ne seraient pas des éditions de l'œuvre demandée. Une série
-        # n'en a pas non plus : chaque « édition » y serait celle d'un tome.
-        edition_alternatives=(
-            [] if (ambiguous or series.is_series) else build_edition_choices(resolution)
-        ),
+    query_title = parse_query_title_and_author(clean_query)[0]
+    updates = draft_updates_from_search(
+        result,
+        query_title=query_title,
+        category_id=str(category.id) if category else "",
     )
+    # Le BookContext n'est alimenté que par une identité confirmée
+    if result.status == BookSearchStatus.FOUND and result.confirmed:
+        meta = BookMetadata(
+            title=result.confirmed.title,
+            author=result.confirmed.author,
+            publisher=result.confirmed.publisher,
+            isbn13=result.reference.isbn13 if result.reference else None,
+            publication_year=result.confirmed.publication_year,
+        )
+        updates["book_context"] = book_context_from(meta).model_dump()
+    await state.update_data(**updates)
 
     if inline_price_cents is not None:
         await state.update_data(max_item_price_cents=inline_price_cents)

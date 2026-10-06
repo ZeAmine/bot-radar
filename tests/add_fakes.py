@@ -159,6 +159,35 @@ def fake_bnf(
     return bnf
 
 
+def fake_book_search(
+    bnf: MagicMock,
+) -> MagicMock:
+    """Cas d'usage simulé : mappe les verdicts du faux service via les vrais adaptateurs.
+
+    Telegram appelle `BookSearchUseCase` : le simuler au niveau du service laisserait
+    passer le mapping (statuts, `confirmed`, T9, série). Ici, les adaptateurs réels
+    tournent, donc une résolution de série produit bien `is_series=True`.
+    """
+    from app.services.book_metadata_service import BibliographicReport
+    from app.use_cases.book_search import result_from_report, result_from_verdict_report
+
+    class _UseCase:
+        async def search_by_title(self, title: str, author_hint: str | None = None):
+            resolution = await bnf.resolve_for_alert(title, author_hint)
+            return result_from_report(
+                BibliographicReport(kind="title", resolution=resolution),
+                query_title=title,
+            )
+
+        async def search_by_isbn(self, isbn: str, expected_title: str | None = None):
+            verdict = await bnf.confirm_isbn_for_title(isbn, expected_title)
+            return result_from_verdict_report(
+                BibliographicReport(kind="isbn", verdict=verdict), expected_title
+            )
+
+    return MagicMock(return_value=_UseCase())
+
+
 def cached_market_price() -> BookMarketCache:
     """Cote déjà en base pour un ouvrage du catalogue : prix du jour et plus bas 1 an."""
     return BookMarketCache(

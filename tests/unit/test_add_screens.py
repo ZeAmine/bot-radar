@@ -25,6 +25,7 @@ from app.bot.handlers.alerts_create import (
     start_add_alert,
 )
 from app.db.models.user import User
+from app.domain.enums import BookSearchStatus
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.book_metadata_service import BookMetadata, BookResolution
 from app.services.market_price_service import PENDING_COTE_LINE
@@ -196,12 +197,19 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     les laisser disparaître. Les six messages du parcours sont de vrais handlers.
     """
     from app.bot.handlers.alerts_helpers import UNIDENTIFIED_WORK_NOTE
+    from app.services.book_metadata_service import BibliographicReport
+    from app.use_cases.book_search import BookSearchResult, result_from_report
 
     class _Service:
         """Aucune autorité ne rend de notice : ni la BNF, ni OpenLibrary, ni Google."""
 
-        async def resolve_input(self, _query):
-            return None
+        async def search_by_title(self, _title, _author_hint=None):
+            return result_from_report(
+                BibliographicReport(kind="title", resolution=None)
+            )
+
+        async def search_by_isbn(self, _isbn, _expected_title=None):
+            return BookSearchResult(status=BookSearchStatus.NOT_FOUND)
 
     state = DraftState()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
@@ -230,7 +238,7 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     saisie = incoming_message("whoogys dailycieux")
     with (
         patch(
-            "app.bot.handlers.alerts_helpers.BookMetadataService", return_value=_Service()
+            "app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=_Service()
         ),
         patch("app.bot.handlers.alerts.AlertRepository", return_value=alert_repo),
         patch("app.bot.handlers.alerts.CategoryRepository", return_value=category_repo),

@@ -65,6 +65,15 @@ from app.services.book_metadata_service import (
 from app.utils.isbn import is_valid_isbn, normalize_isbn
 
 
+class InvalidIsbnError(ValueError):
+    """Un ISBN mal formé, rejeté avant tout appel réseau.
+
+    Sous-classe dédiée (et non `ValueError` nu) pour que la route HTTP ne
+    convertisse en 422 que cette erreur de validation précise : une autre
+    `ValueError` reste une erreur interne inattendue (500 générique).
+    """
+
+
 @dataclass(frozen=True)
 class BookWorkChoice:
     """Une œuvre candidate, telle qu'une autorité la nomme.
@@ -109,6 +118,13 @@ class BookSearchResult:
     établi. `attempts` porte les tentatives (provider, type de recherche,
     statut, brut vide ou non, code contrôlé) ; `consulted=None` ne survit que
     dans les adaptateurs purs historiques sans rapport.
+
+    `confirmed` est la vue œuvre de la notice qui **confirme** l'identité :
+    renseignée uniquement sur `found` (une autorité a nommé l'ouvrage), `None`
+    dès qu'il y a ambiguïté, repli non confirmé ou absence. C'est la seule
+    source de `title`/`author` faisant autorité pour le brouillon. `is_series`
+    est calculé par le cas d'usage via `series_signal` (il possède le titre
+    demandé) ; `False` sur le chemin ISBN (tome explicitement demandé).
     """
 
     status: BookSearchStatus
@@ -121,6 +137,8 @@ class BookSearchResult:
     conflict: BookWorkChoice | None = None
     note: str | None = None
     attempts: tuple[ProviderAttempt, ...] = ()
+    confirmed: BookWorkChoice | None = None
+    is_series: bool = False
 
     def __post_init__(self) -> None:
         if (self.reference is None) == (self.status == BookSearchStatus.FOUND):
@@ -163,12 +181,16 @@ def _sources_by_isbn(resolution: BookResolution) -> dict[str, str]:
     return sources
 
 
-def result_from_resolution(resolution: BookResolution | None) -> BookSearchResult:
+def result_from_resolution(
+    resolution: BookResolution | None, query_title: str | None = None
+) -> BookSearchResult:
     """Adapte une résolution par titre vers le contrat partagé.
 
     `None` vaut `not_found` avec `consulted=None` : le service ne dit pas
     aujourd'hui si c'est une absence ou une panne (limitation documentée en
     tête de module), et l'adaptateur ne tranche pas à sa place.
+    `query_title` alimente `is_series` via `series_signal` (le cas d'usage
+    le passe ; sans lui, `False`).
     """
     if resolution is None:
         return BookSearchResult(status=BookSearchStatus.NOT_FOUND, consulted=None)
@@ -199,6 +221,11 @@ def result_from_resolution(resolution: BookResolution | None) -> BookSearchResul
         _edition_choice(by_isbn[edition.isbn13], sources.get(edition.isbn13))
         for edition in resolution.editions()
     )
+    series = (
+        resolution.series_signal(query_title)
+        if query_title
+        else None
+    )
     return BookSearchResult(
         status=BookSearchStatus.FOUND,
         editions=editions,
@@ -206,6 +233,8 @@ def result_from_resolution(resolution: BookResolution | None) -> BookSearchResul
         consulted=None,
         provenance=best.source,
         note=provenance_note(best),
+        confirmed=_work_choice(best),
+        is_series=bool(series and series.is_series),
     )
 
 
@@ -256,6 +285,7 @@ def result_from_isbn_verdict(
             consulted=verdict.consulted,
             provenance=notice.source,
             note=provenance_note(notice),
+            confirmed=_work_choice(notice),
         )
     if contradicts and notice is not None:
         author = notice.author or "un auteur non renseigné"
@@ -323,7 +353,9 @@ def _bnf_failed(attempts: tuple[ProviderAttempt, ...]) -> bool:
     )
 
 
-def result_from_report(report: BibliographicReport) -> BookSearchResult:
+def result_from_report(
+    report: BibliographicReport, query_title: str | None = None
+) -> BookSearchResult:
     """Chemin titre depuis un rapport : décisions existantes + règle T9.
 
     Le retour historique (`resolve_for_alert`, Telegram dans ce lot) accepte
@@ -351,7 +383,7 @@ def result_from_report(report: BibliographicReport) -> BookSearchResult:
             consulted=consulted,
             attempts=attempts,
         )
-    base = result_from_resolution(resolution)
+    base = result_from_resolution(resolution, query_title)
     if (
         base.status == BookSearchStatus.FOUND
         and _bnf_failed(attempts)
@@ -388,7 +420,9 @@ def result_from_verdict_report(
     verdict = report.verdict
     assert verdict is not None
     base = result_from_isbn_verdict(verdict, expected_title)
-    consulted = _consulted_from(report.attempts)
+    # Sans tentative dans le rapport (adaptateur sans observabilité), la liste du
+    # verdict fait foi : la remplacer par un vide inventerait « personne consulté ».
+    consulted = _consulted_from(report.attempts) or verdict.consulted
     failed = _failed_from(report.attempts)
     if (
         base.status == BookSearchStatus.NOT_FOUND
@@ -428,7 +462,7 @@ class BookSearchUseCase:
     ) -> BookSearchResult:
         """Recherche par titre (+ indice d'auteur), adaptée au contrat."""
         report = await self._service.resolve_for_alert_report(title, author_hint)
-        return result_from_report(report)
+        return result_from_report(report, query_title=title)
 
     async def search_by_isbn(
         self, isbn: str, expected_title: str | None = None

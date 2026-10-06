@@ -14,6 +14,7 @@ import pytest
 from aiogram.types import Message
 
 from app.domain.rules.series_detection import detect_series
+from tests.add_fakes import fake_book_search
 
 VOLUME_2_TITLE = "Absolute Martian Manhunter Vol. 2"
 SERIES_TITLE = "Absolute Martian Manhunter"
@@ -159,8 +160,8 @@ async def _lookup(query: str, resolution: object) -> dict:
 
     with (
         patch(
-            "app.bot.handlers.alerts_helpers.BookMetadataService",
-            return_value=_FakeService(resolution),
+            "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+            fake_book_search(_FakeService(resolution)),
         ),
         patch(
             "app.bot.handlers.alerts.CategoryRepository",

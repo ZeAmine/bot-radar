@@ -6,6 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiogram.types import Message
 
+from app.domain.enums import BookSearchStatus
+from app.use_cases.book_search import BookSearchResult, BookWorkChoice
+
 
 @pytest.mark.asyncio
 async def test_process_bd_query_lookup_stores_competing_editions():
@@ -77,34 +80,37 @@ async def test_process_bd_query_lookup_refuses_to_attach_a_homonym():
     1989 : aucune donnée n'est rattachée, et les deux œuvres sont proposées au choix.
     """
     from app.bot.handlers.alerts_helpers import process_bd_query_lookup
-    from app.services.book_metadata_service import BookMetadata, BookResolution
-
-    roman = BookMetadata(
-        title="Les Enfants perdus",
-        author="Rosemonde Ahou de Saintange",
-        publisher="La Pensée universelle",
-        isbn13="9782214080627",
-        publication_year=1989,
-        recommended_includes=["les enfants perdus"],
-        recommended_excludes=["roman"],
-        recommended_variants=["enfants perdus"],
+    ambiguous = BookSearchResult(
+        status=BookSearchStatus.AMBIGUOUS,
+        works=(
+            BookWorkChoice(
+                title="Les Enfants perdus",
+                author="Rosemonde Ahou de Saintange",
+                isbn13="9782214080627",
+                provenance="bnf",
+            ),
+            BookWorkChoice(
+                title="Les Enfants perdus",
+                author="Nef",
+                isbn13="9782810206087",
+                provenance="bnf",
+            ),
+        ),
+        note="⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre.",
     )
-    bande = BookMetadata(
-        title="Les Enfants perdus",
-        author="Nef",
-        publisher="Éditions du Chêne",
-        isbn13="9782810206087",
-        publication_year=2025,
-    )
-    resolution = BookResolution(best=roman, other_works=[bande])
 
-    class _Service:
-        async def resolve_input(self, _query):
-            return resolution
+    class _UseCase:
+        async def search_by_title(self, _title, _author=None):
+            return ambiguous
+
+    stored: dict = {}
+
+    async def _update_data(**kwargs):
+        stored.update(kwargs)
 
     state = AsyncMock()
-    state.get_data = AsyncMock(return_value={})
-    state.update_data = AsyncMock()
+    state.get_data = AsyncMock(side_effect=lambda: dict(stored))
+    state.update_data = _update_data
     state.set_state = AsyncMock()
     message = MagicMock(spec=Message)
     message.answer = AsyncMock(return_value=MagicMock(spec=Message))
@@ -115,7 +121,7 @@ async def test_process_bd_query_lookup_refuses_to_attach_a_homonym():
 
     with (
         patch(
-            "app.bot.handlers.alerts_helpers.BookMetadataService", return_value=_Service()
+            "app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=_UseCase()
         ),
         patch(
             "app.bot.handlers.alerts.CategoryRepository",
@@ -123,8 +129,6 @@ async def test_process_bd_query_lookup_refuses_to_attach_a_homonym():
         ),
     ):
         await process_bd_query_lookup(message, state, "Les Enfants perdus", AsyncMock())
-
-    stored = state.update_data.call_args.kwargs
     assert stored["isbn"] is None
     assert stored["author"] is None
     assert stored["publisher"] is None
@@ -137,8 +141,9 @@ async def test_process_bd_query_lookup_refuses_to_attach_a_homonym():
         "Rosemonde Ahou de Saintange",
         "Nef",
     ]
-    # Les mots-clés d'inclusion restent : ils dérivent du titre demandé, pas de l'œuvre.
-    assert stored["include_keywords"] == ["les enfants perdus"]
+    # Les mots-clés d'inclusion dérivent du titre demandé, pas de l'œuvre retenue :
+    # ils ne dépendent donc pas de l'homonyme que le score a placé en tête.
+    assert stored["include_keywords"] == ["les enfants perdus", "enfants perdus"]
 
 
 @pytest.mark.asyncio
@@ -155,9 +160,12 @@ async def test_process_bd_query_lookup_opens_the_card_when_nothing_is_known():
         process_bd_query_lookup,
     )
 
-    class _Service:
-        async def resolve_input(self, _query):
-            return None
+
+    not_found = BookSearchResult(status=BookSearchStatus.NOT_FOUND)
+
+    class _UseCase:
+        async def search_by_title(self, _title, _author=None):
+            return not_found
 
     stored: dict = {}
 
@@ -181,7 +189,7 @@ async def test_process_bd_query_lookup_opens_the_card_when_nothing_is_known():
 
     with (
         patch(
-            "app.bot.handlers.alerts_helpers.BookMetadataService", return_value=_Service()
+            "app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=_UseCase()
         ),
         patch(
             "app.bot.handlers.alerts.CategoryRepository",

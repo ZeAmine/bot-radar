@@ -259,29 +259,33 @@ async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_wor
     state = DraftState()
 
     patches = patched(repos, fake_bnf(resolution), client)
-    for entered in patches:
-        entered.start()
-    try:
-        await start_add_alert(message, state)
-        await drain(repos["tasks"])
+    with patch(
+        "app.bot.handlers.alerts_helpers.BookMetadataService",
+        return_value=fake_bnf(resolution),
+    ):
+        for entered in patches:
+            entered.start()
+        try:
+            await start_add_alert(message, state)
+            await drain(repos["tasks"])
 
-        await open_isbn_edit_field(state)
-        typed_message = incoming_message(ISBN_INCONNU)
-        await process_creation_edit_input(typed_message, state)
+            await open_isbn_edit_field(state)
+            typed_message = incoming_message(ISBN_INCONNU)
+            await process_creation_edit_input(typed_message, state)
 
-        assert state.data["isbn"] == ISBN_INCONNU
-        # Rien ne rattache plus l'ancien auteur au nouvel ISBN : le récap le dit.
-        assert state.data["author"] is None
-        assert state.data["publisher"] is None
-        assert state.data["edition_alternatives"] == []
-        typed_answer = typed_message.answer.call_args[0][0]
-        assert "<b>ISBN :</b> <code>" + ISBN_INCONNU + "</code>" in typed_answer
-        assert "ISBN saisi, non confirmé par la BNF" in typed_answer
-        assert "Martin Panchaud" not in typed_answer
-        await drain(repos["tasks"])
-    finally:
-        for entered in reversed(patches):
-            entered.stop()
+            assert state.data["isbn"] == ISBN_INCONNU
+            # Rien ne rattache plus l'ancien auteur au nouvel ISBN : le récap le dit.
+            assert state.data["author"] is None
+            assert state.data["publisher"] is None
+            assert state.data["edition_alternatives"] == []
+            typed_answer = typed_message.answer.call_args[0][0]
+            assert "<b>ISBN :</b> <code>" + ISBN_INCONNU + "</code>" in typed_answer
+            assert "ISBN saisi, non confirmé par la BNF" in typed_answer
+            assert "Martin Panchaud" not in typed_answer
+            await drain(repos["tasks"])
+        finally:
+            for entered in reversed(patches):
+                entered.stop()
 
 
 @pytest.mark.asyncio

@@ -48,10 +48,11 @@ from app.bot.labels import (
 )
 from app.db.models.user import User
 from app.services.ai.schemas import NegotiationResult
-from app.services.book_metadata_service import BookResolution
+from app.services.book_metadata_service import BibliographicReport, BookResolution
 from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceService
 from app.services.price_calculator import format_price_summary
 from app.services.telegram_service import build_listing_caption
+from app.use_cases.book_search import result_from_report
 
 # Le harnais de parcours : les écrans de copie sont joués par les vrais handlers, jamais
 # par un appel direct à `creation_card`. Les simulations sont partagées — doubles dans
@@ -678,10 +679,15 @@ async def _price_screen_text(kind: str) -> tuple[str, AsyncMock]:
             recommended_variants=[],
         )
         service = MagicMock()
-        service.resolve_input = AsyncMock(return_value=BookResolution(best=meta))
+        service.search_by_title = AsyncMock(
+            return_value=result_from_report(
+                BibliographicReport(kind="title", resolution=BookResolution(best=meta)),
+                query_title="la couleur des choses",
+            )
+        )
         with (
             patch(
-                "app.bot.handlers.alerts_helpers.BookMetadataService", return_value=service
+                "app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=service
             ),
             patch("app.bot.handlers.alerts.CategoryRepository", return_value=category_repo),
         ):
@@ -714,8 +720,8 @@ async def test_the_price_screen_of_a_book_is_the_creation_card_without_the_price
     assert "<b>Titre :</b> La couleur des choses" in lines
     assert "<b>Auteur :</b> Martin Panchaud" in lines
     assert "<b>Éditeur :</b> Çà et là" in lines
-    assert "<b>Mots-clés inclus :</b> la couleur des choses" in lines
-    assert "<b>Mots-clés exclus :</b> coffret" in lines
+    assert "<b>Mots-clés inclus :</b> la couleur des choses, couleur des choses" in lines
+    assert "<b>Mots-clés exclus :</b> roman, poche, anglais, english, dvd" in lines
     assert lines[-1] == (
         "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
     )
