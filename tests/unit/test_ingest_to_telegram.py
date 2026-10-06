@@ -22,17 +22,17 @@ from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db
 from app.core.config import settings
 from app.core.constants import AlertStatus
-from app.db.base import Base
 from app.db.models.alert import Alert
 from app.db.models.category import Category
 from app.db.models.user import User
 from app.main import app
 from tests.add_fakes import FakeTelegramBot
+from tests.database import fresh_database
 from tests.screens import published_caption
 
 TELEGRAM_CHAT_ID = 987654321
@@ -77,15 +77,8 @@ EXPECTED_CAPTION = "\n".join(
 @pytest.fixture
 async def ingestion_db():
     """Session SQLite en mémoire : l'alerte est une vraie ligne, lue par le matching."""
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    async with maker() as session:
+    async with fresh_database(replayed_on_postgres=False) as (session, _maker):
         yield session
-
-    await engine.dispose()
 
 
 async def _seed_alert(

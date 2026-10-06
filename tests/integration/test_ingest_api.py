@@ -1,43 +1,23 @@
 """Tests d'intégration pour l'endpoint d'ingestion POST /api/v1/ingest/listings."""
 
-import os
 import uuid
 from collections.abc import AsyncGenerator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db
 from app.core.config import settings
-from app.db.base import Base
 from app.db.models.category import Category
 from app.main import app
+from tests.database import fresh_database
 
 
 @pytest.fixture
 async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Crée une base de test asynchrone (PostgreSQL si TEST_DATABASE_URL, sinon SQLite)."""
-    test_engine = create_async_engine(
-        os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:"),
-        echo=False,
-    )
-
-    async with test_engine.begin() as conn:
-        # La base PostgreSQL de CI est partagée et persistante : sans
-        # cette remise à zéro, le deuxième test recrée les mêmes lignes
-        # (catégories) et viole la contrainte unique. SQLite mémoire est
-        # neuf par construction ; drop_all y est un no-op sans danger.
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_maker = async_sessionmaker(
-        bind=test_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-
-    async with session_maker() as session:
+    """Base de test neuve (PostgreSQL si la CI la rejoue, sinon SQLite), catégorie amorcée."""
+    async with fresh_database(replayed_on_postgres=True) as (session, _maker):
         # Insérer les catégories initiales de test
         cat_bd = Category(
             id=uuid.uuid4(),
@@ -49,8 +29,6 @@ async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
         session.add(cat_bd)
         await session.commit()
         yield session
-
-    await test_engine.dispose()
 
 
 @pytest.fixture

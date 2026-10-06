@@ -7,9 +7,8 @@ telles que le rendu les produit : deux avertissements côte à côte, un ⚠️ 
 la loupe, aucun blanc avant « Prix maximum », et « Non renseigné » seulement quand
 l'ouvrage n'est identifié par personne.
 
-Le harnais du parcours `/add` est partagé, jamais importé d'un module de test : les
-doubles et leurs données dans `tests/add_fakes.py`, leur câblage et les espions dans
-`tests/add_journey.py`, la lecture de ce qu'un écran publie dans `tests/screens.py`.
+Le harnais (doubles, câblage, lecture des écrans) est partagé : `tests/add_fakes.py`,
+`tests/add_journey.py`, `tests/screens.py`.
 """
 
 import html
