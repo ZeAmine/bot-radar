@@ -36,9 +36,10 @@ from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.book_metadata_service import BookMetadata, BookResolution
 from app.services.market_price_service import PENDING_COTE_LINE
 
-# Le harnais de parcours vit dans `tests/add_journey.py` : un module partagé, jamais un
-# module de test importé par un autre. Les simulations n'y sont écrites qu'une fois.
-from tests.add_journey import (
+# Le harnais du parcours `/add` est partagé, jamais importé d'un module de test : les
+# doubles et leurs données dans `tests/add_fakes.py`, leur câblage et les espions dans
+# `tests/add_journey.py`, la lecture de ce qu'un écran publie dans `tests/screens.py`.
+from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
     ISBN_AUTRE_LIVRE,
@@ -46,19 +47,19 @@ from tests.add_journey import (
     ROUTE_BANNERS,
     DraftState,
     FakeMessage,
-    confirm_press,
     deepseek_payload,
-    drain,
-    edition_buttons,
     fake_bnf,
     fake_deepseek,
+)
+from tests.add_journey import drain, patched, repositories
+from tests.screens import (
+    confirm_press,
+    edition_buttons,
     incoming_message,
     index_of_line,
     message_with_recap,
     open_isbn_edit_field,
-    patched,
     recap_text,
-    repositories,
     work_buttons,
 )
 
