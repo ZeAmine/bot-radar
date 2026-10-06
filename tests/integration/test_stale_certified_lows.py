@@ -29,14 +29,15 @@ from app.db.models.category import Category
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.db.models.user import User
 from app.db.repositories.market_price_repo import MarketPriceRepository
-from tests.database import fresh_database
+from tests.database import postgres_replayed_database
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
 async def session() -> AsyncGenerator[AsyncSession, None]:
-    async with fresh_database(replayed_on_postgres=True) as (session, _maker):
+    async with postgres_replayed_database() as database:
+        session = database.session
         yield session
 
 

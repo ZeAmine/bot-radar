@@ -50,7 +50,7 @@ from app.schemas.listing import ListingIngestPayload
 from app.services.book_metadata_service import BookMetadata, BookMetadataService
 from app.use_cases import ingest_listing
 from app.use_cases.ingest_listing import ProcessListingUseCase
-from tests.database import fresh_database
+from tests.database import sqlite_only_database
 
 # ---------------------------------------------------------------- scorers fixés
 SERIES_NAME = "The Grocery"
@@ -177,7 +177,8 @@ async def series_db() -> AsyncGenerator[tuple[AsyncSession, async_sessionmaker],
     C'est précisément l'alerte qui partsait sans cote : aucun ISBN, aucun tome
     dans le catalogue. Le chemin mesuré est donc celui de la résolution complète.
     """
-    async with fresh_database(replayed_on_postgres=False) as (session, session_maker):
+    async with sqlite_only_database() as database:
+        session, session_maker = database
         category = Category(slug="bd_comics", label="BD & Comics", emoji="📚", is_active=True)
         session.add(category)
         await session.flush()

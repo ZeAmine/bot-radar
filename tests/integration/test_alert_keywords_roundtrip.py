@@ -44,7 +44,7 @@ from app.db.repositories.alert_repo import AlertRepository
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.book_metadata_service import BookMetadata
-from tests.database import fresh_database
+from tests.database import postgres_replayed_database
 
 pytestmark = pytest.mark.asyncio
 
@@ -59,7 +59,8 @@ async def session_maker() -> AsyncGenerator[async_sessionmaker[AsyncSession], No
     session qui n'a rien partagé avec celle qui écrit, sinon il ne prouve que
     Python.
     """
-    async with fresh_database(replayed_on_postgres=True) as (_session, maker):
+    async with postgres_replayed_database() as database:
+        maker = database.maker
         # L'identité de l'alerte est posée par une session qui se ferme ensuite.
         async with maker() as seeding:
             seeding.add(

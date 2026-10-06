@@ -16,13 +16,14 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.category import Category
 from app.db.models.user import User
 from app.main import app
-from tests.database import fresh_database
+from tests.database import postgres_replayed_database
 
 
 @pytest.fixture
 async def internal_test_db() -> AsyncGenerator[AsyncSession, None]:
     """Base de test peuplée (PostgreSQL si la CI la rejoue, sinon SQLite)."""
-    async with fresh_database(replayed_on_postgres=True) as (session, _maker):
+    async with postgres_replayed_database() as database:
+        session = database.session
         user = User(telegram_user_id=12345, is_allowed=True)
         cat = Category(slug="bd_comics", label="BD", emoji="📚", is_active=True)
         session.add_all([user, cat])
