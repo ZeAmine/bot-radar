@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.bot.labels import (
     BTN_ANALYSIS_RUNNING,
     BTN_APPLY_EXCLUSIONS,
+    BTN_BACK_TO_ALERT,
     BTN_BACK_TO_AUTOTUNE,
     BTN_CANCEL,
     BTN_CLOSE,
@@ -103,7 +104,7 @@ def _proposal_keyboard(
             [InlineKeyboardButton(text=edit_label, callback_data=f"ai_tune_edit:{alert_id}")],
             [
                 InlineKeyboardButton(
-                    text=f"← {BTN_CANCEL}", callback_data=f"ai_tune_cancel:{alert_id}"
+                    text=BTN_CANCEL, callback_data=f"ai_tune_cancel:{alert_id}"
                 )
             ],
         ]
@@ -698,7 +699,7 @@ async def handle_var_apply(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="← Retour à l'alerte", callback_data=f"al_edit:{alert.id}"
+                    text=BTN_BACK_TO_ALERT, callback_data=f"al_edit:{alert.id}"
                 )
             ]
         ]

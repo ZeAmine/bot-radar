@@ -542,6 +542,13 @@ def test_a_recap_that_is_not_a_series_stays_exactly_as_it_was():
 # et légende d'annonce. Le formatter et les claviers échappaient au verrou, qui ne
 # lisait que `handlers` — `keyboards/alerts.py` réécrivait dès lors les sept libellés
 # du menu d'édition, exactement la dérive que le verrou devait empêcher.
+#
+# `app/services/ai/pipeline.py` reste dehors à dessein : il compose un **prompt**
+# pour le modèle (`Prix : …`), pas un écran que l'utilisateur lit — l'ajouter au
+# périmètre y produirait un faux positif. Le brancher sur `FIELD_PRICE` serait pire
+# encore : renommer un libellé d'IHM changerait alors le prompt sans toucher à sa
+# version, donc sans changer la clé de cache d'analyse, et l'ancien résultat serait
+# servi en silence pendant sept jours. Un prompt n'est pas un libellé d'affichage.
 _SCREEN_SOURCES = (
     pathlib.Path("app/bot/handlers"),
     pathlib.Path("app/bot/formatter.py"),
@@ -603,8 +610,9 @@ def test_no_charte_label_is_hardcoded_in_a_screen():
     silencieusement.
 
     Un bouton n'a ni séparateur ni casse imposée : sa seule forme est son texte
-    exact, et c'est aussi par lui qu'il dérive. « ← Retour » écrit à quatre endroits
-    ne se répare qu'à quatre endroits — le verrou lui rend une source unique.
+    exact, et c'est aussi par lui qu'il dérive. « Retour » écrit à plusieurs
+    endroits ne se répare qu'à plusieurs endroits — le verrou lui rend une source
+    unique.
 
     Le périmètre est **tous** les écrans, pas les handlers seuls : la fiche, les
     claviers et la légende d'annonce portent les mêmes libellés, et un verrou qui
@@ -634,6 +642,85 @@ def test_no_charte_label_is_hardcoded_in_a_screen():
     assert not violations, (
         "Libellé(s) de charte recopié(s) en dur dans un écran — "
         "importer depuis app.bot.labels :\n" + "\n".join(violations)
+    )
+
+
+def _inline_button_texts() -> list[tuple[str, int, str]]:
+    """Texte de chaque bouton inline de l'application, charte résolue.
+
+    Une seule collecte pour les trois façons d'écrire le même bouton : le
+    littéral (`text="Fermer"`), la constante de charte (`text=BTN_BACK`) et la
+    f-string (`text=f"… {BTN_CANCEL}"`). On lit le sous-arbre `text=` de chaque
+    `InlineKeyboardButton` et on y résout les noms contre `labels` — sans quoi
+    réintroduire une flèche dans `BTN_BACK` échapperait au verrou, qui ne verrait
+    qu'un nom.
+
+    Le périmètre est toute l'application, pas les écrans : la règle ne vise pas un
+    écran mais un bouton, et `app/tasks/proactive_autotune.py` en envoie aussi.
+    """
+    import ast
+
+    import app.bot.labels as labels
+
+    rows: list[tuple[str, int, str]] = []
+    for path in sorted(pathlib.Path("app").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "InlineKeyboardButton"
+            ):
+                continue
+            text = {kw.arg: kw.value for kw in node.keywords}.get("text")
+            if text is None:
+                continue
+            for child in ast.walk(text):
+                if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                    rows.append((path.as_posix(), node.lineno, child.value))
+                elif isinstance(child, ast.Name):
+                    value = getattr(labels, child.id, None)
+                    if isinstance(value, str):
+                        rows.append((path.as_posix(), node.lineno, value))
+    return rows
+
+
+def test_no_button_carries_an_arrow():
+    """Une flèche ne sert à rien dans un bouton : le verrou l'interdit à la source.
+
+    Règle 4 de la charte. Les deux façons d'en faire entrer une sont couvertes —
+    l'écrire dans la constante, ou l'écrire dans le bouton — parce qu'elles se
+    réparent séparément : retirer `←` de `BTN_BACK` laisserait les littéraux en
+    place, et corriger les littéraux laisserait la constante remettre la flèche
+    au clavier suivant.
+
+    Une flèche de titre (`Détection → alerte`) décrit un flux, pas une action, et
+    n'est pas un bouton : elle sort du périmètre puisqu'on ne lit que les
+    `InlineKeyboardButton`, jamais le texte des messages.
+    """
+    import app.bot.labels as labels
+
+    arrows = "←→↑↓"
+    violations: list[str] = []
+
+    for name, value in sorted(vars(labels).items()):
+        if name.startswith("BTN_") and isinstance(value, str) and any(
+            arrow in value for arrow in arrows
+        ):
+            violations.append(f"app/bot/labels.py — {name} {value!r} porte une flèche")
+
+    seen: set[tuple[str, int, str]] = set()
+    for file_name, line, text in _inline_button_texts():
+        if not any(arrow in text for arrow in arrows):
+            continue
+        if (file_name, line, text) in seen:
+            continue
+        seen.add((file_name, line, text))
+        violations.append(f"{file_name}:{line} — bouton fléché {text.strip()[:60]!r}")
+
+    assert not violations, (
+        "Flèche(s) dans un bouton — une flèche ne sert à rien, la retirer :\n"
+        + "\n".join(violations)
     )
 
 

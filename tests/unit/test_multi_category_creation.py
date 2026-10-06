@@ -345,7 +345,7 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     labels = [btn.text for row in kb.inline_keyboard for btn in row]
     assert "(" not in "".join(labels)
     assert "Prix maximum" in labels
-    assert "← Retour au récapitulatif" in labels
+    assert "Retour au récapitulatif" in labels
 
     # 2. Test de la sous-option modification de prix
     callback.answer.reset_mock()
@@ -402,7 +402,7 @@ async def test_edit_menu_labels_are_bare_for_a_bd_with_an_isbn():
         "Mots-clés exclus",
         "Variantes",
         "États acceptés",
-        "← Retour au récapitulatif",
+        "Retour au récapitulatif",
     ]
     # Ni la valeur de l'ISBN ni celle du prix ne débordent dans un libellé.
     assert "9781799510871" not in str(kb.inline_keyboard)

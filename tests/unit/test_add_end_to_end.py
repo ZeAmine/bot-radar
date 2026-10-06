@@ -1338,7 +1338,7 @@ async def test_returning_to_a_draft_that_is_gone_never_shows_a_default_recap():
     """Un brouillon vidé ne se relit pas comme une création en cours.
 
     Après une création, l'état est vidé ; l'ancien clavier restait affiché et
-    « ← Retour au récapitulatif » re-rendait « Titre : Alerte » sans aucune donnée.
+    « Retour au récapitulatif » re-rendait « Titre : Alerte » sans aucune donnée.
     """
     from app.bot.handlers.alerts_create_confirm import DRAFT_GONE_MESSAGE, back_to_recap
 

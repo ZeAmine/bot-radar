@@ -481,7 +481,7 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
 
 
 def test_market_panel_is_routed_for_both_entry_and_back_to_all_tomes():
-    """« ← Tous les tomes » porte `market_details:` : le filtre doit le router.
+    """« Tous les tomes » porte `market_details:` : le filtre doit le router.
 
     Le panneau n'était enregistré que pour `market:`. Le retour « Tous les tomes »
     ne désignait donc aucun handler et le bouton restait mort.
