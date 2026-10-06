@@ -45,7 +45,7 @@ from app.db.models.user import User
 from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import ListingIngestPayload
 from app.use_cases.ingest_listing import ProcessListingUseCase
-from tests.database import fresh_database
+from tests.database import sqlite_only_database
 
 # ---------------------------------------------------------------- scorers fixés
 N_BD_ALERTS = 40
@@ -93,7 +93,8 @@ async def benchmark_db() -> AsyncGenerator[AsyncSession, None]:
     - 1 alerte BD avec ISBN lié à un livre du catalogue + cache de marché frais ;
     - 40 alertes tech actives (catégorie différente, sortie immédiate du matcher).
     """
-    async with fresh_database(replayed_on_postgres=False) as (session, _maker):
+    async with sqlite_only_database() as database:
+        session = database.session
         cat_bd = Category(slug="bd_comics", label="BD & Comics", emoji="📚", is_active=True)
         cat_tech = Category(slug="tech", label="Électronique", emoji="💻", is_active=True)
         session.add_all([cat_bd, cat_tech])

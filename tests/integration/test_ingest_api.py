@@ -11,13 +11,14 @@ from app.api.dependencies import get_db
 from app.core.config import settings
 from app.db.models.category import Category
 from app.main import app
-from tests.database import fresh_database
+from tests.database import postgres_replayed_database
 
 
 @pytest.fixture
 async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Base de test neuve (PostgreSQL si la CI la rejoue, sinon SQLite), catégorie amorcée."""
-    async with fresh_database(replayed_on_postgres=True) as (session, _maker):
+    async with postgres_replayed_database() as database:
+        session = database.session
         # Insérer les catégories initiales de test
         cat_bd = Category(
             id=uuid.uuid4(),

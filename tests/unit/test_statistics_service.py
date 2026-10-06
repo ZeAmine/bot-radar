@@ -15,13 +15,14 @@ from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
 from app.db.repositories.stats_repo import StatsRepository
 from app.services.statistics_service import StatisticsService
-from tests.database import fresh_database
+from tests.database import sqlite_only_database
 
 
 @pytest.fixture
 async def stats_session():
     """Crée une session SQLite en mémoire avec données de test pour les statistiques."""
-    async with fresh_database(replayed_on_postgres=False) as (session, _maker):
+    async with sqlite_only_database() as database:
+        session = database.session
         user = User(telegram_user_id=999, is_allowed=True)
         cat_bd = Category(slug="bd-comics", label="BD & Comics", emoji="📚", is_active=True)
         cat_tech = Category(slug="tech", label="Tech", emoji="💻", is_active=True)

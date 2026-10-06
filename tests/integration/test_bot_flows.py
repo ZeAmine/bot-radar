@@ -47,7 +47,7 @@ from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
 from app.services.book_metadata_service import BookMetadata, BookResolution
-from tests.database import fresh_database
+from tests.database import postgres_replayed_database
 
 BOT_TOKEN = "123456789:AAG_ci_test_dummy_token_abc123"
 CHAT_ID = 4242
@@ -60,7 +60,8 @@ TG_USER_ID = 4242
 @pytest.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Base réelle (PostgreSQL en CI, SQLite sinon), catégories amorcées."""
-    async with fresh_database(replayed_on_postgres=True) as (session, _maker):
+    async with postgres_replayed_database() as database:
+        session = database.session
         session.add(
             Category(
                 id=uuid.uuid4(),
