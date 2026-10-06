@@ -455,11 +455,16 @@ class ProcessListingUseCase:
                 discovered_isbn = listing.isbn13
                 has_lot = bool(tome_result and tome_result.is_lot and tome_result.lot_tomes)
                 if not discovered_isbn and not has_lot:
+                    # Une alerte sans ISBN est une série : l'annonce non résolue
+                    # relance la découverte de **tous** ses tomes, pas seulement
+                    # d'un titre. Une alerte à ISBN garde sa recherche unitaire.
+                    # L'appel reste après l'envoi (`safe_create_task`), invariant n°1.
                     safe_create_task(
                         link_books_from_bnf(
                             alert.name,
                             alert.id,
                             author=getattr(alert, "author", None),
+                            series=not alert.isbn,
                         ),
                         name=f"bnf_link_{alert.id}",
                     )

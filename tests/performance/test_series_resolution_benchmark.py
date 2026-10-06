@@ -38,7 +38,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
-from app.core.constants import AlertStatus
+from app.core.constants import AlertStatus, ProviderQueryStatus
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
 from app.db.models.book import Book
@@ -46,6 +46,7 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.category import Category
 from app.db.models.listing import Listing
 from app.db.models.user import User
+from app.providers.google_books import ProviderQueryResult
 from app.schemas.listing import ListingIngestPayload
 from app.services.book_metadata_service import BookMetadata, BookMetadataService
 from app.use_cases import ingest_listing
@@ -59,7 +60,7 @@ WARMUP_ITERATIONS = 3
 MEASURED_ITERATIONS = 20
 BUDGET_MS = 500.0  # Invariant n°1 : l'alerte part en moins de 500 ms
 BNF_LATENCY_MS = 300.0  # Latence simulée de la BNF, bien au-dessus du budget
-SERIES_NOTICES = 6  # MAX_SERIES_BOOKS
+SERIES_NOTICES = 6  # taille du jeu de tomes simulé dans ce fichier
 # Sélection sur 60 notices : CPU pur de filtrage. Le seuil est serré parce que
 # l'opération est locale — une régression ici se voit en quelques dizaines de µs.
 SERIES_LOOKUP_BUDGET_MS = 5.0
@@ -67,6 +68,18 @@ SERIES_LOOKUP_BUDGET_MS = 5.0
 # budget à 100 ms : il attrape l'introduction d'un appel bloquant (une vraie
 # requête BNF dépasse 300 ms) sans dépendre de la machine qui exécute.
 SERIES_LINK_BUDGET_MS = 100.0
+
+
+async def _empty_openlibrary(
+    *_args: Any, **_kwargs: Any
+) -> ProviderQueryResult[dict[str, Any]]:
+    """OpenLibrary neutralisée : ces benchmarks mesurent le chemin BNF, pas le repli.
+
+    Depuis que `lookup_series_notices` complète par OpenLibrary quand la BNF rend
+    moins de tomes que le plafond, un stub BNF seul laisserait partir une vraie
+    requête réseau. Le réseau est entièrement mocké ici : il doit le rester.
+    """
+    return ProviderQueryResult(status=ProviderQueryStatus.SUCCESS, items=())
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -252,6 +265,9 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
         return _series_notices()
 
     monkeypatch.setattr(BookMetadataService, "_query_bnf_sru", _slow_bnf)
+    monkeypatch.setattr(
+        BookMetadataService, "_query_openlibrary_result", _empty_openlibrary
+    )
 
     priced: list[tuple[uuid.UUID, str | None]] = []
     monkeypatch.setattr(
@@ -316,11 +332,12 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
     # L'ordre est la preuve : l'alerte est partie, le use case est rendu, et
     # seulement ensuite le catalogue est cherché.
     assert order[:3] == ["envoi", "retour", "bnf"], order
-    # Et la tâche différée a fait son travail, après coup : elle a lié le livre
-    # que l'annonce désigne et l'a fait coter. Une tâche qui ne travaille pas ne
-    # prouverait rien non plus. Le motif « bnf_link » dit que la cote part
-    # après la liaison, jamais avant.
-    assert len(priced) == 1, priced
+    # Et la tâche différée a fait son travail, après coup : le chemin d'ingestion
+    # relance la découverte de **série** (`series=not alert.isbn`), donc les six
+    # tomes liés partent en cote, pas le seul titre de l'annonce. Une tâche qui ne
+    # travaille pas ne prouverait rien non plus. Le motif « bnf_link » dit que la
+    # cote part après la liaison, jamais avant.
+    assert len(priced) == SERIES_NOTICES, priced
     assert {reason for _book_id, reason in priced} == {"bnf_link"}, priced
 
 
@@ -347,6 +364,9 @@ async def test_benchmark_series_lookup_selects_six_tomes(monkeypatch: pytest.Mon
         return response
 
     monkeypatch.setattr(BookMetadataService, "_query_bnf_sru", _instant_bnf)
+    monkeypatch.setattr(
+        BookMetadataService, "_query_openlibrary_result", _empty_openlibrary
+    )
 
     async def _one_lookup() -> list[BookMetadata]:
         return await service.lookup_series_notices(SERIES_NAME, author_hint="Tyler Johnson")
@@ -396,6 +416,9 @@ async def test_benchmark_series_link_writes_six_links_and_prices_them(
         return _series_notices()
 
     monkeypatch.setattr(BookMetadataService, "_query_bnf_sru", _instant_bnf)
+    monkeypatch.setattr(
+        BookMetadataService, "_query_openlibrary_result", _empty_openlibrary
+    )
 
     priced: list[tuple[uuid.UUID, str | None]] = []
     monkeypatch.setattr(

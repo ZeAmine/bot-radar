@@ -174,7 +174,18 @@ async def test_lookup_series_notices_keeps_the_tomes_and_drops_the_lookalikes():
             isbn13="9780000000019", source=AUTORITE_BNF,
         ),
     ]
-    with patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)):
+    with (
+        patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)),
+        # La BNF rend moins de tomes que le plafond : le repli se déclenche, donc
+        # il est neutralisé ici — ce test porte sur le tri BNF, pas sur OpenLibrary.
+        patch.object(
+            service,
+            "_query_openlibrary_result",
+            new=AsyncMock(
+                return_value=ProviderQueryResult(status=ProviderQueryStatus.SUCCESS, items=())
+            ),
+        ),
+    ):
         notices = await service.lookup_series_notices(
             "Blacksad", author_hint="Juan Diaz Canales"
         )
@@ -205,6 +216,151 @@ async def test_lookup_series_notices_is_bounded_and_deduplicates_isbns():
     assert len(notices) == 3
     assert len({notice.isbn13 for notice in notices}) == 3
     assert empty == []
+
+
+def _openlibrary_result(docs: list[dict[str, object]]) -> ProviderQueryResult[dict[str, object]]:
+    """Réponse OpenLibrary simulée : des documents bruts, comme l'API en rend."""
+    return ProviderQueryResult(
+        status=ProviderQueryStatus.SUCCESS,
+        items=tuple(docs),
+        has_results=bool(docs),
+    )
+
+
+def _series_doc(
+    title: str, isbns: list[str], author: str | None = None
+) -> dict[str, object]:
+    """Un document OpenLibrary minimal : titre, ISBN et auteur."""
+    doc: dict[str, object] = {"title": title, "isbn": isbns}
+    if author:
+        doc["author_name"] = [author]
+    return doc
+
+
+@pytest.mark.asyncio
+async def test_lookup_series_notices_completes_with_openlibrary_when_bnf_is_short():
+    """Quand la BNF rend moins de tomes que la série n'en a, OpenLibrary complète.
+
+    Le repli n'est jamais une substitution : il ignore un ISBN déjà rendu par la
+    BNF, écarte un tome porté par un autre auteur et un titre étranger à la série,
+    et ses notices portent leur provenance — elles ne se lisent pas comme du BNF.
+    """
+    service = BookMetadataService()
+    bnf = BookMetadata(
+        title="Blacksad Tome 2",
+        author="Juan Díaz Canales",
+        isbn13="9782369903086",
+        source=AUTORITE_BNF,
+    )
+    openlibrary = AsyncMock(
+        return_value=_openlibrary_result(
+            [
+                # Même ISBN que la BNF : ignoré, la notice BNF fait foi.
+                _series_doc("Blacksad Tome 2", ["9782369903086"], "Juan Díaz Canales"),
+                # Un vrai tome manquant.
+                _series_doc("Blacksad Tome 5", ["9782205051407"], "Juan Díaz Canales"),
+                # Même préfixe, autre auteur : pas un tome de la série.
+                _series_doc("Blacksad Tome 6", ["9782205051506"], "Un Autre"),
+                # Titre étranger à la série.
+                _series_doc("Une tout autre série", ["9782205051605"], "Un Autre"),
+            ]
+        )
+    )
+    with (
+        patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=[bnf])),
+        patch.object(service, "_query_openlibrary_result", new=openlibrary),
+    ):
+        notices = await service.lookup_series_notices(
+            "Blacksad", author_hint="Juan Diaz Canales"
+        )
+
+    assert [notice.title for notice in notices] == ["Blacksad Tome 2", "Blacksad Tome 5"]
+    assert notices[0].source == AUTORITE_BNF
+    fallback = notices[1]
+    assert fallback.source == AUTORITE_OPENLIBRARY
+    assert provenance_note(fallback) == OPENLIBRARY_SOURCE_NOTE
+
+
+@pytest.mark.asyncio
+async def test_lookup_series_notices_openlibrary_fallback_respects_the_cap():
+    """Le complément OpenLibrary est borné par ce qui reste sous `limit`."""
+    service = BookMetadataService()
+    bnf = BookMetadata(
+        title="Blacksad Tome 1",
+        author="Juan Díaz Canales",
+        isbn13="9782205049504",
+        source=AUTORITE_BNF,
+    )
+    openlibrary = AsyncMock(
+        return_value=_openlibrary_result(
+            [
+                _series_doc("Blacksad Tome 2", ["9782205051407"], "Juan Díaz Canales"),
+                _series_doc("Blacksad Tome 3", ["9782205051506"], "Juan Díaz Canales"),
+                _series_doc("Blacksad Tome 4", ["9782205051605"], "Juan Díaz Canales"),
+            ]
+        )
+    )
+    with (
+        patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=[bnf])),
+        patch.object(service, "_query_openlibrary_result", new=openlibrary),
+    ):
+        notices = await service.lookup_series_notices(
+            "Blacksad", author_hint="Juan Diaz Canales", limit=2
+        )
+
+    assert len(notices) == 2
+    assert len({notice.isbn13 for notice in notices}) == 2
+
+
+@pytest.mark.asyncio
+async def test_lookup_series_notices_never_replaces_a_bnf_notice():
+    """Un ISBN rendu par la BNF n'est pas réécrit par le document OpenLibrary."""
+    service = BookMetadataService()
+    bnf = BookMetadata(
+        title="Blacksad Tome 2",
+        author="Juan Díaz Canales",
+        isbn13="9782205051407",
+        source=AUTORITE_BNF,
+    )
+    openlibrary = AsyncMock(
+        return_value=_openlibrary_result(
+            [_series_doc("Blacksad : l'encyclopédie", ["9782205051407"], "Juan Díaz Canales")]
+        )
+    )
+    with (
+        patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=[bnf])),
+        patch.object(service, "_query_openlibrary_result", new=openlibrary),
+    ):
+        notices = await service.lookup_series_notices(
+            "Blacksad", author_hint="Juan Diaz Canales"
+        )
+
+    assert [notice.title for notice in notices] == ["Blacksad Tome 2"]
+    assert notices[0].source == AUTORITE_BNF
+
+
+@pytest.mark.asyncio
+async def test_lookup_series_notices_skips_openlibrary_when_bnf_is_complete():
+    """La BNF suffit : OpenLibrary n'est pas interrogée."""
+    service = BookMetadataService()
+    records = [
+        BookMetadata(
+            title=f"Blacksad Tome {index}",
+            author="Juan Díaz Canales",
+            isbn13=f"97822050514{index:02d}",
+            source=AUTORITE_BNF,
+        )
+        for index in range(1, 4)
+    ]
+    openlibrary = AsyncMock()
+    with (
+        patch.object(service, "_query_bnf_sru", new=AsyncMock(return_value=records)),
+        patch.object(service, "_query_openlibrary_result", new=openlibrary),
+    ):
+        notices = await service.lookup_series_notices("Blacksad", limit=3)
+
+    assert len(notices) == 3
+    openlibrary.assert_not_awaited()
 
 
 def test_title_similarity_ignores_case_accents_and_subtitle():
