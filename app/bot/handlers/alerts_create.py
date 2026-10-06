@@ -757,16 +757,18 @@ async def save_alert(
     # Le brouillon tel qu'il vient d'être écrit : la confirmation relit la carte de
     # récap, mais sur les valeurs réellement enregistrées — les listes passées par le
     # nettoyeur, pas celles du moteur. `is_series` suit, et c'est le même drapeau que
-    # celui du récap : les deux écrans ne peuvent pas se contredire. La note du
-    # brouillon, elle, reste au brouillon : elle peut nommer le bouton « ✨ Variantes &
-    # Exclusions IA » et parler d'une alerte à créer — or ce bouton n'est plus sous la
-    # carte, et l'alerte est créée.
+    # celui du récap : les deux écrans ne peuvent pas se contredire. La note du moteur
+    # n'est relue que si le moteur a **répondu** : son verdict (« aucune variante de
+    # frappe ») est une vérité de l'alerte, la même sur les deux écrans. La note
+    # d'échec, elle, reste au brouillon : elle nomme le bouton « ✨ Variantes &
+    # Exclusions IA », absent de ce clavier, et parle d'une alerte à créer — or elle
+    # est créée.
     stored_draft = {
         **data,
         "exclude_keywords": excludes,
         "variants": variants,
         "selected_conditions": conditions,
-        "keyword_note": None,
+        "keyword_note": data.get("keyword_note") if data.get("keywords_finalized") else None,
     }
 
     # 1. Catégorie

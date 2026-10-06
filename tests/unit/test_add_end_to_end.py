@@ -1517,7 +1517,9 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     assert "🔎" not in recap
     assert any("🔎" in ecran for ecran in ecrans[:-1]), "le jalon garde sa loupe"
 
-    # « Alerte créée » relit la même carte : le même avertissement, à la même place.
+    # « Alerte créée » relit la même carte : les **deux** avertissements, à la même
+    # place. Le verdict du moteur a été rendu : il ne nomme aucun bouton et ne parle
+    # d'aucune création à venir, donc rien ne justifie de le taire ici.
     confirm_callback, confirm_message = _confirmation_message()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     confirmation_repos = _repositories(ISBN_INCONNU)
@@ -1537,13 +1539,11 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     confirm_lines = confirmation.splitlines()
     assert confirm_lines[0] == "✅ <b>Alerte créée</b>"
     assert confirm_lines[1] == ""
-    # ADR-032 : la note du moteur est la seule donnée volontairement non relue par la
-    # confirmation — elle peut nommer le bouton « Variantes & Exclusions IA », absent
-    # de ce clavier. L'avertissement d'identité, lui, est là, à la même place.
+    # Le même bloc de notes, dans le même ordre, séparé de la liste par un seul blanc.
     assert confirm_lines[2] == f"<i>{html.escape(note_bnf)}</i>"
-    assert confirm_lines[3] == ""
-    assert confirm_lines[4].startswith("<b>ISBN :</b>")
-    assert note_ia not in confirmation
+    assert confirm_lines[3] == f"<i>{note_ia}</i>"
+    assert confirm_lines[4] == ""
+    assert confirm_lines[5].startswith("<b>ISBN :</b>")
     assert "Non renseigné" not in confirmation
     prix = _index_dune_ligne(confirm_lines, "<b>Prix maximum :</b>")
     assert confirm_lines[prix - 1] != "", "aucune ligne vide avant « Prix maximum »"
@@ -1717,3 +1717,67 @@ async def test_the_three_keyword_verdicts_warn_instead_of_observing():
         index_note = next(i for i, line in enumerate(lines) if attendu in line)
         assert lines[index_note].startswith("<i>⚠️")
         assert index_note < _index_dune_ligne(lines, "<b>ISBN :</b>")
+
+
+@pytest.mark.asyncio
+async def test_the_confirmation_drops_the_engines_plea_but_keeps_its_verdict():
+    """La confirmation n'écarte que le plaidoyer du moteur, plus son verdict.
+
+    Quand le moteur n'a **pas** répondu, sa note nomme le bouton « ✨ Variantes &
+    Exclusions IA » — absent du clavier de confirmation — et annonce une alerte « à
+    créer » qui vient de l'être : elle n'a pas de sens sur cet écran et reste au
+    brouillon. L'autre côté est dans
+    `test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirmation` :
+    un verdict rendu, lui, se relit partout. Ce test tient la frontière entre les deux.
+    """
+    resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
+    client = _fake_deepseek(_deepseek_payload())
+    repos = _repositories(BNF_EDITION.isbn13)
+
+    message, loading_message = _message_with_recap("/add la couleur des choses. Max 12 €")
+    state = DraftState()
+
+    patches = _patched(repos, _fake_bnf(resolution), client)
+    plea = patch(
+        "app.bot.handlers.alerts_create.keyword_variants_module."
+        "generate_variants_and_exclusions",
+        new_callable=AsyncMock,
+        return_value=KeywordVariantsOutcome.unanswered(),
+    )
+    for entered in patches:
+        entered.start()
+    plea.start()
+    try:
+        await start_add_alert(message, state)
+        await _drain(repos["tasks"])
+    finally:
+        plea.stop()
+        for entered in reversed(patches):
+            entered.stop()
+
+    recap = loading_message.edit_text.call_args_list[-1][0][0]
+    assert "L'IA n'a pas répondu après une relance" in recap
+    # Le moteur n'a pas répondu : la recherche n'est pas définitive.
+    assert state.data["keywords_finalized"] is False
+
+    confirm_callback, confirm_message = _confirmation_message()
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    confirm_repos = _repositories(BNF_EDITION.isbn13)
+    patches = _patched(confirm_repos, MagicMock(), MagicMock())
+    for entered in patches:
+        entered.start()
+    try:
+        await save_alert(confirm_callback, state, db_user, AsyncMock())
+        await _drain(confirm_repos["tasks"])
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+    confirmation = confirm_message.edit_text.call_args[0][0]
+    assert "L'IA n'a pas répondu" not in confirmation
+    # Ni le bouton qu'elle nomme, ni l'alerte « à créer » qu'elle annonce.
+    assert "Variantes & Exclusions IA" not in confirmation
+    assert "cette alerte sera créée" not in confirmation
+    # L'identité, elle, reste : la confirmation n'est pas devenue muette.
+    assert "<b>Titre :</b> La couleur des choses" in confirmation
+    assert "<b>ISBN :</b> <code>" in confirmation
