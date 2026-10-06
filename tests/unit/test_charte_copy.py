@@ -11,7 +11,7 @@ Deux natures de test, et deux seulement.
   `tests/add_journey.py`, jamais recopiées ici ; un changement de copie qui n'atteint pas
   l'écran réel ne peut pas passer.
 
-Les mêmes écrans sont relus ligne à ligne par les parcours de `test_add_end_to_end` — les
+Les mêmes écrans sont relus ligne à ligne par les parcours de `test_add_screens` — les
 deux avertissements en tête et côte à côte, le ⚠️ à la place de la loupe, l'absence de
 blanc avant « Prix maximum », les trous d'identité quand personne n'identifie l'ouvrage.
 Les verrous qui rejouaient ces cas sur une fonction de rendu appelée à la main ont été

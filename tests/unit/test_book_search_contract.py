@@ -2,8 +2,9 @@
 
 Fixtures et mocks uniquement : aucune requête réseau, aucune base, aucun LLM.
 Le comportement Telegram existant est vérifié inchangé par les suites
-dédiées (`test_add_end_to_end`, `test_alert_edition_choices`,
-`test_book_metadata_service`), rejouées avec ce fichier.
+dédiées (`test_add_isbn`, `test_add_creation_card`, `test_add_keyboards`,
+`test_add_screens`, `test_alert_edition_choices`, `test_book_metadata_service`),
+rejouées avec ce fichier.
 """
 
 import ast
