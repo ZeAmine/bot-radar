@@ -720,7 +720,7 @@ async def test_the_price_screen_of_a_book_is_the_creation_card_without_the_price
     assert "<b>Titre :</b> La couleur des choses" in lines
     assert "<b>Auteur :</b> Martin Panchaud" in lines
     assert "<b>Éditeur :</b> Çà et là" in lines
-    assert "<b>Mots-clés inclus :</b> la couleur des choses, couleur des choses" in lines
+    assert "<b>Mots-clés inclus :</b> couleur des choses" in lines
     assert "<b>Mots-clés exclus :</b> roman, poche, anglais, english, dvd" in lines
     assert lines[-1] == (
         "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"

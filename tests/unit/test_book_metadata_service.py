@@ -117,10 +117,10 @@ def test_generate_recommended_keywords():
     assert "warhammer" in exc
     assert "death bringer" in var
 
-    # La saga de Grimr
+    # La saga de Grimr — une seule inclusion, sans article : l'alternative n'est pas
+    # un critère de plus (le matcher exige toutes les inclusions).
     inc_g, exc_g, var_g = generate_recommended_keywords("La saga de Grimr", "Jérémie Moreau")
-    assert "la saga de grimr" in inc_g
-    assert "saga de grimr" in inc_g
+    assert inc_g == ["saga de grimr"]
     assert "roman" in exc_g
     assert "poche" in exc_g
 

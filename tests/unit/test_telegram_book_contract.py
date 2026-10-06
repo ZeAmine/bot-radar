@@ -448,13 +448,13 @@ async def test_jeton_invalide_par_nouvelle_recherche() -> None:
     assert await _search_still_current(state, second)
 
 
-def test_generation_des_mots_cles_restreint_pas_plus_le_matching() -> None:
-    """Pour un `found` (toujours avec ISBN), les critères valent ceux d'avant.
+def test_generation_des_mots_cles_accepte_les_deux_formulations_du_titre() -> None:
+    """Une seule inclusion : les deux formulations du titre sont acceptées.
 
-    La projection dérive les mots-clés du titre confirmé ; l'ancienne branche prenait
-    `notice.recommended_includes`, calculés par la **même** fonction. On le prouve par
-    le matcher lui-même : un `found` porte toujours un ISBN, et sous cette condition
-    les deux jeux d'inclusions acceptent et refusent les mêmes annonces.
+    L'ancienne branche ajoutait « la couleur des choses » **et** « couleur des choses »,
+    et le matcher exigeant toutes les inclusions, la première imposait l'article : une
+    annonce « Couleur des choses » était refusée. Ici, l'inclusion unique est la forme
+    sans article, qui est une **phrase en mots entiers** trouvée dans les deux.
     """
     from types import SimpleNamespace
 
@@ -462,25 +462,22 @@ def test_generation_des_mots_cles_restreint_pas_plus_le_matching() -> None:
     from app.domain.rules.listing_match import evaluate_listing_against_alert
     from app.services.book_metadata_service import generate_recommended_keywords
 
-    def _alert(includes: list[str]):  # noqa: ANN202 - fabrique locale
+    def _alerte(includes: list[str], excludes: list[str] | None = None):  # noqa: ANN202
         return SimpleNamespace(
             status=AlertStatus.ACTIVE,
             category=SimpleNamespace(slug="bd_comics"),
             max_item_price_cents=999_999,
             name="La couleur des choses",
-            isbn="9782369903086",
+            isbn=None,  # alerte textuelle : partial / not_found / unavailable
             include_keywords=includes,
             variants=[],
-            exclude_keywords=[],
+            exclude_keywords=excludes or [],
             accepted_conditions=[],
         )
 
-    ancien = []  # ce que la branche OpenLibrary attachait avant (aucune recommandation)
-    nouveau = list(generate_recommended_keywords("La couleur des choses", None)[0])
-
-    def _match(annonce: str, includes: list[str]) -> bool:
+    def _match(annonce: str, includes: list[str], excludes: list[str] | None = None) -> bool:
         return evaluate_listing_against_alert(
-            alert=_alert(includes),
+            alert=_alerte(includes, excludes),
             listing_category_slug="bd_comics",
             listing_normalized_title=annonce,
             listing_normalized_description=None,
@@ -488,28 +485,72 @@ def test_generation_des_mots_cles_restreint_pas_plus_le_matching() -> None:
             listing_item_price_cents=2000,
         ).is_match
 
-    for annonce in (
-        "La couleur des choses",
-        "Couleur des choses",
-        "Coffret La couleur des choses",
-        "La couleur des choses - edition integrale",
-    ):
-        assert _match(annonce, ancien) == _match(annonce, nouveau), annonce
+    genere = list(generate_recommended_keywords("La couleur des choses", None)[0])
+    assert genere == ["couleur des choses"], "une seule inclusion, sans article"
+
+    # Les deux formulations du titre, et les ajouts vendeurs, sont acceptés.
+    assert _match("La Couleur des choses", genere)
+    assert _match("Couleur des choses", genere)
+    assert _match("Coffret La couleur des choses", genere)
+    assert _match("La couleur des choses - edition integrale", genere)
+
+    # Un titre incomplet ou un autre ouvrage reste refusé.
+    assert not _match("couleur", genere)
+    assert not _match("Le chat du rabbin", genere)
+
+    # Une exclusion explicite est toujours un rejet.
+    assert not _match("La couleur des choses - coffret", genere, excludes=["coffret"])
+
+    # Les inclusions **manuelles** gardent leur sémantique : plusieurs termes
+    # indispensables restent tous requis (aucun passage global de ALL à ANY).
+    manuels = ["one piece", "tome 2"]
+    assert _match("One Piece tome 2", manuels)
+    assert not _match("One Piece tome 3", manuels)
+    assert not _match("One Piece", manuels)
 
 
-def test_repli_pendant_panne_ne_verrouille_plus_le_matching_sur_l_isbn() -> None:
-    """Conséquence assumée de T9 : l'alerte matche par titre, plus par un code non confirmé.
+def test_generation_ne_depend_pas_de_la_source_bibliographique() -> None:
+    """La même règle s'applique quel que soit le chemin qui a résolu l'ouvrage."""
+    from app.services.book_metadata_service import generate_recommended_keywords
+
+    # Aucun paramètre d'autorité n'entre dans la génération : titre seul.
+    for auteur in (None, "Martin Panchaud", "Un Auteur Inconnu"):
+        assert generate_recommended_keywords("La couleur des choses", auteur) == (
+            ["couleur des choses"],
+            generate_recommended_keywords("La couleur des choses", None)[1],
+            [],
+        )
+
+
+def test_repli_pendant_panne_surveille_par_titre_et_non_par_code() -> None:
+    """T9 : l'alerte issue d'un repli ne porte aucun code, elle surveille par titre.
 
     Avant, un repli pendant une panne BNF partait avec l'ISBN du repli et matchait par
     code. Désormais `partial` ne rattache aucun ISBN : l'alerte matche sur les termes du
-    titre demandé. C'est le prix de ne jamais confirmer une identité que la BNF n'a pas
-    donnée — et il est visible ici, pas seulement dans l'ADR.
+    titre demandé — et ces termes acceptent les deux formulations du titre, comme toute
+    alerte textuelle.
     """
     updates = draft_updates_from_search(_partial_repli_panne(), query_title="Blacksad")
 
     assert updates["isbn"] is None, "aucun code non confirmé n'est attaché"
     assert updates["include_keywords"] == ["blacksad"], "le titre pilote le matching"
     assert updates["work_choices"], "le candidat reste consultable, sans faire foi"
+
+
+def test_alertes_textuelles_acceptent_les_deux_formulations() -> None:
+    """`partial`, `not_found` et `unavailable` génèrent la même inclusion, sans article.
+
+    La vérification porte sur la projection elle-même : c'est elle qui écrit les
+    critères, et les trois statuts la traversent de la même façon.
+    """
+    for resultat in (
+        _partial_repli_panne(),
+        BookSearchResult(status=BookSearchStatus.NOT_FOUND),
+        _unavailable(),
+    ):
+        updates = draft_updates_from_search(resultat, query_title="La couleur des choses")
+        assert updates["isbn"] is None
+        assert updates["include_keywords"] == ["couleur des choses"]
 
 
 def test_natural_add_applique_la_meme_politique_que_la_saisie_manuelle() -> None:

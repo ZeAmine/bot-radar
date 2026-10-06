@@ -609,19 +609,31 @@ def clean_bnf_publisher(raw_publisher: str) -> str:
 def generate_recommended_keywords(
     title: str, _author: str | None = None
 ) -> tuple[list[str], list[str], list[str]]:
-    """Génère des mots-clés d'inclusion, d'exclusion et de variantes adaptés à l'œuvre."""
+    """Génère des mots-clés d'inclusion, d'exclusion et de variantes adaptés à l'œuvre.
+
+    **Une seule inclusion**, jamais deux formulations du même titre. La branche
+    historique ajoutait aussi la version sans article : le matcher exigant **toutes**
+    les inclusions (`all(...)`), la seconde ne pouvait rien élargir et la première
+    imposait l'article — « Couleur des choses » était refusé pour « La couleur des
+    choses ». On retient donc la forme **sans article** quand elle reste multi-mots :
+    la recherche est une phrase en mots entiers, donc cette forme est trouvée aussi
+    bien dans « Couleur des choses » que dans « La couleur des choses ». Un titre dont
+    l'article retiré ne laisse qu'un mot (« Le Chat » → « chat ») garde sa forme
+    complète : on n'élargit jamais la veille à un mot isolé.
+    """
     norm_title = normalize_text(title)
     includes: list[str] = []
 
     if norm_title:
         includes.append(norm_title)
 
-        # Si le titre commence par un article français, ajouter la version sans article
+        # La forme sans article est une **alternative** du même titre, pas un critère de
+        # plus : elle remplace la forme complète, et seulement si elle reste distincte.
         for article in ["la ", "le ", "les ", "l "]:
             if norm_title.startswith(article):
                 without_article = norm_title[len(article):].strip()
-                if without_article and without_article not in includes:
-                    includes.append(without_article)
+                if len(without_article.split()) >= 2:
+                    includes = [without_article]
                 break
 
     # Variantes automatiques (ex: "deathbringer" -> "death bringer")
