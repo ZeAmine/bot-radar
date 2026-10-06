@@ -417,6 +417,9 @@ async def test_add_end_to_end_model_isbn_of_another_book_then_edition_switch():
 
         confirmation = confirm_message.edit_text.call_args[0][0]
         assert "<b>ISBN :</b> <code>9782369904151</code>" in confirmation
+        # L'édition qu'il vient de choisir se relit dans la confirmation, à la place du
+        # récap où elle la montrait : c'est la même carte, donc la même ligne.
+        assert "<b>Édition :</b> Editions çà et là · 224 p. · 19 cm" in confirmation
         # Le livre vient d'être créé : sa cote est annoncée, pas encore chiffrée.
         assert PENDING_COTE_LINE in confirmation
     finally:
@@ -964,16 +967,22 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
         assert create_kwargs["exclude_keywords"] == ["keeping two"]
 
         # La confirmation rejoue les mots-clés qu'elle affiche : ce qui est annoncé est
-        # ce qui est stocké. Elle ne liste plus les variantes ni les exclusions — la carte
-        # de création a été ramenée aux champs de la fiche (ISBN, titre, auteur, éditeur,
-        # prix max, états, inclus) — donc l'aller-retour se vérifie sur l'inclus, seul
-        # champ de mots-clés encore affiché. Les variantes et exclusions restent
-        # vérifiées ci-dessus, sur ce qui atteint réellement la ligne créée.
+        # ce qui est stocké. Elle est la carte de récap relue, donc elle porte les mêmes
+        # lignes que lui — variantes et exclusions comprises : c'est une seule
+        # construction, elles ne peuvent plus manquer d'un côté et pas de l'autre. Les
+        # valeurs sont celles écrites en base (passées par le nettoyeur), pas celles du
+        # moteur : le brouillon est relu tel qu'il vient d'être enregistré.
         confirmation = confirm_message.edit_text.call_args[0][0]
         keywords_line = f"<b>Mots-clés inclus :</b> {', '.join(create_kwargs['include_keywords'])}"
         assert keywords_line in confirmation
-        assert "Variantes :" not in confirmation
-        assert "<b>Mots-clés exclus :</b>" not in confirmation
+        assert (
+            "<b>Variantes :</b> "
+            f"{', '.join(create_kwargs['variants'])}" in confirmation
+        )
+        assert (
+            "<b>Mots-clés exclus :</b> "
+            f"{', '.join(create_kwargs['exclude_keywords'])}" in confirmation
+        )
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -1120,6 +1129,109 @@ async def test_series_alert_starts_book_resolution_at_creation():
     assert PENDING_COTE_LINE not in confirmation
     assert "Prix du marché" not in confirmation
     assert "Prix bas constaté" not in confirmation
+
+
+@pytest.mark.asyncio
+async def test_a_missing_identifier_is_told_in_the_confirmation_too():
+    """Sans ISBN, la confirmation dit « introuvable » comme le récap, au lieu de se taire.
+
+    La ligne existait dans le récap et pas dans la confirmation, qui écrivait ses lignes
+    à la main : son silence se lisait « l'identifiant a été trouvé ». La carte n'est plus
+    qu'une construction, donc les deux écrans portent la même ligne — et aucun livre
+    n'ayant été créé, il n'y a rien à coter.
+    """
+    repos = _repositories("")
+    state = DraftState()
+    state.data = {
+        "category_slug": "bd_comics",
+        "name": "Dailyeux",
+        "author": "Whoogy's",
+        "isbn": None,
+        "include_keywords": ["dailyeux"],
+        "max_item_price_cents": 3000,
+    }
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    confirm_message = MagicMock(spec=Message)
+    confirm_message.edit_text = AsyncMock()
+    confirm_callback = MagicMock()
+    confirm_callback.data = "alert_create_confirm"
+    confirm_callback.message = confirm_message
+    confirm_callback.answer = AsyncMock()
+
+    with patch("app.use_cases.ingest_listing.link_books_from_bnf", new_callable=AsyncMock):
+        patches = _patched(repos, MagicMock(), MagicMock())
+        for entered in patches:
+            entered.start()
+        try:
+            await save_alert(confirm_callback, state, db_user, db_session)
+            await _drain(repos["tasks"])
+        finally:
+            for entered in reversed(patches):
+                entered.stop()
+
+    confirmation = confirm_message.edit_text.call_args[0][0]
+    assert (
+        "<b>ISBN :</b> introuvable — la BNF ne catalogue pas cet ouvrage" in confirmation
+    )
+    assert "<b>Titre :</b> Dailyeux" in confirmation
+    assert PENDING_COTE_LINE not in confirmation
+    repos["book_repo"].create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_draft_note_stays_on_the_recap_and_never_reaches_the_confirmation():
+    """Le brouillon peut nommer son bouton : l'écran d'après ne repropose pas ce geste.
+
+    C'est la seule information que le récap et la confirmation ne partagent pas, et elle
+    l'est par décision : la note renvoie au bouton « ✨ Variantes & Exclusions IA », qui
+    n'est plus sous la carte une fois l'alerte créée, et elle peut parler d'une alerte à
+    créer. La carte, elle, reste la même — la confirmation écarte une donnée du
+    brouillon, elle ne réécrit pas son rendu.
+    """
+    note = (
+        "⚠️ L'IA n'a pas répondu après une relance : cette alerte sera créée sans "
+        "variante ni exclusion. Appuie sur « ✨ Variantes & Exclusions IA » pour réessayer."
+    )
+    repos = _repositories(BNF_EDITION.isbn13)
+    state = DraftState()
+    state.data = {
+        "category_slug": "bd_comics",
+        "name": "La couleur des choses",
+        "author": "Martin Panchaud",
+        "isbn": BNF_EDITION.isbn13,
+        "include_keywords": ["la couleur des choses"],
+        "max_item_price_cents": 1200,
+        "keyword_note": note,
+    }
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    recap, _keyboard = build_creation_recap(state.data)
+    assert note in recap
+
+    confirm_message = MagicMock(spec=Message)
+    confirm_message.edit_text = AsyncMock()
+    confirm_callback = MagicMock()
+    confirm_callback.data = "alert_create_confirm"
+    confirm_callback.message = confirm_message
+    confirm_callback.answer = AsyncMock()
+
+    patches = _patched(repos, MagicMock(), MagicMock())
+    for entered in patches:
+        entered.start()
+    try:
+        await save_alert(confirm_callback, state, db_user, db_session)
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+    confirmation = confirm_message.edit_text.call_args[0][0]
+    assert note not in confirmation
+    assert "Variantes & Exclusions IA" not in confirmation
+    # La fiche, elle, est bien relue : les deux écrans restent la même carte.
+    assert "<b>Titre :</b> La couleur des choses" in confirmation
 
 
 @pytest.mark.asyncio

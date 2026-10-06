@@ -68,6 +68,16 @@ logger = logging.getLogger(__name__)
 # fiche restent identiques.
 RECAP_TITLE = "➕ <b>Créer une alerte</b>"
 
+# Titre de la confirmation : la carte est la même, relue après l'enregistrement. Seul
+# l'en-tête change — c'est ce que l'écran annonce —, et il est écrit ici pour qu'aucun
+# des deux rendus n'en invente un second.
+ALERT_CREATED_TITLE = "✅ <b>Alerte créée</b>"
+
+# Pied du récap : une consigne, donc en italique (charte, règle 2). Il vit à côté du
+# titre parce que `creation_card` le pose sur les deux écrans ; la confirmation a le
+# sien, et les deux arrivent par le même paramètre, donc aucun ne peut l'oublier.
+RECAP_FOOTER = "<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"
+
 # Indication d'une série : ce que l'alerte surveille, non une information du livre.
 # C'est une phrase, pas une donnée de fiche : elle rend la disparition de l'identifiant
 # intelligible (« l'ISBN est omis, et voici pourquoi »), donc elle vit **hors** de la
@@ -152,44 +162,60 @@ def _join_escaped(values: list[str]) -> str:
     return ", ".join(html.escape(str(value)) for value in values)
 
 
-def format_semi_auto_recap(
-    title: str,
-    author: str | None,
-    publisher: str | None,
-    isbn: str | None,
-    max_price_cents: int | None,
-    include_keywords: list[str],
-    exclude_keywords: list[str],
-    conditions: list[str] | None = None,
-    variants: list[str] | None = None,
-    is_series: bool = False,
-    isbn_note: str | None = None,
-    edition_alternatives: list[dict[str, Any]] | None = None,
-    keyword_note: str | None = None,
-    expects_isbn: bool = True,
+def creation_card(
+    data: dict[str, Any],
+    *,
+    header: str = RECAP_TITLE,
+    footer: str = RECAP_FOOTER,
+    extra_lines: list[str] | None = None,
 ) -> str:
-    """Carte compacte du brouillon, telle qu'affichée avant « Créer l'alerte ».
+    """La carte de création, construite **une fois** : récap et confirmation lisent celle-ci.
 
-    La carte s'ouvre sur `RECAP_TITLE`, puis une ligne par information, du plus
-    structurant au plus accessoire : identifiant, identité de l'œuvre — l'édition
-    surveillée comprise, quand il y a un choix à faire —, puis les critères de veille.
-    Les états sont abrégés (`format_conditions`) pour que la carte tienne à l'écran
-    sans devenir un pavé.
+    `data` porte les clés du brouillon FSM — `name`, `author`, `publisher`, `isbn`,
+    `isbn_note`, `is_series`, `category_slug`, `edition_alternatives`,
+    `max_item_price_cents`, `selected_conditions`, `include_keywords`,
+    `exclude_keywords`, `variants`, `keyword_note`. Un appelant qui tient des champs et
+    non un brouillon passe `expects_isbn` explicitement, à la place de `category_slug`.
 
-    Trois textes vivent **hors** de la liste des informations, en italique et isolés par
-    une ligne vide (charte, règle 3) : `SERIES_INDICATION` (ce que l'alerte surveille),
-    `isbn_note` (provenance d'ISBN douteuse, repli de source) et `keyword_note` (ce que
-    la recherche de mots-clés a ou n'a pas trouvé). `isbn_note` passe **au-dessus** de
-    l'ISBN, dont il conditionne la confiance ; collé entre l'identifiant et le titre, il
-    ne se lisait pas. Le pied de confirmation, lui, est une consigne, donc en italique
-    (règle 2).
+    Le récap et la confirmation divergeaient par trois cas — la ligne d'édition,
+    l'identifiant introuvable et le bloc de cote — parce que deux blocs de code les
+    écrivaient chacun de leur côté : une correction d'un côté laissait l'autre écran
+    derrière. Ici, il n'y a plus qu'un texte. `header` et `footer` nomment l'écran et
+    ce qu'il attend, `extra_lines` reçoit ce qui n'appartient qu'à la confirmation — la
+    cote du livre créé, ou son attente. Une ligne ajoutée à un écran s'ajoute à
+    l'autre ; elle ne peut plus y manquer.
+
+    Ordre de la carte, du plus structurant au plus accessoire : l'indication de série
+    ou l'avertissement d'identité — **hors** de la liste des informations, en italique
+    et isolés par une ligne vide (charte, règle 3) —, l'identifiant, l'identité de
+    l'œuvre (l'édition surveillée comprise, quand il y a un choix à faire), puis les
+    critères de veille, les notes du brouillon, et enfin le bloc d'issue avant le pied.
     """
-    price_str = format_price_cents(max_price_cents)
-    cond_display = format_conditions(
-        conditions if conditions else DEFAULT_BD_CONDITIONS
+    title = data.get("name", "Alerte")
+    author = data.get("author")
+    publisher = data.get("publisher")
+    isbn = data.get("isbn")
+    isbn_note = data.get("isbn_note")
+    is_series = data.get("is_series", False)
+    edition_alternatives = data.get("edition_alternatives")
+    include_keywords = data.get("include_keywords", [])
+    exclude_keywords = data.get("exclude_keywords", [])
+    variants = data.get("variants")
+    keyword_note = data.get("keyword_note")
+    # Une alerte hors livres — un objet, un jeu — n'a pas d'identifiant à trouver : sa
+    # catégorie le dit, et un appelant sans brouillon le dit par `expects_isbn`.
+    expects_isbn = data.get(
+        "expects_isbn",
+        data.get("category_slug", CategorySlug.BD_COMICS.value)
+        == CategorySlug.BD_COMICS.value,
     )
 
-    lines: list[str] = [RECAP_TITLE, ""]
+    price_str = format_price_cents(data.get("max_item_price_cents"))
+    cond_display = format_conditions(
+        data.get("selected_conditions") or DEFAULT_BD_CONDITIONS
+    )
+
+    lines: list[str] = [header, ""]
     # L'indication de série ouvre la carte, isolée par une ligne vide : elle dit ce que
     # l'alerte surveille, et pourquoi elle n'a pas d'identifiant à montrer. Sa place
     # n'est pas dans la liste — elle ne décrit ni le titre, ni l'auteur, ni l'éditeur.
@@ -244,12 +270,59 @@ def format_semi_auto_recap(
     if keyword_note:
         lines.extend(["", f"<i>{keyword_note}</i>"])
 
-    # Le pied de confirmation est porté par la carte elle-même : tous les chemins qui
-    # aboutissent ici finissent sur le même clavier, donc une seule formulation, et
-    # aucune ne peut la laisser de côté. L'alerte n'est pas encore créée : le texte
-    # ne dit pas le contraire. C'est une consigne, donc en italique (charte).
-    lines.extend(["", "<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"])
+    # Ce qui n'appartient qu'à un écran arrive par `extra_lines` — le bloc de cote de
+    # la confirmation — juste avant le pied : c'est ce que la carte vient de produire,
+    # pas un critère de veille, donc cela ferme la liste des informations.
+    if extra_lines:
+        lines.extend(["", *extra_lines])
+
+    # Le pied nomme ce que l'écran attend : le récap se relit avant de valider, la
+    # confirmation annonce ce qui va suivre. Les deux arrivent par le même paramètre,
+    # donc la carte ne peut pas en oublier un. C'est une consigne, donc en italique
+    # (charte, règle 2).
+    lines.extend(["", footer])
     return "\n".join(lines)
+
+
+def format_semi_auto_recap(
+    title: str,
+    author: str | None,
+    publisher: str | None,
+    isbn: str | None,
+    max_price_cents: int | None,
+    include_keywords: list[str],
+    exclude_keywords: list[str],
+    conditions: list[str] | None = None,
+    variants: list[str] | None = None,
+    is_series: bool = False,
+    isbn_note: str | None = None,
+    edition_alternatives: list[dict[str, Any]] | None = None,
+    keyword_note: str | None = None,
+    expects_isbn: bool = True,
+) -> str:
+    """Le récap rendu depuis des champs explicites, et non depuis un brouillon.
+
+    Même carte que `creation_card` : c'est son seul rendu, donc un appelant qui tient
+    des champs ne peut pas afficher autre chose que l'écran qui lit le brouillon.
+    """
+    return creation_card(
+        {
+            "name": title,
+            "author": author,
+            "publisher": publisher,
+            "isbn": isbn,
+            "isbn_note": isbn_note,
+            "is_series": is_series,
+            "expects_isbn": expects_isbn,
+            "edition_alternatives": edition_alternatives,
+            "max_item_price_cents": max_price_cents,
+            "selected_conditions": conditions,
+            "include_keywords": include_keywords,
+            "exclude_keywords": exclude_keywords,
+            "variants": variants,
+            "keyword_note": keyword_note,
+        }
+    )
 
 
 def build_edition_choices(resolution: Any) -> list[dict[str, Any]]:
@@ -445,29 +518,6 @@ def format_edition_line(
     ]
 
 
-def recap_from_state(data: dict[str, Any]) -> str:
-    """Construit le récap de création à partir du brouillon FSM (rendu unique)."""
-    return format_semi_auto_recap(
-        title=data.get("name", "Alerte"),
-        author=data.get("author"),
-        publisher=data.get("publisher"),
-        isbn=data.get("isbn"),
-        max_price_cents=data.get("max_item_price_cents"),
-        include_keywords=data.get("include_keywords", []),
-        exclude_keywords=data.get("exclude_keywords", []),
-        conditions=data.get("selected_conditions"),
-        variants=data.get("variants"),
-        is_series=data.get("is_series", False),
-        isbn_note=data.get("isbn_note"),
-        edition_alternatives=data.get("edition_alternatives"),
-        # La note accompagne le brouillon plutôt que l'appel : changer d'édition ou
-        # modifier un prix re-rend la carte, et l'explication doit survivre au rendu.
-        keyword_note=data.get("keyword_note"),
-        expects_isbn=data.get("category_slug", CategorySlug.BD_COMICS.value)
-        == CategorySlug.BD_COMICS.value,
-    )
-
-
 def creation_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
     """Clavier du récap : œuvres homonymes, éditions numérotées, puis validation.
 
@@ -493,9 +543,10 @@ def build_creation_recap(data: dict[str, Any]) -> tuple[str, InlineKeyboardMarku
     Cliquer une édition, corriger un prix, changer un mot-clé ou attendre la
     recherche de variantes ne change que les données de `data`. Le rendu reste
     identique : aucun de ces gestes ne peut produire une carte différente de celle
-    qu'il vient de remplacer, ni laisser un en-tête de chemin concurrence.
+    qu'il vient de remplacer, ni laisser un en-tête de chemin concurrence. La
+    confirmation de création lit la même carte, avec son propre en-tête et sa cote.
     """
-    return recap_from_state(data), creation_keyboard(data)
+    return creation_card(data), creation_keyboard(data)
 
 
 def format_alerts_list_text(
