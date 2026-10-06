@@ -17,7 +17,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
-from tests.add_fakes import UnloadedBook, cached_market_price
+from tests.add_fakes import UnloadedBook, cached_market_price, fake_book_search
 
 
 def repositories(
@@ -95,8 +95,8 @@ def patched(repos: dict, bnf: MagicMock, client: MagicMock):
         ),
         patch("app.services.ai.modules.natural_add.natural_add_module.client", client),
         patch(
-            "app.services.ai.modules.natural_add.BookMetadataService",
-            return_value=bnf,
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
         ),
         patch(
             "app.bot.handlers.alerts_create.keyword_variants_module."

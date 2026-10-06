@@ -53,7 +53,6 @@ from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
-    BookMetadata,
     format_edition_fragments,
     generate_recommended_keywords,
     parse_query_title_and_author,
@@ -63,6 +62,7 @@ from app.use_cases.book_search import (
     BookSearchUseCase,
     BookWorkChoice,
     InvalidIsbnError,
+    metadata_from_result,
 )
 from app.utils.isbn import extract_clean_isbn
 
@@ -877,13 +877,8 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
         result = None
 
     if result is not None and result.status == BookSearchStatus.FOUND:
-        confirmed = result.confirmed
-        meta = BookMetadata(
-            title=confirmed.title if confirmed else title,
-            author=confirmed.author if confirmed else None,
-            publisher=confirmed.publisher if confirmed else None,
-            isbn13=result.reference.isbn13 if result.reference else isbn.strip(),
-        )
+        meta = metadata_from_result(result)
+        assert meta is not None
         return IsbnRealignment(
             updates={
                 # Le spread vient d'abord : il vide la fiche de l'ouvrage précédent, et
@@ -1168,14 +1163,9 @@ async def process_bd_query_lookup(
     )
     # Le BookContext n'est alimenté que par une identité confirmée
     if result.status == BookSearchStatus.FOUND and result.confirmed:
-        meta = BookMetadata(
-            title=result.confirmed.title,
-            author=result.confirmed.author,
-            publisher=result.confirmed.publisher,
-            isbn13=result.reference.isbn13 if result.reference else None,
-            publication_year=result.confirmed.publication_year,
-        )
-        updates["book_context"] = book_context_from(meta).model_dump()
+        meta = metadata_from_result(result)
+        if meta is not None:
+            updates["book_context"] = book_context_from(meta).model_dump()
     await state.update_data(**updates)
 
     if inline_price_cents is not None:

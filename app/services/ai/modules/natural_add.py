@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.constants import STANDARD_CONDITIONS, CategorySlug
+from app.domain.enums import BookSearchStatus
 from app.domain.rules.series_detection import SeriesSignal
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import (
@@ -17,12 +18,14 @@ from app.services.ai.schemas import (
 )
 from app.services.book_metadata_service import (
     BookMetadata,
-    BookMetadataService,
     EditionAlternative,
     WorkAlternative,
-    ambiguity_note,
     parse_query_title_and_author,
-    provenance_note,
+)
+from app.use_cases.book_search import (
+    BookSearchResult,
+    BookSearchUseCase,
+    metadata_from_result,
 )
 from app.utils.isbn import extract_clean_isbn, is_valid_isbn, normalize_isbn
 
@@ -82,6 +85,34 @@ SYSTEM_PROMPT = (
     "Réponds TOUJOURS avec un objet JSON valide contenant exactement "
     "ces champs."
 )
+
+
+def _editions_of(result: BookSearchResult) -> list[EditionAlternative]:
+    """Éditions du contrat converties pour le brouillon `natural_add`."""
+    return [
+        EditionAlternative(
+            isbn13=edition.isbn13,
+            publisher=edition.publisher,
+            publication_year=edition.publication_year,
+            format_detail=edition.format_detail,
+        )
+        for edition in result.editions
+    ]
+
+
+def _works_of(result: BookSearchResult) -> list[WorkAlternative]:
+    """Œuvres homonymes du contrat converties pour le brouillon `natural_add`."""
+    return [
+        WorkAlternative(
+            isbn13=work.isbn13,
+            title=work.title,
+            author=work.author,
+            publisher=work.publisher,
+            publication_year=work.publication_year,
+        )
+        for work in result.works
+        if work.isbn13
+    ]
 
 
 @dataclass(frozen=True)
@@ -280,41 +311,43 @@ class NaturalAddModule(BaseAIModule):
             return _ResolvedWork()
 
         typed_isbn, ai_isbn = candidates
-        service = BookMetadataService()
+        use_case = BookSearchUseCase()
 
-        resolution = None
+        result = None
         try:
-            resolution = await service.resolve_for_alert(title, author_hint)
+            result = await use_case.search_by_title(title, author_hint)
         except Exception as exc:
             logger.warning("Résolution BNF impossible pour « %s » : %s", title, exc)
 
-        ambiguous = resolution is not None and resolution.is_ambiguous
-        work_choices = resolution.work_choices() if ambiguous and resolution else []
+        ambiguous = result is not None and result.status == BookSearchStatus.AMBIGUOUS
+        work_choices = _works_of(result) if ambiguous and result else []
+        confirmed = metadata_from_result(result) if result else None
 
         for candidate in (typed_isbn, ai_isbn):
-            if not candidate or (resolution and resolution.best.isbn13 == candidate):
+            if not candidate or (confirmed is not None and confirmed.isbn13 == candidate):
                 continue
             try:
-                verified = await service.verify_isbn(candidate, title)
+                isbn_result = await use_case.search_by_isbn(candidate, title)
             except Exception as exc:
                 logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", candidate, exc)
                 continue
-            if verified:
+            verified = metadata_from_result(isbn_result)
+            if verified is not None:
                 # Les éditions concurrentes ne valent que si le titre désigne une œuvre
                 # unique : sinon elles décrivent l'homonyme retenu par le score, pas
                 # l'ouvrage que l'ISBN vient d'identifier.
                 return _ResolvedWork(
                     isbn13=candidate,
                     book=verified,
-                    isbn_note=provenance_note(verified),
+                    isbn_note=isbn_result.note,
                     edition_alternatives=(
-                        [] if ambiguous or resolution is None else resolution.editions()
+                        [] if ambiguous or result is None else _editions_of(result)
                     ),
                     work_choices=work_choices,
                 )
 
-        if resolution and ambiguous:
-            note = ambiguity_note(resolution) or ""
+        if ambiguous and result is not None:
+            note = result.note or ""
             if typed_isbn:
                 # L'utilisateur a lui-même donné cet ISBN : le garder vaut mieux que de
                 # perdre sa saisie. La BNF se tait sur un ouvrage récent, ce n'est pas
@@ -326,18 +359,18 @@ class NaturalAddModule(BaseAIModule):
                 )
             return _ResolvedWork(isbn_note=note, work_choices=work_choices)
 
-        if resolution:
+        if confirmed is not None and result is not None:
             # Les éditions concurrentes sont portées par `edition_alternatives`, que le
             # récap transforme en boutons numérotés : les redire ici en texte ne
             # produirait qu'un doublon de l'information déjà rendue.
             return _ResolvedWork(
-                isbn13=resolution.best.isbn13,
-                book=resolution.best,
-                isbn_note=provenance_note(resolution.best),
-                edition_alternatives=resolution.editions(),
+                isbn13=result.reference.isbn13 if result.reference else confirmed.isbn13,
+                book=confirmed,
+                isbn_note=result.note,
+                edition_alternatives=_editions_of(result),
                 # La nature de l'œuvre se lit sur toute la résolution, notices voisines
                 # comprises : la retenue ne porte pas toujours le numéro qui la trahit.
-                series=resolution.series_signal(title),
+                series=SeriesSignal(is_series=result.is_series),
             )
 
         if typed_isbn:

@@ -446,6 +446,28 @@ def result_from_verdict_report(
     )
 
 
+def metadata_from_result(result: BookSearchResult) -> BookMetadata | None:
+    """Notice d'autorité d'un résultat `found`, pour les appelants qui en veulent une.
+
+    Projection unique partagée (Telegram, natural_add) : elle refuse tout statut
+    qui n'est pas `found`, donc elle ne peut pas faire passer un candidat de repli
+    pour une identité confirmée.
+    """
+    if result.status != BookSearchStatus.FOUND or result.confirmed is None:
+        return None
+    return BookMetadata(
+        title=result.confirmed.title,
+        author=result.confirmed.author,
+        publisher=result.confirmed.publisher,
+        isbn13=result.reference.isbn13 if result.reference else result.confirmed.isbn13,
+        publication_year=result.confirmed.publication_year,
+        # La mise en forme appartient à l'édition (elle change d'une édition à l'autre) :
+        # elle vit sur la référence, pas sur l'œuvre.
+        format_detail=result.reference.format_detail if result.reference else None,
+        source=result.confirmed.provenance or AUTORITE_BNF,
+    )
+
+
 class BookSearchUseCase:
     """Orchestration de recherche partagée (futurs endpoints et Telegram).
 

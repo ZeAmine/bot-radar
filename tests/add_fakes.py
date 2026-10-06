@@ -168,7 +168,11 @@ def fake_book_search(
     passer le mapping (statuts, `confirmed`, T9, série). Ici, les adaptateurs réels
     tournent, donc une résolution de série produit bien `is_series=True`.
     """
-    from app.services.book_metadata_service import BibliographicReport
+    from app.services.book_metadata_service import (
+        AUTORITE_BNF,
+        BibliographicReport,
+        IsbnVerdict,
+    )
     from app.use_cases.book_search import result_from_report, result_from_verdict_report
 
     class _UseCase:
@@ -181,6 +185,17 @@ def fake_book_search(
 
         async def search_by_isbn(self, isbn: str, expected_title: str | None = None):
             verdict = await bnf.confirm_isbn_for_title(isbn, expected_title)
+            if not isinstance(verdict, IsbnVerdict):
+                # Service simulé d'un test écrit pour l'ancien joint (`verify_isbn`) :
+                # on dérive le verdict de sa réponse, sans rien changer au code réel.
+                notice = await bnf.verify_isbn(isbn, expected_title or "")
+                verdict = (
+                    IsbnVerdict(
+                        outcome="confirme", notice=notice, consulted=(AUTORITE_BNF,)
+                    )
+                    if notice is not None
+                    else IsbnVerdict(outcome="inconnu", consulted=(AUTORITE_BNF,))
+                )
             return result_from_verdict_report(
                 BibliographicReport(kind="isbn", verdict=verdict), expected_title
             )

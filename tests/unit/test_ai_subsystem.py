@@ -18,6 +18,7 @@ from app.services.book_metadata_service import (
     BookMetadataService,
     BookResolution,
 )
+from tests.add_fakes import fake_book_search
 from tests.fakes_catalogue import FakeCatalogueClient
 from tests.fakes_llm import FakeLLM, FlakyLLM
 
@@ -175,8 +176,9 @@ async def test_natural_add_isbn_overruled_by_bnf():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("la couleur des choses. Max 12 €.")
 
     assert res is not None
@@ -213,8 +215,9 @@ async def test_natural_add_flags_openlibrary_fallback_provenance():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("klara and the sun max 15€")
 
     assert res is not None
@@ -245,8 +248,9 @@ async def test_natural_add_typed_isbn_wins_when_confirmed():
     bnf.verify_isbn = AsyncMock(return_value=PANCHAUD_EDITION)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("9782369903086 max 12€")
 
     assert res is not None
@@ -271,8 +275,9 @@ async def test_natural_add_skips_redundant_verification_of_resolved_isbn():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("9782369903086 max 12€")
 
     assert res is not None
@@ -297,8 +302,9 @@ async def test_natural_add_without_verifiable_isbn_falls_back_to_title():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("Oeuvre introuvable")
 
     assert res is not None
@@ -333,8 +339,9 @@ async def test_natural_add_flags_a_work_no_authority_identifies():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("whoogys dailycieux, 30€")
 
     assert res is not None
@@ -361,8 +368,9 @@ async def test_natural_add_drops_ai_isbn_with_invalid_check_digit():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("One Piece")
 
     assert res is not None
@@ -388,8 +396,9 @@ async def test_natural_add_skips_isbn_for_series_and_non_book_categories():
     bnf.verify_isbn = AsyncMock()
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("tous les tomes de One Piece")
 
     assert res is not None
@@ -436,8 +445,9 @@ async def test_natural_add_detects_the_series_the_notice_reveals():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("Absolute Martian Manhunter")
 
     assert res is not None
@@ -524,8 +534,9 @@ async def test_natural_add_keeps_the_isbn_when_a_tome_is_requested():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("Absolute Martian Manhunter Tome 2")
 
     assert res is not None
@@ -733,8 +744,9 @@ async def test_natural_add_exposes_competing_editions():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("la couleur des choses. Max 12 €.")
 
     assert res is not None
@@ -759,8 +771,9 @@ async def test_natural_add_without_alternatives_leaves_empty_list():
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("la couleur des choses. Max 12 €.")
 
     assert res is not None
@@ -815,8 +828,9 @@ async def test_natural_add_attaches_nothing_when_the_title_is_a_homonym():
     bnf = _homonym_bnf()
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("les enfants perdus. Max 12 €")
 
     assert res is not None
@@ -849,8 +863,9 @@ async def test_natural_add_reads_the_author_the_user_typed():
     )
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("les enfants perdus de Nef. Max 12 €")
 
     assert res is not None
@@ -868,8 +883,9 @@ async def test_natural_add_keeps_a_typed_isbn_on_a_homonymic_title():
     bnf = _homonym_bnf()
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("9782810206087 les enfants perdus")
 
     assert res is not None
@@ -896,8 +912,9 @@ async def test_natural_add_bnf_notice_overrules_the_author_guessed_by_the_model(
     bnf.verify_isbn = AsyncMock(return_value=None)
 
     with patch.object(natural_add_module, "client", mock_client), patch(
-        "app.services.ai.modules.natural_add.BookMetadataService", return_value=bnf
-    ):
+            "app.services.ai.modules.natural_add.BookSearchUseCase",
+            fake_book_search(bnf),
+        ):
         res = await natural_add_module.parse_prompt("la couleur des choses")
 
     assert res is not None
