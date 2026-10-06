@@ -20,8 +20,11 @@ from app.bot.labels import (
     FIELD_ISBN,
     FIELD_MAX_PRICE,
     FIELD_PUBLISHER,
+    FIELD_STATUS,
     FIELD_TITLE,
     FIELD_VARIANTS,
+    STATUS_ACTIVE,
+    STATUS_PAUSED,
     TITLE_ALERT_EXISTS,
     format_conditions,
     format_price_cents,
@@ -575,7 +578,7 @@ def format_alerts_list_text(
     lines.append("")
     start_num = current_page * 10 + 1
     for i, a in enumerate(alerts, start=start_num):
-        status_text = "Active" if a.status == AlertStatus.ACTIVE else "En pause"
+        status_text = STATUS_ACTIVE if a.status == AlertStatus.ACTIVE else STATUS_PAUSED
         cat_icon = (
             f"{a.category.emoji} "
             if getattr(a, "category", None) and getattr(a.category, "emoji", None)
@@ -726,7 +729,7 @@ async def render_existing_alert_response(
     Arrêt net et binaire : aucune alerte concurrente n'est créée, aucune recherche de variantes
     n'est déclenchée, et le récapitulatif de confirmation de création n'est jamais affiché.
     """
-    status_text = "Active" if existing.status == AlertStatus.ACTIVE else "En pause"
+    status_text = STATUS_ACTIVE if existing.status == AlertStatus.ACTIVE else STATUS_PAUSED
     price_str = format_price_cents(existing.max_item_price_cents)
 
     category_slug = (
@@ -748,7 +751,7 @@ async def render_existing_alert_response(
         item_label = f"Ce produit ({cat_text})"
 
     isbn_line = (
-        f"<b>ISBN :</b> <code>{html.escape(existing.isbn)}</code>\n"
+        f"<b>{FIELD_ISBN} :</b> <code>{html.escape(existing.isbn)}</code>\n"
         if existing.isbn
         else ""
     )
@@ -767,7 +770,7 @@ async def render_existing_alert_response(
             f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
             f"{isbn_line}"
             f"<b>Prix maximum actuel :</b> {price_str}\n"
-            f"<b>Statut :</b> {status_text}\n\n"
+            f"<b>{FIELD_STATUS} :</b> {status_text}\n\n"
             f"Tu as indiqué un prix de {new_price_str}.\n"
             "Souhaites-tu mettre à jour le prix maximum de cette alerte existante ?"
         )
@@ -798,7 +801,7 @@ async def render_existing_alert_response(
             f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
             f"{isbn_line}"
             f"<b>Prix maximum actuel :</b> {price_str}\n"
-            f"<b>Statut :</b> {status_text}\n\n"
+            f"<b>{FIELD_STATUS} :</b> {status_text}\n\n"
             "Pour modifier son prix maximum, entre un nouveau montant "
             "ou choisis Conserver sans modification."
         )
@@ -959,12 +962,14 @@ async def process_bd_query_lookup(
     if series.is_series:
         # Une série n'affiche pas d'ISBN : c'est le choix, pas un oubli.
         identity_lines.append(f"📖 {SERIES_INDICATION}")
-    identity_lines.append(f"✍️ <b>Auteur :</b> {html.escape(meta.author or 'Non spécifié')}")
+    identity_lines.append(f"✍️ <b>{FIELD_AUTHOR} :</b> {html.escape(meta.author or 'Non spécifié')}")
     if not series.is_series:
         identity_lines.append(
-            f"🏢 <b>Éditeur :</b> {html.escape(meta.publisher or 'Non spécifié')}"
+            f"🏢 <b>{FIELD_PUBLISHER} :</b> {html.escape(meta.publisher or 'Non spécifié')}"
         )
-        identity_lines.append(f"🔢 <b>ISBN :</b> <code>{meta.isbn13 or 'Non trouvé'}</code>")
+        identity_lines.append(
+            f"🔢 <b>{FIELD_ISBN} :</b> <code>{meta.isbn13 or 'Non trouvé'}</code>"
+        )
     prompt = (
         "\n".join(identity_lines)
         + "\n\n"

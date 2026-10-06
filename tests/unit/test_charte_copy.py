@@ -438,6 +438,84 @@ def test_a_recap_that_is_not_a_series_stays_exactly_as_it_was():
 
 
 # ---------------------------------------------------------------------------
+# Libellés de charte : labels.py est la source unique, aucun handler ne les recopie
+# ---------------------------------------------------------------------------
+
+
+def _handler_text_literals() -> list[tuple[str, int, str]]:
+    """Littéraux de texte rendus par les handlers, docstrings exclues.
+
+    Un libellé cité dans une docstring ne s'affiche nulle part : le verrou doit
+    porter sur ce que l'utilisateur lit, pas sur le source entier. Les balises
+    sont retirées avant comparaison pour que `<b>ISBN :</b>` se lise « ISBN : ».
+    """
+    import ast
+    import pathlib
+    import re
+
+    literals: list[tuple[str, int, str]] = []
+    for path in sorted(pathlib.Path("app/bot/handlers").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings: set[int] = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body:
+                first = body[0]
+                if (
+                    isinstance(first, ast.Expr)
+                    and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)
+                ):
+                    docstrings.add(id(first.value))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
+                literals.append(
+                    (path.name, node.lineno, re.sub(r"<[^>]+>", "", node.value))
+                )
+    return literals
+
+
+def test_no_charte_label_is_hardcoded_in_a_handler():
+    """Un libellé de charte vient de `labels` : aucun handler ne le recopie en dur.
+
+    Deux façons de dériver, une seule règle de détection : le libellé **tel quel**
+    (un bouton du clavier d'édition, un titre d'écran de saisie) ou le libellé suivi
+    de son séparateur (« ISBN : », « Statut : ») dans une ligne rendue. Le verrou
+    lit les libellés du module — `FIELD_*` et `STATUS_*`, les statuts s'étant révélés
+    réécrits en dur au même endroit — et non une liste recopiée : un libellé ajouté
+    à `labels.py` est protégé dès sa naissance, et un écran qui réécrirait
+    « Mots-clés exclus » échoue ici au lieu de dériver silencieusement.
+    """
+    import re
+
+    import app.bot.labels as labels
+
+    charte_labels = {
+        name: value
+        for name, value in vars(labels).items()
+        if name.startswith(("FIELD_", "STATUS_")) and isinstance(value, str)
+    }
+    assert charte_labels, "labels n'expose aucun FIELD_/STATUS_ : le verrou ne verrouille rien"
+
+    violations = []
+    for file_name, line, text in _handler_text_literals():
+        for name, label in charte_labels.items():
+            if text.strip() == label or re.search(re.escape(label) + r"\s*:", text):
+                violations.append(
+                    f"{file_name}:{line} — {name} {label!r} écrit en dur : {text.strip()[:60]!r}"
+                )
+
+    assert not violations, (
+        "Libellé(s) de charte recopié(s) en dur dans un handler — "
+        "importer depuis app.bot.labels :\n" + "\n".join(violations)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Récap et confirmation : une seule carte, donc aucun des deux écrans ne peut
 # taire un cas que l'autre affiche — la ligne d'édition, l'identifiant introuvable.
 # ---------------------------------------------------------------------------
