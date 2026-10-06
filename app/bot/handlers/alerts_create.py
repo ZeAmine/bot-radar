@@ -51,7 +51,7 @@ from app.services.alert_service import (
 )
 from app.services.book_market_pricing import schedule_book_pricing
 from app.services.market_price_service import (
-    PENDING_COTE_LINE,
+    cote_absence_line,
     format_cote_lines,
 )
 from app.utils.isbn import extract_clean_isbn
@@ -819,23 +819,23 @@ async def save_alert(
             # de l'alerte, pour que les tomes identifiés soient cotés avant l'annonce.
             _schedule_series_resolution(alert_id=alert.id, name=name, author=author)
 
-        # La cote déjà connue est affichée telle quelle ; sinon la confirmation
-        # annonce qu'elle arrive, plutôt que de laisser croire qu'il n'y a pas de prix.
-        # Une alerte de série n'a pas encore de livre tant qu'aucun tome n'a été
-        # identifié : dans ce cas, il n'y a rien à coter, donc rien à annoncer.
-        # Ni marchand, ni date : la même cote est servie par plusieurs plateformes,
-        # et `historical_low_at` est réécrit à chaque rafraîchissement de la cote —
-        # elle daterait du moment de la création, pas du prix constaté.
+        # La cote déjà connue est affichée telle quelle ; sinon la confirmation dit
+        # **laquelle** des deux attentes elle traverse — une cote en cours, ou une
+        # passe qui n'a rien trouvé — plutôt que de laisser croire à une cote qui
+        # arrive. Une alerte de série n'a pas encore de livre tant qu'aucun tome n'a
+        # été identifié : dans ce cas, il n'y a rien à coter, donc rien à annoncer.
+        # Ni marchand, ni prix daté : la même cote est servie par plusieurs
+        # plateformes, et `historical_low_at` est réécrit à chaque rafraîchissement —
+        # une date de prix daterait de la création. La date de la ligne d'absence,
+        # elle, est celle du relevé qui l'a constatée.
         cote_lines = format_cote_lines(book)
+        absence_line = cote_absence_line(book)
+        extra_lines = cote_lines or ([absence_line] if absence_line else [])
         resp_text = creation_card(
             stored_draft,
             header=ALERT_CREATED_TITLE,
             footer=_CONFIRMATION_FOOTER,
-            extra_lines=(
-                (cote_lines or [PENDING_COTE_LINE])
-                if (cote_lines or book is not None)
-                else None
-            ),
+            extra_lines=extra_lines or None,
         )
     else:
         # Tech ou Vêtements (sans livre ni cote de livres)

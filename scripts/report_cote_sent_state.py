@@ -12,6 +12,8 @@ compteurs et rapporte la répartition :
 
 - `real` : une cote chiffrée a été affichée ;
 - `pending` : un livre était identifié, sa cote en cours de calcul ;
+- `no_offer` : un livre était identifié, une passe a eu lieu et n'a trouvé aucune
+offre — l'attente n'est plus la bonne lecture, le résultat est connu ;
 - `searching` : aucun livre résolu, la recherche de l'ouvrage a été annoncée.
 
 Les compteurs ne mesurent que depuis leur mise en service : un rapport lu juste
@@ -53,6 +55,7 @@ GREEN, YELLOW, DIM, RESET = "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 LIBELLE = {
     "real": "cote chiffrée affichée",
     "pending": "livre identifié, cote en cours",
+    "no_offer": "livre identifié, aucune offre trouvée",
     "searching": "aucun livre résolu, recherche annoncée",
 }
 

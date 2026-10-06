@@ -638,8 +638,12 @@ def test_lot_card_shows_the_total_only_when_every_tome_is_priced():
     assert "Tome 1 : 5,00 €" in card
 
 
-def test_lot_card_without_any_price_announces_the_pending_cote():
-    """E4 : un lot dont aucun tome n'est coté annonce l'attente, pas un panneau vide."""
+def test_lot_card_without_any_price_announces_the_pending_cotes():
+    """E4 : un lot dont aucun tome n'est coté annonce l'attente, pas un panneau vide.
+
+    L'attente est comptée par tome plutôt que résumée par la ligne générique : le
+    lot dit combien de tomes il attend, sans cesser d'annoncer qu'il attend.
+    """
     books = [_tome_book("Blast — Tome 1", None), _tome_book("Blast — Tome 2", None)]
     listing = create_listing(estimated_total_cents=1500)
     tome_result = TomeMatchResult(is_lot=True, lot_tomes=[1, 2], confidence="high")
@@ -647,8 +651,96 @@ def test_lot_card_without_any_price_announces_the_pending_cote():
     card = MarketPriceService.format_market_details_card(
         listing, None, books, tome_result, None
     )
-    assert PENDING_COTE_LINE in card
+    assert "⏳ 2 tome(s) en cours de cote…" in card
     assert "Total du lot" not in card
+
+
+# --------------------------------------------------------------------------- E5 : absences
+
+
+def _tome_book_with_settled_absence(title: str, *, checked_at: datetime | None = None) -> Book:
+    """Un tome dont une passe de cotation a eu lieu, sans trouver la moindre offre."""
+    book = _tome_book(title, None)
+    book.market_cache = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=book.id,
+        lowest_delivered_price_cents=None,
+        best_provider_name=None,
+        best_source_url=None,
+        confidence=None,
+        comparison_status=ComparisonStatus.UNAVAILABLE,
+        checked_at=datetime.now(UTC) if checked_at is None else checked_at,
+        expires_at=None,
+        historical_low_1y_cents=None,
+    )
+    return book
+
+
+def test_a_pass_without_offer_is_dated_and_no_longer_reads_as_pending():
+    """Une passe qui a eu lieu a un résultat : l'absence d'offre, et sa date.
+
+    « Cote d'occasion en cours de calcul… » restait affiché pour un livre que
+    personne ne vend : l'attente était le seul mensonge disponible ici.
+    """
+    from app.services.market_price_service import NO_OFFER_LINE, cote_absence_line
+
+    checked_at = datetime(2026, 10, 6, 9, 30, tzinfo=UTC)
+    settled = _tome_book_with_settled_absence("Blast — Tome 3", checked_at=checked_at)
+
+    # Aucun livre : rien à dire d'une cote qui n'a pas d'objet.
+    assert cote_absence_line(None) is None
+    # Jamais coté : l'attente est vraie, elle reste.
+    assert cote_absence_line(_tome_book("Blast — Tome 2", None)) == PENDING_COTE_LINE
+
+    line = cote_absence_line(settled)
+    assert line is not None
+    assert line.startswith(NO_OFFER_LINE)
+    # La date est celle du relevé, lue à l'heure de Paris.
+    assert "06/10" in line
+
+    # Un cache sans date de relevé n'atteste aucune passe : on ne conclut pas.
+    never_checked = _tome_book_with_settled_absence("Blast — Tome 4")
+    never_checked.market_cache.checked_at = None
+    assert cote_absence_line(never_checked) == PENDING_COTE_LINE
+
+
+def test_series_card_counts_a_settled_absence_apart_from_the_pending_cotes():
+    """Le panneau distingue ce qu'il attend de ce qu'il a déjà constaté.
+
+    Les deux comptes portent sur les mêmes tomes sans prix, mais ne disent pas la
+    même chose : l'un attend une cote, l'autre l'a déjà eue.
+    """
+    books = [
+        _tome_book("Blast — Tome 1", 500),
+        _tome_book("Blast — Tome 2", None),
+        _tome_book_with_settled_absence("Blast — Tome 3"),
+    ]
+    listing = create_listing(estimated_total_cents=1500)
+
+    card = MarketPriceService.format_market_details_card(
+        listing, None, books, None, None, series_total_cents=1200
+    )
+
+    assert "⏳ 1 tome(s) en cours de cote…" in card
+    assert "🔍 1 tome(s) sans aucune offre trouvée." in card
+    # Le total persisté ne bouge pas : il somme ce qui est coté, pas l'absence.
+    assert "<b>Total de la série :</b> ~12,00 € (1/3 tomes)" in card
+
+
+def test_the_panel_without_cote_says_which_silence_it_reports():
+    """Le panneau date ce qu'il a constaté, et n'affirme rien qu'il n'a pas fait."""
+    listing = create_listing(estimated_total_cents=1500)
+    pending_book = _tome_book("Blast — Intégrale", None)
+    settled = _tome_book_with_settled_absence("Blast — Intégrale")
+
+    pending_card = MarketPriceService.format_market_details_card(listing, pending_book)
+    settled_card = MarketPriceService.format_market_details_card(listing, settled)
+
+    assert PENDING_COTE_LINE in pending_card
+    assert "Aucune offre" not in pending_card
+    assert "Aucune offre d'occasion trouvée" in settled_card
+    assert "(relevé du " in settled_card
+    assert PENDING_COTE_LINE not in settled_card
 
 
 def test_single_book_card_carries_the_series_total():

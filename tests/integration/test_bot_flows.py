@@ -362,6 +362,73 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
     assert link.book_id == book.id
 
 
+@pytest.mark.asyncio
+async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_cote(
+    driver, db_session
+):
+    """Une passe déjà revenue vide se dit par sa date, jamais par « en cours de calcul ».
+
+    `save_alert` relit la fiche du livre qu'il vient de lier : quand une passe a eu
+    lieu sans trouver d'offre, la confirmation doit le dire. La même cote est servie
+    par plusieurs plateformes, et c'est le relevé — pas le prix — que sa date nomme.
+    """
+    from app.services.market_price_service import NO_OFFER_LINE, PENDING_COTE_LINE
+
+    bot, dispatcher = driver
+    user = await _add_user(db_session)
+
+    # Le livre est déjà au catalogue, coté une fois : cette passe-là n'a rien trouvé.
+    book = Book(
+        id=uuid.uuid4(),
+        title="La couleur des choses",
+        normalized_title="la couleur des choses",
+        isbn13="9782369904151",
+    )
+    db_session.add(book)
+    await db_session.flush()
+    db_session.add(
+        BookMarketCache(
+            id=uuid.uuid4(),
+            book_id=book.id,
+            lowest_delivered_price_cents=None,
+            comparison_status=ComparisonStatus.UNAVAILABLE,
+            historical_low_1y_cents=None,
+            checked_at=datetime(2026, 10, 6, 9, 30, tzinfo=UTC),
+        )
+    )
+    await db_session.commit()
+
+    bnf = _bnf_stub(_edition_resolution())
+    with (
+        patch("app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=bnf),
+        patch("app.bot.handlers.alerts_create_confirm.BookSearchUseCase", return_value=bnf),
+        patch("app.bot.handlers.alerts_create.schedule_book_pricing"),
+    ):
+        await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
+        category_data = _buttons_matching(bot, "add_cat:")[0]
+        await _feed(bot, dispatcher, _callback_update(category_data, update_id=2), db_session, user)
+        await _feed(bot, dispatcher, _message_update("La couleur des choses", 3), db_session, user)
+        await _feed(bot, dispatcher, _message_update("12", 4), db_session, user)
+
+        # L'édition qui porte l'ISBN du livre déjà coté.
+        chosen = _buttons_matching(bot, "al_create_edition:")[1]
+        await _feed(bot, dispatcher, _callback_update(chosen, update_id=5), db_session, user)
+        await _feed(
+            bot,
+            dispatcher,
+            _callback_update("alert_create_confirm", update_id=6),
+            db_session,
+            user,
+        )
+
+    confirmation = [text for text in _texts(bot) if "✅ <b>Alerte créée</b>" in text]
+    assert confirmation, "la confirmation de création n'a jamais été rendue"
+    assert NO_OFFER_LINE in confirmation[-1]
+    # La date est celle du relevé, lue heure de Paris.
+    assert "06/10" in confirmation[-1]
+    assert PENDING_COTE_LINE not in confirmation[-1]
+
+
 # --------------------------------------------------------------------------- flux (b)
 
 

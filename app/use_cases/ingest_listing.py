@@ -29,6 +29,7 @@ from app.services.market_price_service import (
     PENDING_COTE_LINE,
     SEARCHING_BOOK_LINE,
     MarketPriceService,
+    cote_absence_line,
     has_usable_price,
 )
 from app.services.telegram_service import send_listing_alert
@@ -133,16 +134,10 @@ def comparison_line_from_loaded_books(
         books_in_series=series,
         tome_result=tome_result,
     )
-    return line or _pending_cote_line(book), True, book
-
-
-def _pending_cote_line(book: Book | None) -> str | None:
-    """Ligne d'attente quand un livre est identifié mais pas encore côté.
-
-    Le silence faisait croire à l'absence de prix. Le livre, lui, n'est cote qu'en
-    arrière-plan : l'alerte ne doit pas attendre un marchand.
-    """
-    return PENDING_COTE_LINE if book is not None else None
+    # Le livre, lui, n'est coté qu'en arrière-plan : l'alerte n'attend pas un
+    # marchand. Le silence ferait croire à l'absence de prix ; la ligne dit laquelle
+    # des deux attentes elle traverse (`cote_absence_line`).
+    return line or cote_absence_line(book), True, book
 
 
 async def _link_bd_catalog_background(
@@ -428,7 +423,7 @@ class ProcessListingUseCase:
             book=book,
             books_in_series=[book],
         )
-        return line or _pending_cote_line(book), True, book
+        return line or cote_absence_line(book), True, book
 
     async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> Book | None:
         """Résout le livre en local. La recherche BNF part en tâche de fond.

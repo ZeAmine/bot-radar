@@ -1,6 +1,7 @@
 """Tests unitaires pour ProcessListingUseCase et AsyncEnrichListingUseCase."""
 
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -365,6 +366,60 @@ async def test_bd_alert_without_price_is_priced_in_background(mock_db: AsyncMock
     assert kwargs["market_comparison_line"] == PENDING_COTE_LINE
     # L'invariant n°1 se lit dans l'ordre des appels : l'alerte d'abord, la cote ensuite.
     assert calls == ["send", "price:alert_sent"]
+    schedule.assert_called_once_with(book.id, reason="alert_sent")
+
+
+@pytest.mark.asyncio
+async def test_bd_alert_whose_pass_found_nothing_is_dated_instead_of_pending(
+    mock_db: AsyncMock,
+) -> None:
+    """Un livre déjà coté — sans résultat — se dit par sa date, pas par une attente.
+
+    L'alerte annonçait « cote en cours de calcul » à chaque annonce pour un livre
+    dont toutes les passes étaient revenues vides : le seul mensonge disponible
+    était d'attendre encore. La cotation reste relancée, elle : c'est une offre
+    qui peut apparaître, pas la ligne qui doit mentir.
+    """
+    from app.db.models.book_market_cache import BookMarketCache
+    from app.services.market_price_service import NO_OFFER_LINE, PENDING_COTE_LINE
+
+    cache = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=uuid.uuid4(),
+        lowest_delivered_price_cents=None,
+        comparison_status=ComparisonStatus.UNAVAILABLE,
+        historical_low_1y_cents=None,
+        checked_at=datetime(2026, 10, 6, 9, 30, tzinfo=UTC),
+    )
+    mock_send_alert = AsyncMock(return_value=True)
+
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal"),
+        patch("app.use_cases.ingest_listing.schedule_book_pricing") as schedule,
+    ):
+        use_case = ProcessListingUseCase(db=mock_db)
+        _mock_listing, mock_repo, _alert, book = _bd_scenario(cache)
+        use_case.listing_repo = mock_repo
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-123",
+            url="https://vinted.fr/item-123",
+            title="Blacksad - Tome 6",
+            category_slug="bd_comics",
+            item_price_cents=1400,
+        )
+        await use_case.execute(payload, raw_payload={})
+
+    line = mock_send_alert.call_args.kwargs["market_comparison_line"]
+    assert line.startswith(NO_OFFER_LINE)
+    assert "06/10" in line
+    assert PENDING_COTE_LINE not in line
+    # L'absence d'offre n'interdit pas la passe suivante : le livre reste demandé.
     schedule.assert_called_once_with(book.id, reason="alert_sent")
 
 

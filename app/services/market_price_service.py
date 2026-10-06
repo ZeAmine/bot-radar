@@ -49,6 +49,12 @@ PENDING_COTE_LINE = "Cote d'occasion en cours de calcul…"
 # partait sans aucun bloc de cote, ce qui se lisait comme une absence de prix.
 SEARCHING_BOOK_LINE = "🔎 Recherche de l'ouvrage en cours…"
 
+# Ligne affichée quand un livre identifié a bel et bien été coté — une passe a eu
+# lieu — mais qu'aucun marchand n'a produit d'offre. « En cours de calcul » serait
+# faux : le calcul est fait, son résultat est l'absence d'offre. Le relevé est daté
+# par `cote_absence_line` ; la phrase sert de préfixe (`is_no_offer_line`).
+NO_OFFER_LINE = "🔍 Aucune offre d'occasion trouvée"
+
 try:
     _PARIS_TZ: ZoneInfo = ZoneInfo("Europe/Paris")
 except Exception:  # pragma: no cover - fuseau absent sur l'image de prod
@@ -157,6 +163,44 @@ def has_usable_price(cache: BookMarketCache | None) -> bool:
     """
     reference_cents, _ = reference_price(cache)
     return reference_cents is not None
+
+
+def _loaded_market_cache(book: Book) -> BookMarketCache | None:
+    """Cache de marché déjà chargé, sans déclencher de lecture paresseuse.
+
+    Un livre rendu par `add_book` n'a pas sa relation chargée : la lire ici
+    lèverait en session asyncio. « Pas chargé » se lit comme « pas encore connu »,
+    donc comme une cote à venir — jamais comme une absence d'offre affirmée.
+    """
+    cache = book.__dict__.get("market_cache")
+    return cache if isinstance(cache, BookMarketCache) else None
+
+
+def is_no_offer_line(line: str | None) -> bool:
+    """Vrai pour la ligne « aucune offre trouvée », comparée par préfixe.
+
+    La ligne porte la date de son relevé : c'est cette phrase-ci qui l'identifie.
+    """
+    return line is not None and line.startswith(NO_OFFER_LINE)
+
+
+def cote_absence_line(book: Book | None) -> str | None:
+    """Ligne à annoncer quand aucune cote chiffrée n'est disponible pour ce livre.
+
+    Deux silences, deux vérités, et une seule ligne pour les dire : un livre jamais
+    coté attend encore sa passe (« en cours de calcul »), un livre dont la cote est
+    vide **après** une passe a un résultat, et ce résultat est l'absence d'offre —
+    daté du relevé qui l'a constaté. Les confondre faisait lire une attente
+    éternelle là où la réponse était déjà connue.
+
+    ``None`` quand il n'y a aucun livre : rien à dire d'une cote sans objet.
+    """
+    if book is None:
+        return None
+    cache = _loaded_market_cache(book)
+    if cache is None or cache.checked_at is None:
+        return PENDING_COTE_LINE
+    return f"{NO_OFFER_LINE} (relevé du {_format_checked_at(cache.checked_at)})."
 
 
 def format_cote_lines(book: Book | None) -> list[str]:
@@ -289,18 +333,28 @@ def _lot_reference_total(matched: list[Book]) -> int | None:
     return sum(known)
 
 
-def _pending_tome_count_line(books: list[Book]) -> str | None:
-    """Ligne « n tomes en cours de cote » : un tome sans prix doit se voir.
+def _unpriced_tome_lines(books: list[Book]) -> str | None:
+    """Comptes des tomes sans prix : l'attente et l'absence se distinguent.
 
-    Cacher un tome muet faisait lire une série de7 tomes comme une série de5 —
-    le silence passait pour l'inventaire complet de la série.
+    Cacher un tome muet faisait lire une série de 7 tomes comme une série de 5 —
+    le silence passait pour l'inventaire complet de la série. Et compter pour « en
+    cours » un tome dont une passe a déjà conclu à l'absence d'offre faisait
+    attendre une cote qui n'arriverait pas : chaque silence a son compte.
     """
-    unpriced = sum(
-        1 for book in _listable_series_books(books) if reference_price(book.market_cache)[0] is None
-    )
-    if not unpriced:
-        return None
-    return f"⏳ {unpriced} tome(s) en cours de cote…"
+    pending = absence = 0
+    for book in _listable_series_books(books):
+        if reference_price(book.market_cache)[0] is not None:
+            continue
+        if is_no_offer_line(cote_absence_line(book)):
+            absence += 1
+        else:
+            pending += 1
+    lines: list[str] = []
+    if pending:
+        lines.append(f"⏳ {pending} tome(s) en cours de cote…")
+    if absence:
+        lines.append(f"🔍 {absence} tome(s) sans aucune offre trouvée.")
+    return "\n".join(lines) or None
 
 
 def _series_total_line(total_cents: int, books: list[Book]) -> str:
@@ -621,19 +675,17 @@ class MarketPriceService:
         target_books = matched or books_in_series
 
         lines = MarketPriceService._header("<b>Cote par tome (plus bas connu) :</b>")
-        shown = False
         for book in _sort_series_books(target_books):
             price_cents, _ = reference_price(book.market_cache)
             if price_cents is None:
                 continue
             lines.append(f"• {clean_tome_display_title(book.title)} : {format_cents(price_cents)}")
-            shown = True
 
-        pending = _pending_tome_count_line(target_books)
-        if shown and pending:
-            lines.append(pending)
-        elif not shown:
-            lines.append(PENDING_COTE_LINE)
+        # Un panneau sans cote n'est jamais vide : il dit ce qu'il attend, ou ce
+        # qu'une passe a déjà constaté.
+        unpriced = _unpriced_tome_lines(target_books)
+        if unpriced:
+            lines.append(unpriced)
 
         lot_total = _lot_reference_total(matched)
         if lot_total is not None:
@@ -662,13 +714,13 @@ class MarketPriceService:
         )
         lines.append("Annonce sans tome précis détecté.\n")
         lines.append("<b>Cotes par tome (plus bas connu) :</b>")
-        series_lines = MarketPriceService._series_books_lines(books_in_series, None)
-        # Un tome sans cote est une cote en attente, pas une cote absente : un
-        # titre suivi d'une section vide se lisait comme un panneau mort.
-        lines.extend(series_lines or [PENDING_COTE_LINE])
-        pending = _pending_tome_count_line(books_in_series)
-        if series_lines and pending:
-            lines.append(pending)
+        lines.extend(MarketPriceService._series_books_lines(books_in_series, None))
+        # Un tome sans cote est une cote en attente, pas une cote absente ; et un
+        # tome dont la passe a conclu à l'absence d'offre n'attend plus rien. Les
+        # deux comptes remplacent la section vide, qui se lisait comme un panneau mort.
+        unpriced = _unpriced_tome_lines(books_in_series)
+        if unpriced:
+            lines.append(unpriced)
         if series_total_cents is not None:
             lines.append(_series_total_line(series_total_cents, books_in_series))
         latest = MarketPriceService._latest_checked_at(books_in_series)
@@ -686,7 +738,7 @@ class MarketPriceService:
         cache = book.market_cache if book else None
         reference_cents, is_historical = reference_price(cache)
         if cache is None or reference_cents is None:
-            return MarketPriceService._no_market_price_card()
+            return MarketPriceService._no_market_price_card(book)
 
         snapshots = book.__dict__.get("snapshots")
         partners = _select_secondhand_partners(
@@ -761,9 +813,13 @@ class MarketPriceService:
         return None
 
     @staticmethod
-    def _no_market_price_card() -> str:
-        return (
-            "📊 <b>Prix du marché</b>\n\n"
-            "Aucune offre d'occasion comparable n'a pu être trouvée "
-            "pour ce titre sur les plateformes partenaires."
-        )
+    def _no_market_price_card(book: Book | None = None) -> str:
+        """Panneau sans cote chiffrée : la même vérité que la ligne d'alerte, datée.
+
+        Le panneau disait déjà l'absence ; il dit désormais **laquelle** — une cote
+        qui vient, ou une passe qui n'a rien trouvé — et date ce qu'il a constaté.
+        La phrase longue d'avant affirmait une recherche que personne n'avait
+        forcément lancée.
+        """
+        absence = cote_absence_line(book) or PENDING_COTE_LINE
+        return f"📊 <b>Prix du marché</b>\n\n{absence}"
