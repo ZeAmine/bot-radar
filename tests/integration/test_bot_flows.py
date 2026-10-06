@@ -430,7 +430,7 @@ async def _seed_series(session: AsyncSession) -> tuple[User, Listing, list[Book]
 
 @pytest.mark.asyncio
 async def test_back_to_all_tomes_lists_the_real_tomes_and_a_tome_still_opens(driver, db_session):
-    """« ← Tous les tomes » rouvre la liste, et un tome reste sélectionnable.
+    """« Tous les tomes » rouvre la liste, et un tome reste sélectionnable.
 
     Un panneau qui s'ouvre mais dont aucun tome ne se choisit serait encore un
     bouton mort : c'est tout le système derrière le bouton qui est éprouvé ici.
@@ -462,7 +462,7 @@ async def test_back_to_all_tomes_lists_the_real_tomes_and_a_tome_still_opens(dri
         back = _buttons_matching(bot, "market_details:")
         assert back == [f"market_details:{listing.id}"]
 
-        # « ← Tous les tomes » ramène à la liste des tomes.
+        # « Tous les tomes » ramène à la liste des tomes.
         await _feed(
             bot,
             dispatcher,

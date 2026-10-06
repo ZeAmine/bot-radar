@@ -14,7 +14,7 @@ from aiogram.types import (
 )
 
 from app.bot.keyboards.listings import get_dislike_confirmation_keyboard
-from app.bot.labels import escape_html
+from app.bot.labels import BTN_CLOSE, escape_html
 from app.db.models.listing import Listing
 from app.db.repositories.autotune_repo import record_listing_dislike
 from app.db.repositories.book_repo import BookRepository
@@ -128,7 +128,7 @@ async def handle_view_market_details(
 ) -> None:
     """Affiche le panneau détaillé du prix du marché pour l'annonce BD sélectionnée.
 
-    `market_details:` est le retour « ← Tous les tomes » : il réaffiche la liste des
+    `market_details:` est le retour « Tous les tomes » : il réaffiche la liste des
     tomes en éditant le message en place. Sans ce filtre, le bouton du panneau de
     série ne routait vers aucun handler et restait mort.
     """
@@ -188,7 +188,7 @@ async def _show_market_details(
         if current_row:
             tome_buttons.append(current_row)
 
-    tome_buttons.append([InlineKeyboardButton(text="← Fermer", callback_data="close_market_panel")])
+    tome_buttons.append([InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel")])
     back_keyboard = InlineKeyboardMarkup(inline_keyboard=tome_buttons)
 
     if isinstance(callback.message, Message):
@@ -263,10 +263,10 @@ async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="← Tous les tomes",
+                    text="Tous les tomes",
                     callback_data=f"market_details:{listing.id}",
                 ),
-                InlineKeyboardButton(text="← Fermer", callback_data="close_market_panel"),
+                InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel"),
             ]
         ]
     )
@@ -318,7 +318,7 @@ async def handle_negotiate(
     text = negotiation_module.format_telegram_html(result)
     close_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← Fermer", callback_data="close_market_panel")]
+            [InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel")]
         ]
     )
 

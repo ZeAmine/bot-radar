@@ -28,7 +28,7 @@ def test_get_cancel_edit_keyboard():
     alert_id = uuid.uuid4()
     kb = get_cancel_edit_keyboard(alert_id)
     assert len(kb.inline_keyboard) == 1
-    assert kb.inline_keyboard[0][0].text == "← Retour aux champs"
+    assert kb.inline_keyboard[0][0].text == "Retour aux champs"
     assert kb.inline_keyboard[0][0].callback_data == f"al_edit:{alert_id}"
 
 

@@ -209,12 +209,11 @@ def test_get_alerts_list_keyboard():
         mock_alerts, current_page=0, total_pages=3, category_slug="tech")
     rows = keyboard.inline_keyboard
 
-    # 5 boutons sur row 0, 2 sur row 1, 1 bouton nav 'Suivant ➡️' sur row 2, 1 row d'actions sur row
-    # 3
+    # rangées : 5 boutons, puis 2, puis la navigation (« Suivant »), puis les actions.
     assert len(rows) == 4
     assert len(rows[0]) == 5
     assert len(rows[1]) == 2
-    assert rows[2][0].text == "Suivant →"
+    assert rows[2][0].text == "Suivant"
     assert rows[2][0].callback_data == "al_list_page:tech:1"
     assert rows[3][0].text == "Catégories"
     assert rows[3][0].callback_data == "al_list_cat_menu"

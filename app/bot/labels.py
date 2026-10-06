@@ -9,7 +9,7 @@ Les statuts (`Active`, `En pause`) et les mentions d'absence (« Non renseigné 
 « Indisponible », « À confirmer ») sont des constantes : la présentation ne
 réinvente pas la donnée, elle la nomme. Les enums restent dans `app.domain`.
 
-Trois règles de mise en forme, valables sur **tous** les écrans :
+Quatre règles de présentation, valables sur **tous** les écrans :
 
 1. **Un libellé de champ est gras, sa valeur reste en romain.**
    `**Prix maximum :** 15,00 €` — jamais `**Prix maximum : 15,00 €**`. La valeur
@@ -30,6 +30,14 @@ Trois règles de mise en forme, valables sur **tous** les écrans :
    la même forme : italique, isolée, et **hors de la liste des informations**,
    sous le titre de l'écran. Elle dit *pourquoi* l'identifiant est omis ; elle
    n'est pas une donnée de fiche et ne prend donc pas rang avec elles.
+4. **Une flèche ne sert à rien dans un bouton.**
+   `Retour`, jamais `← Retour` : la flèche ne dit rien que le verbe ne dise
+   déjà, et le lecteur doit la décoder pour retrouver une action pourtant
+   écrite en toutes lettres — sans que le bouton en fasse davantage. Elle se
+   retire donc à la source, pas à chaque endroit qui l'emploie : ni la
+   constante ni le littéral n'en portent, et `test_no_button_carries_an_arrow`
+   tient les deux formes. La flèche d'un **titre** (`Détection → alerte`)
+   décrit un flux, pas une action : elle n'entre pas dans cette règle.
 """
 
 import html
@@ -99,9 +107,9 @@ FIELD_SUGGESTED_EXCLUDES_CUSTOM = "Mots-clés exclus suggérés (personnalisés)
 # Navigation et boutons — libellés explicites et constants
 # ---------------------------------------------------------------------------
 
-BTN_PREVIOUS = "← Précédent"
-BTN_NEXT = "Suivant →"
-BTN_BACK = "← Retour"
+BTN_PREVIOUS = "Précédent"
+BTN_NEXT = "Suivant"
+BTN_BACK = "Retour"
 BTN_VIEW_LISTING = "Voir l'annonce"
 BTN_CLOSE = "Fermer"
 BTN_CANCEL = "Annuler"
@@ -112,13 +120,18 @@ BTN_RESUME = "Réactiver"
 BTN_CREATE = "Créer l'alerte"
 BTN_CATEGORIES = "Catégories"
 BTN_ALERTS_LIST = "Liste des alertes"
-BTN_BACK_TO_MENU = "← Retour au menu"
-BTN_BACK_TO_RECAP = "← Retour au récapitulatif"
-BTN_BACK_TO_AUTOTUNE = "← Retour à la liste"
+BTN_BACK_TO_MENU = "Retour au menu"
+BTN_BACK_TO_RECAP = "Retour au récapitulatif"
+BTN_BACK_TO_AUTOTUNE = "Retour à la liste"
+# « Retour à l'alerte » et « Retour aux champs » revenaient écrits en dur à quatre
+# et deux endroits, sur deux fichiers pour la première : un libellé qui revient n'a
+# qu'une source, sinon le cinquième endroit finit par l'écrire autrement.
+BTN_BACK_TO_ALERT = "Retour à l'alerte"
+BTN_BACK_TO_FIELDS = "Retour aux champs"
 BTN_APPLY_EXCLUSIONS = "Appliquer les exclusions"
 BTN_EDIT_EXCLUSIONS = "Modifier la liste"
 BTN_EDIT_EXCLUSIONS_AGAIN = "Modifier à nouveau"
-BTN_DISCARD_CHANGES = "← Revenir sans modifier"
+BTN_DISCARD_CHANGES = "Revenir sans modifier"
 BTN_EDIT_ALERT_SETTINGS = "⚙️ Modifier l'alerte"
 BTN_ANALYSIS_RUNNING = "⏳ Analyse en cours"
 # Un bouton ne répète pas l'action qu'il propose déjà à l'écran : « Confirmer »

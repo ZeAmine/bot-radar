@@ -27,6 +27,7 @@ from app.bot.keyboards.alerts import (
 )
 from app.bot.labels import (
     BTN_BACK,
+    BTN_BACK_TO_ALERT,
     FIELD_EXCLUDE_KEYWORDS,
     FIELD_INCLUDE_KEYWORDS,
     FIELD_ISBN,
@@ -292,7 +293,7 @@ async def prompt_new_field_value(
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text="← Retour à l'alerte",
+                                text=BTN_BACK_TO_ALERT,
                                 callback_data=f"al_edit:{alert.id}",
                             )
                         ]
@@ -311,7 +312,7 @@ async def prompt_new_field_value(
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text="← Retour à l'alerte",
+                                text=BTN_BACK_TO_ALERT,
                                 callback_data=f"al_edit:{alert.id}",
                             )
                         ]
@@ -358,7 +359,7 @@ async def prompt_new_field_value(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="← Retour à l'alerte",
+                            text=BTN_BACK_TO_ALERT,
                             callback_data=f"al_edit:{alert.id}",
                         )
                     ]
@@ -870,7 +871,7 @@ async def confirm_soft_delete_alert(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="← Retour aux catégories", callback_data="ed_cat_menu"
+                            text="Retour aux catégories", callback_data="ed_cat_menu"
                         )
                     ]
                 ]

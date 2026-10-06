@@ -8,6 +8,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.bot.labels import (
     BTN_ALERTS_LIST,
     BTN_BACK,
+    BTN_BACK_TO_FIELDS,
     BTN_CANCEL,
     BTN_CATEGORIES,
     BTN_CLOSE,
@@ -369,7 +370,7 @@ def get_edit_conditions_keyboard(
     buttons.append(
         [
             InlineKeyboardButton(
-                text="← Retour aux champs",
+                text=BTN_BACK_TO_FIELDS,
                 callback_data=f"al_edit:{alert_id}",
             )
         ]
@@ -381,7 +382,7 @@ def get_cancel_edit_keyboard(alert_id: uuid.UUID) -> InlineKeyboardMarkup:
     """Retourne un clavier avec bouton retour/annuler lors de la saisie d'une nouvelle valeur."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← Retour aux champs", callback_data=f"al_edit:{alert_id}")],
+            [InlineKeyboardButton(text=BTN_BACK_TO_FIELDS, callback_data=f"al_edit:{alert_id}")],
         ]
     )
 
