@@ -102,6 +102,13 @@ def create_app() -> FastAPI:
     application.include_router(health.router)
     application.include_router(ingest.router)
     application.include_router(internal.router)
+    # Les routes livres en dernier et en import local : `app.providers` (dont
+    # `chasse_aux_livres` importe le service de métadonnées) doit être
+    # initialisé avant que le cas d'usage ne le traverse, sinon l'import
+    # circulaire latent échoue au démarrage.
+    from app.api.routes.books import router as books_router
+
+    application.include_router(books_router)
     application.include_router(telegram.router)
 
     return application

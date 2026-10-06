@@ -65,6 +65,15 @@ from app.services.book_metadata_service import (
 from app.utils.isbn import is_valid_isbn, normalize_isbn
 
 
+class InvalidIsbnError(ValueError):
+    """Un ISBN mal formé, rejeté avant tout appel réseau.
+
+    Sous-classe dédiée (et non `ValueError` nu) pour que la route HTTP ne
+    convertisse en 422 que cette erreur de validation précise : une autre
+    `ValueError` reste une erreur interne inattendue (500 générique).
+    """
+
+
 @dataclass(frozen=True)
 class BookWorkChoice:
     """Une œuvre candidate, telle qu'une autorité la nomme.
@@ -441,6 +450,8 @@ class BookSearchUseCase:
         """
         clean_isbn = normalize_isbn(isbn)
         if not clean_isbn or not is_valid_isbn(clean_isbn):
-            raise ValueError(f"ISBN invalide : {isbn.strip()} — aucun provider interrogé.")
+            raise InvalidIsbnError(
+                f"ISBN invalide : {isbn.strip()} — aucun provider interrogé."
+            )
         report = await self._service.consult_authorities_report(isbn)
         return result_from_verdict_report(report, expected_title)

@@ -94,6 +94,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     # Règles de rate limiting : (préfixe de route, max_requêtes, fenêtre_secondes)
     ROUTE_LIMITS = [
         ("/api/v1/internal", 30, 60),       # Anti brute-force sur routes internes (30 req/min)
+        ("/api/v1/books", 30, 60),          # Recherche bibliographique (30 req/min, même classe)
         ("/api/v1/ingest", 1200, 60),       # Ingestion des annonces (1200 req/min)
         ("/api/v1/telegram/webhook", 120, 60), # Webhook Telegram (120 req/min)
     ]
