@@ -736,6 +736,63 @@ async def test_bd_resolution_schedules_bnf_without_awaiting_it(mock_db: AsyncMoc
 
 
 @pytest.mark.asyncio
+async def test_bd_series_alert_relaunches_the_whole_series_discovery(
+    mock_db: AsyncMock,
+) -> None:
+    """Une annonce non résolue d'une alerte sans ISBN relance la **série** entière.
+
+    Avant, ce chemin ne demandait qu'un titre : les tomes d'une série déjà créée
+    n'étaient donc jamais complétés après la création. `series=not alert.isbn`
+    vaut True ici, et la tâche reste différée — l'envoi n'attend rien.
+    """
+    use_case = ProcessListingUseCase(db=mock_db)
+    listing = MagicMock(title="Blacksad - Tome 9", isbn13=None)
+    alert = MagicMock(id=uuid.uuid4(), isbn=None, name="Blacksad")
+
+    with (
+        patch("app.use_cases.ingest_listing.BookRepository") as repo_cls,
+        patch("app.use_cases.ingest_listing.BookCatalogService"),
+        patch("app.use_cases.ingest_listing.link_books_from_bnf") as link,
+        patch("app.use_cases.ingest_listing.safe_create_task") as scheduled,
+    ):
+        repo_cls.return_value.resolve_book_for_listing = AsyncMock(
+            return_value=(None, None, None)
+        )
+        await use_case._resolve_bd_market_comparison(listing, alert)
+
+    link.assert_called_once()
+    assert link.call_args.kwargs["series"] is True
+    scheduled.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_bd_alert_with_an_isbn_keeps_its_unitary_path(mock_db: AsyncMock) -> None:
+    """Une alerte à ISBN ne relance pas de découverte de série : elle reste unitaire.
+
+    La branche à ISBN résout son livre par le code ; le drapeau `series=not alert.isbn`
+    ne doit donc jamais être posé à False sur une découverte de série — il n'y a
+    simplement pas de telle découverte pour ces alertes.
+    """
+    use_case = ProcessListingUseCase(db=mock_db)
+    listing = MagicMock(title="Les Indes fourbes", isbn13=None)
+    alert = MagicMock(id=uuid.uuid4(), isbn="9782889010851", name="Les Indes fourbes")
+
+    with (
+        patch("app.use_cases.ingest_listing.BookRepository") as repo_cls,
+        patch("app.use_cases.ingest_listing.BookCatalogService") as catalog_cls,
+        patch("app.use_cases.ingest_listing.link_books_from_bnf") as link,
+        patch("app.use_cases.ingest_listing.safe_create_task") as scheduled,
+    ):
+        repo_cls.return_value.get_book_for_alert = AsyncMock(return_value=None)
+        repo_cls.return_value.get_by_isbn13 = AsyncMock(return_value=None)
+        catalog_cls.return_value.add_book = AsyncMock(return_value=None)
+        await use_case._resolve_bd_market_comparison(listing, alert)
+
+    link.assert_not_called()
+    scheduled.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_bd_alert_without_a_resolvable_book_announces_the_search(
     mock_db: AsyncMock,
 ) -> None:
@@ -1012,7 +1069,7 @@ async def test_a_conclusive_search_writes_its_verdict_on_the_alert() -> None:
 
     Le verdict n'est écrit que quand il est concluant. Une notice arrivée l'efface ;
     une autorité muette ne l'écrit pas **et** n'efface pas ce qu'on savait — un
-    silence ne prouve rien, dans aucun sens (ADR-040).
+    silence ne prouve rien, dans aucun sens (ADR-041).
     """
     from app.services.book_metadata_service import CatalogueVerdict
     from app.use_cases import ingest_listing as mod

@@ -413,7 +413,7 @@ def test_classify_sent_cote_state_names_the_five_outcomes():
     reviendrait à attendre une cote que la passe a déjà rendue vide. La série
     que personne ne catalogue compte à part elle aussi : sans source, aucune
     passe ne la cotera jamais, et la compter ``searching`` ferait attendre une
-    recherche qui est terminée (ADR-040).
+    recherche qui est terminée (ADR-041).
     """
     from app.services.market_health import classify_sent_cote_state
     from app.services.market_price_service import (

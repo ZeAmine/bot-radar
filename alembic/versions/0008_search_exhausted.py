@@ -15,7 +15,7 @@ la prochaine résolution de fond de chaque alerte concernée, et s'efface dès q
 notice est liée.
 
 Une autorité muette ne pose rien : « personne ne le connaît » exige que tout le
-monde ait répondu (règle pure `is_catalogue_exhausted`, ADR-040).
+monde ait répondu (règle pure `is_catalogue_exhausted`, ADR-041).
 
 Revision ID: 0008_search_exhausted
 Revises: 0007_series_total

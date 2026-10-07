@@ -16,7 +16,7 @@ compteurs et rapporte la répartition :
 offre — l'attente n'est plus la bonne lecture, le résultat est connu ;
 - `searching` : aucun livre résolu, la recherche de l'ouvrage a été annoncée ;
 - `uncatalogued` : aucun livre résolu, et la recherche a **conclu** qu'aucune
-source ne catalogue l'ouvrage — l'attente n'était plus de mise (ADR-040).
+source ne catalogue l'ouvrage — l'attente n'était plus de mise (ADR-041).
 
 Les compteurs ne mesurent que depuis leur mise en service : un rapport lu juste
 après un déploiement ne décrit pas l'historique, il décrit ce qui suit. Un total

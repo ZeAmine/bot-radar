@@ -775,7 +775,7 @@ async def test_a_handled_callback_is_answered_exactly_once(driver, db_session):
     assert len(answers) == 1, "le filet a répondu en plus du handler"
 
 
-# --------------------------------------------------- verdict de catalogue (ADR-040)
+# --------------------------------------------------- verdict de catalogue (ADR-041)
 
 
 @pytest.mark.asyncio

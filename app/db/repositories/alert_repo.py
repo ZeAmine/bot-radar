@@ -164,7 +164,7 @@ class AlertRepository:
         La date est celle du relevé qui l'établit ; ``None`` l'efface — une notice
         arrivée depuis contredit le verdict, et l'alerte ne doit pas continuer de
         l'annoncer. Ce n'est ni une règle de matching ni une cote : seulement la
-        mémoire d'une recherche, écrite par l'enrichissement de fond (ADR-040).
+        mémoire d'une recherche, écrite par l'enrichissement de fond (ADR-041).
         """
         alert = await self.session.get(Alert, alert_id)
         if alert is None:

@@ -48,10 +48,11 @@ TITLE_SIMILARITY_MIN = 0.75
 SAME_WORK_TITLE_SIMILARITY_MIN = 0.9
 # Nombre maximum d'éditions alternatives remontées à l'utilisateur.
 MAX_ALTERNATIVE_EDITIONS = 3
-# Nombre maximum de tomes rattachés à une série suivie par son nom. Au-delà, on
-# remplirait le catalogue de notices voisines pour un gain de couverture nul : les
-# annonces d'une série portent leurs tomes, pas les vingt suivants.
-MAX_SERIES_BOOKS = 6
+# Nombre maximum de tomes rattachés à une série suivie par son nom. Un plafond
+# protège le catalogue des notices voisines ; à 6, une série normale de BD en
+# perdait (Blacksad compte 7 tomes). 12 couvre les séries réelles sans ouvrir la
+# porte au bruit : le préfixe de titre et la cohérence d'auteur restent le filtre.
+MAX_SERIES_BOOKS = 12
 
 # Préfixes ISBN des éditions francophones (règle GF pour la langue française).
 FRENCH_ISBN_PREFIXES = ("9782", "979")
@@ -1157,7 +1158,7 @@ class BookMetadataService:
         *,
         limit: int = MAX_SERIES_BOOKS,
     ) -> CatalogueVerdict:
-        """Notices distinctes d'une série — ses tomes — quand la BNF les nomme.
+        """Notices distinctes d'une série — ses tomes — quand une autorité les nomme.
 
         Une série suivie par son nom (« Blacksad ») n'a aucune fiche : ses annonces
         partaient sans cote tant qu'aucun tome n'avait été lié. Chercher par titre
@@ -1165,12 +1166,17 @@ class BookMetadataService:
         n'est pas une identité (ADR-021) : sans concordance d'auteur, rien n'est
         rattaché, et la recherche reste bornée à `limit` notices.
 
-        Contrairement à `lookup_by_title_and_author`, il n'y a pas de repli
-        OpenLibrary : composer une série est un enrichissement, pas un sauvetage.
+        La BNF reste la source primaire ; quand elle rend **moins** de notices que
+        `limit`, OpenLibrary complète les tomes manquants (ADR-033). Ce repli ne
+        remplace jamais une notice BNF : il ne voit que les ISBN que la BNF n'a pas
+        déjà donnés, et ses notices portent leur provenance (`AUTORITE_OPENLIBRARY`),
+        donc `provenance_note` les distingue d'une confirmation BNF.
 
-        Le verdict est celui de **cette** recherche : une série sans aucun tome
-        retenu, dont la BNF a pourtant répondu, n'est pas une recherche en cours —
-        c'est une réponse, et elle se dit (ADR-040).
+        Le verdict est celui de **cette** recherche, repli compris : une série sans
+        aucun tome retenu, dont les autorités interrogées ont pourtant toutes
+        répondu, n'est pas une recherche en cours — c'est une réponse, et elle se dit
+        (ADR-041). Une autorité muette interdit la conclusion : son silence ne prouve
+        rien.
         """
         wanted = normalize_text(series_title)
         if not wanted:
@@ -1212,7 +1218,68 @@ class BookMetadataService:
             selected.append(record)
             if len(selected) >= limit:
                 break
+        if len(selected) < limit:
+            completed, ol_result = await self._complete_series_from_openlibrary(
+                series_title=series_title,
+                wanted=wanted,
+                author_hint=author_hint,
+                seen=seen,
+                limit=limit - len(selected),
+            )
+            # Le repli nourrit le verdict comme la voie BNF : sans sa tentative, une
+            # série vide se lirait « personne ne la connaît » alors qu'OpenLibrary
+            # s'est peut-être tue — et un silence ne prouve rien.
+            if ol_result is not None:
+                attempts.append(_attempt(AUTORITE_OPENLIBRARY, "title", ol_result))
+            selected.extend(completed)
         return _verdict(attempts, *selected)
+
+    async def _complete_series_from_openlibrary(
+        self,
+        *,
+        series_title: str,
+        wanted: str,
+        author_hint: str | None,
+        seen: set[str],
+        limit: int,
+    ) -> tuple[list[BookMetadata], ProviderQueryResult[dict[str, Any]] | None]:
+        """Complète une série par OpenLibrary — seulement les tomes que la BNF a tus.
+
+        Repli d'enrichissement, jamais de substitution : `seen` porte les ISBN déjà
+        retenus par la BNF, et un document qui les recoupe est ignoré. Les critères
+        d'appartenance sont ceux de la voie BNF — préfixe de titre normalisé ou
+        similarité suffisante, cohérence d'auteur quand elle est connue — pour que
+        les deux sources ne se contredisent pas sur ce qu'est un tome de la série.
+        Les notices rendues gardent leur provenance OpenLibrary (`BookMetadata.source`).
+
+        La requête réellement partie est rendue avec ses notices : c'est elle qui fait
+        entrer OpenLibrary dans le verdict (`None` quand rien n'a été demandé).
+        """
+        if limit <= 0:
+            return [], None
+        params: dict[str, str] = {"title": clean_title_query(series_title)}
+        if author_hint:
+            params["author"] = author_hint
+        works, result = await self._openlibrary_works(params)
+
+        found: list[BookMetadata] = []
+        for work in works:
+            meta = work.meta
+            if not meta.isbn13 or meta.isbn13 in seen:
+                continue
+            notice_title = normalize_text(meta.title)
+            is_series_member = notice_title.startswith(wanted) or (
+                title_similarity(meta.title, series_title) >= TITLE_SIMILARITY_MIN
+            )
+            if not is_series_member:
+                continue
+            if author_hint and meta.author and not same_author(meta.author, author_hint):
+                continue
+            seen.add(meta.isbn13)
+            found.append(meta)
+            if len(found) >= limit:
+                break
+        return found, result
 
     async def _bnf_records_result(
         self,
@@ -1225,7 +1292,7 @@ class BookMetadataService:
         Le second élément est ce qui manque à une liste vide pour être une réponse :
         sans lui, `[]` dit aussi bien « la BNF ignore cet ISBN » que « la requête a
         échoué », et l'appelant qui doit rendre compte ne peut pas trancher. C'est
-        cette distinction qui fait un verdict (`is_catalogue_exhausted`, ADR-040).
+        cette distinction qui fait un verdict (`is_catalogue_exhausted`, ADR-041).
 
         Les libellés de panne reprennent les expressions historiques à l'identique
         — le contrat neuf (`error_code`) ne porte, lui, que des codes contrôlés,

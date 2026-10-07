@@ -149,7 +149,7 @@ async def test_lookup_by_title_and_author_mocked():
         assert "death bringer" in res.recommended_variants
 
         # Le verdict accompagne la notice : sans lui, une BNF muette et une BNF
-        # vide se liraient pareil (ADR-040).
+        # vide se liraient pareil (ADR-041).
         verdict = await service.lookup_by_title_and_author(
             "deathbringer de ismael le Grand"
         )
@@ -229,7 +229,7 @@ async def test_lookup_series_notices_dit_qui_a_repondu_et_qui_s_est_tu():
     séries qui ont motivé la question : la BNF a répondu, elle ne les connaît
     pas, et leurs alertes annonçaient pourtant une recherche en cours. Une panne
     BNF, elle, ne doit jamais devenir ce verdict — l'annoncer accuserait une
-    autorité de ne pas connaître un ouvrage qu'elle n'a pas lu (ADR-040).
+    autorité de ne pas connaître un ouvrage qu'elle n'a pas lu (ADR-041).
     """
     from app.domain.rules.catalogue_search import is_catalogue_exhausted
 
@@ -242,21 +242,30 @@ async def test_lookup_series_notices_dit_qui_a_repondu_et_qui_s_est_tu():
     ]
 
     # 1. Toutes les autorités interrogées ont répondu, aucune ne connaît la série.
+    # La BNF d'abord ; comme elle rend moins de tomes que le plafond, le repli
+    # OpenLibrary est interrogé lui aussi, et il a répondu — sans rien trouver.
     with _mock_bnf_typed(service, []):
         exhausted = await service.lookup_series_notices("Absolute Martian Manhunter")
-    assert exhausted.consulted == (AUTORITE_BNF,)
+    assert exhausted.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
     assert exhausted.unavailable == ()
     assert exhausted.notices == ()
     assert is_catalogue_exhausted(exhausted) is True
 
     # 2. La BNF s'est tue : rien n'est établi, et le verdict n'est pas rendu.
-    with patch.object(
-        service,
-        "_bnf_records_result",
-        new=AsyncMock(return_value=_panne_bnf("timeout")),
+    with (
+        patch.object(
+            service,
+            "_bnf_records_result",
+            new=AsyncMock(return_value=_panne_bnf("timeout")),
+        ),
+        patch.object(
+            service,
+            "_query_openlibrary_result",
+            new=AsyncMock(return_value=_openlibrary_answered_nothing()),
+        ),
     ):
         silent = await service.lookup_series_notices("Absolute Martian Manhunter")
-    assert silent.consulted == (AUTORITE_BNF,)
+    assert silent.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
     assert silent.unavailable == (AUTORITE_BNF,)
     assert silent.notices == ()
     assert is_catalogue_exhausted(silent) is False
@@ -334,6 +343,161 @@ async def test_lookup_by_title_and_author_dit_qui_a_repondu_et_qui_s_est_tu():
     assert found.unavailable == ()
     assert [found_notice.isbn13 for found_notice in found.notices] == ["9782369904151"]
     assert is_catalogue_exhausted(found) is False
+
+
+def _openlibrary_result(docs: list[dict[str, object]]) -> ProviderQueryResult[dict[str, object]]:
+    """Réponse OpenLibrary simulée : des documents bruts, comme l'API en rend."""
+    return ProviderQueryResult(
+        status=ProviderQueryStatus.SUCCESS,
+        items=tuple(docs),
+        has_results=bool(docs),
+    )
+
+
+def _series_doc(
+    title: str, isbns: list[str], author: str | None = None
+) -> dict[str, object]:
+    """Un document OpenLibrary minimal : titre, ISBN et auteur."""
+    doc: dict[str, object] = {"title": title, "isbn": isbns}
+    if author:
+        doc["author_name"] = [author]
+    return doc
+
+
+@pytest.mark.asyncio
+async def test_lookup_series_notices_completes_with_openlibrary_when_bnf_is_short():
+    """Quand la BNF rend moins de tomes que la série n'en a, OpenLibrary complète.
+
+    Le repli n'est jamais une substitution : il ignore un ISBN déjà rendu par la
+    BNF, écarte un tome porté par un autre auteur et un titre étranger à la série,
+    et ses notices portent leur provenance — elles ne se lisent pas comme du BNF.
+    """
+    service = BookMetadataService()
+    bnf = BookMetadata(
+        title="Blacksad Tome 2",
+        author="Juan Díaz Canales",
+        isbn13="9782369903086",
+        source=AUTORITE_BNF,
+    )
+    openlibrary = AsyncMock(
+        return_value=_openlibrary_result(
+            [
+                # Même ISBN que la BNF : ignoré, la notice BNF fait foi.
+                _series_doc("Blacksad Tome 2", ["9782369903086"], "Juan Díaz Canales"),
+                # Un vrai tome manquant.
+                _series_doc("Blacksad Tome 5", ["9782205051407"], "Juan Díaz Canales"),
+                # Même préfixe, autre auteur : pas un tome de la série.
+                _series_doc("Blacksad Tome 6", ["9782205051506"], "Un Autre"),
+                # Titre étranger à la série.
+                _series_doc("Une tout autre série", ["9782205051605"], "Un Autre"),
+            ]
+        )
+    )
+    with (
+        patch.object(
+            service, "_bnf_records_result", new=AsyncMock(return_value=_typed_bnf([bnf]))
+        ),
+        patch.object(service, "_query_openlibrary_result", new=openlibrary),
+    ):
+        verdict = await service.lookup_series_notices(
+            "Blacksad", author_hint="Juan Diaz Canales"
+        )
+        notices = verdict.notices
+
+    assert [notice.title for notice in notices] == ["Blacksad Tome 2", "Blacksad Tome 5"]
+    assert notices[0].source == AUTORITE_BNF
+    fallback = notices[1]
+    assert fallback.source == AUTORITE_OPENLIBRARY
+    assert provenance_note(fallback) == OPENLIBRARY_SOURCE_NOTE
+
+
+@pytest.mark.asyncio
+async def test_lookup_series_notices_openlibrary_fallback_respects_the_cap():
+    """Le complément OpenLibrary est borné par ce qui reste sous `limit`."""
+    service = BookMetadataService()
+    bnf = BookMetadata(
+        title="Blacksad Tome 1",
+        author="Juan Díaz Canales",
+        isbn13="9782205049504",
+        source=AUTORITE_BNF,
+    )
+    openlibrary = AsyncMock(
+        return_value=_openlibrary_result(
+            [
+                _series_doc("Blacksad Tome 2", ["9782205051407"], "Juan Díaz Canales"),
+                _series_doc("Blacksad Tome 3", ["9782205051506"], "Juan Díaz Canales"),
+                _series_doc("Blacksad Tome 4", ["9782205051605"], "Juan Díaz Canales"),
+            ]
+        )
+    )
+    with (
+        patch.object(
+            service, "_bnf_records_result", new=AsyncMock(return_value=_typed_bnf([bnf]))
+        ),
+        patch.object(service, "_query_openlibrary_result", new=openlibrary),
+    ):
+        verdict = await service.lookup_series_notices(
+            "Blacksad", author_hint="Juan Diaz Canales", limit=2
+        )
+        notices = verdict.notices
+
+    assert len(notices) == 2
+    assert len({notice.isbn13 for notice in notices}) == 2
+
+
+@pytest.mark.asyncio
+async def test_lookup_series_notices_never_replaces_a_bnf_notice():
+    """Un ISBN rendu par la BNF n'est pas réécrit par le document OpenLibrary."""
+    service = BookMetadataService()
+    bnf = BookMetadata(
+        title="Blacksad Tome 2",
+        author="Juan Díaz Canales",
+        isbn13="9782205051407",
+        source=AUTORITE_BNF,
+    )
+    openlibrary = AsyncMock(
+        return_value=_openlibrary_result(
+            [_series_doc("Blacksad : l'encyclopédie", ["9782205051407"], "Juan Díaz Canales")]
+        )
+    )
+    with (
+        patch.object(
+            service, "_bnf_records_result", new=AsyncMock(return_value=_typed_bnf([bnf]))
+        ),
+        patch.object(service, "_query_openlibrary_result", new=openlibrary),
+    ):
+        verdict = await service.lookup_series_notices(
+            "Blacksad", author_hint="Juan Diaz Canales"
+        )
+        notices = verdict.notices
+
+    assert [notice.title for notice in notices] == ["Blacksad Tome 2"]
+    assert notices[0].source == AUTORITE_BNF
+
+
+@pytest.mark.asyncio
+async def test_lookup_series_notices_skips_openlibrary_when_bnf_is_complete():
+    """La BNF suffit : OpenLibrary n'est pas interrogée."""
+    service = BookMetadataService()
+    records = [
+        BookMetadata(
+            title=f"Blacksad Tome {index}",
+            author="Juan Díaz Canales",
+            isbn13=f"97822050514{index:02d}",
+            source=AUTORITE_BNF,
+        )
+        for index in range(1, 4)
+    ]
+    openlibrary = AsyncMock()
+    with (
+        patch.object(
+            service, "_bnf_records_result", new=AsyncMock(return_value=_typed_bnf(records))
+        ),
+        patch.object(service, "_query_openlibrary_result", new=openlibrary),
+    ):
+        verdict = await service.lookup_series_notices("Blacksad", limit=3)
+        assert len(verdict.notices) == 3
+        openlibrary.assert_not_awaited()
 
 
 def test_title_similarity_ignores_case_accents_and_subtitle():
@@ -607,10 +771,25 @@ def _typed_bnf(
     )
 
 
+def _openlibrary_answered_nothing() -> ProviderQueryResult[dict[str, object]]:
+    """Repli OpenLibrary neutralisé : il a répondu, sans document."""
+    return ProviderQueryResult(status=ProviderQueryStatus.SUCCESS, items=())
+
+
 def _mock_bnf_typed(service, records):
-    """Patch du joint BNF typé pour `resolve_for_alert` (contexte `with`)."""
-    return patch.object(
-        service, "_bnf_records_result", new=AsyncMock(return_value=_typed_bnf(records))
+    """Patch du joint BNF typé (contexte `with`), repli OpenLibrary compris.
+
+    Depuis que `lookup_series_notices` complète par OpenLibrary quand la BNF rend
+    moins de notices que le plafond, un stub BNF seul laisserait partir une vraie
+    requête réseau dès qu'une série est cherchée. Le repli est donc neutralisé ici
+    une fois pour toutes.
+    """
+    return patch.multiple(
+        service,
+        _bnf_records_result=AsyncMock(return_value=_typed_bnf(records)),
+        _query_openlibrary_result=AsyncMock(
+            return_value=_openlibrary_answered_nothing()
+        ),
     )
 
 

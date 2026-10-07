@@ -58,7 +58,7 @@ NO_OFFER_LINE = "🔍 Aucune offre d'occasion trouvée"
 # Ligne affichée quand la recherche d'ouvrage a **conclu** : toutes les autorités
 # interrogées ont répondu, aucune ne catalogue l'ouvrage. La ligne d'attente
 # (« recherche de l'ouvrage en cours ») serait fausse : la recherche est finie, et
-# son résultat est cette absence. Le verdict est persisté sur l'alerte (ADR-040).
+# son résultat est cette absence. Le verdict est persisté sur l'alerte (ADR-041).
 NO_CATALOGUE_LINE = (
     "🚫 Aucune source ne catalogue cet ouvrage — la veille reste par titre."
 )
@@ -835,7 +835,7 @@ class MarketPriceService:
 
         Le panneau annonçait « cote d'occasion en cours de calcul… » pour une série
         que personne ne catalogue : la recherche était terminée, et sa réponse tenait
-        en une ligne. La dire est tout ce qui reste à faire (ADR-028, ADR-040).
+        en une ligne. La dire est tout ce qui reste à faire (ADR-028, ADR-041).
         """
         return f"📊 <b>Prix du marché</b>\n\n{NO_CATALOGUE_LINE}"
 
