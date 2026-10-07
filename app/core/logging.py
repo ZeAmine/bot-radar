@@ -40,17 +40,25 @@ _ASSIGNMENT_SECRET = re.compile(
 )
 _BEARER_SECRET = re.compile(r"(?i)(\bBearer\s+)(\S+)")
 _PREFIXED_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{8,}\b")
+_WEBHOOK_SECRET = re.compile(r"(/api/v1/telegram/webhook/)[^/\s?#\"']+")
+_DUIH_SECRET = re.compile(r"(?i)(\bduih\s*=\s*)[^&\s\"'<>]+")
+_COOKIE_HEADER = re.compile(r"(?i)(\bCookie\s*:\s*)[^\r\n]+")
 
 
 def _is_sensitive_key(key: str) -> bool:
     normalized = key.lower().replace("-", "_")
-    return any(fragment in normalized for fragment in JSONFormatter.SENSITIVE_KEYS)
+    return normalized in {"cookie", "set_cookie", "cookies", "duih"} or any(
+        fragment in normalized for fragment in JSONFormatter.SENSITIVE_KEYS
+    )
 
 
 def redact_text(text: str) -> str:
     """Masque les secrets interpolés dans un message de log."""
     text = _BEARER_SECRET.sub(r"\1[REDACTED]", text)
     text = _ASSIGNMENT_SECRET.sub(r"\1[REDACTED]", text)
+    text = _WEBHOOK_SECRET.sub(r"\1[REDACTED]", text)
+    text = _DUIH_SECRET.sub(r"\1[REDACTED]", text)
+    text = _COOKIE_HEADER.sub(r"\1[REDACTED]", text)
     return _PREFIXED_SECRET.sub("[REDACTED]", text)
 
 
@@ -63,7 +71,7 @@ def _redact_value(key: str, value: Any) -> Any:
         return {
             str(item_key): _redact_value(str(item_key), item) for item_key, item in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_redact_value("", item) for item in value]
     return value
 
