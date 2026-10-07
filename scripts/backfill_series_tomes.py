@@ -15,6 +15,12 @@ repositories et la même cotation. Il n'ajoute ni table, ni migration, ni
 dépendance, et n'écrit **aucun** total de série : celui-ci reste posé par
 `persist_market_result`, la seule source de vérité.
 
+Les cotations partent en arrière-plan (elles ne doivent jamais retarder une
+alerte). Un CLI, lui, s'arrête : sans attendre, `asyncio.run` annulerait les
+tâches en vol et laisserait les tomes liés **sans cote**, donc le panneau « 📊
+Prix du marché » muet et le total de série absent. La passe attend donc ses
+propres cotations avant de rendre la main.
+
 Il est **idempotent** : une seconde passe ne relie rien de neuf et le rapporte.
 Elle relance en revanche les autorités, qui restent donc sollicitées.
 
@@ -47,6 +53,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from app.core.constants import AlertStatus, CategorySlug
+from app.core.tasks import wait_all_background_tasks
 from app.db.models.alert import Alert
 from app.db.models.category import Category
 from app.db.repositories.book_repo import BookRepository
@@ -60,6 +67,11 @@ logger = logging.getLogger("radar.backfill_series")
 # le backfill peut lier des dizaines de séries d'affilée. Un quart de seconde est
 # invisible pour l'utilisateur et pour l'autorité.
 AUTHORITY_PAUSE_SECONDS = 0.35
+
+# Attente des cotations lancées par la liaison : chacune est bornée, côté marchands,
+# par le délai de collecte d'un livre (20 s, `book_market_pricing`). Les passes
+# tournent en parallèle, donc cette durée borne la plus lente et non leur somme.
+PRICING_DRAIN_SECONDS = 30.0
 
 EXIT_CLEAN, EXIT_REMAINING, EXIT_ERROR = 0, 1, 2
 
@@ -346,6 +358,11 @@ async def run(args: argparse.Namespace) -> int:
         return EXIT_ERROR
 
     reports = await backfill(alerts, dry_run=args.dry_run) if alerts else []
+
+    # Les tomes viennent d'être liés ; leurs cotations courent encore en tâche de
+    # fond. Sortir maintenant les annulerait, et laisserait sans prix ce que la
+    # passe vient justement de rattacher.
+    await wait_all_background_tasks(timeout=PRICING_DRAIN_SECONDS)
 
     if args.json:
         print(as_json(reports, generated_at=generated_at, dry_run=args.dry_run))
