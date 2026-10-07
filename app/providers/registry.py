@@ -6,7 +6,7 @@ import logging
 import httpx
 
 from app.domain.rules.market_offer import is_comparable_secondhand_offer
-from app.providers.base import BookMarketProvider, MarketOffer, normalize_search_isbn
+from app.providers.base import BookMarketProvider, MarketOffer, MarketOffers, normalize_search_isbn
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 from app.providers.ebay_browse import EbayBrowseProvider
 from app.providers.gibert import GibertProvider
@@ -44,6 +44,7 @@ class ProviderRegistry:
             if EbayBrowseProvider.is_configured():
                 default_providers.append(EbayBrowseProvider(http_client=http_client))
             self.providers = default_providers
+        self.failed_provider_names: set[str] = set()
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
     async def fetch_offers_from_provider(
@@ -73,7 +74,7 @@ class ProviderRegistry:
                     provider.name,
                     exc,
                 )
-                return []
+                return MarketOffers(failed_providers=(provider.name,))
 
     async def fetch_all_offers(
         self,
@@ -82,7 +83,7 @@ class ProviderRegistry:
         title: str,
         author: str | None = None,
         edition: str | None = None,
-    ) -> list[MarketOffer]:
+    ) -> MarketOffers:
         """Interroge l'ensemble des fournisseurs enregistrés en parallèle contrôlé.
 
         L'ISBN n'est transmis qu'après validation de sa clé de contrôle : une
@@ -103,11 +104,16 @@ class ProviderRegistry:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_offers: list[MarketOffer] = []
-        for res in results:
+        failures: set[str] = set()
+        for provider, res in zip(self.providers, results, strict=True):
+            if isinstance(res, BaseException):
+                failures.add(provider.name)
             if isinstance(res, list):
                 all_offers.extend(res)
+                failures.update(getattr(res, "failed_providers", ()))
 
-        return all_offers
+        self.failed_provider_names.update(failures)
+        return MarketOffers(all_offers, failed_providers=tuple(sorted(failures)))
 
     @staticmethod
     def _merchant_key(offer: MarketOffer) -> str:

@@ -289,7 +289,7 @@ async def test_a_pass_without_any_price_is_reported():
         mp.setattr(market_health, "get_redis_client", lambda: client)
 
         await market_health.notify_no_prices_found(
-            10, 10, 0, incremental=False, mode_label="complet (10 livres)"
+            10, 10, 0, incremental=False, mode_label="complet (10 livres)", errors=10
         )
 
     assert len(sent) == 1
@@ -344,10 +344,10 @@ async def test_la_passe_sans_cote_ne_signale_quune_seule_fois():
         mp.setattr(market_health, "get_redis_client", lambda: client)
 
         await market_health.notify_no_prices_found(
-            10, 10, 0, incremental=False, mode_label="complet (10 livres)"
+            10, 10, 0, incremental=False, mode_label="complet (10 livres)", errors=10
         )
         await market_health.notify_no_prices_found(
-            10, 10, 0, incremental=False, mode_label="complet (10 livres)"
+            10, 10, 0, incremental=False, mode_label="complet (10 livres)", errors=10
         )
 
     assert len(sent) == 1
@@ -376,11 +376,12 @@ async def test_le_message_ne_saccuse_plus_les_sources():
         mp.setattr(market_health, "get_redis_client", lambda: client)
 
         await market_health.notify_no_prices_found(
-            10, 10, 0, incremental=False, mode_label="complet (10 livres)"
+            10, 10, 0, incremental=False, mode_label="complet (10 livres)", errors=10
         )
 
     assert "Toutes les sources sont muettes" not in sent[0]
     assert "Aucune source" not in sent[0]
+    assert "en erreur" in sent[0]
 
 
 @pytest.mark.asyncio

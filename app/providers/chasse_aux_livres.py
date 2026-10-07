@@ -19,7 +19,7 @@ from app.domain.rules.market_offer import (
     is_merchant_excluded,
     is_very_good_or_better,
 )
-from app.providers.base import MarketOffer, normalize_search_isbn
+from app.providers.base import MarketOffer, MarketOffers, normalize_search_isbn
 from app.services.book_metadata_service import title_similarity
 from app.services.market_price_service import extract_tome_number_from_title
 from app.utils.text import normalize_text
@@ -38,23 +38,25 @@ Sleeper = Callable[[float], Awaitable[None]]
 TITLE_COHERENCE_MIN = 0.72
 
 # Vocabulaire générique d'édition, sans valeur discriminante pour identifier une œuvre.
-_TITLE_STOP_WORDS = frozenset({
-    "tome",
-    "tomes",
-    "volume",
-    "integrale",
-    "edition",
-    "livre",
-    "bd",
-    "des",
-    "les",
-    "une",
-    "par",
-    "pour",
-    "dans",
-    "avec",
-    "sur",
-})
+_TITLE_STOP_WORDS = frozenset(
+    {
+        "tome",
+        "tomes",
+        "volume",
+        "integrale",
+        "edition",
+        "livre",
+        "bd",
+        "des",
+        "les",
+        "une",
+        "par",
+        "pour",
+        "dans",
+        "avec",
+        "sur",
+    }
+)
 
 _HISTORICAL_LOW_LABELS = (
     "Très bon état +",
@@ -103,6 +105,7 @@ def select_historical_low_cents(series_by_label: dict[str, float]) -> int | None
     ]
     return min(cents) if cents else None
 
+
 CHASSE_BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -110,8 +113,7 @@ CHASSE_BROWSER_HEADERS = {
         "Chrome/128.0.0.0 Safari/537.36"
     ),
     "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/avif,image/webp,*/*;q=0.8"
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
     "Sec-Ch-Ua": '"Google Chrome";v="128", "Chromium";v="128", "Not.A/Brand";v="24"',
@@ -208,10 +210,12 @@ class ChasseAuxLivresProvider:
         # 1. Tentative par ISBN : uniquement si le code passe sa clé de contrôle,
         # sinon la recherche renverrait l'ouvrage d'un autre livre.
         clean_isbn = normalize_search_isbn(isbn13)
+        failures: set[str] = set()
         if clean_isbn:
             offers = await self._search_query(
                 clean_isbn, expected_title=title, expected_isbn=clean_isbn
             )
+            failures.update(getattr(offers, "failed_providers", ()))
             if offers:
                 return offers
 
@@ -222,11 +226,15 @@ class ChasseAuxLivresProvider:
             t_query = title.strip()
             if author:
                 t_query = f"{t_query} {author.strip()}"
-            return await self._search_query(
+            offers = await self._search_query(
                 t_query, expected_title=title, expected_isbn=clean_isbn
             )
+            if offers:
+                return offers
+            failures.update(getattr(offers, "failed_providers", ()))
+            return MarketOffers(offers, failed_providers=tuple(sorted(failures)))
 
-        return []
+        return MarketOffers(failed_providers=tuple(sorted(failures)))
 
     async def _search_query(
         self,
@@ -263,13 +271,13 @@ class ChasseAuxLivresProvider:
                         await self._sleep(wait_time)
                         continue
                     logger.warning("Chasse-aux-livres rate-limit persistant pour '%s'.", query)
-                    return []
+                    return MarketOffers(failed_providers=(self.name,))
 
                 if resp1.status_code != 200:
                     logger.debug(
                         "Chasse-aux-livres returned HTTP %d on search page", resp1.status_code
                     )
-                    return []
+                    return MarketOffers(failed_providers=(self.name,))
 
                 html_page = resp1.text
                 hash_match = re.search(r'data-hash=["\']([a-zA-Z0-9_-]{16,128})["\']', html_page)
@@ -289,7 +297,7 @@ class ChasseAuxLivresProvider:
                     logger.debug(
                         "Chasse-aux-livres returned HTTP %d on search-results", resp2.status_code
                     )
-                    return []
+                    return MarketOffers(failed_providers=(self.name,))
 
                 data = resp2.json()
                 d_html = data.get("d", "")
@@ -304,7 +312,7 @@ class ChasseAuxLivresProvider:
                     expected_title=expected_title,
                     expected_isbn=expected_isbn,
                 )
-                if deep_offers:
+                if deep_offers is not None:
                     return deep_offers
 
                 return []
@@ -314,7 +322,7 @@ class ChasseAuxLivresProvider:
                     await self._sleep(1.5)
                     continue
                 logger.debug("Erreur silencieuse connecteur Chasse-aux-livres: %s", exc)
-                return []
+                return MarketOffers(failed_providers=(self.name,))
 
         return []
 
@@ -339,13 +347,15 @@ class ChasseAuxLivresProvider:
             isbn_match = re.search(r"ISBN&nbsp;:\s*(\d{10,13})", d_html)
             found_isbn = normalize_search_isbn(isbn_match.group(1)) if isbn_match else None
             title_match = re.search(
-                r'class=["\']title["\'][^>]*>\s*<a[^>]*>([^<]+)</a>', d_html, re.DOTALL)
+                r'class=["\']title["\'][^>]*>\s*<a[^>]*>([^<]+)</a>', d_html, re.DOTALL
+            )
             if not title_match:
                 title_match = re.search(
-                    r'<a[^>]+href=["\']/prix/[^"\']+["\'][^>]+title=["\']([^"\']+)["\']', d_html)
-            
+                    r'<a[^>]+href=["\']/prix/[^"\']+["\'][^>]+title=["\']([^"\']+)["\']', d_html
+                )
+
             found_title = html.unescape(title_match.group(1).strip()) if title_match else None
-            slug_m = re.search(r'/prix/[^/]+/([^/]+)', product_path)
+            slug_m = re.search(r"/prix/[^/]+/([^/]+)", product_path)
             slug_title = slug_m.group(1).replace("-", " ") if slug_m else ""
 
             if not found_title or found_title.isdigit():
@@ -388,7 +398,7 @@ class ChasseAuxLivresProvider:
 
             resp_prod = await client.get(product_url, headers=CHASSE_BROWSER_HEADERS)
             if resp_prod.status_code != 200:
-                return None
+                return MarketOffers(failed_providers=(self.name,))
 
             p_html = resp_prod.text
             asin_m = re.search(r'data-asin="([^"]+)"', p_html)
@@ -409,7 +419,7 @@ class ChasseAuxLivresProvider:
             )
             resp_lookup = await client.get(lookup_url, headers=ajax_headers)
             if resp_lookup.status_code != 200:
-                return None
+                return MarketOffers(failed_providers=(self.name,))
 
             data = resp_lookup.json()
             raw_offers = data.get("offers", {})
@@ -498,6 +508,7 @@ class ChasseAuxLivresProvider:
 
             # Extraction du minimum historique sur 1 an via l'API /rest/jcd de Chasse-aux-livres
             hist_low_1y_cents: int | None = None
+            historical_failed = False
             didh_m = re.search(r'data-didh=["\']([a-f0-9]+)["\']', p_html)
             if didh_m:
                 didh = didh_m.group(1)
@@ -509,6 +520,8 @@ class ChasseAuxLivresProvider:
                 )
                 try:
                     resp_jcd = await client.get(jcd_url, headers=ajax_headers, timeout=4.0)
+                    if resp_jcd.status_code != 200:
+                        historical_failed = True
                     if resp_jcd.status_code == 200 and len(resp_jcd.text) > 0:
                         jcd_data = resp_jcd.json()
                         series_by_label: dict[str, float] = {}
@@ -533,6 +546,7 @@ class ChasseAuxLivresProvider:
 
                         hist_low_1y_cents = select_historical_low_cents(series_by_label)
                 except Exception as jcd_exc:
+                    historical_failed = True
                     logger.debug("Historique des prix Chasse-aux-livres indisponible: %s", jcd_exc)
 
             # Zéro Neuf déguisé : Si aucune occasion n'est en stock,
@@ -561,34 +575,37 @@ class ChasseAuxLivresProvider:
                             },
                         )
                     ]
-                return None
+                return MarketOffers(failed_providers=(self.name,)) if historical_failed else None
 
             primary = best_used
             cond_str = f"{primary['condition']} ({primary['merchant']})"
 
-            return [
-                MarketOffer(
-                    provider_name=self.name,
-                    item_price_cents=primary["total_cents"],
-                    shipping_price_cents=None,
-                    delivered_price_cents=primary["total_cents"],
-                    price_includes_shipping=True,
-                    source_url=primary["url"],
-                    currency="EUR",
-                    item_condition=cond_str,
-                    confidence=MatchConfidence.HIGH,
-                    is_available=True,
-                    is_comparable=True,
-                    raw_payload={
-                        "isbn13": found_isbn,
-                        "title": found_title,
-                        "query": query,
-                        "best_merchant": primary["merchant"],
-                        "partners": partners,
-                        "historical_low_1y_cents": hist_low_1y_cents,
-                    },
-                )
-            ]
+            return MarketOffers(
+                [
+                    MarketOffer(
+                        provider_name=self.name,
+                        item_price_cents=primary["total_cents"],
+                        shipping_price_cents=None,
+                        delivered_price_cents=primary["total_cents"],
+                        price_includes_shipping=True,
+                        source_url=primary["url"],
+                        currency="EUR",
+                        item_condition=cond_str,
+                        confidence=MatchConfidence.HIGH,
+                        is_available=True,
+                        is_comparable=True,
+                        raw_payload={
+                            "isbn13": found_isbn,
+                            "title": found_title,
+                            "query": query,
+                            "best_merchant": primary["merchant"],
+                            "partners": partners,
+                            "historical_low_1y_cents": hist_low_1y_cents,
+                        },
+                    )
+                ],
+                failed_providers=(self.name,) if historical_failed else (),
+            )
         except Exception as exc:
             logger.debug("Échec de l'extraction détaillée Chasse-aux-livres: %s", exc)
-            return None
+            return MarketOffers(failed_providers=(self.name,))

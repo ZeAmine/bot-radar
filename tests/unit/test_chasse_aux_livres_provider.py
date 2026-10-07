@@ -231,8 +231,14 @@ async def test_chasse_aux_livres_title_mismatch_rejected():
     # la détecte.
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
         mock_get.side_effect = [
-            resp_search, resp_rest, resp_prod, resp_lookup,
-            resp_search, resp_rest, resp_prod, resp_lookup,
+            resp_search,
+            resp_rest,
+            resp_prod,
+            resp_lookup,
+            resp_search,
+            resp_rest,
+            resp_prod,
+            resp_lookup,
         ]
 
         # Recherche pour "Mutafukaz Loba Loca" avec réponse "Rip Tome 1"
@@ -372,8 +378,14 @@ async def test_chasse_aux_livres_strict_used_filtering():
         # Deux fois quatre réponses : la recherche par ISBN puis le repli par
         # titre doivent tous deux aboutir, sans être avalés par le retry.
         mock_get.side_effect = [
-            resp_search, resp_rest, resp_prod, resp_lookup,
-            resp_search, resp_rest, resp_prod, resp_lookup,
+            resp_search,
+            resp_rest,
+            resp_prod,
+            resp_lookup,
+            resp_search,
+            resp_rest,
+            resp_prod,
+            resp_lookup,
         ]
 
         offers = await provider.get_offers(isbn13="9791095670568", title="Rip Tome 1")
@@ -450,19 +462,9 @@ def test_select_historical_low_takes_the_minimum_across_accepted_tiers():
     """
     from app.providers.chasse_aux_livres import select_historical_low_cents
 
-    assert (
-        select_historical_low_cents(
-            {"Très bon état +": 22.9, "Comme neuf +": 13.5}
-        )
-        == 1350
-    )
+    assert select_historical_low_cents({"Très bon état +": 22.9, "Comme neuf +": 13.5}) == 1350
     # L'ordre des libellés ne doit plus changer le résultat.
-    assert (
-        select_historical_low_cents(
-            {"Comme neuf +": 13.5, "Très bon état +": 22.9}
-        )
-        == 1350
-    )
+    assert select_historical_low_cents({"Comme neuf +": 13.5, "Très bon état +": 22.9}) == 1350
 
 
 @pytest.mark.asyncio
@@ -491,9 +493,10 @@ def test_is_title_coherent_rejects_unrelated_work_and_other_tome():
     # Correspondances legitimes
     assert is_coherent("Rip Tome 1", "Rip Tome 1") is True
     assert is_coherent("Blacksad", "Blacksad Tome 5 Amarillo") is True
-    assert is_coherent(
-        "Gou Tanabe Lovecraft - Montagnes hallucinées", "Les Montagnes hallucinées"
-    ) is True
+    assert (
+        is_coherent("Gou Tanabe Lovecraft - Montagnes hallucinées", "Les Montagnes hallucinées")
+        is True
+    )
 
     # Rejets
     assert is_coherent("Mutafukaz Loba Loca", "Rip Tome 1") is False
@@ -501,3 +504,27 @@ def test_is_title_coherent_rejects_unrelated_work_and_other_tome():
     assert is_coherent("Le prophète", "Iznogoud") is False
     assert is_coherent("Le prophète", None) is True
 
+
+async def test_historical_endpoint_failure_is_visible_even_with_a_current_offer(monkeypatch):
+    client = AsyncMock()
+
+    async def respond(url, **_kwargs):
+        if "/rest/jcd" in url:
+            return httpx.Response(403)
+        if "/rest/lookup" in url:
+            return httpx.Response(200, json=MOCK_LOOKUP_JSON)
+        return httpx.Response(200, text=MOCK_PROD_HTML + '<div data-didh="aabbcc"></div>')
+
+    client.get.side_effect = respond
+    monkeypatch.setattr(
+        "app.providers.chasse_aux_livres.resolve_session_token", AsyncMock(return_value="test")
+    )
+    offers = await ChasseAuxLivresProvider()._try_deep_lookup(
+        client,
+        MOCK_REST_JSON["d"],
+        "Rip",
+        expected_title="Rip",
+        expected_isbn="9791095670568",
+    )
+    assert offers
+    assert offers.failed_providers == ("chasse_aux_livres",)

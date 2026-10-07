@@ -36,6 +36,16 @@ WHERE observed.book_id = c.book_id
 
 
 def upgrade() -> None:
+    # Le schéma initial ne créait pas ces colonnes, pourtant déjà présentes
+    # sur l'ancienne production. Une installation vierge doit aussi passer.
+    op.execute(
+        "ALTER TABLE book_market_cache "
+        "ADD COLUMN IF NOT EXISTS historical_low_1y_cents INTEGER"
+    )
+    op.execute(
+        "ALTER TABLE book_market_cache "
+        "ADD COLUMN IF NOT EXISTS historical_low_at TIMESTAMP WITH TIME ZONE"
+    )
     op.execute(_SQL)
 
 

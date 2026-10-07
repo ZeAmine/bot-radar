@@ -60,8 +60,22 @@ async def record_listing_dislike(
     listing_id: uuid.UUID,
     alert_id: uuid.UUID | None,
     chat_id: int | None,
-) -> None:
-    """Journalise un faux positif confirmé."""
+) -> bool:
+    """Journalise une seule fois un signalement pour cette annonce et cette alerte."""
+    # Le verrou de ligne sérialise les confirmations concurrentes en production.
+    await db_session.execute(select(Listing.id).where(Listing.id == listing_id).with_for_update())
+    existing = await db_session.execute(
+        select(BotEvent.id)
+        .where(
+            BotEvent.event_type == "listing_disliked",
+            BotEvent.listing_id == listing_id,
+            BotEvent.alert_id == alert_id,
+            BotEvent.metadata_["chat_id"].as_integer() == chat_id,
+        )
+        .limit(1)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return False
     db_session.add(
         BotEvent(
             event_type="listing_disliked",
@@ -70,14 +84,13 @@ async def record_listing_dislike(
             metadata_={"chat_id": chat_id},
         )
     )
+    return True
 
 
 async def clear_dislikes_for_alert(alert_id: uuid.UUID, db_session: Any) -> int:
     """Supprime les faux positifs d'une alerte après application des exclusions."""
     listing_ids_subquery = (
-        select(ListingMatch.listing_id)
-        .where(ListingMatch.alert_id == alert_id)
-        .scalar_subquery()
+        select(ListingMatch.listing_id).where(ListingMatch.alert_id == alert_id).scalar_subquery()
     )
     stmt = delete(BotEvent).where(
         BotEvent.event_type == "listing_disliked",
@@ -124,4 +137,3 @@ async def get_all_alerts_with_dislike_threshold(
     )
     res = await db_session.execute(stmt)
     return [(row[0], row[1], int(row[2])) for row in res.all()]
-

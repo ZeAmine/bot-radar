@@ -323,9 +323,8 @@ def get_alert_edit_fields_keyboard(
             (FIELD_CONDITIONS, "conditions"),
         ]
 
-    # Ajout des actions intelligentes IA
-    fields.append(("Suggérer variantes IA", "ai_variants"))
-    fields.append(("Auto-tuning exclusions IA", "ai_autotune"))
+    if category_slug == CategorySlug.BD_COMICS.value:
+        fields.append(("Prix du marché", "market"))
 
     buttons = [
         [InlineKeyboardButton(text=label, callback_data=f"ed_f:{alert_id}:{field}")]

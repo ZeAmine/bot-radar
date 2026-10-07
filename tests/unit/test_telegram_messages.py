@@ -207,10 +207,8 @@ def test_disliked_button_text():
         is_disliked=True,
     )
     # Ligne 3, bouton 1 : doit être '✅ Signalé'
-    assert kb.inline_keyboard[2][0].text == "✅ Signalé"
+    assert kb.inline_keyboard[2][0].text == "Faux positif enregistré"
     assert kb.inline_keyboard[2][0].callback_data == f"disliked:{listing_id}"
-
-
 
 
 def _make_alert_message() -> MagicMock:
@@ -250,68 +248,55 @@ async def _press_dislike(listing: Listing) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_dislike_confirmation_says_what_confirm_confirms():
-    """« Confirmer » doit dire ce qu'il confirme, pas seulement clignoter un toast.
-
-    Le clavier est posé sur un message qui ne parle que de l'annonce : un
-    « Confirmer » nu sous une annonce à protéger se lit comme une confirmation
-    d'achat. La question doit vivre dans le texte, pas seulement dans le toast,
-    qui disparaît en quelques secondes alors que le clavier reste.
-    """
+    """La confirmation est le clavier du message d'annonce, sans nouveau message."""
     listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
-    alert_message = await _press_dislike(listing)
-
-    alert_message.reply.assert_awaited_once()
-    kwargs = alert_message.reply.call_args.kwargs
-    text = kwargs["text"]
-
-    assert "faux positif" in text.lower()
-    assert listing.title in text
-    assert "Confirmer" in [b.text for b in kwargs["reply_markup"].inline_keyboard[-1]]
+    message = await _press_dislike(listing)
+    message.reply.assert_not_awaited()
+    rows = message.edit_reply_markup.await_args.kwargs["reply_markup"].inline_keyboard
+    assert [button.text for button in rows[-1]] == ["Confirmer", "Annuler"]
 
 
 @pytest.mark.asyncio
 async def test_dislike_confirmation_escapes_the_listing_title():
-    """Un titre contenant du HTML ne doit pas casser la mise en forme du message."""
+    """Un titre HTML reste intact : aucun texte n'est reconstruit à la confirmation."""
     listing = create_sample_listing(
-        category_slug=CategorySlug.BD_COMICS.value, title="<b>BD</b> & cie")
-    alert_message = await _press_dislike(listing)
-
-    text = alert_message.reply.call_args.kwargs["text"]
-    assert "<b>BD</b>" not in text
-    assert "&lt;b&gt;BD&lt;/b&gt; &amp; cie" in text
+        category_slug=CategorySlug.BD_COMICS.value, title="<b>BD</b> & cie"
+    )
+    message = await _press_dislike(listing)
+    message.reply.assert_not_awaited()
+    message.edit_text.assert_not_awaited()
+    message.edit_reply_markup.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_dislike_never_modifies_the_announcement_message():
     """L'annonce porte le prix et la cote : elle ne doit jamais être réécrite.
 
-    Réutiliser le message d'annonce pour la confirmation paraît plus simple, mais
-    sa légende n'est pas reconstructible ici (la cote et les mots-clés viennent de
-    l'ingestion, pas du handler). Un « Annuler » laisserait alors l'écran figé sur
-    la question, prix et cote perdus à jamais. La confirmation part donc dans un
-    message à part : l'annonce n'est ni réécrite, ni privée de son clavier.
+    La légende n'est pas reconstructible ici : seuls les boutons changent,
+    le prix et la cote restent exactement ceux reçus à l'ingestion.
     """
     listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
     alert_message = await _press_dislike(listing)
 
     alert_message.edit_text.assert_not_awaited()
-    alert_message.edit_reply_markup.assert_not_awaited()
+    alert_message.edit_reply_markup.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_cancel_dislike_discards_the_confirmation_only():
-    """« Annuler » ferme l'écran de confirmation et ne touche à rien d'autre."""
+    """Annuler restaure les actions sur le même message, sans suppression."""
     from app.bot.handlers.callbacks import handle_cancel_dislike
 
     listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
-    alert_message = await _press_dislike(listing)
-
-    confirmation = _make_alert_message()
-    await handle_cancel_dislike(_press(f"cancel_dislike:{listing.id}", confirmation))
-
-    confirmation.delete.assert_awaited_once()
-    alert_message.edit_text.assert_not_awaited()
-    alert_message.edit_reply_markup.assert_not_awaited()
+    message = _make_alert_message()
+    with patch(
+        "app.bot.handlers.callbacks.ListingRepository.get_by_id", AsyncMock(return_value=listing)
+    ):
+        await handle_cancel_dislike(_press(f"cancel_dislike:{listing.id}", message), MagicMock())
+    message.delete.assert_not_awaited()
+    message.edit_text.assert_not_awaited()
+    rows = message.edit_reply_markup.await_args.kwargs["reply_markup"].inline_keyboard
+    assert rows[-1][0].callback_data == f"dislike:{listing.id}"
 
 
 @pytest.mark.asyncio
@@ -320,7 +305,7 @@ async def test_confirm_dislike_discards_the_confirmation_only():
     from app.bot.handlers.callbacks import handle_confirm_dislike
 
     listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
-    alert_message = await _press_dislike(listing)
+    await _press_dislike(listing)
 
     confirmation = _make_alert_message()
     db_session = MagicMock()
@@ -342,9 +327,10 @@ async def test_confirm_dislike_discards_the_confirmation_only():
             _press(f"confirm_dislike:{listing.id}", confirmation), db_session
         )
 
-    confirmation.delete.assert_awaited_once()
-    alert_message.edit_text.assert_not_awaited()
-    alert_message.edit_reply_markup.assert_not_awaited()
+    confirmation.delete.assert_not_awaited()
+    rows = confirmation.edit_reply_markup.await_args.kwargs["reply_markup"].inline_keyboard
+    assert rows[-1][0].callback_data == f"disliked:{listing.id}"
+    confirmation.edit_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -374,10 +360,12 @@ async def test_dislike_confirmation_survives_a_reply_failure():
 
     listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
     alert_message = _make_alert_message()
-    alert_message.reply = AsyncMock(side_effect=TelegramBadRequest(
-        method=EditMessageText(chat_id=1, message_id=1, text="x"),
-        message="Bad Request: chat not found",
-    ))
+    alert_message.edit_reply_markup = AsyncMock(
+        side_effect=TelegramBadRequest(
+            method=EditMessageText(chat_id=1, message_id=1, text="x"),
+            message="Bad Request: chat not found",
+        )
+    )
     callback = _press(f"dislike:{listing.id}", alert_message)
 
     with patch(

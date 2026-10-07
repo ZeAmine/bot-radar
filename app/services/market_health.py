@@ -13,6 +13,7 @@ une fois par jour. La correction, elle, est ailleurs (ADR-019).
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any
 
 from app.core.redis import get_redis_client
@@ -97,17 +98,26 @@ def format_stale_certified_lows(
     )
 
 
-async def _claim_notification_slot() -> bool:
-    """Réserve le droit d'envoyer, une fois par fenêtre. Un Redis muet n'empêche rien."""
+_notification_deadlines: dict[str, float] = {}
+
+
+async def _claim_slot(key: str, ttl: int) -> bool:
+    """Dédoublonne aussi pendant une panne Redis, dans l'unique processus."""
+    now = monotonic()
+    if _notification_deadlines.get(key, 0) > now:
+        return False
     try:
-        claimed = await get_redis_client().set(
-            NOTIFY_KEY, "1", ex=NOTIFY_TTL_SECONDS, nx=True
-        )
-        return bool(claimed)
-    except Exception as exc:  # pragma: no cover - Redis indisponible
-        # Mieux vaut deux messages qu'un silence : le job passe deux fois par jour.
-        logger.warning("Dédoublonnage de l'alerte de cote indisponible : %s", exc)
-        return True
+        claimed = bool(await get_redis_client().set(key, "1", ex=ttl, nx=True))
+    except Exception:
+        logger.warning("Dédoublonnage Redis indisponible ; repli local pour %s", key)
+        claimed = True
+    if claimed:
+        _notification_deadlines[key] = now + ttl
+    return claimed
+
+
+async def _claim_notification_slot() -> bool:
+    return await _claim_slot(NOTIFY_KEY, NOTIFY_TTL_SECONDS)
 
 
 async def notify_stale_certified_lows(
@@ -180,31 +190,11 @@ SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
 
 
 async def _claim_no_prices_notification_slot() -> bool:
-    """Réserve le droit d'envoyer l'alerte « aucune cote », une fois par fenêtre.
-
-    Un Redis muet n'empêche rien : mieux vaut deux messages qu'un silence.
-    """
-    try:
-        claimed = await get_redis_client().set(
-            NO_PRICES_NOTIFY_KEY, "1", ex=NO_PRICES_NOTIFY_TTL_SECONDS, nx=True
-        )
-        return bool(claimed)
-    except Exception as exc:  # pragma: no cover - Redis indisponible
-        logger.warning("Dédoublonnage de l'alerte « aucune cote » indisponible : %s", exc)
-        return True
+    return await _claim_slot(NO_PRICES_NOTIFY_KEY, NO_PRICES_NOTIFY_TTL_SECONDS)
 
 
 async def _claim_silent_notification_slot() -> bool:
-    """Réserve le droit d'envoyer l'alerte de source muette, une fois par fenêtre."""
-    try:
-        claimed = await get_redis_client().set(
-            SILENT_NOTIFY_KEY, "1", ex=SILENT_NOTIFY_TTL_SECONDS, nx=True
-        )
-        return bool(claimed)
-    except Exception as exc:  # pragma: no cover - Redis indisponible
-        # Mieux vaut deux messages qu'un silence : le job passe deux fois par jour.
-        logger.warning("Dédoublonnage de l'alerte de source muette indisponible : %s", exc)
-        return True
+    return await _claim_slot(SILENT_NOTIFY_KEY, SILENT_NOTIFY_TTL_SECONDS)
 
 
 def _provider_age_line(last_seen: datetime | None, now: datetime) -> str:
@@ -316,24 +306,17 @@ async def notify_no_prices_found(
     *,
     incremental: bool,
     mode_label: str,
+    errors: int = 0,
+    failed_providers: tuple[str, ...] = (),
 ) -> None:
-    """Prévient quand une passe complète n'a trouvé aucune cote.
+    """Signale une passe complète sans prix seulement si un échec est attesté.
 
-    Cette alerte ne se prononce plus sur un lot partiel. Le mode incrémental
-    traite huit livres toutes les trente minutes, et sa sélection est *triée*
-    vers l'échec : `get_books_needing_price_refresh` ordonne par `checked_at ASC
-    NULLS FIRST`, donc par les livres les moins récemment vérifiés, et un livre
-    sans cote revient en tête de file après six heures là où un livre coté
-    attend vingt-quatre. Les livres sans offre sont donc structurellement sur-
-    représentés dans le lot — « 0 cote sur 8 » n'y prouve rien.
-
-    Juger un micro-lot revenait à annoncer « toutes les sources sont muettes »
-    à partir d'un fait par livre, alors que la base en compte 90 cotés : le
-    message était faux, et il revenait jusqu'à quarante-huit fois par jour
-    faute de dédoublonnage. Une passe complète (07:00 et 19:00) couvre en
-    revanche tous les livres et justifie le verdict ; la panne de fournisseur,
-    elle, reste portée par `notify_silent_providers`, qui sait la nommer.
+    Une absence normale d'offres reste dans le panneau du livre. Les lots
+    incrémentaux et les passes partielles ne prouvent jamais un incident global.
     """
+    if not errors and not failed_providers:
+        logger.debug("Collecte terminée sans offre : aucun incident technique.")
+        return
     if processed == 0 or available > 0:
         return
     # `total` est la sélection, pas le catalogue : en mode incrémental la
@@ -357,14 +340,15 @@ async def notify_no_prices_found(
         return
 
     message = (
-        f"⚠️ <b>Aucune cote trouvée</b>\n\n"
+        f"⚠️ <b>Collecte de prix en échec</b>\n\n"
         f"Passe {mode_label} : {processed} livres traités, 0 cote disponible.\n\n"
-        "Aucun livre n'a produit d'offre d'occasion. Cela ne dit pas quelle "
-        "source a répondu : l'alerte « Sources de cotation muettes » nomme "
-        "celles qui se sont tues."
+        f"{errors} livre(s) en erreur. Les derniers prix connus sont conservés.\n"
+        + (f"Sources en échec : {', '.join(failed_providers)}.\n" if failed_providers else "")
+        + "La prochaine collecte réessaiera automatiquement."
+
     )
     await notify_admins(message)
-    logger.warning("Aucune cote trouvée sur une passe complète (%d livres).", processed)
+    logger.warning("Collecte de prix en échec sur une passe complète (%d livres).", processed)
 
 
 # --- Diagnostic : avec quelle cote une alerte BD part-elle ? ---

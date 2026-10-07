@@ -37,7 +37,7 @@ Un changement est terminé seulement si :
 
 ### Workflow Git
 
-Le dépôt est protégé : le status check `check` est obligatoire et `enforce_admins` est actif, donc le push direct sur `main` est refusé, **y compris par le propriétaire**. Ce n’est pas une précaution de style : la CI ne peut pas jouer le rôle de `check` sur un commit qui n’existe pas encore sur GitHub. La branche est donc la seule voie, et elle est aussi la bonne.
+Le dépôt est protégé : le status check `check` est obligatoire sur une branche à jour (`strict=true`) et `enforce_admins` est actif, donc le push direct sur `main` est refusé, **y compris par le propriétaire**. Ce n’est pas une précaution de style : la CI ne peut pas jouer le rôle de `check` sur un commit qui n’existe pas encore sur GitHub. La branche est donc la seule voie, et elle est aussi la bonne.
 
 - **Une feature = une branche**, issue de `main`, nommée `feat/`, `fix/`, `docs/` ou `chore/` selon l’intention. Jamais de commit direct sur `main`.
 - **Commit et push sur la branche sont libres**, sans demande préalable : c’est le prix de la protection, et la branche supprimée après merge en garde la trace dans l’historique.
@@ -230,7 +230,7 @@ Puis `make verify-deploy` : les mêmes contrôles, mais cette fois un écart de 
 
 Ne pas committer ni pousser sauf demande. Ne pas `--force` git.
 
-**Protection de `main`** (actrice, à ne pas défaire) : le status check `check` est obligatoire et `enforce_admins` est actif, donc **le force-push est refusé, y compris par le propriétaire**. Elle rend le push direct impossible, et pas par prudence : la CI ne peut pas jouer le role `check` sur un commit qui n’existe pas encore sur GitHub. Le chemin normal n’est donc plus de la lever : c’est la branche et la PR (voir « Workflow Git »). `scripts/push_protected.py` a été supprimé avec cette voie — la constitution ne tolère pas un chemin contourné maintenu en vie à côté du chemin réel.
+**Protection de `main`** (actrice, à ne pas défaire) : le status check `check` est obligatoire sur une branche à jour (`strict=true`) et `enforce_admins` est actif, donc **le force-push est refusé, y compris par le propriétaire**. Elle rend le push direct impossible, et pas par prudence : la CI ne peut pas jouer le role `check` sur un commit qui n’existe pas encore sur GitHub. Le chemin normal n’est donc plus de la lever : c’est la branche et la PR (voir « Workflow Git »). `scripts/push_protected.py` a été supprimé avec cette voie — la constitution ne tolère pas un chemin contourné maintenu en vie à côté du chemin réel.
 
 La procédure de restauration ci-dessous reste la référence, pour le cas où la configuration de la branche doit être rétablie à la main. Lever :
 
@@ -243,7 +243,7 @@ La remettre ensuite — ce corps reproduit l’état mesuré sur l’API, pas l�
 ```bash
 gh api -X PUT repos/ZeAmine/bot-radar/branches/main/protection --input - <<'JSON'
 {
-  "required_status_checks": { "strict": false, "contexts": ["check"] },
+  "required_status_checks": { "strict": true, "contexts": ["check"] },
   "enforce_admins": true,
   "required_pull_request_reviews": null,
   "restrictions": null,
@@ -265,7 +265,7 @@ Ce que l’API accepte, vérifié par aller-retour `PUT` puis `GET` :
 
 Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
 
-Révision Alembic actuelle attendue : `0008_search_exhausted` (verdict « aucune source ne catalogue cet ouvrage » sur l'alerte). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — donc seulement en production. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
+Révision Alembic actuelle attendue : `0009_market_refresh_state` (tentative de collecte distincte du dernier relevé de prix). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — donc seulement en production. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
 
 ## IA
 

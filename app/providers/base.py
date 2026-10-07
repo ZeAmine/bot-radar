@@ -1,5 +1,6 @@
 """Protocole et modèles de données de base pour les fournisseurs de prix de marché."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -23,6 +24,19 @@ class MarketOffer:
     is_comparable: bool = True
     price_includes_shipping: bool = False
     raw_payload: dict[str, Any] | None = None
+
+
+class MarketOffers(list[MarketOffer]):
+    """Offres collectées et sources en échec ; une liste vide n'est pas un diagnostic."""
+
+    def __init__(
+        self,
+        offers: Iterable[MarketOffer] = (),
+        *,
+        failed_providers: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(offers)
+        self.failed_providers = failed_providers
 
 
 def normalize_search_isbn(raw_isbn: str | None) -> str | None:

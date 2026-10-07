@@ -6,7 +6,7 @@ import httpx
 
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
-from app.providers.base import MarketOffer
+from app.providers.base import MarketOffer, MarketOffers
 from app.providers.headers import COMMON_BROWSER_HEADERS
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ class GibertProvider:
                 timeout=5.0,
             )
             if response.status_code != 200:
-                return []
+                return MarketOffers(failed_providers=(self.name,))
 
             data = response.json()
             items = data.get("products", data.get("items", []))
@@ -99,4 +99,4 @@ class GibertProvider:
             ]
         except Exception as exc:
             logger.debug("Erreur silencieuse connecteur Gibert: %s", exc)
-            return []
+            return MarketOffers(failed_providers=(self.name,))

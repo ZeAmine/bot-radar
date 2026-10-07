@@ -13,8 +13,11 @@ from aiogram.types import (
     Message,
 )
 
-from app.bot.keyboards.listings import get_dislike_confirmation_keyboard
-from app.bot.labels import BTN_CLOSE, escape_html
+from app.bot.keyboards.listings import (
+    get_dislike_confirmation_keyboard,
+    get_listing_alert_keyboard,
+)
+from app.bot.labels import BTN_CLOSE
 from app.db.models.book import Book
 from app.db.models.listing import Listing
 from app.db.repositories.autotune_repo import record_listing_dislike
@@ -180,18 +183,31 @@ async def _show_market_details(
     callback: CallbackQuery,
     db_session: Any,
 ) -> None:
+    if (callback.data or "").startswith("market_details:"):
+        from app.bot.handlers.market_panel import select_panel_tome
+
+        if await select_panel_tome(callback, None):
+            return
     listing_id = await _parse_listing_id(callback)
     if listing_id is None:
         return
 
     # La résolution — alerte, ISBN, tome, catalogue, cotation — vit dans le cas
     # d'usage : ce handler ne fait que présenter ce qu'elle renvoie.
-    panel = await ViewMarketDetailsUseCase(db_session).execute(listing_id)
+    panel = await ViewMarketDetailsUseCase(db_session).execute(listing_id, refresh=False)
     if panel is None:
         await callback.answer("Annonce introuvable.", show_alert=True)
         return
+    if (callback.data or "").startswith("market:"):
+        from app.bot.handlers.market_panel import open_panel
+
+        await callback.answer()
+        await open_panel(callback, panel)
+        return
 
     listing = panel.listing
+    if listing is None:
+        return
     book = panel.book
     books_in_series = panel.books_in_series
 
@@ -250,6 +266,10 @@ async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
         await callback.answer("Annonce invalide.", show_alert=True)
         return
     listing_id, book_id = decoded
+    from app.bot.handlers.market_panel import select_panel_tome
+
+    if await select_panel_tome(callback, book_id):
+        return
 
     listing_repo = ListingRepository(db_session)
     listing = await listing_repo.get_by_id(listing_id)
@@ -312,6 +332,9 @@ async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
 async def handle_close_market_panel(callback: CallbackQuery) -> None:
     """Supprime le message de détail du marché."""
     if isinstance(callback.message, Message):
+        from app.bot.handlers.market_panel import close_panel
+
+        close_panel(callback.message)
         await callback.message.delete()
     await callback.answer()
 
@@ -377,28 +400,8 @@ async def handle_dislike(
         category_slug=listing.category_slug,
     )
     if isinstance(callback.message, Message):
-        # La confirmation est un message à part, en réponse à l'annonce.
-        #
-        # Réutiliser le message d'annonce serait plus court : on y poserait le
-        # clavier, et son texte porterait la question. Mais ce message est la
-        # trace de l'annonce — son prix, sa cote, ses mots-clés — et cette
-        # légende n'est pas reconstructible ici : la cote et les mots-clés
-        # viennent de l'ingestion, pas du handler. Un « Annuler » ou un
-        # « Confirmer » laisserait donc l'écran bloqué sur la question, sans
-        # prix à jamais. Un message séparé se remplace, se supprime, et
-        # n'abîme rien : c'est le clavier du message d'annonce qui reste
-        # intact, avec son texte d'origine.
-        confirmation_text = (
-            f"Signaler cette annonce comme faux positif ?\n\n"
-            f"{escape_html(listing.title)}\n"
-            "Elle sera ignorée pour cette alerte."
-        )
         with contextlib.suppress(Exception):
-            await callback.message.reply(
-                text=confirmation_text,
-                reply_markup=confirm_kb,
-                disable_web_page_preview=True,
-            )
+            await callback.message.edit_reply_markup(reply_markup=confirm_kb)
 
     await callback.answer("Confirmer le faux positif ?")
 
@@ -417,7 +420,11 @@ async def handle_confirm_dislike(
     listing = await listing_repo.get_by_id(listing_id)
     alert = await listing_repo.get_alert_for_listing(listing_id)
 
-    await record_listing_dislike(
+    if listing is None:
+        await callback.answer("Annonce introuvable.")
+        return
+
+    recorded = await record_listing_dislike(
         db_session,
         listing_id=listing_id,
         alert_id=alert.id if alert else None,
@@ -425,19 +432,13 @@ async def handle_confirm_dislike(
     )
     await db_session.commit()
 
-    if listing and isinstance(callback.message, Message):
-        # Le message de confirmation se termine ici : on le supprime pour ne pas
-        # laisser une question sans réponse au-dessus du fil. Le message
-        # d'annonce, lui, garde son texte et son clavier.
-        with contextlib.suppress(Exception):
-            await callback.message.delete()
+    if isinstance(callback.message, Message):
+        await callback.message.edit_reply_markup(reply_markup=get_listing_alert_keyboard(
+            listing.id, listing.url, listing.category_slug, is_disliked=True,
+        ))
+    await callback.answer("Faux positif enregistré.")
 
-    await callback.answer(
-        "👎 Faux positif enregistré ! L'IA l'utilisera pour auto-nettoyer vos alertes.",
-        show_alert=True,
-    )
-
-    if alert and callback.from_user and callback.bot:
+    if recorded and alert and callback.from_user and callback.bot:
         from app.tasks.proactive_autotune import schedule_proactive_autotune_check
 
         schedule_proactive_autotune_check(
@@ -448,25 +449,18 @@ async def handle_confirm_dislike(
 
 
 @router.callback_query(F.data.startswith("cancel_dislike:"))
-async def handle_cancel_dislike(callback: CallbackQuery) -> None:
-    """Annule la demande de faux positif et referme l'écran de confirmation.
-
-    Le message d'annonce n'a jamais été modifié : il n'y a rien à restaurer.
-    Seul le message de confirmation est supprimé. Le paramètre `db_session` a
-    disparu avec la lecture qui servait à reconstruire le clavier — l'injection
-    par le routeur reste tolérante, une signature plus courte ne casse rien.
-    """
+async def handle_cancel_dislike(callback: CallbackQuery, db_session: Any) -> None:
+    """Restaure le clavier de l'annonce sans toucher à son contenu."""
     listing_id = await _parse_listing_id(callback)
     if listing_id is None:
         return
-
+    listing = await _listing_or_answer(callback, db_session, listing_id)
+    if listing is None:
+        return
     if isinstance(callback.message, Message):
-        # Rien à restaurer : l'annonce n'a jamais été modifiée. Le message de
-        # confirmation disparaît, ce qui laisse le fil dans l'état où
-        # l'utilisateur était avant son appui.
-        with contextlib.suppress(Exception):
-            await callback.message.delete()
-
+        await callback.message.edit_reply_markup(reply_markup=get_listing_alert_keyboard(
+            listing.id, listing.url, listing.category_slug,
+        ))
     await callback.answer("Annulé.")
 
 
@@ -480,5 +474,3 @@ async def handle_already_disliked(callback: CallbackQuery) -> None:
 async def handle_noop_callback(callback: CallbackQuery) -> None:
     """Accusé de réception silencieux pour les boutons de statut (ex: '⏳ En cours...')."""
     await callback.answer()
-
-

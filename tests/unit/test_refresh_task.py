@@ -159,8 +159,8 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
         )
 
     assert stats["processed"] == 1
-    assert stats["available"] == 1
-    assert stats["unavailable"] == 0
+    assert stats["available"] == 0
+    assert stats["unavailable"] == 1
     mock_market_repo.update_or_create_cache.assert_not_called()
     mock_market_repo.clamp_historical_low_by_observations.assert_awaited_once_with(
         mock_book.id, 900
@@ -218,7 +218,7 @@ async def test_refresh_processes_several_books_in_one_wave():
     assert stats["unavailable"] == 2
 
     # L'alerte reste produite : seule sa destination change.
-    alertes = [s for s in sends if "Aucune cote" in s]
+    alertes = [s for s in sends if "Collecte de prix en échec" in s]
     assert len(alertes) == 1, "la passe complète doit signaler l'absence totale de cote"
     assert "Passe complet (3 livres)" in alertes[0]
     assert "3 livres traités, 0 cote disponible" in alertes[0]
@@ -257,7 +257,9 @@ async def _passe_sans_offres(
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
-    market_repo.update_or_create_cache = AsyncMock(return_value=None)
+    market_repo.update_or_create_cache = AsyncMock(return_value=BookMarketCache(
+        comparison_status=ComparisonStatus.UNAVAILABLE,
+    ))
 
     mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: book_repo)
     mp.setattr("app.services.book_market_pricing.MarketPriceRepository", lambda _s: market_repo)
@@ -297,11 +299,11 @@ async def test_passe_incremental_sans_cote_n_alerte_personne():
 
     assert stats["processed"] == 8
     assert stats["available"] == 0
-    assert [s for s in sends if "Aucune cote" in s] == []
+    assert [s for s in sends if "Collecte de prix en échec" in s] == []
 
 
 @pytest.mark.asyncio
-async def test_passe_complete_sans_cote_signale_une_seule_fois():
+async def test_passe_complete_sans_offre_ne_signale_pas_un_incident():
     """La passe complète, elle, a le droit de conclure — et ne le fait qu'une fois."""
     sends: list[str] = []
     with pytest.MonkeyPatch.context() as mp:
@@ -319,5 +321,5 @@ async def test_passe_complete_sans_cote_signale_une_seule_fois():
 
     assert premiere["processed"] == 12
     assert seconde["processed"] == 12
-    alertes = [s for s in sends if "Aucune cote" in s]
-    assert len(alertes) == 1, "la fenêtre Redis doit étouffer la seconde passe"
+    alertes = [s for s in sends if "Collecte de prix en échec" in s]
+    assert alertes == [], "une absence normale d'offres n'est pas un incident"

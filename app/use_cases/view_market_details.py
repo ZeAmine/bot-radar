@@ -19,6 +19,7 @@ from app.db.models.alert import Alert
 from app.db.models.book import Book
 from app.db.models.listing import Listing
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
+from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
@@ -26,7 +27,7 @@ from app.domain.rules.catalogue_search import is_uncatalogued
 from app.services.book_catalog_service import BookCatalogService
 from app.services.book_market_pricing import price_book_now
 from app.services.book_metadata_service import BookMetadataService
-from app.services.market_price_service import has_usable_price
+from app.services.market_price_service import extract_tome_number_from_title, has_usable_price
 from app.services.tome_extractor import TomeMatchResult
 
 logger = logging.getLogger(__name__)
@@ -43,13 +44,14 @@ class MarketPanelData:
     (jamais recomposé ici) : ``None`` tant qu'aucune écriture de cote ne l'a posé.
     """
 
-    listing: Listing
+    listing: Listing | None
     book: Book | None
     books_in_series: list[Book] | None
     tome_result: TomeMatchResult | None
     latest_snapshot: MarketPriceSnapshot | None
     series_total_cents: int | None = None
     catalogue_exhausted: bool = False
+    alert: Alert | None = None
 
 
 class ViewMarketDetailsUseCase:
@@ -61,7 +63,12 @@ class ViewMarketDetailsUseCase:
         self.book_repo = BookRepository(db)
         self.market_repo = MarketPriceRepository(db)
 
-    async def execute(self, listing_id: uuid.UUID) -> MarketPanelData | None:
+    async def execute(
+        self,
+        listing_id: uuid.UUID,
+        *,
+        refresh: bool = True,
+    ) -> MarketPanelData | None:
         """Données du panneau, ou ``None`` si l'annonce n'existe pas.
 
         Une annonce inconnue n'est pas une erreur : c'est au handler de le dire
@@ -74,18 +81,16 @@ class ViewMarketDetailsUseCase:
         alert = await self.listing_repo.get_alert_for_listing(listing.id)
         book, books_in_series, tome_result = await self._resolve_book(listing, alert)
         target_isbn = (
-            (alert.isbn if alert else None)
-            or listing.isbn13
-            or (book.isbn13 if book else None)
+            (alert.isbn if alert else None) or listing.isbn13 or (book.isbn13 if book else None)
         )
 
-        if not book and not books_in_series:
+        if refresh and not book and not books_in_series:
             catalog = BookCatalogService(self.db)
             book, _ = await catalog.identify_book(isbn13=target_isbn, title=listing.title)
 
         # Le tome précis de l'annonce manque encore aux livres de la série :
         # l'ISBN du tome vient alors de la notice du titre.
-        if not book and tome_result and tome_result.tome_number:
+        if refresh and not book and tome_result and tome_result.tome_number:
             verdict = await BookMetadataService().lookup_by_title_and_author(listing.title)
             meta = verdict.notice
             if meta and meta.isbn13:
@@ -97,20 +102,19 @@ class ViewMarketDetailsUseCase:
                     publisher=meta.publisher,
                 )
                 if alert:
-                    await self.book_repo.link_alert_to_book(
-                        alert_id=alert.id, book_id=book.id
-                    )
+                    await self.book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
                 if books_in_series is not None:
                     books_in_series.append(book)
                 target_isbn = meta.isbn13
 
-        book = await self._refresh_price_if_needed(
-            listing=listing,
-            alert=alert,
-            book=book,
-            books_in_series=books_in_series,
-            target_isbn=target_isbn,
-        )
+        if refresh:
+            book = await self._refresh_price_if_needed(
+                listing=listing,
+                alert=alert,
+                book=book,
+                books_in_series=books_in_series,
+                target_isbn=target_isbn,
+            )
 
         # Le total vient de l'alerte, et la cotation qui vient peut-être d'avoir
         # lieu dans `_refresh_price_if_needed` vient de le réécrire dans sa propre
@@ -147,7 +151,57 @@ class ViewMarketDetailsUseCase:
             latest_snapshot=latest_snapshot,
             series_total_cents=series_total,
             catalogue_exhausted=catalogue_exhausted,
+            alert=alert,
         )
+
+    async def execute_for_alert(
+        self,
+        alert_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> MarketPanelData | None:
+        """Lit la cote d'une alerte appartenant à l'utilisateur, sans I/O externe."""
+        alert = await AlertRepository(self.db).get_by_id(alert_id, user_id=user_id)
+        if alert is None or alert.category.slug != "bd_comics":
+            return None
+        books = await self.book_repo.get_all_books_for_alert(alert.id)
+        books.sort(key=lambda b: (extract_tome_number_from_title(b.title) or 999, b.title))
+        book = books[0] if books else None
+        if alert.isbn:
+            book = await self.book_repo.get_book_for_alert(alert.id)
+            books = [book] if book else []
+        snapshot = await self.market_repo.get_latest_snapshot(book.id) if book else None
+        return MarketPanelData(
+            listing=None,
+            book=book,
+            books_in_series=books,
+            tome_result=None,
+            latest_snapshot=snapshot,
+            series_total_cents=alert.series_total_cents,
+            catalogue_exhausted=is_uncatalogued(alert),
+            alert=alert,
+        )
+
+    async def resolve_alert_books(
+        self,
+        alert_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+    ) -> None:
+        """Identifie et lie les ouvrages d'une alerte pour une consultation explicite."""
+        alert = await AlertRepository(self.db).get_by_id(alert_id, user_id=user_id)
+        if alert is None or await self.book_repo.get_all_books_for_alert(alert.id):
+            return
+        if alert.isbn:
+            book, _ = await BookCatalogService(self.db).identify_book(
+                isbn13=alert.isbn,
+                title=alert.name,
+            )
+            if book and book.isbn13 == alert.isbn:
+                await self.book_repo.link_alert_to_book(alert.id, book.id)
+                await self.db.commit()
+        else:
+            from app.use_cases.ingest_listing import link_books_from_bnf
+
+            await link_books_from_bnf(alert.name, alert.id, series=True)
 
     async def _resolve_book(
         self,
@@ -231,9 +285,7 @@ class ViewMarketDetailsUseCase:
                     isbn13=target_isbn,
                 )
                 if alert:
-                    await self.book_repo.link_alert_to_book(
-                        alert_id=alert.id, book_id=book.id
-                    )
+                    await self.book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
             # Le livre doit être écrit avant que la cotation ne lise sa session.
             await self.db.commit()
             cache = await price_book_now(book.id, reason="market_button")
