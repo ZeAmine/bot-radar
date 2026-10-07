@@ -110,7 +110,7 @@ Toute modification du chemin ingestion → matching → Telegram doit respecter 
 
 1. Dédoublonner l’annonce (`source_name` + `external_id`).
 2. Matcher en CPU local (`evaluate_listing_against_alert`). Une requête groupée de l'état de notification par annonce (`match_notification_state`), pas un `SELECT` par alerte.
-3. Cote BD : **cache local uniquement**. `MarketPriceService.get_comparison_summary` est synchrone, zéro HTTP. Référence unique : le prix le plus bas constaté sur 1 an, sinon le prix du marché du jour (ADR-016). Un livre identifié mais sans cote affiche `PENDING_COTE_LINE` (« cote en cours ») : le silence faisait croire à une absence de prix. Une passe déjà revenue vide ne s'annonce plus comme en cours — `cote_absence_line` rend alors `NO_OFFER_LINE`, datée du relevé : l'attente éternelle était le seul mensonge disponible (ADR-039).
+3. Cote BD : **cache local uniquement**. `MarketPriceService.get_comparison_summary` est synchrone, zéro HTTP. Référence unique : le prix le plus bas constaté sur 1 an, sinon le prix du marché du jour (ADR-016). Un livre identifié mais sans cote affiche `PENDING_COTE_LINE` (« cote en cours ») : le silence faisait croire à une absence de prix. Une passe déjà revenue vide ne s'annonce plus comme en cours — `cote_absence_line` rend alors `NO_OFFER_LINE`, datée du relevé : l'attente éternelle était le seul mensonge disponible (ADR-039). Une œuvre sans fiche **parce qu'aucune autorité ne la catalogue** ne s'annonce plus comme une recherche en cours : `NO_CATALOGUE_LINE` le dit, et la ligne reste distincte d'une cote chiffrée jusque dans l'audit d'envoi (ADR-041).
 4. `send_listing_alert` — priorité absolue.
 5. Ensuite seulement, en `safe_create_task` :
    - enrichissement DeepSeek dans `telegram_service.py` avec le **vrai** `message_id` ;
@@ -265,7 +265,7 @@ Ce que l’API accepte, vérifié par aller-retour `PUT` puis `GET` :
 
 Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
 
-Révision Alembic actuelle attendue : `0006_composite_indexes` (index composites alertes/cache). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — donc seulement en production. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
+Révision Alembic actuelle attendue : `0008_search_exhausted` (verdict « aucune source ne catalogue cet ouvrage » sur l'alerte). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — donc seulement en production. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
 
 ## IA
 

@@ -307,6 +307,75 @@ class ProviderAttempt:
 
 
 @dataclass(frozen=True)
+class CatalogueVerdict:
+    """Ce qu'une recherche de catalogue a appris : qui a parlé, et ce qui en est sorti.
+
+    `consulted` nomme les autorités réellement interrogées, dans l'ordre réel et
+    sans doublons ; `unavailable` celles dont l'échec est établi ; `notices` les
+    notices retenues. Un `notices` vide ne dit pas la même chose selon
+    `unavailable` : « toutes les autorités consultées ont répondu, aucune ne
+    connaît l'ouvrage » est une information ; « une autorité s'est tue » en est
+    l'absence. C'est la règle pure `is_catalogue_exhausted` qui tranche — jamais
+    l'appelant, qui ne voit qu'une liste vide.
+
+    Le vocabulaire est celui du rapport de recherche (`consulted`,
+    `unavailable`, `ProviderAttempt`) : le jour où le contrat partagé saura
+    composer une série, l'enrichissement de fond s'y branchera sans seconde
+    interprétation à maintenir.
+    """
+
+    consulted: tuple[str, ...] = ()
+    unavailable: tuple[str, ...] = ()
+    notices: tuple[BookMetadata, ...] = ()
+
+    @property
+    def notice(self) -> BookMetadata | None:
+        """La notice retenue, s'il y en a une (une recherche par titre en rend au plus une)."""
+        return self.notices[0] if self.notices else None
+
+
+def consulted_authorities(attempts: tuple[ProviderAttempt, ...]) -> tuple[str, ...]:
+    """Autorités réellement interrogées, ordre réel, sans doublons.
+
+    Un désactivé n'y figure pas : une source sans clé n'a jamais été interrogée,
+    et l'annoncer consultée serait un mensonge de plus.
+    """
+    seen: list[str] = []
+    for attempt in attempts:
+        if attempt.provider not in seen:
+            seen.append(attempt.provider)
+    return tuple(seen)
+
+
+def failed_authorities(attempts: tuple[ProviderAttempt, ...]) -> tuple[str, ...]:
+    """Autorités dont l'échec est établi (un désactivé n'est jamais en échec)."""
+    return tuple(
+        provider
+        for provider in consulted_authorities(attempts)
+        if any(
+            attempt.provider == provider
+            and attempt.status != ProviderQueryStatus.SUCCESS
+            for attempt in attempts
+        )
+    )
+
+
+def _verdict(
+    attempts: list[ProviderAttempt], *notices: BookMetadata | None
+) -> CatalogueVerdict:
+    """Le verdict d'une recherche : les tentatives réelles et les notices retenues.
+
+    Une notice `None` (aucun repli n'a rendu) n'est pas une notice : elle est
+    filtrée ici, pour qu'aucun appelant n'ait à se demander si le tuple en porte.
+    """
+    return CatalogueVerdict(
+        consulted=consulted_authorities(tuple(attempts)),
+        unavailable=failed_authorities(tuple(attempts)),
+        notices=tuple(notice for notice in notices if notice is not None),
+    )
+
+
+@dataclass(frozen=True)
 class BibliographicReport:
     """Enveloppe d'une recherche : le résultat métier et les tentatives réelles.
 
@@ -694,8 +763,10 @@ class BookMetadataService:
         if "vinted." in clean_q.lower():
             return await self._lookup_from_vinted_url(clean_q)
 
-        # 3. Recherche par Titre (+ Auteur éventuel)
-        return await self.lookup_by_title_and_author(clean_q)
+        # 3. Recherche par Titre (+ Auteur éventuel). `resolve_input` garde son
+        # retour historique (la notice) : le verdict est lu par les appelants qui
+        # savent quoi en faire, pas par les écrans de saisie.
+        return (await self.lookup_by_title_and_author(clean_q)).notice
 
     async def resolve_input(self, query: str) -> BookResolution | None:
         """Résout une saisie libre de l'utilisateur, quelle qu'en soit la forme.
@@ -1038,32 +1109,47 @@ class BookMetadataService:
         meta.recommended_variants = variants
         return meta
 
-    async def lookup_by_title_and_author(self, user_input: str) -> BookMetadata | None:
-        """Recherche par titre et indice d'auteur avec ranking intelligent."""
+    async def lookup_by_title_and_author(self, user_input: str) -> CatalogueVerdict:
+        """Recherche par titre et indice d'auteur, avec le verdict qui l'accompagne.
+
+        Le retour ne porte pas seulement la notice : il porte aussi **qui a parlé**.
+        Sans cela, une BNF vide et une BNF muette se lisaient pareil, et une alerte
+        de série ne pouvait pas dire « aucune source ne catalogue cet ouvrage » sans
+        risquer de l'annoncer sur une panne réseau. Les décisions d'autorité sont
+        inchangées : mêmes requêtes, même ordre, même repli.
+        """
         title_cand, author_cand = parse_query_title_and_author(user_input)
         clean_title_q = clean_title_query(title_cand)
 
+        attempts: list[ProviderAttempt] = []
+
         # Requête BNF avec le titre
         cql = f'bib.title all "{clean_title_q}"'
-        records = await self._query_bnf_sru(
+        result, _panne = await self._bnf_records_result(
             cql, author_hint=author_cand, title_hint=clean_title_q
         )
+        attempts.append(_attempt(AUTORITE_BNF, "title", result))
+        records = list(result.items)
 
         if not records and author_cand:
             # Essai plus large si pas de résultat
             cql_broad = f'bib.anywhere all "{clean_title_q}"'
-            records = await self._query_bnf_sru(
+            broad, _panne_broad = await self._bnf_records_result(
                 cql_broad, author_hint=author_cand, title_hint=clean_title_q
             )
+            attempts.append(_attempt(AUTORITE_BNF, "title_anywhere", broad))
+            records = list(broad.items)
 
         if records:
-            return self._attach_recommendations(records[0])
+            return _verdict(attempts, self._attach_recommendations(records[0]))
 
-        fallback, _ol_attempt = await self._resolve_via_openlibrary(clean_title_q, author_cand)
+        fallback, ol_attempt = await self._resolve_via_openlibrary(clean_title_q, author_cand)
+        attempts.append(ol_attempt)
         if fallback is not None:
-            return fallback.best
-        google, _google_attempts = await self._resolve_via_google_books(clean_title_q, author_cand)
-        return google.best if google else None
+            return _verdict(attempts, fallback.best)
+        google, google_attempts = await self._resolve_via_google_books(clean_title_q, author_cand)
+        attempts.extend(google_attempts)
+        return _verdict(attempts, google.best if google else None)
 
     async def lookup_series_notices(
         self,
@@ -1071,7 +1157,7 @@ class BookMetadataService:
         author_hint: str | None = None,
         *,
         limit: int = MAX_SERIES_BOOKS,
-    ) -> list[BookMetadata]:
+    ) -> CatalogueVerdict:
         """Notices distinctes d'une série — ses tomes — quand une autorité les nomme.
 
         Une série suivie par son nom (« Blacksad ») n'a aucune fiche : ses annonces
@@ -1085,22 +1171,35 @@ class BookMetadataService:
         remplace jamais une notice BNF : il ne voit que les ISBN que la BNF n'a pas
         déjà donnés, et ses notices portent leur provenance (`AUTORITE_OPENLIBRARY`),
         donc `provenance_note` les distingue d'une confirmation BNF.
+
+        Le verdict est celui de **cette** recherche, repli compris : une série sans
+        aucun tome retenu, dont les autorités interrogées ont pourtant toutes
+        répondu, n'est pas une recherche en cours — c'est une réponse, et elle se dit
+        (ADR-041). Une autorité muette interdit la conclusion : son silence ne prouve
+        rien.
         """
         wanted = normalize_text(series_title)
         if not wanted:
-            return []
+            # Titre vide : aucune autorité n'a été interrogée, et le verdict ne
+            # pourra jamais dire « personne ne le connaît » — personne n'a cherché.
+            return CatalogueVerdict()
         clean_title = clean_title_query(series_title)
-        records = await self._query_bnf_sru(
+        attempts: list[ProviderAttempt] = []
+        result, _panne = await self._bnf_records_result(
             f'bib.title all "{clean_title}"',
             author_hint=author_hint,
             title_hint=clean_title,
         )
+        attempts.append(_attempt(AUTORITE_BNF, "title", result))
+        records = list(result.items)
         if not records and author_hint:
-            records = await self._query_bnf_sru(
+            broad, _panne_broad = await self._bnf_records_result(
                 f'bib.anywhere all "{clean_title}"',
                 author_hint=author_hint,
                 title_hint=clean_title,
             )
+            attempts.append(_attempt(AUTORITE_BNF, "title_anywhere", broad))
+            records = list(broad.items)
 
         selected: list[BookMetadata] = []
         seen: set[str] = set()
@@ -1119,18 +1218,21 @@ class BookMetadataService:
             selected.append(record)
             if len(selected) >= limit:
                 break
-
         if len(selected) < limit:
-            selected.extend(
-                await self._complete_series_from_openlibrary(
-                    series_title=series_title,
-                    wanted=wanted,
-                    author_hint=author_hint,
-                    seen=seen,
-                    limit=limit - len(selected),
-                )
+            completed, ol_result = await self._complete_series_from_openlibrary(
+                series_title=series_title,
+                wanted=wanted,
+                author_hint=author_hint,
+                seen=seen,
+                limit=limit - len(selected),
             )
-        return selected
+            # Le repli nourrit le verdict comme la voie BNF : sans sa tentative, une
+            # série vide se lirait « personne ne la connaît » alors qu'OpenLibrary
+            # s'est peut-être tue — et un silence ne prouve rien.
+            if ol_result is not None:
+                attempts.append(_attempt(AUTORITE_OPENLIBRARY, "title", ol_result))
+            selected.extend(completed)
+        return _verdict(attempts, *selected)
 
     async def _complete_series_from_openlibrary(
         self,
@@ -1140,7 +1242,7 @@ class BookMetadataService:
         author_hint: str | None,
         seen: set[str],
         limit: int,
-    ) -> list[BookMetadata]:
+    ) -> tuple[list[BookMetadata], ProviderQueryResult[dict[str, Any]] | None]:
         """Complète une série par OpenLibrary — seulement les tomes que la BNF a tus.
 
         Repli d'enrichissement, jamais de substitution : `seen` porte les ISBN déjà
@@ -1149,13 +1251,16 @@ class BookMetadataService:
         similarité suffisante, cohérence d'auteur quand elle est connue — pour que
         les deux sources ne se contredisent pas sur ce qu'est un tome de la série.
         Les notices rendues gardent leur provenance OpenLibrary (`BookMetadata.source`).
+
+        La requête réellement partie est rendue avec ses notices : c'est elle qui fait
+        entrer OpenLibrary dans le verdict (`None` quand rien n'a été demandé).
         """
         if limit <= 0:
-            return []
+            return [], None
         params: dict[str, str] = {"title": clean_title_query(series_title)}
         if author_hint:
             params["author"] = author_hint
-        works, _result = await self._openlibrary_works(params)
+        works, result = await self._openlibrary_works(params)
 
         found: list[BookMetadata] = []
         for work in works:
@@ -1174,38 +1279,7 @@ class BookMetadataService:
             found.append(meta)
             if len(found) >= limit:
                 break
-        return found
-
-    async def _query_bnf_sru(
-        self,
-        cql_query: str,
-        author_hint: str | None = None,
-        title_hint: str | None = None,
-    ) -> list[BookMetadata]:
-        """Interroge l'API SRU de la BNF. Absorbe les pannes : voir `_bnf_records`.
-
-        Une liste vide y signifie « aucune notice », jamais « autorité muette » :
-        une panne ne doit pas ressembler à un refus. Seul `consult_authorities`,
-        qui interroge les autorités, a besoin de savoir la différence.
-        """
-        records, _panne = await self._bnf_records(cql_query, author_hint, title_hint)
-        return records
-
-    async def _bnf_records(
-        self,
-        cql_query: str,
-        author_hint: str | None = None,
-        title_hint: str | None = None,
-    ) -> tuple[list[BookMetadata], str | None]:
-        """Notices SRU, et le motif de panne si l'autorité n'a pas répondu.
-
-        Le second élément est ce qui manque à une liste vide pour être une réponse :
-        sans lui, `[]` dit aussi bien « la BNF ignore cet ISBN » que « la requête a
-        échoué », et l'appelant qui doit rendre compte ne peut pas trancher.
-        Libellés historiques préservés à l'identique (voir `_bnf_records_result`).
-        """
-        result, panne = await self._bnf_records_result(cql_query, author_hint, title_hint)
-        return list(result.items), panne
+        return found, result
 
     async def _bnf_records_result(
         self,
@@ -1213,15 +1287,17 @@ class BookMetadataService:
         author_hint: str | None = None,
         title_hint: str | None = None,
     ) -> tuple[ProviderQueryResult[BookMetadata], str | None]:
-        """Notices SRU typées, et le libellé historique de panne éventuelle.
+        """Notices SRU typées, et le motif de panne si l'autorité n'a pas répondu.
 
-        Même requête, même parsing, même scoring que le chemin historique : seuls
-        s'ajoutent le statut typé et `has_results` (blocs `recordData` reçus,
-        avant tout tri). Les libellés de panne reprennent les expressions
-        historiques à l'identique — le contrat neuf (`error_code`) ne porte,
-        lui, que des codes contrôlés, jamais de message d'exception. Les logs
-        ne portent que des noms de classes : l'URL SRU contient la saisie
-        utilisateur, qui n'a rien à y faire.
+        Le second élément est ce qui manque à une liste vide pour être une réponse :
+        sans lui, `[]` dit aussi bien « la BNF ignore cet ISBN » que « la requête a
+        échoué », et l'appelant qui doit rendre compte ne peut pas trancher. C'est
+        cette distinction qui fait un verdict (`is_catalogue_exhausted`, ADR-041).
+
+        Les libellés de panne reprennent les expressions historiques à l'identique
+        — le contrat neuf (`error_code`) ne porte, lui, que des codes contrôlés,
+        jamais de message d'exception. Les logs ne portent que des noms de classes :
+        l'URL SRU contient la saisie utilisateur, qui n'a rien à y faire.
         """
         params = {
             "version": "1.2",

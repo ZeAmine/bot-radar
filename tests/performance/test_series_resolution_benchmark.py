@@ -123,6 +123,25 @@ def _series_notices(count: int = SERIES_NOTICES) -> list[BookMetadata]:
     ]
 
 
+def _typed_bnf(
+    records: list[BookMetadata],
+) -> tuple[ProviderQueryResult[BookMetadata], None]:
+    """Joint typé moqué : la BNF a répondu, avec ces notices et sans panne.
+
+    Le service ne rend plus une liste nue : une liste vide y disait aussi bien
+    « cette série n'existe pas » que « la requête a échoué ». Le benchmark
+    remplace donc le joint typé, pas la lecture qu'on en fait.
+    """
+    return (
+        ProviderQueryResult(
+            status=ProviderQueryStatus.SUCCESS,
+            items=tuple(records),
+            has_results=bool(records),
+        ),
+        None,
+    )
+
+
 def _bnf_response(records_total: int = 60) -> list[BookMetadata]:
     """Réponse SRU réaliste : des tomes, un doublon d'ISBN, du hors-série.
 
@@ -259,12 +278,14 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
     # échoue avant même d'atteindre la BNF.
     monkeypatch.setattr("app.db.session.AsyncSessionLocal", session_maker)
 
-    async def _slow_bnf(*_args: Any, **_kwargs: Any) -> list[BookMetadata]:
+    async def _slow_bnf(
+        *_args: Any, **_kwargs: Any
+    ) -> tuple[ProviderQueryResult[BookMetadata], None]:
         events.append("bnf")
         await asyncio.sleep(BNF_LATENCY_MS / 1000.0)
-        return _series_notices()
+        return _typed_bnf(_series_notices())
 
-    monkeypatch.setattr(BookMetadataService, "_query_bnf_sru", _slow_bnf)
+    monkeypatch.setattr(BookMetadataService, "_bnf_records_result", _slow_bnf)
     monkeypatch.setattr(
         BookMetadataService, "_query_openlibrary_result", _empty_openlibrary
     )
@@ -360,16 +381,19 @@ async def test_benchmark_series_lookup_selects_six_tomes(monkeypatch: pytest.Mon
     service = BookMetadataService()
     response = _bnf_response()
 
-    async def _instant_bnf(*_args: Any, **_kwargs: Any) -> list[BookMetadata]:
-        return response
+    async def _instant_bnf(
+        *_args: Any, **_kwargs: Any
+    ) -> tuple[ProviderQueryResult[BookMetadata], None]:
+        return _typed_bnf(response)
 
-    monkeypatch.setattr(BookMetadataService, "_query_bnf_sru", _instant_bnf)
+    monkeypatch.setattr(BookMetadataService, "_bnf_records_result", _instant_bnf)
     monkeypatch.setattr(
         BookMetadataService, "_query_openlibrary_result", _empty_openlibrary
     )
 
     async def _one_lookup() -> list[BookMetadata]:
-        return await service.lookup_series_notices(SERIES_NAME, author_hint="Tyler Johnson")
+        verdict = await service.lookup_series_notices(SERIES_NAME, author_hint="Tyler Johnson")
+        return list(verdict.notices)
 
     for _ in range(WARMUP_ITERATIONS):
         assert len(await _one_lookup()) == SERIES_NOTICES
@@ -412,10 +436,12 @@ async def test_benchmark_series_link_writes_six_links_and_prices_them(
 
     monkeypatch.setattr("app.db.session.AsyncSessionLocal", session_maker)
 
-    async def _instant_bnf(*_args: Any, **_kwargs: Any) -> list[BookMetadata]:
-        return _series_notices()
+    async def _instant_bnf(
+        *_args: Any, **_kwargs: Any
+    ) -> tuple[ProviderQueryResult[BookMetadata], None]:
+        return _typed_bnf(_series_notices())
 
-    monkeypatch.setattr(BookMetadataService, "_query_bnf_sru", _instant_bnf)
+    monkeypatch.setattr(BookMetadataService, "_bnf_records_result", _instant_bnf)
     monkeypatch.setattr(
         BookMetadataService, "_query_openlibrary_result", _empty_openlibrary
     )

@@ -64,6 +64,14 @@ class Alert(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Réécrit à chaque écriture de cote par `persist_market_result` — jamais ailleurs.
     series_total_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Verdict « aucune source ne catalogue cet ouvrage » : la date du relevé qui l'a
+    # établi, NULL tant que la recherche n'a pas conclu. Une date plutôt qu'un drapeau :
+    # le fait se lit comme une observation datée, et il se remplace au relevé suivant.
+    # Écrit par l'enrichissement de fond (`link_books_from_bnf`), jamais par un écran.
+    book_search_exhausted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # États acceptés (liste de chaînes ou null si tous acceptés)
     accepted_conditions: Mapped[list[str] | None] = mapped_column(
         JSON().with_variant(JSONB, "postgresql"),

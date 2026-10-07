@@ -40,7 +40,7 @@ from app.db.models.user import User  # noqa: E402
 from app.providers.base import MarketOffer  # noqa: E402
 from app.providers.registry import ProviderRegistry as RealProviderRegistry  # noqa: E402
 from app.services import book_market_pricing as pricing  # noqa: E402
-from app.services.book_metadata_service import BookMetadata  # noqa: E402
+from app.services.book_metadata_service import BookMetadata, CatalogueVerdict  # noqa: E402
 from tests.database import sqlite_only_database  # noqa: E402
 from tests.fakes_catalogue import BNF_RECORD_TEMPLATE, FakeCatalogueClient  # noqa: E402
 
@@ -199,8 +199,14 @@ async def test_dry_run_on_a_temporary_database_renders_a_readable_report(
     async with sqlite_only_database() as fresh:
         await _seed_alerts(fresh.session)
         fake_service = MagicMock()
+        # Un double fidèle : le service rend un **verdict**, pas une liste nue. Rendre
+        # une liste ici ferait passer `discover_tomes` sans jamais l'exercer, et le
+        # mode rapport casserait en production dès que le verdict arriverait (ADR-041).
         fake_service.lookup_series_notices = AsyncMock(
-            return_value=[BookMetadata(title="Blacksad Tome 2", isbn13=TOME_2)]
+            return_value=CatalogueVerdict(
+                consulted=("bnf",),
+                notices=(BookMetadata(title="Blacksad Tome 2", isbn13=TOME_2),),
+            )
         )
         args = argparse.Namespace(dry_run=True, json=False, limit=None)
         with (

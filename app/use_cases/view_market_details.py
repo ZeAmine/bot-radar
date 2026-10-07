@@ -22,6 +22,7 @@ from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
+from app.domain.rules.catalogue_search import is_uncatalogued
 from app.services.book_catalog_service import BookCatalogService
 from app.services.book_market_pricing import price_book_now
 from app.services.book_metadata_service import BookMetadataService
@@ -48,6 +49,7 @@ class MarketPanelData:
     tome_result: TomeMatchResult | None
     latest_snapshot: MarketPriceSnapshot | None
     series_total_cents: int | None = None
+    catalogue_exhausted: bool = False
 
 
 class ViewMarketDetailsUseCase:
@@ -84,7 +86,8 @@ class ViewMarketDetailsUseCase:
         # Le tome précis de l'annonce manque encore aux livres de la série :
         # l'ISBN du tome vient alors de la notice du titre.
         if not book and tome_result and tome_result.tome_number:
-            meta = await BookMetadataService().lookup_by_title_and_author(listing.title)
+            verdict = await BookMetadataService().lookup_by_title_and_author(listing.title)
+            meta = verdict.notice
             if meta and meta.isbn13:
                 catalog = BookCatalogService(self.db)
                 book = await catalog.add_book(
@@ -113,9 +116,13 @@ class ViewMarketDetailsUseCase:
         # lieu dans `_refresh_price_if_needed` vient de le réécrire dans sa propre
         # session : on relit plutôt que d'afficher la valeur du début d'entrée.
         series_total: int | None = None
+        catalogue_exhausted = False
         if alert is not None:
             await self.db.refresh(alert)
             series_total = alert.series_total_cents
+            # Le verdict de recherche est lu en base comme le total : le panneau
+            # l'affiche, il ne le recalcule pas.
+            catalogue_exhausted = is_uncatalogued(alert)
 
         # Un livre non résolu dans une série d'un seul tome est ce tome : le
         # panneau n'a pas besoin d'un choix qui n'en est pas un.
@@ -139,6 +146,7 @@ class ViewMarketDetailsUseCase:
             tome_result=tome_result,
             latest_snapshot=latest_snapshot,
             series_total_cents=series_total,
+            catalogue_exhausted=catalogue_exhausted,
         )
 
     async def _resolve_book(

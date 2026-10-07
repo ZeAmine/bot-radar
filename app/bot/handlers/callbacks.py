@@ -21,6 +21,7 @@ from app.db.repositories.autotune_repo import record_listing_dislike
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
+from app.domain.rules.catalogue_search import is_uncatalogued
 from app.services.ai.modules.negotiation import negotiation_module
 from app.services.market_price_service import (
     MarketPriceService,
@@ -201,6 +202,7 @@ async def _show_market_details(
         tome_result=panel.tome_result,
         latest_snapshot=panel.latest_snapshot,
         series_total_cents=panel.series_total_cents,
+        catalogue_exhausted=panel.catalogue_exhausted,
     )
     # Les tomes se choisissent depuis n'importe quel panneau de la série, résolu
     # ou non : condition unique `len(books_in_series) > 1` (voir helper).
@@ -278,6 +280,7 @@ async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
         tome_result=None,
         latest_snapshot=latest_snap,
         series_total_cents=alert.series_total_cents if alert else None,
+        catalogue_exhausted=is_uncatalogued(alert) if alert else False,
     )
 
     # Depuis un tome, les autres tomes restent à portée de pouce : la sélection

@@ -3,6 +3,7 @@
 import logging
 import sys
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from aiogram import Bot
@@ -14,8 +15,10 @@ from app.core.tasks import safe_create_task
 from app.db.models.book import Book
 from app.db.models.bot_event import BotEvent
 from app.db.models.listing import Listing
+from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.repositories.listing_repo import ListingRepository
+from app.domain.rules.catalogue_search import is_catalogue_exhausted, is_uncatalogued
 from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import (
     ListingIngestPayload,
@@ -26,6 +29,7 @@ from app.services.book_catalog_service import BookCatalogService
 from app.services.book_market_pricing import schedule_book_pricing
 from app.services.market_health import classify_sent_cote_state, record_sent_cote_state
 from app.services.market_price_service import (
+    NO_CATALOGUE_LINE,
     PENDING_COTE_LINE,
     SEARCHING_BOOK_LINE,
     MarketPriceService,
@@ -56,6 +60,11 @@ async def link_books_from_bnf(
     n'a aucune fiche, et sa première annonce partait sans cote tant qu'aucun tome
     n'avait été lié. Chaque notice liée est cotée si elle n'a pas déjà une cote
     utilisable, une seule fois par livre (le garde de `schedule_book_pricing`).
+
+    La recherche rend un **verdict** (`CatalogueVerdict`), et c'est ici qu'il devient
+    une donnée de l'alerte : quand toutes les autorités interrogées ont répondu sans
+    rien rendre, l'alerte le retient et ses prochaines annonces le disent, au lieu
+    d'annoncer une recherche en cours indéfiniment (ADR-041).
     """
     from app.db.session import AsyncSessionLocal
     from app.services.book_metadata_service import BookMetadataService
@@ -64,16 +73,22 @@ async def link_books_from_bnf(
     try:
         service = BookMetadataService()
         if series:
-            found = await service.lookup_series_notices(title, author_hint=author)
+            verdict = await service.lookup_series_notices(title, author_hint=author)
         else:
-            meta = await service.lookup_by_title_and_author(query)
-            found = [meta] if meta else []
-        notices = [notice for notice in found if notice and notice.isbn13]
-        if not notices:
-            return
+            verdict = await service.lookup_by_title_and_author(query)
+        notices = [notice for notice in verdict.notices if notice and notice.isbn13]
 
         to_price: list[uuid.UUID] = []
         async with AsyncSessionLocal() as session:
+            # Le verdict s'écrit là où il est connu, et seulement quand il est
+            # concluant : une notice arrivée efface l'exhaustion, une autorité muette
+            # ne la réécrit pas (elle ne prouve rien, ni dans un sens ni dans l'autre).
+            alert_repo = AlertRepository(session)
+            if notices:
+                await alert_repo.set_book_search_exhausted(alert_id, None)
+            elif is_catalogue_exhausted(verdict):
+                await alert_repo.set_book_search_exhausted(alert_id, datetime.now(UTC))
+
             book_repo = BookRepository(session)
             catalog = BookCatalogService(session)
             for notice in notices:
@@ -277,9 +292,14 @@ class ProcessListingUseCase:
                 # en cours ; sinon → recherche de l'ouvrage en cours (la résolution
                 # de fond va réellement la lancer, cf. `if not catalog_ready`).
                 if market_line is None:
-                    market_line = (
-                        PENDING_COTE_LINE if catalog_ready else SEARCHING_BOOK_LINE
-                    )
+                    if catalog_ready:
+                        market_line = PENDING_COTE_LINE
+                    elif is_uncatalogued(alert):
+                        # Aucun livre, et la recherche a déjà répondu : annoncer
+                        # « recherche en cours » serait la faire attendre pour rien.
+                        market_line = NO_CATALOGUE_LINE
+                    else:
+                        market_line = SEARCHING_BOOK_LINE
             pending_sends.append(
                 (alert, match_result, market_line, catalog_ready, resolved_book)
             )

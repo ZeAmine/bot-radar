@@ -140,8 +140,16 @@ async def linked_isbns(alert: SeriesAlert) -> set[str]:
 
 
 async def discover_tomes(alert: SeriesAlert) -> list[BookMetadata]:
-    """Tomes qu'une autorité rend pour la série — BNF d'abord, OpenLibrary en complément."""
-    return await BookMetadataService().lookup_series_notices(alert.name, author_hint=None)
+    """Tomes qu'une autorité rend pour la série — BNF d'abord, OpenLibrary en complément.
+
+    La recherche rend un **verdict** (ADR-041) : le script ne lit que ses notices,
+    et c'est le seam appelé ici qui porte la lecture — un appelant qui attendrait une
+    liste nue itérerait un verdict, et le mode rapport tomberait sur un `TypeError`.
+    """
+    verdict = await BookMetadataService().lookup_series_notices(
+        alert.name, author_hint=None
+    )
+    return list(verdict.notices)
 
 
 async def link_series(alert: SeriesAlert) -> None:

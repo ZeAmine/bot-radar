@@ -154,6 +154,24 @@ class AlertRepository:
         await self.session.flush()
         return alert
 
+    async def set_book_search_exhausted(
+        self,
+        alert_id: uuid.UUID,
+        exhausted_at: datetime | None,
+    ) -> None:
+        """Écrit le verdict « aucune source ne catalogue cet ouvrage », sans commit.
+
+        La date est celle du relevé qui l'établit ; ``None`` l'efface — une notice
+        arrivée depuis contredit le verdict, et l'alerte ne doit pas continuer de
+        l'annoncer. Ce n'est ni une règle de matching ni une cote : seulement la
+        mémoire d'une recherche, écrite par l'enrichissement de fond (ADR-041).
+        """
+        alert = await self.session.get(Alert, alert_id)
+        if alert is None:
+            return
+        alert.book_search_exhausted_at = exhausted_at
+        await self.session.flush()
+
     async def soft_delete(self, alert: Alert) -> Alert:
         """Effectue un soft delete de l'alerte."""
         alert.status = AlertStatus.DELETED

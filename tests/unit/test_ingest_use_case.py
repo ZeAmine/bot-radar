@@ -970,6 +970,7 @@ async def test_catalog_resolution_leaves_an_already_priced_book_alone() -> None:
 @pytest.mark.asyncio
 async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> None:
     """La BNF est interrogée par nom d'alerte (+ auteur), jamais par titre d'annonce."""
+    from app.services.book_metadata_service import CatalogueVerdict
     from app.use_cases import ingest_listing as mod
 
     meta = MagicMock(isbn13="9782369904151", author="Un Auteur", publisher="Un Éditeur")
@@ -983,7 +984,9 @@ async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> N
         patch.object(mod, "BookCatalogService"),
         patch.object(mod, "schedule_book_pricing") as schedule,
     ):
-        service_cls.return_value.lookup_by_title_and_author = AsyncMock(return_value=meta)
+        service_cls.return_value.lookup_by_title_and_author = AsyncMock(
+            return_value=CatalogueVerdict(consulted=("bnf",), notices=(meta,))
+        )
         repo_cls.return_value.get_by_isbn13 = AsyncMock(return_value=book)
         repo_cls.return_value.link_alert_to_book = AsyncMock()
         repo_cls.return_value.get_by_id = AsyncMock(
@@ -1002,6 +1005,7 @@ async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> N
 async def test_bnf_link_for_a_series_links_and_prices_every_tome() -> None:
     """`series=True` lie chaque tome de la série et ne cote que ceux sans cote."""
     from app.db.models.book_market_cache import BookMarketCache
+    from app.services.book_metadata_service import CatalogueVerdict
     from app.use_cases import ingest_listing as mod
 
     priced = MagicMock(isbn13="9782369900011", author="A", publisher="P")
@@ -1023,7 +1027,9 @@ async def test_bnf_link_for_a_series_links_and_prices_every_tome() -> None:
         patch.object(mod, "schedule_book_pricing") as schedule,
     ):
         service_cls.return_value.lookup_series_notices = AsyncMock(
-            return_value=[priced, already_priced]
+            return_value=CatalogueVerdict(
+                consulted=("bnf",), notices=(priced, already_priced)
+            )
         )
         repo_cls.return_value.get_by_isbn13 = AsyncMock(side_effect=_get_isbn)
         repo_cls.return_value.link_alert_to_book = AsyncMock()
@@ -1055,3 +1061,112 @@ async def test_bnf_link_for_a_series_links_and_prices_every_tome() -> None:
     schedule.assert_called_once_with(books[priced.isbn13].id, reason="bnf_link")
 
 
+
+
+@pytest.mark.asyncio
+async def test_a_conclusive_search_writes_its_verdict_on_the_alert() -> None:
+    """Les trois issues d'une résolution de fond : verdict posé, effacé, ou silence.
+
+    Le verdict n'est écrit que quand il est concluant. Une notice arrivée l'efface ;
+    une autorité muette ne l'écrit pas **et** n'efface pas ce qu'on savait — un
+    silence ne prouve rien, dans aucun sens (ADR-041).
+    """
+    from app.services.book_metadata_service import CatalogueVerdict
+    from app.use_cases import ingest_listing as mod
+
+    notice = MagicMock(isbn13="9782369904151", author="A", publisher="P", title="T")
+    cases = {
+        "aucune source ne le connaît": CatalogueVerdict(consulted=("bnf",)),
+        "une autorité s'est tue": CatalogueVerdict(
+            consulted=("bnf",), unavailable=("bnf",)
+        ),
+        "une notice est arrivée": CatalogueVerdict(consulted=("bnf",), notices=(notice,)),
+    }
+
+    with (
+        patch("app.services.book_metadata_service.BookMetadataService") as service_cls,
+        patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
+        patch.object(mod, "BookRepository") as repo_cls,
+        patch.object(mod, "BookCatalogService"),
+        patch.object(mod, "AlertRepository") as alert_repo_cls,
+        patch.object(mod, "schedule_book_pricing"),
+    ):
+        book = MagicMock()
+        book.id = uuid.uuid4()
+        repo_cls.return_value.get_by_isbn13 = AsyncMock(return_value=book)
+        repo_cls.return_value.get_by_id = AsyncMock(
+            return_value=MagicMock(market_cache=MagicMock())
+        )
+        repo_cls.return_value.link_alert_to_book = AsyncMock()
+        recorder = AsyncMock()
+        alert_repo_cls.return_value.set_book_search_exhausted = recorder
+
+        alert_id = uuid.uuid4()
+        service_cls.return_value.lookup_by_title_and_author = AsyncMock(
+            return_value=cases["aucune source ne le connaît"]
+        )
+        await mod.link_books_from_bnf("Absolute Martian Manhunter", alert_id)
+        recorded_alert, recorded_at = recorder.await_args.args
+        assert recorded_alert == alert_id
+        assert isinstance(recorded_at, datetime), (
+            "le verdict se date, il ne se pose pas comme un drapeau"
+        )
+
+        recorder.reset_mock()
+        service_cls.return_value.lookup_by_title_and_author = AsyncMock(
+            return_value=cases["une autorité s'est tue"]
+        )
+        await mod.link_books_from_bnf("Absolute Martian Manhunter", alert_id)
+        recorder.assert_not_awaited()
+
+        recorder.reset_mock()
+        service_cls.return_value.lookup_by_title_and_author = AsyncMock(
+            return_value=cases["une notice est arrivée"]
+        )
+        await mod.link_books_from_bnf("Absolute Martian Manhunter", alert_id)
+        assert recorder.await_args.args == (alert_id, None), (
+            "une notice liée contredit le verdict : elle l'efface"
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_alert_of_an_uncatalogued_series_says_it(mock_db: AsyncMock) -> None:
+    """Aucun livre, et le verdict en base : l'alerte le dit, elle n'annonce plus rien.
+
+    C'est la ligne que l'utilisateur recevait à chaque annonce d'une série que
+    personne ne catalogue : « recherche de l'ouvrage en cours » y était faux, la
+    recherche étant terminée, et sa réponse tenant en cette phrase.
+    """
+    from app.services.market_health import classify_sent_cote_state
+    from app.services.market_price_service import NO_CATALOGUE_LINE
+
+    mock_send_alert = AsyncMock(return_value=True)
+    with (
+        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
+        patch(
+            "app.db.repositories.listing_repo.ListingRepository.mark_notified",
+            new_callable=AsyncMock,
+        ),
+        patch("app.db.session.AsyncSessionLocal"),
+        patch("app.use_cases.ingest_listing.schedule_book_pricing"),
+    ):
+        use_case = ProcessListingUseCase(db=mock_db)
+        _mock_listing, mock_repo, alert, _book = _bd_scenario(None)
+        alert.alert_books = []
+        alert.book_search_exhausted_at = datetime(2026, 10, 6, 9, 30, tzinfo=UTC)
+        use_case.listing_repo = mock_repo
+        payload = ListingIngestPayload(
+            source_name="vinted",
+            external_id="test-456",
+            url="https://vinted.fr/item-456",
+            title="Absolute Martian Manhunter",
+            category_slug="bd_comics",
+            item_price_cents=900,
+        )
+        await use_case.execute(payload, raw_payload={})
+
+    line = mock_send_alert.call_args.kwargs["market_comparison_line"]
+    assert line == NO_CATALOGUE_LINE
+    # L'audit d'envoi ne compte pas cette ligne comme une cote chiffrée : elle
+    # n'en est pas une, et la compter « real » ferait croire à une couverture.
+    assert classify_sent_cote_state(line) == "uncatalogued"

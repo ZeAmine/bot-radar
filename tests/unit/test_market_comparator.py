@@ -743,6 +743,37 @@ def test_the_panel_without_cote_says_which_silence_it_reports():
     assert PENDING_COTE_LINE not in settled_card
 
 
+def test_the_panel_of_an_uncatalogued_series_says_it_and_lets_books_win():
+    """Le panneau d'une œuvre que personne ne catalogue dit la réponse, pas l'attente.
+
+    Le verdict vaut pour une alerte **sans livre** : dès qu'un livre existe, sa
+    cote est plus récente que le verdict, et l'écran la montre. Un panneau qui
+    préférerait le verdict à un livre afficherait une absence démentie par la base.
+    """
+    from app.services.market_price_service import NO_CATALOGUE_LINE
+
+    listing = create_listing(estimated_total_cents=1500)
+
+    card = MarketPriceService.format_market_details_card(
+        listing, None, catalogue_exhausted=True
+    )
+    assert NO_CATALOGUE_LINE in card
+    assert PENDING_COTE_LINE not in card
+
+    # Sans le verdict, le même panneau annonce l'attente : c'est le verdict qui
+    # change la phrase, pas une absence de livre qui traînerait partout.
+    waiting = MarketPriceService.format_market_details_card(listing, None)
+    assert PENDING_COTE_LINE in waiting
+    assert NO_CATALOGUE_LINE not in waiting
+
+    # Un livre contredit le verdict : il est coté, donc catalogué.
+    priced = MarketPriceService.format_market_details_card(
+        listing, _tome_book("Blast — Tome 1", 500), catalogue_exhausted=True
+    )
+    assert NO_CATALOGUE_LINE not in priced
+    assert "5,00 €" in priced
+
+
 def test_single_book_card_carries_the_series_total():
     """E4 : le tome résolu affiche aussi le total de sa série — il en fait partie."""
     current = _tome_book("Blast — Tome 2", 700)
