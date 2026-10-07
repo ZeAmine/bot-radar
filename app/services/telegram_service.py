@@ -3,7 +3,6 @@ import logging
 from typing import Any
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
 
 from app.bot.keyboards.listings import get_listing_alert_keyboard
 from app.bot.labels import abbreviate_condition, escape_html, join_list
@@ -141,13 +140,22 @@ async def send_listing_alert(
                         caption=caption,
                         reply_markup=keyboard,
                     )
+                    logger.info(
+                        "Résultat photo Telegram : %s",
+                        "sent" if attempt == 1 else "retry_sent",
+                        extra={
+                            "event": "photo_delivery",
+                            "listing_id": str(listing.id),
+                            "status": "sent" if attempt == 1 else "retry_sent",
+                        },
+                    )
                     break
                 except Exception as photo_exc:
                     logger.error(
                         "Échec %d/2 de l'envoi de la photo (listing %s, %s): %s",
                         attempt,
                         listing.id,
-                        photo_url,
+                        photo_url.split("?", 1)[0],
                         photo_exc,
                     )
                     if attempt == 1:
@@ -159,10 +167,21 @@ async def send_listing_alert(
                 )
 
         if not sent_msg:
+            text = caption
+            if photo_url is not None:
+                text += "\n\n<i>Photo indisponible ; l'annonce reste accessible via son lien.</i>"
             sent_msg = await bot.send_message(
                 chat_id=chat_id,
-                text=caption,
+                text=text,
                 reply_markup=keyboard,
+            )
+            logger.info(
+                "Résultat photo Telegram : text_fallback",
+                extra={
+                    "event": "photo_delivery",
+                    "listing_id": str(listing.id),
+                    "status": "text_fallback" if photo_url else "text_only",
+                },
             )
 
         # Pipeline IA asynchrone, post-alerte et non bloquant
@@ -179,12 +198,13 @@ async def send_listing_alert(
             )
 
         return True
-    except TelegramAPIError as exc:
+    except Exception as exc:
         logger.error(
             "Échec de l'envoi de l'alerte Telegram (chat_id: %s, listing_id: %s): %s",
             chat_id,
             listing.id,
             exc,
+            extra={"event": "photo_delivery", "listing_id": str(listing.id), "status": "failed"},
         )
         return False
 
@@ -222,4 +242,3 @@ async def notify_admins(
                 user_id,
                 exc,
             )
-

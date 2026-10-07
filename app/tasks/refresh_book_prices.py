@@ -28,6 +28,7 @@ from app.services.book_market_pricing import (
     BookPricingResult,
     fetch_offers_for_book,
     persist_market_result,
+    price_book_now,
     pricing_stat,
 )
 from app.services.market_health import (
@@ -85,6 +86,13 @@ async def _price_one_book(
     semaphore: asyncio.Semaphore,
 ) -> str:
     """Interroge les fournisseurs pour un livre et consolide sa cote."""
+    if session is None:
+        async with semaphore:
+            cache = await price_book_now(book.id, reason="scheduled", registry=registry)
+        if cache is None:
+            return "errors"
+        registry.failed_provider_names.update(cache.failed_provider_names or [])
+        return pricing_stat(cache)
     async with semaphore:
         offers: list[MarketOffer] = await fetch_offers_for_book(book, registry=registry)
 
@@ -94,13 +102,7 @@ async def _price_one_book(
         historical_low_cents=extract_best_historical_low(offers),
     )
 
-    if session is not None:
-        return pricing_stat(await persist_market_result(session, book.id, result))
-
-    async with AsyncSessionLocal() as book_session:
-        outcome = pricing_stat(await persist_market_result(book_session, book.id, result))
-        await book_session.commit()
-        return outcome
+    return pricing_stat(await persist_market_result(session, book.id, result))
 
 
 async def _run_wave(
@@ -176,9 +178,7 @@ async def refresh_book_prices_task(
         return stats
 
     mode_label = (
-        f"incrémental ({len(books)} livres)"
-        if incremental
-        else f"complet ({len(books)} livres)"
+        f"incrémental ({len(books)} livres)" if incremental else f"complet ({len(books)} livres)"
     )
     logger.info("Début du rafraîchissement des prix BD en mode %s.", mode_label)
 
@@ -223,18 +223,16 @@ async def refresh_book_prices_task(
     # ne doit pas passer sous le radar. Ces alertes ne bloquent jamais le
     # rafraîchissement.
     total_books = len(books)
-    await notify_incomplete_refresh(
-        stats["processed"], total_books, mode_label=mode_label
-    )
+    await notify_incomplete_refresh(stats["processed"], total_books, mode_label=mode_label)
     await notify_no_prices_found(
         stats["processed"],
         total_books,
         stats["available"],
         incremental=incremental,
         mode_label=mode_label,
+        errors=stats["errors"],
+        failed_providers=tuple(sorted(registry.failed_provider_names)),
     )
-    await notify_high_error_ratio(
-        stats["processed"], stats["errors"], mode_label=mode_label
-    )
+    await notify_high_error_ratio(stats["processed"], stats["errors"], mode_label=mode_label)
 
     return stats

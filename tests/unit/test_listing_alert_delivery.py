@@ -114,6 +114,7 @@ async def test_alert_falls_back_to_text_after_two_failures_and_says_so(
     assert bot.send_photo.await_count == 2
     bot.send_message.assert_awaited_once()
     assert bot.send_message.call_args.kwargs["text"].startswith("🆕 <b>Cauchon")
+    assert "Photo indisponible" in bot.send_message.call_args.kwargs["text"]
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("Échec 1/2" in message for message in messages)

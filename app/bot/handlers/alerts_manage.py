@@ -246,6 +246,16 @@ async def prompt_new_field_value(
         await callback.answer("Alerte introuvable.", show_alert=True)
         return
 
+    if field == "market":
+        from app.bot.handlers.market_panel import open_panel
+        from app.use_cases.view_market_details import ViewMarketDetailsUseCase
+
+        await callback.answer()
+        panel = await ViewMarketDetailsUseCase(db_session).execute_for_alert(alert.id, db_user.id)
+        if panel is not None:
+            await open_panel(callback, panel, user_id=db_user.id)
+        return
+
     # 1. Conditions : cases à cocher interactives
     if field == "conditions":
         await callback.answer()

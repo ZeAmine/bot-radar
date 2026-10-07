@@ -20,7 +20,7 @@ import asyncio
 import logging
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +32,13 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.db.session import AsyncSessionLocal
-from app.providers.base import MarketOffer, extract_best_historical_low, normalize_search_isbn
+from app.domain.rules.market_offer import is_comparable_secondhand_offer
+from app.providers.base import (
+    MarketOffer,
+    MarketOffers,
+    extract_best_historical_low,
+    normalize_search_isbn,
+)
 from app.providers.registry import ProviderRegistry
 from app.services.market_price_service import series_reference_total
 from app.utils.price import format_cents
@@ -64,6 +70,7 @@ class BookPricingResult:
     comparison_status: ComparisonStatus
     cache_duration_hours: int
     historical_low_1y_cents: int | None
+    failed_providers: tuple[str, ...] = ()
 
     @property
     def has_data(self) -> bool:
@@ -98,6 +105,7 @@ class BookPricingResult:
                 comparison_status=ComparisonStatus.AVAILABLE,
                 cache_duration_hours=CACHE_HOURS_WITH_PRICE,
                 historical_low_1y_cents=historical_low_cents,
+                failed_providers=getattr(offers, "failed_providers", ()),
             )
 
         if historical_low_cents is not None:
@@ -110,6 +118,7 @@ class BookPricingResult:
                 comparison_status=ComparisonStatus.UNAVAILABLE,
                 cache_duration_hours=CACHE_HOURS_WITH_PRICE,
                 historical_low_1y_cents=historical_low_cents,
+                failed_providers=getattr(offers, "failed_providers", ()),
             )
 
         return BookPricingResult(
@@ -121,11 +130,16 @@ class BookPricingResult:
             comparison_status=ComparisonStatus.UNAVAILABLE,
             cache_duration_hours=CACHE_HOURS_WITHOUT_PRICE,
             historical_low_1y_cents=None,
+            failed_providers=getattr(offers, "failed_providers", ()),
         )
 
 
 def pricing_stat(cache: BookMarketCache | None) -> str:
     """Ventilation d'une passe de cotation, lue dans la cote consolidée."""
+    if cache is not None and cache.collection_status == "failed":
+        return "errors"
+    if cache is not None and cache.collection_status == "empty":
+        return "unavailable"
     if cache is not None and cache.comparison_status == ComparisonStatus.AVAILABLE:
         return "available"
     return "unavailable"
@@ -143,15 +157,20 @@ async def fetch_offers_for_book(
     une alerte partie sans prix alors que le bouton, lui, trouvait la cote.
     """
     active_registry = registry or ProviderRegistry()
-    return await asyncio.wait_for(
-        active_registry.fetch_all_offers(
-            isbn13=normalize_search_isbn(book.isbn13),
-            title=book.title,
-            author=book.author,
-            edition=book.edition,
-        ),
-        timeout=BOOK_FETCH_TIMEOUT_SECONDS,
-    )
+    try:
+        return await asyncio.wait_for(
+            active_registry.fetch_all_offers(
+                isbn13=normalize_search_isbn(book.isbn13),
+                title=book.title,
+                author=book.author,
+                edition=book.edition,
+            ),
+            timeout=BOOK_FETCH_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        names = tuple(provider.name for provider in active_registry.providers)
+        logger.warning("Délai global de collecte dépassé pour %s", book.id)
+        return MarketOffers(failed_providers=names or ("collecte marché",))
 
 
 async def _refresh_series_totals(session: AsyncSession, book_id: uuid.UUID) -> None:
@@ -166,7 +185,8 @@ async def _refresh_series_totals(session: AsyncSession, book_id: uuid.UUID) -> N
     if not alert_ids:
         return
     book_repo = BookRepository(session)
-    for alert_id in alert_ids:
+    for alert_id in sorted(alert_ids):
+        await repo.lock_series(alert_id)
         books = await book_repo.get_all_books_for_alert(alert_id)
         await repo.set_series_total(
             alert_id,
@@ -193,10 +213,12 @@ async def persist_market_result(
         # Règle de résilience : un silence réseau ne doit pas priver l'utilisateur
         # d'un prix déjà connu et encore frais.
         existing = await repo.get_cache_by_book_id(book_id)
-        if (
-            existing is not None
-            and existing.comparison_status == ComparisonStatus.AVAILABLE
-            and existing.lowest_delivered_price_cents is not None
+        if existing is not None and (
+            result.failed_providers
+            or (
+                existing.comparison_status == ComparisonStatus.AVAILABLE
+                and existing.lowest_delivered_price_cents is not None
+            )
         ):
             logger.info(
                 "Maintien résilient du prix en cache pour le livre ID %s (%s cents).",
@@ -206,13 +228,11 @@ async def persist_market_result(
             # Un silence réseau n'empêche pas de réparer une cote surestimée :
             # nos relevés sont déjà en base.
             if existing.historical_low_1y_cents is not None:
-                existing.historical_low_1y_cents = (
-                    await repo.clamp_historical_low_by_observations(
-                        book_id, existing.historical_low_1y_cents
-                    )
+                existing.historical_low_1y_cents = await repo.clamp_historical_low_by_observations(
+                    book_id, existing.historical_low_1y_cents
                 )
             now = datetime.now(UTC)
-            existing.checked_at = now
+            _stamp_collection(existing, result)
             existing.expires_at = now + timedelta(hours=CACHE_HOURS_RESILIENT_REFRESH)
             await _refresh_series_totals(session, book_id)
             return existing
@@ -227,8 +247,36 @@ async def persist_market_result(
         cache_duration_hours=result.cache_duration_hours,
         historical_low_1y_cents=result.historical_low_1y_cents,
     )
+    _stamp_collection(cache, result)
+    if not result.has_data and result.failed_providers:
+        cache.checked_at = None
     await _refresh_series_totals(session, book_id)
     return cache
+
+
+def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None:
+    """Conserve le résultat de tentative séparément de la date du dernier prix."""
+    cache.last_attempt_at = datetime.now(UTC)
+    cache.failed_provider_names = list(result.failed_providers)
+    retained_offers = cache.current_offers
+    cache.current_offers = [
+        asdict(offer)
+        for offer in result.offers
+        if is_comparable_secondhand_offer(offer)
+        and offer.is_available
+        and (offer.shipping_price_cents is not None or offer.price_includes_shipping)
+    ]
+    if result.failed_providers and not result.has_data:
+        cache.current_offers = retained_offers
+    cache.collection_status = (
+        "partial"
+        if result.failed_providers and result.has_data
+        else "failed"
+        if result.failed_providers
+        else "complete"
+        if result.has_data
+        else "empty"
+    )
 
 
 async def price_book(
@@ -251,15 +299,39 @@ async def price_book(
         format_cents(cache.lowest_delivered_price_cents)
         if cache.lowest_delivered_price_cents
         else "inconnu",
-        format_cents(cache.historical_low_1y_cents)
-        if cache.historical_low_1y_cents
-        else "inconnu",
+        format_cents(cache.historical_low_1y_cents) if cache.historical_low_1y_cents else "inconnu",
         pricing_stat(cache),
     )
     return cache
 
 
-async def price_book_now(book_id: uuid.UUID, *, reason: str) -> BookMarketCache | None:
+_pricing_tasks: dict[uuid.UUID, asyncio.Task[BookMarketCache | None]] = {}
+
+
+async def price_book_now(
+    book_id: uuid.UUID,
+    *,
+    reason: str,
+    registry: ProviderRegistry | None = None,
+) -> BookMarketCache | None:
+    """Partage une collecte déjà en vol entre le scheduler et les panneaux."""
+    task = _pricing_tasks.get(book_id)
+    if task is None:
+        task = safe_create_task(
+            _price_book_once(book_id, reason=reason, registry=registry),
+            name=f"price_book_{book_id}",
+        )
+        _pricing_tasks[book_id] = task
+        task.add_done_callback(lambda _done: _pricing_tasks.pop(book_id, None))
+    return await asyncio.shield(task)
+
+
+async def _price_book_once(
+    book_id: uuid.UUID,
+    *,
+    reason: str,
+    registry: ProviderRegistry | None = None,
+) -> BookMarketCache | None:
     """Cote un livre dans sa propre session. N'élève jamais.
 
     Un marchand muet n'a pas le droit de faire échouer l'écran qui a demandé la
@@ -269,11 +341,9 @@ async def price_book_now(book_id: uuid.UUID, *, reason: str) -> BookMarketCache 
         async with AsyncSessionLocal() as session:
             book = await BookRepository(session).get_by_id(book_id)
             if book is None:
-                logger.warning(
-                    "Cotation ignorée : livre ID %s introuvable (%s).", book_id, reason
-                )
+                logger.warning("Cotation ignorée : livre ID %s introuvable (%s).", book_id, reason)
                 return None
-            cache = await price_book(session, book)
+            cache = await price_book(session, book, registry=registry)
             await session.commit()
             return cache
     except Exception as exc:

@@ -90,6 +90,10 @@ class MarketPriceRepository:
         alert.series_total_cents = total_cents
         await self.session.flush()
 
+    async def lock_series(self, alert_id: uuid.UUID) -> None:
+        """Sérialise le calcul du total avant la relecture des caches des tomes."""
+        await self.session.execute(select(Alert.id).where(Alert.id == alert_id).with_for_update())
+
     async def get_historical_low_1y(self, book_id: uuid.UUID) -> int | None:
         """Calcule le prix le plus bas constaté sur les 365 derniers jours
         à partir des données certifiées stockées dans les snapshots (raw_payload).
@@ -210,9 +214,7 @@ class MarketPriceRepository:
         total = 0
         for title, isbn, low, last_seen, matching in result.all():
             # `historical_low_1y_cents` est filtré non nul par le WHERE ci-dessus.
-            found.append(
-                (title, isbn, cast(int, low), cast("datetime | None", last_seen))
-            )
+            found.append((title, isbn, cast(int, low), cast("datetime | None", last_seen)))
             # La fenêtre porte le même total sur chaque ligne : une seule suffit.
             total = matching
         return found, total
@@ -254,10 +256,7 @@ class MarketPriceRepository:
             .order_by(func.max(MarketPriceSnapshot.checked_at))
         )
         result = await self.session.execute(stmt)
-        return [
-            (name, cast("datetime | None", last_seen))
-            for name, last_seen in result.all()
-        ]
+        return [(name, cast("datetime | None", last_seen)) for name, last_seen in result.all()]
 
     async def update_or_create_cache(
         self,
@@ -312,8 +311,11 @@ class MarketPriceRepository:
             cache.checked_at = now
             cache.expires_at = expires_at
             cache.comparison_status = comparison_status
+            if (
+                historical_low_1y_cents is not None and historical_low_1y_cents == computed_hist_low
+            ) or computed_hist_low != cache.historical_low_1y_cents:
+                cache.historical_low_at = now if computed_hist_low is not None else None
             cache.historical_low_1y_cents = computed_hist_low
-            cache.historical_low_at = now if computed_hist_low is not None else None
             await self.session.flush()
             return cache
 
@@ -327,7 +329,7 @@ class MarketPriceRepository:
             expires_at=expires_at,
             comparison_status=comparison_status,
             historical_low_1y_cents=computed_hist_low,
-            historical_low_at=now if computed_hist_low is not None else None,
+            historical_low_at=now if historical_low_1y_cents is not None else None,
         )
         self.session.add(cache)
         await self.session.flush()

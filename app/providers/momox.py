@@ -6,7 +6,7 @@ import httpx
 
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
-from app.providers.base import MarketOffer
+from app.providers.base import MarketOffer, MarketOffers
 from app.providers.headers import COMMON_BROWSER_HEADERS
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class MomoxProvider:
                 timeout=5.0,
             )
             if response.status_code != 200:
-                return []
+                return MarketOffers(failed_providers=(self.name,))
 
             data = response.json()
             products = data.get("data", [])
@@ -96,4 +96,4 @@ class MomoxProvider:
             ]
         except Exception as exc:
             logger.debug("Erreur silencieuse connecteur Momox: %s", exc)
-            return []
+            return MarketOffers(failed_providers=(self.name,))

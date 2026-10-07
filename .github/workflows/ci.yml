@@ -68,6 +68,12 @@ jobs:
       - name: Installer le projet et les outils de dev
         run: pip install -c requirements.lock -e ".[dev]"
 
+      - name: Migrations sur une base PostgreSQL vierge
+        env:
+          DATABASE_URL: "postgresql+asyncpg://test:test@localhost:5432/test"
+          TELEGRAM_BOT_TOKEN: "123456789:AAG_ci_test_dummy_token_abc123"
+        run: alembic upgrade head
+
       - name: Tests d'intégration sur PostgreSQL
         env:
           TELEGRAM_BOT_TOKEN: "123456789:AAG_ci_test_dummy_token_abc123"

@@ -25,7 +25,7 @@ def get_listing_alert_keyboard(
 
     dislike_btn = (
         InlineKeyboardButton(
-            text="✅ Signalé", callback_data=f"disliked:{listing_id}"
+            text="Faux positif enregistré", callback_data=f"disliked:{listing_id}"
         )
         if is_disliked
         else InlineKeyboardButton(
@@ -59,9 +59,7 @@ def get_dislike_confirmation_keyboard(
 ) -> InlineKeyboardMarkup:
     """Clavier demandant confirmation avant d'enregistrer un faux positif.
 
-    « Confirmer » suffit : le message juste au-dessus dit déjà ce qui est
-    confirmé, et « Confirmer le signalement » répétait ce que l'écran venait
-    d'annoncer — sur un bouton, la place manquante pour autre chose.
+    Le clavier remplace les actions de l'annonce, sans réécrire sa légende.
     """
     row1 = [InlineKeyboardButton(text=BTN_VIEW_LISTING, url=listing_url)]
 

@@ -10,7 +10,7 @@ import httpx
 from app.core.config import settings
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
-from app.providers.base import MarketOffer
+from app.providers.base import MarketOffer, MarketOffers
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ class EbayBrowseProvider:
         client = self.http_client or get_shared_http_client()
         token = await self._get_access_token(client)
         if not token:
-            return []
+            return MarketOffers(failed_providers=(self.name,))
 
         # Priorité absolue à l'ISBN-13 (GTIN), sinon requête textuelle combinée
         confidence = MatchConfidence.HIGH
@@ -141,14 +141,14 @@ class EbayBrowseProvider:
             response = await client.get(search_url, headers=headers, params=params, timeout=5.0)
             if response.status_code != 200:
                 logger.warning("Erreur recherche eBay (HTTP %s)", response.status_code)
-                return []
+                return MarketOffers(failed_providers=(self.name,))
 
             data = response.json()
             items = data.get("itemSummaries", [])
             return self._parse_items(items, confidence)
         except Exception as exc:
             logger.warning("Erreur lors de l'appel eBay Browse API: %s", exc)
-            return []
+            return MarketOffers(failed_providers=(self.name,))
 
     def _parse_items(
         self, items: list[dict[str, Any]], confidence: MatchConfidence

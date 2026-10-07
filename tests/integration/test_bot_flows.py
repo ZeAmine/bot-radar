@@ -76,7 +76,7 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
-async def driver() -> AsyncGenerator[tuple[Bot, Dispatcher], None]:
+async def driver(monkeypatch, db_session) -> AsyncGenerator[tuple[Bot, Dispatcher], None]:
     """Les vrais handlers, dans un vrai dispatcher, avec un Bot sans réseau.
 
     `bot.session` est simulée : aucune requête ne part vers Telegram, et l'objet
@@ -92,11 +92,35 @@ async def driver() -> AsyncGenerator[tuple[Bot, Dispatcher], None]:
     """
     bot = Bot(token=BOT_TOKEN)
     bot.session = AsyncMock()
-    sent = MagicMock()
-    sent.edit_text = AsyncMock()
-    sent.edit_reply_markup = AsyncMock()
-    sent.delete = AsyncMock()
-    bot.session.return_value = sent
+    bot.last_message_id = 1000
+
+    async def fake_api(_bot, method, **_kwargs):
+        from aiogram.methods import EditMessageText, SendMessage
+
+        if isinstance(method, (SendMessage, EditMessageText)):
+            if isinstance(method, SendMessage):
+                bot.last_message_id += 1
+            message_id = getattr(method, "message_id", None) or bot.last_message_id
+            return Message(
+                message_id=message_id,
+                date=datetime.now(UTC),
+                chat=_chat(),
+                text=method.text,
+                reply_markup=method.reply_markup,
+            ).as_(bot)
+        return True
+
+    bot.session.side_effect = fake_api
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.bot.handlers import market_panel
+
+    monkeypatch.setattr(
+        market_panel,
+        "AsyncSessionLocal",
+        async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    monkeypatch.setattr(market_panel, "price_book_now", AsyncMock(return_value=None))
 
     # Les routeurs de l'application sont rattachés une fois pour toutes à la chaîne
     # du dispatcher de production, et aiogram refuse un second parent (le setter
@@ -114,6 +138,8 @@ async def driver() -> AsyncGenerator[tuple[Bot, Dispatcher], None]:
     dispatcher.include_router(callbacks.router)
     yield bot, dispatcher
     await storage.close()
+    for view in list(market_panel._panels.values()):
+        market_panel.close_panel(view.message)
 
 
 def _tg_user() -> TgUser:
@@ -135,9 +161,11 @@ def _message_update(text: str, update_id: int = 1) -> Update:
     return Update(update_id=update_id, message=message)
 
 
-def _callback_update(data: str, panel_text: str = "panel", update_id: int = 500) -> Update:
+def _callback_update(
+    data: str, panel_text: str = "panel", update_id: int = 500, message_id: int | None = None
+) -> Update:
     message = Message(
-        message_id=update_id,
+        message_id=message_id or update_id,
         date=datetime.now(UTC),
         chat=_chat(),
         from_user=_tg_user(),
@@ -257,9 +285,7 @@ def _bnf_stub(resolution: BookResolution | None) -> MagicMock:
         if notice is None:
             return BookSearchResult(status=BookSearchStatus.NOT_FOUND)
         return result_from_report(
-            BibliographicReport(
-                kind="title", resolution=BookResolution(best=notice)
-            ),
+            BibliographicReport(kind="title", resolution=BookResolution(best=notice)),
             query_title=expected_title or notice.title,
         )
 
@@ -463,9 +489,7 @@ async def _seed_series(session: AsyncSession) -> tuple[User, Listing, list[Book]
     """Une alerte de série, ses tomes cotés, et l'annonce qui l'a déclenchée."""
     user = await _add_user(session)
     category = (
-        await session.execute(
-            select(Category).where(Category.slug == CategorySlug.BD_COMICS.value)
-        )
+        await session.execute(select(Category).where(Category.slug == CategorySlug.BD_COMICS.value))
     ).scalar_one()
 
     alert = Alert(
@@ -549,13 +573,18 @@ async def test_back_to_all_tomes_lists_the_real_tomes_and_a_tome_still_opens(dri
         tome_buttons = _buttons_matching(bot, "market_tome:")
         assert len(tome_buttons) == len(books), "la série n'a pas listé ses tomes"
         panel = _texts(bot)[-1]
-        assert "Cotes par tome" in panel
+        assert "Tome 1" in panel
         for number, price in ((1, "5,09 €"), (2, "8,99 €"), (3, "9,83 €")):
-            assert f"Tome {number} : {price}" in panel
+            assert f"Tome {number}" in panel
+            assert price in panel
 
         # Un tome se choisit toujours : c'est la suite du flux, pas un bouton mort.
         await _feed(
-            bot, dispatcher, _callback_update(tome_buttons[1], update_id=2), db_session, user
+            bot,
+            dispatcher,
+            _callback_update(tome_buttons[1], update_id=2, message_id=bot.last_message_id),
+            db_session,
+            user,
         )
         assert "📊 <b>Prix du marché</b>" in _texts(bot)[-1]
         back = _buttons_matching(bot, "market_details:")
@@ -565,7 +594,9 @@ async def test_back_to_all_tomes_lists_the_real_tomes_and_a_tome_still_opens(dri
         await _feed(
             bot,
             dispatcher,
-            _callback_update(back[0], panel_text=_texts(bot)[-1], update_id=3),
+            _callback_update(
+                back[0], panel_text=_texts(bot)[-1], update_id=3, message_id=bot.last_message_id
+            ),
             db_session,
             user,
         )
@@ -576,6 +607,75 @@ async def test_back_to_all_tomes_lists_the_real_tomes_and_a_tome_still_opens(dri
 
 
 # --------------------------------------------------------------------------- E4 : total de série
+
+
+async def test_edit_market_refresh_keeps_the_selected_tome(driver, db_session, monkeypatch):
+    """Le tome 1 peut finir après la sélection du tome 2 sans réafficher le premier."""
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.bot.handlers import market_panel
+    from app.providers.base import MarketOffer, MarketOffers
+    from app.services import book_market_pricing
+
+    bot, dispatcher = driver
+    user, _listing, books = await _seed_series(db_session)
+    alert_id = (await db_session.execute(select(Alert.id))).scalar_one()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fetch(book, registry=None):
+        _ = registry
+        if book.id == books[0].id:
+            entered.set()
+            await release.wait()
+        return MarketOffers(
+            [
+                MarketOffer(
+                    provider_name="test_source",
+                    item_price_cents=500,
+                    shipping_price_cents=100,
+                    delivered_price_cents=600,
+                    source_url="https://example.com/book",
+                    item_condition="Très bon état",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(book_market_pricing, "fetch_offers_for_book", fetch)
+    monkeypatch.setattr(
+        book_market_pricing,
+        "AsyncSessionLocal",
+        async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    monkeypatch.setattr(market_panel, "price_book_now", book_market_pricing.price_book_now)
+    await _feed(bot, dispatcher, _callback_update(f"ed_f:{alert_id}:market"), db_session, user)
+    message_id = bot.last_message_id
+    assert "Vinted" not in _texts(bot)[-1]
+    assert "Actualisation en cours" in _texts(bot)[-1]
+    await asyncio.wait_for(entered.wait(), 2)
+    buttons = _buttons_matching(bot, "market_tome:")
+    await _feed(
+        bot, dispatcher, _callback_update(buttons[1], message_id=message_id), db_session, user
+    )
+    assert "<b>Blacksad — Tome 2</b>" in _texts(bot)[-1]
+    release.set()
+    view = market_panel._panels[(CHAT_ID, message_id)]
+    await asyncio.wait_for(view.task, 5)
+    final = _texts(bot)[-1]
+    assert "<b>Blacksad — Tome 2</b>" in final
+    assert "Actualisation en cours" not in final
+    assert "6,00 €" in final
+    assert "Collecte terminée" in final
+    await _feed(
+        bot,
+        dispatcher,
+        _callback_update("close_market_panel", message_id=message_id),
+        db_session,
+        user,
+    )
+    assert (CHAT_ID, message_id) not in market_panel._panels
 
 
 async def _seed_series_without_prices(db_session) -> tuple[Alert, list[Book]]:

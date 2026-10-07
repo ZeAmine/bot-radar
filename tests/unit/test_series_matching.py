@@ -333,6 +333,8 @@ async def test_handle_market_tome_select():
     mock_callback = MagicMock(spec=CallbackQuery)
     mock_callback.data = _encode_tome_ref(listing_id, book_id)
     mock_msg = MagicMock(spec=Message)
+    mock_msg.chat = MagicMock(id=42)
+    mock_msg.message_id = 123
     mock_msg.edit_text = AsyncMock()
     mock_callback.message = mock_msg
     mock_callback.answer = AsyncMock()
@@ -396,6 +398,8 @@ async def test_market_tome_view_keeps_the_tome_selection_when_series_has_several
     mock_callback = MagicMock(spec=CallbackQuery)
     mock_callback.data = _encode_tome_ref(listing_id, book_id)
     mock_msg = MagicMock(spec=Message)
+    mock_msg.chat = MagicMock(id=42)
+    mock_msg.message_id = 123
     mock_msg.edit_text = AsyncMock()
     mock_callback.message = mock_msg
     mock_callback.answer = AsyncMock()

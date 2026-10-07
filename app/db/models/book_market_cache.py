@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import JSON
 
 from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -47,6 +48,10 @@ class BookMarketCache(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     historical_low_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    collection_status: Mapped[str | None] = mapped_column(String(20))
+    failed_provider_names: Mapped[list[str] | None] = mapped_column(JSON)
+    current_offers: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
 
     # Relations
     book: Mapped["Book"] = relationship("Book", back_populates="market_cache")
