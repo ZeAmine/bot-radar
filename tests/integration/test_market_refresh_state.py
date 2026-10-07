@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.core.constants import ComparisonStatus
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
@@ -91,3 +93,57 @@ async def test_whole_collection_timeout_is_persisted(monkeypatch):
         assert cache is not None
         assert cache.collection_status == "failed"
         assert cache.failed_provider_names == ["slow_source"]
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_linked_book_keeps_refresh_metadata_with_production_autoflush_disabled(failed):
+    from app.db.models.alert import Alert
+    from app.db.models.alert_book import AlertBook
+    from app.db.models.category import Category
+    from app.db.models.user import User
+
+    async with postgres_replayed_database() as database:
+        s = database.session
+        s.autoflush = False
+        user = User(telegram_user_id=1234, is_allowed=True)
+        category = Category(slug="bd_comics", label="BD", emoji="📚", is_active=True)
+        s.add_all([user, category])
+        await s.flush()
+        alert = Alert(
+            user_id=user.id, category_id=category.id, name="Livre", include_keywords=["livre"]
+        )
+        book = Book(title="Livre", normalized_title="livre")
+        s.add_all([alert, book])
+        await s.flush()
+        cache = BookMarketCache(
+            book_id=book.id,
+            lowest_delivered_price_cents=1000,
+            comparison_status=ComparisonStatus.AVAILABLE,
+        )
+        s.add_all([cache, AlertBook(alert_id=alert.id, book_id=book.id)])
+        await s.commit()
+        registry = MagicMock()
+        registry.fetch_all_offers = AsyncMock(
+            return_value=(
+                MarketOffers(failed_providers=("test_source",))
+                if failed
+                else MarketOffers(
+                    [
+                        MarketOffer(
+                            provider_name="source",
+                            item_price_cents=1500,
+                            shipping_price_cents=0,
+                            delivered_price_cents=1500,
+                            source_url="https://example.com",
+                            item_condition="Très bon",
+                        )
+                    ]
+                )
+            )
+        )
+        await price_book(s, book, registry=registry)
+        await s.commit()
+        await s.refresh(cache)
+        assert cache.collection_status == ("failed" if failed else "complete")
+        assert cache.failed_provider_names == (["test_source"] if failed else [])
+        assert cache.last_attempt_at is not None
