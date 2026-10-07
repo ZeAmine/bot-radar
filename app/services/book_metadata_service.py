@@ -48,10 +48,11 @@ TITLE_SIMILARITY_MIN = 0.75
 SAME_WORK_TITLE_SIMILARITY_MIN = 0.9
 # Nombre maximum d'éditions alternatives remontées à l'utilisateur.
 MAX_ALTERNATIVE_EDITIONS = 3
-# Nombre maximum de tomes rattachés à une série suivie par son nom. Au-delà, on
-# remplirait le catalogue de notices voisines pour un gain de couverture nul : les
-# annonces d'une série portent leurs tomes, pas les vingt suivants.
-MAX_SERIES_BOOKS = 6
+# Nombre maximum de tomes rattachés à une série suivie par son nom. Un plafond
+# protège le catalogue des notices voisines ; à 6, une série normale de BD en
+# perdait (Blacksad compte 7 tomes). 12 couvre les séries réelles sans ouvrir la
+# porte au bruit : le préfixe de titre et la cohérence d'auteur restent le filtre.
+MAX_SERIES_BOOKS = 12
 
 # Préfixes ISBN des éditions francophones (règle GF pour la langue française).
 FRENCH_ISBN_PREFIXES = ("9782", "979")
@@ -1071,7 +1072,7 @@ class BookMetadataService:
         *,
         limit: int = MAX_SERIES_BOOKS,
     ) -> list[BookMetadata]:
-        """Notices distinctes d'une série — ses tomes — quand la BNF les nomme.
+        """Notices distinctes d'une série — ses tomes — quand une autorité les nomme.
 
         Une série suivie par son nom (« Blacksad ») n'a aucune fiche : ses annonces
         partaient sans cote tant qu'aucun tome n'avait été lié. Chercher par titre
@@ -1079,8 +1080,11 @@ class BookMetadataService:
         n'est pas une identité (ADR-021) : sans concordance d'auteur, rien n'est
         rattaché, et la recherche reste bornée à `limit` notices.
 
-        Contrairement à `lookup_by_title_and_author`, il n'y a pas de repli
-        OpenLibrary : composer une série est un enrichissement, pas un sauvetage.
+        La BNF reste la source primaire ; quand elle rend **moins** de notices que
+        `limit`, OpenLibrary complète les tomes manquants (ADR-033). Ce repli ne
+        remplace jamais une notice BNF : il ne voit que les ISBN que la BNF n'a pas
+        déjà donnés, et ses notices portent leur provenance (`AUTORITE_OPENLIBRARY`),
+        donc `provenance_note` les distingue d'une confirmation BNF.
         """
         wanted = normalize_text(series_title)
         if not wanted:
@@ -1115,7 +1119,62 @@ class BookMetadataService:
             selected.append(record)
             if len(selected) >= limit:
                 break
+
+        if len(selected) < limit:
+            selected.extend(
+                await self._complete_series_from_openlibrary(
+                    series_title=series_title,
+                    wanted=wanted,
+                    author_hint=author_hint,
+                    seen=seen,
+                    limit=limit - len(selected),
+                )
+            )
         return selected
+
+    async def _complete_series_from_openlibrary(
+        self,
+        *,
+        series_title: str,
+        wanted: str,
+        author_hint: str | None,
+        seen: set[str],
+        limit: int,
+    ) -> list[BookMetadata]:
+        """Complète une série par OpenLibrary — seulement les tomes que la BNF a tus.
+
+        Repli d'enrichissement, jamais de substitution : `seen` porte les ISBN déjà
+        retenus par la BNF, et un document qui les recoupe est ignoré. Les critères
+        d'appartenance sont ceux de la voie BNF — préfixe de titre normalisé ou
+        similarité suffisante, cohérence d'auteur quand elle est connue — pour que
+        les deux sources ne se contredisent pas sur ce qu'est un tome de la série.
+        Les notices rendues gardent leur provenance OpenLibrary (`BookMetadata.source`).
+        """
+        if limit <= 0:
+            return []
+        params: dict[str, str] = {"title": clean_title_query(series_title)}
+        if author_hint:
+            params["author"] = author_hint
+        works, _result = await self._openlibrary_works(params)
+
+        found: list[BookMetadata] = []
+        for work in works:
+            meta = work.meta
+            if not meta.isbn13 or meta.isbn13 in seen:
+                continue
+            notice_title = normalize_text(meta.title)
+            is_series_member = notice_title.startswith(wanted) or (
+                title_similarity(meta.title, series_title) >= TITLE_SIMILARITY_MIN
+            )
+            if not is_series_member:
+                continue
+            if author_hint and meta.author and not same_author(meta.author, author_hint):
+                continue
+            seen.add(meta.isbn13)
+            found.append(meta)
+            if len(found) >= limit:
+                break
+        return found
 
     async def _query_bnf_sru(
         self,
