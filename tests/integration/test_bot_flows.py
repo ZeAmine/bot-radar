@@ -138,8 +138,15 @@ async def driver(monkeypatch, db_session) -> AsyncGenerator[tuple[Bot, Dispatche
     dispatcher.include_router(callbacks.router)
     yield bot, dispatcher
     await storage.close()
-    for view in list(market_panel._panels.values()):
+    views = list(market_panel._panels.values())
+    for view in views:
         market_panel.close_panel(view.message)
+    # Attendre la fermeture de la session de relecture avant que la base de la
+    # fixture suivante ne soit effacée : annuler sans attendre gardait un verrou
+    # PostgreSQL ouvert pendant le DROP TABLE de la passe suivante.
+    import asyncio
+
+    await asyncio.gather(*(view.task for view in views if view.task), return_exceptions=True)
 
 
 def _tg_user() -> TgUser:
