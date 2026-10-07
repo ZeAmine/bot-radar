@@ -26,7 +26,7 @@ from app.schemas.listing import (
     ListingMatchItem,
 )
 from app.services.book_catalog_service import BookCatalogService
-from app.services.book_market_pricing import schedule_book_pricing
+from app.services.book_market_pricing import price_book_now, schedule_book_pricing
 from app.services.market_health import classify_sent_cote_state, record_sent_cote_state
 from app.services.market_price_service import (
     NO_CATALOGUE_LINE,
@@ -34,9 +34,11 @@ from app.services.market_price_service import (
     SEARCHING_BOOK_LINE,
     MarketPriceService,
     cote_absence_line,
+    extract_tome_number_from_title,
     has_usable_price,
 )
 from app.services.telegram_service import send_listing_alert
+from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.use_cases.ingest_listing")
 
@@ -47,6 +49,7 @@ async def link_books_from_bnf(
     author: str | None = None,
     *,
     series: bool = False,
+    wait_for_prices: bool = False,
 ) -> None:
     """Lie les notices BNF d'une œuvre et les cote, sans retarder l'envoi Telegram.
 
@@ -60,6 +63,9 @@ async def link_books_from_bnf(
     n'a aucune fiche, et sa première annonce partait sans cote tant qu'aucun tome
     n'avait été lié. Chaque notice liée est cotée si elle n'a pas déjà une cote
     utilisable, une seule fois par livre (le garde de `schedule_book_pricing`).
+    `wait_for_prices=True` réserve l'attente à la création d'une alerte : elle
+    prépare ses propres cotes avant d'activer la surveillance, sans attendre
+    les tâches d'autres alertes. L'ingestion conserve le mode arrière-plan.
 
     La recherche rend un **verdict** (`CatalogueVerdict`), et c'est ici qu'il devient
     une donnée de l'alerte : quand toutes les autorités interrogées ont répondu sans
@@ -105,6 +111,15 @@ async def link_books_from_bnf(
                     )
                 if not book:
                     continue
+                if (
+                    series
+                    and extract_tome_number_from_title(notice.title) is not None
+                    and extract_tome_number_from_title(book.title) is None
+                ):
+                    # Même ISBN certifié, titre de tome enfin explicite : les anciennes
+                    # fiches issues d'un titre d'œuvre sont réalignées sans changer d'ouvrage.
+                    book.title = notice.title
+                    book.normalized_title = normalize_text(notice.title)
                 await book_repo.link_alert_to_book(alert_id=alert_id, book_id=book.id)
                 # `add_book` rend un livre dont `market_cache` n'est pas chargé : on
                 # relit par le dépôt (qui précharge la relation) avant de décider.
@@ -118,8 +133,20 @@ async def link_books_from_bnf(
 
     # La cote part en arrière-plan : c'est elle qui fera apparaître la ligne de prix
     # sur les alertes suivantes de cet ouvrage.
-    for book_id in to_price:
-        schedule_book_pricing(book_id, reason="bnf_link")
+    if wait_for_prices:
+        import asyncio
+
+        # Deux livres par vague : la création attend ses propres cotes seulement.
+        for start in range(0, len(to_price), 2):
+            await asyncio.gather(
+                *(
+                    price_book_now(book_id, reason="bnf_link")
+                    for book_id in to_price[start : start + 2]
+                )
+            )
+    else:
+        for book_id in to_price:
+            schedule_book_pricing(book_id, reason="bnf_link")
 
 
 def comparison_line_from_loaded_books(

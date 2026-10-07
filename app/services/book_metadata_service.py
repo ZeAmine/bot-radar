@@ -30,6 +30,7 @@ from app.providers.google_books import (
     GoogleVolume,
     ProviderQueryResult,
 )
+from app.services.market_price_service import extract_tome_number_from_title
 from app.utils.isbn import (
     is_valid_isbn,
     isbn10_to_isbn13,
@@ -1215,7 +1216,7 @@ class BookMetadataService:
             if author_hint and record.author and not same_author(record.author, author_hint):
                 continue
             seen.add(record.isbn13)
-            selected.append(record)
+            selected.append(replace(record, title=record.volume_title or record.title))
             if len(selected) >= limit:
                 break
         if len(selected) < limit:
@@ -1276,10 +1277,42 @@ class BookMetadataService:
             if author_hint and meta.author and not same_author(meta.author, author_hint):
                 continue
             seen.add(meta.isbn13)
-            found.append(meta)
+            found.append(await self._openlibrary_series_volume(meta))
             if len(found) >= limit:
                 break
         return found, result
+
+    async def _openlibrary_series_volume(self, meta: BookMetadata) -> BookMetadata:
+        """Lit le numéro sur l'édition exacte, jamais sur la position dans une série.
+
+        La recherche OpenLibrary renvoie le titre de l'œuvre sans son numéro ;
+        l'édition du même ISBN porte parfois « Vol. 1 ». Une panne conserve la
+        notice initiale, et un ISBN différent ne peut jamais la réécrire.
+        """
+        if not meta.isbn13 or extract_tome_number_from_title(meta.title) is not None:
+            return meta
+        try:
+            client = self.http_client or get_shared_http_client()
+            response = await client.get(
+                f"https://openlibrary.org/isbn/{meta.isbn13}.json",
+                follow_redirects=True,
+                timeout=self.timeout_seconds,
+            )
+            if response.status_code != 200:
+                return meta
+            payload = response.json()
+            if not isinstance(payload, dict) or meta.isbn13 not in payload.get("isbn_13", []):
+                return meta
+            title = payload.get("title")
+            if (
+                isinstance(title, str)
+                and extract_tome_number_from_title(title) is not None
+                and title_similarity(title, meta.title) >= TITLE_SIMILARITY_MIN
+            ):
+                return replace(meta, title=title, volume_title=title)
+        except Exception as exc:
+            logger.debug("Notice de volume OpenLibrary indisponible : %s", type(exc).__name__)
+        return meta
 
     async def _bnf_records_result(
         self,

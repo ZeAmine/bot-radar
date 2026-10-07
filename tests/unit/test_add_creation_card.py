@@ -143,8 +143,8 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
       chaque rafraîchissement de la cote, elle daterait de la création et non du prix ;
     - le pied annonce la notification, sans la promesse « 24/24 sur Vinted ».
 
-    Le livre est déjà au catalogue et déjà coté : la cotation tourne en arrière-plan,
-    la confirmation n'affiche donc que ce qui est déjà en base.
+    Le livre est déjà au catalogue et déjà coté : la confirmation relit le prix
+    conservé après une cotation simulée sans nouvelle donnée.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
     bnf = fake_bnf(resolution)
@@ -330,8 +330,8 @@ async def test_series_alert_starts_book_resolution_at_creation():
     Une série surveillée par son nom n'a aucune fiche tant qu'aucun tome n'a été
     identifié : sans cette résolution, sa première annonce partait sans aucune ligne
     de cote. La résolution part par le **nom de l'alerte** (+ auteur), et cote le
-    livre qu'elle lie — la prochaine annonce aura de quoi comparer. La confirmation,
-    elle, n'annonce toujours aucune cote : il n'y a encore rien à coter. Elle relit en
+    livre qu'elle lie avant l'activation. Le double de résolution ne lie aucun
+    livre ici : la confirmation n'invente donc aucune cote. Elle relit en
     revanche la carte de récap telle quelle, indication de série comprise : c'est le
     même drapeau du brouillon qui décide, donc les deux écrans ne peuvent pas se
     contredire.
@@ -366,14 +366,15 @@ async def test_series_alert_starts_book_resolution_at_creation():
                 entered.stop()
 
     repos["book_repo"].create.assert_not_called()
-    # La cotation se déclenche dans la résolution de fond, pas directement ici.
-    repos["schedule_pricing"].assert_not_called()
+    # La résolution attend les cotations de ses tomes, pas de cote unitaire ici.
+    repos["price_now"].assert_not_awaited()
     bnf.assert_awaited_once()
     args, kwargs = bnf.call_args
     assert args[0] == "Blacksad"
     assert kwargs.get("author") == "Juan Díaz Canales"
     # La série est demandée en entier : ses tomes sont liés et cotés d'un coup.
     assert kwargs.get("series") is True
+    assert kwargs.get("wait_for_prices") is True
 
     confirmation = confirm_message.edit_text.call_args[0][0]
     assert "✅ <b>Alerte créée</b>" in confirmation
@@ -565,6 +566,6 @@ async def test_a_just_created_book_still_gets_its_confirmation():
     confirmation = confirm_message.edit_text.call_args[0][0]
     assert "✅ <b>Alerte créée</b>" in confirmation
     assert "<b>Titre :</b> Le démon de la colline au loup" in confirmation
-    assert PENDING_COTE_LINE in confirmation
+    assert "<i>⚠️ Cote indisponible</i>" in confirmation
     # Le livre de la confirmation est relu par son id, jamais l'objet rendu par `create`.
-    repos["book_repo"].get_by_id.assert_awaited_once()
+    assert repos["book_repo"].get_by_id.await_count == 2

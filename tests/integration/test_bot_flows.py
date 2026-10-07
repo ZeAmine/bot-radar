@@ -322,9 +322,12 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
         # `alerts_create_confirm` et doit recevoir le même double, sinon le test dépend
         # d'un vrai appel à la BNF.
         patch("app.bot.handlers.alerts_create_confirm.BookSearchUseCase", return_value=bnf),
-        # La cotation part en arrière-plan après la confirmation : un test ne doit pas
-        # atteindre les marchands, ni laisser une tâche en vol à sa fermeture.
-        patch("app.bot.handlers.alerts_create.schedule_book_pricing") as pricing,
+        # La création attend sa cote : le test remplace la frontière des marchands.
+        patch(
+            "app.bot.handlers.alerts_create.price_book_now",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as pricing,
     ):
         await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
 
@@ -348,7 +351,7 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
             db_session,
             user,
         )
-        # La cote du livre neuf part en arrière-plan, après la confirmation et non avant.
+        # La cote du livre neuf est demandée avant l'activation et la confirmation.
         assert pricing.called, "la cote du livre créé n'a pas été préchauffée"
 
     confirmation = [text for text in _texts(bot) if "✅ <b>Alerte créée</b>" in text]
@@ -435,7 +438,11 @@ async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_c
     with (
         patch("app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=bnf),
         patch("app.bot.handlers.alerts_create_confirm.BookSearchUseCase", return_value=bnf),
-        patch("app.bot.handlers.alerts_create.schedule_book_pricing"),
+        patch(
+            "app.bot.handlers.alerts_create.price_book_now",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     ):
         await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
         category_data = _buttons_matching(bot, "add_cat:")[0]
@@ -559,8 +566,8 @@ async def _seed_series(session: AsyncSession) -> tuple[User, Listing, list[Book]
 
 
 @pytest.mark.asyncio
-async def test_back_to_all_tomes_lists_the_real_tomes_and_a_tome_still_opens(driver, db_session):
-    """« Tous les tomes » rouvre la liste, et un tome reste sélectionnable.
+async def test_tome_buttons_allow_switching_without_a_global_series_button(driver, db_session):
+    """Les boutons individuels permettent de passer directement d'un tome à l'autre.
 
     Un panneau qui s'ouvre mais dont aucun tome ne se choisit serait encore un
     bouton mort : c'est tout le système derrière le bouton qui est éprouvé ici.
@@ -594,23 +601,17 @@ async def test_back_to_all_tomes_lists_the_real_tomes_and_a_tome_still_opens(dri
             user,
         )
         assert "📊 <b>Prix du marché</b>" in _texts(bot)[-1]
-        back = _buttons_matching(bot, "market_details:")
-        assert back == [f"market_details:{listing.id}"]
-
-        # « Tous les tomes » ramène à la liste des tomes.
+        assert _buttons_matching(bot, "market_details:") == []
+        reopened = _buttons_matching(bot, "market_tome:")
+        assert len(reopened) == len(books)
         await _feed(
             bot,
             dispatcher,
-            _callback_update(
-                back[0], panel_text=_texts(bot)[-1], update_id=3, message_id=bot.last_message_id
-            ),
+            _callback_update(reopened[0], update_id=3, message_id=bot.last_message_id),
             db_session,
             user,
         )
-
-    assert "Cotes par tome" in _texts(bot)[-1]
-    reopened = _buttons_matching(bot, "market_tome:")
-    assert len(reopened) == len(books)
+    assert "Tome 1" in _texts(bot)[-1]
 
 
 # --------------------------------------------------------------------------- E4 : total de série
@@ -674,7 +675,7 @@ async def test_edit_market_refresh_keeps_the_selected_tome(driver, db_session, m
     assert "<b>Blacksad — Tome 2</b>" in final
     assert "Actualisation en cours" not in final
     assert "6,00 €" in final
-    assert "Collecte terminée" in final
+    assert "<b>Actualisation :</b>" in final
     await _feed(
         bot,
         dispatcher,

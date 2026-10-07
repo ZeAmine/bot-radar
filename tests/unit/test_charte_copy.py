@@ -815,7 +815,7 @@ async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
     # Le bloc de cote n'appartient qu'a la confirmation : c'est ce que l'ecran vient de
     # produire, pas un critere de veille.
     assert PENDING_COTE_LINE not in recap
-    assert PENDING_COTE_LINE in confirmation
+    assert "<i>⚠️ Cote indisponible</i>" in confirmation
     # Chaque ecran garde son propre pied : la consigne n'est pas la meme.
     assert confirmation.endswith(
         "\n\n<i>Les annonces correspondant à ces critères déclencheront une alerte Telegram.</i>"

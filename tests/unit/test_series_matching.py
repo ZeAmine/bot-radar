@@ -153,7 +153,7 @@ def test_series_matching_lot_card():
     assert "Cote par tome (plus bas connu) :" in card
     assert "• Tome 1 : 16,00 €" in card
     assert "• Tome 2 : 18,50 €" in card
-    assert "Dernière mise à jour :" in card
+    assert "Actualisation :" in card
 
 
 def test_series_matching_chateau_des_animaux_lot_1_2_3():
@@ -361,7 +361,7 @@ async def test_handle_market_tome_select():
         assert "📊 <b>Prix du marché</b>" in text
         assert "4,70 €" in text
         keyboard = mock_msg.edit_text.call_args[1]["reply_markup"]
-        assert any(
+        assert not any(
             btn.callback_data == f"market_details:{listing_id}"
             for row in keyboard.inline_keyboard
             for btn in row
@@ -431,7 +431,7 @@ async def test_market_tome_view_keeps_the_tome_selection_when_series_has_several
             if (btn.callback_data or "").startswith("market_tome:")
         ]
         assert len(tome_buttons) == 2, "tous les tomes restent accessibles"
-        assert any(
+        assert not any(
             btn.callback_data == f"market_details:{listing_id}"
             for row in keyboard.inline_keyboard
             for btn in row

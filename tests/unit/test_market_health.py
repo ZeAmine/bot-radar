@@ -441,7 +441,7 @@ async def test_recording_a_cote_state_counts_it_without_raising():
     """La mesure incrémente le bon compteur, et tous les états sont lisibles."""
     client = MagicMock()
     client.incr = AsyncMock()
-    client.mget = AsyncMock(return_value=["5", None, "3", "2", "4"])
+    client.mget = AsyncMock(return_value=["5", None, "3", "2", "4", "1"])
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(market_health, "get_redis_client", lambda: client)
@@ -455,6 +455,7 @@ async def test_recording_a_cote_state_counts_it_without_raising():
         "no_offer": 3,
         "searching": 2,
         "uncatalogued": 4,
+        "unavailable": 1,
     }
 
 

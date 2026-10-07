@@ -1308,11 +1308,11 @@ async def test_entite_interne_declenchee_est_ecartee_et_annoncee_comme_panne():
 async def test_entite_externe_ne_lit_pas_le_fichier_local_et_le_signale(tmp_path):
     """Un `SYSTEM file://…` ne fait entrer aucun octet du disque, et se voit.
 
-    Le parseur de la C refuse déjà l'entité externe (`undefined entity`), mais par
-    accident d'implémentation, pas par contrat : le jour où un vrai durcissement
-    (un parseur dédié, une liste blanche) le remplace, c'est cette assertion qui tient la
-    ligne. Le motif est exigé ici parce qu'un `ParseError` brut, lui, ne dit rien
- de la décision — il dirait seulement que quelque chose a échoué.
+       Le parseur de la C refuse déjà l'entité externe (`undefined entity`), mais par
+       accident d'implémentation, pas par contrat : le jour où un vrai durcissement
+       (un parseur dédié, une liste blanche) le remplace, c'est cette assertion qui tient la
+       ligne. Le motif est exigé ici parce qu'un `ParseError` brut, lui, ne dit rien
+    de la décision — il dirait seulement que quelque chose a échoué.
     """
     contenu_local = "9782369903062 CONTENU LOCAL QUI NE DOIT PAS FUIR"
     fichier = tmp_path / "secret.txt"
@@ -1320,16 +1320,12 @@ async def test_entite_externe_ne_lit_pas_le_fichier_local_et_le_signale(tmp_path
     charge = _sru(
         PANCHAUD_EDITION_2022.replace("9782369903086", "&fuite;"),
         doctype=(
-            "<!DOCTYPE srw:searchRetrieveResponse ["
-            f'<!ENTITY fuite SYSTEM "{fichier.as_uri()}">'
-            "]>"
+            f'<!DOCTYPE srw:searchRetrieveResponse [<!ENTITY fuite SYSTEM "{fichier.as_uri()}">]>'
         ),
     )
     service = BookMetadataService(http_client=_ClientSRUFige(charge))
 
-    notices, panne = await _bnf_notices_and_panne(
-        service, "bib.isbn adj \"9782369903086\""
-    )
+    notices, panne = await _bnf_notices_and_panne(service, 'bib.isbn adj "9782369903086"')
 
     assert notices == []
     assert panne == _PANNE_DOCTYPE
@@ -1681,3 +1677,39 @@ async def test_the_third_source_fires_only_after_both_others_in_the_same_resolut
     openlibrary = premier("openlibrary.org")
     google = premier("googleapis.com")
     assert bnf < openlibrary < google
+
+
+async def test_series_keeps_the_volume_title_from_the_bnf_notice():
+    service = BookMetadataService()
+    record = BookMetadata(
+        title="Série",
+        volume_title="Série Tome 1",
+        isbn13="9782205049504",
+    )
+    with _mock_bnf_typed(service, [record]):
+        verdict = await service.lookup_series_notices("Série", limit=1)
+    assert verdict.notices[0].title == "Série Tome 1"
+
+
+async def test_openlibrary_series_reads_the_volume_from_the_exact_edition():
+    from unittest.mock import MagicMock
+
+    client = AsyncMock()
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "title": "Absolute Martian Manhunter Vol. 1",
+        "isbn_13": ["9781799505204"],
+    }
+    client.get.return_value = response
+    service = BookMetadataService(http_client=client)
+    meta = BookMetadata(
+        title="Absolute Martian Manhunter",
+        isbn13="9781799505204",
+        source=AUTORITE_OPENLIBRARY,
+    )
+    result = await service._openlibrary_series_volume(meta)
+    assert result.title == "Absolute Martian Manhunter Vol. 1"
+    assert result.isbn13 == meta.isbn13
+
+    response.json.return_value["isbn_13"] = ["9782205049504"]
+    assert await service._openlibrary_series_volume(meta) == meta

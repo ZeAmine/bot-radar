@@ -11,6 +11,49 @@ from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceServ
 from app.services.tome_extractor import TomeMatchResult
 
 
+def test_market_card_has_one_refresh_date_and_a_warning_below_the_header():
+    book = create_book_with_cache()
+    book.market_cache.collection_status = "partial"
+    book.market_cache.last_attempt_at = datetime(2026, 10, 7, 15, 4, tzinfo=UTC)
+    book.market_cache.historical_low_at = datetime(2026, 10, 6, 20, 45, tzinfo=UTC)
+    book.market_cache.failed_provider_names = ["secret_source"]
+    card = MarketPriceService.format_market_details_card(None, book)
+    assert card.splitlines()[2] == "<i>⚠️ Actualisation partielle (07/10 à 17:04)</i>"
+    assert "📚 <b>Blacksad" in card
+    assert "<b>Minimum sur 1 an :</b> 22,00 € (06/10 à 22:45)" in card
+    assert "<b>Meilleure offre actuelle :</b> 22,00 €" in card
+    assert card.count("07/10 à 17:04") == 1
+    assert "Dernière tentative" not in card
+    assert "Dernière mise à jour" not in card
+    assert "secret_source" not in card
+
+
+def test_failed_refresh_does_not_present_retained_prices_as_current():
+    book = create_book_with_cache()
+    book.market_cache.collection_status = "failed"
+    card = MarketPriceService.format_market_details_card(None, book)
+    assert "<i>⚠️ Actualisation impossible" in card
+    assert "<b>Dernière offre connue :</b> 22,00 €" in card
+    assert "Meilleure offre actuelle" not in card
+
+
+def test_a_failed_collection_without_any_price_is_no_longer_in_progress():
+    from app.services.market_health import classify_sent_cote_state
+    from app.services.market_price_service import cote_absence_line
+
+    book = create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None)
+    book.market_cache.checked_at = None
+    book.market_cache.last_attempt_at = datetime(2026, 10, 7, 15, 4, tzinfo=UTC)
+    book.market_cache.collection_status = "failed"
+    line = cote_absence_line(book)
+    assert "Cote indisponible" in line
+    assert "en cours" not in line
+    assert classify_sent_cote_state(line) == "unavailable"
+    card = MarketPriceService.format_market_details_card(None, book)
+    assert card.count("07/10 à 17:04") == 1
+    assert "en cours" not in card
+
+
 def create_book_with_cache(
     *,
     lowest_delivered_cents: int | None = 2200,
@@ -188,7 +231,7 @@ def test_comparator_with_historical_low_1y():
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
-    assert "Dernière mise à jour :" in card
+    assert "Actualisation :" in card
 
 
 def test_comparator_no_historical_low_falls_back_to_live_market_price():
@@ -249,7 +292,7 @@ def test_comparator_historical_low_when_status_unavailable():
     # Vérifier que le panneau 'Prix du marché' affiche le prix bas constaté
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "📊 <b>Prix du marché</b>" in card
-    assert "<b>Prix bas constaté :</b> 18,50 €" in card
+    assert "<b>Minimum sur 1 an :</b> 18,50 €" in card
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
@@ -273,7 +316,7 @@ def test_comparator_single_book_series_fallback():
         books_in_series=[book],
     )
     assert "📊 <b>Prix du marché</b>" in card
-    assert "<b>Prix bas constaté :</b> 15,48 €" in card
+    assert "<b>Minimum sur 1 an :</b> 15,48 €" in card
 
 
 def test_comparator_no_price_at_all_returns_unavailable():
@@ -301,13 +344,17 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
                 "total_cents": 869,
             },
             "Fnac": {
-                "merchant": "Fnac", "is_used": True, "condition": "Très bon", "total_cents": 899
+                "merchant": "Fnac",
+                "is_used": True,
+                "condition": "Très bon",
+                "total_cents": 899,
             },
-            "Momox": {
-                "merchant": "Momox", "is_used": True, "condition": "Bon", "total_cents": 750
-            },
+            "Momox": {"merchant": "Momox", "is_used": True, "condition": "Bon", "total_cents": 750},
             "Abebooks": {
-                "merchant": "Abebooks", "is_used": True, "condition": "Correct", "total_cents": 700
+                "merchant": "Abebooks",
+                "is_used": True,
+                "condition": "Correct",
+                "total_cents": 700,
             },
             "Recyclivre": {
                 "merchant": "Recyclivre",
@@ -328,7 +375,10 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
                 "total_cents": 950,
             },
             "Bal": {
-                "merchant": "Bal", "is_used": True, "condition": "Tres bon", "total_cents": 980
+                "merchant": "Bal",
+                "is_used": True,
+                "condition": "Tres bon",
+                "total_cents": 980,
             },
             "Amazon": {
                 "merchant": "Amazon",
@@ -337,7 +387,10 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
                 "total_cents": 1050,
             },
             "Ebay": {
-                "merchant": "Ebay", "is_used": True, "condition": "Très bon", "total_cents": 1200
+                "merchant": "Ebay",
+                "is_used": True,
+                "condition": "Très bon",
+                "total_cents": 1200,
             },
         }
     }
@@ -368,7 +421,7 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
     # Limite stricte de 5 offres (Ebay qui est la 6e valide ne doit pas être affichée)
     assert "Ebay" not in card
 
-    assert "Dernière mise à jour :" in card
+    assert "Actualisation :" in card
 
 
 def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_partners():
@@ -413,7 +466,7 @@ def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_
     card = MarketPriceService.format_market_details_card(listing, book)
 
     # 1. Vérifier la présence de la cote 1 an
-    assert "<b>Prix bas constaté :</b> 5,48 €" in card
+    assert "<b>Minimum sur 1 an :</b> 5,48 €" in card
     # 2. Vérifier la présence du comparatif boutique
     assert "<b>Comparatif par boutique :</b>" in card
     assert "• Momox : 21,04 € (Très bon)" in card
@@ -436,7 +489,7 @@ def test_summary_and_card_share_the_same_reference_price():
 
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 5,48 €" in summary
-    assert "<b>Prix bas constaté :</b> 5,48 €" in card
+    assert "<b>Minimum sur 1 an :</b> 5,48 €" in card
     assert "<b>Prix du marché :</b> 22,00 €" not in card
 
 
@@ -739,7 +792,7 @@ def test_the_panel_without_cote_says_which_silence_it_reports():
     assert PENDING_COTE_LINE in pending_card
     assert "Aucune offre" not in pending_card
     assert "Aucune offre d'occasion trouvée" in settled_card
-    assert "(relevé du " in settled_card
+    assert "<b>Actualisation :</b>" in settled_card
     assert PENDING_COTE_LINE not in settled_card
 
 
@@ -806,3 +859,43 @@ def test_series_reference_total_ignores_an_integral_when_tomes_are_numbered():
     # Aucune cote : pas de total — un zéro se lirait comme une série gratuite.
     assert series_reference_total([_tome_book("Blast — Tome 1", None)]) is None
 
+
+def test_lot_status_keeps_a_failed_tome_visible_after_another_tome_succeeds():
+    first = create_book_with_cache()
+    second = create_book_with_cache()
+    first.title, second.title = "Série Tome 1", "Série Tome 2"
+    first.market_cache.collection_status = "failed"
+    first.market_cache.last_attempt_at = datetime(2026, 10, 6, tzinfo=UTC)
+    second.market_cache.collection_status = "complete"
+    second.market_cache.last_attempt_at = datetime(2026, 10, 7)
+    card = MarketPriceService.format_market_details_card(
+        None, None, [first, second], TomeMatchResult(is_lot=True, lot_tomes=[1, 2])
+    )
+    assert "<i>⚠️ Actualisation partielle (07/10 à 02:00)</i>" in card
+    assert card.count("07/10 à 02:00") == 1
+
+
+def test_a_series_with_failed_unpriced_tomes_does_not_promise_pending_prices():
+    book = create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None)
+    book.title = "Série Tome 1"
+    book.market_cache.collection_status = "failed"
+    other = create_book_with_cache()
+    other.title = "Série Tome 2"
+    card = MarketPriceService.format_market_details_card(None, None, [book, other])
+    assert "1 tome(s) sans cote disponible" in card
+    assert "en cours de cote" not in card
+
+
+def test_series_with_one_empty_tome_does_not_claim_the_whole_collection_is_empty():
+    first = create_book_with_cache()
+    first.title = "Série Tome 1"
+    first.market_cache.collection_status = "complete"
+    first.market_cache.last_attempt_at = datetime(2026, 10, 6, tzinfo=UTC)
+    second = create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None)
+    second.title = "Série Tome 2"
+    second.market_cache.collection_status = "empty"
+    second.market_cache.last_attempt_at = datetime(2026, 10, 7, tzinfo=UTC)
+    card = MarketPriceService.format_market_details_card(None, None, [first, second])
+    assert card.splitlines()[2] == "<b>Actualisation :</b> 07/10 à 02:00"
+    assert "1 tome(s) sans aucune offre trouvée" in card
+    assert "• Tome 1 : 22,00 €" in card

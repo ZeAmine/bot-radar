@@ -8,7 +8,7 @@ import uuid
 from typing import Any
 
 from aiogram import F
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -33,6 +33,7 @@ from app.core.constants import (
     DEFAULT_CLOTHES_CONDITIONS,
     DEFAULT_GAMING_CONDITIONS,
     DEFAULT_TECH_CONDITIONS,
+    AlertStatus,
     CategorySlug,
     MatchConfidence,
 )
@@ -49,7 +50,7 @@ from app.services.alert_service import (
     AlertServiceError,
     parse_price_to_cents,
 )
-from app.services.book_market_pricing import schedule_book_pricing
+from app.services.book_market_pricing import price_book_now
 from app.services.market_price_service import (
     cote_absence_line,
     format_cote_lines,
@@ -77,8 +78,6 @@ def _get_alert_repo(session: Any) -> Any:
     if isinstance(AlertRepository, unittest.mock.Base):
         return AlertRepository(session)
     return getattr(alerts_mod, "AlertRepository", AlertRepository)(session)
-
-
 
 
 def _merge_keywords(*groups: list[str] | None) -> list[str]:
@@ -254,24 +253,6 @@ def _get_book_repo(session: Any) -> Any:
     import app.bot.handlers.alerts as alerts_mod
 
     return getattr(alerts_mod, "BookRepository", BookRepository)(session)
-
-
-def _schedule_series_resolution(
-    *, alert_id: uuid.UUID, name: str, author: str | None
-) -> None:
-    """Déclenche la résolution d'une série sans ISBN, dès sa création.
-
-    Une série surveillée par son nom n'a aucune fiche tant qu'aucun tome n'a été
-    identifié : sa première annonce partait donc sans ligne de cote. La résolution
-    part par le **nom de l'alerte**, demande à la BNF les notices de la série
-    (`series=True`) et cote chaque tome lié — la prochaine annonce aura de quoi comparer.
-    """
-    from app.use_cases.ingest_listing import link_books_from_bnf
-
-    safe_create_task(
-        link_books_from_bnf(name, alert_id, author=author, series=True),
-        name=f"bnf_link_{alert_id}",
-    )
 
 
 @router.message(Command("add", "ajouter"))
@@ -807,30 +788,46 @@ async def save_alert(
                 vinted_search_url=vinted_url,
             )
 
+        # La surveillance ne devient active qu'après la préparation du catalogue
+        # et des cotes. L'ingestion reste ensuite une simple lecture du cache.
+        alert.status = AlertStatus.PAUSED
         await db_session.commit()
+        # Le brouillon est terminé avant toute attente : un nouveau /add peut
+        # commencer sans être effacé par la fin de cette préparation.
         await state.clear()
+        if isinstance(callback.message, Message):
+            with contextlib.suppress(TelegramAPIError):
+                await callback.message.edit_text("📊 <i>Préparation des prix du marché…</i>")
 
-        # La cote part après le commit : elle lit le livre dans sa propre session, et
-        # surtout elle ne doit pas faire attendre les marchands avant la confirmation.
         if book is not None:
-            schedule_book_pricing(book.id, reason="alert_created")
+            await price_book_now(book.id, reason="alert_created")
+            # La cotation utilise une autre session : relire évite d'attacher son
+            # objet ORM détaché à une session qui possède déjà le même cache.
+            loaded = await book_repo.get_by_id(book.id, refresh=True)
+            books = [loaded] if loaded is not None else [book]
         else:
-            # Série sans ISBN : rien à coter encore. On lance la résolution par le nom
-            # de l'alerte, pour que les tomes identifiés soient cotés avant l'annonce.
-            _schedule_series_resolution(alert_id=alert.id, name=name, author=author)
+            from app.use_cases.ingest_listing import link_books_from_bnf
 
-        # La cote déjà connue est affichée telle quelle ; sinon la confirmation dit
-        # **laquelle** des deux attentes elle traverse — une cote en cours, ou une
-        # passe qui n'a rien trouvé — plutôt que de laisser croire à une cote qui
-        # arrive. Une alerte de série n'a pas encore de livre tant qu'aucun tome n'a
-        # été identifié : dans ce cas, il n'y a rien à coter, donc rien à annoncer.
-        # Ni marchand, ni prix daté : la même cote est servie par plusieurs
-        # plateformes, et `historical_low_at` est réécrit à chaque rafraîchissement —
-        # une date de prix daterait de la création. La date de la ligne d'absence,
-        # elle, est celle du relevé qui l'a constatée.
-        cote_lines = format_cote_lines(book)
-        absence_line = cote_absence_line(book)
-        extra_lines = cote_lines or ([absence_line] if absence_line else [])
+            await link_books_from_bnf(
+                name, alert.id, author=author, series=True, wait_for_prices=True
+            )
+            books = await book_repo.get_all_books_for_alert(alert.id)
+
+        alert.status = AlertStatus.ACTIVE
+        await db_session.commit()
+        extra_lines: list[str] = []
+        for priced_book in books:
+            if len(books) > 1:
+                extra_lines.append(f"📚 <b>{html.escape(priced_book.title)}</b>")
+            lines = format_cote_lines(priced_book)
+            if not lines:
+                absence = cote_absence_line(priced_book)
+                lines = [
+                    absence
+                    if absence and "en cours" not in absence
+                    else "<i>⚠️ Cote indisponible</i>"
+                ]
+            extra_lines.extend(lines)
         resp_text = creation_card(
             stored_draft,
             header=ALERT_CREATED_TITLE,
@@ -868,9 +865,7 @@ async def save_alert(
         )
 
     vinted_btn = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Voir la recherche Vinted", url=vinted_url)]
-        ]
+        inline_keyboard=[[InlineKeyboardButton(text="Voir la recherche Vinted", url=vinted_url)]]
     )
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(resp_text, reply_markup=vinted_btn)

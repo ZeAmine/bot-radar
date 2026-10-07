@@ -30,12 +30,13 @@ class BookRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_by_id(self, book_id: uuid.UUID) -> Book | None:
+    async def get_by_id(self, book_id: uuid.UUID, *, refresh: bool = False) -> Book | None:
         """Récupère un livre par son UUID avec son cache de marché."""
         stmt = (
             select(Book)
             .options(*self._BOOK_EAGER_LOAD)
             .where(Book.id == book_id)
+            .execution_options(populate_existing=refresh)
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()

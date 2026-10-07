@@ -60,6 +60,7 @@ LIBELLE = {
     "no_offer": "livre identifié, aucune offre trouvée",
     "searching": "aucun livre résolu, recherche annoncée",
     "uncatalogued": "aucun livre résolu, aucune source ne le catalogue",
+    "unavailable": "livre identifié, collecte échouée sans cote",
 }
 
 

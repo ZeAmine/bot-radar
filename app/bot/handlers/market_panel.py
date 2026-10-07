@@ -69,6 +69,16 @@ def _content(view: PanelView) -> tuple[str, InlineKeyboardMarkup]:
     panel = view.panel
     books = panel.books_in_series or ([panel.book] if panel.book else [])
     selected = next((b for b in books if b.id == view.selected_id), None)
+    notes: list[str] = []
+    if view.refreshing:
+        notes.append("Actualisation en cours…")
+    elif view.failed:
+        notes.append("⚠️ Actualisation impossible ; derniers relevés conservés.")
+    missing_first = (
+        view.alert_id
+        and len(books) > 1
+        and not any(extract_tome_number_from_title(b.title) == 1 for b in books)
+    )
     text = MarketPriceService.format_market_details_card(
         listing=panel.listing,
         book=selected,
@@ -77,27 +87,15 @@ def _content(view: PanelView) -> tuple[str, InlineKeyboardMarkup]:
         latest_snapshot=panel.latest_snapshot if selected is panel.book else None,
         series_total_cents=panel.series_total_cents,
         catalogue_exhausted=panel.catalogue_exhausted,
+        refresh_note="<i>" + "\n".join(notes) + "</i>" if notes else None,
+        additional_note=(
+            "<i>Tome 1 absent du catalogue ; premier tome connu affiché.</i>"
+            if missing_first
+            else None
+        ),
     )
-    if (
-        view.alert_id
-        and len(books) > 1
-        and not any(extract_tome_number_from_title(b.title) == 1 for b in books)
-    ):
-        text += "\nTome 1 absent du catalogue ; premier tome connu affiché."
-    if view.refreshing:
-        text += "\n\n<i>Actualisation en cours…</i>"
-    elif view.failed:
-        text += "\n\nActualisation impossible ; derniers relevés conservés."
     source_id = view.listing_id or view.alert_id
     rows = _tome_selection_rows(source_id, books) if source_id and len(books) > 1 else []
-    if source_id and len(books) > 1:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Tous les tomes", callback_data=f"market_details:{source_id}"
-                )
-            ]
-        )
     rows.append([InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel")])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -199,10 +197,17 @@ async def _reload(view: PanelView) -> None:
 async def _refresh_panel(view: PanelView) -> None:
     try:
         books = view.panel.books_in_series or ([view.panel.book] if view.panel.book else [])
-        if not books and view.panel.alert:
+        if view.panel.alert and (
+            not books
+            or (
+                not view.panel.alert.isbn
+                and any(extract_tome_number_from_title(b.title) is None for b in books)
+            )
+        ):
             async with AsyncSessionLocal() as db:
                 await ViewMarketDetailsUseCase(db).resolve_alert_books(
-                    view.panel.alert.id, view.user_id,
+                    view.panel.alert.id,
+                    view.user_id,
                 )
             await _reload(view)
             books = view.panel.books_in_series or ([view.panel.book] if view.panel.book else [])
