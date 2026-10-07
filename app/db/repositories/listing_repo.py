@@ -17,6 +17,7 @@ from app.db.models.book import Book
 from app.db.models.category import Category
 from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
+from app.db.models.user import User
 from app.schemas.listing import ListingIngestPayload
 from app.services.price_calculator import calculate_estimated_total
 from app.utils.text import normalize_text
@@ -27,6 +28,44 @@ class ListingRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def get_initial_seen_external_ids(self, source_name: str) -> list[str]:
+        """Lit les annonces récentes sans notification éligible encore en attente.
+
+        L'attente est le même `notified_at` nul que dans `match_notification_state`.
+        Comme `_alert_has_telegram_chat`, le destinataire est un utilisateur lié
+        avec un identifiant Telegram non nul et différent de zéro. Les alertes
+        actives seules participent au chemin d'envoi.
+
+        La fenêtre reste celle des 3 000 annonces récentes, avant exclusion des
+        attentes : les annonces plus anciennes ne deviennent pas déjà vues.
+        """
+        recent = (
+            select(Listing.id, Listing.external_id, Listing.received_at)
+            .where(Listing.source_name == source_name)
+            .order_by(Listing.received_at.desc())
+            .limit(3000)
+            .subquery()
+        )
+        pending = (
+            select(ListingMatch.id)
+            .join(Alert, Alert.id == ListingMatch.alert_id)
+            .join(User, User.id == Alert.user_id)
+            .where(
+                ListingMatch.listing_id == recent.c.id,
+                ListingMatch.notified_at.is_(None),
+                Alert.status == AlertStatus.ACTIVE,
+                User.telegram_user_id != 0,
+            )
+            .exists()
+        )
+        stmt = (
+            select(recent.c.external_id)
+            .where(~pending)
+            .order_by(recent.c.received_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def get_by_source_and_external_id(
         self,
