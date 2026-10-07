@@ -1,12 +1,18 @@
+import io
+import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiogram.types import CallbackQuery, User
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
-from app.api.middlewares.security import rate_limiter
+from app.api.middlewares.security import PayloadSizeLimitMiddleware, rate_limiter
 from app.bot.middlewares.throttling import ThrottlingMiddleware
 from app.core.config import settings
+from app.core.logging import JSONFormatter
 from app.core.rate_limiter import SlidingWindowRateLimiter
 from app.core.security import (
     is_telegram_user_allowed,
@@ -86,6 +92,47 @@ def test_payload_size_limit_rejects_chunked_body():
     )
     assert response.status_code == 413
     assert "Payload trop volumineux" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/v1/telegram/webhook/webhook-factice", "/api/v1/ingest/listings"]
+)
+async def test_chunked_rejection_keeps_the_route_but_never_logs_the_webhook_secret(
+    path: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Le rejet réel 413 expurge le secret dès la source et dans le journal JSON."""
+    application = FastAPI()
+    application.add_middleware(PayloadSizeLimitMiddleware)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JSONFormatter())
+    logger = logging.getLogger("radar.security.middleware")
+    logger.addHandler(handler)
+
+    async def streamed_body():
+        yield b"{}"
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=application), base_url="http://test"
+        ) as client:
+            response = await client.post(path, content=streamed_body())
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    assert response.status_code == 413
+    output = stream.getvalue()
+    assert "webhook-factice" not in output
+    record = next(record for record in caplog.records if record.name == logger.name)
+    assert "webhook-factice" not in record.getMessage()
+    expected_path = (
+        "/api/v1/telegram/webhook/[REDACTED]" if "webhook" in path else "/api/v1/ingest/listings"
+    )
+    payload = json.loads(output)
+    assert expected_path in payload["message"]
+    assert "Transfer-Encoding: chunked" in payload["message"]
+    assert payload["level"] == "WARNING"
 
 
 def test_rate_limit_middleware():
@@ -216,4 +263,3 @@ async def test_throttling_middleware():
     r3 = await middleware(handler, cb, data)
     assert r3 is None
     assert cb.answer.call_count == 1
-

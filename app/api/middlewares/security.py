@@ -78,10 +78,14 @@ class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 pass
         elif "chunked" in request.headers.get("transfer-encoding", "").lower():
+            path = request.url.path
+            webhook_prefix = "/api/v1/telegram/webhook/"
+            if path.startswith(webhook_prefix):
+                path = f"{webhook_prefix}[REDACTED]"
             logger.warning(
                 "Requête rejetée : taille de payload indéterminable "
                 "(Transfer-Encoding: chunked) sur %s.",
-                request.url.path,
+                path,
             )
             return self._payload_too_large()
 
