@@ -1,7 +1,6 @@
 import base64
 import contextlib
 import logging
-import re
 import uuid
 from typing import Any
 
@@ -29,6 +28,8 @@ from app.services.ai.modules.negotiation import negotiation_module
 from app.services.market_price_service import (
     MarketPriceService,
     clean_tome_display_title,
+    extract_tome_number_from_title,
+    listable_series_books,
 )
 from app.use_cases.view_market_details import ViewMarketDetailsUseCase
 
@@ -79,6 +80,7 @@ async def _listing_or_answer(
     if listing is None:
         await callback.answer("Annonce introuvable.", show_alert=True)
     return listing
+
 
 # Préfixe des boutons par tome du panneau « 📊 Prix du marché ». Telegram refuse
 # un `callback_data` de plus de 64 octets — une contrainte de l'API, pas une
@@ -138,10 +140,12 @@ def _tome_selection_rows(
     """
     rows: list[list[InlineKeyboardButton]] = []
     current_row: list[InlineKeyboardButton] = []
-    for book in books:
-        t_label = clean_tome_display_title(book.title)
-        m = re.search(r"\b(?:tome|t|vol)\s*\.?\s*(\d+)\b", t_label, re.IGNORECASE)
-        btn_text = f"T{m.group(1)}" if m else t_label[:8]
+    for book in sorted(
+        listable_series_books(books),
+        key=lambda b: (extract_tome_number_from_title(b.title) or 999, b.title),
+    ):
+        number = extract_tome_number_from_title(book.title)
+        btn_text = f"T{number}" if number else clean_tome_display_title(book.title)[:20]
         current_row.append(
             InlineKeyboardButton(
                 text=btn_text,
@@ -164,9 +168,8 @@ async def handle_view_market_details(
 ) -> None:
     """Affiche le panneau détaillé du prix du marché pour l'annonce BD sélectionnée.
 
-    `market_details:` est le retour « Tous les tomes » : il réaffiche la liste des
-    tomes en éditant le message en place. Sans ce filtre, le bouton du panneau de
-    série ne routait vers aucun handler et restait mort.
+    `market_details:` reste routé pour les boutons des anciens messages ; les
+    nouveaux panneaux ne proposent que les boutons individuels des tomes.
     """
     try:
         await _show_market_details(callback, db_session)
@@ -308,15 +311,7 @@ async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
     keyboard_rows: list[list[InlineKeyboardButton]] = []
     if books_in_series and len(books_in_series) > 1:
         keyboard_rows = _tome_selection_rows(listing.id, books_in_series)
-    keyboard_rows.append(
-        [
-            InlineKeyboardButton(
-                text="Tous les tomes",
-                callback_data=f"market_details:{listing.id}",
-            ),
-            InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel"),
-        ]
-    )
+    keyboard_rows.append([InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
     if isinstance(callback.message, Message):

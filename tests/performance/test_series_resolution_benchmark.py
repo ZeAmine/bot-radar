@@ -255,7 +255,7 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
 
     Le travail différé ici est celui du chemin d'ingestion : il lie le livre que
     l'annonce désigne et le cote. Le vol de six tomes appartient à la création de
-    l'alerte (`_schedule_series_resolution`) et se mesure dans
+    l'alerte (`link_books_from_bnf`) et se mesure dans
     `test_benchmark_series_link_writes_six_links_and_prices_them`.
     """
     monkeypatch.setattr(settings, "AI_ENABLED", False)

@@ -1002,17 +1002,20 @@ async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> N
 
 
 @pytest.mark.asyncio
-async def test_bnf_link_for_a_series_links_and_prices_every_tome() -> None:
+@pytest.mark.parametrize("wait_for_prices", [False, True])
+async def test_bnf_link_for_a_series_links_and_prices_every_tome(wait_for_prices: bool) -> None:
     """`series=True` lie chaque tome de la série et ne cote que ceux sans cote."""
     from app.db.models.book_market_cache import BookMarketCache
     from app.services.book_metadata_service import CatalogueVerdict
     from app.use_cases import ingest_listing as mod
 
-    priced = MagicMock(isbn13="9782369900011", author="A", publisher="P")
-    already_priced = MagicMock(isbn13="9782369900028", author="A", publisher="P")
+    priced = MagicMock(isbn13="9782369900011", title="Blacksad Tome 1", author="A", publisher="P")
+    already_priced = MagicMock(
+        isbn13="9782369900028", title="Blacksad Tome 2", author="A", publisher="P"
+    )
     books = {}
     for notice in (priced, already_priced):
-        book = MagicMock()
+        book = MagicMock(title="Blacksad")
         book.id = uuid.uuid4()
         books[notice.isbn13] = book
 
@@ -1025,11 +1028,10 @@ async def test_bnf_link_for_a_series_links_and_prices_every_tome() -> None:
         patch.object(mod, "BookRepository") as repo_cls,
         patch.object(mod, "BookCatalogService"),
         patch.object(mod, "schedule_book_pricing") as schedule,
+        patch.object(mod, "price_book_now", new_callable=AsyncMock) as price_now,
     ):
         service_cls.return_value.lookup_series_notices = AsyncMock(
-            return_value=CatalogueVerdict(
-                consulted=("bnf",), notices=(priced, already_priced)
-            )
+            return_value=CatalogueVerdict(consulted=("bnf",), notices=(priced, already_priced))
         )
         repo_cls.return_value.get_by_isbn13 = AsyncMock(side_effect=_get_isbn)
         repo_cls.return_value.link_alert_to_book = AsyncMock()
@@ -1042,25 +1044,25 @@ async def test_bnf_link_for_a_series_links_and_prices_every_tome() -> None:
         )
         repo_cls.return_value.get_by_id = AsyncMock(
             side_effect=lambda book_id: MagicMock(
-                market_cache=(
-                    None
-                    if book_id == books[priced.isbn13].id
-                    else usable_cache
-                )
+                market_cache=(None if book_id == books[priced.isbn13].id else usable_cache)
             )
         )
 
         await mod.link_books_from_bnf(
-            "Blacksad", uuid.uuid4(), author="A", series=True
+            "Blacksad", uuid.uuid4(), author="A", series=True, wait_for_prices=wait_for_prices
         )
 
     service_cls.return_value.lookup_series_notices.assert_awaited_once_with(
         "Blacksad", author_hint="A"
     )
     # Un seul tome est coté : celui qui n'avait pas de cote utilisable.
-    schedule.assert_called_once_with(books[priced.isbn13].id, reason="bnf_link")
-
-
+    if wait_for_prices:
+        schedule.assert_not_called()
+        price_now.assert_awaited_once_with(books[priced.isbn13].id, reason="bnf_link")
+    else:
+        schedule.assert_called_once_with(books[priced.isbn13].id, reason="bnf_link")
+        price_now.assert_not_awaited()
+    assert books[priced.isbn13].title == "Blacksad Tome 1"
 
 
 @pytest.mark.asyncio

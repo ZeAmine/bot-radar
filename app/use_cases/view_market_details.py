@@ -188,7 +188,10 @@ class ViewMarketDetailsUseCase:
     ) -> None:
         """Identifie et lie les ouvrages d'une alerte pour une consultation explicite."""
         alert = await AlertRepository(self.db).get_by_id(alert_id, user_id=user_id)
-        if alert is None or await self.book_repo.get_all_books_for_alert(alert.id):
+        if alert is None:
+            return
+        books = await self.book_repo.get_all_books_for_alert(alert.id)
+        if books and (alert.isbn or all(extract_tome_number_from_title(b.title) for b in books)):
             return
         if alert.isbn:
             book, _ = await BookCatalogService(self.db).identify_book(

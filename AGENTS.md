@@ -129,6 +129,17 @@ Interdit sur ce chemin :
 
 Conséquence assumée : la **première** alerte d’une BD inconnue peut partir sans ligne de cote. L’ISBN BNF sert aux suivantes.
 
+### Préparation d'une alerte BD (ADR-043)
+
+La création prépare le catalogue et attend les cotes de l'ouvrage ou des tomes
+avant d'activer la surveillance. L'alerte est persistée en pause pendant cette
+préparation ; le brouillon FSM est terminé avant les attentes réseau. La cote
+est ensuite relue dans la session de création, jamais attachée depuis la session
+de cotation. Une collecte échouée sans prix affiche « Cote indisponible », pas
+une cote « en cours ». L'ingestion garde exclusivement la lecture du cache local
+avant Telegram ; les replis de fond restent nécessaires aux alertes anciennes
+ou aux données réellement manquantes.
+
 ## Invariant n°2 — un seul scheduler
 
 - `app/main.py` démarre **toujours** APScheduler. Le poller Vinted est optionnel (`VINTED_POLLER_ENABLED`).

@@ -19,6 +19,7 @@ from typing import Any
 from app.core.redis import get_redis_client
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.services.market_price_service import (
+    COTE_UNAVAILABLE_LINE,
     NO_CATALOGUE_LINE,
     PENDING_COTE_LINE,
     SEARCHING_BOOK_LINE,
@@ -359,7 +360,7 @@ async def notify_no_prices_found(
 # d'autre : un compteur par état, incrémenté après que l'alerte est partie.
 
 COTE_STATE_KEY_PREFIX = "radar:cote_sent_state:"
-COTE_STATES = ("real", "pending", "no_offer", "searching", "uncatalogued")
+COTE_STATES = ("real", "pending", "no_offer", "searching", "uncatalogued", "unavailable")
 
 
 def classify_sent_cote_state(market_line: str | None) -> str:
@@ -369,7 +370,8 @@ def classify_sent_cote_state(market_line: str | None) -> str:
     cours. ``no_offer`` : un livre identifié, une passe a eu lieu et n'a trouvé
     aucune offre. ``searching`` : aucun livre résolu, la recherche est annoncée.
     ``uncatalogued`` : aucun livre résolu, et la recherche a **conclu** qu'aucune
-    source ne connaît l'ouvrage. Une ligne absente est comptée ``pending`` : c'est
+    source ne connaît l'ouvrage. ``unavailable`` : la collecte a échoué sans
+    cote utilisable. Une ligne absente est comptée ``pending`` : c'est
     un livre dont la ligne manque, pas une recherche qui n'a pas lieu.
     """
     if market_line == NO_CATALOGUE_LINE:
@@ -378,6 +380,8 @@ def classify_sent_cote_state(market_line: str | None) -> str:
         return "searching"
     if is_no_offer_line(market_line):
         return "no_offer"
+    if market_line and market_line.startswith(COTE_UNAVAILABLE_LINE):
+        return "unavailable"
     if market_line is None or market_line == PENDING_COTE_LINE:
         return "pending"
     return "real"

@@ -29,7 +29,7 @@ def repositories(
     """Repositories simulées et spies pour `save_alert`.
 
     `already_catalogued` décrit un livre déjà au catalogue et déjà coté : c'est le
-    seul cas où la confirmation peut afficher un prix sans attendre les marchands.
+    cas où la confirmation relit un prix après la collecte, même si elle échoue.
     `lazy_created_book` décrit le livre qui vient d'être créé : `create` rend un objet
     dont `market_cache` n'est pas chargé, et `get_by_id` le relit comme en production.
     """
@@ -47,6 +47,7 @@ def repositories(
     book_repo.create = AsyncMock(return_value=created)
     book_repo.get_by_id = AsyncMock(return_value=book)
     book_repo.link_alert_to_book = AsyncMock()
+    book_repo.get_all_books_for_alert = AsyncMock(return_value=[])
 
     alert_repo = MagicMock()
     alert_repo.create = AsyncMock(return_value=alert)
@@ -60,9 +61,8 @@ def repositories(
         "book_repo": book_repo,
         "alert_repo": alert_repo,
         "category_repo": category_repo,
-        # La cotation part en arrière-plan après la création : le handler ne fait
-        # que la demander, elle est vérifiée dans son propre module.
-        "schedule_pricing": MagicMock(),
+        # La création attend la cotation avant d'activer la surveillance.
+        "price_now": AsyncMock(return_value=None),
         # La recherche des variantes part en arrière-plan : le test la déclenche lui-même.
         "tasks": [],
     }
@@ -148,8 +148,8 @@ def patched(
             return_value=repos["category_repo"],
         ),
         patch(
-            "app.bot.handlers.alerts_create.schedule_book_pricing",
-            new=repos["schedule_pricing"],
+            "app.bot.handlers.alerts_create.price_book_now",
+            new=repos["price_now"],
         ),
         patch("app.bot.handlers.alerts.AlertRepository", return_value=repos["alert_repo"]),
         patch("app.bot.handlers.alerts.BookRepository", return_value=repos["book_repo"]),

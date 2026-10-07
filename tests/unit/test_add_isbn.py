@@ -27,7 +27,6 @@ from app.bot.handlers.alerts_create_confirm import (
 )
 from app.db.models.user import User
 from app.services.book_metadata_service import BookResolution
-from app.services.market_price_service import PENDING_COTE_LINE
 from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
@@ -134,9 +133,8 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
         assert "search_text=9782369904151" in create_kwargs["vinted_search_url"]
         assert repos["book_repo"].create.call_args.kwargs["isbn13"] == "9782369904151"
 
-        # 4. La cote part en arrière-plan sur le livre créé, sans retarder la
-        # confirmation : l'utilisateur ne fait pas attendre son alerte aux marchands.
-        repos["schedule_pricing"].assert_called_once_with(
+        # 4. La création attend la cote du livre avant d'activer la surveillance.
+        repos["price_now"].assert_awaited_once_with(
             repos["book_repo"].create.return_value.id,
             reason="alert_created",
         )
@@ -146,8 +144,8 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
         # L'édition qu'il vient de choisir se relit dans la confirmation, à la place du
         # récap où elle la montrait : c'est la même carte, donc la même ligne.
         assert "<b>Édition :</b> Editions çà et là · 224 p. · 19 cm" in confirmation
-        # Le livre vient d'être créé : sa cote est annoncée, pas encore chiffrée.
-        assert PENDING_COTE_LINE in confirmation
+        # La collecte simulée a échoué : la confirmation ne promet aucune attente.
+        assert "<i>⚠️ Cote indisponible</i>" in confirmation
     finally:
         for entered in reversed(patches):
             entered.stop()
@@ -238,7 +236,7 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
             assert "search_start_type=item_page_isbn" in create_kwargs["vinted_search_url"]
             assert "search_text=9782369903086" in create_kwargs["vinted_search_url"]
             assert repos["book_repo"].create.call_args.kwargs["isbn13"] == "9782369903086"
-            repos["schedule_pricing"].assert_called_once_with(
+            repos["price_now"].assert_awaited_once_with(
                 repos["book_repo"].create.return_value.id,
                 reason="alert_created",
             )
