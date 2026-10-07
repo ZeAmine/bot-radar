@@ -180,7 +180,21 @@ async def test_refresh_processes_several_books_in_one_wave():
     mock_registry.fetch_all_offers = AsyncMock(side_effect=[[], RuntimeError("timeout"), []])
     mock_registry.select_best_offer = MagicMock(return_value=None)
 
+    # Sans ce garde-fou, l'alerte « aucune cote » part pour de vrai : c'est le
+    # vrai bot (token du .env local) qui l'envoie, et la fenêtre de
+    # dédoublonnage Redis (`redis://redis`, injoignable hors compose) renvoie
+    # « slot libre » à chaque passe — d'où un message à chaque pytest.
+    sends: list[str] = []
+
+    async def faux_notify(text: str) -> None:
+        sends.append(text)
+
     with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.services.market_health.notify_admins", faux_notify)
+        client = MagicMock()
+        client.set = AsyncMock(return_value=True)
+        mp.setattr("app.services.market_health.get_redis_client", lambda: client)
+
         mock_book_repo = MagicMock()
         mock_book_repo.get_books_for_active_bd_alerts = AsyncMock(return_value=books)
 
@@ -202,6 +216,12 @@ async def test_refresh_processes_several_books_in_one_wave():
     assert stats["processed"] == 3
     assert stats["errors"] == 1
     assert stats["unavailable"] == 2
+
+    # L'alerte reste produite : seule sa destination change.
+    alertes = [s for s in sends if "Aucune cote" in s]
+    assert len(alertes) == 1, "la passe complète doit signaler l'absence totale de cote"
+    assert "Passe complet (3 livres)" in alertes[0]
+    assert "3 livres traités, 0 cote disponible" in alertes[0]
 
 
 

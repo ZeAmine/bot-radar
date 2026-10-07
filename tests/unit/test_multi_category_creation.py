@@ -650,6 +650,15 @@ async def test_start_add_alert_natural_add_interrupts_when_already_watched():
         assert "15,00 €" in edited_text
         assert "20,00 €" in edited_text
 
+        # Charte, règle 2 : les trois phrases d'information et de consigne sont en italique…
+        assert "<i>Cette BD est déjà surveillée dans tes alertes.</i>" in edited_text
+        assert "<i>Tu as indiqué un prix de 20,00 €.</i>" in edited_text
+        assert edited_text.count("<i>") == 3
+        # … et la règle 1 tient : libellés gras, valeurs en romain, jamais italiques.
+        assert "<b>Prix maximum actuel :</b> 15,00 €" in edited_text
+        assert "<i>15,00 €" not in edited_text
+        assert "<b>Statut :</b> Active" in edited_text
+
         # Clavier avec mise à jour et conservation
         kb = loading_message.edit_text.call_args[1]["reply_markup"]
         callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
@@ -710,6 +719,17 @@ async def test_start_add_alert_pre_check_avoids_ia_when_already_watched():
         text = message.answer.call_args[0][0]
         assert "Cette BD est déjà surveillée dans tes alertes" in text
         assert "Astérix le Gaulois" in text
+
+        # Charte, règle 2 : la phrase d'information et la consigne du pied sont en italique,
+        # la règle 1 garde les valeurs en romain.
+        assert "<i>Cette BD est déjà surveillée dans tes alertes.</i>" in text
+        assert (
+            "<i>Pour modifier son prix maximum, entre un nouveau montant "
+            "ou choisis Conserver sans modification.</i>"
+        ) in text
+        assert text.count("<i>") == 2
+        assert "<b>Prix maximum actuel :</b> 15,00 €" in text
+        assert "<i>15,00 €" not in text
 
 
 @pytest.mark.asyncio

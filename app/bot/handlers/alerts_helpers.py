@@ -1017,13 +1017,13 @@ async def render_existing_alert_response(
         agreement = "e" if item_label.startswith("Cette") else ""
         warn_text = (
             f"⚠️ <b>{TITLE_ALERT_EXISTS[2:].strip()}</b>\n\n"
-            f"{item_label} est déjà surveillé{agreement} dans tes alertes.\n\n"
+            f"<i>{item_label} est déjà surveillé{agreement} dans tes alertes.</i>\n\n"
             f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
             f"{isbn_line}"
             f"<b>Prix maximum actuel :</b> {price_str}\n"
             f"<b>{FIELD_STATUS} :</b> {status_text}\n\n"
-            f"Tu as indiqué un prix de {new_price_str}.\n"
-            "Souhaites-tu mettre à jour le prix maximum de cette alerte existante ?"
+            f"<i>Tu as indiqué un prix de {new_price_str}.</i>\n"
+            "<i>Souhaites-tu mettre à jour le prix maximum de cette alerte existante ?</i>"
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1048,13 +1048,13 @@ async def render_existing_alert_response(
         agreement = "e" if item_label.startswith("Cette") else ""
         warn_text = (
             f"⚠️ <b>{TITLE_ALERT_EXISTS[2:].strip()}</b>\n\n"
-            f"{item_label} est déjà surveillé{agreement} dans tes alertes.\n\n"
+            f"<i>{item_label} est déjà surveillé{agreement} dans tes alertes.</i>\n\n"
             f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
             f"{isbn_line}"
             f"<b>Prix maximum actuel :</b> {price_str}\n"
             f"<b>{FIELD_STATUS} :</b> {status_text}\n\n"
-            "Pour modifier son prix maximum, entre un nouveau montant "
-            "ou choisis Conserver sans modification."
+            "<i>Pour modifier son prix maximum, entre un nouveau montant "
+            "ou choisis Conserver sans modification.</i>"
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[

@@ -318,7 +318,7 @@ def _ean13(body: str) -> str:
     return body + str((10 - total % 10) % 10)
 
 
-# Trois tomes connus de la BNF, deux que seul OpenLibrary rend : le repli d'ADR-039
+# Trois tomes connus de la BNF, deux que seul OpenLibrary rend : le repli d'ADR-040
 # passe donc par le même chemin que la source primaire.
 BNF_ISBNS = [_ean13(f"978220500{number:03d}") for number in range(1, 4)]
 OPENLIBRARY_ISBNS = [_ean13(f"978287100{number:03d}") for number in range(4, 6)]
