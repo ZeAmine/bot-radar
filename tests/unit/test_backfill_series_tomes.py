@@ -17,7 +17,7 @@ import uuid
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -363,9 +363,10 @@ OPENLIBRARY_DOCS = [
 class _FakeRegistry:
     """Registre marchand : une offre d'occasion par tome, plus bas 1 an compris."""
 
-    def __init__(self) -> None:
-        self.calls: list[str | None] = []
-        self.last_context: tuple[str, str | None, str | None] = ("", None, None)
+    # Tracés sur la classe : le point de cotation crée une instance par livre,
+    # ces traces s'éteindraient avec elle.
+    calls: ClassVar[list[str | None]] = []
+    last_context: ClassVar[tuple[str, str | None, str | None]] = ("", None, None)
 
     async def fetch_all_offers(
         self,
@@ -375,9 +376,9 @@ class _FakeRegistry:
         author: str | None = None,
         edition: str | None = None,
     ) -> list[MarketOffer]:
-        # La signature reproduit le vrai registre : le contexte est tracé, pas filtré.
-        self.calls.append(isbn13)
-        self.last_context = (title, author, edition)
+        # La signature reproduit le vrai registre : le contexte est lu par le test.
+        _FakeRegistry.calls.append(isbn13)
+        _FakeRegistry.last_context = (title, author, edition)
         price = MARKET_CENTS[str(isbn13)]
         return [
             MarketOffer(
@@ -421,6 +422,8 @@ async def _written_state(session: Any) -> dict[str, Any]:
 
 def _write_pass_patches(fresh: Any) -> tuple[ExitStack, FakeCatalogueClient]:
     """Les trois sessions du chemin et les deux frontières (autorités, marchands)."""
+    _FakeRegistry.calls.clear()
+    _FakeRegistry.last_context = ("", None, None)
     fake_http = FakeCatalogueClient(
         bnf_records=BNF_RECORDS, openlibrary_docs=OPENLIBRARY_DOCS
     )
@@ -454,6 +457,11 @@ async def test_a_write_pass_links_and_prices_every_tome_of_the_series() -> None:
     assert written["series_total_cents"] == sum(LOWEST_CENTS.values())
     # Le repli a réellement servi : sans lui, deux tomes manqueraient.
     assert fake_http.openlibrary_queries
+    # Une interrogation marchande par tome lié — pas une de plus, pas une de moins —
+    # et le titre l'a accompagné : c'est ce repli par titre qui rend une cote
+    # possible même quand l'ISBN seul ne suffit pas.
+    assert sorted(call for call in _FakeRegistry.calls if call) == EXPECTED_ISBNS
+    assert _FakeRegistry.last_context[0].startswith("Blacksad Tome")
 
 
 @pytest.mark.asyncio
