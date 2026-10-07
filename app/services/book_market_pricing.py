@@ -180,6 +180,9 @@ async def _refresh_series_totals(session: AsyncSession, book_id: uuid.UUID) -> N
     écriture, un seul chemin). Une alerte sans ISBN mais à un seul livre relié
     n'est pas une série : son total reste ``NULL``, l'écran n'a rien à sommer.
     """
+    # En production autoflush=False : populate_existing écraserait autrement
+    # les métadonnées de collecte encore en mémoire lors de la relecture.
+    await session.flush()
     repo = MarketPriceRepository(session)
     alert_ids = await repo.get_alert_ids_linked_to_book(book_id)
     if not alert_ids:
