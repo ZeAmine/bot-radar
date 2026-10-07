@@ -22,7 +22,7 @@ from app.core.redis import get_redis_client
 from app.core.tasks import safe_create_task
 from app.db.models.alert import Alert
 from app.db.models.category import Category
-from app.db.models.listing import Listing
+from app.db.repositories.listing_repo import ListingRepository
 from app.db.session import AsyncSessionLocal
 from app.services.telegram_service import notify_admins
 from app.services.vinted_parsing import CATALOG_PAGE_SIZE
@@ -242,17 +242,10 @@ def get_adaptive_poll_interval() -> float:
 
 
 async def load_initial_seen_ids() -> FifoSet:
-    """Charge les IDs d'annonces récemment enregistrées en base pour éviter les doublons."""
+    """Recharge les vues récentes sans masquer une notification encore à envoyer."""
     try:
         async with AsyncSessionLocal() as session:
-            stmt = (
-                select(Listing.external_id)
-                .where(Listing.source_name == "vinted")
-                .order_by(Listing.received_at.desc())
-                .limit(3000)
-            )
-            result = await session.execute(stmt)
-            raw_ids = list(result.scalars().all())
+            raw_ids = await ListingRepository(session).get_initial_seen_external_ids("vinted")
             return FifoSet(reversed(raw_ids))
     except Exception as exc:
         logger.warning("Impossible de charger les anciens IDs d'annonces : %s", exc)

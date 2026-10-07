@@ -12,6 +12,7 @@ from app.tasks.vinted_poller import (
     MAX_MEANINGFUL_CYCLE_GAP_S,
     WINDOW_LOG_EVERY_CYCLES,
     CycleCadence,
+    load_initial_seen_ids,
     poll_vinted_once,
 )
 
@@ -23,6 +24,23 @@ def test_cycle_cadence_ignores_the_first_cycle() -> None:
 
     assert cadence.percentile(50) is None
     assert cadence.percentile(90) is None
+
+
+async def test_initial_seen_read_failure_keeps_its_visible_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Le repli vide reste accompagné du diagnostic de lecture existant."""
+    with (
+        patch("app.tasks.vinted_poller.AsyncSessionLocal") as factory,
+        caplog.at_level(logging.WARNING, logger="radar.vinted_poller"),
+    ):
+        session = AsyncMock()
+        session.execute.side_effect = RuntimeError("Base temporairement indisponible")
+        factory.return_value.__aenter__.return_value = session
+        seen = await load_initial_seen_ids()
+    assert seen == set()
+    assert "Impossible de charger les anciens IDs d'annonces" in caplog.text
+    assert "Base temporairement indisponible" in caplog.text
 
 
 def _record_cycles(cadence: CycleCadence, gaps: list[float], start: float = 0.0) -> float:
