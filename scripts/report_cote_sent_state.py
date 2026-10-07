@@ -14,7 +14,9 @@ compteurs et rapporte la répartition :
 - `pending` : un livre était identifié, sa cote en cours de calcul ;
 - `no_offer` : un livre était identifié, une passe a eu lieu et n'a trouvé aucune
 offre — l'attente n'est plus la bonne lecture, le résultat est connu ;
-- `searching` : aucun livre résolu, la recherche de l'ouvrage a été annoncée.
+- `searching` : aucun livre résolu, la recherche de l'ouvrage a été annoncée ;
+- `uncatalogued` : aucun livre résolu, et la recherche a **conclu** qu'aucune
+source ne catalogue l'ouvrage — l'attente n'était plus de mise (ADR-040).
 
 Les compteurs ne mesurent que depuis leur mise en service : un rapport lu juste
 après un déploiement ne décrit pas l'historique, il décrit ce qui suit. Un total
@@ -57,6 +59,7 @@ LIBELLE = {
     "pending": "livre identifié, cote en cours",
     "no_offer": "livre identifié, aucune offre trouvée",
     "searching": "aucun livre résolu, recherche annoncée",
+    "uncatalogued": "aucun livre résolu, aucune source ne le catalogue",
 }
 
 

@@ -55,6 +55,14 @@ SEARCHING_BOOK_LINE = "🔎 Recherche de l'ouvrage en cours…"
 # par `cote_absence_line` ; la phrase sert de préfixe (`is_no_offer_line`).
 NO_OFFER_LINE = "🔍 Aucune offre d'occasion trouvée"
 
+# Ligne affichée quand la recherche d'ouvrage a **conclu** : toutes les autorités
+# interrogées ont répondu, aucune ne catalogue l'ouvrage. La ligne d'attente
+# (« recherche de l'ouvrage en cours ») serait fausse : la recherche est finie, et
+# son résultat est cette absence. Le verdict est persisté sur l'alerte (ADR-040).
+NO_CATALOGUE_LINE = (
+    "🚫 Aucune source ne catalogue cet ouvrage — la veille reste par titre."
+)
+
 try:
     _PARIS_TZ: ZoneInfo = ZoneInfo("Europe/Paris")
 except Exception:  # pragma: no cover - fuseau absent sur l'image de prod
@@ -603,12 +611,18 @@ class MarketPriceService:
         tome_result: "TomeMatchResult | None" = None,
         latest_snapshot: Any = None,
         series_total_cents: int | None = None,
+        catalogue_exhausted: bool = False,
     ) -> str:
         """Génère le texte complet du panneau callback « Prix du marché ».
 
         `series_total_cents` est le total **persisté** sur l'alerte : l'écran ne
         le recalcule jamais, il affiche ce que la dernière écriture de cote a mis
         en base. ``NULL`` se traduit par une ligne absente, pas par zéro.
+
+        `catalogue_exhausted` est le verdict **lu en base** lui aussi : la recherche
+        a conclu qu'aucune source ne catalogue l'ouvrage. Il ne remplace quelque
+        chose que là où il n'y a ni livre ni série — des livres contrediraient le
+        verdict, et la cote qu'ils portent est plus récente que lui.
         """
         books_in_series = books_in_series or []
 
@@ -626,6 +640,9 @@ class MarketPriceService:
             return MarketPriceService._series_card(
                 listing, books_in_series, series_total_cents
             )
+
+        if not book and catalogue_exhausted:
+            return MarketPriceService._no_catalogue_card()
 
         return MarketPriceService._single_book_card(
             book, books_in_series, latest_snapshot, series_total_cents
@@ -811,6 +828,16 @@ class MarketPriceService:
             if is_safe:
                 return html.escape(url, quote=True)
         return None
+
+    @staticmethod
+    def _no_catalogue_card() -> str:
+        """Panneau d'une alerte dont la recherche a conclu qu'aucune source ne la connaît.
+
+        Le panneau annonçait « cote d'occasion en cours de calcul… » pour une série
+        que personne ne catalogue : la recherche était terminée, et sa réponse tenait
+        en une ligne. La dire est tout ce qui reste à faire (ADR-028, ADR-040).
+        """
+        return f"📊 <b>Prix du marché</b>\n\n{NO_CATALOGUE_LINE}"
 
     @staticmethod
     def _no_market_price_card(book: Book | None = None) -> str:

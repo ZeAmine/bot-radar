@@ -59,6 +59,8 @@ from app.services.book_metadata_service import (
     IsbnVerdict,
     ProviderAttempt,
     ambiguity_note,
+    consulted_authorities,
+    failed_authorities,
     provenance_note,
     title_similarity,
 )
@@ -322,28 +324,6 @@ def result_from_isbn_verdict(
     )
 
 
-def _consulted_from(attempts: tuple[ProviderAttempt, ...]) -> tuple[str, ...]:
-    """Autorités réellement interrogées, ordre réel, sans doublons."""
-    seen: list[str] = []
-    for attempt in attempts:
-        if attempt.provider not in seen:
-            seen.append(attempt.provider)
-    return tuple(seen)
-
-
-def _failed_from(attempts: tuple[ProviderAttempt, ...]) -> tuple[str, ...]:
-    """Autorités dont l'échec est établi (un désactivé n'est jamais en échec)."""
-    return tuple(
-        provider
-        for provider in _consulted_from(attempts)
-        if any(
-            attempt.provider == provider
-            and attempt.status != ProviderQueryStatus.SUCCESS
-            for attempt in attempts
-        )
-    )
-
-
 def _bnf_failed(attempts: tuple[ProviderAttempt, ...]) -> bool:
     """La BNF a-t-elle manqué au moins une requête tentée ?"""
     return any(
@@ -366,8 +346,8 @@ def result_from_report(
     rapport qui diffère, pas le service.
     """
     attempts = report.attempts
-    consulted = _consulted_from(attempts)
-    failed = _failed_from(attempts)
+    consulted = consulted_authorities(attempts)
+    failed = failed_authorities(attempts)
     resolution = report.resolution
     if resolution is None:
         if failed:
@@ -422,8 +402,8 @@ def result_from_verdict_report(
     base = result_from_isbn_verdict(verdict, expected_title)
     # Sans tentative dans le rapport (adaptateur sans observabilité), la liste du
     # verdict fait foi : la remplacer par un vide inventerait « personne consulté ».
-    consulted = _consulted_from(report.attempts) or verdict.consulted
-    failed = _failed_from(report.attempts)
+    consulted = consulted_authorities(report.attempts) or verdict.consulted
+    failed = failed_authorities(report.attempts)
     if (
         base.status == BookSearchStatus.NOT_FOUND
         and not base.works

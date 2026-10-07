@@ -773,3 +773,103 @@ async def test_a_handled_callback_is_answered_exactly_once(driver, db_session):
         method for method in _api_methods(bot) if type(method).__name__ == "AnswerCallbackQuery"
     ]
     assert len(answers) == 1, "le filet a répondu en plus du handler"
+
+
+# --------------------------------------------------- verdict de catalogue (ADR-040)
+
+
+@pytest.mark.asyncio
+async def test_the_catalogue_verdict_crosses_a_real_database() -> None:
+    """Le verdict traverse la base : écrit par la liaison, relu par l'alerte.
+
+    Les deux moitiés étaient prouvées séparément, sur des doubles : rien ne disait
+    que la colonne persiste ce que la liaison a conclu. Ici, une vraie session, et
+    les trois issues. Une série que personne ne catalogue laisse sa date ; une
+    autorité muette ne laisse **rien** (un silence ne prouve rien, dans aucun sens) ;
+    une notice arrivée l'efface, sans quoi l'alerte continuerait de dire une
+    exhaustion que la réalité a démentie.
+    """
+    from app.domain.rules.catalogue_search import is_uncatalogued
+    from app.services.book_metadata_service import BookMetadataService, CatalogueVerdict
+    from app.use_cases import ingest_listing
+
+    notice = BookMetadata(
+        title="Absolute Martian Manhunter — Tome 1",
+        author="Deniz Camp",
+        isbn13="9782369904151",
+        source="bnf",
+    )
+
+    async with postgres_replayed_database() as database:
+        session, maker = database.session, database.maker
+        session.add(
+            Category(
+                id=uuid.uuid4(),
+                slug=CategorySlug.BD_COMICS.value,
+                label="BD & Comics",
+                emoji="📚",
+                is_active=True,
+            )
+        )
+        await session.commit()
+        user = await _add_user(session)
+        category = (
+            await session.execute(
+                select(Category).where(Category.slug == CategorySlug.BD_COMICS.value)
+            )
+        ).scalar_one()
+        alert = Alert(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            category_id=category.id,
+            name="Absolute Martian Manhunter",
+            isbn=None,
+            include_keywords=["absolute martian manhunter"],
+            exclude_keywords=[],
+            variants=[],
+            max_item_price_cents=5000,
+            accepted_conditions=None,
+            status=AlertStatus.ACTIVE,
+        )
+        session.add(alert)
+        await session.commit()
+        alert_id = alert.id
+
+        async def _search(verdict: CatalogueVerdict) -> None:
+            """Une recherche de fond dont le résultat est décidé par l'appelant."""
+            with (
+                patch(
+                    "app.db.session.AsyncSessionLocal",
+                    MagicMock(return_value=maker()),
+                ),
+                patch.object(
+                    BookMetadataService,
+                    "lookup_by_title_and_author",
+                    new=AsyncMock(return_value=verdict),
+                ),
+                patch.object(ingest_listing, "schedule_book_pricing"),
+            ):
+                await ingest_listing.link_books_from_bnf(alert.name, alert_id)
+
+        async def _reloaded() -> Alert:
+            session.expire_all()
+            return await session.get(Alert, alert_id)
+
+        # 1. Toutes les autorités ont répondu, aucune ne connaît l'ouvrage : la
+        #    recherche a une réponse, et l'alerte la porte — datée.
+        await _search(CatalogueVerdict(consulted=("bnf", "openlibrary")))
+        exhausted = await _reloaded()
+        assert is_uncatalogued(exhausted) is True
+        assert isinstance(exhausted.book_search_exhausted_at, datetime)
+
+        # 2. Une autorité s'est tue : rien n'est établi, donc rien n'est écrit —
+        #    et le verdict précédent n'est pas effacé non plus.
+        await _search(CatalogueVerdict(consulted=("bnf",), unavailable=("bnf",)))
+        silent = await _reloaded()
+        assert is_uncatalogued(silent) is True, "un silence n'efface pas ce qu'on savait"
+
+        # 3. Une notice est arrivée : l'ouvrage est catalogué, le verdict s'efface.
+        await _search(CatalogueVerdict(consulted=("bnf",), notices=(notice,)))
+        found = await _reloaded()
+        assert is_uncatalogued(found) is False
+        assert found.book_search_exhausted_at is None
