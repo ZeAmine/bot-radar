@@ -86,3 +86,99 @@ Cette procédure est préparée, **non exécutée sur la production dans le lot*
 
 Il s'agit d'un retour arrière sous restrictions, pas d'une promesse de continuité
 fonctionnelle avec l'ancien code. La migration refuse un downgrade destructeur.
+
+## Vérification locale de la transition 0009 → 0010
+
+Rejeu sur PostgreSQL 16 jetable, avec le venv verrouillé du dépôt, vrai démarrage
+Uvicorn/scheduler, vrai `/health`, poller désactivé et frontières externes doublées :
+
+- schéma 0009, puis démarrage cible dans l'ordre actuel de `make deploy` :
+  `ProgrammingError`, colonne `alerts.preparation` absente, dans la reprise due
+  au démarrage ; **le healthcheck HTTP répond pourtant 200** ;
+- migration 0010 puis reprise dans ce même processus : réussite, activation et
+  effacement du marqueur ;
+- sur une autre base neuve, migration avec le code cible avant son démarrage :
+  aucune erreur de reprise au démarrage, santé 200 et préparation réussie.
+
+Le healthcheck reste exécuté sans contournement ; il ne contrôle actuellement pas
+le schéma DB. L'ordre actuel expose donc un intervalle de code incompatible avec
+la DB, même si le déploiement finit ensuite par réussir.
+
+**Correction minimale proposée pour cette migration additive, non implémentée
+dans `scripts/deploy.py` dans ce tour :** pré-vol et synchronisation, construction
+de l'image cible sans démarrer l'application, migration ponctuelle utilisant
+explicitement cette image, puis démarrage et attente du vrai healthcheck,
+vérification stricte, notification. Exemple des étapes intermédiaires :
+
+```sh
+docker compose build app
+docker compose run --rm --no-deps -T --entrypoint alembic app upgrade head
+docker compose run --rm --no-deps -T --entrypoint alembic app current
+docker compose up -d --no-build --pull never app
+# Attendre healthy, contrôler /health, puis make verify-deploy.
+```
+
+Le one-shot ne lance ni scheduler ni poller et ne vise pas l'ancien conteneur.
+L'échec de migration arrête la chaîne avant démarrage cible. Aucun contrôle de
+santé n'est retiré. Cette proposition ne modifie pas silencieusement la procédure
+actuelle d'AGENTS.md et doit être validée avant le déploiement F04.
+
+## Artefact de retour exécutable
+
+```sh
+python scripts/prepare_f04_rollback.py --base d8da825 --target <commit-F04-validé> \
+  --output /chemin/nouveau-repertoire
+```
+
+L'artefact contient le code app/scripts parent, le graphe Alembic cible 0010,
+un manifeste d'empreintes, `Dockerfile.rollback`, `rollback.sh` et deux outils :
+
+- `freeze_bd_preparations.py` : lecture seule par défaut ; sous maintenance et
+  arrêt vérifié, retire l'intention et renouvelle le jeton. Contexte, dates,
+  état et erreur sont conservés ; anciennes lignes NULL et suppressions ignorées.
+  Refuse tout schéma autre que 0010 ou une demande marquée hors pause.
+- `serve_f04_rollback.py` : démarre l'ancien code dans un seul processus avec
+  une garde ASGI **toujours active** renvoyant 503 aux entrées Telegram.
+  Pas de commutateur permettant de rouvrir `/resume` avec le code ancien.
+
+`rollback.sh PROJECT_DIR LOCAL_RUNTIME_IMAGE CADDY_MAINTENANCE_CONFIG ORIGIN
+--execute` exige une image déjà présente et une configuration complète de
+maintenance Caddy préparée/revue. Il construit sans téléchargement, contrôle
+health 200 et Telegram 503, arrête app, vérifie l'arrêt, gèle les demandes,
+restaure seulement les répertoires de code, puis vérifie la santé, le graphe 0010,
+l'absence de worker, les empreintes et le hash des marqueurs. Le résidu
+`push_protected.py` est protégé et non exécuté. Aucun downgrade, aucun volume DB
+ou `.env` ciblé, aucune déclaration trompeuse du commit parent pour ce build mixte.
+
+**Éprouvé localement :** gel de deux demandes pending/blocked, maintien des pauses
+NULL, conservation du contexte et des dates, second gel idempotent ; ancien code
+avec graphe 0010 démarré sur PostgreSQL 0010, santé HTTP 200, Telegram 503,
+aucun dispatch de l'update synthétique et aucune reprise F04 présente.
+
+**Non éprouvé :** activation de la configuration réelle Caddy, construction de
+l'image de retour avec le runtime exact de production, exécution complète de
+`rollback.sh` sur le Compose de production. Aucun accès production effectué.
+La garde ASGI a été testée, pas une configuration Caddy supposée équivalente.
+
+**Réouverture :** jamais avec cet ancien code. Revenir à un code comprenant F04
+et validé, contrôler schéma/empreintes/santé/scheduler et demandes conservées, puis
+rouvrir la passerelle avec accord explicite. Les demandes gelées attendent une
+relance explicite ; aucune reclassification des anciennes pauses.
+
+## Comparaison contrôlée des benchmarks
+
+Parent `d8da825`, code de la branche `9eb8bfc`, même venv, `PYTHONHASHSEED=0`,
+mêmes doubles, SQLite en mémoire et caches pytest/bytecode désactivés. Trois
+processus séparés par arbre, alternés parent/branche. Serveurs et PostgreSQL du
+harnais arrêtés avant ces mesures ; aucun contrôle ni travail agent en parallèle.
+Seuls les deux scénarios précédemment hors budget ont été exécutés.
+
+| Exécution | Sélection parent p95 | Sélection branche p95 | Liaison parent p95 | Liaison branche p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 1,50 ms | 1,61 ms | 77,31 ms | 15,47 ms |
+| 2 | 1,77 ms | 1,21 ms | 33,20 ms | 11,87 ms |
+| 3 | 1,21 ms | 1,24 ms | 10,99 ms | 12,28 ms |
+
+Budgets inchangés : sélection 5 ms, liaison 100 ms. Les six exécutions sont
+réussies. Aucune régression reproductible dans cet échantillon ; variabilité
+observée aussi sur le parent, sans cause attribuée. Aucune mesure de production.
