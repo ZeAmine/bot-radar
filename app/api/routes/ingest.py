@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db, require_ingest_token
@@ -13,6 +13,7 @@ from app.schemas.listing import ListingIngestPayload, ListingIngestResponse
 # (ex: patch("app.api.routes.ingest.send_listing_alert"))
 from app.services.telegram_service import send_listing_alert
 from app.use_cases.ingest_listing import ProcessListingUseCase
+from app.use_cases.listing_ingestion_gate import IngestionBusyError
 
 logger = logging.getLogger(__name__)
 
@@ -34,4 +35,14 @@ async def ingest_listing(
     """Ingère une nouvelle annonce, calcule le total, matche les alertes et notifie."""
     raw_payload: dict[str, Any] = await request.json()
     use_case = ProcessListingUseCase(db)
-    return await use_case.execute(payload, raw_payload=raw_payload)
+    try:
+        return await use_case.execute(payload, raw_payload=raw_payload)
+    except IngestionBusyError as exc:
+        logger.warning(
+            "Admission d'ingestion refusée temporairement : %s",
+            exc.reason,
+            extra={"event": "ingestion_busy", "reason": exc.reason},
+        )
+        raise HTTPException(
+            status_code=503, detail=exc.message, headers={"Retry-After": "1"}
+        ) from exc
