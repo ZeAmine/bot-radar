@@ -29,7 +29,7 @@ help:
 	@echo "  make check-history       Rejouer Ruff, Mypy et Pytest sur chaque commit"
 	@echo "  make preflight           Vérifier le VPS avant une synchronisation"
 	@echo "  make verify-deploy       Revérifier le VPS après une synchronisation"
-	@echo "  make deploy              Déployer (pré-vol → synchro → build → migration → démarrage → contrôle)"
+	@echo "  make deploy              Déployer (pré-vol → arrêt confirmé → synchro → build → migration → démarrage → contrôle)"
 	@echo "  make pr                  Branche, commit, push et PR (MESSAGE=… ou MESSAGE_FILE=… TITLE=… [BRANCH=…] [STAGE=…])"
 	@echo "  make verify              Second passage local (lint + test) puis attente de la CI verte"
 	@echo "  make format              Formater le code avec Ruff"

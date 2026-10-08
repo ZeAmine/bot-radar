@@ -201,17 +201,30 @@ Un push ne déploie rien : `~/bot-radar` n’est pas un dépôt git, c’est une
 **La procédure complète est une commande :**
 
 ```bash
-make deploy           # pré-vol → synchronisation → build → migration cible → démarrage → vérification
+make deploy           # pré-vol → arrêt confirmé → synchronisation → build → migration cible → démarrage → vérification
 ```
 
-Elle s’arrête au premier échec et n’essaie pas l’étape suivante. L’image cible est construite sans démarrer l’application. L’ancienne application est ensuite arrêtée ; la migration utilise un conteneur ponctuel de cette image, avec entrypoint Alembic, sans scheduler ni poller. Le démarrage cible n’a lieu qu’après réussite de la migration et de sa lecture de révision. L’attente de santé et les vérifications strictes restent obligatoires après démarrage. `make deploy DEPLOY_ARGS=--dry-run` relit l’ordre sans rien exécuter. Les étapes restent accessibles séparément (`make preflight`, `make verify-deploy`) pour reprendre un déploiement interrompu.
+Elle s’arrête au premier échec et n’essaie pas l’étape suivante. Après pré-vol, l’ancienne application est arrêtée et son arrêt est confirmé par inspection avant toute synchronisation. L’image cible est ensuite construite sans démarrer l’application ; la migration utilise un conteneur ponctuel de cette image, avec entrypoint Alembic, sans scheduler ni poller. Le démarrage cible n’a lieu qu’après réussite de la migration et de sa lecture de révision. L’attente de santé et les vérifications strictes restent obligatoires après démarrage. `make deploy DEPLOY_ARGS=--dry-run` relit l’ordre sans rien exécuter. Les étapes restent accessibles séparément (`make preflight`, `make verify-deploy`) pour reprendre un déploiement interrompu.
 
-L’ancienne application reste en service pendant la construction, puis est arrêtée pendant la migration. La synchronisation conserve les bind mounts existants : ses fichiers ont déjà été actualisés, même si le processus précédent tourne encore. L’interruption couvre la migration et le démarrage jusqu’à la santé réelle, sans durée garantie. Un échec de construction n’arrête pas l’ancien processus ; un échec de migration laisse l’application arrêtée et exige une reprise opérateur, sans redémarrage ou retour arrière automatique.
+L’interruption inclut désormais synchronisation, construction, migration et démarrage jusqu’à la santé réelle, sans durée garantie. Un échec après arrêt peut laisser le service arrêté et l’arbre partiellement synchronisé ; ne jamais relancer automatiquement l’ancien code sur cet arbre. Un échec après démarrage peut laisser la cible active. Le bilan d’un déploiement interrompu doit indiquer l’état réellement constaté du conteneur, du code et du schéma avant de choisir la reprise ou la restauration décrite dans `docs/bd-preparation.md`. Aucune restauration automatique.
 
 Le détail de chaque étape, quand on les joue à la main :
 
 ```bash
 make preflight        # APP_ENV, secrets, un seul scheduler, migration en tête, écart de code
+```
+
+Arrêt confirmé **avant** synchronisation des fichiers runtime :
+
+```bash
+ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 'bash -s' <<'SH'
+set -eu
+cd ~/bot-radar
+cid=$(docker compose ps -a -q app)
+test -n "$cid"
+docker compose stop app
+test "$(docker inspect --format '{{.State.Running}}' "$cid")" = false
+SH
 ```
 
 Synchronisation (n’exclut pas `.env` distant : **ne pas** envoyer un `.env` local par accident ; le rsync ci-dessous ne cible pas `.env` s’il est absent du filtre, mais un `.env` local **écraserait** la prod s’il est présent — vérifier avant) :
@@ -230,11 +243,11 @@ ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56
   "cd ~/bot-radar && docker compose build app"
 ```
 
-Arrêt de l’ancienne application, puis migration depuis l’image cible construite, **avant** son démarrage :
+Migration depuis l’image cible construite, application toujours arrêtée :
 
 ```bash
 ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/bot-radar && docker compose stop app && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app upgrade head < /dev/null && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app current < /dev/null"
+  "cd ~/bot-radar && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app upgrade head < /dev/null && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app current < /dev/null"
 ```
 
 Démarrage seulement après réussite des deux commandes précédentes, puis attente de santé :

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Déploie : pré-vol, synchronisation, build, migration cible, démarrage, vérification.
+"""Déploie : pré-vol, arrêt confirmé, sync, build, migration, démarrage, vérification.
 
 La procédure était une liste de commandes à recopier dans le bon ordre, et c'est
 exactement le genre de liste qu'on exécute à moitié. Trois accidents y sont invisibles
@@ -134,6 +134,24 @@ def step_sync(ctx: Context) -> int:
     return code
 
 
+def step_stop(ctx: Context) -> int:
+    """Arrête et confirme l'arrêt de l'app avant toute écriture dans ses bind mounts."""
+    script = f"""set -eu
+cd {ctx.remote_dir}
+cid=$(docker compose ps -a -q app)
+[ -n "$cid" ] || {{ echo "conteneur app introuvable : arrêt non confirmé"; exit 1; }}
+docker compose stop app
+running=$(docker inspect --format '{{{{.State.Running}}}}' "$cid")
+[ "$running" = false ] || {{ echo "app encore active : synchronisation interdite"; exit 1; }}
+echo "arrêt app confirmé avant synchronisation"
+"""
+    code, out, err = ctx.remote_or_default().run(script)
+    print(f"{DIM}{out.strip()}{RESET}")
+    if err.strip():
+        print(f"{DIM}{err.strip()}{RESET}")
+    return code
+
+
 def step_rebuild(ctx: Context) -> int:
     """Construit l'image cible sans démarrer l'app ; son graphe Alembic y est inclus."""
     script = (
@@ -149,7 +167,7 @@ def step_rebuild(ctx: Context) -> int:
 
 
 def step_migrate(ctx: Context) -> int:
-    """Arrête l'ancienne app, puis migre depuis l'image construite à l'étape précédente.
+    """Migre depuis l'image construite, pendant que l'app reste arrêtée.
 
     Compose run utilise l'image du service, pas celle du conteneur ancien. Sans
     build ni pull ici, le graphe est celui de la cible. L'entrypoint Alembic ne
@@ -158,7 +176,6 @@ def step_migrate(ctx: Context) -> int:
     """
     script = f"""set -eu
 cd {ctx.remote_dir}
-docker compose stop app
 docker compose run --rm --no-deps --pull never -T --entrypoint alembic app upgrade head < /dev/null
 docker compose run --rm --no-deps --pull never -T --entrypoint alembic app current < /dev/null
 """
@@ -313,6 +330,7 @@ def step_notify(ctx: Context) -> int:
 
 STEPS: tuple[tuple[str, Callable[[Context], int]], ...] = (
     ("Pré-vol", step_preflight),
+    ("Arrêt confirmé de l'app", step_stop),
     ("Synchronisation", step_sync),
     ("Reconstruction de l'image", step_rebuild),
     ("Migration", step_migrate),

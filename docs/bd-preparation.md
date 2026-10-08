@@ -104,14 +104,19 @@ Le healthcheck reste exécuté sans contournement ; il ne contrôle actuellement
 le schéma DB. L'ancien ordre expose donc un intervalle de code incompatible avec
 la DB, même si le déploiement finit ensuite par réussir.
 
-**Correction intégrée dans `scripts/deploy.py` :** pré-vol et synchronisation, construction
-de l'image cible sans démarrer l'application, migration ponctuelle utilisant
-explicitement cette image après arrêt de l'ancienne app, puis démarrage et attente du vrai healthcheck,
+**Correction intégrée dans `scripts/deploy.py` :** pré-vol, arrêt confirmé de l'app,
+synchronisation, construction de l'image cible sans démarrer l'application,
+migration ponctuelle utilisant explicitement cette image, puis démarrage et attente du vrai healthcheck,
 vérification stricte, notification. Exemple des étapes intermédiaires :
 
 ```sh
-docker compose build app
+set -eu
+cid=$(docker compose ps -a -q app)
+test -n "$cid"
 docker compose stop app
+test "$(docker inspect --format '{{.State.Running}}' "$cid")" = false
+# Synchroniser avec les exclusions habituelles seulement après cet arrêt confirmé.
+docker compose build app
 docker compose run --rm --no-deps --pull never -T --entrypoint alembic app upgrade head < /dev/null
 docker compose run --rm --no-deps --pull never -T --entrypoint alembic app current < /dev/null
 docker compose up -d --no-build --pull never app
@@ -121,15 +126,34 @@ docker compose up -d --no-build --pull never app
 Le one-shot ne lance ni scheduler ni poller et ne vise pas l'ancien conteneur.
 L'échec de construction empêche la migration ; l'échec de migration ou de lecture
 de révision arrête la chaîne avant démarrage cible. Aucun contrôle de santé ou de
-révision n'est retiré. AGENTS.md décrit ce même ordre. L'ancienne application
-reste en service pendant le build (ses bind mounts ont déjà été synchronisés),
-puis est arrêtée pendant la migration. L'interruption couvre migration et
-redémarrage jusqu'à la santé réelle, sans durée garantie. Un échec de migration
-ou de lecture de révision laisse l'app arrêtée. Un échec de santé ou de vérification
+révision n'est retiré. AGENTS.md décrit ce même ordre. L'échec d'arrêt ou de sa
+confirmation empêche toute synchronisation ; l'échec de synchronisation empêche
+le build. L'ancienne application est arrêtée avant toute écriture dans ses bind mounts.
+L'interruption couvre synchronisation, construction, migration et redémarrage
+jusqu'à la santé réelle, sans durée garantie. Un échec après arrêt peut laisser
+l'app arrêtée et les fichiers runtime partiellement synchronisés. Un échec de santé ou de vérification
 après démarrage laisse la cible potentiellement en cours : la procédure s'arrête
 sans arrêt ou restauration automatique. Les tests de
 procédure exécutent les scripts shell avec Docker doublé ; ils ne constituent
 pas un déploiement éprouvé sur le Compose de production.
+
+Après un échec, le bilan opérateur doit relever l'état réel du conteneur, les
+empreintes du code et la révision effective (one-shot d'une image compatible si
+l'app est arrêtée), sans supposer qu'une étape échouée n'a rien changé. Ne pas
+relancer l'ancienne image sur les bind mounts partiellement synchronisés.
+Si le schéma est resté intégralement à 0009, restaurer d'abord le code et l'image
+vérifiés d8da825, sans restauration de données, puis contrôler avant réouverture.
+Si le schéma est à 0010, appliquer le retour compatible ci-dessous : graphe 0010
+conservé, maintenance Telegram, conservation des marqueurs et restrictions de
+réouverture. Si le schéma ou l'état du code est incertain, rester arrêté et faire
+vérifier la restauration ; aucun downgrade ni falsification de révision.
+
+L'orchestration `rollback.sh` préparée suppose une app encore en service pour
+ses premiers contrôles HTTP. Si elle est déjà arrêtée, ne pas la relancer pour
+satisfaire cette précondition : le chemin de restauration depuis cet état doit
+être adapté et revu pendant la préparation du déploiement. Les composants de
+retour restent disponibles ; Caddy réel, image de production et orchestration
+complète restent non éprouvés. Aucun retour en production n'est déclenché.
 
 ## Artefact de retour exécutable
 

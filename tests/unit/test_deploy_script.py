@@ -25,6 +25,7 @@ from deploy import (  # noqa: E402
     step_notify,
     step_rebuild,
     step_start,
+    step_stop,
 )
 from notify_deploy import send_telegram_notification  # noqa: E402
 
@@ -164,18 +165,32 @@ def test_migration_uses_the_target_image_without_starting_the_app():
     remote = _FakeRemote()
     assert step_migrate(_ctx(remote=remote)) == 0
     script = remote.scripts[0]
-    assert "docker compose stop app" in script
+    assert "docker compose stop app" not in script
     assert "--entrypoint alembic app upgrade head" in script
     assert "--entrypoint alembic app current" in script
     assert "--no-deps" in script
     assert "--pull never" in script
     assert "docker compose exec" not in script
     assert "docker compose up" not in script
-    assert script.index("docker compose stop app") < script.index("alembic app upgrade head")
+    assert script.index("alembic app upgrade head") < script.index("alembic app current")
 
 
-@pytest.mark.parametrize("failure", ["", "build", "upgrade", "current"])
-def test_procedure_shell_uses_built_image_and_stops_on_failure(tmp_path, failure):
+def test_stop_confirms_the_container_is_no_longer_running():
+    remote = _FakeRemote()
+    assert step_stop(_ctx(remote=remote)) == 0
+    script = remote.scripts[0]
+    assert "docker compose ps -a -q app" in script
+    assert "docker compose stop app" in script
+    assert ".State.Running" in script
+    assert '[ "$running" = false ]' in script
+    assert script.index("docker compose stop app") < script.index(".State.Running")
+    assert "docker compose up" not in script
+
+
+@pytest.mark.parametrize(
+    "failure", ["", "stop", "running", "inspect", "sync", "build", "upgrade", "current"]
+)
+def test_procedure_shell_uses_built_image_and_stops_on_failure(tmp_path, monkeypatch, failure):
     """Scripts shell réels avec Docker doublé, sans SSH ni conteneur réel."""
     import os
     import subprocess
@@ -185,6 +200,10 @@ def test_procedure_shell_uses_built_image_and_stops_on_failure(tmp_path, failure
     log = tmp_path / "commands"
     image = tmp_path / "image"
     image.write_text("old")
+    running = tmp_path / "running"
+    running.write_text("true")
+    runtime = tmp_path / "runtime"
+    runtime.write_text("old")
     docker = tmp_path / "docker"
     docker.write_text('''#!/usr/bin/env python3
 import os, pathlib, sys
@@ -192,24 +211,44 @@ args = sys.argv[1:]
 with open(os.environ['COMMAND_LOG'], 'a') as f:
     f.write(' '.join(args) + '\\n')
 image = pathlib.Path(os.environ['IMAGE_STATE'])
+running = pathlib.Path(os.environ['RUNNING_STATE'])
+if args[:2] == ['compose', 'stop']:
+    if os.environ['FAILURE'] == 'stop': sys.exit(34)
+    if os.environ['FAILURE'] != 'running': running.write_text('false')
 if args[:2] == ['compose', 'build']:
+    assert running.read_text() == 'false'
     if os.environ['FAILURE'] == 'build': sys.exit(31)
     image.write_text('target')
 if args[:2] == ['compose', 'run']:
+    assert running.read_text() == 'false'
     assert image.read_text() == 'target', 'migration dans une ancienne image'
     assert '--entrypoint' in args and args[args.index('--entrypoint') + 1] == 'alembic'
     assert '--no-deps' in args and '--pull' in args and 'never' in args
     if 'upgrade' in args and os.environ['FAILURE'] == 'upgrade': sys.exit(32)
     if 'current' in args and os.environ['FAILURE'] == 'current': sys.exit(33)
     print('0010_alert_preparation (head)')
-if args[:3] == ['compose', 'ps', '-q']: print('synthetic-cid')
-if args[0] == 'inspect': print('healthy')
+if args[:2] == ['compose', 'up']: running.write_text('true')
+if args[:2] == ['compose', 'ps']: print('synthetic-cid')
+if args[0] == 'inspect':
+    if os.environ['FAILURE'] == 'inspect': sys.exit(36)
+    print(running.read_text() if '.State.Running' in args[2] else 'healthy')
 ''')
     docker.chmod(0o755)
     env = dict(
         os.environ, PATH=str(tmp_path) + os.pathsep + os.environ["PATH"],
-        COMMAND_LOG=str(log), IMAGE_STATE=str(image), FAILURE=failure,
+        COMMAND_LOG=str(log), IMAGE_STATE=str(image), RUNNING_STATE=str(running), FAILURE=failure,
     )
+
+    def sync(argv):
+        assert argv[0] == "rsync"
+        assert running.read_text() == "false", "synchronisation pendant que l'app tourne"
+        assert "--exclude=.env" in argv
+        with log.open("a") as stream:
+            stream.write("rsync runtime\n")
+        runtime.write_text("partial" if failure == "sync" else "target")
+        return (35 if failure == "sync" else 0), ""
+
+    monkeypatch.setattr(deploy, "_run_local", sync)
 
     class ShellRemote:
         def run(self, script):
@@ -221,30 +260,47 @@ if args[0] == 'inspect': print('healthy')
     trailing = []
     steps = tuple(
         (label, _recorder(trailing, label) if action in (
-            deploy.step_preflight, deploy.step_sync, deploy.step_verify, deploy.step_notify
+            deploy.step_preflight, deploy.step_verify, deploy.step_notify
         ) else action)
         for label, action in deploy.STEPS
     )
     code = run_steps(steps, _ctx(remote=ShellRemote(), remote_dir=str(tmp_path)))
     commands = log.read_text().splitlines()
-    assert commands[0] == "compose build app"
-    if failure == "build":
-        assert code == 31
-        assert len(commands) == 1
+    assert commands[0] == "compose ps -a -q app"
+    assert commands[1] == "compose stop app"
+    if failure in {"stop", "running", "inspect"}:
+        assert code == {"stop": 34, "running": 1, "inspect": 36}[failure]
+        assert "rsync runtime" not in commands
+        assert runtime.read_text() == "old"
     else:
-        assert commands[1] == "compose stop app"
-        assert commands[2].startswith("compose run ")
-        assert commands[2].endswith("alembic app upgrade head")
-        if failure:
-            assert code == {"upgrade": 32, "current": 33}[failure]
-            assert not any(c.startswith("compose up ") for c in commands)
+        assert commands[2].startswith("inspect --format ")
+        assert commands[3] == "rsync runtime"
+        if failure == "sync":
+            assert code == 35
+            assert len(commands) == 4
         else:
-            assert code == 0
-            assert commands[3].endswith("alembic app current")
-            assert commands[4] == "compose up -d --no-build --pull never app"
-            assert trailing[-2:] == ["Vérification", "Notification"]
+            assert commands[4] == "compose build app"
+            if failure == "build":
+                assert code == 31
+                assert len(commands) == 5
+            else:
+                assert commands[5].startswith("compose run ")
+                assert commands[5].endswith("alembic app upgrade head")
+                if failure:
+                    assert code == {"upgrade": 32, "current": 33}[failure]
+                else:
+                    assert code == 0
+                    assert commands[6].endswith("alembic app current")
+                    assert commands[7] == "compose up -d --no-build --pull never app"
+                    assert trailing[-2:] == ["Vérification", "Notification"]
     if failure:
-        assert trailing == ["Pré-vol", "Synchronisation"]
+        assert trailing == ["Pré-vol"]
+        assert not any(c.startswith("compose up ") for c in commands)
+    if failure in {"sync", "build", "upgrade", "current"}:
+        assert running.read_text() == "false"
+    if failure == "sync":
+        assert runtime.read_text() == "partial"
+        assert image.read_text() == "old"
 
 
 @pytest.mark.parametrize("code", [0, 1, 255])
