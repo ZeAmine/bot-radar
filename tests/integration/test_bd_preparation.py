@@ -116,6 +116,106 @@ async def test_textual_preparation_completes_without_catalogue_or_price(preparat
     assert (alert.book_search_exhausted_at is not None) == (not unavailable)
 
 
+@pytest.mark.parametrize("action", [None, "pause", "delete"])
+async def test_edition_edit_joins_durable_preparation_and_preserves_current_intent(
+    preparation, monkeypatch, action
+):
+    """L'intégration #81 conserve le jeton F04 et la confiance de la fiche choisie."""
+    from app.bot.handlers import alerts_manage
+    from app.db.models.alert_book import AlertBook
+    from app.db.repositories.alert_repo import AlertRepository
+    from app.domain.enums import MatchConfidence
+
+    p = preparation
+    alert_id = await p.create(name="Édition synthétique")
+    initial = (await p.read(alert_id)).preparation["token"]
+    catalog_entered, catalog_release = asyncio.Event(), asyncio.Event()
+    price_entered, price_release = asyncio.Event(), asyncio.Event()
+    edit_committed = asyncio.Event()
+
+    async def wait_event(event, *operations):
+        signal = asyncio.create_task(event.wait())
+        done, _ = await asyncio.wait(
+            [signal, *operations], return_when=asyncio.FIRST_COMPLETED
+        )
+        if not event.is_set():
+            signal.cancel()
+            for operation in done:
+                await operation
+            pytest.fail("Le traitement s'est terminé avant le jalon attendu")
+        await signal
+
+    async def catalogue(*_args, **_kwargs):
+        catalog_entered.set()
+        await catalog_release.wait()
+        return CatalogueVerdict(
+            consulted=("BNF",),
+            notices=(BookMetadata(title="Ancien tome", isbn13="9782369903086"),),
+        )
+
+    async def pricing(*_args, **_kwargs):
+        price_entered.set()
+        await price_release.wait()
+        return MarketOffers()
+
+    p.lookup.side_effect = catalogue
+    p.prices.side_effect = pricing
+    monkeypatch.setattr(alerts_manage, "AsyncSessionLocal", p.db.maker)
+    monkeypatch.setattr(alerts_manage, "safe_create_task", lambda coro, **_kwargs: coro.close())
+    monkeypatch.setattr(
+        alerts_manage, "_lookup_isbn_notice", AsyncMock(return_value=BookMetadata(
+            title="Édition synthétique", isbn13="9782369904151",
+            confidence=MatchConfidence.LOW.value,
+        ))
+    )
+    state = DraftState()
+    state.data = {"edit_alert_id": str(alert_id), "edit_field": "isbn"}
+    clear = state.clear
+
+    async def committed_clear():
+        await clear()
+        edit_committed.set()
+
+    state.clear = committed_clear
+    message = AsyncMock()
+    message.text = "9782369904151"
+    first = asyncio.create_task(p.module.prepare_bd_alert(alert_id))
+    await catalog_entered.wait()
+    async with p.db.maker() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        edited = asyncio.create_task(alerts_manage.save_edited_field_value(
+            message, state, user, session
+        ))
+        await wait_event(edit_committed, edited)
+        current = await p.read(alert_id)
+        assert current.preparation["token"] != initial
+        assert current.isbn == "9782369904151"
+        catalog_release.set()
+        await wait_event(price_entered, edited, first)
+        if action:
+            async with p.db.maker() as gesture:
+                repo = AlertRepository(gesture)
+                current = await repo.get_by_id(alert_id)
+                if action == "pause":
+                    await repo.set_status(current, AlertStatus.PAUSED)
+                else:
+                    await repo.soft_delete(current)
+                await gesture.commit()
+        price_release.set()
+        await edited
+        await first
+    current = await p.read(alert_id)
+    assert current.status == {
+        None: AlertStatus.ACTIVE, "pause": AlertStatus.PAUSED, "delete": AlertStatus.DELETED
+    }[action]
+    assert (current.preparation is None) == (action is None)
+    p.prices.assert_awaited_once()
+    async with p.db.maker() as session:
+        links = list((await session.execute(select(AlertBook))).scalars())
+        assert len(links) == 1
+        assert links[0].match_confidence == MatchConfidence.LOW
+
+
 @pytest.mark.parametrize("action", ["pause", "delete", "edit"])
 async def test_old_catalogue_result_cannot_attach_or_activate_after_user_action(
     preparation, action

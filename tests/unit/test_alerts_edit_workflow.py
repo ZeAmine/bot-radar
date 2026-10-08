@@ -5,6 +5,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram.types import Message
 
 from app.bot.handlers.alerts_manage import (
     handle_edit_condition_toggle,
@@ -256,8 +257,8 @@ async def test_save_edited_field_value_skip_clears_list():
 
 
 @pytest.mark.asyncio
-async def test_save_edited_field_value_rejects_isbn_of_another_book():
-    """Un ISBN qui désigne un autre ouvrage est refusé avec le vrai titre de l'ouvrage."""
+async def test_save_edited_field_value_requests_confirmation_for_another_book():
+    """Un ISBN d’une autre œuvre demande confirmation sans modifier l’alerte."""
     from unittest.mock import patch
 
     from app.services.book_metadata_service import BookMetadata
@@ -265,8 +266,8 @@ async def test_save_edited_field_value_rejects_isbn_of_another_book():
     alert_id = uuid.uuid4()
     message = AsyncMock()
     message.text = "9782369903062"
-    state = AsyncMock()
-    state.get_data.return_value = {
+    state = _EditState()
+    state.data = {
         "edit_alert_id": str(alert_id),
         "edit_field": "isbn",
     }
@@ -286,9 +287,7 @@ async def test_save_edited_field_value_rejects_isbn_of_another_book():
     repo_mock = AsyncMock()
     repo_mock.get_by_id.return_value = mock_alert
 
-    conflicting = BookMetadata(
-        title="Keeping two", author="Jordan Crane", isbn13="9782369903062"
-    )
+    conflicting = BookMetadata(title="Keeping two", author="Jordan Crane", isbn13="9782369903062")
     lookup_mock = AsyncMock(return_value=conflicting)
 
     with (
@@ -305,6 +304,9 @@ async def test_save_edited_field_value_rejects_isbn_of_another_book():
     error_text = message.answer.call_args[0][0]
     assert "Keeping two" in error_text
     assert "La couleur des choses" in error_text
+    keyboard = message.answer.call_args.kwargs["reply_markup"]
+    assert keyboard.inline_keyboard[0][0].text == "Confirmer le remplacement"
+    assert keyboard.inline_keyboard[0][1].text == "Annuler"
 
 
 @pytest.mark.asyncio
@@ -315,8 +317,8 @@ async def test_save_edited_field_value_accepts_isbn_matching_alert():
     alert_id = uuid.uuid4()
     message = AsyncMock()
     message.text = "978-2-36990-308-6"
-    state = AsyncMock()
-    state.get_data.return_value = {
+    state = _EditState()
+    state.data = {
         "edit_alert_id": str(alert_id),
         "edit_field": "isbn",
     }
@@ -353,6 +355,7 @@ async def test_save_edited_field_value_accepts_isbn_matching_alert():
             new=lookup_mock,
         ),
         patch("app.db.repositories.book_repo.BookRepository", return_value=AsyncMock()),
+        patch("app.bot.handlers.alerts_manage.price_book_now", new=AsyncMock()),
         patch(
             "app.db.repositories.market_price_repo.MarketPriceRepository",
             return_value=AsyncMock(),
@@ -365,7 +368,7 @@ async def test_save_edited_field_value_accepts_isbn_matching_alert():
         await save_edited_field_value(message, state=state, db_user=user, db_session=session)
 
     assert mock_alert.isbn == "9782369903086"
-    session.commit.assert_awaited_once()
+    assert session.commit.await_count == 2
     assert len(tasks) == 1
     for coro, _name in tasks:
         coro.close()
@@ -526,7 +529,10 @@ def _isbn_journey(
     words = AsyncMock(return_value=outcome)
     tasks: list = []
 
-    card_message = AsyncMock()
+    card_message = AsyncMock(spec=Message)
+    card_message.answer = AsyncMock(return_value=card_message)
+    card_message.edit_text = AsyncMock()
+    card_message.edit_reply_markup = AsyncMock()
     message = AsyncMock()
     message.answer = AsyncMock(return_value=card_message)
 
@@ -543,9 +549,7 @@ def _isbn_journey(
         "card_message": card_message,
         "db_session": AsyncMock(),
         "patches": [
-            patch(
-                "app.bot.handlers.alerts_manage._get_alert_repo", return_value=alert_repo
-            ),
+            patch("app.bot.handlers.alerts_manage._get_alert_repo", return_value=alert_repo),
             patch(
                 "app.bot.handlers.alerts_manage.AsyncSessionLocal",
                 return_value=_BackgroundSession(),
@@ -554,7 +558,7 @@ def _isbn_journey(
                 "app.bot.handlers.alerts_manage.safe_create_task",
                 new=_capture_task(tasks),
             ),
-            patch("app.bot.handlers.alerts_manage.schedule_book_pricing"),
+            patch("app.bot.handlers.alerts_manage.price_book_now", new=AsyncMock()),
             patch(
                 "app.bot.handlers.alerts_manage.keyword_variants_module."
                 "generate_variants_and_exclusions",
@@ -564,9 +568,7 @@ def _isbn_journey(
                 "app.services.book_metadata_service.BookMetadataService.lookup_by_isbn",
                 new=AsyncMock(return_value=notice),
             ),
-            patch(
-                "app.db.repositories.book_repo.BookRepository", return_value=book_repo
-            ),
+            patch("app.db.repositories.book_repo.BookRepository", return_value=book_repo),
         ],
     }
 
@@ -587,7 +589,7 @@ async def _open_isbn_field(journey: dict) -> None:
     assert journey["state"].data["edit_field"] == "isbn"
 
 
-async def _type_isbn(journey: dict, isbn: str) -> None:
+async def _type_isbn(journey: dict, isbn: str, *, confirm: bool = True) -> None:
     """Enregistre la valeur saisie dans le champ ISBN ouvert."""
     journey["message"].text = isbn
     await save_edited_field_value(
@@ -595,6 +597,21 @@ async def _type_isbn(journey: dict, isbn: str) -> None:
         state=journey["state"],
         db_user=journey["user"],
         db_session=journey["db_session"],
+    )
+    pending = journey["state"].data.get("pending_isbn")
+    if pending and confirm:
+        await _confirm_pending_isbn(journey, pending["token"])
+
+
+async def _confirm_pending_isbn(journey: dict, token: str, action: str = "yes") -> None:
+    from app.bot.handlers.alerts_manage import confirm_isbn_replacement
+
+    callback = MagicMock()
+    callback.data = f"ed_isbn:{action}:{token}"
+    callback.message = journey["card_message"]
+    callback.answer = AsyncMock()
+    await confirm_isbn_replacement(
+        callback, journey["state"], journey["user"], journey["db_session"]
     )
 
 
@@ -702,6 +719,8 @@ async def test_the_variants_left_awaiting_confirmation_do_not_survive_the_change
         await _open_isbn_field(journey)
         await _type_isbn(journey, NOUVEL_ISBN)
 
+    for coro, _name in journey["tasks"]:
+        coro.close()
     assert get_pending_variants(journey["alert"].id) == []
 
 
@@ -768,3 +787,206 @@ async def test_re_entering_the_same_isbn_leaves_the_keywords_alone():
     assert journey["alert"].exclude_keywords == ANCIENNES_EXCLUSIONS
     assert journey["tasks"] == []
     journey["words"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_edition_from_screenshot_realigns_the_alert():
+    """Le suffixe bibliographique rejetait une édition légitime et gardait l’ancienne fiche."""
+    journey = _isbn_journey(
+        isbn="9782800142449",
+        variants=["guerreternelle"],
+        exclusions=["roman"],
+        notice=BookMetadata(
+            title="La guerre éternelle (Nouv. éd.) Marvano, Haldeman",
+            author="Marvano",
+            publisher="Dupuis",
+            isbn13="9782800164861",
+            publication_year=2015,
+            format_detail="144 p.",
+        ),
+        outcome=KeywordVariantsOutcome.unanswered(),
+    )
+    journey["alert"].name = "La guerre éternelle — Intégrale"
+    with _frontieres(journey["patches"]):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, "9782800164861")
+    for coro, _name in journey["tasks"]:
+        coro.close()
+    assert journey["alert"].isbn == "9782800164861"
+    assert journey["alert"].name == "La guerre éternelle (Nouv. éd.) Marvano, Haldeman"
+    assert journey["alert"].include_keywords != ["La couleur des choses"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["yes", "no"])
+async def test_confirming_or_cancelling_another_work_changes_only_the_confirmed_alert(action):
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=ANCIENNES_VARIANTES,
+        exclusions=ANCIENNES_EXCLUSIONS,
+        notice=BookMetadata(title="Keeping two", author="Jordan Crane", isbn13=NOUVEL_ISBN),
+        outcome=KeywordVariantsOutcome.unanswered(),
+    )
+    with _frontieres(journey["patches"]):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN, confirm=False)
+        assert journey["alert"].isbn == ANCIEN_ISBN
+        assert journey["alert"].variants == ANCIENNES_VARIANTES
+        pending = journey["state"].data["pending_isbn"]
+        await _confirm_pending_isbn(journey, pending["token"], action)
+    for coro, _name in journey["tasks"]:
+        coro.close()
+    if action == "yes":
+        assert journey["alert"].isbn == NOUVEL_ISBN
+        assert journey["alert"].name == "Keeping two"
+        assert journey["alert"].include_keywords == ["keeping two"]
+    else:
+        assert journey["alert"].isbn == ANCIEN_ISBN
+        assert journey["alert"].name == "La couleur des choses"
+        assert journey["alert"].variants == ANCIENNES_VARIANTES
+    assert journey["state"].data == {}
+
+
+@pytest.mark.asyncio
+async def test_an_old_confirmation_does_not_replace_a_more_recent_edit():
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=ANCIENNES_VARIANTES,
+        exclusions=ANCIENNES_EXCLUSIONS,
+        notice=BookMetadata(title="Keeping two", author="Jordan Crane", isbn13=NOUVEL_ISBN),
+        outcome=KeywordVariantsOutcome.unanswered(),
+    )
+    with _frontieres(journey["patches"]):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN, confirm=False)
+        token = journey["state"].data["pending_isbn"]["token"]
+        await _open_isbn_field(journey)
+        await _confirm_pending_isbn(journey, token)
+    assert journey["alert"].isbn == ANCIEN_ISBN
+    assert journey["alert"].variants == ANCIENNES_VARIANTES
+    assert journey["tasks"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_late_bibliographic_response_cannot_revive_a_cancelled_edit():
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=ANCIENNES_VARIANTES,
+        exclusions=ANCIENNES_EXCLUSIONS,
+        notice=_notice(),
+        outcome=KeywordVariantsOutcome.unanswered(),
+    )
+
+    async def cancelled_lookup(_service, _isbn):
+        await journey["state"].clear()
+        return _notice()
+
+    with (
+        _frontieres(journey["patches"]),
+        patch(
+            "app.services.book_metadata_service.BookMetadataService.lookup_by_isbn",
+            new=cancelled_lookup,
+        ),
+    ):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN)
+    assert journey["alert"].isbn == ANCIEN_ISBN
+    assert journey["state"].data == {}
+    assert journey["tasks"] == []
+
+
+def test_same_title_with_a_different_known_author_needs_confirmation():
+    from app.bot.handlers.alerts_manage import _conflicting_isbn_message
+
+    notice = BookMetadata(title="Les enfants perdus", author="Neyef", isbn13=NOUVEL_ISBN)
+    assert _conflicting_isbn_message(notice, NOUVEL_ISBN, "Les enfants perdus", "Orson Scott Card")
+
+
+def test_a_different_volume_needs_confirmation_even_with_similar_titles():
+    from app.bot.handlers.alerts_manage import _conflicting_isbn_message
+
+    notice = BookMetadata(title="Batman Terre Un Tome 2", isbn13=NOUVEL_ISBN)
+    assert _conflicting_isbn_message(notice, NOUVEL_ISBN, "Batman Terre Un Tome 1")
+
+
+@pytest.mark.asyncio
+async def test_failed_progress_message_does_not_leave_the_new_edition_paused():
+    from aiogram.exceptions import TelegramAPIError
+
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=[],
+        exclusions=[],
+        notice=_notice(),
+        outcome=KeywordVariantsOutcome.unanswered(),
+    )
+    journey["message"].answer.side_effect = [
+        TelegramAPIError(method=MagicMock(), message="message indisponible"),
+        journey["card_message"],
+        journey["card_message"],
+    ]
+    with _frontieres(journey["patches"]):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN)
+    for coro, _name in journey["tasks"]:
+        coro.close()
+    assert journey["alert"].isbn == NOUVEL_ISBN
+    assert journey["alert"].status == AlertStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_finishing_preparation_cannot_reactivate_a_replaced_isbn():
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN,
+        variants=[],
+        exclusions=[],
+        notice=_notice(),
+        outcome=KeywordVariantsOutcome.unanswered(),
+    )
+
+    async def second_edit(_book_id, *, reason):
+        assert reason == "isbn_edited"
+        journey["alert"].isbn = "9782070413775"
+        journey["alert"].status = AlertStatus.PAUSED
+
+    with (
+        _frontieres(journey["patches"]),
+        patch(
+            "app.bot.handlers.alerts_manage.price_book_now",
+            new=second_edit,
+        ),
+    ):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN)
+    assert journey["alert"].isbn == "9782070413775"
+    assert journey["alert"].status == AlertStatus.PAUSED
+    assert journey["tasks"] == []
+
+
+def test_shared_first_name_does_not_prove_two_authors_are_the_same():
+    from app.bot.handlers.alerts_manage import _conflicting_isbn_message
+
+    notice = BookMetadata(title="Un même titre", author="John Doe", isbn13=NOUVEL_ISBN)
+    assert _conflicting_isbn_message(notice, NOUVEL_ISBN, "Un même titre", "John Smith")
+
+
+@pytest.mark.asyncio
+async def test_a_late_lookup_does_not_edit_an_alert_deleted_in_the_meantime():
+    journey = _isbn_journey(
+        isbn=ANCIEN_ISBN, variants=[], exclusions=[], notice=_notice(),
+        outcome=KeywordVariantsOutcome.unanswered(),
+    )
+    async def deleted_lookup(_service, _isbn):
+        journey["alert"].status = AlertStatus.DELETED
+        return _notice()
+
+    with _frontieres(journey["patches"]), patch(
+        "app.services.book_metadata_service.BookMetadataService.lookup_by_isbn",
+        new=deleted_lookup,
+    ):
+        await _open_isbn_field(journey)
+        await _type_isbn(journey, NOUVEL_ISBN)
+    for coro, _name in journey["tasks"]:
+        coro.close()
+    assert journey["alert"].isbn == ANCIEN_ISBN
+    assert journey["alert"].status == AlertStatus.DELETED

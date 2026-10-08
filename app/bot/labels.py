@@ -9,7 +9,7 @@ Les statuts (`Active`, `En pause`) et les mentions d'absence (« Non renseigné 
 « Indisponible », « À confirmer ») sont des constantes : la présentation ne
 réinvente pas la donnée, elle la nomme. Les enums restent dans `app.domain`.
 
-Quatre règles de présentation, valables sur **tous** les écrans :
+Cinq règles de présentation, valables sur **tous** les écrans :
 
 1. **Un libellé de champ est gras, sa valeur reste en romain.**
    `**Prix maximum :** 15,00 €` — jamais `**Prix maximum : 15,00 €**`. La valeur
@@ -38,6 +38,8 @@ Quatre règles de présentation, valables sur **tous** les écrans :
    constante ni le littéral n'en portent, et `test_no_button_carries_an_arrow`
    tient les deux formes. La flèche d'un **titre** (`Détection → alerte`)
    décrit un flux, pas une action : elle n'entre pas dans cette règle.
+5. **Les actions d’une annonce « Prix du marché », « Faux positif » et « Négocier »
+   restent sans émoji**, y compris lorsque leur clavier est reconstruit.
 """
 
 import html

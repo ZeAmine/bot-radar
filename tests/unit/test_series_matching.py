@@ -224,7 +224,7 @@ def test_series_matching_lot_variations_matrix(
     expected_label: str,
     expected_icon: str,
     expected_diff: str,
-    ) -> None:
+) -> None:
     """Matrice générale vérifiant la cotation cumulée selon différentes combinaisons de tomes."""
     books = [
         _create_mock_book("Série Test — Tome 1", 1600),
@@ -539,9 +539,7 @@ async def test_handle_view_market_details_success():
         mock_l_cls.return_value = mock_l
 
         mock_b = MagicMock()
-        mock_b.resolve_book_for_listing = AsyncMock(
-            return_value=(mock_book, [mock_book], None)
-        )
+        mock_b.resolve_book_for_listing = AsyncMock(return_value=(mock_book, [mock_book], None))
         mock_b_cls.return_value = mock_b
 
         mock_m = MagicMock()
@@ -729,7 +727,6 @@ def test_series_card_counts_every_unpriced_tome_when_none_is_priced():
     assert "11,98 €" in card
 
 
-
 def test_rip_tome_titles_cleaning_no_stray_parenthesis():
     """Vérifie que les titres de la série RIP ne produisent aucune parenthèse orpheline."""
     from app.services.market_price_service import clean_tome_display_title
@@ -807,7 +804,6 @@ def test_format_market_details_card_no_cote_indisponible_in_lot():
     assert "Cote indisponible" not in card
     assert "• Tome 1 : 12,00 €" in card
     assert "Tome 2" not in card  # pas de cote -> exclu du résumé propre
-
 
 
 def test_market_details_card_series_tomes_formatting():
@@ -1084,5 +1080,86 @@ def test_explicitly_numbered_lot_is_not_flagged_as_inferred():
     assert tome_res.composition_inferred is False
 
 
+def test_integrale_with_one_cached_tome_is_not_a_pending_calculation():
+    """La capture Batman a un cache, mais aucune composition du lot prouvée."""
+    from types import SimpleNamespace
+
+    from app.use_cases.ingest_listing import comparison_line_from_loaded_books
+
+    book = _create_mock_book("Batman Terre Un", 999)
+    book.isbn13 = "9791026812715"
+    listing = Listing(
+        title="Batman Terre-un intégrale",
+        description=None,
+        item_price_cents=4000,
+        estimated_total_cents=4558,
+    )
+    alert = SimpleNamespace(name="Batman Terre Un", alert_books=[SimpleNamespace(book=book)])
+    line, ready, resolved = comparison_line_from_loaded_books(listing, alert)
+    assert ready
+    assert resolved is None
+    assert line is not None
+    assert "Composition du lot non identifiée" in line
+    assert "calcul" not in line
+    assert "9,99" not in line
 
 
+def test_single_volume_integrale_uses_its_prepared_price():
+    """Une édition intégrale en un livre ne doit pas être traitée comme un lot inconnu."""
+    from types import SimpleNamespace
+
+    from app.use_cases.ingest_listing import comparison_line_from_loaded_books
+
+    book = _create_mock_book("La guerre éternelle — Intégrale", 1933)
+    book.isbn13 = "9782800142449"
+    listing = Listing(
+        title="La guerre éternelle intégrale",
+        description=None,
+        item_price_cents=1000,
+        estimated_total_cents=1200,
+    )
+    alert = SimpleNamespace(name=book.title, alert_books=[SimpleNamespace(book=book)])
+    line, _ready, resolved = comparison_line_from_loaded_books(listing, alert)
+    assert resolved is book
+    assert line is not None
+    assert "19,33 €" in line
+    assert "calcul" not in line
+
+
+def test_explicit_bundle_does_not_use_a_single_integrale_price():
+    """Le titre intégrale du catalogue ne prouve pas le contenu d’un lot explicite."""
+    from types import SimpleNamespace
+
+    from app.use_cases.ingest_listing import comparison_line_from_loaded_books
+
+    book = _create_mock_book("La guerre éternelle — Intégrale", 1933)
+    listing = Listing(
+        title="Lot La guerre éternelle intégrale",
+        description=None,
+        item_price_cents=1000,
+        estimated_total_cents=1200,
+    )
+    alert = SimpleNamespace(name=book.title, alert_books=[SimpleNamespace(book=book)])
+    line, _ready, resolved = comparison_line_from_loaded_books(listing, alert)
+    assert resolved is None
+    assert line is not None
+    assert "Composition du lot non identifiée" in line
+    assert "19,33" not in line
+
+
+def test_a_missing_cache_is_not_presented_as_an_ongoing_calculation():
+    from types import SimpleNamespace
+
+    from app.use_cases.ingest_listing import comparison_line_from_loaded_books
+
+    book = _create_mock_book("Blacksad — Tome 6", None)
+    book.market_cache = None
+    listing = Listing(title="Blacksad Tome 6", description=None, item_price_cents=1000)
+    alert = SimpleNamespace(name="Blacksad", alert_books=[SimpleNamespace(book=book)])
+    line, ready, resolved = comparison_line_from_loaded_books(listing, alert)
+    assert ready
+    assert resolved is book
+    assert line is not None
+    assert "Cote indisponible" in line
+    assert "à l’envoi" in line
+    assert "calcul" not in line

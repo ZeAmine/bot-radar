@@ -151,7 +151,9 @@ class PreparationRunner:
                             book = await book_repo.create(
                                 title=name, normalized_title=normalize_text(name), isbn13=isbn
                             )
-                        await book_repo.link_alert_to_book(alert_id, book.id)
+                        linked = await book_repo.get_all_books_for_alert(alert_id)
+                        if not any(existing.id == book.id for existing in linked):
+                            await book_repo.link_alert_to_book(alert_id, book.id)
                         book_id = book.id
                         await session.commit()
                     stage = "pricing_write"

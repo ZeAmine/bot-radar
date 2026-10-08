@@ -119,12 +119,12 @@ def test_telegram_buttons_bd_comics():
     assert rows[0][0].text == "Voir l'annonce"
     assert rows[0][0].url == url
 
-    assert rows[1][0].text == "📊 Prix du marché"
+    assert rows[1][0].text == "Prix du marché"
     assert rows[1][0].callback_data == f"market:{listing_id}"
 
-    assert rows[2][0].text == "👎 Faux positif"
+    assert rows[2][0].text == "Faux positif"
     assert rows[2][0].callback_data == f"dislike:{listing_id}"
-    assert rows[2][1].text == "💬 Négocier"
+    assert rows[2][1].text == "Négocier"
     assert rows[2][1].callback_data == f"negotiate:{listing_id}"
 
     # Vérifie l'absence absolue de bouton Payer et Dressing
@@ -148,9 +148,9 @@ def test_telegram_buttons_clothes_and_tech():
         assert rows[0][0].text == "Voir l'annonce"
         assert rows[0][0].url == url
 
-        assert rows[1][0].text == "👎 Faux positif"
+        assert rows[1][0].text == "Faux positif"
         assert rows[1][0].callback_data == f"dislike:{listing_id}"
-        assert rows[1][1].text == "💬 Négocier"
+        assert rows[1][1].text == "Négocier"
         assert rows[1][1].callback_data == f"negotiate:{listing_id}"
 
         all_texts = [btn.text for row in rows for btn in row]
@@ -186,7 +186,7 @@ def test_dislike_confirmation_keyboard():
     rows = kb.inline_keyboard
     assert len(rows) == 3
     assert rows[0][0].text == "Voir l'annonce"
-    assert rows[1][0].text == "📊 Prix du marché"
+    assert rows[1][0].text == "Prix du marché"
     # Ligne 3 = confirmation et annulation
     assert rows[2][0].text == "Confirmer"
     assert rows[2][0].callback_data == f"confirm_dislike:{listing_id}"

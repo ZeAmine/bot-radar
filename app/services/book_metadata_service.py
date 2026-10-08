@@ -985,28 +985,67 @@ class BookMetadataService:
             for record in records
             if title_similarity(record.title, title) >= TITLE_SIMILARITY_MIN
         ]
-        if not candidates:
-            # La BNF n'a rien rendu : les deux replis, dans l'ordre, et le premier qui
-            # nomme l'ouvrage s'arrête. Chacun rend sa provenance au récap.
+        only_other_authors = bool(author_hint and author_hint.strip()) and bool(candidates) and all(
+            self._author_hint_match(candidate, author_hint) == "conflicts"
+            for candidate in candidates
+        )
+        fallback_resolution: BookResolution | None = None
+        if not candidates or only_other_authors:
+            disputed_isbns = {candidate.isbn13 for candidate in candidates}
+
+            def usable_fallback(resolution: BookResolution | None) -> bool:
+                """Un homonyme ne justifie jamais de réattribuer son ISBN au repli."""
+                return resolution is not None and (
+                    not only_other_authors or (
+                        resolution.author_hint_match == "matched"
+                        and resolution.best.isbn13 not in disputed_isbns
+                    )
+                )
+
+            # Rien d'exploitable, ou seulement d'autres auteurs : les deux replis dans
+            # l'ordre. Avec des homonymes BNF, le repli doit nommer l'auteur demandé.
             ol_resolution, ol_attempt = await self._resolve_via_openlibrary(
                 title, author_hint
             )
             attempts.append(ol_attempt)
-            if ol_resolution is not None:
+            if usable_fallback(ol_resolution):
+                fallback_resolution = ol_resolution
+            else:
+                google_resolution, google_attempts = await self._resolve_via_google_books(
+                    title, author_hint
+                )
+                attempts.extend(google_attempts)
+                if usable_fallback(google_resolution):
+                    fallback_resolution = google_resolution
+
+            if fallback_resolution is not None:
+                # Les homonymes BNF restent des œuvres distinctes, jamais des éditions
+                # du repli. Leur présence ne contredit pas un auteur explicitement nommé.
+                homonyms = list(fallback_resolution.other_works)
+                seen = {meta.isbn13 for meta in homonyms}
+                for candidate in candidates:
+                    if candidate.isbn13 not in seen and self._is_homonym(
+                        candidate, fallback_resolution.best, title
+                    ):
+                        homonyms.append(candidate)
+                        seen.add(candidate.isbn13)
+                fallback_resolution = replace(
+                    fallback_resolution,
+                    other_works=homonyms[:MAX_ALTERNATIVE_EDITIONS],
+                    alternatives=[
+                        meta for meta in fallback_resolution.alternatives
+                        if meta.isbn13 not in disputed_isbns
+                    ],
+                )
                 return BibliographicReport(
                     kind="title",
-                    resolution=ol_resolution,
+                    resolution=fallback_resolution,
                     attempts=tuple(attempts),
                 )
-            google_resolution, google_attempts = await self._resolve_via_google_books(
-                title, author_hint
-            )
-            attempts.extend(google_attempts)
-            return BibliographicReport(
-                kind="title",
-                resolution=google_resolution,
-                attempts=tuple(attempts),
-            )
+            if not candidates:
+                return BibliographicReport(kind="title", attempts=tuple(attempts))
+            # Aucun repli ne nomme l'auteur voulu : les homonymes BNF sont conservés
+            # avec le bilan des tentatives, sans ratifier l'un d'eux en silence.
 
         candidates = self._prefer_author_hint(candidates, author_hint)
         best = self._attach_recommendations(candidates[0])
@@ -1635,6 +1674,7 @@ class BookMetadataService:
         # ici, comme partout ailleurs, pour qu'une notice voisine ne passe pas devant
         # l'œuvre demandée.
         candidates.sort(key=lambda meta: title_similarity(meta.title, title), reverse=True)
+        candidates = self._prefer_author_hint(candidates, author_hint)
         best = candidates[0]
         alternatives = [
             candidate

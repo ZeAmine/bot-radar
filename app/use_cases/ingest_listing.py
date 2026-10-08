@@ -31,6 +31,7 @@ from app.services.book_catalog_service import BookCatalogService
 from app.services.book_market_pricing import price_book_now, schedule_book_pricing
 from app.services.market_health import classify_sent_cote_state, record_sent_cote_state
 from app.services.market_price_service import (
+    COTE_NOT_READY_LINE,
     NO_CATALOGUE_LINE,
     PENDING_COTE_LINE,
     SEARCHING_BOOK_LINE,
@@ -189,10 +190,12 @@ def comparison_line_from_loaded_books(
         books_in_series=series,
         tome_result=tome_result,
     )
-    # Le livre, lui, n'est coté qu'en arrière-plan : l'alerte n'attend pas un
-    # marchand. Le silence ferait croire à l'absence de prix ; la ligne dit laquelle
-    # des deux attentes elle traverse (`cote_absence_line`).
-    return line or cote_absence_line(book), True, book
+    # Le livre sera rattrapé en arrière-plan, sans retarder Telegram. Le message
+    # envoyé est un instantané : il ne promet pas un résultat qui ne le modifiera pas.
+    absence = line or cote_absence_line(book)
+    if absence == PENDING_COTE_LINE:
+        absence = COTE_NOT_READY_LINE
+    return absence, True, book
 
 
 async def _link_bd_catalog_background(
@@ -233,9 +236,7 @@ async def _link_bd_catalog_background(
                 # chargé : on le relit par le dépôt (qui précharge la relation) avant
                 # de décider s'il faut le coter.
                 loaded = await BookRepository(session).get_by_id(book.id)
-                needs_price = loaded is not None and not has_usable_price(
-                    loaded.market_cache
-                )
+                needs_price = loaded is not None and not has_usable_price(loaded.market_cache)
             await session.commit()
     except Exception as exc:
         logger.debug("Liaison catalogue BD différée ignorée pour %s : %s", alert_id, exc)
@@ -354,24 +355,24 @@ class ProcessListingUseCase:
                     listing, alert
                 )
                 if not catalog_ready:
-                    market_line, catalog_ready, resolved_book = (
-                        await self._comparison_from_catalog_isbn(listing, alert)
-                    )
-                # Aucune alerte BD ne part sans bloc de cote : livre identifié → cote
-                # en cours ; sinon → recherche de l'ouvrage en cours (la résolution
+                    (
+                        market_line,
+                        catalog_ready,
+                        resolved_book,
+                    ) = await self._comparison_from_catalog_isbn(listing, alert)
+                # Aucune alerte BD ne part sans bloc de cote : un cache manquant
+                # se dit à l’envoi ; sinon → recherche de l’ouvrage (la résolution
                 # de fond va réellement la lancer, cf. `if not catalog_ready`).
                 if market_line is None:
                     if catalog_ready:
-                        market_line = PENDING_COTE_LINE
+                        market_line = COTE_NOT_READY_LINE
                     elif is_uncatalogued(alert):
                         # Aucun livre, et la recherche a déjà répondu : annoncer
                         # « recherche en cours » serait la faire attendre pour rien.
                         market_line = NO_CATALOGUE_LINE
                     else:
                         market_line = SEARCHING_BOOK_LINE
-            pending_sends.append(
-                (alert, match_result, market_line, catalog_ready, resolved_book)
-            )
+            pending_sends.append((alert, match_result, market_line, catalog_ready, resolved_book))
 
         if is_duplicate and not pending_sends and not pending_ids:
             return ListingIngestResponse(

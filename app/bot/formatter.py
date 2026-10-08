@@ -1,11 +1,14 @@
 import html
 
 from app.bot.labels import (
+    FIELD_AUTHOR,
     FIELD_CONDITIONS,
+    FIELD_EDITION,
     FIELD_EXCLUDE_KEYWORDS,
     FIELD_INCLUDE_KEYWORDS,
     FIELD_ISBN,
     FIELD_MAX_PRICE,
+    FIELD_PUBLISHER,
     FIELD_STATUS,
     FIELD_VARIANTS,
     NOT_PROVIDED,
@@ -68,6 +71,22 @@ def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1
     isbn = getattr(alert, "isbn", None)
     if isbn:
         lines.append(f"<b>{FIELD_ISBN} :</b> <code>{html.escape(isbn)}</code>")
+        links = alert.__dict__.get("alert_books", [])
+        book = (
+            next((link.book for link in links if link.book.isbn13 == isbn), None)
+            if isinstance(links, list)
+            else None
+        )
+        if book is not None:
+            for label, value in (
+                (FIELD_AUTHOR, book.author),
+                (FIELD_PUBLISHER, book.publisher),
+                ("Année", book.publication_year),
+                (FIELD_EDITION, book.edition),
+            ):
+                lines.append(
+                    f"<b>{label} :</b> {html.escape(str(value)) if value else NOT_PROVIDED}"
+                )
 
     lines.extend(
         [

@@ -487,10 +487,39 @@ correspondant d'`AGENTS.md`. Ce qui suit n'est pas une copie de la constitution.
 - **Vérification** : tests de préparation avant activation, relecture ORM entre sessions, nouveau brouillon pendant la collecte, panne du message de progression, numéro de volume attesté par ISBN et statut agrégé de lot. Une collecte sans donnée ne peut garantir ni prix courant ni historique : l'interface annonce le résultat réel et ne fabrique aucune cote.
 
 
-### ADR-044 : La préparation BD porte une intention durable et une version
+### ADR-046 : La préparation BD porte une intention durable et une version
 - **Date** : 2026-10-08
 - **Décision validée** : `alerts.preparation` nullable distingue les nouvelles préparations pending/blocked de PAUSED. Les anciennes lignes restent NULL et ne sont jamais reclassées. Le marqueur conserve l’auteur demandé comme indice, le jeton, l’intention et un code d’erreur stable ; une réussite l’efface dans le commit d’activation.
 - **Concurrence** : résultats catalogue, verdict et activation sous garde de version et verrou court commun aux gestes utilisateur ; aucun HTTP sous verrou. Pause retire l’intention, reprise prépare au lieu d’activer directement ; ISBN ou nom textuel changés invalident le travail et son ancien catalogue. Les modifications sans dépendance bibliographique ne relancent rien.
 - **Reprise** : scheduler unique, passe au démarrage puis toutes les cinq minutes, quatre demandes par passe, deux travaux au plus et progression par dernière tentative. Les demandes blocked ou volontairement suspendues attendent un geste explicite. Annuler un appelant ne tue pas le travail partagé.
 - **Limites** : absence d’ISBN, de catalogue ou de cote reste admissible selon ADR-043 ; erreur technique de persistance distincte et visible. Aucun message Telegram durable exactement une fois. Si blocked ne peut être persisté, les fournisseurs ne sont pas relancés sur cette version dans le processus ; le prochain processus ne peut connaître une erreur qui n’a pas été écrite.
 - **Retour arrière** : colonne conservée, aucun downgrade destructeur. L’ancien /resume ignore les intentions : bloquer les updates Telegram en maintenance est obligatoire, l’inhibition automatique seule ne suffit pas. Le graphe Alembic doit rester compatible, sans contourner un contrôle en échec. Procédure et restrictions : [`docs/bd-preparation.md`](docs/bd-preparation.md). Aucune opération production exécutée dans ce lot.
+### ADR-044 : Changer d’édition réaligne la fiche ; une annonce décrit la cote à l’envoi
+- **Contexte** : l’édition ISBN de « La guerre éternelle — Intégrale » refusait la notice « La guerre éternelle (Nouv. éd.) Marvano, Haldeman », au score 0,712 contre 0,75. Le handler gardait aussi le nom et les inclusions de l’ancien ouvrage, créait une fiche sans ses métadonnées et relançait la cote après activation. Une annonce « Batman Terre-un intégrale » devenait un lot non résolu avec une seule fiche liée, puis annonçait un calcul malgré un cache existant.
+- **Décision** : la vérification d’édition retire uniquement les mentions bibliographiques pour comparer les titres, sans modifier les seuils globaux. Une différence d’auteur connu, de tome ou une identité incertaine demande une confirmation explicite, sans écriture préalable. La confirmation expire avec la saisie ou un changement d’identité. Le nouvel ISBN remplace la fiche, les inclusions dérivées, les variantes/exclusions et la liaison ; sa cote passe par `price_book_now` pendant la pause, puis est relue dans la session d’édition avant reprise. Une alerte déjà en pause le reste. Les réponses bibliographiques et les mots-clés tardifs sont gardés par la saisie et la révision de l’alerte.
+- **Cote envoyée** : une édition explicitement intégrale au catalogue peut être résolue comme un seul livre en l’absence d’indices de lot. Un lot sans composition identifiable annonce une comparaison indisponible, jamais une cote en calcul. Un cache sans relevé est dit indisponible à l’envoi ; les collectes de rattrapage restent après Telegram. Aucun message ancien n’est réécrit et aucune somme ni formule n’est changée.
+- **Présentation** : les boutons « Prix du marché », « Faux positif » et « Négocier » sont sans émoji dans tous les états du clavier d’annonce.
+- **Compatibilité** : aucune migration. Un ISBN inconnu reste saisissable sur une alerte existante après confirmation explicite, avec confiance faible et sans métadonnées inventées ; les règles de confirmation des nouvelles créations restent inchangées.
+### ADR-045 : Les homonymes ne doivent pas masquer les replis d'une nouveauté
+
+- **Contexte** : la saisie de `9782810206087` rendait « non confirmé par la BNF »
+  sans bilan des replis. Une panne OpenLibrary pouvait être imputée à une BNF
+  répondante. Par titre, les homonymes BNF faisaient arrêter la résolution alors
+  que tous leurs auteurs connus contredisaient l'auteur explicitement demandé.
+- **Décision** : la création après changement d'ISBN affiche les sources réellement
+  consultées et celles indisponibles, l'absence de notice exploitable ou le candidat
+  de repli non confirmant. Les champs d'identité inconnus restent visibles. L'ISBN
+  volontairement saisi garde son contrat de persistance ; le candidat ne remplit ni
+  l'auteur confirmé ni le contexte bibliographique. Sans confirmation, la carte
+  propose de retirer le code pour surveiller le titre.
+- **Repli ciblé** : si tous les candidats BNF ont un auteur connu différent de
+  l'indice explicite, OpenLibrary puis Google Books configuré sont consultés dans
+  l'ordre. Le repli doit nommer l'auteur demandé et ne peut réattribuer un ISBN
+  BNF contradictoire. Les homonymes BNF sont conservés comme œuvres distinctes,
+  jamais comme éditions du repli. Sans repli concordant, l'ambiguïté est conservée.
+  Sans indice d'auteur, avec un auteur BNF concordant ou inconnu, l'arrêt existant
+  est inchangé. Les règles de panne BNF et de confirmation ISBN restent intactes.
+- **Évaluation** : [16 titres, 48 appels publics](docs/evaluations/recent-books-2026-10-08.md) :
+  12 œuvres retrouvées par titre contre 11 avant, gain sur *Le Voyage* de Baudoin ;
+  11 ISBN exacts confirmés. Les trois nouveautés absentes restent non confirmées.
+  Aucun fournisseur, cache, endpoint ni appel avant Telegram ajouté ; F04 séparé.

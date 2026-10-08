@@ -20,6 +20,7 @@ from app.core.redis import get_redis_client
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.services.market_price_service import (
     COTE_UNAVAILABLE_LINE,
+    LOT_UNRESOLVED_LINE,
     NO_CATALOGUE_LINE,
     PENDING_COTE_LINE,
     SEARCHING_BOOK_LINE,
@@ -380,6 +381,8 @@ def classify_sent_cote_state(market_line: str | None) -> str:
         return "searching"
     if is_no_offer_line(market_line):
         return "no_offer"
+    if market_line == LOT_UNRESOLVED_LINE:
+        return "unavailable"
     if market_line and market_line.startswith(COTE_UNAVAILABLE_LINE):
         return "unavailable"
     if market_line is None or market_line == PENDING_COTE_LINE:
