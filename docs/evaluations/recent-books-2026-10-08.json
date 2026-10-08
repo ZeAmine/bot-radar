@@ -1,0 +1,2040 @@
+{
+  "date": "2026-10-08T13:31:15.856780+00:00",
+  "baseline_commit": "4eed61f7f124de764173050ce106ef52dbf08ace",
+  "sources": [
+    "bnf",
+    "openlibrary"
+  ],
+  "google": "disabled_without_reading_secrets",
+  "application_cache": false,
+  "method": "16 titres, ISBN exact et titre+auteur ; réponses publiques réutilisées uniquement dans le harnais de diagnostic pour comparer le commit de référence ; aucune donnée de critiques/profils ; pas de retry automatique",
+  "public_requests": [
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0526,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.5262,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0791,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.1894,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0308,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.2088,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0143,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.1194,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.1752,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0134,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.2189,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.294,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.8021,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.2015,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0562,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0518,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.2649,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.559,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0893,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.884,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0758,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.4394,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.042,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.8174,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0172,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.6837,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.5653,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.4774,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.014,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.2761,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.7939,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0286,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.2668,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.9822,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.202,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.02,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.1845,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.7019,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0673,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.4876,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.5134,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0621,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.3456,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.1614,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.6031,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.0146,
+      "status": 200
+    },
+    {
+      "source": "openlibrary.org",
+      "seconds": 0.495,
+      "status": 200
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "seconds": 0.6374,
+      "status": 200
+    }
+  ],
+  "cases": [
+    {
+      "group": "nouveautes",
+      "title": "Les Enfants perdus",
+      "author": "Neyef",
+      "expected_isbn": "9782810206087",
+      "reference": "https://www.editions-ruedesevres.fr/Les-Enfants-Perdus",
+      "isbn_search": {
+        "status": "not_found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "ambiguous",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "ambiguous",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "title",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.5788,
+      "title_first_seconds": 0.2685,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 5.0571,
+      "identity_found_before": false,
+      "identity_found_after": false,
+      "exact_isbn_found": false,
+      "expected_edition_in_title_results": false,
+      "confirmed_author_matches_reference": null,
+      "isbn_author_matches_reference": null
+    },
+    {
+      "group": "nouveautes",
+      "title": "Dailycieux",
+      "author": "Whoogy's",
+      "expected_isbn": "9782812322495",
+      "reference": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001392716&titre_livre=Dailycieux",
+      "isbn_search": {
+        "status": "not_found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "not_found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "bnf",
+            "search_type": "title_anywhere",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "title",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "not_found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "bnf",
+            "search_type": "title_anywhere",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "title",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.2396,
+      "title_first_seconds": 0.3089,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 5.8059,
+      "identity_found_before": false,
+      "identity_found_after": false,
+      "exact_isbn_found": false,
+      "expected_edition_in_title_results": false,
+      "confirmed_author_matches_reference": null,
+      "isbn_author_matches_reference": null
+    },
+    {
+      "group": "nouveautes",
+      "title": "L’Enfance des ruines",
+      "author": "Pascal Rabaté",
+      "expected_isbn": "9782810206056",
+      "reference": "https://www.editions-ruedesevres.fr/L-Enfance-des-ruines",
+      "isbn_search": {
+        "status": "not_found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "ambiguous",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          },
+          {
+            "provider": "bnf",
+            "search_type": "title_anywhere",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "ambiguous",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          },
+          {
+            "provider": "bnf",
+            "search_type": "title_anywhere",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "title",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.2323,
+      "title_first_seconds": 1.2976,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 6.7922,
+      "identity_found_before": false,
+      "identity_found_after": false,
+      "exact_isbn_found": false,
+      "expected_edition_in_title_results": false,
+      "confirmed_author_matches_reference": null,
+      "isbn_author_matches_reference": null
+    },
+    {
+      "group": "nouveautes",
+      "title": "La Langue des vipères",
+      "author": "Juliette Brocal",
+      "expected_isbn": "9782810207121",
+      "reference": "https://www.editions-ruedesevres.fr/La-Langue-des-viperes",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La langue des vipères",
+          "author": "Juliette Brocal",
+          "isbn": "9782810207121",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782810207121",
+            "publisher": "Rue de Sèvres",
+            "year": 2026,
+            "format": "1 volume 224 p ; 32 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La langue des vipères",
+          "author": "Juliette Brocal",
+          "isbn": "9782810207121",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782810207121",
+            "publisher": "Rue de Sèvres",
+            "year": 2026,
+            "format": "1 volume 224 p ; 32 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La langue des vipères",
+          "author": "Juliette Brocal",
+          "isbn": "9782810207121",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782810207121",
+            "publisher": "Rue de Sèvres",
+            "year": 2026,
+            "format": "1 volume 224 p ; 32 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.0562,
+      "title_first_seconds": 0.0518,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 2.2137,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": true,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "connus",
+      "title": "Hoka Hey !",
+      "author": "Neyef",
+      "expected_isbn": "9782810202294",
+      "reference": "https://www.editions-ruedesevres.fr/Hoka-Hey",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Hoka hey !",
+          "author": "Neyef",
+          "isbn": "9782810202294",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782810202294",
+            "publisher": "Rue de Sèvres",
+            "year": 2022,
+            "format": "1 vol. (224 p.) : ill. en coul. ; 32 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Hoka hey !",
+          "author": "Neyef",
+          "isbn": "9782810202294",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782810202294",
+            "publisher": "Rue de Sèvres",
+            "year": 2022,
+            "format": "1 vol. (224 p.) : ill. en coul. ; 32 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Hoka hey !",
+          "author": "Neyef",
+          "isbn": "9782810202294",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782810202294",
+            "publisher": "Rue de Sèvres",
+            "year": 2022,
+            "format": "1 vol. (224 p.) : ill. en coul. ; 32 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.2649,
+      "title_first_seconds": 0.559,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 2.9289,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": true,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "connus",
+      "title": "La Couleur des choses",
+      "author": "Martin Panchaud",
+      "expected_isbn": "9782369903086",
+      "reference": "https://www.caetla.fr/La-couleur-des-choses",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La couleur des choses",
+          "author": "Martin Panchaud",
+          "isbn": "9782369903086",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782369903086",
+            "publisher": "Çà et là",
+            "year": 2022,
+            "format": "1 vol. (224 p.) : ill. en coul. ; 24 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La couleur des choses",
+          "author": "Martin Panchaud",
+          "isbn": "9782369903086",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782369903086",
+            "publisher": "Çà et là",
+            "year": 2022,
+            "format": "1 vol. (224 p.) : ill. en coul. ; 24 cm",
+            "provenance": "bnf"
+          },
+          {
+            "isbn": "9782369904151",
+            "publisher": "Editions çà et là",
+            "year": null,
+            "format": "1 vol. (224 p.) ; 19 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La couleur des choses",
+          "author": "Martin Panchaud",
+          "isbn": "9782369903086",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782369903086",
+            "publisher": "Çà et là",
+            "year": 2022,
+            "format": "1 vol. (224 p.) : ill. en coul. ; 24 cm",
+            "provenance": "bnf"
+          },
+          {
+            "isbn": "9782369904151",
+            "publisher": "Editions çà et là",
+            "year": null,
+            "format": "1 vol. (224 p.) ; 19 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.0893,
+      "title_first_seconds": 0.884,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 3.0805,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": true,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "connus",
+      "title": "La Saga de Grimr",
+      "author": "Jérémie Moreau",
+      "expected_isbn": "9782756080642",
+      "reference": "https://www.ijb.de/fileadmin/Daten/The_White_Ravens/The_White_Ravens_2018.pdf",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La saga de Grimr",
+          "author": "Jérémie Moreau",
+          "isbn": "9782756080642",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782756080642",
+            "publisher": "Éditions Delcourt",
+            "year": 2017,
+            "format": "1 vol. (231 p.) : ill. en coul. ; 27 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La saga de Grimr",
+          "author": "Jérémie Moreau",
+          "isbn": "9782756080642",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782756080642",
+            "publisher": "Éditions Delcourt",
+            "year": 2017,
+            "format": "1 vol. (231 p.) : ill. en coul. ; 27 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La saga de Grimr",
+          "author": "Jérémie Moreau",
+          "isbn": "9782756080642",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782756080642",
+            "publisher": "Éditions Delcourt",
+            "year": 2017,
+            "format": "1 vol. (231 p.) : ill. en coul. ; 27 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.0758,
+      "title_first_seconds": 0.4394,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 2.6189,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": true,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "connus",
+      "title": "Le Monde sans fin",
+      "author": "Jean-Marc Jancovici",
+      "expected_isbn": "9782205088168",
+      "reference": "https://www.dargaud.com/bd/le-monde-sans-fin-bda5378080",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Le monde sans fin",
+          "author": "Jean-Marc Jancovici",
+          "isbn": "9782205088168",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782205088168",
+            "publisher": "Dargaud",
+            "year": 2021,
+            "format": "1 vol. (192 p.) : ill. en coul. ; 30 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Le monde sans fin",
+          "author": "Jean-Marc Jancovici",
+          "isbn": "9782205088168",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782205088168",
+            "publisher": "Dargaud",
+            "year": 2021,
+            "format": "1 vol. (192 p.) : ill. en coul. ; 30 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Le monde sans fin",
+          "author": "Jean-Marc Jancovici",
+          "isbn": "9782205088168",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782205088168",
+            "publisher": "Dargaud",
+            "year": 2021,
+            "format": "1 vol. (192 p.) : ill. en coul. ; 30 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.042,
+      "title_first_seconds": 0.8174,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 2.9646,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": true,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "homonymes",
+      "title": "La Bête",
+      "author": "Chabouté",
+      "expected_isbn": "9782749300054",
+      "reference": "https://www.bdphile.fr/album/bd/33928-la-bete--chaboute",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La Bête",
+          "author": "Christophe Chabouté",
+          "isbn": "9782749300054",
+          "provenance": "openlibrary"
+        },
+        "editions": [
+          {
+            "isbn": "9782749300054",
+            "publisher": "Vents d'Ouest",
+            "year": 2002,
+            "format": "154 p.",
+            "provenance": "openlibrary"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La Bête",
+          "author": "Christophe Chabouté",
+          "isbn": "9782749300054",
+          "provenance": "openlibrary"
+        },
+        "editions": [
+          {
+            "isbn": "9782749300054",
+            "publisher": "Vents d'Ouest",
+            "year": 2002,
+            "format": "154 p.",
+            "provenance": "openlibrary"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La Bête",
+          "author": "Christophe Chabouté",
+          "isbn": "9782749300054",
+          "provenance": "openlibrary"
+        },
+        "editions": [
+          {
+            "isbn": "9782749300054",
+            "publisher": "Vents d'Ouest",
+            "year": 2002,
+            "format": "154 p.",
+            "provenance": "openlibrary"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.7009,
+      "title_first_seconds": 1.0427,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 5.9519,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": true,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "homonymes",
+      "title": "Le Chat",
+      "author": "Philippe Geluck",
+      "expected_isbn": "9782203340015",
+      "reference": "https://mediatheque90.territoiredebelfort.fr/ccvs/index.php?id=3738&lvl=notice_display",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Le chat",
+          "author": "Philippe Geluck",
+          "isbn": "9782203340015",
+          "provenance": "openlibrary"
+        },
+        "editions": [
+          {
+            "isbn": "9782203340015",
+            "publisher": "Casterman",
+            "year": 1986,
+            "format": "75 p.",
+            "provenance": "openlibrary"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "[Le chat]",
+          "author": "Philippe Geluck",
+          "isbn": "9782203014527",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782203014527",
+            "publisher": "Casterman",
+            "year": 2008,
+            "format": "7 vol. : ill. en noir et en coul., couv. ill. en coul. ; 23 cm",
+            "provenance": "bnf"
+          },
+          {
+            "isbn": "9782203013612",
+            "publisher": "Casterman",
+            "year": 2007,
+            "format": "1 vol. (47 p.) : ill. en noir et en coul., couv. ill. en coul. ; 23 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "[Le chat]",
+          "author": "Philippe Geluck",
+          "isbn": "9782203014527",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782203014527",
+            "publisher": "Casterman",
+            "year": 2008,
+            "format": "7 vol. : ill. en noir et en coul., couv. ill. en coul. ; 23 cm",
+            "provenance": "bnf"
+          },
+          {
+            "isbn": "9782203013612",
+            "publisher": "Casterman",
+            "year": 2007,
+            "format": "1 vol. (47 p.) : ill. en noir et en coul., couv. ill. en coul. ; 23 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.2901,
+      "title_first_seconds": 0.7939,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 4.2426,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": false,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "homonymes",
+      "title": "Le Voyage",
+      "author": "Edmond Baudoin",
+      "expected_isbn": "9782909020662",
+      "reference": "https://www.lassociation.fr/catalogue/le-voyage/",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Le Voyage",
+          "author": "Edmond Baudoin",
+          "isbn": "9782909020662",
+          "provenance": "openlibrary"
+        },
+        "editions": [
+          {
+            "isbn": "9782909020662",
+            "publisher": "L'Association",
+            "year": 1996,
+            "format": null,
+            "provenance": "openlibrary"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "ambiguous",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Le Voyage",
+          "author": "Edmond Baudoin",
+          "isbn": "9782909020662",
+          "provenance": "openlibrary"
+        },
+        "editions": [
+          {
+            "isbn": "9782909020662",
+            "publisher": "L'Association",
+            "year": 1996,
+            "format": null,
+            "provenance": "openlibrary"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.2954,
+      "title_first_seconds": 1.1842,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 5.6888,
+      "identity_found_before": false,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": true,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "homonymes",
+      "title": "La Chute",
+      "author": "Albert Camus",
+      "expected_isbn": "9782070212125",
+      "reference": "https://catalogue.bnf.fr/ark:/12148/cb37374744t",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La chute",
+          "author": "Albert Camus",
+          "isbn": "9782070212125",
+          "provenance": "openlibrary"
+        },
+        "editions": [
+          {
+            "isbn": "9782070212125",
+            "publisher": "Rowohlt Taschenbuch",
+            "year": 1917,
+            "format": "147 p.",
+            "provenance": "openlibrary"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La chute",
+          "author": "Albert Camus",
+          "isbn": "9782070212125",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782070212125",
+            "publisher": "Gallimard",
+            "year": 1992,
+            "format": "1 volume 169 p ; 21 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La chute",
+          "author": "Albert Camus",
+          "isbn": "9782070212125",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782070212125",
+            "publisher": "Gallimard",
+            "year": 1992,
+            "format": "1 volume 169 p ; 21 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.2045,
+      "title_first_seconds": 0.7019,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 4.0656,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": true,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "editions",
+      "title": "La Guerre éternelle",
+      "author": "Marvano",
+      "expected_isbn": "9782800164861",
+      "reference": "https://www.dupuis.com/la-guerre-eternelle-edition-integrale/bd/la-guerre-eternelle-edition-integrale-tome-1-la-guerre-eternelle-edition-integrale/2573",
+      "isbn_search": {
+        "status": "not_found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "ambiguous",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "ambiguous",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "title",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.0673,
+      "title_first_seconds": 1.001,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 4.2249,
+      "identity_found_before": false,
+      "identity_found_after": false,
+      "exact_isbn_found": false,
+      "expected_edition_in_title_results": false,
+      "confirmed_author_matches_reference": null,
+      "isbn_author_matches_reference": null
+    },
+    {
+      "group": "editions",
+      "title": "Dune",
+      "author": "Frank Herbert",
+      "expected_isbn": "9782266320481",
+      "reference": "https://www.lisez.com/livre-de-poche/dune-tome-1-dune/9782266320481",
+      "isbn_search": {
+        "status": "not_found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": null,
+        "editions": [],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Dune",
+          "author": "Frank Herbert",
+          "isbn": "9780441013593",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9780441013593",
+            "publisher": "Ace",
+            "year": 2005,
+            "format": "1 vol. (687 p.) : 1 portrait ; 21 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "Dune",
+          "author": "Frank Herbert",
+          "isbn": "9780441013593",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9780441013593",
+            "publisher": "Ace",
+            "year": 2005,
+            "format": "1 vol. (687 p.) : 1 portrait ; 21 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.0621,
+      "title_first_seconds": 0.3456,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 2.5131,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": false,
+      "expected_edition_in_title_results": false,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": null
+    },
+    {
+      "group": "editions",
+      "title": "La Peste",
+      "author": "Albert Camus",
+      "expected_isbn": "9782070349579",
+      "reference": "https://www.cercle-enseignement.com/Ouvrages/Gallimard/Folioplus-classiques/La-Peste",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La peste",
+          "author": "Albert Camus",
+          "isbn": "9782070349579",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782070349579",
+            "publisher": "Gallimard",
+            "year": 2007,
+            "format": "1 vol. (391 p.) : couv. ill. en coul. ; 18 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La peste",
+          "author": "Albert Camus",
+          "isbn": "9782070212033",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782070212033",
+            "publisher": "Gallimard",
+            "year": 1992,
+            "format": "1 volume 332 p ; 21 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "La peste",
+          "author": "Albert Camus",
+          "isbn": "9782070212033",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782070212033",
+            "publisher": "Gallimard",
+            "year": 1992,
+            "format": "1 volume 332 p ; 21 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.1614,
+      "title_first_seconds": 0.6031,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 2.87,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": false,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    },
+    {
+      "group": "editions",
+      "title": "L’Étranger",
+      "author": "Albert Camus",
+      "expected_isbn": "9782070360024",
+      "reference": "https://www.cercle-enseignement.com/Ouvrages/Gallimard/Folio/L-Etranger",
+      "isbn_search": {
+        "status": "found",
+        "consulted": [
+          "bnf",
+          "openlibrary"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "L’étranger",
+          "author": "Albert Camus",
+          "isbn": "9782070360024",
+          "provenance": "openlibrary"
+        },
+        "editions": [
+          {
+            "isbn": "9782070360024",
+            "publisher": "Top Emecé",
+            "year": 1942,
+            "format": "143 p.",
+            "provenance": "openlibrary"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": false,
+            "error_code": null
+          },
+          {
+            "provider": "openlibrary",
+            "search_type": "isbn",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "before_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "L'étranger",
+          "author": "Albert Camus",
+          "isbn": "9782754807685",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782754807685",
+            "publisher": "Futuropolis-Gallimard",
+            "year": 2012,
+            "format": "1 volume 138 p ; 35 cm",
+            "provenance": "bnf"
+          },
+          {
+            "isbn": "9782744132001",
+            "publisher": "France loisirs",
+            "year": 1999,
+            "format": "1 volume 111 p ; 21 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "after_title": {
+        "status": "found",
+        "consulted": [
+          "bnf"
+        ],
+        "unavailable": [],
+        "confirmed": {
+          "title": "L'étranger",
+          "author": "Albert Camus",
+          "isbn": "9782754807685",
+          "provenance": "bnf"
+        },
+        "editions": [
+          {
+            "isbn": "9782754807685",
+            "publisher": "Futuropolis-Gallimard",
+            "year": 2012,
+            "format": "1 volume 138 p ; 35 cm",
+            "provenance": "bnf"
+          },
+          {
+            "isbn": "9782744132001",
+            "publisher": "France loisirs",
+            "year": 1999,
+            "format": "1 volume 111 p ; 21 cm",
+            "provenance": "bnf"
+          }
+        ],
+        "attempts": [
+          {
+            "provider": "bnf",
+            "search_type": "title",
+            "status": "success",
+            "has_results": true,
+            "error_code": null
+          }
+        ]
+      },
+      "isbn_first_seconds": 0.5096,
+      "title_first_seconds": 0.6374,
+      "cache_seconds": null,
+      "elapsed_including_throttle": 4.3075,
+      "identity_found_before": true,
+      "identity_found_after": true,
+      "exact_isbn_found": true,
+      "expected_edition_in_title_results": false,
+      "confirmed_author_matches_reference": true,
+      "isbn_author_matches_reference": true
+    }
+  ],
+  "summary": {
+    "title_found_before": 11,
+    "title_found_after": 12,
+    "exact_isbn_found": 11,
+    "reference_edition_in_title_results": 8,
+    "new_wrong_author_matches": 0,
+    "cache_response_seconds": null,
+    "wrong_author_matches": 0
+  }
+}

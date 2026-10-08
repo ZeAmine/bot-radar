@@ -16,7 +16,7 @@ import pytest
 
 from app.bot.handlers import alerts_helpers
 from app.services.book_metadata_service import BookMetadataService
-from tests.add_fakes import fake_book_search
+from app.use_cases.book_search import BookSearchUseCase
 
 ISBN_PANNE = "9782369903086"  # la BNF décroche sur ce code
 ISBN_SAIN = "9782072909207"  # la BNF répond « je ne connais pas »
@@ -67,7 +67,7 @@ def autorite(monkeypatch) -> None:
     monkeypatch.setattr(
         alerts_helpers,
         "BookSearchUseCase",
-        fake_book_search(BookMetadataService(http_client=_ClientPanneSurUnISBN())),
+        lambda: BookSearchUseCase(BookMetadataService(http_client=_ClientPanneSurUnISBN())),
     )
 
 
@@ -104,7 +104,8 @@ async def test_une_panne_le_dit_a_l_utilisateur():
     realignment = await alerts_helpers.realign_draft_to_isbn(_brouillon(), ISBN_PANNE)
     note = realignment.updates["isbn_note"]
 
-    assert "n'a pas pu être interrogée" in note
+    assert "Sources indisponibles : BNF" in note
+    assert "Candidat" in note
     assert "TimeoutError" not in note
 
 
@@ -117,4 +118,4 @@ async def test_un_repli_apres_une_reponse_de_la_bnf_est_accepte():
     assert realignment.conflict is None
     assert realignment.updates["author"] == "Martin Panchaud"
     assert realignment.updates["publisher"] == "Ça et là"
-    assert realignment.updates["isbn_note"] == "Source OpenLibrary (repli BNF)"
+    assert "Source OpenLibrary (repli BNF)" in realignment.updates["isbn_note"]

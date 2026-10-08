@@ -53,6 +53,9 @@ from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
+    AUTORITE_BNF,
+    AUTORITE_GOOGLE_BOOKS,
+    AUTORITE_OPENLIBRARY,
     format_edition_fragments,
     generate_recommended_keywords,
     parse_query_title_and_author,
@@ -337,11 +340,11 @@ def creation_card(
     # un oubli de la carte plutôt que comme une information sur l'ouvrage.
     if author:
         lines.append(f"<b>{FIELD_AUTHOR} :</b> {html.escape(author)}")
-    elif book_unidentified:
+    elif book_unidentified or data.get("identity_unconfirmed"):
         lines.append(f"<b>{FIELD_AUTHOR} :</b> {NOT_PROVIDED}")
     if publisher:
         lines.append(f"<b>{FIELD_PUBLISHER} :</b> {html.escape(publisher)}")
-    elif book_unidentified:
+    elif book_unidentified or data.get("identity_unconfirmed"):
         lines.append(f"<b>{FIELD_PUBLISHER} :</b> {NOT_PROVIDED}")
     # L'édition surveillée complète l'identité du livre : elle se lit juste après
     # l'éditeur, avec lequel l'utilisateur la recoupe, et avant que la carte ne passe
@@ -694,9 +697,9 @@ def draft_updates_from_search(
 ) -> dict[str, Any]:
     """Projette un `BookSearchResult` en clés brouillon, en une passe.
 
-    C'est la **seule** interprétation du contrat pour la création : tous les
-    chemins (saisie manuelle, natural_add, réalignement) passent ici, donc
-    aucun ne peut diverger sur ce qu'est une identité confirmée.
+    La recherche initiale et le choix d'œuvre passent ici. Le réalignement d'un
+    ISBN saisi conserve son exception explicite : le code volontairement saisi
+    reste au brouillon même sans identité confirmée.
 
     Règles :
     - `found` seul attache un ISBN et remplit les champs confirmés ;
@@ -732,6 +735,7 @@ def draft_updates_from_search(
             "edition_alternatives": [],
             "book_context": None,
             "book_unidentified": False,
+            "identity_unconfirmed": False,
         }
 
     if is_found:
@@ -759,6 +763,7 @@ def draft_updates_from_search(
             ],
             "book_context": None,
             "book_unidentified": False,
+            "identity_unconfirmed": False,
         }
 
     if is_ambiguous:
@@ -781,6 +786,7 @@ def draft_updates_from_search(
             "edition_alternatives": [],
             "book_context": None,
             "book_unidentified": False,
+            "identity_unconfirmed": True,
         }
 
     # not_found / unavailable / partial : alerte textuelle, jamais d'ISBN
@@ -817,6 +823,7 @@ def draft_updates_from_search(
         "edition_alternatives": [],
         "book_context": None,
         "book_unidentified": result.status == BookSearchStatus.NOT_FOUND,
+        "identity_unconfirmed": True,
     }
 
 
@@ -871,7 +878,43 @@ KEYWORDS_FROM_PREVIOUS_WORK: dict[str, Any] = {
     # qui l'accompagne porte la nuance de confirmation. Laisser le drapeau en place
     # ferait dire deux fois la même chose à la carte.
     "book_unidentified": False,
+    "identity_unconfirmed": False,
 }
+
+
+def _isbn_verification_note(result: BookSearchResult | None) -> str:
+    """Rend le bilan réel, sans transformer une panne de repli en panne BNF."""
+    source_names = {
+        AUTORITE_BNF: "BNF",
+        AUTORITE_OPENLIBRARY: "OpenLibrary",
+        AUTORITE_GOOGLE_BOOKS: "Google Books",
+    }
+    if result is None:
+        return "ISBN saisi, non confirmé : vérification impossible, réessaie plus tard."
+    if result.status == BookSearchStatus.FOUND:
+        source = source_names.get(result.provenance or "")
+        note = result.note or (f"Source {source}." if source else "Identité confirmée.")
+    elif result.status == BookSearchStatus.PARTIAL:
+        note = "ISBN saisi, non confirmé : candidat repéré, vérification incomplète."
+        if result.works:
+            candidate = result.works[0]
+            author = f" de {candidate.author}" if candidate.author else ""
+            source = source_names.get(candidate.provenance or "")
+            provenance = f" ({source})" if source else ""
+            note += f" Candidat : « {candidate.title} »{author}{provenance}."
+    elif result.status == BookSearchStatus.UNAVAILABLE:
+        note = "ISBN saisi, non confirmé : vérification incomplète, réessaie plus tard."
+    else:
+        note = "ISBN saisi, non confirmé : aucune notice exploitable dans les sources consultées."
+    if result.consulted:
+        sources = ", ".join(source_names.get(source, source) for source in result.consulted)
+        note += f" Sources consultées : {sources}."
+    if result.unavailable:
+        sources = ", ".join(source_names.get(source, source) for source in result.unavailable)
+        note += f" Sources indisponibles : {sources}."
+    if result.status != BookSearchStatus.FOUND:
+        note += " Tu peux surveiller le titre en retirant l’ISBN."
+    return note
 
 
 async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealignment:
@@ -908,7 +951,7 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
             conflict="ISBN invalide : 10 ou 13 chiffres avec une clé de contrôle correcte."
         )
     except Exception as exc:
-        logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", isbn, exc)
+        logger.warning("Vérification bibliographique impossible : %s", type(exc).__name__)
         result = None
 
     if result is not None and result.status == BookSearchStatus.FOUND:
@@ -921,7 +964,7 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
                 **KEYWORDS_FROM_PREVIOUS_WORK,
                 "isbn": isbn,
                 "is_series": False,
-                "isbn_note": result.note,
+                "isbn_note": _isbn_verification_note(result),
                 "author": meta.author,
                 "publisher": meta.publisher,
                 "edition_alternatives": await _resolve_edition_choices(title, meta.author),
@@ -942,7 +985,6 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
             )
         )
 
-    note = "ISBN saisi, non confirmé par la BNF"
     if result is not None and result.status in (
         BookSearchStatus.UNAVAILABLE,
         BookSearchStatus.PARTIAL,
@@ -950,16 +992,16 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
         # Le motif ne va pas au brouillon — il est technique ; l'utilisateur, lui, doit
         # savoir qu'une nouvelle tentative a du sens, et qu'aucune autorité n'a tranché.
         logger.warning(
-            "Vérification BNF impossible pour l'ISBN %s : %s", isbn, result.unavailable
+            "Vérification bibliographique incomplète : %s", result.unavailable
         )
-        note = "ISBN saisi, non confirmé : la BNF n'a pas pu être interrogée, réessaie plus tard"
 
     return IsbnRealignment(
         updates={
             **KEYWORDS_FROM_PREVIOUS_WORK,
             "isbn": isbn,
             "is_series": False,
-            "isbn_note": note,
+            "isbn_note": _isbn_verification_note(result),
+            "identity_unconfirmed": True,
             "author": None,
             "publisher": None,
             "edition_alternatives": [],

@@ -282,7 +282,7 @@ async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_wor
             assert state.data["edition_alternatives"] == []
             typed_answer = typed_message.answer.call_args[0][0]
             assert "<b>ISBN :</b> <code>" + ISBN_INCONNU + "</code>" in typed_answer
-            assert "ISBN saisi, non confirmé par la BNF" in typed_answer
+            assert "ISBN saisi, non confirmé : aucune notice exploitable" in typed_answer
             assert "Martin Panchaud" not in typed_answer
             await drain(repos["tasks"])
         finally:
