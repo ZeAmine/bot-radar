@@ -493,3 +493,26 @@ correspondant d'`AGENTS.md`. Ce qui suit n'est pas une copie de la constitution.
 - **Cote envoyée** : une édition explicitement intégrale au catalogue peut être résolue comme un seul livre en l’absence d’indices de lot. Un lot sans composition identifiable annonce une comparaison indisponible, jamais une cote en calcul. Un cache sans relevé est dit indisponible à l’envoi ; les collectes de rattrapage restent après Telegram. Aucun message ancien n’est réécrit et aucune somme ni formule n’est changée.
 - **Présentation** : les boutons « Prix du marché », « Faux positif » et « Négocier » sont sans émoji dans tous les états du clavier d’annonce.
 - **Compatibilité** : aucune migration. Un ISBN inconnu reste saisissable sur une alerte existante après confirmation explicite, avec confiance faible et sans métadonnées inventées ; les règles de confirmation des nouvelles créations restent inchangées.
+### ADR-045 : Les homonymes ne doivent pas masquer les replis d'une nouveauté
+
+- **Contexte** : la saisie de `9782810206087` rendait « non confirmé par la BNF »
+  sans bilan des replis. Une panne OpenLibrary pouvait être imputée à une BNF
+  répondante. Par titre, les homonymes BNF faisaient arrêter la résolution alors
+  que tous leurs auteurs connus contredisaient l'auteur explicitement demandé.
+- **Décision** : la création après changement d'ISBN affiche les sources réellement
+  consultées et celles indisponibles, l'absence de notice exploitable ou le candidat
+  de repli non confirmant. Les champs d'identité inconnus restent visibles. L'ISBN
+  volontairement saisi garde son contrat de persistance ; le candidat ne remplit ni
+  l'auteur confirmé ni le contexte bibliographique. Sans confirmation, la carte
+  propose de retirer le code pour surveiller le titre.
+- **Repli ciblé** : si tous les candidats BNF ont un auteur connu différent de
+  l'indice explicite, OpenLibrary puis Google Books configuré sont consultés dans
+  l'ordre. Le repli doit nommer l'auteur demandé et ne peut réattribuer un ISBN
+  BNF contradictoire. Les homonymes BNF sont conservés comme œuvres distinctes,
+  jamais comme éditions du repli. Sans repli concordant, l'ambiguïté est conservée.
+  Sans indice d'auteur, avec un auteur BNF concordant ou inconnu, l'arrêt existant
+  est inchangé. Les règles de panne BNF et de confirmation ISBN restent intactes.
+- **Évaluation** : [16 titres, 48 appels publics](docs/evaluations/recent-books-2026-10-08.md) :
+  12 œuvres retrouvées par titre contre 11 avant, gain sur *Le Voyage* de Baudoin ;
+  11 ISBN exacts confirmés. Les trois nouveautés absentes restent non confirmées.
+  Aucun fournisseur, cache, endpoint ni appel avant Telegram ajouté ; F04 séparé.
