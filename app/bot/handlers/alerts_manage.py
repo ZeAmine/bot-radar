@@ -2,13 +2,18 @@
 et suppression (/delete) d'alertes.
 """
 
+import contextlib
 import html
 import logging
+import re
 import urllib.parse
 import uuid
+from dataclasses import asdict
+from datetime import datetime
 from typing import Any
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -28,10 +33,14 @@ from app.bot.keyboards.alerts import (
 from app.bot.labels import (
     BTN_BACK,
     BTN_BACK_TO_ALERT,
+    BTN_CANCEL,
+    FIELD_AUTHOR,
     FIELD_EXCLUDE_KEYWORDS,
     FIELD_INCLUDE_KEYWORDS,
     FIELD_ISBN,
+    FIELD_PUBLISHER,
     FIELD_VARIANTS,
+    NOT_PROVIDED,
 )
 from app.bot.states.alert_creation import AlertEditState
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
@@ -49,9 +58,16 @@ from app.services.alert_service import (
     parse_price_to_cents,
     validate_and_parse_vinted_url,
 )
-from app.services.book_market_pricing import schedule_book_pricing
-from app.services.book_metadata_service import BookMetadata
+from app.services.book_market_pricing import price_book_now
+from app.services.book_metadata_service import BookMetadata, generate_recommended_keywords
+from app.services.market_price_service import (
+    COTE_UNAVAILABLE_LINE,
+    PENDING_COTE_LINE,
+    cote_absence_line,
+    format_cote_lines,
+)
 from app.utils.isbn import extract_clean_isbn
+from app.utils.text import normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -398,7 +414,12 @@ async def prompt_new_field_value(
     # 2. Tous les autres champs : bloc <code> cliquable pour copier en 1 clic
     await callback.answer()
     await state.set_state(AlertEditState.waiting_for_new_value)
-    await state.update_data(edit_alert_id=str(alert.id), edit_field=field)
+    await state.update_data(
+        edit_alert_id=str(alert.id),
+        edit_field=field,
+        pending_isbn=None,
+        edit_request_token=uuid.uuid4().hex,
+    )
 
     labels = {
         "name": ("Nom / Titre", "Colle dans la zone de texte, modifie et envoie :"),
@@ -448,11 +469,7 @@ async def prompt_new_field_value(
             f"{prompt_hint}"
         )
     else:
-        text = (
-            f"✏️ <b>{title}</b>\n\n"
-            f"Valeur actuelle : Non renseignée\n\n"
-            f"{prompt_hint}"
-        )
+        text = f"✏️ <b>{title}</b>\n\nValeur actuelle : Non renseignée\n\n{prompt_hint}"
 
     keyboard = get_cancel_edit_keyboard(alert.id)
     if callback.message and hasattr(callback.message, "edit_text"):
@@ -522,10 +539,10 @@ async def handle_edit_condition_all(
 async def _lookup_isbn_notice(isbn13: str) -> BookMetadata | None:
     """Notice que les autorités rendent pour cet ISBN, None si personne n'en a une.
 
-    L'ISBN inconnu et la panne réseau se lisent pareil : aucun des deux ne prouve une
-    contradiction, et la saisie de l'utilisateur ne doit jamais être bloquée par le
-    second. La notice sert deux fois — au filet anti-mauvais ISBN, et à la fiche sur
-    laquelle le moteur raisonne — donc elle est demandée **une** fois.
+    L’ISBN inconnu et la panne réseau ne prouvent aucune contradiction. Le
+    remplacement reste possible après confirmation explicite, sans inventer de fiche.
+    La notice sert au contrôle d’identité et à la fiche sur laquelle le moteur
+    raisonne ; elle est donc demandée une seule fois.
     """
     from app.services.book_metadata_service import BookMetadataService
 
@@ -536,21 +553,118 @@ async def _lookup_isbn_notice(isbn13: str) -> BookMetadata | None:
         return None
 
 
+def _edition_work_title(title: str, author: str | None = None) -> str:
+    """Retire les mentions bibliographiques, sans changer les titres du catalogue."""
+    title = re.sub(
+        r"\(\s*(?:nouv(?:elle)?\.?\s*[ée]d(?:ition)?\.?|ré[ée]dition)\s*\)",
+        " ",
+        title,
+        flags=re.IGNORECASE,
+    )
+    normalized = normalize_text(title)
+    if author:
+        # Une notice peut répéter ses auteurs après le titre. Ne retirer ce
+        # suffixe que si le nom rendu par l’autorité apparaît comme mot entier.
+        author_name = normalize_text(author)
+        author_match = re.search(rf"\b{re.escape(author_name)}\b", normalized)
+        if author_match and author_match.start() > 0:
+            normalized = normalized[: author_match.start()]
+    return re.sub(r"\bintegrale\b", "", normalized).strip(" -—,:")
+
+
 def _conflicting_isbn_message(
     notice: BookMetadata | None,
     isbn13: str,
     alert_name: str,
+    current_author: str | None = None,
 ) -> str | None:
-    """Message d'erreur si la notice rattache cet ISBN à un autre ouvrage que l'alerte."""
+    """Demande confirmation si l’édition ne peut pas être rattachée à l’œuvre actuelle."""
     from app.services.book_metadata_service import TITLE_SIMILARITY_MIN, title_similarity
 
-    if notice is None or title_similarity(notice.title, alert_name) >= TITLE_SIMILARITY_MIN:
-        return None
+    if notice is None:
+        return "ISBN non confirmé : aucune fiche bibliographique disponible."
+    from app.services.tome_extractor import TomeExtractor
 
-    real_author = f" de {notice.author}" if notice.author else ""
+    old_number = TomeExtractor.extract(alert_name).tome_number
+    new_number = TomeExtractor.extract(notice.title).tome_number
+    volume_conflict = old_number != new_number and (old_number or new_number)
+    same_title = (
+        title_similarity(
+            _edition_work_title(notice.title, notice.author),
+            _edition_work_title(alert_name, current_author),
+        )
+        >= TITLE_SIMILARITY_MIN
+    )
+    old_author_words = set(normalize_text(current_author).split())
+    new_author_words = set(normalize_text(notice.author).split())
+    author_conflict = bool(
+        old_author_words
+        and new_author_words
+        and not (old_author_words <= new_author_words or new_author_words <= old_author_words)
+    )
+    if same_title and not author_conflict and not volume_conflict:
+        return None
+    who = f" de {notice.author}" if notice.author else ""
     return (
-        f"Cet ISBN ({isbn13}) correspond à « {notice.title} »{real_author}, "
-        f"pas à « {alert_name} »."
+        f"Cet ISBN ({isbn13}) correspond à « {notice.title} »{who}. "
+        f"L’alerte surveille actuellement « {alert_name} »."
+    )
+
+
+@router.callback_query(F.data.startswith("ed_isbn:"))
+async def confirm_isbn_replacement(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db_user: User,
+    db_session: Any,
+) -> None:
+    """Consomme une proposition d’ISBN appartenant à la saisie encore ouverte."""
+    data = await state.get_data()
+    pending = data.get("pending_isbn")
+    parts = (callback.data or "").split(":")
+    if (
+        len(parts) != 3
+        or not pending
+        or parts[2] != pending["token"]
+        or data.get("edit_field") != "isbn"
+    ):
+        await callback.answer("Cette proposition a expiré.", show_alert=True)
+        return
+    alert = await _get_alert_repo(db_session).get_by_id(
+        uuid.UUID(data["edit_alert_id"]), user_id=db_user.id
+    )
+    if (
+        alert is None
+        or alert.isbn != pending["previous_isbn"]
+        or alert.name != pending["previous_name"]
+        or alert.status == AlertStatus.DELETED
+    ):
+        await state.update_data(pending_isbn=None)
+        await callback.answer("Cette proposition a expiré.", show_alert=True)
+        return
+    if not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    if parts[1] == "no":
+        await state.clear()
+        await callback.answer("Remplacement annulé.")
+        await callback.message.edit_text("Remplacement annulé : l’alerte est conservée.")
+        return
+    if parts[1] != "yes":
+        await callback.answer("Action inconnue.")
+        return
+    await state.update_data(pending_isbn=None)
+    await callback.answer()
+    with contextlib.suppress(TelegramAPIError):
+        await callback.message.edit_reply_markup(reply_markup=None)
+    raw_notice = pending["notice"]
+    notice = BookMetadata(**raw_notice) if raw_notice is not None else None
+    await _save_edited_field_value(
+        callback.message,
+        state,
+        db_user,
+        db_session,
+        confirmed_isbn=(pending["isbn"], notice),
     )
 
 
@@ -562,6 +676,7 @@ async def _refresh_alert_keywords(
     category_slug: str,
     book_context: BookContext | None,
     target: Message,
+    expected_revision: datetime | None = None,
 ) -> None:
     """Rend à une alerte les mots-clés de l'ouvrage qu'elle surveille désormais.
 
@@ -580,7 +695,15 @@ async def _refresh_alert_keywords(
 
     async with AsyncSessionLocal() as session:
         alert = await _get_alert_repo(session).get_by_id(alert_id)
-        if alert is None or alert.isbn != expected_isbn:
+        if (
+            alert is None
+            or alert.isbn != expected_isbn
+            or alert.name != name
+            or (
+                expected_revision is not None
+                and alert.updated_at.replace(tzinfo=None) != expected_revision.replace(tzinfo=None)
+            )
+        ):
             logger.info(
                 "Mots-clés de « %s » non écrits : l'alerte ne porte plus l'ISBN %s.",
                 name,
@@ -603,21 +726,35 @@ async def save_edited_field_value(
     db_user: User,
     db_session: Any,
 ) -> None:
-    """Applique la modification du champ en base de données et affiche l'alerte mise à jour."""
+    """Applique la modification du champ et affiche l’alerte mise à jour."""
+    await _save_edited_field_value(message, state, db_user, db_session)
+
+
+async def _save_edited_field_value(
+    message: Message,
+    state: FSMContext,
+    db_user: User,
+    db_session: Any,
+    *,
+    confirmed_isbn: tuple[str, BookMetadata | None] | None = None,
+) -> None:
+    """Chemin commun à la saisie et à la confirmation du remplacement."""
     data = await state.get_data()
     alert_id = uuid.UUID(data["edit_alert_id"])
     field = data["edit_field"]
-    raw_text = (message.text or "").strip()
+    raw_text = confirmed_isbn[0] if confirmed_isbn else (message.text or "").strip()
 
     alert_repo = _get_alert_repo(db_session)
     alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
-    if not alert:
+    if not alert or alert.status == AlertStatus.DELETED:
         await message.answer("Alerte introuvable.")
         await state.clear()
         return
 
     try:
         book_to_price: uuid.UUID | None = None
+        price_lines: list[str] = []
+        previous_status = alert.status
         # L'ISBN retenu quand il remplace celui de l'alerte : c'est le seul cas où les
         # mots-clés de l'ouvrage précédent doivent partir, et donc le seul où la
         # recherche du moteur est relancée.
@@ -667,13 +804,81 @@ async def save_edited_field_value(
                     raise AlertServiceError(
                         "ISBN invalide : 10 ou 13 chiffres avec une clé de contrôle correcte."
                     )
-                # Filet anti-mauvais ISBN : la notice doit rattacher ce code à CETTE
-                # œuvre. Une panne réseau ne bloque pas la saisie (aucune preuve de
-                # conflit).
-                notice = await _lookup_isbn_notice(clean_isbn)
-                conflicting = _conflicting_isbn_message(notice, clean_isbn, alert.name)
-                if conflicting:
-                    raise AlertServiceError(conflicting)
+                if confirmed_isbn is not None:
+                    notice = confirmed_isbn[1]
+                else:
+                    token = uuid.uuid4().hex
+                    previous_identity = (alert.isbn, alert.name)
+                    await state.update_data(edit_request_token=token, pending_isbn=None)
+                    notice = await _lookup_isbn_notice(clean_isbn)
+                    current = await state.get_data()
+                    if (
+                        current.get("edit_alert_id") != str(alert.id)
+                        or current.get("edit_field") != "isbn"
+                        or current.get("edit_request_token") != token
+                    ):
+                        return
+                    await db_session.refresh(alert, ["isbn", "name", "status"])
+                    if (
+                        alert.status == AlertStatus.DELETED
+                        or (alert.isbn, alert.name) != previous_identity
+                    ):
+                        await message.answer("L’alerte a changé pendant la recherche. Réessaie.")
+                        return
+                    previous_status = alert.status
+                    from app.db.repositories.book_repo import BookRepository
+
+                    old_book = (
+                        await BookRepository(db_session).get_by_isbn13(alert.isbn)
+                        if alert.isbn
+                        else None
+                    )
+                    old_author = (
+                        old_book.author if old_book and isinstance(old_book.author, str) else None
+                    )
+                    conflicting = _conflicting_isbn_message(
+                        notice, clean_isbn, alert.name, old_author
+                    )
+                    if conflicting and alert.isbn != clean_isbn:
+                        await state.update_data(
+                            pending_isbn={
+                                "token": token,
+                                "isbn": clean_isbn,
+                                "notice": asdict(notice) if notice else None,
+                                "previous_isbn": alert.isbn,
+                                "previous_name": alert.name,
+                            }
+                        )
+                        keyboard = InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [
+                                    InlineKeyboardButton(
+                                        text="Confirmer le remplacement",
+                                        callback_data=f"ed_isbn:yes:{token}",
+                                    ),
+                                    InlineKeyboardButton(
+                                        text=BTN_CANCEL, callback_data=f"ed_isbn:no:{token}"
+                                    ),
+                                ]
+                            ]
+                        )
+                        identity = ""
+                        if notice:
+                            identity = (
+                                f"\n<b>{FIELD_AUTHOR} :</b> "
+                                f"{html.escape(notice.author or NOT_PROVIDED)}"
+                                f"\n<b>{FIELD_PUBLISHER} :</b> "
+                                f"{html.escape(notice.publisher or NOT_PROVIDED)}"
+                                f"\n<b>{FIELD_ISBN} :</b> <code>{clean_isbn}</code>"
+                            )
+                        await message.answer(
+                            f"<i>{html.escape(conflicting)}</i>\n{identity}"
+                            "\n\n<i>Remplacer l’ouvrage surveillé par cet ISBN ?</i>",
+                            reply_markup=keyboard,
+                        )
+                        return
+                if notice is not None and extract_clean_isbn(notice.isbn13 or "") != clean_isbn:
+                    raise AlertServiceError("La notice ne confirme pas l’ISBN demandé.")
                 # Changer d'ISBN, c'est changer d'ouvrage : les variantes et les
                 # exclusions ont été raisonnées sur la fiche précédente, et une
                 # variante suffit à contourner la contrainte d'inclusion. Elles
@@ -683,8 +888,14 @@ async def save_edited_field_value(
                 if alert.isbn != clean_isbn:
                     replaced_isbn = clean_isbn
                     new_work_context = book_context_from(notice) if notice else None
+                    if notice is not None:
+                        alert.name = notice.title
+                        alert.include_keywords, _, _ = generate_recommended_keywords(
+                            _edition_work_title(notice.title, notice.author), notice.author
+                        )
                     alert.variants = []
                     alert.exclude_keywords = []
+                    alert.book_search_exhausted_at = None
                     # Une proposition de variantes encore en attente de confirmation
                     # décrit l'ouvrage précédent : l'appliquer après ce changement
                     # ferait matcher l'alerte sur l'ancien livre. Le bouton de la
@@ -693,7 +904,8 @@ async def save_edited_field_value(
                 alert.isbn = clean_isbn
                 # Nettoyer d'éventuels ISBN numériques résiduels dans les mots-clés
                 alert.include_keywords = [
-                    kw for kw in (alert.include_keywords or [])
+                    kw
+                    for kw in (alert.include_keywords or [])
                     if not (kw.isdigit() and len(kw) >= 10)
                 ]
                 # Mettre à jour l'URL de recherche Vinted
@@ -702,9 +914,8 @@ async def save_edited_field_value(
                     f"{base_vinted}&search_text={clean_isbn}&order=newest_first"
                 )
 
-                # Propagation globale en base : livre et liaison alerte-livre. La cote
-                # est relancée après le commit, pour que le livre existe déjà quand
-                # la tâche de fond ouvrira sa session.
+                # La fiche et sa liaison sont écrites avant la préparation de la cote.
+                # La cotation ouvre sa session après le commit de l’alerte en pause.
                 from app.core.constants import MatchConfidence
                 from app.db.repositories.book_repo import BookRepository
                 from app.utils.text import normalize_text
@@ -714,14 +925,26 @@ async def save_edited_field_value(
                 book = await book_repo.get_by_isbn13(clean_isbn)
                 if not book:
                     book = await book_repo.create(
-                        title=alert.name,
-                        normalized_title=normalize_text(alert.name),
+                        title=notice.title if notice else alert.name,
+                        normalized_title=normalize_text(notice.title if notice else alert.name),
                         isbn13=clean_isbn,
                     )
+                if notice is not None:
+                    book.title = notice.title
+                    book.normalized_title = normalize_text(notice.title)
+                    book.author = notice.author
+                    book.publisher = notice.publisher
+                    book.publication_year = notice.publication_year
+                    book.edition = notice.format_detail
+                    book.format = notice.format_detail
 
                 if book:
                     await book_repo.clear_alert_books(alert.id)
-                    await book_repo.link_alert_to_book(alert.id, book.id, MatchConfidence.HIGH)
+                    await book_repo.link_alert_to_book(
+                        alert.id,
+                        book.id,
+                        MatchConfidence(notice.confidence) if notice else MatchConfidence.LOW,
+                    )
                     book_to_price = book.id
         elif field == "url":
             parsed_url = validate_and_parse_vinted_url(raw_text)
@@ -729,21 +952,44 @@ async def save_edited_field_value(
         elif field == "max_price":
             alert.max_item_price_cents = parse_price_to_cents(raw_text)
         elif field == "conditions":
-            alert.accepted_conditions = (
-                parse_comma_separated_list(raw_text) if raw_text else None
-            )
+            alert.accepted_conditions = parse_comma_separated_list(raw_text) if raw_text else None
 
+        if book_to_price is not None:
+            alert.status = AlertStatus.PAUSED
         await db_session.commit()
         await state.clear()
 
         if book_to_price is not None:
-            schedule_book_pricing(book_to_price, reason="isbn_edited")
+            prepared_name = alert.name
+            with contextlib.suppress(TelegramAPIError):
+                await message.answer("📊 <i>Préparation des prix du marché…</i>")
+            await price_book_now(book_to_price, reason="isbn_edited")
+            await db_session.refresh(alert, ["isbn", "name", "status", "updated_at"])
+            if (
+                alert.isbn != clean_isbn
+                or alert.status != AlertStatus.PAUSED
+                or alert.name != prepared_name
+            ):
+                return
+            # Le cache vient d’une autre session : relire, jamais rattacher l’objet retourné.
+            priced_book = await book_repo.get_by_id(book_to_price, refresh=True)
+            price_lines = format_cote_lines(priced_book)
+            if not price_lines:
+                absence = cote_absence_line(priced_book)
+                price_lines = [
+                    absence if absence and absence != PENDING_COTE_LINE else COTE_UNAVAILABLE_LINE
+                ]
+            await db_session.refresh(alert, ["alert_books"])
+            alert.status = previous_status
+            await db_session.commit()
 
         cat_slug = alert.category.slug if alert.category else "all"
         total_count = await alert_repo.count_by_user(db_user.id, category_slug=cat_slug)
 
         await message.answer("✅ Modification enregistrée.")
         card_text = format_alert_card(alert, current_index=0, total_count=total_count)
+        if price_lines:
+            card_text += "\n\n" + "\n".join(price_lines)
         card_message = await message.answer(
             card_text,
             reply_markup=get_alert_card_keyboard(
@@ -766,6 +1012,7 @@ async def save_edited_field_value(
                     category_slug=cat_slug,
                     book_context=new_work_context,
                     target=card_message,
+                    expected_revision=alert.updated_at,
                 ),
                 name=f"alert-keywords-{alert.id}",
             )

@@ -324,8 +324,6 @@ async def test_bd_alert_without_price_is_priced_in_background(mock_db: AsyncMock
     Sans elle, un livre laissé vide le restait jusqu'au prochain rafraîchissement
     planifié — c'est ce qui faisait apparaître une alerte sans prix ni écart.
     """
-    from app.services.market_price_service import PENDING_COTE_LINE
-
     calls: list[str] = []
 
     async def _send(**_kwargs: object) -> bool:
@@ -363,7 +361,8 @@ async def test_bd_alert_without_price_is_priced_in_background(mock_db: AsyncMock
 
     mock_send_alert.assert_awaited_once()
     _, kwargs = mock_send_alert.call_args
-    assert kwargs["market_comparison_line"] == PENDING_COTE_LINE
+    assert "Cote indisponible" in kwargs["market_comparison_line"]
+    assert "à l’envoi" in kwargs["market_comparison_line"]
     # L'invariant n°1 se lit dans l'ordre des appels : l'alerte d'abord, la cote ensuite.
     assert calls == ["send", "price:alert_sent"]
     schedule.assert_called_once_with(book.id, reason="alert_sent")
@@ -695,7 +694,8 @@ async def test_mark_notified_commits_before_the_next_send(mock_db: AsyncMock) ->
                 condition_matches=True,
                 price_matches=True,
             ),
-        ),pytest.raises(RuntimeError, match="telegram down")
+        ),
+        pytest.raises(RuntimeError, match="telegram down"),
     ):
         await use_case.execute(payload, raw_payload={})
 
@@ -725,9 +725,7 @@ async def test_bd_resolution_schedules_bnf_without_awaiting_it(mock_db: AsyncMoc
             side_effect=_close_task,
         ) as scheduled,
     ):
-        repo_cls.return_value.resolve_book_for_listing = AsyncMock(
-            return_value=(None, None, None)
-        )
+        repo_cls.return_value.resolve_book_for_listing = AsyncMock(return_value=(None, None, None))
         result = await use_case._resolve_bd_market_comparison(listing, alert)
 
     assert result is None
@@ -755,9 +753,7 @@ async def test_bd_series_alert_relaunches_the_whole_series_discovery(
         patch("app.use_cases.ingest_listing.link_books_from_bnf") as link,
         patch("app.use_cases.ingest_listing.safe_create_task") as scheduled,
     ):
-        repo_cls.return_value.resolve_book_for_listing = AsyncMock(
-            return_value=(None, None, None)
-        )
+        repo_cls.return_value.resolve_book_for_listing = AsyncMock(return_value=(None, None, None))
         await use_case._resolve_bd_market_comparison(listing, alert)
 
     link.assert_called_once()
@@ -885,7 +881,7 @@ async def test_bd_alert_records_the_cote_state_it_shipped(mock_db: AsyncMock) ->
 
     # Livre lié sans cote : l'alerte a annoncé « cote en cours », et c'est cet état
     # qui est mesuré.
-    assert seen_states == ["pending"]
+    assert seen_states == ["unavailable"]
     assert any(name.startswith("cote_state_") for name in scheduled)
 
 
@@ -918,9 +914,7 @@ async def test_catalog_resolution_prices_the_book_it_links() -> None:
         patch.object(mod, "has_usable_price", return_value=False),
         patch.object(mod, "schedule_book_pricing") as schedule,
     ):
-        repo_cls.return_value.get_by_id = AsyncMock(
-            return_value=MagicMock(market_cache=None)
-        )
+        repo_cls.return_value.get_by_id = AsyncMock(return_value=MagicMock(market_cache=None))
         await mod._link_bd_catalog_background(
             alert_id=uuid.uuid4(),
             alert_name="Blacksad",
@@ -989,9 +983,7 @@ async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> N
         )
         repo_cls.return_value.get_by_isbn13 = AsyncMock(return_value=book)
         repo_cls.return_value.link_alert_to_book = AsyncMock()
-        repo_cls.return_value.get_by_id = AsyncMock(
-            return_value=MagicMock(market_cache=None)
-        )
+        repo_cls.return_value.get_by_id = AsyncMock(return_value=MagicMock(market_cache=None))
 
         await mod.link_books_from_bnf("The Grocery", uuid.uuid4(), author="Un Auteur")
 
@@ -1079,9 +1071,7 @@ async def test_a_conclusive_search_writes_its_verdict_on_the_alert() -> None:
     notice = MagicMock(isbn13="9782369904151", author="A", publisher="P", title="T")
     cases = {
         "aucune source ne le connaît": CatalogueVerdict(consulted=("bnf",)),
-        "une autorité s'est tue": CatalogueVerdict(
-            consulted=("bnf",), unavailable=("bnf",)
-        ),
+        "une autorité s'est tue": CatalogueVerdict(consulted=("bnf",), unavailable=("bnf",)),
         "une notice est arrivée": CatalogueVerdict(consulted=("bnf",), notices=(notice,)),
     }
 

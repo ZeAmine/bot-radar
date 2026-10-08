@@ -16,6 +16,7 @@ from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.category import Category
 from app.services.tome_extractor import TomeExtractor, TomeMatchResult
+from app.utils.text import normalize_text
 
 
 class BookRepository:
@@ -43,11 +44,7 @@ class BookRepository:
 
     async def get_by_isbn13(self, isbn13: str) -> Book | None:
         """Recherche un livre par son ISBN-13 exact."""
-        stmt = (
-            select(Book)
-            .options(*self._BOOK_CACHE_LOAD)
-            .where(Book.isbn13 == isbn13.strip())
-        )
+        stmt = select(Book).options(*self._BOOK_CACHE_LOAD).where(Book.isbn13 == isbn13.strip())
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -165,11 +162,7 @@ class BookRepository:
         book_ids = list((await self.session.execute(subq)).scalars().all())
         if not book_ids:
             return []
-        stmt = (
-            select(Book)
-            .options(selectinload(Book.market_cache))
-            .where(Book.id.in_(book_ids))
-        )
+        stmt = select(Book).options(selectinload(Book.market_cache)).where(Book.id.in_(book_ids))
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -293,6 +286,22 @@ def resolve_loaded_books(
         return None, [], tome_res
 
     if tome_res.is_lot:
+        # « Intégrale » peut désigner une édition en un volume. Seule une fiche
+        # explicitement intégrale, sans indices de plusieurs livres, le prouve.
+        normalized_listing = normalize_text(f"{listing_title} {listing_description or ''}")
+        explicit_bundle = any(
+            re.search(rf"\b{re.escape(keyword)}\b", normalized_listing)
+            for keyword in TomeExtractor.LOT_KEYWORDS
+            if keyword != "integrale"
+        )
+        if (
+            len(books) == 1
+            and not tome_res.lot_tomes
+            and tome_res.lot_count is None
+            and not explicit_bundle
+            and re.search(r"\bintegrale\b", normalize_text(books[0].title))
+        ):
+            return books[0], books, replace(tome_res, is_lot=False)
         if tome_res.lot_tomes:
             wanted = set(tome_res.lot_tomes)
             matching_lot = [
@@ -302,10 +311,14 @@ def resolve_loaded_books(
         if tome_res.lot_count:
             composed = _resolve_counted_lot(books, alert_name, tome_res.lot_count)
             if composed is not None:
-                return None, books, replace(
-                    tome_res,
-                    lot_tomes=composed,
-                    composition_inferred=True,
+                return (
+                    None,
+                    books,
+                    replace(
+                        tome_res,
+                        lot_tomes=composed,
+                        composition_inferred=True,
+                    ),
                 )
         return None, books, tome_res
 

@@ -44,6 +44,8 @@ MAX_PARTNERS_SHOWN = 5
 # dire que la cote arrive que laisser croire qu'il n'y a pas de prix.
 PENDING_COTE_LINE = "Cote d'occasion en cours de calcul…"
 COTE_UNAVAILABLE_LINE = "⚠️ Cote indisponible"
+COTE_NOT_READY_LINE = f"{COTE_UNAVAILABLE_LINE} (aucun relevé enregistré à l’envoi)."
+LOT_UNRESOLVED_LINE = "⚠️ Composition du lot non identifiée : comparaison indisponible."
 
 # Ligne affichée quand aucun livre n'est encore identifié pour l'alerte : la
 # résolution (catalogue, puis BNF) tourne en arrière-plan. Sans elle, l'alerte
@@ -530,6 +532,20 @@ class MarketPriceService:
             )
             if summary is not None:
                 return summary
+
+        # Un lot non résolu n’est pas une cote en cours : son contenu manque.
+        if tome_result and tome_result.is_lot:
+            if not tome_result.lot_tomes:
+                return LOT_UNRESOLVED_LINE
+            matched = _match_lot_books(books_in_series, tome_result.lot_tomes)
+            if not matched:
+                return LOT_UNRESOLVED_LINE
+            absences = [cote_absence_line(candidate) for candidate in matched]
+            if any(line and line.startswith(COTE_UNAVAILABLE_LINE) for line in absences):
+                return COTE_UNAVAILABLE_LINE
+            if PENDING_COTE_LINE in absences:
+                return PENDING_COTE_LINE
+            return next((line for line in absences if line), COTE_UNAVAILABLE_LINE)
 
         # 3. Série reconnue mais tome non résolu. La ligne dit ce qui est su — la
         # série — et se tait sur ce qui ne l'est pas : « cote indisponible » y
