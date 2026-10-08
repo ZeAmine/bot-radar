@@ -567,5 +567,6 @@ async def test_a_just_created_book_still_gets_its_confirmation():
     assert "✅ <b>Alerte créée</b>" in confirmation
     assert "<b>Titre :</b> Le démon de la colline au loup" in confirmation
     assert "<i>⚠️ Cote indisponible</i>" in confirmation
-    # Le livre de la confirmation est relu par son id, jamais l'objet rendu par `create`.
-    assert repos["book_repo"].get_by_id.await_count == 2
+    # Deux lectures chargées : le livre créé, puis les liens actuels après préparation.
+    assert repos["book_repo"].get_by_id.await_count == 1
+    repos["book_repo"].get_all_books_for_alert.assert_awaited_once()

@@ -41,7 +41,9 @@ async def test_delete_completely_cleans_alert_and_orphans():
     mock_count_res = MagicMock()
     mock_count_res.scalar_one.return_value = 0
 
-    session.execute.side_effect = [mock_books_res, mock_count_res]
+    mock_lock_res = MagicMock()
+    mock_lock_res.scalar_one_or_none.return_value = mock_alert
+    session.execute.side_effect = [mock_lock_res, mock_books_res, mock_count_res]
     session.get.return_value = mock_book
 
     result = await repo.delete_completely(mock_alert)
@@ -76,7 +78,9 @@ async def test_delete_completely_preserves_shared_book():
     mock_count_res = MagicMock()
     mock_count_res.scalar_one.return_value = 1
 
-    session.execute.side_effect = [mock_books_res, mock_count_res]
+    mock_lock_res = MagicMock()
+    mock_lock_res.scalar_one_or_none.return_value = mock_alert
+    session.execute.side_effect = [mock_lock_res, mock_books_res, mock_count_res]
 
     result = await repo.delete_completely(mock_alert)
 

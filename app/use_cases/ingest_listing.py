@@ -19,6 +19,7 @@ from app.db.models.listing import Listing
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.repositories.listing_repo import ListingRepository
+from app.domain.entities.alert_preparation import PreparationError
 from app.domain.rules.catalogue_search import is_catalogue_exhausted, is_uncatalogued
 from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import (
@@ -52,7 +53,8 @@ async def link_books_from_bnf(
     *,
     series: bool = False,
     wait_for_prices: bool = False,
-) -> None:
+    expected_preparation_token: str | None = None,
+) -> bool:
     """Lie les notices BNF d'une œuvre et les cote, sans retarder l'envoi Telegram.
 
     L'entrée est le **nom de l'alerte** (l'œuvre surveillée), pas le titre brut de
@@ -92,6 +94,10 @@ async def link_books_from_bnf(
             # concluant : une notice arrivée efface l'exhaustion, une autorité muette
             # ne la réécrit pas (elle ne prouve rien, ni dans un sens ni dans l'autre).
             alert_repo = AlertRepository(session)
+            if expected_preparation_token is not None:
+                current = await alert_repo.lock_preparation(alert_id, expected_preparation_token)
+                if current is None:
+                    return False
             if notices:
                 await alert_repo.set_book_search_exhausted(alert_id, None)
             elif is_catalogue_exhausted(verdict):
@@ -130,8 +136,10 @@ async def link_books_from_bnf(
                     to_price.append(book.id)
             await session.commit()
     except Exception as exc:
+        if expected_preparation_token is not None:
+            raise PreparationError("catalog_write") from exc
         logger.warning("Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc)
-        return
+        return False
 
     # La cote part en arrière-plan : c'est elle qui fera apparaître la ligne de prix
     # sur les alertes suivantes de cet ouvrage.
@@ -140,15 +148,18 @@ async def link_books_from_bnf(
 
         # Deux livres par vague : la création attend ses propres cotes seulement.
         for start in range(0, len(to_price), 2):
-            await asyncio.gather(
+            results = await asyncio.gather(
                 *(
                     price_book_now(book_id, reason="bnf_link")
                     for book_id in to_price[start : start + 2]
                 )
             )
+            if expected_preparation_token is not None and any(result is None for result in results):
+                raise PreparationError("pricing_write")
     else:
         for book_id in to_price:
             schedule_book_pricing(book_id, reason="bnf_link")
+    return True
 
 
 def comparison_line_from_loaded_books(

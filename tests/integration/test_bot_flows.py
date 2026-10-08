@@ -47,6 +47,7 @@ from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
 from app.services.book_metadata_service import BookMetadata, BookResolution
+from app.use_cases import prepare_bd_alert as preparation
 from tests.database import postgres_replayed_database
 
 BOT_TOKEN = "123456789:AAG_ci_test_dummy_token_abc123"
@@ -114,6 +115,28 @@ async def driver(monkeypatch, db_session) -> AsyncGenerator[tuple[Bot, Dispatche
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from app.bot.handlers import market_panel
+
+    maker = async_sessionmaker(db_session.bind, expire_on_commit=False, autoflush=False)
+
+    async def cached_price(book_id, *, reason):
+        assert reason == "alert_created"
+        from app.db.repositories.book_repo import BookRepository
+
+        async with maker() as session:
+            book = await BookRepository(session).get_by_id(book_id)
+            if book.market_cache is not None:
+                return book.market_cache
+            cache = BookMarketCache(
+                book_id=book_id, comparison_status=ComparisonStatus.UNAVAILABLE,
+                checked_at=datetime.now(UTC), collection_status="empty",
+            )
+            session.add(cache)
+            await session.commit()
+            return cache
+
+    monkeypatch.setattr(preparation, "AsyncSessionLocal", maker)
+    monkeypatch.setattr(preparation, "preparation_runner", preparation.PreparationRunner())
+    monkeypatch.setattr(preparation, "price_book_now", cached_price)
 
     monkeypatch.setattr(
         market_panel,
@@ -324,9 +347,9 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
         patch("app.bot.handlers.alerts_create_confirm.BookSearchUseCase", return_value=bnf),
         # La création attend sa cote : le test remplace la frontière des marchands.
         patch(
-            "app.bot.handlers.alerts_create.price_book_now",
+            "app.use_cases.prepare_bd_alert.price_book_now",
             new_callable=AsyncMock,
-            return_value=None,
+            wraps=preparation.price_book_now,
         ) as pricing,
     ):
         await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
@@ -439,9 +462,9 @@ async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_c
         patch("app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=bnf),
         patch("app.bot.handlers.alerts_create_confirm.BookSearchUseCase", return_value=bnf),
         patch(
-            "app.bot.handlers.alerts_create.price_book_now",
+            "app.use_cases.prepare_bd_alert.price_book_now",
             new_callable=AsyncMock,
-            return_value=None,
+            wraps=preparation.price_book_now,
         ),
     ):
         await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)

@@ -1,0 +1,88 @@
+# Préparation durable des nouvelles alertes BD
+
+ADR-043 reste la règle : une nouvelle BD est préparée avant surveillance. Une
+préparation terminée signifie que les tentatives catalogue/cote nécessaires sont
+revenues et que leurs écritures requises ont réussi. Elle ne signifie ni ISBN
+obtenu, ni prix trouvé. Catalogue absent, autorité indisponible et cote vide sont
+des résultats admissibles ; aucune identité ou cote n'est inventée.
+
+## Contrat durable
+
+`alerts.preparation` est nullable. Les anciennes lignes restent SQL NULL, sans
+reclassification. Les nouvelles demandes contiennent :
+
+- `token` : version unique du travail ;
+- `state` : `pending` ou `blocked` ;
+- `activation_requested` : intention indépendante du statut `PAUSED` ;
+- `author_hint` : auteur demandé utile à la recherche, jamais auteur confirmé ;
+- `requested_at`, `last_attempt_at` : dates UTC pour observation et progression ;
+- `error_code` : `catalog_write`, `pricing_write`, `activation_write` ou
+  `unexpected`, jamais un texte d'exception.
+
+Une réussite active l'alerte et efface le marqueur dans le même commit. Une pause
+invalide le jeton et retire l'intention sans perdre le contexte/erreur. Une reprise
+explicite remet une demande inachevée en pending ; une pause ordinaire NULL garde
+son ancienne reprise directe. Changer l'ISBN ou le titre d'une veille textuelle
+invalide le travail et retire ses anciennes liaisons/verdict/total. Prix, conditions,
+mots-clés et titre d'affichage d'une alerte conservant son ISBN ne relancent pas la
+préparation. Les livres et leurs caches restent utilisables indépendamment.
+
+Les résultats et les actions utilisateur partagent des transactions courtes avec
+verrou de l'alerte et condition sur le jeton/intention/statut. Aucun réseau sous ce
+verrou. Une suppression ou version périmée donne un abandon normal. Une cote déjà
+engagée peut finir dans sa propre session, sans rétablir une identité ancienne.
+
+## Reprise et limites
+
+Un travail partagé par alerte, deux préparations simultanées. Une annulation du
+caller ne tue pas le travail partagé ; une interruption du travail reste pending.
+Le scheduler unique lance une passe au démarrage, puis toutes les cinq minutes :
+quatre demandes maximum, pending et intention présente seulement. Les travaux
+en cours sont exclus ; les passes ne se chevauchent pas. Le tri par dernière
+tentative (NULL d'abord), puis création/ID, fait progresser les demandes suivantes.
+
+Une erreur technique devient blocked et attend une relance explicite. Si la DB
+ne peut pas enregistrer blocked, la version est suspendue localement et seule cette
+écriture est retentée, sans nouvelle collecte. Si le processus meurt avant toute
+persistance de cet échec, le prochain processus ne peut connaître cette erreur :
+la demande durable pending peut être tentée à nouveau. L'erreur reste journalisée.
+
+Le travail repris ne dépend d'aucun FSM ou message Telegram. La carte /show ou
+/list est la source courante ; pas de confirmation Telegram durable « exactement
+une fois ». Une erreur d'affichage ou de suggestion IA ne conditionne pas l'activation.
+
+## Retour arrière : maintenance obligatoire, pas seulement inhibition du scheduler
+
+Cette procédure est préparée, **non exécutée sur la production dans le lot**.
+
+1. Avant toute restauration, fermer l'entrée des updates Telegram au niveau de la
+   passerelle, avec une réponse non-200 empêchant leur exécution. Cela doit couvrir
+   tous les messages/callbacks, y compris ceux déjà dans une file locale. Ne pas
+   simplement masquer le bouton /resume. Interdire aussi les actions opérateur de
+   modification d'alertes pendant cette maintenance.
+2. Arrêter `radar_app` et attendre sa terminaison : le scheduler et les préparations
+   nouvelles sont ainsi arrêtés. Aucun second processus. Les collectes annulées
+   ne doivent plus écrire avant la conservation des demandes.
+3. Avec un outil de maintenance compatible et les accès explicitement autorisés,
+   ne traiter que les lignes avec marqueur non NULL : appliquer la sémantique de
+   `PreparationRequest.suspend()` (jeton renouvelé, intention false, contexte et
+   erreur conservés) et conserver PAUSED. Ne toucher à aucune ancienne pause NULL.
+   Ni suppression de marqueur ni restauration de données.
+4. Restaurer le code/image voulu **sans downgrade SQL**, en conservant la colonne
+   et la révision `0010_alert_preparation`. L'ancien ORM peut ignorer la colonne,
+   mais l'ancien /resume peut toujours activer une demande gelée : c'est démontré
+   par `test_old_orm_can_read_but_its_resume_bypasses_even_a_frozen_request`.
+   **Les updates Telegram restent bloqués pendant toute l'exploitation de l'ancien
+   code** ; l'inhibition des seules reprises automatiques ne suffit pas.
+5. Ne falsifier ni version Alembic ni contrôles : le graphe Alembic de l'image
+   d8da825 s'arrête à 0009 et ne connaît pas 0010. La procédure habituelle de
+   déploiement/vérification peut refuser ce retour. Si elle refuse, arrêter et
+   préparer un build de retour compatible conservant le graphe 0010, avec revue
+   et autorisation, au lieu de contourner les contrôles.
+6. Rouvrir les commandes seulement après retour d'un code qui comprend les
+   intentions et après vérification du code, santé, schéma, scheduler unique et
+   demandes conservées. Leur reprise exige alors un geste explicite ; les anciennes
+   pauses ambiguës ne sont jamais reclassées automatiquement.
+
+Il s'agit d'un retour arrière sous restrictions, pas d'une promesse de continuité
+fonctionnelle avec l'ancien code. La migration refuse un downgrade destructeur.

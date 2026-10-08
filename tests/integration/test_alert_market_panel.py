@@ -78,7 +78,11 @@ async def test_creation_reloads_a_cache_written_in_another_session(monkeypatch):
                 await other.commit()
                 return changed
 
-        monkeypatch.setattr("app.bot.handlers.alerts_create.price_book_now", price)
+        from app.use_cases import prepare_bd_alert as preparation
+
+        monkeypatch.setattr(preparation, "price_book_now", price)
+        monkeypatch.setattr(preparation, "AsyncSessionLocal", database.maker)
+        monkeypatch.setattr(preparation, "preparation_runner", preparation.PreparationRunner())
         state = DraftState()
         state.data = {
             "name": "Livre",

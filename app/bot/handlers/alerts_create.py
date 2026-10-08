@@ -8,7 +8,7 @@ import uuid
 from typing import Any
 
 from aiogram import F
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -42,6 +42,7 @@ from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.category_repo import CategoryRepository
+from app.domain.entities.alert_preparation import PreparationRequest
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.keyword_variants import keyword_variants_module
 from app.services.ai.modules.natural_add import natural_add_module
@@ -50,11 +51,11 @@ from app.services.alert_service import (
     AlertServiceError,
     parse_price_to_cents,
 )
-from app.services.book_market_pricing import price_book_now
 from app.services.market_price_service import (
     cote_absence_line,
     format_cote_lines,
 )
+from app.use_cases.prepare_bd_alert import prepare_bd_alert
 from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text, strip_html_tags
 
@@ -791,30 +792,45 @@ async def save_alert(
         # La surveillance ne devient active qu'après la préparation du catalogue
         # et des cotes. L'ingestion reste ensuite une simple lecture du cache.
         alert.status = AlertStatus.PAUSED
+        alert.preparation = PreparationRequest(author_hint=author).stored()
         await db_session.commit()
         # Le brouillon est terminé avant toute attente : un nouveau /add peut
         # commencer sans être effacé par la fin de cette préparation.
         await state.clear()
         if isinstance(callback.message, Message):
-            with contextlib.suppress(TelegramAPIError):
+            try:
                 await callback.message.edit_text("📊 <i>Préparation des prix du marché…</i>")
+            except Exception:
+                logger.warning("Message de préparation indisponible", exc_info=True)
 
-        if book is not None:
-            await price_book_now(book.id, reason="alert_created")
-            # La cotation utilise une autre session : relire évite d'attacher son
-            # objet ORM détaché à une session qui possède déjà le même cache.
-            loaded = await book_repo.get_by_id(book.id, refresh=True)
-            books = [loaded] if loaded is not None else [book]
-        else:
-            from app.use_cases.ingest_listing import link_books_from_bnf
+        prepared = await prepare_bd_alert(alert.id)
+        current = await alert_repo.get_by_id(alert.id, refresh=True)
+        if current is None:
+            return  # Suppression pendant la préparation : aucun rattachement/écran ancien.
+        alert = current
+        identity_changed = (alert.name, alert.isbn) != (name, isbn)
+        vinted_url = alert.vinted_search_url or vinted_url
+        if not prepared or alert.status != AlertStatus.ACTIVE:
+            from app.bot.formatter import format_alert_card
+            from app.bot.keyboards.alerts import get_alert_card_keyboard
 
-            await link_books_from_bnf(
-                name, alert.id, author=author, series=True, wait_for_prices=True
-            )
-            books = await book_repo.get_all_books_for_alert(alert.id)
-
-        alert.status = AlertStatus.ACTIVE
-        await db_session.commit()
+            if callback.message and hasattr(callback.message, "edit_text"):
+                with contextlib.suppress(Exception):
+                    await callback.message.edit_text(
+                        format_alert_card(alert),
+                        reply_markup=get_alert_card_keyboard(
+                            alert.id, alert.status, 0, 1, category_slug,
+                            preparation=alert.preparation,
+                        ),
+                    )
+            return
+        books = await book_repo.get_all_books_for_alert(alert.id)
+        stored_draft.update(
+            name=alert.name, isbn=alert.isbn, include_keywords=alert.include_keywords,
+            exclude_keywords=alert.exclude_keywords, variants=alert.variants,
+            max_item_price_cents=alert.max_item_price_cents,
+            selected_conditions=alert.accepted_conditions,
+        )
         extra_lines: list[str] = []
         for priced_book in books:
             if len(books) > 1:
@@ -834,6 +850,14 @@ async def save_alert(
             footer=_CONFIRMATION_FOOTER,
             extra_lines=extra_lines or None,
         )
+        if identity_changed:
+            # La fiche initiale (auteur, édition, provenance) ne décrit plus les
+            # critères actuels : afficher l'alerte relue, jamais cet ancien brouillon.
+            from app.bot.formatter import format_alert_card
+
+            resp_text = format_alert_card(alert)
+            if extra_lines:
+                resp_text += "\n\n" + "\n".join(extra_lines)
     else:
         # Tech ou Vêtements (sans livre ni cote de livres)
         vinted_url = (
@@ -868,4 +892,7 @@ async def save_alert(
         inline_keyboard=[[InlineKeyboardButton(text="Voir la recherche Vinted", url=vinted_url)]]
     )
     if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(resp_text, reply_markup=vinted_btn)
+        try:
+            await callback.message.edit_text(resp_text, reply_markup=vinted_btn)
+        except Exception:
+            logger.warning("Confirmation de création indisponible", exc_info=True)

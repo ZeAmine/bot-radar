@@ -40,6 +40,7 @@ from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
 from app.db.session import AsyncSessionLocal
+from app.domain.entities.alert_preparation import preparation_request
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.keyword_variants import keyword_variants_module
 from app.services.ai.schemas import BookContext, book_context_from
@@ -51,6 +52,7 @@ from app.services.alert_service import (
 )
 from app.services.book_market_pricing import schedule_book_pricing
 from app.services.book_metadata_service import BookMetadata
+from app.use_cases.prepare_bd_alert import prepare_bd_alert
 from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger(__name__)
@@ -166,6 +168,7 @@ async def handle_select_edit_category(
         current_page=page,
         total_pages=total_count,
         category_slug=category_slug,
+        preparation=getattr(alert, "preparation", None),
     )
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(card_text, reply_markup=keyboard)
@@ -617,6 +620,25 @@ async def save_edited_field_value(
         return
 
     try:
+        # L'autorité est consultée avant le verrou SQL. La cohérence du titre
+        # sera ensuite jugée sur l'alerte relue, et non sur l'objet initial.
+        notice = None
+        clean_isbn = None
+        if field == "isbn" and raw_text.lower() not in (
+            "/skip", "-", "aucun", "aucune", "clear", "supprimer"
+        ):
+            clean_isbn = extract_clean_isbn(raw_text)
+            if not clean_isbn:
+                raise AlertServiceError(
+                    "ISBN invalide : 10 ou 13 chiffres avec une clé de contrôle correcte."
+                )
+            notice = await _lookup_isbn_notice(clean_isbn)
+        if not await alert_repo.lock_for_edit(alert):
+            await db_session.rollback()
+            await message.answer("Alerte introuvable.")
+            await state.clear()
+            return
+        original_name, original_isbn = alert.name, alert.isbn
         book_to_price: uuid.UUID | None = None
         # L'ISBN retenu quand il remplace celui de l'alerte : c'est le seul cas où les
         # mots-clés de l'ouvrage précédent doivent partir, et donc le seul où la
@@ -662,15 +684,10 @@ async def save_edited_field_value(
                     f"{urllib.parse.quote_plus(alert.name)}&order=newest_first"
                 )
             else:
-                clean_isbn = extract_clean_isbn(raw_text)
-                if not clean_isbn:
-                    raise AlertServiceError(
-                        "ISBN invalide : 10 ou 13 chiffres avec une clé de contrôle correcte."
-                    )
+                assert clean_isbn is not None
                 # Filet anti-mauvais ISBN : la notice doit rattacher ce code à CETTE
                 # œuvre. Une panne réseau ne bloque pas la saisie (aucune preuve de
                 # conflit).
-                notice = await _lookup_isbn_notice(clean_isbn)
                 conflicting = _conflicting_isbn_message(notice, clean_isbn, alert.name)
                 if conflicting:
                     raise AlertServiceError(conflicting)
@@ -733,10 +750,21 @@ async def save_edited_field_value(
                 parse_comma_separated_list(raw_text) if raw_text else None
             )
 
+        preparation_changed = alert.isbn != original_isbn or (
+            field == "name" and alert.name != original_name and not alert.isbn
+        )
+        if preparation_changed:
+            await alert_repo.invalidate_preparation(alert, author_hint=None)
         await db_session.commit()
         await state.clear()
 
-        if book_to_price is not None:
+        if preparation_changed and preparation_request(alert) is not None:
+            await prepare_bd_alert(alert.id)
+            refreshed = await alert_repo.get_by_id(alert.id, refresh=True)
+            if refreshed is None:
+                return
+            alert = refreshed
+        elif book_to_price is not None:
             schedule_book_pricing(book_to_price, reason="isbn_edited")
 
         cat_slug = alert.category.slug if alert.category else "all"
@@ -752,6 +780,7 @@ async def save_edited_field_value(
                 current_page=0,
                 total_pages=total_count,
                 category_slug=cat_slug,
+                preparation=getattr(alert, "preparation", None),
             ),
         )
 
@@ -770,6 +799,7 @@ async def save_edited_field_value(
                 name=f"alert-keywords-{alert.id}",
             )
     except AlertServiceError as exc:
+        await db_session.rollback()
         await message.answer(f"⚠️ {exc}\nRéessaie (ou /cancel pour annuler) :")
 
 
@@ -821,6 +851,14 @@ async def toggle_resume_alert(
 
     await alert_repo.set_status(alert, AlertStatus.ACTIVE)
     await db_session.commit()
+    if preparation_request(alert) is not None:
+        try:
+            await callback.answer("📊 Préparation relancée ; consulte l'alerte pour son état.")
+        except Exception:
+            logger.warning("Acquittement de reprise indisponible", exc_info=True)
+        await prepare_bd_alert(alert.id)
+        await view_single_alert(callback, db_user, db_session, answer_callback=False)
+        return
     await callback.answer("▶️ Alerte réactivée.")
     await view_single_alert(callback, db_user, db_session)
 

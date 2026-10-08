@@ -15,6 +15,7 @@ from app.bot.labels import (
 )
 from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
+from app.domain.entities.alert_preparation import preparation_request
 from app.utils.price import format_cents
 
 
@@ -29,6 +30,20 @@ def format_cents_to_euros(cents: int | None) -> str:
     return format_cents(cents)
 
 
+def alert_status_text(alert: Alert) -> str:
+    """Sépare surveillance active, pause volontaire et travail de préparation."""
+    request = preparation_request(alert)
+    if alert.status == AlertStatus.ACTIVE:
+        return STATUS_ACTIVE
+    if request is None:
+        return STATUS_PAUSED
+    if not request.activation_requested:
+        return "⏸ Pause volontaire — préparation inachevée"
+    if request.state == "blocked":
+        return "⚠️ Préparation bloquée — relance disponible"
+    return "⏳ Préparation en cours ou en attente de reprise"
+
+
 def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1) -> str:
     """Génère la fiche d'une alerte pour /show, dans l'ordre de la charte.
 
@@ -40,7 +55,7 @@ def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1
     Chaque libellé de champ est gras, sa valeur reste en romain (charte, règle 1) :
     la fiche se balaie du regard, sans qu'une ligne entière pèse sur l'écran.
     """
-    status_text = STATUS_ACTIVE if alert.status == AlertStatus.ACTIVE else STATUS_PAUSED
+    status_text = alert_status_text(alert)
     category_emoji = alert.category.emoji if alert.category else "📚"
 
     header = f"{category_emoji} <b>{html.escape(alert.name)}</b>"
