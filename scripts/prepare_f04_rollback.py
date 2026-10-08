@@ -66,8 +66,12 @@ docker compose run --rm --no-deps -T --entrypoint python \
 # Restaurer seulement le code ; .env et données restent hors cible.
 orphan_before=absent
 if [ -f scripts/push_protected.py ]; then orphan_before=$(sha256sum scripts/push_protected.py); fi
-rsync -a --delete "$bundle/app/" app/
-rsync -a --delete --exclude=push_protected.py "$bundle/scripts/" scripts/
+rsync -a "$bundle/app/" app/
+rsync -a --exclude=push_protected.py "$bundle/scripts/" scripts/
+# Retirer seulement les ajouts de code F04 absents du parent. Pas de purge
+# générale d'app/scripts : fichiers opérateur, cookies, sauvegardes et logs conservés.
+rm -f app/domain/entities/alert_preparation.py app/use_cases/prepare_bd_alert.py
+rm -f scripts/prepare_f04_rollback.py
 if [ "$orphan_before" != absent ]; then
   [ "$(sha256sum scripts/push_protected.py)" = "$orphan_before" ]
 fi
