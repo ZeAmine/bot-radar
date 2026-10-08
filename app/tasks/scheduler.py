@@ -1,6 +1,7 @@
 """Configuration et démarrage du planificateur de tâches APScheduler."""
 
 import logging
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -9,6 +10,7 @@ from app.core.config import settings
 from app.tasks.cleanup import cleanup_old_data_task
 from app.tasks.proactive_autotune import run_proactive_autotune_scan
 from app.tasks.refresh_book_prices import refresh_book_prices_task
+from app.use_cases.prepare_bd_alert import recover_bd_preparations
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,12 @@ logger = logging.getLogger(__name__)
 def create_scheduler() -> AsyncIOScheduler:
     """Crée et configure le scheduler avec les horaires configurés."""
     scheduler = AsyncIOScheduler(timezone="Europe/Paris")
+    scheduler.add_job(
+        recover_bd_preparations, "interval", minutes=5,
+        next_run_time=datetime.now(UTC), id="recover_bd_preparations",
+        name="Reprise des préparations BD", replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
 
     # Parsing des horaires configurés (ex: '07:00,19:00')
     times = [t.strip() for t in settings.PRICE_REFRESH_TIMES.split(",") if ":" in t]

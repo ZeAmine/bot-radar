@@ -9,14 +9,14 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.formatter import format_alert_card
+from app.bot.formatter import alert_status_text, format_alert_card
 from app.bot.handlers.alerts_helpers import format_alerts_list_text
 from app.bot.keyboards.alerts import (
     get_alert_card_keyboard,
     get_alerts_list_keyboard,
     get_list_category_selection_keyboard,
 )
-from app.bot.labels import BTN_ALERTS_LIST, STATUS_ACTIVE, STATUS_PAUSED
+from app.bot.labels import BTN_ALERTS_LIST
 from app.core.constants import AlertStatus, CategorySlug
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
@@ -94,7 +94,8 @@ async def show_alerts(
             alert = matched_alerts[0]
             card_text = format_alert_card(alert, current_index=0, total_count=1)
             keyboard = get_alert_card_keyboard(
-                alert.id, alert.status, current_page=0, total_pages=1
+                alert.id, alert.status, current_page=0, total_pages=1,
+                preparation=getattr(alert, "preparation", None),
             )
             await message.answer(card_text, reply_markup=keyboard)
             return
@@ -105,7 +106,7 @@ async def show_alerts(
                 InlineKeyboardButton(
                     text=(
                         f"{a.name} "
-                        f"({STATUS_ACTIVE if a.status == AlertStatus.ACTIVE else STATUS_PAUSED})"
+                        f"({alert_status_text(a)})"
                     ),
                     callback_data=f"al_view:{a.id}",
                 )
@@ -133,7 +134,8 @@ async def show_alerts(
 
     card_text = format_alert_card(alert, current_index=0, total_count=total_count)
     keyboard = get_alert_card_keyboard(
-        alert.id, alert.status, current_page=0, total_pages=total_count
+        alert.id, alert.status, current_page=0, total_pages=total_count,
+        preparation=getattr(alert, "preparation", None),
     )
     await message.answer(card_text, reply_markup=keyboard)
 
@@ -187,6 +189,7 @@ async def paginate_alerts(
         current_page=page,
         total_pages=total_count,
         category_slug=category_slug,
+        preparation=getattr(alert, "preparation", None),
     )
 
     if callback.message and hasattr(callback.message, "edit_text"):
@@ -198,13 +201,15 @@ async def view_single_alert(
     callback: CallbackQuery,
     db_user: User,
     db_session: Any,
+    *, answer_callback: bool = True,
 ) -> None:
     """Affiche la carte d'une alerte spécifique après action ou retour."""
-    await callback.answer()
+    if answer_callback:
+        await callback.answer()
     alert_id = uuid.UUID(callback.data.split(":")[1])  # type: ignore
 
     alert_repo = _get_alert_repo(db_session)
-    alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
+    alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id, refresh=True)
     if not alert or alert.status == AlertStatus.DELETED:
         if callback.message and hasattr(callback.message, "edit_text"):
             await callback.message.edit_text(
@@ -226,6 +231,7 @@ async def view_single_alert(
         current_page=0,
         total_pages=total_count,
         category_slug=cat_slug,
+        preparation=getattr(alert, "preparation", None),
     )
     if isinstance(callback.message, Message):
         await callback.message.edit_text(card_text, reply_markup=keyboard)

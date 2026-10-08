@@ -236,10 +236,18 @@ def get_alert_card_keyboard(
     current_page: int,
     total_pages: int,
     category_slug: str = "all",
+    *, preparation: dict[str, object] | None = None,
 ) -> InlineKeyboardMarkup:
     """Retourne le clavier pour une carte d'alerte individuelle dans /show et /edit."""
     pause_text = BTN_PAUSE if status == AlertStatus.ACTIVE else BTN_RESUME
     pause_action = "pause" if status == AlertStatus.ACTIVE else "resume"
+    if isinstance(preparation, dict):
+        if not preparation.get("activation_requested"):
+            pause_text = "▶️ Reprendre la préparation"
+        elif preparation.get("state") == "blocked":
+            pause_text = "🔄 Relancer la préparation"
+        else:
+            pause_text, pause_action = "⏸ Suspendre la préparation", "pause"
 
     row_actions = [
         InlineKeyboardButton(text=BTN_EDIT, callback_data=f"al_edit:{alert_id}"),

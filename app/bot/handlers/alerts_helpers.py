@@ -9,7 +9,7 @@ from typing import Any
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.formatter import format_cents_to_euros
+from app.bot.formatter import alert_status_text, format_cents_to_euros
 from app.bot.keyboards.alerts import edition_ordinal, get_alert_confirmation_keyboard
 from app.bot.labels import (
     FIELD_AUTHOR,
@@ -24,8 +24,6 @@ from app.bot.labels import (
     FIELD_TITLE,
     FIELD_VARIANTS,
     NOT_PROVIDED,
-    STATUS_ACTIVE,
-    STATUS_PAUSED,
     TITLE_ALERT_EXISTS,
     format_conditions,
     format_price_cents,
@@ -41,7 +39,6 @@ from app.core.constants import (
     DEFAULT_GAMING_EXCLUSIONS,
     DEFAULT_TECH_CONDITIONS,
     DEFAULT_TECH_EXCLUSIONS,
-    AlertStatus,
     CategorySlug,
 )
 from app.db.models.alert import Alert
@@ -619,7 +616,7 @@ def format_alerts_list_text(
     lines.append("")
     start_num = current_page * 10 + 1
     for i, a in enumerate(alerts, start=start_num):
-        status_text = STATUS_ACTIVE if a.status == AlertStatus.ACTIVE else STATUS_PAUSED
+        status_text = alert_status_text(a)
         cat_icon = (
             f"{a.category.emoji} "
             if getattr(a, "category", None) and getattr(a.category, "emoji", None)
@@ -1022,7 +1019,7 @@ async def render_existing_alert_response(
     Arrêt net et binaire : aucune alerte concurrente n'est créée, aucune recherche de variantes
     n'est déclenchée, et le récapitulatif de confirmation de création n'est jamais affiché.
     """
-    status_text = STATUS_ACTIVE if existing.status == AlertStatus.ACTIVE else STATUS_PAUSED
+    status_text = alert_status_text(existing)
     price_str = format_price_cents(existing.max_item_price_cents)
 
     category_slug = (

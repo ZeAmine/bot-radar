@@ -51,6 +51,13 @@ def repositories(
 
     alert_repo = MagicMock()
     alert_repo.create = AsyncMock(return_value=alert)
+    async def create(**values):
+        for key, value in values.items():
+            setattr(alert, key, value)
+        return alert
+    alert_repo.create.side_effect = create
+    alert_repo.get_by_id = AsyncMock(return_value=alert)
+    alert_repo.lock_for_edit = AsyncMock(return_value=True)
     alert_repo.find_existing = AsyncMock(return_value=None)
 
     category_repo = MagicMock()
@@ -102,6 +109,25 @@ def patched(
     """
     if isbn_bnf is None:
         isbn_bnf = bnf
+
+    async def prepare(_alert_id):
+        """Frontière durable doublée pour l'écran ; les tests DB jouent le vrai cas d'usage."""
+        from app.core.constants import AlertStatus
+        from app.use_cases.ingest_listing import link_books_from_bnf
+
+        alert = repos["alert_repo"].create.return_value
+        if alert.isbn:
+            book = repos["book_repo"].get_by_id.return_value
+            await repos["price_now"](book.id, reason="alert_created")
+            repos["book_repo"].get_all_books_for_alert.return_value = [book]
+        elif isinstance(link_books_from_bnf, AsyncMock):
+            await link_books_from_bnf(
+                alert.name, alert.id, author=alert.preparation["author_hint"],
+                series=True, wait_for_prices=True,
+            )
+        alert.status = AlertStatus.ACTIVE
+        alert.preparation = None
+        return True
     return (
         patch(
             "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
@@ -148,8 +174,8 @@ def patched(
             return_value=repos["category_repo"],
         ),
         patch(
-            "app.bot.handlers.alerts_create.price_book_now",
-            new=repos["price_now"],
+            "app.bot.handlers.alerts_create.prepare_bd_alert",
+            new=prepare,
         ),
         patch("app.bot.handlers.alerts.AlertRepository", return_value=repos["alert_repo"]),
         patch("app.bot.handlers.alerts.BookRepository", return_value=repos["book_repo"]),

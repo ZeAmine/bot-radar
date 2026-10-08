@@ -1,22 +1,40 @@
 """La création prépare les cotes avant d'activer la surveillance."""
 
-import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import EditMessageText
+from sqlalchemy import select
 
 from app.bot.handlers.alerts_create import save_alert
 from app.core.constants import AlertStatus
+from app.db.models.alert import Alert
+from app.db.models.book import Book
+from app.db.models.category import Category
+from app.db.models.user import User
+from app.use_cases import prepare_bd_alert as preparation
 from tests.add_fakes import DraftState, cached_market_price
-from tests.add_journey import patched, repositories
+from tests.database import sqlite_only_database
 from tests.screens import confirm_press
 
 
+@pytest.fixture
+async def preparation_db(monkeypatch):
+    async with sqlite_only_database() as database:
+        database.maker.configure(autoflush=False)
+        category = Category(slug="bd_comics", label="BD", emoji="B", is_active=True)
+        user = User(telegram_user_id=601, is_allowed=True)
+        database.session.add_all([category, user])
+        await database.session.commit()
+        monkeypatch.setattr(preparation, "AsyncSessionLocal", database.maker)
+        monkeypatch.setattr(preparation, "preparation_runner", preparation.PreparationRunner())
+        yield database, user
+
+
 @pytest.mark.parametrize("progress_fails", [False, True])
-async def test_creation_waits_for_price_before_activating_and_confirming(progress_fails):
-    repos = repositories("9782369904151")
+async def test_creation_waits_for_price_before_activating_and_confirming(
+    preparation_db, monkeypatch, progress_fails
+):
+    database, user = preparation_db
     state = DraftState()
     state.data = {
         "category_slug": "bd_comics",
@@ -33,33 +51,32 @@ async def test_creation_waits_for_price_before_activating_and_confirming(progres
             ),
             None,
         ]
-    session = AsyncMock()
-    book = repos["book_repo"].get_by_id.return_value
-    alert = repos["alert_repo"].create.return_value
     price = cached_market_price()
 
     async def collect(book_id, *, reason):
-        assert book_id == book.id
         assert reason == "alert_created"
-        assert alert.status == AlertStatus.PAUSED
-        assert session.commit.await_count == 1
+        async with database.maker() as observer:
+            book = (await observer.execute(select(Book))).scalar_one()
+            assert book_id == book.id
+            alert = (await observer.execute(select(Alert))).scalar_one()
+            assert alert.status == AlertStatus.PAUSED
+            assert alert.preparation["activation_requested"] is True
+            price.book_id = book_id
+            observer.add(price)
+            await observer.commit()
         assert "Préparation des prix" in message.edit_text.call_args.args[0]
         assert state.data == {}
         state.data = {"name": "Nouveau brouillon"}
-        book.market_cache = price
         return price
 
-    patches = patched(repos, MagicMock(), MagicMock())
-    for entered in patches:
-        entered.start()
-    try:
-        with patch("app.bot.handlers.alerts_create.price_book_now", new=collect, create=True):
-            await save_alert(callback, state, MagicMock(id=uuid.uuid4()), session)
-    finally:
-        for entered in reversed(patches):
-            entered.stop()
-    assert alert.status == AlertStatus.ACTIVE
-    assert session.commit.await_count == 2
+    monkeypatch.setattr(preparation, "price_book_now", collect)
+    await save_alert(callback, state, user, database.session)
+    # L'activation est désormais committée dans une session dédiée. Relire les
+    # deux états durables vérifie la frontière, au lieu de compter les anciens mocks.
+    async with database.maker() as observer:
+        alert = (await observer.execute(select(Alert))).scalar_one()
+        assert alert.status == AlertStatus.ACTIVE
+        assert alert.preparation is None
     assert state.data == {"name": "Nouveau brouillon"}
     assert "<b>Prix du marché :</b> 18,00 €" in message.edit_text.call_args.args[0]
     assert "en cours de calcul" not in message.edit_text.call_args.args[0]

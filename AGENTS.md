@@ -204,15 +204,30 @@ Un push ne déploie rien : `~/bot-radar` n’est pas un dépôt git, c’est une
 **La procédure complète est une commande :**
 
 ```bash
-make deploy           # pré-vol → synchronisation → rebuild → migration → vérification
+make deploy           # pré-vol → arrêt confirmé → synchronisation → build → migration cible → démarrage → vérification
 ```
 
-Elle s’arrête au premier échec et n’essaie pas l’étape suivante : la première qui échoue n’est jamais rattrapée par les suivantes. La migration n’est jouée qu’une fois le conteneur sain — migrer pendant le redémarrage viserait l’image précédente et laisserait le schéma en retard d’une version sur le code, sans que rien ne le signale. `make deploy DEPLOY_ARGS=--dry-run` relit l’ordre sans rien exécuter. Les étapes restent accessibles séparément (`make preflight`, `make verify-deploy`) pour reprendre un déploiement interrompu.
+Elle s’arrête au premier échec et n’essaie pas l’étape suivante. Après pré-vol, l’ancienne application est arrêtée et son arrêt est confirmé par inspection avant toute synchronisation. L’image cible est ensuite construite sans démarrer l’application ; la migration utilise un conteneur ponctuel de cette image, avec entrypoint Alembic, sans scheduler ni poller. Le démarrage cible n’a lieu qu’après réussite de la migration et de sa lecture de révision. L’attente de santé et les vérifications strictes restent obligatoires après démarrage. `make deploy DEPLOY_ARGS=--dry-run` relit l’ordre sans rien exécuter. Les étapes restent accessibles séparément (`make preflight`, `make verify-deploy`) pour reprendre un déploiement interrompu.
+
+L’interruption inclut désormais synchronisation, construction, migration et démarrage jusqu’à la santé réelle, sans durée garantie. Un échec après arrêt peut laisser le service arrêté et l’arbre partiellement synchronisé ; ne jamais relancer automatiquement l’ancien code sur cet arbre. Un échec après démarrage peut laisser la cible active. Le bilan d’un déploiement interrompu doit indiquer l’état réellement constaté du conteneur, du code et du schéma avant de choisir la reprise ou la restauration décrite dans `docs/bd-preparation.md`. Aucune restauration automatique.
 
 Le détail de chaque étape, quand on les joue à la main :
 
 ```bash
 make preflight        # APP_ENV, secrets, un seul scheduler, migration en tête, écart de code
+```
+
+Arrêt confirmé **avant** synchronisation des fichiers runtime :
+
+```bash
+ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 'bash -s' <<'SH'
+set -eu
+cd ~/bot-radar
+cid=$(docker compose ps -a -q app)
+test -n "$cid"
+docker compose stop app
+test "$(docker inspect --format '{{.State.Running}}' "$cid")" = false
+SH
 ```
 
 Synchronisation (n’exclut pas `.env` distant : **ne pas** envoyer un `.env` local par accident ; le rsync ci-dessous ne cible pas `.env` s’il est absent du filtre, mais un `.env` local **écraserait** la prod s’il est présent — vérifier avant) :
@@ -228,14 +243,21 @@ Rebuild de l’app (obligatoire pour `alembic/` : non monté en volume ; `./app`
 
 ```bash
 ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/bot-radar && docker compose up -d --build app"
+  "cd ~/bot-radar && docker compose build app"
 ```
 
-Migration **après** que le nouveau conteneur soit healthy :
+Migration depuis l’image cible construite, application toujours arrêtée :
 
 ```bash
 ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/bot-radar && docker compose exec -T app alembic upgrade head && docker compose exec -T app alembic current"
+  "cd ~/bot-radar && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app upgrade head < /dev/null && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app current < /dev/null"
+```
+
+Démarrage seulement après réussite des deux commandes précédentes, puis attente de santé :
+
+```bash
+ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
+  "cd ~/bot-radar && docker compose up -d --no-build --pull never app"
 ```
 
 Contrôles : `radar_app` healthy, `https://radar.aminezegmou.fr/health` 200, pas de conteneur worker, pas de log `Secrets de production vides`, scheduler démarré. Ne pas dumper de tokens dans les logs collectés.
@@ -279,7 +301,7 @@ Ce que l’API accepte, vérifié par aller-retour `PUT` puis `GET` :
 
 Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
 
-Révision Alembic actuelle attendue : `0009_market_refresh_state` (tentative de collecte distincte du dernier relevé de prix). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — donc seulement en production. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
+Révision Alembic actuelle attendue : `0010_alert_preparation` (préparation durable et reprenable des nouvelles alertes BD, distincte d’une pause volontaire). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — donc seulement en production. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
 
 ## IA
 

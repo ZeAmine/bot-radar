@@ -49,6 +49,7 @@ from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
 from app.db.session import AsyncSessionLocal
+from app.domain.entities.alert_preparation import preparation_request
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.keyword_variants import keyword_variants_module
 from app.services.ai.schemas import BookContext, book_context_from
@@ -66,6 +67,7 @@ from app.services.market_price_service import (
     cote_absence_line,
     format_cote_lines,
 )
+from app.use_cases.prepare_bd_alert import prepare_bd_alert
 from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text
 
@@ -182,6 +184,7 @@ async def handle_select_edit_category(
         current_page=page,
         total_pages=total_count,
         category_slug=category_slug,
+        preparation=getattr(alert, "preparation", None),
     )
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(card_text, reply_markup=keyboard)
@@ -665,6 +668,7 @@ async def confirm_isbn_replacement(
         db_user,
         db_session,
         confirmed_isbn=(pending["isbn"], notice),
+        confirmed_identity=(pending["previous_isbn"], pending["previous_name"]),
     )
 
 
@@ -737,6 +741,7 @@ async def _save_edited_field_value(
     db_session: Any,
     *,
     confirmed_isbn: tuple[str, BookMetadata | None] | None = None,
+    confirmed_identity: tuple[str | None, str] | None = None,
 ) -> None:
     """Chemin commun à la saisie et à la confirmation du remplacement."""
     data = await state.get_data()
@@ -752,6 +757,46 @@ async def _save_edited_field_value(
         return
 
     try:
+        # L'autorité est consultée avant le verrou SQL. La cohérence du titre
+        # sera ensuite jugée sur l'alerte relue, et non sur l'objet initial.
+        notice = None
+        clean_isbn = None
+        request_token = None
+        lookup_identity = None
+        if field == "isbn" and raw_text.lower() not in (
+            "/skip", "-", "aucun", "aucune", "clear", "supprimer"
+        ):
+            clean_isbn = extract_clean_isbn(raw_text)
+            if not clean_isbn:
+                raise AlertServiceError(
+                    "ISBN invalide : 10 ou 13 chiffres avec une clé de contrôle correcte."
+                )
+            if confirmed_isbn is not None:
+                notice = confirmed_isbn[1]
+            else:
+                request_token = uuid.uuid4().hex
+                lookup_identity = (alert.isbn, alert.name)
+                await state.update_data(edit_request_token=request_token, pending_isbn=None)
+                notice = await _lookup_isbn_notice(clean_isbn)
+                current = await state.get_data()
+                if (
+                    current.get("edit_alert_id") != str(alert.id)
+                    or current.get("edit_field") != "isbn"
+                    or current.get("edit_request_token") != request_token
+                ):
+                    await db_session.rollback()
+                    return
+        if not await alert_repo.lock_for_edit(alert) or alert.status == AlertStatus.DELETED:
+            await db_session.rollback()
+            await message.answer("Alerte introuvable.")
+            await state.clear()
+            return
+        expected_identity = confirmed_identity or lookup_identity
+        if expected_identity is not None and (alert.isbn, alert.name) != expected_identity:
+            await db_session.rollback()
+            await message.answer("L’alerte a changé pendant la recherche. Réessaie.")
+            return
+        original_name, original_isbn = alert.name, alert.isbn
         book_to_price: uuid.UUID | None = None
         price_lines: list[str] = []
         previous_status = alert.status
@@ -799,33 +844,8 @@ async def _save_edited_field_value(
                     f"{urllib.parse.quote_plus(alert.name)}&order=newest_first"
                 )
             else:
-                clean_isbn = extract_clean_isbn(raw_text)
-                if not clean_isbn:
-                    raise AlertServiceError(
-                        "ISBN invalide : 10 ou 13 chiffres avec une clé de contrôle correcte."
-                    )
-                if confirmed_isbn is not None:
-                    notice = confirmed_isbn[1]
-                else:
-                    token = uuid.uuid4().hex
-                    previous_identity = (alert.isbn, alert.name)
-                    await state.update_data(edit_request_token=token, pending_isbn=None)
-                    notice = await _lookup_isbn_notice(clean_isbn)
-                    current = await state.get_data()
-                    if (
-                        current.get("edit_alert_id") != str(alert.id)
-                        or current.get("edit_field") != "isbn"
-                        or current.get("edit_request_token") != token
-                    ):
-                        return
-                    await db_session.refresh(alert, ["isbn", "name", "status"])
-                    if (
-                        alert.status == AlertStatus.DELETED
-                        or (alert.isbn, alert.name) != previous_identity
-                    ):
-                        await message.answer("L’alerte a changé pendant la recherche. Réessaie.")
-                        return
-                    previous_status = alert.status
+                assert clean_isbn is not None
+                if confirmed_isbn is None:
                     from app.db.repositories.book_repo import BookRepository
 
                     old_book = (
@@ -840,13 +860,18 @@ async def _save_edited_field_value(
                         notice, clean_isbn, alert.name, old_author
                     )
                     if conflicting and alert.isbn != clean_isbn:
+                        previous_isbn, previous_name = alert.isbn, alert.name
+                        # Aucune écriture avant confirmation. Le rollback libère
+                        # le verrou ; relire l'utilisateur qu'il vient d'expirer.
+                        await db_session.rollback()
+                        await db_session.refresh(db_user)
                         await state.update_data(
                             pending_isbn={
-                                "token": token,
+                                "token": request_token,
                                 "isbn": clean_isbn,
                                 "notice": asdict(notice) if notice else None,
-                                "previous_isbn": alert.isbn,
-                                "previous_name": alert.name,
+                                "previous_isbn": previous_isbn,
+                                "previous_name": previous_name,
                             }
                         )
                         keyboard = InlineKeyboardMarkup(
@@ -854,10 +879,10 @@ async def _save_edited_field_value(
                                 [
                                     InlineKeyboardButton(
                                         text="Confirmer le remplacement",
-                                        callback_data=f"ed_isbn:yes:{token}",
+                                        callback_data=f"ed_isbn:yes:{request_token}",
                                     ),
                                     InlineKeyboardButton(
-                                        text=BTN_CANCEL, callback_data=f"ed_isbn:no:{token}"
+                                        text=BTN_CANCEL, callback_data=f"ed_isbn:no:{request_token}"
                                     ),
                                 ]
                             ]
@@ -902,6 +927,9 @@ async def _save_edited_field_value(
                     # proposition le dit alors (« Les suggestions ont expiré. »).
                     pop_pending_variants(alert.id)
                 alert.isbn = clean_isbn
+                if original_isbn != clean_isbn:
+                    # Invalider l'ancien catalogue avant de lier la nouvelle fiche.
+                    await alert_repo.invalidate_preparation(alert, author_hint=None)
                 # Nettoyer d'éventuels ISBN numériques résiduels dans les mots-clés
                 alert.include_keywords = [
                     kw
@@ -954,22 +982,41 @@ async def _save_edited_field_value(
         elif field == "conditions":
             alert.accepted_conditions = parse_comma_separated_list(raw_text) if raw_text else None
 
-        if book_to_price is not None:
+        preparation_changed = alert.isbn != original_isbn or (
+            field == "name" and alert.name != original_name and not alert.isbn
+        )
+        if preparation_changed and not (field == "isbn" and alert.isbn is not None):
+            await alert_repo.invalidate_preparation(alert, author_hint=None)
+        request = preparation_request(alert)
+        if book_to_price is not None and request is None:
             alert.status = AlertStatus.PAUSED
         await db_session.commit()
         await state.clear()
 
-        if book_to_price is not None:
+        if preparation_changed and preparation_request(alert) is not None:
+            await prepare_bd_alert(alert.id)
+            refreshed = await alert_repo.get_by_id(alert.id, refresh=True)
+            if refreshed is None:
+                return
+            alert = refreshed
+        elif book_to_price is not None and request is None:
             prepared_name = alert.name
+            # Parcours publié des anciennes lignes NULL (#81) : garde fraîche
+            # ISBN/nom/statut. updated_at inclut aussi les écritures de cote,
+            # donc n'est pas un jeton d'identité. F04 utilise son propre jeton
+            # dans la branche de préparation ci-dessus, qui reste inchangée.
             with contextlib.suppress(TelegramAPIError):
                 await message.answer("📊 <i>Préparation des prix du marché…</i>")
             await price_book_now(book_to_price, reason="isbn_edited")
-            await db_session.refresh(alert, ["isbn", "name", "status", "updated_at"])
+            if not await alert_repo.lock_for_edit(alert):
+                await db_session.rollback()
+                return
             if (
                 alert.isbn != clean_isbn
                 or alert.status != AlertStatus.PAUSED
                 or alert.name != prepared_name
             ):
+                await db_session.rollback()
                 return
             # Le cache vient d’une autre session : relire, jamais rattacher l’objet retourné.
             priced_book = await book_repo.get_by_id(book_to_price, refresh=True)
@@ -998,6 +1045,7 @@ async def _save_edited_field_value(
                 current_page=0,
                 total_pages=total_count,
                 category_slug=cat_slug,
+                preparation=getattr(alert, "preparation", None),
             ),
         )
 
@@ -1017,6 +1065,7 @@ async def _save_edited_field_value(
                 name=f"alert-keywords-{alert.id}",
             )
     except AlertServiceError as exc:
+        await db_session.rollback()
         await message.answer(f"⚠️ {exc}\nRéessaie (ou /cancel pour annuler) :")
 
 
@@ -1068,6 +1117,14 @@ async def toggle_resume_alert(
 
     await alert_repo.set_status(alert, AlertStatus.ACTIVE)
     await db_session.commit()
+    if preparation_request(alert) is not None:
+        try:
+            await callback.answer("📊 Préparation relancée ; consulte l'alerte pour son état.")
+        except Exception:
+            logger.warning("Acquittement de reprise indisponible", exc_info=True)
+        await prepare_bd_alert(alert.id)
+        await view_single_alert(callback, db_user, db_session, answer_callback=False)
+        return
     await callback.answer("▶️ Alerte réactivée.")
     await view_single_alert(callback, db_user, db_session)
 

@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.db.models.category import Category
+from app.domain.entities.alert_preparation import preparation_request
 
 
 class AlertRepository:
@@ -71,14 +72,69 @@ class AlertRepository:
         self,
         alert_id: uuid.UUID,
         user_id: uuid.UUID | None = None,
+        *, refresh: bool = False,
     ) -> Alert | None:
         """Récupère une alerte par son UUID, optionnellement filtrée par utilisateur."""
         stmt = select(Alert).options(*self._ALERT_EAGER_LOAD).where(Alert.id == alert_id)
+        stmt = stmt.execution_options(populate_existing=refresh)
         if user_id:
             stmt = stmt.where(Alert.user_id == user_id)
 
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def lock_for_edit(self, alert: Alert, *, include_deleted: bool = False) -> bool:
+        """Relit l'alerte sous verrou court, commun aux gestes et aux résultats de préparation."""
+        stmt = (
+            select(Alert).options(*self._ALERT_EAGER_LOAD)
+            .where(Alert.id == alert.id).with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if not include_deleted:
+            stmt = stmt.where(Alert.status != AlertStatus.DELETED, Alert.deleted_at.is_(None))
+        return (await self.session.execute(stmt)).scalar_one_or_none() is not None
+
+    async def lock_preparation(self, alert_id: uuid.UUID, token: str) -> Alert | None:
+        """N'admet les écritures que sur la version encore souhaitée ; aucun HTTP sous ce verrou."""
+        stmt = (
+            select(Alert).where(
+                Alert.id == alert_id, Alert.status == AlertStatus.PAUSED,
+                Alert.deleted_at.is_(None), Alert.preparation["token"].as_string() == token,
+                Alert.preparation["state"].as_string() == "pending",
+                Alert.preparation["activation_requested"].as_boolean().is_(True),
+            ).with_for_update().execution_options(populate_existing=True)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def invalidate_preparation(self, alert: Alert, *, author_hint: str | None) -> None:
+        """Seules les dépendances bibliographiques changent la version du travail."""
+        request = preparation_request(alert)
+        if request is not None:
+            from app.db.repositories.book_repo import BookRepository
+
+            # L'identité a changé : les anciennes liaisons/verdict/total ne sont
+            # plus ceux de cette alerte. Les livres et leurs cotes restent valides.
+            await BookRepository(self.session).clear_alert_books(alert.id)
+            alert.book_search_exhausted_at = None
+            alert.series_total_cents = None
+            alert.preparation = request.restart(
+                activate=request.activation_requested, author_hint=author_hint
+            ).stored()
+
+    async def pending_preparation_ids(self, excluded: set[uuid.UUID]) -> list[uuid.UUID]:
+        """Quatre demandes éligibles, jamais tentées puis les moins récemment tentées."""
+        stmt = select(Alert.id).where(
+            Alert.status == AlertStatus.PAUSED, Alert.deleted_at.is_(None),
+            Alert.preparation["state"].as_string() == "pending",
+            Alert.preparation["activation_requested"].as_boolean().is_(True),
+        )
+        if excluded:
+            stmt = stmt.where(Alert.id.not_in(excluded))
+        stmt = stmt.order_by(
+            Alert.preparation["last_attempt_at"].as_string().asc().nulls_first(),
+            Alert.created_at, Alert.id,
+        ).limit(4)
+        return list((await self.session.execute(stmt)).scalars())
 
     async def list_not_deleted(self) -> list[Alert]:
         """Alertes encore présentes, plus récentes d'abord."""
@@ -150,7 +206,19 @@ class AlertRepository:
         status: AlertStatus,
     ) -> Alert:
         """Modifie le statut d'une alerte (active / paused)."""
-        alert.status = status
+        if not await self.lock_for_edit(alert):
+            return alert
+        request = preparation_request(alert)
+        if request is not None and status in (AlertStatus.PAUSED, AlertStatus.ACTIVE):
+            if status == AlertStatus.PAUSED:
+                alert.preparation = request.suspend().stored()
+            elif not request.activation_requested or request.state == "blocked":
+                alert.preparation = request.restart(
+                    activate=status == AlertStatus.ACTIVE, author_hint=request.author_hint
+                ).stored()
+            alert.status = AlertStatus.PAUSED
+        else:
+            alert.status = status
         await self.session.flush()
         return alert
 
@@ -174,6 +242,8 @@ class AlertRepository:
 
     async def soft_delete(self, alert: Alert) -> Alert:
         """Effectue un soft delete de l'alerte."""
+        if not await self.lock_for_edit(alert):
+            return alert
         alert.status = AlertStatus.DELETED
         alert.deleted_at = datetime.now(UTC)
         await self.session.flush()
@@ -193,6 +263,8 @@ class AlertRepository:
         from app.db.models.book import Book
 
         alert_id = alert.id
+        if not await self.lock_for_edit(alert, include_deleted=True):
+            return {"alert_id": alert_id, "deleted_books_count": 0}
 
         # 1. Identifier les livres liés à cette alerte
         stmt_books = select(AlertBook.book_id).where(AlertBook.alert_id == alert_id)
@@ -363,4 +435,3 @@ class AlertRepository:
                 return existing_book
 
         return None
-

@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
@@ -84,6 +84,12 @@ class Alert(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=AlertStatus.ACTIVE,
         index=True,
         nullable=False,
+    )
+
+    # NULL pour les alertes antérieures et les préparations achevées.
+    preparation: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"),
+        nullable=True,
     )
 
     # Horodatage pour soft delete
