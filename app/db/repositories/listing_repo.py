@@ -73,9 +73,13 @@ class ListingRepository:
         external_id: str,
     ) -> Listing | None:
         """Recherche une annonce existante par sa source et son identifiant externe."""
-        stmt = select(Listing).where(
-            Listing.source_name == source_name,
-            Listing.external_id == external_id,
+        stmt = (
+            select(Listing)
+            .where(
+                Listing.source_name == source_name,
+                Listing.external_id == external_id,
+            )
+            .execution_options(populate_existing=True)
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -139,6 +143,7 @@ class ListingRepository:
             select(Alert)
             .join(Category, Alert.category_id == Category.id)
             .options(*load_options)
+            .execution_options(populate_existing=True)
             .where(
                 Category.slug == category_slug,
                 Alert.status == AlertStatus.ACTIVE,

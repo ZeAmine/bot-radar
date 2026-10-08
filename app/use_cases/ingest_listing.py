@@ -1,5 +1,6 @@
 """Cas d'usage : Ingestion, matching déterministe et orchestration d'alerte."""
 
+import asyncio
 import logging
 import sys
 import uuid
@@ -38,6 +39,7 @@ from app.services.market_price_service import (
     has_usable_price,
 )
 from app.services.telegram_service import send_listing_alert
+from app.use_cases.listing_ingestion_gate import listing_ingestion_gate
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.use_cases.ingest_listing")
@@ -268,6 +270,35 @@ class ProcessListingUseCase:
         self.listing_repo = ListingRepository(db)
 
     async def execute(
+        self,
+        payload: ListingIngestPayload,
+        raw_payload: dict[str, Any],
+    ) -> ListingIngestResponse:
+        """Sérialise l'annonce avant toute décision et jusqu'aux commits de notification."""
+        async with listing_ingestion_gate.protect(payload.source_name, payload.external_id):
+            try:
+                return await self._execute_serialized(payload, raw_payload)
+            except BaseException:
+                # Libérer aussi les écritures SQL avant d'admettre le prochain traitement.
+                # L'envoi reste attendu ici : aucune tâche de livraison n'est détachée.
+                await self._rollback_before_release()
+                raise
+
+    async def _rollback_before_release(self) -> None:
+        """Termine le rollback sous protection, même si l'appelant est annulé pendant celui-ci."""
+        rollback = safe_create_task(self.db.rollback(), name="ingest_rollback")
+        cancelled = False
+        while not rollback.done():
+            try:
+                await asyncio.shield(rollback)
+            except asyncio.CancelledError:
+                cancelled = True
+        # La tâche SQL est terminée avant toute sortie du gate ; elle n'est pas détachée.
+        rollback.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _execute_serialized(
         self,
         payload: ListingIngestPayload,
         raw_payload: dict[str, Any],
