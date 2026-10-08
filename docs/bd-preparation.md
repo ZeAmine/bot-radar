@@ -124,8 +124,10 @@ de révision arrête la chaîne avant démarrage cible. Aucun contrôle de sant�
 révision n'est retiré. AGENTS.md décrit ce même ordre. L'ancienne application
 reste en service pendant le build (ses bind mounts ont déjà été synchronisés),
 puis est arrêtée pendant la migration. L'interruption couvre migration et
-redémarrage jusqu'à la santé réelle, sans durée garantie. En cas d'échec après
-l'arrêt, elle reste arrêtée : aucune restauration automatique. Les tests de
+redémarrage jusqu'à la santé réelle, sans durée garantie. Un échec de migration
+ou de lecture de révision laisse l'app arrêtée. Un échec de santé ou de vérification
+après démarrage laisse la cible potentiellement en cours : la procédure s'arrête
+sans arrêt ou restauration automatique. Les tests de
 procédure exécutent les scripts shell avec Docker doublé ; ils ne constituent
 pas un déploiement éprouvé sur le Compose de production.
 
