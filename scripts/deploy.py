@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Déploie le bot sur le VPS : pré-vol, synchronisation, rebuild, migration, vérification.
+"""Déploie : pré-vol, synchronisation, build, migration cible, démarrage, vérification.
 
 La procédure était une liste de commandes à recopier dans le bon ordre, et c'est
-exactement le genre de liste qu'on exécute à moitié. Deux accidents y sont invisibles
+exactement le genre de liste qu'on exécute à moitié. Trois accidents y sont invisibles
 depuis le dépôt :
 
 - un `rsync` oublié — le push est vert, le VPS sert encore le code précédent ;
-- une migration passée avant que le conteneur ne soit sain — elle vise alors
-  l'image d'avant, et le schéma se retrouve en retard d'une version sur le code.
+- une migration dans le conteneur précédent — elle vise l'ancien graphe ;
+- un démarrage cible avant migration — la reprise lit des colonnes encore absentes.
 
 Un script n'a pas d'oubli : chaque étape attend l'échec de la précédente, et la
 première qui échoue arrête tout sans lancer la suite. L'ordre est donc une donnée,
@@ -58,7 +58,7 @@ RSYNC_EXCLUDES = (
     "vendor",
 )
 
-# Attente de la santé du conteneur avant migration, en tentatives d'une seconde.
+# Attente de la santé du conteneur cible après migration, en tentatives de deux secondes.
 HEALTH_ATTEMPTS = 30
 
 
@@ -135,11 +135,11 @@ def step_sync(ctx: Context) -> int:
 
 
 def step_rebuild(ctx: Context) -> int:
-    """Reconstruit l'image de l'app : obligatoire, `alembic/` n'est pas monté en volume."""
+    """Construit l'image cible sans démarrer l'app ; son graphe Alembic y est inclus."""
     script = (
         "set -eu\n"
         f"cd {ctx.remote_dir}\n"
-        "docker compose up -d --build app\n"
+        "docker compose build app\n"
     )
     code, out, err = ctx.remote_or_default().run(script)
     print(f"{DIM}{out.strip()}{RESET}")
@@ -149,18 +149,31 @@ def step_rebuild(ctx: Context) -> int:
 
 
 def step_migrate(ctx: Context) -> int:
-    """Applique la migration, mais seulement une fois le conteneur sain.
+    """Arrête l'ancienne app, puis migre depuis l'image construite à l'étape précédente.
 
-    Migrer contre un conteneur qui redémarre encore viserait l'image précédente :
-    le schéma resterait en retard d'une version sur le code, sans que rien ne le
-    signale. Le schéma doit suivre le code : c'est une condition, pas une étape.
-
-    Chaque `docker compose exec` ferme son entrée standard : le script arrive sur
-    celle de `bash -s`, et le conteneur la consomme. Sans cela, `alembic current`
-    n'est jamais exécuté — la migration passe, sa confirmation disparaît.
+    Compose run utilise l'image du service, pas celle du conteneur ancien. Sans
+    build ni pull ici, le graphe est celui de la cible. L'entrypoint Alembic ne
+    démarre ni app ni scheduler ; les dépendances restent en service. Les appels
+    ferment stdin pour ne pas consommer la suite du script SSH.
     """
     script = f"""set -eu
 cd {ctx.remote_dir}
+docker compose stop app
+docker compose run --rm --no-deps --pull never -T --entrypoint alembic app upgrade head < /dev/null
+docker compose run --rm --no-deps --pull never -T --entrypoint alembic app current < /dev/null
+"""
+    code, out, err = ctx.remote_or_default().run(script)
+    print(f"{DIM}{out.strip()}{RESET}")
+    if err.strip():
+        print(f"{DIM}{err.strip()}{RESET}")
+    return code
+
+
+def step_start(ctx: Context) -> int:
+    """Démarre seulement après migration réussie et attend la santé réelle."""
+    script = f"""set -eu
+cd {ctx.remote_dir}
+docker compose up -d --no-build --pull never app
 cid=$(docker compose ps -q app)
 [ -n "$cid" ] || {{ echo "conteneur app introuvable"; exit 1; }}
 state=unknown
@@ -176,9 +189,7 @@ if [ "$state" != "healthy" ]; then
   echo "conteneur app non sain après {HEALTH_ATTEMPTS} tentatives : $state"
   exit 1
 fi
-echo "conteneur sain, migration..."
-docker compose exec -T app alembic upgrade head < /dev/null
-docker compose exec -T app alembic current < /dev/null
+echo "conteneur cible sain après migration"
 """
     code, out, err = ctx.remote_or_default().run(script)
     print(f"{DIM}{out.strip()}{RESET}")
@@ -305,6 +316,7 @@ STEPS: tuple[tuple[str, Callable[[Context], int]], ...] = (
     ("Synchronisation", step_sync),
     ("Reconstruction de l'image", step_rebuild),
     ("Migration", step_migrate),
+    ("Démarrage et santé", step_start),
     ("Vérification", step_verify),
     ("Notification", step_notify),
 )

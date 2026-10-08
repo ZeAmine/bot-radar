@@ -92,7 +92,7 @@ fonctionnelle avec l'ancien code. La migration refuse un downgrade destructeur.
 Rejeu sur PostgreSQL 16 jetable, avec le venv verrouillé du dépôt, vrai démarrage
 Uvicorn/scheduler, vrai `/health`, poller désactivé et frontières externes doublées :
 
-- schéma 0009, puis démarrage cible dans l'ordre actuel de `make deploy` :
+- schéma 0009, puis démarrage cible dans l'ancien ordre de `make deploy` :
   `ProgrammingError`, colonne `alerts.preparation` absente, dans la reprise due
   au démarrage ; **le healthcheck HTTP répond pourtant 200** ;
 - migration 0010 puis reprise dans ce même processus : réussite, activation et
@@ -101,27 +101,33 @@ Uvicorn/scheduler, vrai `/health`, poller désactivé et frontières externes do
   aucune erreur de reprise au démarrage, santé 200 et préparation réussie.
 
 Le healthcheck reste exécuté sans contournement ; il ne contrôle actuellement pas
-le schéma DB. L'ordre actuel expose donc un intervalle de code incompatible avec
+le schéma DB. L'ancien ordre expose donc un intervalle de code incompatible avec
 la DB, même si le déploiement finit ensuite par réussir.
 
-**Correction minimale proposée pour cette migration additive, non implémentée
-dans `scripts/deploy.py` dans ce tour :** pré-vol et synchronisation, construction
+**Correction intégrée dans `scripts/deploy.py` :** pré-vol et synchronisation, construction
 de l'image cible sans démarrer l'application, migration ponctuelle utilisant
-explicitement cette image, puis démarrage et attente du vrai healthcheck,
+explicitement cette image après arrêt de l'ancienne app, puis démarrage et attente du vrai healthcheck,
 vérification stricte, notification. Exemple des étapes intermédiaires :
 
 ```sh
 docker compose build app
-docker compose run --rm --no-deps -T --entrypoint alembic app upgrade head
-docker compose run --rm --no-deps -T --entrypoint alembic app current
+docker compose stop app
+docker compose run --rm --no-deps --pull never -T --entrypoint alembic app upgrade head < /dev/null
+docker compose run --rm --no-deps --pull never -T --entrypoint alembic app current < /dev/null
 docker compose up -d --no-build --pull never app
 # Attendre healthy, contrôler /health, puis make verify-deploy.
 ```
 
 Le one-shot ne lance ni scheduler ni poller et ne vise pas l'ancien conteneur.
-L'échec de migration arrête la chaîne avant démarrage cible. Aucun contrôle de
-santé n'est retiré. Cette proposition ne modifie pas silencieusement la procédure
-actuelle d'AGENTS.md et doit être validée avant le déploiement F04.
+L'échec de construction empêche la migration ; l'échec de migration ou de lecture
+de révision arrête la chaîne avant démarrage cible. Aucun contrôle de santé ou de
+révision n'est retiré. AGENTS.md décrit ce même ordre. L'ancienne application
+reste en service pendant le build (ses bind mounts ont déjà été synchronisés),
+puis est arrêtée pendant la migration. L'interruption couvre migration et
+redémarrage jusqu'à la santé réelle, sans durée garantie. En cas d'échec après
+l'arrêt, elle reste arrêtée : aucune restauration automatique. Les tests de
+procédure exécutent les scripts shell avec Docker doublé ; ils ne constituent
+pas un déploiement éprouvé sur le Compose de production.
 
 ## Artefact de retour exécutable
 

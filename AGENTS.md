@@ -201,10 +201,12 @@ Un push ne déploie rien : `~/bot-radar` n’est pas un dépôt git, c’est une
 **La procédure complète est une commande :**
 
 ```bash
-make deploy           # pré-vol → synchronisation → rebuild → migration → vérification
+make deploy           # pré-vol → synchronisation → build → migration cible → démarrage → vérification
 ```
 
-Elle s’arrête au premier échec et n’essaie pas l’étape suivante : la première qui échoue n’est jamais rattrapée par les suivantes. La migration n’est jouée qu’une fois le conteneur sain — migrer pendant le redémarrage viserait l’image précédente et laisserait le schéma en retard d’une version sur le code, sans que rien ne le signale. `make deploy DEPLOY_ARGS=--dry-run` relit l’ordre sans rien exécuter. Les étapes restent accessibles séparément (`make preflight`, `make verify-deploy`) pour reprendre un déploiement interrompu.
+Elle s’arrête au premier échec et n’essaie pas l’étape suivante. L’image cible est construite sans démarrer l’application. L’ancienne application est ensuite arrêtée ; la migration utilise un conteneur ponctuel de cette image, avec entrypoint Alembic, sans scheduler ni poller. Le démarrage cible n’a lieu qu’après réussite de la migration et de sa lecture de révision. L’attente de santé et les vérifications strictes restent obligatoires après démarrage. `make deploy DEPLOY_ARGS=--dry-run` relit l’ordre sans rien exécuter. Les étapes restent accessibles séparément (`make preflight`, `make verify-deploy`) pour reprendre un déploiement interrompu.
+
+L’ancienne application reste en service pendant la construction, puis est arrêtée pendant la migration. La synchronisation conserve les bind mounts existants : ses fichiers ont déjà été actualisés, même si le processus précédent tourne encore. L’interruption couvre la migration et le démarrage jusqu’à la santé réelle, sans durée garantie. Un échec de construction n’arrête pas l’ancien processus ; un échec de migration laisse l’application arrêtée et exige une reprise opérateur, sans redémarrage ou retour arrière automatique.
 
 Le détail de chaque étape, quand on les joue à la main :
 
@@ -225,14 +227,21 @@ Rebuild de l’app (obligatoire pour `alembic/` : non monté en volume ; `./app`
 
 ```bash
 ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/bot-radar && docker compose up -d --build app"
+  "cd ~/bot-radar && docker compose build app"
 ```
 
-Migration **après** que le nouveau conteneur soit healthy :
+Arrêt de l’ancienne application, puis migration depuis l’image cible construite, **avant** son démarrage :
 
 ```bash
 ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/bot-radar && docker compose exec -T app alembic upgrade head && docker compose exec -T app alembic current"
+  "cd ~/bot-radar && docker compose stop app && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app upgrade head < /dev/null && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app current < /dev/null"
+```
+
+Démarrage seulement après réussite des deux commandes précédentes, puis attente de santé :
+
+```bash
+ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
+  "cd ~/bot-radar && docker compose up -d --no-build --pull never app"
 ```
 
 Contrôles : `radar_app` healthy, `https://radar.aminezegmou.fr/health` 200, pas de conteneur worker, pas de log `Secrets de production vides`, scheduler démarré. Ne pas dumper de tokens dans les logs collectés.

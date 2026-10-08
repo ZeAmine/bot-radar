@@ -24,6 +24,7 @@ from deploy import (  # noqa: E402
     step_migrate,
     step_notify,
     step_rebuild,
+    step_start,
 )
 from notify_deploy import send_telegram_notification  # noqa: E402
 
@@ -118,29 +119,27 @@ def test_rsync_never_sends_the_local_env():
 
 
 def test_migration_waits_for_a_healthy_container():
-    """La migration ne part que sur un conteneur sain : schéma et code du même build."""
+    """Le démarrage après migration attend toujours la santé de l'image cible."""
     remote = _FakeRemote()
-    assert step_migrate(_ctx(remote=remote)) == 0
+    assert step_start(_ctx(remote=remote)) == 0
 
     script = remote.scripts[0]
     assert f'-lt {HEALTH_ATTEMPTS}' in script
     assert "healthy" in script
-    # L'ordre compte : on interroge la santé avant de toucher au schéma.
-    assert script.index("healthy") < script.index("alembic upgrade head")
-    assert "alembic current" in script
+    assert script.index("docker compose up") < script.index("healthy")
 
 
 def test_docker_exec_in_a_script_never_eats_the_rest_of_it():
-    """`docker compose exec` lit l'entrée standard : sans `</dev/null`, il avale la suite.
+    """Le one-shot ferme stdin pour préserver la suite du script SSH.
 
     Le script arrive sur l'entrée de `bash -s`. Sans la redirection, tout ce qui suit
-    le premier `docker compose exec` n'est jamais exécuté : la migration passait, sa
+    le premier appel Docker n'est jamais exécuté : la migration passait, sa
     ligne de confirmation disparaissait, et l'étape rendait un succès muet.
     """
     remote = _FakeRemote()
     assert step_migrate(_ctx(remote=remote)) == 0
 
-    execs = [line for line in remote.scripts[0].splitlines() if "docker compose exec" in line]
+    execs = [line for line in remote.scripts[0].splitlines() if "docker compose run" in line]
     assert len(execs) == 2
     for line in execs:
         assert "< /dev/null" in line, line
@@ -149,7 +148,7 @@ def test_docker_exec_in_a_script_never_eats_the_rest_of_it():
 def test_migration_reports_a_container_that_never_becomes_healthy():
     """Un conteneur qui ne devient pas sain fait échouer l'étape, pas la migration."""
     remote = _FakeRemote(code=1)
-    assert step_migrate(_ctx(remote=remote)) == 1
+    assert step_start(_ctx(remote=remote)) == 1
 
 
 def test_rebuild_runs_on_the_remote_directory():
@@ -157,7 +156,95 @@ def test_rebuild_runs_on_the_remote_directory():
     remote = _FakeRemote()
     assert step_rebuild(_ctx(remote=remote)) == 0
     assert "cd ~/bot-radar" in remote.scripts[0]
-    assert "docker compose up -d --build app" in remote.scripts[0]
+    assert "docker compose build app" in remote.scripts[0]
+    assert "docker compose up" not in remote.scripts[0]
+
+
+def test_migration_uses_the_target_image_without_starting_the_app():
+    remote = _FakeRemote()
+    assert step_migrate(_ctx(remote=remote)) == 0
+    script = remote.scripts[0]
+    assert "docker compose stop app" in script
+    assert "--entrypoint alembic app upgrade head" in script
+    assert "--entrypoint alembic app current" in script
+    assert "--no-deps" in script
+    assert "--pull never" in script
+    assert "docker compose exec" not in script
+    assert "docker compose up" not in script
+    assert script.index("docker compose stop app") < script.index("alembic app upgrade head")
+
+
+@pytest.mark.parametrize("failure", ["", "build", "upgrade", "current"])
+def test_procedure_shell_uses_built_image_and_stops_on_failure(tmp_path, failure):
+    """Scripts shell réels avec Docker doublé, sans SSH ni conteneur réel."""
+    import os
+    import subprocess
+
+    import deploy
+
+    log = tmp_path / "commands"
+    image = tmp_path / "image"
+    image.write_text("old")
+    docker = tmp_path / "docker"
+    docker.write_text('''#!/usr/bin/env python3
+import os, pathlib, sys
+args = sys.argv[1:]
+with open(os.environ['COMMAND_LOG'], 'a') as f:
+    f.write(' '.join(args) + '\\n')
+image = pathlib.Path(os.environ['IMAGE_STATE'])
+if args[:2] == ['compose', 'build']:
+    if os.environ['FAILURE'] == 'build': sys.exit(31)
+    image.write_text('target')
+if args[:2] == ['compose', 'run']:
+    assert image.read_text() == 'target', 'migration dans une ancienne image'
+    assert '--entrypoint' in args and args[args.index('--entrypoint') + 1] == 'alembic'
+    assert '--no-deps' in args and '--pull' in args and 'never' in args
+    if 'upgrade' in args and os.environ['FAILURE'] == 'upgrade': sys.exit(32)
+    if 'current' in args and os.environ['FAILURE'] == 'current': sys.exit(33)
+    print('0010_alert_preparation (head)')
+if args[:3] == ['compose', 'ps', '-q']: print('synthetic-cid')
+if args[0] == 'inspect': print('healthy')
+''')
+    docker.chmod(0o755)
+    env = dict(
+        os.environ, PATH=str(tmp_path) + os.pathsep + os.environ["PATH"],
+        COMMAND_LOG=str(log), IMAGE_STATE=str(image), FAILURE=failure,
+    )
+
+    class ShellRemote:
+        def run(self, script):
+            result = subprocess.run(
+                ["bash", "-s"], input=script, text=True, capture_output=True, env=env
+            )
+            return result.returncode, result.stdout, result.stderr
+
+    trailing = []
+    steps = tuple(
+        (label, _recorder(trailing, label) if action in (
+            deploy.step_preflight, deploy.step_sync, deploy.step_verify, deploy.step_notify
+        ) else action)
+        for label, action in deploy.STEPS
+    )
+    code = run_steps(steps, _ctx(remote=ShellRemote(), remote_dir=str(tmp_path)))
+    commands = log.read_text().splitlines()
+    assert commands[0] == "compose build app"
+    if failure == "build":
+        assert code == 31
+        assert len(commands) == 1
+    else:
+        assert commands[1] == "compose stop app"
+        assert commands[2].startswith("compose run ")
+        assert commands[2].endswith("alembic app upgrade head")
+        if failure:
+            assert code == {"upgrade": 32, "current": 33}[failure]
+            assert not any(c.startswith("compose up ") for c in commands)
+        else:
+            assert code == 0
+            assert commands[3].endswith("alembic app current")
+            assert commands[4] == "compose up -d --no-build --pull never app"
+            assert trailing[-2:] == ["Vérification", "Notification"]
+    if failure:
+        assert trailing == ["Pré-vol", "Synchronisation"]
 
 
 @pytest.mark.parametrize("code", [0, 1, 255])
