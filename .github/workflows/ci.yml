@@ -46,7 +46,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        # Même image officielle, sans la limite de pulls anonymes Docker Hub des runners.
+        image: public.ecr.aws/docker/library/postgres:16-alpine
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test

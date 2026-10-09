@@ -224,7 +224,7 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
             #    sans eux, la recherche repart seule en arrière-plan.
             await drain(repos["tasks"])
             recap_answer = typed_message.answer.call_args[0][0]
-            assert "<b>Mots-clés inclus :</b> La couleur des choses" in recap_answer
+            assert "<b>Mots-clés inclus :</b> couleur des choses" in recap_answer
 
             # 5. Création sur l'ISBN saisi, avec l'URL Vinted par ISBN.
             confirm_callback, confirm_message = confirm_press()

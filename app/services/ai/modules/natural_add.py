@@ -20,6 +20,7 @@ from app.services.book_metadata_service import (
     BookMetadata,
     EditionAlternative,
     WorkAlternative,
+    generate_recommended_keywords,
     parse_query_title_and_author,
 )
 from app.use_cases.book_search import (
@@ -28,6 +29,7 @@ from app.use_cases.book_search import (
     metadata_from_result,
 )
 from app.utils.isbn import extract_clean_isbn, is_valid_isbn, normalize_isbn
+from app.utils.text import normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +60,15 @@ SYSTEM_PROMPT = (
     '- "author": string ou null (nom de l\'auteur principal si identifiable).\n'
     '- "publisher": string ou null (éditeur ou collection spécifique '
     'ex: "Dargaud", "Panini Comics", "Marvel Deluxe").\n'
-    '- "include_keywords": Liste de mots-clés obligatoires pour la recherche '
-    '(ex: ["L\'Arabe du futur"]).\n'
+    '- "include_keywords": Minimum de termes nécessaires pour identifier la recherche, '
+    'en minuscules (ex: ["arabe du futur"]). Chaque élément est OBLIGATOIRE (ET), '
+    'une expression exige ses mots consécutifs dans cet ordre. Privilégie le titre seul '
+    'quand il suffit. Ne rends jamais deux formulations alternatives comme inclusions. '
+    'N\'ajoute pas systématiquement auteur, éditeur ou marque : les vendeurs les omettent. '
+    'Pour un produit, conserve le modèle, la génération ou la plateforme nécessaires '
+    'à la demande. Sépare les éléments uniquement s\'ils doivent pouvoir apparaître '
+    'à des endroits différents (ex: ["veste", "dickies"]). Pas de découpage automatique '
+    'en mots ni de nombre minimum de critères : une alerte démarre peu restrictive.\n'
     "  IMPORTANT : Ne jamais inclure de prix ou de filtre de prix dans "
     "les mots-clés !\n"
     '- "exclude_keywords": Liste de mots-clés à exclure pour bloquer les faux '
@@ -199,7 +208,7 @@ class NaturalAddModule(BaseAIModule):
             raw_includes = payload.include_keywords or [clean_name]
             clean_includes = []
             for k in raw_includes:
-                k_clean = price_suffix_regex.sub("", str(k).strip()).strip()
+                k_clean = normalize_text(price_suffix_regex.sub("", str(k).strip()))
                 if k_clean and k_clean not in clean_includes:
                     clean_includes.append(k_clean)
 
@@ -247,6 +256,11 @@ class NaturalAddModule(BaseAIModule):
             if series.is_series:
                 is_series = True
 
+            # Les inclusions sont un ET, pas des suggestions : l'identité bibliographique
+            # sert à identifier l'œuvre, sans exiger auteur ou éditeur dans l'annonce.
+            if category == CategorySlug.BD_COMICS.value:
+                clean_includes, _, _ = generate_recommended_keywords(clean_name)
+
             return NaturalAddResult(
                 name=clean_name,
                 category_slug=category,
@@ -254,7 +268,7 @@ class NaturalAddModule(BaseAIModule):
                 is_series=is_series,
                 author=author,
                 publisher=publisher,
-                include_keywords=clean_includes or [clean_name],
+                include_keywords=clean_includes or [normalize_text(clean_name)],
                 exclude_keywords=clean_excludes,
                 max_price_cents=payload.max_price_cents,
                 conditions=valid_conditions,
