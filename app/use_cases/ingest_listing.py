@@ -298,7 +298,7 @@ class ProcessListingUseCase:
 
     async def _rollback_before_release(self) -> None:
         """Termine le rollback sous protection, même si l'appelant est annulé pendant celui-ci."""
-        rollback = safe_create_task(self.db.rollback(), name="ingest_rollback")
+        rollback = safe_create_task(self.db.rollback(), name="ingest_rollback", cleanup=True)
         cancelled = False
         while not rollback.done():
             try:

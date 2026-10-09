@@ -1,11 +1,12 @@
 """Point d'entrée principal de l'application FastAPI."""
 
 import asyncio
-import contextlib
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from apscheduler.events import EVENT_SCHEDULER_SHUTDOWN, SchedulerEvent
 from fastapi import FastAPI, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
@@ -43,25 +44,67 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if settings.VINTED_POLLER_ENABLED:
         poller_task = safe_create_task(run_vinted_poller(stop_event))
 
-    yield
+    async def shutdown_services() -> None:
+        stop_event.set()
+        # Le shutdown asyncio d'APScheduler est différé et ne joint pas ses jobs.
+        # Son exécuteur 3.x efface _pending_futures : conserver les producteurs avant.
+        stopped = asyncio.Event()
 
-    # Nettoyage à la fermeture
-    stop_event.set()
-    if poller_task:
-        poller_task.cancel()
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            await poller_task
+        def scheduler_stopped(_event: SchedulerEvent) -> None:
+            stopped.set()
 
-    with contextlib.suppress(Exception):
-        scheduler.shutdown(wait=False)
+        scheduler.add_listener(scheduler_stopped, EVENT_SCHEDULER_SHUTDOWN)
+        try:
+            scheduler.pause()
+            executor = scheduler._executors.get("default")
+            pending_jobs = tuple(getattr(executor, "_pending_futures", ()))
+            if poller_task:
+                poller_task.cancel()
+            scheduler.shutdown(wait=False)
+            await stopped.wait()
+        finally:
+            scheduler.remove_listener(scheduler_stopped)
 
-    from app.core.http_client import close_shared_http_client
-    from app.core.redis import close_redis
-    from app.core.tasks import wait_all_background_tasks
+        producers = {task for task in pending_jobs if not task.done()}
+        if poller_task is not None and not poller_task.done():
+            producers.add(poller_task)
+        if producers:
+            logging.getLogger("radar.tasks").warning(
+                "Arrêt non terminé : attente du nettoyage de %d producteur(s).", len(producers)
+            )
+            await asyncio.wait(producers)
 
-    await wait_all_background_tasks(timeout=5.0)
-    await close_shared_http_client()
-    await close_redis()
+        from app.core.http_client import close_shared_http_client
+        from app.core.redis import close_redis
+        from app.core.tasks import wait_all_background_tasks
+
+        await wait_all_background_tasks(timeout=5.0)
+        await close_shared_http_client()
+        await close_redis()
+
+    try:
+        yield
+    finally:
+        # Opération locale fortement retenue et toujours jointe, jamais détachée.
+        cleanup = asyncio.create_task(shutdown_services(), name="shutdown-services")
+        caller_cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(cleanup)
+                break
+            except asyncio.CancelledError as exc:
+                if cleanup.cancelled():
+                    raise
+                caller_cancellation = exc
+                logging.getLogger("radar.tasks").warning(
+                    "Arrêt non terminé : appelant annulé, nettoyage des services encore attendu."
+                )
+            except Exception as exc:
+                if caller_cancellation is not None:
+                    raise caller_cancellation from exc
+                raise
+        if caller_cancellation is not None:
+            raise caller_cancellation
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):

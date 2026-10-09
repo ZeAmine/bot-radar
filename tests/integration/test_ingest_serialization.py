@@ -407,6 +407,93 @@ async def test_cancellation_during_rollback_does_not_release_key_early(
     assert (await journey.matches())[0].notified_at is not None
 
 
+@pytest.mark.parametrize("trigger", ["error", "cancellation", "drain_cancellation"])
+@pytest.mark.parametrize("cancel_drain", [False, True])
+async def test_drain_preserves_ingestion_rollback_until_sql_finishes(
+    journey, monkeypatch, trigger, cancel_drain
+):
+    """Le drainage attend le rollback protégé, même enregistré après son échéance."""
+    from app.core import tasks
+    from app.use_cases.ingest_listing import listing_ingestion_gate
+
+    registered = set()
+    monkeypatch.setattr(tasks, "_background_tasks", registered)
+    monkeypatch.setattr(tasks, "_cleanup_tasks", set())
+    entered, rollback_started, release_rollback, drain_observed = (
+        asyncio.Event() for _ in range(4)
+    )
+    rollback_task = None
+    rollback_completed = False
+    original_wait = asyncio.wait
+
+    async def observe_wait(pending, **kwargs):
+        if rollback_task in pending:
+            drain_observed.set()  # Les décisions d'annulation de cette vague sont prises.
+        return await original_wait(pending, **kwargs)
+
+    monkeypatch.setattr(tasks.asyncio, "wait", observe_wait)
+    await journey.add_alert()
+    async with journey.database.maker() as session:
+        original_rollback = session.rollback
+
+        async def rollback():
+            nonlocal rollback_task, rollback_completed
+            rollback_task = asyncio.current_task()
+            rollback_started.set()
+            await release_rollback.wait()
+            await original_rollback()
+            rollback_completed = True
+
+        async def interrupt_commit():
+            entered.set()
+            if trigger == "error":
+                raise RuntimeError("Échec factice avant persistance")
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(session, "rollback", rollback)
+        monkeypatch.setattr(session, "commit", interrupt_commit)
+        first = tasks.safe_create_task(
+            ProcessListingUseCase(session, journey.bot).execute(journey.payload(), {}),
+            name="synthetic-ingestion",
+        )
+        await entered.wait()
+        if trigger != "drain_cancellation":
+            if trigger == "cancellation":
+                first.cancel()
+            await rollback_started.wait()
+        draining = asyncio.create_task(tasks.wait_all_background_tasks(timeout=0))
+        try:
+            await rollback_started.wait()
+            await drain_observed.wait()
+            assert rollback_task.cancelling() == 0, "Le drainage annule directement le rollback"
+            assert not first.done()
+            assert not draining.done()
+            assert session.in_transaction()
+            entry = listing_ingestion_gate._entries[("vinted", "console-1")]
+            assert entry.lock.locked(), "Protection libérée avant la fin SQL"
+            if cancel_drain:
+                draining.cancel()
+            release_rollback.set()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            if cancel_drain:
+                with pytest.raises(asyncio.CancelledError):
+                    await draining
+            else:
+                await draining
+            assert rollback_completed
+            assert not session.in_transaction()
+            assert not listing_ingestion_gate._entries
+            assert not registered
+            assert not tasks._cleanup_tasks
+            assert journey.deliveries == []
+            assert await journey.matches() == []
+            assert (await session.execute(select(Listing))).scalars().all() == []
+        finally:
+            release_rollback.set()
+            await asyncio.gather(first, draining, return_exceptions=True)
+
+
 @pytest.mark.parametrize("failure", ["commit", "timeout"])
 async def test_ambiguous_delivery_remains_pending_and_can_duplicate(journey, monkeypatch, failure):
     """La protection ne transforme pas une réponse perdue ou un commit échoué en succès."""
