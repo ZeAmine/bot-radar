@@ -21,9 +21,8 @@ celle qui part.
 
 Trois parcours, même chemin. Les deux premiers ne diffèrent que par un champ de
 l'alerte, ses `variants` : la variante valide l'annonce, sans elle rien ne part. Le
-troisième est une BD dont l'ISBN, porté par l'annonce scrapée, retrouve au catalogue
-un livre déjà coté : la ligne de cote figure donc dans le message remis, et c'est
-l'ISBN qui la rend possible.
+troisième est une BD dont l'alerte porte l'identité attendue : le livre déjà coté
+fournit la ligne de cote. L'ISBN déclaré par le vendeur n'est pas cette confirmation.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -301,19 +300,13 @@ async def test_a_listing_that_matches_no_alert_sends_nothing(
 
 
 @pytest.mark.asyncio
-async def test_an_isbn_listing_delivers_the_priced_book_cote_line(
+async def test_an_isbn_alert_delivers_the_priced_book_cote_line(
     ingestion_db: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """La BD scrapée porte un ISBN : le livre déjà coté fournit la ligne de cote.
-
-    L'annonce Vinted n'a ni mot-clé de catalogue ni liaison préalable : c'est son
-    ISBN, passé par `to_ingest_payload`, qui retrouve le livre coté au moment de
-    l'ingestion. La ligne de cote (prix bas constaté sur un an, comparé au total
-    Vinted) figure donc dans le message réellement remis à Telegram.
-    """
+    """L'identité portée par l'alerte retrouve la cote locale avant l'envoi réel."""
     monkeypatch.setattr(settings, "AI_ENABLED", False)
-    await _seed_alert(
+    alert = await _seed_alert(
         ingestion_db,
         category=Category(
             slug="bd_comics", label="BD & Comics", emoji="📚", is_active=True
@@ -323,6 +316,8 @@ async def test_an_isbn_listing_delivers_the_priced_book_cote_line(
         variants=[],
         max_item_price_cents=1500,
     )
+    alert.isbn = BD_ISBN
+    await ingestion_db.commit()
     await _seed_priced_book(ingestion_db)
     bot = FakeTelegramBot()
 

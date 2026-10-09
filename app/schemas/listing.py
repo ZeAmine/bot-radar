@@ -3,8 +3,21 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
+
+from app.utils.isbn import normalize_listing_isbn
+
+ListingIngestWarning = Literal["listing_isbn_invalid_ignored"]
 
 
 class ListingIngestPayload(BaseModel):
@@ -30,6 +43,27 @@ class ListingIngestPayload(BaseModel):
     photos: list[str] = Field(default_factory=list, max_length=1)
     isbn13: str | None = Field(default=None, max_length=13)
     published_at: datetime | None = Field(default=None)
+    _isbn_invalid_ignored: bool = PrivateAttr(default=False)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def normalize_seller_isbn(cls, data: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
+        """Un code inutilisable n'empêche pas l'ingestion textuelle de l'annonce."""
+        invalid = False
+        if isinstance(data, dict) and isinstance(data.get("isbn13"), str):
+            raw = data["isbn13"]
+            code = normalize_listing_isbn(raw)
+            invalid = code is None
+            data = {**data, "isbn13": code}
+        result = handler(data)
+        if isinstance(data, dict):
+            result._isbn_invalid_ignored = invalid
+        return result
+
+    @property
+    def isbn_invalid_ignored(self) -> bool:
+        """Diagnostic de validation, indépendant du JSON brut conservé par l'ingestion."""
+        return self._isbn_invalid_ignored
 
     @field_validator("category_slug")
     @classmethod
@@ -75,3 +109,4 @@ class ListingIngestResponse(BaseModel):
     estimated_total_cents: int | None
     matches: list[ListingMatchItem]
     needs_retry: bool = False
+    warnings: list[ListingIngestWarning] = Field(default_factory=list)

@@ -40,10 +40,10 @@ dérive (ordre réel, sans doublons) ; `unavailable` nomme les échecs établis.
 Un provider désactivé n'est ni consulté ni en panne. `has_results` vient des
 éléments bruts reçus, avant parsing, scoring et filtrage.
 
-Garanties du lot : lecture seule (aucune écriture `Book` / `AlertBook`),
-aucun appel LLM, aucun cache bibliographique ajouté, aucune migration, aucun
-secret, aucun changement du chemin de détection des annonces (le cas d'usage
-n'est appelé ni par l'ingestion ni par le matching).
+Garanties : lecture seule (aucune écriture `Book` / `AlertBook`), aucun appel LLM,
+aucun cache bibliographique ajouté ni migration. L'ingestion peut consulter ce
+contrat pour confirmer un ISBN vendeur après tous les envois ; il reste absent
+du matching et du chemin synchrone avant Telegram.
 """
 
 from dataclasses import dataclass, replace
