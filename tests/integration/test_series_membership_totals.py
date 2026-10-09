@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import inspect, select
+from sqlalchemy.orm.attributes import NO_VALUE
 
 from app.core import tasks
 from app.core.config import settings
@@ -19,6 +20,7 @@ from app.db.models.category import Category
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
+from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.domain.enums import AlertStatus, ComparisonStatus
 from app.schemas.listing import ListingIngestPayload
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, CatalogueVerdict
@@ -191,28 +193,77 @@ async def test_replacement_recalculates_only_current_membership(journey):
 async def test_recalculation_reads_links_after_waiting_for_mutation(journey, monkeypatch, change):
     from app.services import book_market_pricing as pricing
 
-    entered = asyncio.Event()
-    original = pricing.refresh_series_total
+    waiting = asyncio.Event()
+    committed = asyncio.Event()
+    # Ces listes survivent à la coroutine et à la fermeture de sa session :
+    # l'identity map faible ne peut pas évacuer les objets préchargés.
+    held_books, held_caches, held_sessions = [], [], []
+    readings = []
+    original_lock = MarketPriceRepository.lock_series
+    original_read = BookRepository.get_all_books_for_alert
 
-    async def observed(session, alert_id):
-        entered.set()
-        return await original(session, alert_id)
+    def assert_retained(session):
+        for value in [*held_books, *held_caches]:
+            state = inspect(value)
+            assert state.persistent
+            assert session.sync_session.identity_map[state.key] is value
+        for book, cache in zip(held_books, held_caches, strict=True):
+            assert inspect(book).attrs.market_cache.loaded_value is cache
 
-    monkeypatch.setattr(pricing, "refresh_series_total", observed)
+    def assert_old_prices():
+        assert [cache.lowest_delivered_price_cents for cache in held_caches] == [1000, 2000]
+
+    async def read_current(repo, alert_id):
+        books = await original_read(repo, alert_id)
+        if held_sessions and repo.session is held_sessions[0]:
+            for book in books:
+                assert inspect(book).attrs.market_cache.loaded_value is not NO_VALUE
+                cache = book.market_cache
+                assert cache is not None
+                if book.id in {old.id for old in held_books}:
+                    index = next(i for i, old in enumerate(held_books) if old.id == book.id)
+                    assert book is held_books[index]
+                    assert cache is held_caches[index]
+            readings.append({b.id: b.market_cache.lowest_delivered_price_cents for b in books})
+        return books
+
+    async def acquire_after_commit(repo, alert_id):
+        if held_sessions and repo.session is held_sessions[0]:
+            assert_retained(repo.session)
+            assert_old_prices()
+            waiting.set()
+            await committed.wait()
+            # Aucun refresh/expire de test entre l'écriture concurrente et le
+            # vrai chemin central : l'ancienne cote est encore dans les objets.
+            assert_retained(repo.session)
+            assert_old_prices()
+        await original_lock(repo, alert_id)
+
+    monkeypatch.setattr(BookRepository, "get_all_books_for_alert", read_current)
+    monkeypatch.setattr(MarketPriceRepository, "lock_series", acquire_after_commit)
     async with journey.db.maker() as editor:
         alert = await AlertRepository(editor).get_by_id(journey.alert.id)
         assert await AlertRepository(editor).lock_for_edit(alert)
 
         async def recalculate():
             async with journey.db.maker() as session:
-                # Un ensemble déjà dans l'identity map ne doit pas être republié
-                # après l'attente du verrou.
-                await BookRepository(session).get_all_books_for_alert(journey.alert.id)
+                held_sessions.append(session)
+                books = await BookRepository(session).get_all_books_for_alert(journey.alert.id)
+                held_books.extend(books)
+                held_caches.extend(book.market_cache for book in books)
+                assert [book.id for book in held_books] == [b.id for b in journey.books[:2]]
+                assert_retained(session)
+                assert_old_prices()
                 await pricing.refresh_series_total(session, journey.alert.id)
+                assert_retained(session)
+                if change == "price":
+                    assert held_caches[0].lowest_delivered_price_cents == 1500
                 await session.commit()
 
         task = asyncio.create_task(recalculate())
-        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(waiting.wait(), 2)
+        assert_retained(held_sessions[0])
+        assert_old_prices()
         if change == "add":
             await BookRepository(editor).link_alert_to_book(journey.alert.id, journey.books[2].id)
         elif change == "remove":
@@ -241,6 +292,20 @@ async def test_recalculation_reads_links_after_waiting_for_mutation(journey, mon
                 pricing.BookPricingResult.from_offers([offer], offer, None),
             )
         await editor.commit()
+        assert_retained(held_sessions[0])
+        assert_old_prices()
+        committed.set()
         await asyncio.wait_for(task, 5)
+    first, second, third = [b.id for b in journey.books]
+    assert readings == [
+        {first: 1000, second: 2000},
+        {
+            "add": {first: 1000, second: 2000, third: 3000},
+            "remove": {},
+            "replace": {second: 2000, third: 3000},
+            "price": {first: 1500, second: 2000},
+        }[change],
+    ]
+    assert len(held_books) == len(held_caches) == 2
     expected = {"add": 6000, "remove": None, "replace": 5000, "price": 3500}
     assert await total(journey) == expected[change]
