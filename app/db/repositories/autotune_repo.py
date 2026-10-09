@@ -64,13 +64,17 @@ async def record_listing_dislike(
     """Journalise une seule fois un signalement pour cette annonce et cette alerte."""
     # Le verrou de ligne sérialise les confirmations concurrentes en production.
     await db_session.execute(select(Listing.id).where(Listing.id == listing_id).with_for_update())
+    # L'identifiant Telegram dépasse int32 : un CAST AS INTEGER fait refuser
+    # le paramètre par asyncpg avant toute réponse au bouton « Confirmer ».
+    chat_id_value = BotEvent.metadata_["chat_id"].as_string()
+    same_chat = chat_id_value.is_(None) if chat_id is None else chat_id_value == str(chat_id)
     existing = await db_session.execute(
         select(BotEvent.id)
         .where(
             BotEvent.event_type == "listing_disliked",
             BotEvent.listing_id == listing_id,
             BotEvent.alert_id == alert_id,
-            BotEvent.metadata_["chat_id"].as_integer() == chat_id,
+            same_chat,
         )
         .limit(1)
     )
