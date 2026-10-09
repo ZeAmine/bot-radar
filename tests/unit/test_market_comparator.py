@@ -525,9 +525,11 @@ def test_lot_summary_reports_partial_tome_matching():
         listing=listing, book=None, books_in_series=books, tome_result=tome_res
     )
     assert summary is not None
-    # Seul T1 + T2 sont cumulés (34,50 €) et l'appariement partiel est annoncé
-    assert "<b>Prix bas constaté (Lot, 2/3 tomes) :</b> ~34,50 €" in summary
-    assert "<b>Écart :</b> -9,50 € ✅" in summary
+    assert "Tome 1 : 16,00 €" in summary
+    assert "Tome 2 : 18,50 €" in summary
+    assert "Tome 3 : cote indisponible" in summary
+    assert "34,50" not in summary
+    assert "Écart" not in summary
 
 
 def test_inferred_lot_label_says_the_composition_was_deduced():
@@ -577,10 +579,9 @@ def test_inferred_lot_label_keeps_the_partial_coverage():
         listing=listing, book=None, books_in_series=books, tome_result=tome_res
     )
     assert summary is not None
-    assert (
-        "<b>Prix bas constaté (Lot de 2 tomes, composition déduite, 1/2) :</b> ~16,00 €"
-        in summary
-    )
+    assert "Tome 1 : 16,00 €" in summary
+    assert "Tome 2 : cote indisponible" in summary
+    assert "Écart" not in summary
 
 
 def test_details_card_rejects_unsafe_offer_link():
@@ -776,8 +777,9 @@ def test_series_card_counts_a_settled_absence_apart_from_the_pending_cotes():
 
     assert "⏳ 1 tome(s) en cours de cote…" in card
     assert "🔍 1 tome(s) sans aucune offre trouvée." in card
-    # Le total persisté ne bouge pas : il somme ce qui est coté, pas l'absence.
-    assert "<b>Total de la série :</b> ~12,00 € (1/3 tomes)" in card
+    # Une valeur persistée incohérente est masquée, jamais remplacée à la lecture.
+    assert "Total de la série" not in card
+    assert "~5,00" not in card
 
 
 def test_the_panel_without_cote_says_which_silence_it_reports():
@@ -866,6 +868,7 @@ def test_lot_status_keeps_a_failed_tome_visible_after_another_tome_succeeds():
     first.title, second.title = "Série Tome 1", "Série Tome 2"
     first.market_cache.collection_status = "failed"
     first.market_cache.last_attempt_at = datetime(2026, 10, 6, tzinfo=UTC)
+    first.market_cache.checked_at = datetime(2026, 10, 6, tzinfo=UTC)
     second.market_cache.collection_status = "complete"
     second.market_cache.last_attempt_at = datetime(2026, 10, 7)
     card = MarketPriceService.format_market_details_card(
@@ -895,6 +898,7 @@ def test_series_with_one_empty_tome_does_not_claim_the_whole_collection_is_empty
     second.title = "Série Tome 2"
     second.market_cache.collection_status = "empty"
     second.market_cache.last_attempt_at = datetime(2026, 10, 7, tzinfo=UTC)
+    second.market_cache.checked_at = datetime(2026, 10, 7, tzinfo=UTC)
     card = MarketPriceService.format_market_details_card(None, None, [first, second])
     assert card.splitlines()[2] == "<b>Actualisation :</b> 07/10 à 02:00"
     assert "1 tome(s) sans aucune offre trouvée" in card

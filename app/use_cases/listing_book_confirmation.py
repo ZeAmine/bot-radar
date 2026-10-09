@@ -9,7 +9,7 @@ from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapsho
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.session import AsyncSessionLocal
 from app.domain.entities.alert_preparation import preparation_request
-from app.services.book_market_pricing import schedule_book_pricing
+from app.services.book_market_pricing import recalculate_invalidated_series, schedule_book_pricing
 from app.services.book_metadata_service import TITLE_SIMILARITY_MIN, same_author, title_similarity
 from app.services.market_price_service import has_usable_price
 from app.services.tome_extractor import TomeExtractor
@@ -138,6 +138,7 @@ async def confirm_listing_book(
         loaded = await book_repo.get_by_id(book.id)
         book_id = book.id
         needs_price = loaded is not None and not has_usable_price(loaded.market_cache)
+        await recalculate_invalidated_series(session)
         await session.commit()
     if book_id is not None and needs_price:
         schedule_book_pricing(book_id, reason="seller_isbn_confirmed")

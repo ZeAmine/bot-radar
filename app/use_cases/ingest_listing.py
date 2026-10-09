@@ -29,7 +29,11 @@ from app.schemas.listing import (
     ListingMatchItem,
 )
 from app.services.book_catalog_service import BookCatalogService
-from app.services.book_market_pricing import price_book_now, schedule_book_pricing
+from app.services.book_market_pricing import (
+    price_book_now,
+    recalculate_invalidated_series,
+    schedule_book_pricing,
+)
 from app.services.market_health import classify_sent_cote_state, record_sent_cote_state
 from app.services.market_price_service import (
     COTE_NOT_READY_LINE,
@@ -149,6 +153,7 @@ async def link_books_from_bnf(
                 loaded = await book_repo.get_by_id(book.id)
                 if loaded is not None and not has_usable_price(loaded.market_cache):
                     to_price.append(book.id)
+            await recalculate_invalidated_series(session)
             await session.commit()
     except Exception as exc:
         if expected_preparation_token is not None:
@@ -280,6 +285,7 @@ async def _link_bd_catalog_background(
                 # de décider s'il faut le coter.
                 loaded = await BookRepository(session).get_by_id(book.id)
                 needs_price = loaded is not None and not has_usable_price(loaded.market_cache)
+            await recalculate_invalidated_series(session)
             await session.commit()
     except Exception as exc:
         logger.debug("Liaison catalogue BD différée ignorée pour %s : %s", alert_id, exc)
@@ -540,6 +546,10 @@ class ProcessListingUseCase:
             safe_create_task(_link_bd_catalog_background(**arguments),
                              name=f"bd_catalog_{arguments['alert_id']}")
 
+        # Écriture locale après tous les envois, jamais ajoutée à un lecteur pré-alerte.
+        await recalculate_invalidated_series(self.db)
+        await self.db.commit()
+
         return ListingIngestResponse(
             listing_id=listing.id,
             is_duplicate=is_duplicate,
@@ -566,10 +576,17 @@ class ProcessListingUseCase:
         if await AlertRepository(self.db).lock_bibliographic_result(alert.id, snapshot) is None:
             return None, False, None
         await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
+        selected, books, tome_result = resolve_loaded_books(
+            alert_name=alert.name,
+            listing_title=listing.title,
+            listing_description=listing.description,
+            books=[book],
+        )
         line = MarketPriceService.get_comparison_summary(
             listing=listing,
-            book=book,
-            books_in_series=[book],
+            book=selected or (book if not tome_result.is_lot else None),
+            books_in_series=books,
+            tome_result=tome_result,
         )
         return line or cote_absence_line(book), True, book
 

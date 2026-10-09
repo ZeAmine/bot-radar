@@ -793,6 +793,8 @@ async def save_alert(
         # et des cotes. L'ingestion reste ensuite une simple lecture du cache.
         alert.status = AlertStatus.PAUSED
         alert.preparation = PreparationRequest(author_hint=author).stored()
+        from app.services.book_market_pricing import recalculate_invalidated_series
+        await recalculate_invalidated_series(db_session)
         await db_session.commit()
         # Le brouillon est terminé avant toute attente : un nouveau /add peut
         # commencer sans être effacé par la fin de cette préparation.

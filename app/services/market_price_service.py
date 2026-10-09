@@ -16,6 +16,7 @@ serait une cote fausse. L'écart affiché compare toujours le total Vinted
 
 import html
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -170,8 +171,95 @@ def has_usable_price(cache: BookMarketCache | None) -> bool:
     Une cote ``UNAVAILABLE`` sans historique 1 an ne l'est pas : elle dit qu'une
     passe n'a rien trouvé, pas que l'ouvrage n'a aucun prix.
     """
-    reference_cents, _ = reference_price(cache)
+    reference_cents, _ = admissible_reference_price(cache)
     return reference_cents is not None
+
+
+def admissible_reference_price(cache: BookMarketCache | None) -> tuple[int | None, bool]:
+    """Historique inchangé ; prix courant disponible avec une validité connue et non expirée."""
+    price, historical = reference_price(cache)
+    if price is None or historical:
+        return price, historical
+    if cache is None or cache.comparison_status != ComparisonStatus.AVAILABLE:
+        return None, False
+    if MarketPriceService._is_expired(cache):
+        return None, False
+    return price, False
+
+
+def _reference_reason(book: Book) -> str | None:
+    cache = _loaded_market_cache(book)
+    if has_usable_price(cache):
+        return None
+    if cache is not None and reference_price(cache)[0] is not None:
+        if cache.expires_at is None:
+            return "validité du prix courant inconnue"
+        if MarketPriceService._is_expired(cache):
+            return "prix courant expiré"
+    return "cote indisponible"
+
+
+@dataclass(frozen=True)
+class LotReference:
+    """Résolution locale commune aux deux rendus : une édition par tome, toutes admissibles."""
+
+    books: list[Book]
+    total_cents: int | None
+    historical: bool
+    reason: str | None
+
+
+def lot_reference(books: list[Book], wanted: list[int]) -> LotReference:
+    requested = set(wanted)
+    matched = _match_lot_books(books, wanted)
+    if not requested:
+        return LotReference([], None, False, "composition non identifiée")
+    by_number: dict[int, list[Book]] = {number: [] for number in requested}
+    for candidate in matched:
+        number = extract_tome_number_from_title(candidate.title)
+        if number is not None:
+            by_number[number].append(candidate)
+    if any(len(values) > 1 for values in by_number.values()):
+        return LotReference(matched, None, False, "éditions ambiguës pour les tomes demandés")
+    if any(not values for values in by_number.values()):
+        found = sum(bool(values) for values in by_number.values())
+        return LotReference(
+            matched,
+            None,
+            False,
+            f"référence incomplète ({found}/{len(requested)} tomes identifiés)",
+        )
+    reasons = [_reference_reason(candidate) for candidate in matched]
+    if any(reasons):
+        return LotReference(
+            matched, None, False, "; ".join(dict.fromkeys(reason for reason in reasons if reason))
+        )
+    prices = [admissible_reference_price(_loaded_market_cache(candidate)) for candidate in matched]
+    return LotReference(
+        matched,
+        sum(price for price, _ in prices if price is not None),
+        all(historical for _, historical in prices),
+        None,
+    )
+
+
+def _reference_detail(book: Book) -> str:
+    price, _ = reference_price(_loaded_market_cache(book))
+    reason = _reference_reason(book)
+    value = format_cents(price) if price is not None else "cote indisponible"
+    qualifier = f" ({reason})" if reason and price is not None else ""
+    return f"• {clean_tome_display_title(book.title)} : {value}{qualifier}"
+
+
+def _lot_unavailable(reference: LotReference) -> str:
+    reason = reference.reason or "composition non identifiée"
+    lines = [f"⚠️ {reason.capitalize()} : comparaison indisponible."]
+    books = _sort_series_books(reference.books)
+    # Le résumé reste compact ; le panneau garde les détails de tous les tomes.
+    lines.extend(_reference_detail(book) for book in books[:3])
+    if len(books) > 3:
+        lines.append("… autres détails dans « Prix du marché ».")
+    return "\n".join(lines)
 
 
 def _loaded_market_cache(book: Book) -> BookMarketCache | None:
@@ -207,6 +295,9 @@ def cote_absence_line(book: Book | None) -> str | None:
     if book is None:
         return None
     cache = _loaded_market_cache(book)
+    if cache is not None and reference_price(cache)[0] is not None and not has_usable_price(cache):
+        reason = _reference_reason(book) or "cote indisponible"
+        return f"{COTE_UNAVAILABLE_LINE} ({reason})."
     if cache is not None and cache.collection_status == "failed":
         date = _format_checked_at(cache.last_attempt_at)
         return f"{COTE_UNAVAILABLE_LINE} (tentative du {date})."
@@ -322,31 +413,17 @@ def series_reference_total(books: list[Book]) -> int | None:
     seule, qui définit le total : `persist_market_result` l'appelle à chaque
     écriture de cote, et l'écran affiche la valeur ainsi persistée.
     """
+    listed = listable_series_books(books)
+    numbers = [extract_tome_number_from_title(book.title) for book in listed]
+    numbered = [number for number in numbers if number is not None]
+    if len(numbered) != len(set(numbered)):
+        return None
     known = [
         price_cents
-        for book in listable_series_books(books)
-        if (price_cents := reference_price(book.market_cache)[0]) is not None
+        for book in listed
+        if (price_cents := admissible_reference_price(_loaded_market_cache(book))[0]) is not None
     ]
     return sum(known) if known else None
-
-
-def _lot_reference_total(matched: list[Book]) -> int | None:
-    """Prix de lot : la somme des tomes appariés, seulement s'ils sont tous cotés.
-
-    Un total partiel serait un cumul fictif : le vendeur vend le lot entier, pas
-    la moitié que nous aurions su coter. Sans appariement complet, il n'y a pas
-    de prix de lot — le panneau affiche alors les cotes par tome.
-    """
-    if not matched:
-        return None
-    known = [
-        price_cents
-        for book in matched
-        if (price_cents := reference_price(book.market_cache)[0]) is not None
-    ]
-    if len(known) != len(matched):
-        return None
-    return sum(known)
 
 
 def _unpriced_tome_lines(books: list[Book]) -> str | None:
@@ -359,7 +436,7 @@ def _unpriced_tome_lines(books: list[Book]) -> str | None:
     """
     pending = absence = unavailable = 0
     for book in listable_series_books(books):
-        if reference_price(book.market_cache)[0] is not None:
+        if has_usable_price(_loaded_market_cache(book)):
             continue
         line = cote_absence_line(book)
         if line and line.startswith(COTE_UNAVAILABLE_LINE):
@@ -381,7 +458,7 @@ def _unpriced_tome_lines(books: list[Book]) -> str | None:
 def _series_total_line(total_cents: int, books: list[Book]) -> str:
     """Ligne « Total de série », avec la couverture réelle des tomes cotés."""
     listed = listable_series_books(books)
-    priced = sum(1 for book in listed if reference_price(book.market_cache)[0] is not None)
+    priced = sum(1 for book in listed if has_usable_price(_loaded_market_cache(book)))
     coverage = f" ({priced}/{len(listed)} tomes)" if priced < len(listed) else ""
     return f"<b>Total de la série :</b> ~{format_cents(total_cents)}{coverage}"
 
@@ -517,13 +594,13 @@ class MarketPriceService:
         books_in_series = books_in_series or []
 
         # 1. Livre précis résolu (tome unique ou one-shot)
-        if book and book.market_cache:
+        if book and book.market_cache and not (tome_result and tome_result.is_lot):
             summary = MarketPriceService._single_book_summary(listing, book, tome_result)
             if summary is not None:
                 return summary
 
         # 2. Lot de tomes identifiés dans une série
-        if tome_result and tome_result.is_lot and tome_result.lot_tomes and books_in_series:
+        if tome_result and tome_result.is_lot and tome_result.lot_tomes:
             summary = MarketPriceService._lot_summary(
                 listing,
                 books_in_series,
@@ -567,7 +644,7 @@ class MarketPriceService:
         cache = book.market_cache
         if cache is None:
             return None
-        reference_cents, is_historical = reference_price(cache)
+        reference_cents, is_historical = admissible_reference_price(cache)
 
         # Sans historique certifié, un cache expiré ne peut plus rien garantir.
         if reference_cents is None:
@@ -596,7 +673,7 @@ class MarketPriceService:
     def _is_expired(cache: BookMarketCache) -> bool:
         """Vrai si le cache de marché a dépassé sa durée de validité."""
         if cache.expires_at is None:
-            return False
+            return True
         expires_at = cache.expires_at
         aware = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=UTC)
         return aware < datetime.now(UTC)
@@ -622,25 +699,15 @@ class MarketPriceService:
         dont le T2 n'est pas au catalogue est annoncé comme tel plutôt que
         comparé à une somme qui n'inclut pas le tome manquant.
         """
-        matched = _match_lot_books(books_in_series, lot_tomes)
+        reference = lot_reference(books_in_series, lot_tomes)
+        if reference.total_cents is None:
+            return _lot_unavailable(reference)
+        cumulated = reference.total_cents
         expected_count = len(set(lot_tomes))
-        target_books = matched or books_in_series
-
-        priced: list[tuple[int, bool]] = []
-        for book in target_books:
-            price_cents, is_historical = reference_price(book.market_cache)
-            if price_cents is not None:
-                priced.append((price_cents, is_historical))
-
-        if not priced:
-            return None
-
-        cumulated = sum(price_cents for price_cents, _ in priced)
-        all_historical = all(is_historical for _, is_historical in priced)
-        label = "Prix bas constaté" if all_historical else "Prix du marché"
+        label = "Prix bas constaté" if reference.historical else "Prix du marché"
         label += _lot_label(
             expected_count,
-            len(priced),
+            len(reference.books),
             composition_inferred=composition_inferred,
         )
 
@@ -674,18 +741,24 @@ class MarketPriceService:
         verdict, et la cote qu'ils portent est plus récente que lui.
         """
         books_in_series = books_in_series or []
+        # Validation CPU seulement : aucune somme de remplacement n'est publiée.
+        if series_total_cents != series_reference_total(books_in_series):
+            series_total_cents = None
 
         # Résolution de repli : un tome non résolu mais une série d'un seul livre.
         if not book and len(books_in_series) == 1 and not (tome_result and tome_result.is_lot):
             book = books_in_series[0]
 
-        if not book and books_in_series:
-            if tome_result and tome_result.is_lot:
-                card = MarketPriceService._lot_card(books_in_series, tome_result.lot_tomes)
-                targets = _match_lot_books(books_in_series, tome_result.lot_tomes or [])
-                books_in_series = targets or books_in_series
-            else:
-                card = MarketPriceService._series_card(listing, books_in_series, series_total_cents)
+        if tome_result and tome_result.is_lot:
+            # La sélection d'un tome garde ses détails, jamais un écart entre
+            # son prix unitaire et l'ensemble de l'annonce.
+            card = MarketPriceService._lot_card(books_in_series, tome_result.lot_tomes)
+            if book:
+                details = MarketPriceService._single_book_card(book, [], latest_snapshot, None)
+                card = details + "\n\n" + card.split("\n\n", 1)[-1]
+            books_in_series = _match_lot_books(books_in_series, tome_result.lot_tomes or [])
+        elif not book and books_in_series:
+            card = MarketPriceService._series_card(listing, books_in_series, series_total_cents)
         elif not book and catalogue_exhausted:
             card = MarketPriceService._no_catalogue_card()
         else:
@@ -741,6 +814,9 @@ class MarketPriceService:
             if price_cents is None:
                 continue
             entry = f"• {clean_tome_display_title(book.title)} : {format_cents(price_cents)}"
+            reason = _reference_reason(book)
+            if reason:
+                entry += f" ({reason})"
             lines.append(f"• <b>{entry[2:]}</b>" if is_current else entry)
         return lines
 
@@ -752,15 +828,11 @@ class MarketPriceService:
         total complet, il n'y a pas de prix de lot — le panneau affiche les cotes
         par tome, jamais un cumul fictif sur la moitié d'un lot.
         """
-        matched = _match_lot_books(books_in_series, lot_tomes or [])
-        target_books = matched or books_in_series
+        reference = lot_reference(books_in_series, lot_tomes or [])
+        target_books = reference.books
 
         lines = MarketPriceService._header("<b>Cote par tome (plus bas connu) :</b>")
-        for book in _sort_series_books(target_books):
-            price_cents, _ = reference_price(book.market_cache)
-            if price_cents is None:
-                continue
-            lines.append(f"• {clean_tome_display_title(book.title)} : {format_cents(price_cents)}")
+        lines.extend(_reference_detail(book) for book in _sort_series_books(target_books))
 
         # Un panneau sans cote n'est jamais vide : il dit ce qu'il attend, ou ce
         # qu'une passe a déjà constaté.
@@ -768,9 +840,14 @@ class MarketPriceService:
         if unpriced:
             lines.append(unpriced)
 
-        lot_total = _lot_reference_total(matched)
+        lot_total = reference.total_cents
         if lot_total is not None:
             lines.append(f"<b>Total du lot :</b> ~{format_cents(lot_total)}")
+        else:
+            lines.append(
+                f"⚠️ {(reference.reason or 'composition non identifiée').capitalize()} : "
+                "comparaison indisponible."
+            )
 
         return "\n".join(lines)
 
@@ -836,9 +913,13 @@ class MarketPriceService:
             label = (
                 "Dernière offre connue"
                 if cache.collection_status in ("failed", "empty")
+                or MarketPriceService._is_expired(cache)
                 else "Meilleure offre actuelle"
             )
             lines.append(f"<b>{label} :</b> {format_cents(current_price)}")
+            reason = _reference_reason(book) if book else None
+            if reason:
+                lines.append(f"⚠️ {reason.capitalize()} : comparaison indisponible.")
 
         if is_historical:
             lines.append(
@@ -897,7 +978,7 @@ class MarketPriceService:
             return f"<i>⚠️ Actualisation partielle{date}</i>"
         if status == "empty":
             return f"<i>Aucune offre trouvée{date}</i>"
-        return f"<b>Actualisation :</b> {_format_checked_at(moment)}"
+        return f"<b>Actualisation :</b> {_format_checked_at(cache.checked_at)}"
 
     @staticmethod
     def _best_offer_url(cache: BookMarketCache, partners: dict[str, Any]) -> str | None:
