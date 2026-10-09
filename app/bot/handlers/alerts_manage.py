@@ -1045,6 +1045,8 @@ async def _save_edited_field_value(
         request = preparation_request(alert)
         if book_to_price is not None and request is None:
             alert.status = AlertStatus.PAUSED
+        from app.services.book_market_pricing import recalculate_invalidated_series
+        await recalculate_invalidated_series(db_session)
         await db_session.commit()
         if field == "isbn" and alert.isbn != original_isbn:
             pop_pending_variants(alert.id)

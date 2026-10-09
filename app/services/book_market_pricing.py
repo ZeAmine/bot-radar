@@ -187,14 +187,29 @@ async def _refresh_series_totals(session: AsyncSession, book_id: uuid.UUID) -> N
     alert_ids = await repo.get_alert_ids_linked_to_book(book_id)
     if not alert_ids:
         return
-    book_repo = BookRepository(session)
     for alert_id in sorted(alert_ids):
-        await repo.lock_series(alert_id)
-        books = await book_repo.get_all_books_for_alert(alert_id)
-        await repo.set_series_total(
-            alert_id,
-            series_reference_total(books) if len(books) > 1 else None,
-        )
+        await refresh_series_total(session, alert_id)
+
+
+async def refresh_series_total(session: AsyncSession, alert_id: uuid.UUID) -> None:
+    """Calcul central sur les liaisons/caches relus après acquisition du verrou."""
+    from app.core.constants import AlertStatus
+    from app.db.repositories.alert_repo import AlertRepository
+
+    await session.flush()
+    repo = MarketPriceRepository(session)
+    await repo.lock_series(alert_id)
+    current = await AlertRepository(session).get_by_id(alert_id, refresh=True)
+    if current is None or current.status == AlertStatus.DELETED:
+        return
+    books = await BookRepository(session).get_all_books_for_alert(alert_id)
+    await repo.set_series_total(alert_id, series_reference_total(books) if len(books) > 1 else None)
+
+
+async def recalculate_invalidated_series(session: AsyncSession) -> None:
+    """Draine les seules mutations de la transaction par la même adresse de calcul."""
+    for alert_id in sorted(BookRepository(session).take_invalidated_series_ids()):
+        await refresh_series_total(session, alert_id)
 
 
 async def persist_market_result(

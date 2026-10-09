@@ -4,8 +4,9 @@ import re
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,7 +95,32 @@ class BookRepository:
 
     async def clear_alert_books(self, alert_id: uuid.UUID) -> None:
         """Retire toutes les liaisons livre d'une alerte avant d'en poser une nouvelle."""
-        await self.session.execute(delete(AlertBook).where(AlertBook.alert_id == alert_id))
+        await self._lock_membership(alert_id)
+        removed = await self.session.execute(
+            delete(AlertBook).where(AlertBook.alert_id == alert_id).returning(AlertBook.book_id)
+        )
+        if removed.scalars().first() is not None:
+            await self._invalidate_series_total(alert_id)
+
+    async def _lock_membership(self, alert_id: uuid.UUID) -> None:
+        """Même verrou d'alerte que les écritures de cote et d'identité."""
+        await self.session.execute(select(Alert.id).where(Alert.id == alert_id).with_for_update())
+
+    async def _invalidate_series_total(self, alert_id: uuid.UUID) -> None:
+        await self.session.execute(
+            update(Alert)
+            .where(
+                Alert.id == alert_id,
+                Alert.series_total_cents.is_not(None),
+            )
+            .values(series_total_cents=None)
+        )
+        changed: set[uuid.UUID] = self.session.info.setdefault("series_totals_invalidated", set())
+        changed.add(alert_id)
+
+    def take_invalidated_series_ids(self) -> set[uuid.UUID]:
+        """Identifiants à relire par le calcul central, jamais un ensemble de livres capturé."""
+        return cast(set[uuid.UUID], self.session.info.pop("series_totals_invalidated", set()))
 
     async def ensure_confirmed_book(
         self, *, isbn13: str, title: str, author: str | None, publisher: str | None,
@@ -120,6 +146,7 @@ class BookRepository:
         confidence: MatchConfidence = MatchConfidence.HIGH,
     ) -> AlertBook:
         """Associe une alerte à un livre avec son niveau de confiance."""
+        await self._lock_membership(alert_id)
         # Vérifier si l'association existe déjà
         stmt = select(AlertBook).where(
             AlertBook.alert_id == alert_id,
@@ -137,6 +164,7 @@ class BookRepository:
         )
         self.session.add(alert_book)
         await self.session.flush()
+        await self._invalidate_series_total(alert_id)
         return alert_book
 
     async def get_books_for_active_bd_alerts(self) -> list[Book]:

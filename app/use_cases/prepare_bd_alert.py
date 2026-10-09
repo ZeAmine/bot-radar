@@ -155,6 +155,8 @@ class PreparationRunner:
                         if not any(existing.id == book.id for existing in linked):
                             await book_repo.link_alert_to_book(alert_id, book.id)
                         book_id = book.id
+                        from app.services.book_market_pricing import recalculate_invalidated_series
+                        await recalculate_invalidated_series(session)
                         await session.commit()
                     stage = "pricing_write"
                     if await price_book_now(book_id, reason="alert_created") is None:

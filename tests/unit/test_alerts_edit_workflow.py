@@ -26,6 +26,14 @@ from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.book_metadata_service import BookMetadata
 
 
+@pytest.fixture(autouse=True)
+def central_totals(monkeypatch):
+    """Les écrans doublent la DB ; les mutations/recalculs réels vivent en intégration."""
+    monkeypatch.setattr(
+        "app.services.book_market_pricing.recalculate_invalidated_series", AsyncMock()
+    )
+
+
 def test_get_cancel_edit_keyboard():
     alert_id = uuid.uuid4()
     kb = get_cancel_edit_keyboard(alert_id)

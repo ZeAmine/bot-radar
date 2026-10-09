@@ -129,6 +129,8 @@ def patched(
         alert.preparation = None
         return True
     return (
+        # La persistance centrale est exercée avec une vraie base en intégration.
+        patch("app.services.book_market_pricing.recalculate_invalidated_series", AsyncMock()),
         patch(
             "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
             new_callable=PropertyMock,

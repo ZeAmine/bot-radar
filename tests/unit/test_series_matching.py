@@ -779,8 +779,8 @@ def test_rip_secondary_subtitles_detection():
     assert r3.tome_number == 4
 
 
-def test_format_market_details_card_no_cote_indisponible_in_lot():
-    """Vérifie qu'aucun libellé 'Cote indisponible' n'apparaît dans les cartes de lot."""
+def test_format_market_details_card_keeps_missing_tome_visible_in_lot():
+    """Un tome sans cote explique l'absence de total ; les détails connus restent visibles."""
     b1 = _create_mock_book("RIP — Tome 1 (Derrick — La mort dans l'âme)", 1200)
     b2 = _create_mock_book("RIP — Tome 2 (Maurice — Les mouches ne mentent pas)", None)
     listing = Listing(
@@ -801,9 +801,10 @@ def test_format_market_details_card_no_cote_indisponible_in_lot():
         books_in_series=[b1, b2],
         tome_result=tome_res,
     )
-    assert "Cote indisponible" not in card
+    assert "comparaison indisponible" in card
     assert "• Tome 1 : 12,00 €" in card
-    assert "Tome 2" not in card  # pas de cote -> exclu du résumé propre
+    assert "Tome 2 : cote indisponible" in card
+    assert "Total du lot" not in card
 
 
 def test_market_details_card_series_tomes_formatting():

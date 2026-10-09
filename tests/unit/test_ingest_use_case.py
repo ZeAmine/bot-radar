@@ -17,6 +17,12 @@ from app.use_cases.enrich_listing_ai import AsyncEnrichListingUseCase
 from app.use_cases.ingest_listing import ProcessListingUseCase
 
 
+@pytest.fixture(autouse=True)
+def central_totals(monkeypatch):
+    """La persistance centrale est éprouvée avec des sessions réelles en intégration."""
+    monkeypatch.setattr("app.use_cases.ingest_listing.recalculate_invalidated_series", AsyncMock())
+
+
 @pytest.fixture
 def mock_db() -> AsyncMock:
     """Session SQLAlchemy mockée."""

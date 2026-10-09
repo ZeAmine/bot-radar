@@ -20,7 +20,7 @@ from app.db.models.book import Book
 from app.db.models.listing import Listing
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
-from app.db.repositories.book_repo import BookRepository
+from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.domain.rules.catalogue_search import is_uncatalogued
@@ -106,6 +106,9 @@ class ViewMarketDetailsUseCase:
                 if books_in_series is not None:
                     books_in_series.append(book)
                 target_isbn = meta.isbn13
+                from app.services.book_market_pricing import recalculate_invalidated_series
+                await recalculate_invalidated_series(self.db)
+                await self.db.commit()
 
         if refresh:
             book = await self._refresh_price_if_needed(
@@ -205,6 +208,8 @@ class ViewMarketDetailsUseCase:
                 ) is None:
                     return
                 await self.book_repo.link_alert_to_book(alert.id, book.id)
+                from app.services.book_market_pricing import recalculate_invalidated_series
+                await recalculate_invalidated_series(self.db)
                 await self.db.commit()
         else:
             from app.use_cases.ingest_listing import link_books_from_bnf
@@ -225,7 +230,14 @@ class ViewMarketDetailsUseCase:
         if alert is None:
             return None, None, None
         if alert.isbn:
-            return await self.book_repo.get_book_for_alert(alert.id), None, None
+            book = await self.book_repo.get_book_for_alert(alert.id)
+            selected, books, tome_result = resolve_loaded_books(
+                alert_name=alert.name,
+                listing_title=listing.title,
+                listing_description=listing.description,
+                books=[book] if book else [],
+            )
+            return selected or (book if not tome_result.is_lot else None), books, tome_result
 
         book, series, tome_result = await self.book_repo.resolve_book_for_listing(
             alert_id=alert.id,
@@ -295,6 +307,8 @@ class ViewMarketDetailsUseCase:
                 if alert:
                     await self.book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
             # Le livre doit être écrit avant que la cotation ne lise sa session.
+            from app.services.book_market_pricing import recalculate_invalidated_series
+            await recalculate_invalidated_series(self.db)
             await self.db.commit()
             cache = await price_book_now(book.id, reason="market_button")
             if cache is not None:
