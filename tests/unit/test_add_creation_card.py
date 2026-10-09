@@ -228,7 +228,7 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
         create_kwargs = repos["alert_repo"].create.call_args.kwargs
         assert create_kwargs["name"] == "La couleur des choses"
         assert create_kwargs["isbn"] == BNF_EDITION.isbn13
-        assert create_kwargs["include_keywords"] == ["La couleur des choses"]
+        assert create_kwargs["include_keywords"] == ["couleur des choses"]
         assert create_kwargs["variants"] == ["couleurdeschoses"]
         assert create_kwargs["exclude_keywords"] == ["keeping two"]
 

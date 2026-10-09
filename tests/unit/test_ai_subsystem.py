@@ -143,7 +143,7 @@ async def test_natural_add_cleaning_price_suffix():
         res = await module.parse_prompt("Arabe du futur max 7€")
         assert res is not None
         assert res.name == "Arabe du futur"
-        assert res.include_keywords == ["Arabe du futur"]
+        assert res.include_keywords == ["arabe du futur"]
         assert "figurine" in res.exclude_keywords
         assert "coffret vide" in res.exclude_keywords
         assert res.max_price_cents == 700
@@ -1057,3 +1057,57 @@ async def test_keyword_variants_never_calls_an_unconfigured_engine():
 
     assert client.calls == 0
     assert outcome.answered is False
+
+
+@pytest.mark.asyncio
+async def test_natural_add_book_title_matches_without_generated_author():
+    """L'auteur proposé par le moteur ne doit pas empêcher une annonce sans auteur."""
+    from app.db.models.alert import Alert
+    from app.domain.rules.listing_match import evaluate_listing_against_alert
+
+    client = FakeLLM(text={
+        "name": "La couleur des choses",
+        "category_slug": "bd_comics",
+        "include_keywords": ["La couleur des choses", "Martin Panchaud", "Çà et là"],
+    })
+    http = FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[])
+    with (
+        patch("app.core.config.settings.GOOGLE_BOOKS_API_KEY", ""),
+        patch.object(natural_add_module, "client", client),
+        patch("app.services.book_metadata_service.get_shared_http_client", return_value=http),
+    ):
+        result = await natural_add_module.parse_prompt("La couleur des choses")
+    assert result is not None
+    alert = Alert(name=result.name, include_keywords=result.include_keywords, status="active")
+    match = evaluate_listing_against_alert(
+        alert=alert, listing_category_slug="bd_comics",
+        listing_normalized_title="Couleur des choses BD très bon état",
+        listing_normalized_description="", listing_condition="Très bon état",
+        listing_item_price_cents=1000,
+    )
+    assert match.is_match
+    assert result.include_keywords == ["couleur des choses"]
+
+
+@pytest.mark.asyncio
+async def test_natural_add_keeps_separate_product_identity_terms():
+    """Une marque et un modèle peuvent apparaître séparément, sans perdre la version."""
+    from app.db.models.alert import Alert
+    from app.domain.rules.listing_match import evaluate_listing_against_alert
+
+    client = FakeLLM(text={
+        "name": "Raspberry Pi 4", "category_slug": "tech",
+        "include_keywords": ["Raspberry Pi", "4", "RASPBERRY PI"],
+    })
+    with patch.object(natural_add_module, "client", client):
+        result = await natural_add_module.parse_prompt("Raspberry Pi 4")
+    assert result is not None
+    assert result.include_keywords == ["raspberry pi", "4"]
+    alert = Alert(name=result.name, include_keywords=result.include_keywords, status="active")
+    for title, expected in [("Raspberry Pi modèle 4", True), ("Raspberry Pi modèle 3", False)]:
+        match = evaluate_listing_against_alert(
+            alert=alert, listing_category_slug="tech", listing_normalized_title=title,
+            listing_normalized_description="", listing_condition="Très bon état",
+            listing_item_price_cents=3000,
+        )
+        assert match.is_match is expected
