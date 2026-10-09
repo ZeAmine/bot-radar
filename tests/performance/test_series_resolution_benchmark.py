@@ -471,7 +471,8 @@ async def test_benchmark_series_link_writes_six_links_and_prices_them(
         # Chaque vol repart d'un catalogue vierge : on mesure toujours six tomes
         # à écrire, jamais un catalogue déjà rempli par le vol précédent.
         async with session_maker() as cleanup:
-            for model in (AlertBook, BookMarketCache, Listing, Book, Alert):
+            # Garder l'alerte propriétaire : un résultat ne doit pas lier une alerte supprimée.
+            for model in (AlertBook, BookMarketCache, Listing, Book):
                 await cleanup.execute(delete(model))
             await cleanup.commit()
 

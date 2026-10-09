@@ -2,6 +2,7 @@
 
 import contextlib
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -515,12 +516,15 @@ def _isbn_journey(
         variants=list(variants),
         vinted_search_url="https://www.vinted.fr/catalog?search_text=ancien",
         accepted_conditions=None,
+        preparation=None,
+        updated_at=datetime.now(UTC),
     )
     # `name=` en argument de `MagicMock` nomme le mock, ce n'est pas l'attribut : le
     # titre de l'alerte est lu par le nettoyeur de mots-clés et par la carte.
     alert.name = "La couleur des choses"
     alert_repo = AsyncMock()
     alert_repo.get_by_id.return_value = alert
+    alert_repo.lock_bibliographic_result.return_value = alert
     alert_repo.count_by_user.return_value = 1
 
     book_repo = AsyncMock()
@@ -639,17 +643,17 @@ async def test_changing_the_isbn_from_edit_replaces_the_previous_works_keywords(
         await _open_isbn_field(journey)
         await _type_isbn(journey, NOUVEL_ISBN)
 
-        # Les mots-clés de l'ancien ouvrage ne survivent pas à l'enregistrement.
+        # Les critères déjà appliqués sont conservés ; les propositions seules expirent.
         assert journey["alert"].isbn == NOUVEL_ISBN
-        assert journey["alert"].variants == []
-        assert journey["alert"].exclude_keywords == []
+        assert journey["alert"].variants == ANCIENNES_VARIANTES
+        assert journey["alert"].exclude_keywords == ANCIENNES_EXCLUSIONS
 
         await _drain(journey["tasks"])
 
     # Ceux du nouvel ouvrage sont écrits, à partir de sa fiche : la recherche a été
     # posée sur l'ISBN affiché, pas sur celui qui vient d'être remplacé.
-    assert journey["alert"].variants == NOUVELLES_VARIANTES
-    assert journey["alert"].exclude_keywords == NOUVELLES_EXCLUSIONS
+    assert journey["alert"].variants == ANCIENNES_VARIANTES + NOUVELLES_VARIANTES
+    assert journey["alert"].exclude_keywords == ANCIENNES_EXCLUSIONS + NOUVELLES_EXCLUSIONS
     args, kwargs = journey["words"].await_args
     assert args[0] == "La couleur des choses"
     assert kwargs["category_slug"] == CategorySlug.BD_COMICS.value
@@ -688,7 +692,7 @@ async def test_a_search_in_flight_never_lands_on_a_work_that_changed_again():
         await _drain(journey["tasks"])
 
     assert NOUVELLES_VARIANTES[0] not in journey["alert"].variants
-    assert journey["alert"].exclude_keywords == []
+    assert journey["alert"].exclude_keywords == ANCIENNES_EXCLUSIONS
     journey["card_message"].answer.assert_not_called()
 
 
@@ -746,8 +750,8 @@ async def test_a_new_isbn_that_nobody_knows_leaves_the_alert_mute_and_says_so():
         await _drain(journey["tasks"])
 
     assert journey["alert"].isbn == NOUVEL_ISBN
-    assert journey["alert"].variants == []
-    assert journey["alert"].exclude_keywords == []
+    assert journey["alert"].variants == ANCIENNES_VARIANTES
+    assert journey["alert"].exclude_keywords == ANCIENNES_EXCLUSIONS
     # Aucune fiche n'est disponible : la recherche part quand même, sur le titre.
     args, kwargs = journey["words"].await_args
     assert args[0] == "La couleur des choses"

@@ -896,6 +896,18 @@ class _FakeSession:
         return False
 
 
+def _catalog_alert_repo(name: str) -> AsyncMock:
+    """Une identité existante et fraîche ; les races sont testées sur une vraie base."""
+    from app.core.constants import AlertStatus
+    alert = MagicMock(id=uuid.uuid4(), isbn=None, status=AlertStatus.ACTIVE,
+                      preparation=None, updated_at=datetime.now(UTC))
+    alert.name = name
+    repo = AsyncMock()
+    repo.get_by_id.return_value = alert
+    repo.lock_bibliographic_result.return_value = alert
+    return repo
+
+
 @pytest.mark.asyncio
 async def test_catalog_resolution_prices_the_book_it_links() -> None:
     """La résolution de fond cote, après commit, le livre qu'elle vient de lier."""
@@ -905,6 +917,7 @@ async def test_catalog_resolution_prices_the_book_it_links() -> None:
     book.id = uuid.uuid4()
 
     with (
+        patch.object(mod, "AlertRepository", return_value=_catalog_alert_repo("Blacksad")),
         patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
         patch.object(
             mod.ProcessListingUseCase,
@@ -937,6 +950,7 @@ async def test_catalog_resolution_leaves_an_already_priced_book_alone() -> None:
     book.id = uuid.uuid4()
 
     with (
+        patch.object(mod, "AlertRepository", return_value=_catalog_alert_repo("Blacksad")),
         patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
         patch.object(
             mod.ProcessListingUseCase,
@@ -973,6 +987,7 @@ async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> N
     book.id = uuid.uuid4()
 
     with (
+        patch.object(mod, "AlertRepository", return_value=_catalog_alert_repo("The Grocery")),
         patch("app.services.book_metadata_service.BookMetadataService") as service_cls,
         patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
         patch.object(mod, "BookRepository") as repo_cls,
@@ -1016,6 +1031,7 @@ async def test_bnf_link_for_a_series_links_and_prices_every_tome(wait_for_prices
         return books.get(isbn13)
 
     with (
+        patch.object(mod, "AlertRepository", return_value=_catalog_alert_repo("Blacksad")),
         patch("app.services.book_metadata_service.BookMetadataService") as service_cls,
         patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
         patch.object(mod, "BookRepository") as repo_cls,
@@ -1093,6 +1109,11 @@ async def test_a_conclusive_search_writes_its_verdict_on_the_alert() -> None:
         repo_cls.return_value.link_alert_to_book = AsyncMock()
         recorder = AsyncMock()
         alert_repo_cls.return_value.set_book_search_exhausted = recorder
+        current_repo = _catalog_alert_repo("Absolute Martian Manhunter")
+        alert_repo_cls.return_value.get_by_id = current_repo.get_by_id
+        alert_repo_cls.return_value.lock_bibliographic_result = (
+            current_repo.lock_bibliographic_result
+        )
 
         alert_id = uuid.uuid4()
         service_cls.return_value.lookup_by_title_and_author = AsyncMock(

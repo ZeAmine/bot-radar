@@ -350,8 +350,8 @@ async def test_changing_the_isbn_replaces_the_keywords_left_by_the_previous_work
 
     assert stored is not None
     assert stored.isbn == NOUVEL_ISBN
-    assert stored.variants == ["couleurdeschoses"]
-    assert stored.exclude_keywords == ["keeping two"]
+    assert stored.variants == ["couleurdeschose", "couleurdeschoses"]
+    assert stored.exclude_keywords == ["coffret", "keeping two"]
     assert "search_text=" + NOUVEL_ISBN in stored.vinted_search_url
 
 
@@ -389,8 +389,8 @@ async def test_a_new_isbn_that_nobody_knows_leaves_the_alert_mute_and_says_so(
 
     assert stored is not None
     assert stored.isbn == NOUVEL_ISBN
-    assert stored.variants == []
-    assert stored.exclude_keywords == []
+    assert stored.variants == ["couleurdeschose"]
+    assert stored.exclude_keywords == ["coffret"]
     assert "L'IA n'a pas répondu après une relance" in card_message.answer.call_args[0][0]
 
 

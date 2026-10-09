@@ -46,7 +46,7 @@ from app.bot.states.alert_creation import AlertEditState
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
 from app.core.tasks import safe_create_task
 from app.db.models.user import User
-from app.db.repositories.alert_repo import AlertRepository
+from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
 from app.db.repositories.category_repo import CategoryRepository
 from app.db.session import AsyncSessionLocal
 from app.domain.entities.alert_preparation import preparation_request
@@ -312,12 +312,24 @@ async def prompt_new_field_value(
         try:
             from app.services.ai.modules.keyword_variants import keyword_variants_module
 
-            variants = await keyword_variants_module.generate_variants(alert.name)
+            snapshot = BibliographicSnapshot.capture(alert)
+            # Le résultat peut arriver après une édition/retrait. Libérer la lecture avant IA.
+            await db_session.rollback()
+            variants = await keyword_variants_module.generate_variants(snapshot.name)
+            current = await alert_repo.lock_bibliographic_result(alert_id, snapshot)
+            if current is None:
+                await db_session.rollback()
+                await callback.answer(
+                    "L’alerte a changé ; suggestions abandonnées.", show_alert=True,
+                )
+                return
+            alert = current
             current_variants = set(alert.variants or [])
             existing_vars = {x.lower() for x in current_variants}
             new_variants = [v for v in variants if v.lower() not in existing_vars]
 
             if not variants:
+                await db_session.commit()
                 empty_keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [
@@ -337,6 +349,7 @@ async def prompt_new_field_value(
                 return
 
             if not new_variants:
+                await db_session.commit()
                 existing_keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [
@@ -355,7 +368,8 @@ async def prompt_new_field_value(
                     )
                 return
 
-            save_pending_variants(alert.id, new_variants)
+            save_pending_variants(alert.id, new_variants, snapshot=snapshot)
+            await db_session.commit()
             var_str = ", ".join(new_variants)
             text = (
                 f"✏️ <b>Variantes suggérées</b>\n\n"
@@ -641,6 +655,7 @@ async def confirm_isbn_replacement(
         or alert.isbn != pending["previous_isbn"]
         or alert.name != pending["previous_name"]
         or alert.status == AlertStatus.DELETED
+        or not pending.get("previous_revision")
     ):
         await state.update_data(pending_isbn=None)
         await callback.answer("Cette proposition a expiré.", show_alert=True)
@@ -669,6 +684,11 @@ async def confirm_isbn_replacement(
         db_session,
         confirmed_isbn=(pending["isbn"], notice),
         confirmed_identity=(pending["previous_isbn"], pending["previous_name"]),
+        confirmed_snapshot=BibliographicSnapshot(
+            pending["previous_name"], pending["previous_isbn"],
+            AlertStatus(pending["previous_status"]),
+            datetime.fromisoformat(pending["previous_revision"]), pending["previous_token"],
+        ),
     )
 
 
@@ -693,12 +713,21 @@ async def _refresh_alert_keywords(
     L'écriture est gardée par l'ISBN qui l'a déclenchée : si l'alerte en porte un autre,
     la réponse décrit un ouvrage déjà remplacé et repart sans être écrite.
     """
+    async with AsyncSessionLocal() as session:
+        alert = await _get_alert_repo(session).get_by_id(alert_id)
+        if alert is None or alert.isbn != expected_isbn or alert.name != name:
+            return
+        if expected_revision is not None and (
+            alert.updated_at.replace(tzinfo=None) != expected_revision.replace(tzinfo=None)
+        ):
+            return
+        snapshot = BibliographicSnapshot.capture(alert)
     outcome = await keyword_variants_module.generate_variants_and_exclusions(
         name, category_slug=category_slug, context=book_context
     )
 
     async with AsyncSessionLocal() as session:
-        alert = await _get_alert_repo(session).get_by_id(alert_id)
+        alert = await _get_alert_repo(session).lock_bibliographic_result(alert_id, snapshot)
         if (
             alert is None
             or alert.isbn != expected_isbn
@@ -714,8 +743,12 @@ async def _refresh_alert_keywords(
                 expected_isbn,
             )
             return
-        alert.variants = sanitize_variants(outcome.variants, name)
-        alert.exclude_keywords = sanitize_exclusions(outcome.exclusions, name)
+        alert.variants = list(dict.fromkeys([
+            *(alert.variants or []), *sanitize_variants(outcome.variants, name),
+        ]))
+        alert.exclude_keywords = list(dict.fromkeys([
+            *(alert.exclude_keywords or []), *sanitize_exclusions(outcome.exclusions, name),
+        ]))
         await session.commit()
 
     note = keyword_note(outcome)
@@ -742,6 +775,7 @@ async def _save_edited_field_value(
     *,
     confirmed_isbn: tuple[str, BookMetadata | None] | None = None,
     confirmed_identity: tuple[str | None, str] | None = None,
+    confirmed_snapshot: BibliographicSnapshot | None = None,
 ) -> None:
     """Chemin commun à la saisie et à la confirmation du remplacement."""
     data = await state.get_data()
@@ -763,6 +797,7 @@ async def _save_edited_field_value(
         clean_isbn = None
         request_token = None
         lookup_identity = None
+        lookup_snapshot = None
         if field == "isbn" and raw_text.lower() not in (
             "/skip", "-", "aucun", "aucune", "clear", "supprimer"
         ):
@@ -776,6 +811,7 @@ async def _save_edited_field_value(
             else:
                 request_token = uuid.uuid4().hex
                 lookup_identity = (alert.isbn, alert.name)
+                lookup_snapshot = BibliographicSnapshot.capture(alert)
                 await state.update_data(edit_request_token=request_token, pending_isbn=None)
                 notice = await _lookup_isbn_notice(clean_isbn)
                 current = await state.get_data()
@@ -792,7 +828,10 @@ async def _save_edited_field_value(
             await state.clear()
             return
         expected_identity = confirmed_identity or lookup_identity
-        if expected_identity is not None and (alert.isbn, alert.name) != expected_identity:
+        expected_snapshot = confirmed_snapshot or lookup_snapshot
+        if (
+            expected_identity is not None and (alert.isbn, alert.name) != expected_identity
+        ) or (expected_snapshot is not None and not expected_snapshot.matches(alert)):
             await db_session.rollback()
             await message.answer("L’alerte a changé pendant la recherche. Réessaie.")
             return
@@ -838,6 +877,11 @@ async def _save_edited_field_value(
                 )
         elif field == "isbn":
             if raw_text.lower() in ("/skip", "-", "aucun", "aucune", "clear", "supprimer"):
+                if original_isbn is not None:
+                    await alert_repo.reset_bibliographic_identity(alert)
+                    for attribute in ("include_keywords", "variants", "exclude_keywords"):
+                        setattr(alert, attribute, [term for term in getattr(alert, attribute) or []
+                                                 if term != original_isbn])
                 alert.isbn = None
                 alert.vinted_search_url = (
                     f"https://www.vinted.fr/catalog?search_text="
@@ -861,6 +905,7 @@ async def _save_edited_field_value(
                     )
                     if conflicting and alert.isbn != clean_isbn:
                         previous_isbn, previous_name = alert.isbn, alert.name
+                        previous_snapshot = BibliographicSnapshot.capture(alert)
                         # Aucune écriture avant confirmation. Le rollback libère
                         # le verrou ; relire l'utilisateur qu'il vient d'expirer.
                         await db_session.rollback()
@@ -871,6 +916,9 @@ async def _save_edited_field_value(
                                 "isbn": clean_isbn,
                                 "notice": asdict(notice) if notice else None,
                                 "previous_isbn": previous_isbn,
+                                "previous_revision": previous_snapshot.revision.isoformat(),
+                                "previous_status": previous_snapshot.status.value,
+                                "previous_token": previous_snapshot.preparation_token,
                                 "previous_name": previous_name,
                             }
                         )
@@ -918,23 +966,26 @@ async def _save_edited_field_value(
                         alert.include_keywords, _, _ = generate_recommended_keywords(
                             _edition_work_title(notice.title, notice.author), notice.author
                         )
-                    alert.variants = []
-                    alert.exclude_keywords = []
+                    alert.variants = [
+                        term for term in alert.variants or [] if term != original_isbn
+                    ]
+                    alert.exclude_keywords = [term for term in alert.exclude_keywords or []
+                                              if term != original_isbn]
                     alert.book_search_exhausted_at = None
                     # Une proposition de variantes encore en attente de confirmation
                     # décrit l'ouvrage précédent : l'appliquer après ce changement
                     # ferait matcher l'alerte sur l'ancien livre. Le bouton de la
                     # proposition le dit alors (« Les suggestions ont expiré. »).
-                    pop_pending_variants(alert.id)
                 alert.isbn = clean_isbn
                 if original_isbn != clean_isbn:
                     # Invalider l'ancien catalogue avant de lier la nouvelle fiche.
+                    await alert_repo.reset_bibliographic_identity(alert)
                     await alert_repo.invalidate_preparation(alert, author_hint=None)
                 # Nettoyer d'éventuels ISBN numériques résiduels dans les mots-clés
                 alert.include_keywords = [
                     kw
                     for kw in (alert.include_keywords or [])
-                    if not (kw.isdigit() and len(kw) >= 10)
+                    if kw != original_isbn
                 ]
                 # Mettre à jour l'URL de recherche Vinted
                 base_vinted = "https://www.vinted.fr/catalog?search_start_type=item_page_isbn"
@@ -986,11 +1037,18 @@ async def _save_edited_field_value(
             field == "name" and alert.name != original_name and not alert.isbn
         )
         if preparation_changed and not (field == "isbn" and alert.isbn is not None):
-            await alert_repo.invalidate_preparation(alert, author_hint=None)
+            previous_request = preparation_request(alert)
+            await alert_repo.invalidate_preparation(
+                alert, author_hint=previous_request.author_hint
+                if field == "isbn" and previous_request is not None else None,
+            )
         request = preparation_request(alert)
         if book_to_price is not None and request is None:
             alert.status = AlertStatus.PAUSED
         await db_session.commit()
+        if field == "isbn" and alert.isbn != original_isbn:
+            pop_pending_variants(alert.id)
+            await db_session.refresh(alert, ["alert_books"])
         await state.clear()
 
         if preparation_changed and preparation_request(alert) is not None:
