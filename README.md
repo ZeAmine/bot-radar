@@ -496,6 +496,17 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 
 ### Ingestion d'une annonce (Webhook Marketplace / Scraper)
 
+`isbn13` est une déclaration vendeur, pas une identité confirmée. Les séparateurs
+sont normalisés et les ISBN-10 valides convertis en ISBN-13. Un code inutilisable
+est écarté sans rejeter l'annonce : la réponse ajoute
+`"warnings": ["listing_isbn_invalid_ignored"]` (sinon `[]`), avec un diagnostic
+structuré dans les logs. Les autres validations restent applicables.
+Le code brut reste dans `raw_payload` ; il ne crée aucune fiche de référence.
+La confirmation bibliographique et la vérification de cohérence interviennent
+après les envois Telegram, puis seulement la liaison et la cotation. Une référence
+déjà portée par l'alerte conserve sa cote locale ; l'ISBN vendeur seul ne la fournit pas.
+La saisie volontaire en édition d'alerte (ADR-038) conserve son comportement.
+
 ```bash
 curl -X POST "https://radar.aminezegmou.fr/api/v1/ingest/listings" \
   -H "Content-Type: application/json" \
@@ -532,7 +543,8 @@ curl -X POST "https://radar.aminezegmou.fr/api/v1/ingest/listings" \
       "notification_sent": true
     }
   ],
-  "needs_retry": false
+  "needs_retry": false,
+  "warnings": []
 }
 ```
 

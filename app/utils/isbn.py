@@ -3,6 +3,16 @@
 import re
 
 
+def normalize_listing_isbn(raw: str | None) -> str | None:
+    """Canonise une déclaration vendeur, sans en confirmer l'identité bibliographique."""
+    if raw is None:
+        return None
+    code = re.sub(r"[-\s]", "", raw).upper()
+    if not re.fullmatch(r"[0-9]{9}[0-9X]|(?:978|979)[0-9]{10}", code):
+        return None
+    return isbn_from_identifier(code)
+
+
 def normalize_isbn(raw: str | None) -> str | None:
     """Nettoie une saisie brute en ISBN-10 ou ISBN-13 (tirets, espaces, points, casse)."""
     if not raw:

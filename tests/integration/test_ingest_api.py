@@ -180,6 +180,8 @@ async def test_ingest_bd_listing_with_market_comparison(
     )
     book.market_cache = cache
     test_db_session.add(book)
+    # Référence déjà liée à l'alerte ; le code vendeur seul ne confirme pas ce lien.
+    test_db_session.add(AlertBook(alert_id=alert.id, book_id=book.id))
     await test_db_session.commit()
 
     payload = {

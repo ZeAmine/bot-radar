@@ -215,6 +215,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         mock_listing.description = "Tome 6 en parfait état"
         mock_listing.url = "https://vinted.fr/item-123"
         mock_listing.photos = ["https://img.vinted.fr/1.jpg"]
+        mock_listing.isbn13 = None
 
         mock_repo = AsyncMock()
         mock_repo.get_by_source_and_external_id.return_value = None

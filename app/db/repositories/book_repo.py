@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -93,6 +95,23 @@ class BookRepository:
     async def clear_alert_books(self, alert_id: uuid.UUID) -> None:
         """Retire toutes les liaisons livre d'une alerte avant d'en poser une nouvelle."""
         await self.session.execute(delete(AlertBook).where(AlertBook.alert_id == alert_id))
+
+    async def ensure_confirmed_book(
+        self, *, isbn13: str, title: str, author: str | None, publisher: str | None,
+        publication_year: int | None, format_book: str | None,
+    ) -> Book:
+        """Insère une notice confirmée sans écraser une fiche concurrente ou préexistante."""
+        insert = (
+            pg_insert if self.session.get_bind().dialect.name == "postgresql" else sqlite_insert
+        )
+        await self.session.execute(insert(Book).values(
+            isbn13=isbn13, title=title, normalized_title=normalize_text(title), author=author,
+            publisher=publisher, publication_year=publication_year, format=format_book,
+        ).on_conflict_do_nothing(index_elements=["isbn13"]))
+        book = await self.get_by_isbn13(isbn13)
+        if book is None:
+            raise RuntimeError("Notice confirmée non relue après insertion.")
+        return book
 
     async def link_alert_to_book(
         self,

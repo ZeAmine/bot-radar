@@ -25,6 +25,7 @@ from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import (
     ListingIngestPayload,
     ListingIngestResponse,
+    ListingIngestWarning,
     ListingMatchItem,
 )
 from app.services.book_catalog_service import BookCatalogService
@@ -42,6 +43,7 @@ from app.services.market_price_service import (
 )
 from app.services.telegram_service import send_listing_alert
 from app.use_cases.listing_ingestion_gate import listing_ingestion_gate
+from app.utils.isbn import normalize_listing_isbn
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.use_cases.ingest_listing")
@@ -206,9 +208,24 @@ async def _link_bd_catalog_background(
     listing_title: str,
     listing_description: str | None,
     listing_isbn13: str | None,
+    alert_preparation: dict[str, Any] | None = None,
 ) -> None:
     """Lie le catalogue BD après l'alerte, dans une session dédiée."""
     from app.db.session import AsyncSessionLocal
+
+    seller_isbn = normalize_listing_isbn(listing_isbn13)
+    if seller_isbn and not alert_isbn:
+        from app.use_cases.listing_book_confirmation import confirm_listing_book
+        try:
+            await confirm_listing_book(
+                alert_id=alert_id, alert_name=alert_name, alert_isbn=alert_isbn,
+                expected_preparation=alert_preparation, listing_isbn=seller_isbn,
+                listing_title=listing_title, listing_description=listing_description,
+            )
+        except Exception:
+            logger.warning("Confirmation ISBN vendeur interrompue.",
+                           extra={"event": "listing_isbn_confirmation_failed"}, exc_info=True)
+        return
 
     listing = type(
         "ListingRef",
@@ -216,7 +233,7 @@ async def _link_bd_catalog_background(
         {
             "title": listing_title,
             "description": listing_description,
-            "isbn13": listing_isbn13,
+            "isbn13": None,
             "category_slug": CategorySlug.BD_COMICS.value,
             "item_price_cents": 0,
             "estimated_total_cents": None,
@@ -332,6 +349,13 @@ class ProcessListingUseCase:
             listing = await self.listing_repo.create_from_payload(payload, raw_dict=raw_payload)
             is_duplicate = False
 
+        effective_isbn = normalize_listing_isbn(listing.isbn13)
+        warnings: list[ListingIngestWarning] = []
+        if payload.isbn_invalid_ignored or (listing.isbn13 is not None and effective_isbn is None):
+            warnings.append("listing_isbn_invalid_ignored")
+            logger.warning("ISBN vendeur inutilisable écarté ; annonce conservée.",
+                           extra={"event": "listing_isbn_invalid_ignored"})
+
         active_alerts = await self.listing_repo.get_active_alerts_by_category(payload.category_slug)
         pending_sends: list[PendingSend] = []
         for alert in active_alerts:
@@ -342,7 +366,7 @@ class ProcessListingUseCase:
                 listing_normalized_description=listing.description,
                 listing_condition=listing.condition,
                 listing_item_price_cents=listing.item_price_cents,
-                listing_isbn13=listing.isbn13,
+                listing_isbn13=effective_isbn,
                 listing_raw_url=listing.url,
             )
             if not match_result.is_match or alert.id in notified_ids:
@@ -380,6 +404,7 @@ class ProcessListingUseCase:
                 is_duplicate=True,
                 estimated_total_cents=listing.estimated_total_cents,
                 matches=[],
+                warnings=warnings,
             )
 
         for alert, match_result, _line, _ready, _book in pending_sends:
@@ -415,6 +440,7 @@ class ProcessListingUseCase:
         match_items: list[ListingMatchItem] = []
         needs_retry = False
         books_to_price: set[uuid.UUID] = set()
+        catalog_tasks: list[dict[str, Any]] = []
         send_alert_fn = _get_send_listing_alert()
         for alert, _match_result, market_line, catalog_ready, book in pending_sends:
             notification_sent = False
@@ -444,17 +470,14 @@ class ProcessListingUseCase:
                 if book is not None and not has_usable_price(book.market_cache):
                     books_to_price.add(book.id)
                 if not catalog_ready:
-                    safe_create_task(
-                        _link_bd_catalog_background(
-                            alert_id=alert.id,
-                            alert_name=alert.name,
-                            alert_isbn=getattr(alert, "isbn", None),
-                            listing_title=listing.title,
-                            listing_description=listing.description,
-                            listing_isbn13=listing.isbn13,
-                        ),
-                        name=f"bd_catalog_{alert.id}",
-                    )
+                    catalog_tasks.append({
+                        "alert_id": alert.id, "alert_name": alert.name,
+                        "alert_isbn": getattr(alert, "isbn", None),
+                        "listing_title": listing.title, "listing_description": listing.description,
+                        "listing_isbn13": effective_isbn,
+                        "alert_preparation": getattr(alert, "preparation", None)
+                        if isinstance(getattr(alert, "preparation", None), dict) else None,
+                    })
             match_items.append(
                 ListingMatchItem(
                     alert_id=alert.id,
@@ -486,12 +509,17 @@ class ProcessListingUseCase:
         for book_id in books_to_price:
             schedule_book_pricing(book_id, reason="alert_sent")
 
+        for arguments in catalog_tasks:
+            safe_create_task(_link_bd_catalog_background(**arguments),
+                             name=f"bd_catalog_{arguments['alert_id']}")
+
         return ListingIngestResponse(
             listing_id=listing.id,
             is_duplicate=is_duplicate,
             estimated_total_cents=listing.estimated_total_cents,
             matches=match_items,
             needs_retry=needs_retry,
+            warnings=warnings,
         )
 
     async def _comparison_from_catalog_isbn(
@@ -500,7 +528,7 @@ class ProcessListingUseCase:
         alert: Any,
     ) -> tuple[str | None, bool, Book | None]:
         """Une lecture ISBN indexée si le livre est déjà au catalogue. Pas de BNF."""
-        isbn = listing.isbn13 or getattr(alert, "isbn", None)
+        isbn = getattr(alert, "isbn", None)
         if not isbn:
             return None, False, None
         book_repo = BookRepository(self.db)
@@ -537,9 +565,8 @@ class ProcessListingUseCase:
             )
 
             if not book:
-                discovered_isbn = listing.isbn13
                 has_lot = bool(tome_result and tome_result.is_lot and tome_result.lot_tomes)
-                if not discovered_isbn and not has_lot:
+                if not has_lot:
                     # Une alerte sans ISBN est une série : l'annonce non résolue
                     # relance la découverte de **tous** ses tomes, pas seulement
                     # d'un titre. Une alerte à ISBN garde sa recherche unitaire.
@@ -554,15 +581,6 @@ class ProcessListingUseCase:
                         name=f"bnf_link_{alert.id}",
                     )
 
-                if discovered_isbn:
-                    book = await book_repo.get_by_isbn13(discovered_isbn)
-                    if not book:
-                        book = await catalog_service.add_book(
-                            title=listing.title,
-                            isbn13=discovered_isbn,
-                        )
-                    if book:
-                        await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
         else:
             book = await book_repo.get_book_for_alert(alert.id)
             if not book and alert.isbn:
