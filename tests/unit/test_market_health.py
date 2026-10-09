@@ -404,6 +404,40 @@ async def test_a_high_error_ratio_is_reported_with_a_meaningful_minimum():
     assert "4/6" in sent[0]
 
 
+@pytest.mark.asyncio
+async def test_high_error_ratio_is_sent_once_and_names_the_providers():
+    """La même panne ne se répète pas, et le message dit quelle source a échoué.
+
+    Le job glissant passe toutes les trente minutes. Sans fenêtre, cinq livres
+    dont un fournisseur ne répond pas produisaient un message à chaque passe.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        client = MagicMock()
+        client.set = AsyncMock(side_effect=[True, False])
+        mp.setattr(market_health, "get_redis_client", lambda: client)
+
+        kwargs = {
+            "mode_label": "incrémental (8 livres)",
+            "failed_providers": ("chasse_aux_livres",),
+            "degraded": 5,
+        }
+        await market_health.notify_high_error_ratio(8, 0, **kwargs)
+        await market_health.notify_high_error_ratio(8, 0, **kwargs)
+
+    assert len(sent) == 1
+    assert "chasse_aux_livres" in sent[0]
+    assert "conservés" in sent[0]
+    assert "n'ont pas été mises à jour" not in sent[0]
+    assert client.set.await_args_list[0].kwargs["nx"] is True
+
+
 # --- Diagnostic : avec quelle cote une alerte BD part-elle ? ---
 
 

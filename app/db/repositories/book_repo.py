@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,11 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.category import Category
 from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 from app.utils.text import normalize_text
+
+# Un livre dont la collecte vient d'échouer ne revient pas en tête du lot suivant :
+# le job glissant passe toutes les trente minutes, et ``checked_at`` vide le
+# replaçait devant tous les autres. On le retente après ce repos.
+FAILED_COLLECTION_REST_HOURS = 6
 
 
 class BookRepository:
@@ -189,6 +194,15 @@ class BookRepository:
         Évite tout pic de charge en étalant les rafraîchissements en tâche de fond.
         """
         now = datetime.now(UTC)
+        rest_cutoff = now - timedelta(hours=FAILED_COLLECTION_REST_HOURS)
+        # ``IS NULL`` est explicite : un NOT sur une comparaison fausse en SQL
+        # vaut NULL, et la clause WHERE écarterait alors les livres sans cache.
+        not_in_rest = or_(
+            BookMarketCache.collection_status.is_(None),
+            BookMarketCache.collection_status != "failed",
+            BookMarketCache.last_attempt_at.is_(None),
+            BookMarketCache.last_attempt_at <= rest_cutoff,
+        )
         subq = (
             select(Book.id)
             .join(AlertBook, Book.id == AlertBook.book_id)
@@ -201,6 +215,7 @@ class BookRepository:
                 BookMarketCache.expires_at.is_(None)
                 | (BookMarketCache.expires_at <= now + timedelta(hours=2))
                 | BookMarketCache.checked_at.is_(None),
+                not_in_rest,
             )
             .group_by(Book.id, BookMarketCache.checked_at)
             .order_by(BookMarketCache.checked_at.asc().nulls_first())

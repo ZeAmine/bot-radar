@@ -8,7 +8,7 @@ import pytest
 from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
-from app.providers.base import MarketOffer
+from app.providers.base import MarketOffer, MarketOffers
 from app.tasks.refresh_book_prices import refresh_book_prices_task
 
 
@@ -323,3 +323,60 @@ async def test_passe_complete_sans_offre_ne_signale_pas_un_incident():
     assert seconde["processed"] == 12
     alertes = [s for s in sends if "Collecte de prix en échec" in s]
     assert alertes == [], "une absence normale d'offres n'est pas un incident"
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_is_degraded_not_a_book_error():
+    """Un fournisseur muet n'est pas une exception : la cote du livre n'a pas planté.
+
+    C'est le 5/8 du message « Rafraîchissement dégradé ». La collecte a répondu
+    « cette source a échoué, aucune offre », et le compteur d'erreurs le lisait
+    comme un livre cassé — assez pour franchir le seuil à chaque lot.
+    """
+    livres = _livres(8)
+    sends: list[str] = []
+
+    async def _passe(mp: pytest.MonkeyPatch, *, fenetre_ouverte: bool) -> dict[str, int]:
+        registry = MagicMock()
+        registry.failed_provider_names = set()
+        registry.fetch_all_offers = AsyncMock(
+            return_value=MarketOffers(failed_providers=("chasse_aux_livres",))
+        )
+        registry.select_best_offer = MagicMock(return_value=None)
+
+        book_repo = MagicMock()
+        book_repo.get_books_needing_price_refresh = AsyncMock(return_value=livres)
+        market_repo = MagicMock()
+        market_repo.save_snapshot = AsyncMock()
+        market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
+        market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
+        market_repo.update_or_create_cache = AsyncMock(
+            return_value=BookMarketCache(comparison_status=ComparisonStatus.UNAVAILABLE)
+        )
+        mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: book_repo)
+        mp.setattr("app.services.book_market_pricing.MarketPriceRepository", lambda _s: market_repo)
+
+        async def faux_notify(text: str) -> None:
+            sends.append(text)
+
+        mp.setattr("app.services.market_health.notify_admins", faux_notify)
+        client = MagicMock()
+        client.set = AsyncMock(return_value=fenetre_ouverte)
+        mp.setattr("app.services.market_health.get_redis_client", lambda: client)
+        mp.setattr("app.tasks.refresh_book_prices.notify_stale_certified_lows", AsyncMock())
+        mp.setattr("app.tasks.refresh_book_prices.notify_silent_providers", AsyncMock())
+        mp.setattr("app.tasks.refresh_book_prices.asyncio.sleep", AsyncMock())
+        return await refresh_book_prices_task(
+            registry=registry, session=AsyncMock(), incremental=True, batch_size=8
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        premiere = await _passe(mp, fenetre_ouverte=True)
+        seconde = await _passe(mp, fenetre_ouverte=False)
+
+    assert premiere["errors"] == 0
+    assert premiere["degraded"] == 8
+    assert seconde["errors"] == 0
+    alertes = [s for s in sends if "Rafraîchissement dégradé" in s]
+    assert len(alertes) == 1
+    assert "chasse_aux_livres" in alertes[0]

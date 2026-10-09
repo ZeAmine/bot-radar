@@ -180,6 +180,10 @@ SILENT_PROVIDER_AFTER_HOURS = 48
 # glissant, soit jusqu'à quarante-huit messages par jour.
 NO_PRICES_NOTIFY_KEY = "radar:market:no_prices:notified"
 NO_PRICES_NOTIFY_TTL_SECONDS = 20 * 3600
+# Même fenêtre pour « rafraîchissement dégradé » : le job glissant passe toutes
+# les trente minutes, et cette alerte était la seule à le suivre à ce rythme.
+HIGH_ERROR_NOTIFY_KEY = "radar:market:high_error:notified"
+HIGH_ERROR_NOTIFY_TTL_SECONDS = 20 * 3600
 # Fenêtre de sollicitation : un fournisseur doit avoir été réellement interrogé
 # pendant cette période avant que son silence ne devienne un incident.
 PROVIDER_RECENT_WINDOW_DAYS = 7
@@ -193,6 +197,10 @@ SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
 
 async def _claim_no_prices_notification_slot() -> bool:
     return await _claim_slot(NO_PRICES_NOTIFY_KEY, NO_PRICES_NOTIFY_TTL_SECONDS)
+
+
+async def _claim_high_error_notification_slot() -> bool:
+    return await _claim_slot(HIGH_ERROR_NOTIFY_KEY, HIGH_ERROR_NOTIFY_TTL_SECONDS)
 
 
 async def _claim_silent_notification_slot() -> bool:
@@ -274,31 +282,46 @@ async def notify_incomplete_refresh(
     logger.warning("Rafraîchissement incomplet : %d/%d livres traités.", processed, total)
 
 
+def _ratio_is_high(processed: int, count: int) -> bool:
+    """Vrai quand le nombre et la part dépassent les deux seuils de la passe."""
+    return (
+        processed > 0
+        and count >= MIN_ERRORS_FOR_ALERT
+        and count / processed >= ERROR_RATIO_THRESHOLD
+    )
+
+
 async def notify_high_error_ratio(
     processed: int,
     errors: int,
     *,
     mode_label: str,
+    failed_providers: tuple[str, ...] = (),
+    degraded: int = 0,
 ) -> None:
     """Prévient quand une part des livres a échoué au lieu de simplement manquer.
 
-    Un livre sans offre est normal ; une passe où la moitié des livres terminent
-    en exception signale un fournisseur ou un réseau défaillant, et rien ne le
-    dira autrement.
+    Une exception réelle et une collecte où les fournisseurs nommés n'ont rien
+    rendu sont deux pannes. Un livre sans offre, lui, n'en est pas une. La
+    fenêtre est la même que les autres alertes de cote : une panne qui dure ne
+    se répète pas à chaque lot.
     """
-    if processed == 0 or errors < MIN_ERRORS_FOR_ALERT:
+    provider_outage = bool(failed_providers) and _ratio_is_high(processed, degraded)
+    if not _ratio_is_high(processed, errors) and not provider_outage:
         return
-    if errors / processed < ERROR_RATIO_THRESHOLD:
+    if not await _claim_high_error_notification_slot():
+        logger.debug("Rafraîchissement dégradé déjà signalé dans la fenêtre.")
         return
+    counted = errors if _ratio_is_high(processed, errors) else degraded
+    sources = f"Sources en échec : {', '.join(failed_providers)}.\n" if failed_providers else ""
     message = (
         f"⚠️ <b>Rafraîchissement dégradé</b>\n\n"
-        f"Mode {mode_label} : {errors}/{processed} livres en erreur.\n"
-        "Les cotes de ces livres n'ont pas été mises à jour."
+        f"Mode {mode_label} : {counted}/{processed} livres en erreur.\n"
+        f"{sources}"
+        "Les derniers prix connus sont conservés."
     )
     await notify_admins(message)
-    logger.warning(
-        "Rafraîchissement dégradé : %d/%d livres en erreur.", errors, processed
-    )
+    logger.warning("Rafraîchissement dégradé : %d/%d livres en erreur.", counted, processed)
 
 
 async def notify_no_prices_found(

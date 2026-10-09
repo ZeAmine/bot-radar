@@ -266,8 +266,6 @@ async def persist_market_result(
         historical_low_1y_cents=result.historical_low_1y_cents,
     )
     _stamp_collection(cache, result)
-    if not result.has_data and result.failed_providers:
-        cache.checked_at = None
     await _refresh_series_totals(session, book_id)
     return cache
 
