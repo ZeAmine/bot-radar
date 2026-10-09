@@ -11,12 +11,12 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.bot_instance import bot as default_bot
-from app.core.constants import CategorySlug
+from app.core.constants import AlertStatus, CategorySlug
 from app.core.tasks import safe_create_task
 from app.db.models.book import Book
 from app.db.models.bot_event import BotEvent
 from app.db.models.listing import Listing
-from app.db.repositories.alert_repo import AlertRepository
+from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.repositories.listing_repo import ListingRepository
 from app.domain.entities.alert_preparation import PreparationError
@@ -57,6 +57,7 @@ async def link_books_from_bnf(
     series: bool = False,
     wait_for_prices: bool = False,
     expected_preparation_token: str | None = None,
+    expected_snapshot: BibliographicSnapshot | None = None,
 ) -> bool:
     """Lie les notices BNF d'une œuvre et les cote, sans retarder l'envoi Telegram.
 
@@ -84,6 +85,16 @@ async def link_books_from_bnf(
 
     query = f"{title} par {author}" if author else title
     try:
+        async with AsyncSessionLocal() as session:
+            current = await AlertRepository(session).get_by_id(alert_id)
+            if current is None or current.name != title or current.status == AlertStatus.DELETED:
+                return False
+            snapshot = expected_snapshot or BibliographicSnapshot.capture(current)
+            if not snapshot.matches(current) or (
+                expected_preparation_token is not None
+                and snapshot.preparation_token != expected_preparation_token
+            ):
+                return False
         service = BookMetadataService()
         if series:
             verdict = await service.lookup_series_notices(title, author_hint=author)
@@ -97,10 +108,11 @@ async def link_books_from_bnf(
             # concluant : une notice arrivée efface l'exhaustion, une autorité muette
             # ne la réécrit pas (elle ne prouve rien, ni dans un sens ni dans l'autre).
             alert_repo = AlertRepository(session)
-            if expected_preparation_token is not None:
-                current = await alert_repo.lock_preparation(alert_id, expected_preparation_token)
-                if current is None:
-                    return False
+            current = await alert_repo.lock_bibliographic_result(
+                alert_id, snapshot, require_preparation=expected_preparation_token is not None,
+            )
+            if current is None:
+                return False
             if notices:
                 await alert_repo.set_book_search_exhausted(alert_id, None)
             elif is_catalogue_exhausted(verdict):
@@ -209,6 +221,7 @@ async def _link_bd_catalog_background(
     listing_description: str | None,
     listing_isbn13: str | None,
     alert_preparation: dict[str, Any] | None = None,
+    alert_snapshot: BibliographicSnapshot | None = None,
 ) -> None:
     """Lie le catalogue BD après l'alerte, dans une session dédiée."""
     from app.db.session import AsyncSessionLocal
@@ -221,6 +234,7 @@ async def _link_bd_catalog_background(
                 alert_id=alert_id, alert_name=alert_name, alert_isbn=alert_isbn,
                 expected_preparation=alert_preparation, listing_isbn=seller_isbn,
                 listing_title=listing_title, listing_description=listing_description,
+                expected_snapshot=alert_snapshot,
             )
         except Exception:
             logger.warning("Confirmation ISBN vendeur interrompue.",
@@ -244,6 +258,18 @@ async def _link_bd_catalog_background(
     needs_price = False
     try:
         async with AsyncSessionLocal() as session:
+            repo = AlertRepository(session)
+            current = await repo.get_by_id(alert_id)
+            if current is None or (current.name, current.isbn) != (alert_name, alert_isbn):
+                return
+            snapshot = alert_snapshot or BibliographicSnapshot.capture(current)
+            if not snapshot.matches(current):
+                return
+            if alert_isbn is not None:
+                current = await repo.lock_bibliographic_result(alert_id, snapshot)
+                if current is None:
+                    return
+            alert.bibliographic_snapshot = snapshot
             book = await ProcessListingUseCase(session)._resolve_bd_market_comparison(
                 listing, alert
             )
@@ -473,6 +499,7 @@ class ProcessListingUseCase:
                     catalog_tasks.append({
                         "alert_id": alert.id, "alert_name": alert.name,
                         "alert_isbn": getattr(alert, "isbn", None),
+                        "alert_snapshot": BibliographicSnapshot.capture(alert),
                         "listing_title": listing.title, "listing_description": listing.description,
                         "listing_isbn13": effective_isbn,
                         "alert_preparation": getattr(alert, "preparation", None)
@@ -531,9 +558,12 @@ class ProcessListingUseCase:
         isbn = getattr(alert, "isbn", None)
         if not isbn:
             return None, False, None
+        snapshot = BibliographicSnapshot.capture(alert)
         book_repo = BookRepository(self.db)
         book = await book_repo.get_by_isbn13(isbn)
         if book is None:
+            return None, False, None
+        if await AlertRepository(self.db).lock_bibliographic_result(alert.id, snapshot) is None:
             return None, False, None
         await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
         line = MarketPriceService.get_comparison_summary(
@@ -577,6 +607,7 @@ class ProcessListingUseCase:
                             alert.id,
                             author=getattr(alert, "author", None),
                             series=not alert.isbn,
+                            expected_snapshot=getattr(alert, "bibliographic_snapshot", None),
                         ),
                         name=f"bnf_link_{alert.id}",
                     )

@@ -3,6 +3,7 @@
 import contextlib
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from aiogram import F, Router
@@ -35,7 +36,7 @@ from app.bot.labels import (
 from app.bot.states.alert_creation import AutoTuneState
 from app.db.models.alert import Alert
 from app.db.models.user import User
-from app.db.repositories.alert_repo import AlertRepository
+from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
 from app.db.repositories.autotune_repo import (
     clear_dislikes_for_alert,
     get_alerts_with_dislikes,
@@ -57,23 +58,33 @@ router = Router(name="autotune_router")
 # Suggestions de variantes orthographiques en attente de confirmation. Volontairement
 # en mémoire seule, à la différence du store d'exclusions : ces suggestions sont
 # jetables et se régénèrent d'un simple appel à /autotune.
-_pending_variants: dict[str, list[str]] = {}
+@dataclass(frozen=True)
+class _PendingVariants:
+    values: list[str]
+    snapshot: BibliographicSnapshot | None
+
+
+_pending_variants: dict[str, _PendingVariants] = {}
 _active_tuning_alerts: set[str] = set()
 
 
-def save_pending_variants(alert_id: uuid.UUID, variants: list[str]) -> None:
+def save_pending_variants(
+    alert_id: uuid.UUID, variants: list[str], *, snapshot: BibliographicSnapshot | None = None,
+) -> None:
     """Mémorise les variantes proposées pour cette alerte."""
-    _pending_variants[str(alert_id)] = variants
+    _pending_variants[str(alert_id)] = _PendingVariants(variants, snapshot)
 
 
 def get_pending_variants(alert_id: uuid.UUID) -> list[str]:
     """Variantes proposées pour cette alerte, encore en attente de confirmation."""
-    return _pending_variants.get(str(alert_id), [])
+    pending = _pending_variants.get(str(alert_id))
+    return pending.values if pending else []
 
 
 def pop_pending_variants(alert_id: uuid.UUID) -> list[str]:
     """Retire et renvoie les variantes proposées (confirmation ou abandon)."""
-    return _pending_variants.pop(str(alert_id), [])
+    pending = _pending_variants.pop(str(alert_id), None)
+    return pending.values if pending else []
 
 
 def _autotune_back_keyboard(alert_id: object) -> InlineKeyboardMarkup:
@@ -671,8 +682,8 @@ async def handle_var_apply(
     except ValueError:
         return
 
-    variants = get_pending_variants(alert_id)
-    if not variants:
+    pending = _pending_variants.get(str(alert_id))
+    if pending is None or not pending.values:
         await callback.answer("Les suggestions ont expiré.", show_alert=True)
         return
 
@@ -683,16 +694,25 @@ async def handle_var_apply(
         # validation ultérieure n'a pas à déclencher une nouvelle analyse.
         await callback.answer("Alerte introuvable.", show_alert=True)
         return
-
-    pop_pending_variants(alert_id)
+    if pending.snapshot is not None and await alert_repo.lock_bibliographic_result(
+        alert_id, pending.snapshot
+    ) is None:
+        await db_session.rollback()
+        await callback.answer("Les suggestions ont expiré.", show_alert=True)
+        return
+    if _pending_variants.get(str(alert_id)) is not pending:
+        await db_session.rollback()
+        await callback.answer("Les suggestions ont expiré.", show_alert=True)
+        return
 
     current_variants = list(alert.variants or [])
-    for v in variants:
+    for v in sanitize_variants(pending.values, alert.name):
         if v.lower() not in [k.lower() for k in current_variants]:
             current_variants.append(v)
 
-    alert.variants = sanitize_variants(current_variants, alert.name)
+    alert.variants = current_variants
     await db_session.commit()
+    pop_pending_variants(alert_id)
 
     await callback.answer("Variantes ajoutées.", show_alert=True)
     back_kb = InlineKeyboardMarkup(

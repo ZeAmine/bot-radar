@@ -5,7 +5,7 @@ import uuid
 from typing import Any
 
 from app.core.constants import AlertStatus, BookSearchStatus
-from app.db.repositories.alert_repo import AlertRepository
+from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.session import AsyncSessionLocal
 from app.domain.entities.alert_preparation import preparation_request
@@ -28,8 +28,16 @@ async def confirm_listing_book(
     listing_isbn: str,
     listing_title: str,
     listing_description: str | None,
+    expected_snapshot: BibliographicSnapshot | None = None,
 ) -> None:
     """Consulte sans verrou SQL, puis lie seulement sur l'identité encore courante."""
+    async with AsyncSessionLocal() as session:
+        current = await AlertRepository(session).get_by_id(alert_id)
+        if current is None or (current.name, current.isbn) != (alert_name, alert_isbn):
+            return
+        snapshot = expected_snapshot or BibliographicSnapshot.capture(current)
+        if not snapshot.matches(current):
+            return
     result = await BookSearchUseCase().search_by_isbn(listing_isbn, expected_title=listing_title)
     confirmed, reference = result.confirmed, result.reference
     if result.status != BookSearchStatus.FOUND or confirmed is None or reference is None:
@@ -62,8 +70,8 @@ async def confirm_listing_book(
     needs_price = False
     async with AsyncSessionLocal() as session:
         repo = AlertRepository(session)
-        current = await repo.get_by_id(alert_id)
-        if current is None or not await repo.lock_for_edit(current):
+        current = await repo.lock_bibliographic_result(alert_id, snapshot)
+        if current is None:
             return
         if (
             current.status != AlertStatus.ACTIVE

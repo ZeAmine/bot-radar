@@ -19,7 +19,7 @@ from app.db.models.alert import Alert
 from app.db.models.book import Book
 from app.db.models.listing import Listing
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
-from app.db.repositories.alert_repo import AlertRepository
+from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
@@ -190,6 +190,7 @@ class ViewMarketDetailsUseCase:
         alert = await AlertRepository(self.db).get_by_id(alert_id, user_id=user_id)
         if alert is None:
             return
+        snapshot = BibliographicSnapshot.capture(alert)
         books = await self.book_repo.get_all_books_for_alert(alert.id)
         if books and (alert.isbn or all(extract_tome_number_from_title(b.title) for b in books)):
             return
@@ -199,12 +200,16 @@ class ViewMarketDetailsUseCase:
                 title=alert.name,
             )
             if book and book.isbn13 == alert.isbn:
+                if await AlertRepository(self.db).lock_bibliographic_result(
+                    alert.id, snapshot
+                ) is None:
+                    return
                 await self.book_repo.link_alert_to_book(alert.id, book.id)
                 await self.db.commit()
         else:
             from app.use_cases.ingest_listing import link_books_from_bnf
-
-            await link_books_from_bnf(alert.name, alert.id, series=True)
+            await link_books_from_bnf(alert.name, alert.id, series=True,
+                                      expected_snapshot=snapshot)
 
     async def _resolve_book(
         self,

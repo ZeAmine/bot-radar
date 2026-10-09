@@ -1,6 +1,7 @@
 """Dépôt d'accès aux données pour les alertes."""
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,6 +14,32 @@ from app.core.constants import AlertStatus
 from app.db.models.alert import Alert
 from app.db.models.category import Category
 from app.domain.entities.alert_preparation import preparation_request
+
+
+@dataclass(frozen=True)
+class BibliographicSnapshot:
+    """Contexte optimiste d'un résultat : un ISBN revenu à sa valeur ne suffit pas."""
+
+    name: str
+    isbn: str | None
+    status: AlertStatus
+    revision: datetime
+    preparation_token: str | None
+
+    @classmethod
+    def capture(cls, alert: Alert) -> "BibliographicSnapshot":
+        request = preparation_request(alert)
+        return cls(alert.name, alert.isbn, alert.status, alert.updated_at,
+                   request.token if request else None)
+
+    def matches(self, alert: Alert) -> bool:
+        current = self.capture(alert)
+        return (
+            (self.name, self.isbn, self.status, self.preparation_token)
+            == (current.name, current.isbn, current.status, current.preparation_token)
+            and (self.preparation_token is not None
+                 or self.revision.replace(tzinfo=None) == current.revision.replace(tzinfo=None))
+        )
 
 
 class AlertRepository:
@@ -110,16 +137,45 @@ class AlertRepository:
         """Seules les dépendances bibliographiques changent la version du travail."""
         request = preparation_request(alert)
         if request is not None:
-            from app.db.repositories.book_repo import BookRepository
-
-            # L'identité a changé : les anciennes liaisons/verdict/total ne sont
-            # plus ceux de cette alerte. Les livres et leurs cotes restent valides.
-            await BookRepository(self.session).clear_alert_books(alert.id)
-            alert.book_search_exhausted_at = None
-            alert.series_total_cents = None
+            await self.reset_bibliographic_identity(alert)
             alert.preparation = request.restart(
                 activate=request.activation_requested, author_hint=author_hint
             ).stored()
+
+    async def reset_bibliographic_identity(self, alert: Alert) -> None:
+        """Détache l'ancien catalogue, jamais les livres partagés ; sans commit."""
+        from app.db.repositories.book_repo import BookRepository
+
+        await BookRepository(self.session).clear_alert_books(alert.id)
+        alert.book_search_exhausted_at = None
+        alert.series_total_cents = None
+
+    async def lock_bibliographic_result(
+        self, alert_id: uuid.UUID, snapshot: BibliographicSnapshot, *,
+        require_preparation: bool = False,
+    ) -> Alert | None:
+        """Relit sous verrou court avant liaison/verdict, y compris après un aller-retour d'ISBN."""
+        current = await self.get_by_id(alert_id)
+        if current is None:
+            return None
+        # Même verrou de ligne que lock_for_edit, sans expirer user/alert_books
+        # déjà chargés par l'ingestion. Les champs de garde seuls sont relus.
+        locked = await self.session.scalar(select(Alert.id).where(
+            Alert.id == alert_id, Alert.deleted_at.is_(None), Alert.status != AlertStatus.DELETED,
+        ).with_for_update())
+        if locked is None:
+            return None
+        await self.session.refresh(current, [
+            "name", "isbn", "status", "updated_at", "preparation",
+            "include_keywords", "variants", "exclude_keywords",
+        ])
+        request = preparation_request(current)
+        if require_preparation and (
+            request is None or request.state != "pending" or not request.activation_requested
+            or current.status != AlertStatus.PAUSED
+        ):
+            return None
+        return current if snapshot.matches(current) else None
 
     async def pending_preparation_ids(self, excluded: set[uuid.UUID]) -> list[uuid.UUID]:
         """Quatre demandes éligibles, jamais tentées puis les moins récemment tentées."""
