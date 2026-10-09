@@ -139,6 +139,7 @@ BTN_ANALYSIS_RUNNING = "⏳ Analyse en cours"
 # Un bouton ne répète pas l'action qu'il propose déjà à l'écran : « Confirmer »
 # suffit, le message juste au-dessus dit ce qui est confirmé.
 BTN_CONFIRM = "Confirmer"
+BTN_REPORTED = "Signalé"
 
 # Sélecteur de période : la période courante est marquée, l'autre reste neutre.
 BTN_PERIOD_7 = "7 jours"
@@ -148,6 +149,7 @@ BTN_PERIOD_30 = "30 jours"
 def period_button(label: str, is_current: bool) -> str:
     """Bouton de période, coché quand il correspond à la période affichée."""
     return f"✅ {label}" if is_current else label
+
 
 # ---------------------------------------------------------------------------
 # Helpers de formatage

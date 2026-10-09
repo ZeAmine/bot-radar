@@ -206,8 +206,7 @@ def test_disliked_button_text():
         category_slug=CategorySlug.BD_COMICS.value,
         is_disliked=True,
     )
-    # Ligne 3, bouton 1 : doit être '✅ Signalé'
-    assert kb.inline_keyboard[2][0].text == "Faux positif enregistré"
+    assert kb.inline_keyboard[2][0].text == "Signalé"
     assert kb.inline_keyboard[2][0].callback_data == f"disliked:{listing_id}"
 
 
@@ -308,6 +307,7 @@ async def test_confirm_dislike_discards_the_confirmation_only():
     await _press_dislike(listing)
 
     confirmation = _make_alert_message()
+    callback = _press(f"confirm_dislike:{listing.id}", confirmation)
     db_session = MagicMock()
     db_session.commit = AsyncMock()
     with (
@@ -323,14 +323,32 @@ async def test_confirm_dislike_discards_the_confirmation_only():
         ),
         patch("app.bot.handlers.callbacks.record_listing_dislike", new_callable=AsyncMock),
     ):
-        await handle_confirm_dislike(
-            _press(f"confirm_dislike:{listing.id}", confirmation), db_session
-        )
+        await handle_confirm_dislike(callback, db_session)
 
     confirmation.delete.assert_not_awaited()
-    rows = confirmation.edit_reply_markup.await_args.kwargs["reply_markup"].inline_keyboard
-    assert rows[-1][0].callback_data == f"disliked:{listing.id}"
     confirmation.edit_text.assert_not_awaited()
+    rows = confirmation.edit_reply_markup.await_args.kwargs["reply_markup"].inline_keyboard
+    assert rows[-1][0].text == "Signalé"
+    assert rows[-1][0].callback_data == f"disliked:{listing.id}"
+    callback.answer.assert_awaited_once_with("Faux positif enregistré.")
+
+
+@pytest.mark.asyncio
+async def test_pressing_reported_again_keeps_the_button():
+    """Recliquer sur « Signalé » rappelle le signalement, sans rouvrir la confirmation."""
+    from app.bot.handlers.callbacks import handle_already_disliked
+
+    listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
+    message = _make_alert_message()
+    callback = _press(f"disliked:{listing.id}", message)
+    await handle_already_disliked(callback)
+
+    callback.answer.assert_awaited_once_with(
+        "Cette annonce a déjà été signalée comme faux positif.",
+        show_alert=True,
+    )
+    message.edit_reply_markup.assert_not_awaited()
+    message.edit_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio

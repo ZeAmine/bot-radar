@@ -4,7 +4,7 @@ import uuid
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.labels import BTN_CANCEL, BTN_CONFIRM, BTN_VIEW_LISTING
+from app.bot.labels import BTN_CANCEL, BTN_CONFIRM, BTN_REPORTED, BTN_VIEW_LISTING
 from app.core.constants import CategorySlug
 
 
@@ -19,18 +19,14 @@ def get_listing_alert_keyboard(
     Règles :
     - Ligne 1 : [🔗 Annonce]
     - Ligne 2 : [Prix du marché] (si BD/Comics)
-    - Ligne 3 (Ligne 2 si hors-BD) : [Faux positif] (ou [✅ Signalé]) et [Négocier]
+    - Ligne 3 (Ligne 2 si hors-BD) : [Faux positif] (ou [Signalé]) et [Négocier]
     """
     row1 = [InlineKeyboardButton(text=BTN_VIEW_LISTING, url=listing_url)]
 
     dislike_btn = (
-        InlineKeyboardButton(
-            text="Faux positif enregistré", callback_data=f"disliked:{listing_id}"
-        )
+        InlineKeyboardButton(text=BTN_REPORTED, callback_data=f"disliked:{listing_id}")
         if is_disliked
-        else InlineKeyboardButton(
-            text="Faux positif", callback_data=f"dislike:{listing_id}"
-        )
+        else InlineKeyboardButton(text="Faux positif", callback_data=f"dislike:{listing_id}")
     )
 
     row_actions = [
@@ -41,11 +37,7 @@ def get_listing_alert_keyboard(
     rows = [row1]
     if category_slug == CategorySlug.BD_COMICS.value:
         rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Prix du marché", callback_data=f"market:{listing_id}"
-                )
-            ]
+            [InlineKeyboardButton(text="Prix du marché", callback_data=f"market:{listing_id}")]
         )
     rows.append(row_actions)
 
@@ -64,22 +56,14 @@ def get_dislike_confirmation_keyboard(
     row1 = [InlineKeyboardButton(text=BTN_VIEW_LISTING, url=listing_url)]
 
     row_confirm = [
-        InlineKeyboardButton(
-            text=BTN_CONFIRM, callback_data=f"confirm_dislike:{listing_id}"
-        ),
-        InlineKeyboardButton(
-            text=BTN_CANCEL, callback_data=f"cancel_dislike:{listing_id}"
-        ),
+        InlineKeyboardButton(text=BTN_CONFIRM, callback_data=f"confirm_dislike:{listing_id}"),
+        InlineKeyboardButton(text=BTN_CANCEL, callback_data=f"cancel_dislike:{listing_id}"),
     ]
 
     rows = [row1]
     if category_slug == CategorySlug.BD_COMICS.value:
         rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Prix du marché", callback_data=f"market:{listing_id}"
-                )
-            ]
+            [InlineKeyboardButton(text="Prix du marché", callback_data=f"market:{listing_id}")]
         )
     rows.append(row_confirm)
 
