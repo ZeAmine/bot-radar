@@ -20,6 +20,7 @@ from collections.abc import Iterable, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.book import Book
+from app.db.models.book_market_cache import BookMarketCache
 from app.db.repositories.book_repo import BookRepository
 from app.db.session import AsyncSessionLocal
 from app.providers.base import MarketOffer, extract_best_historical_low
@@ -79,6 +80,19 @@ async def _select_books(
         return await _read(read_session)
 
 
+def _pass_stat(cache: BookMarketCache | None) -> str:
+    """Ventile la passe : un fournisseur muet dégrade la collecte, il ne la plante pas.
+
+    ``pricing_stat`` dit « errors » dès que la collecte est ``failed``. Pour le
+    seuil d'alerte, ce mot est réservé à une exception ou à une cotation qui
+    n'a rien pu écrire. Le livre, lui, a un résultat : la source nommée a échoué.
+    """
+    stat = pricing_stat(cache)
+    if stat == "errors":
+        return "degraded"
+    return stat
+
+
 async def _price_one_book(
     book: Book,
     registry: ProviderRegistry,
@@ -92,7 +106,7 @@ async def _price_one_book(
         if cache is None:
             return "errors"
         registry.failed_provider_names.update(cache.failed_provider_names or [])
-        return pricing_stat(cache)
+        return _pass_stat(cache)
     async with semaphore:
         offers: list[MarketOffer] = await fetch_offers_for_book(book, registry=registry)
 
@@ -102,7 +116,9 @@ async def _price_one_book(
         historical_low_cents=extract_best_historical_low(offers),
     )
 
-    return pricing_stat(await persist_market_result(session, book.id, result))
+    cache = await persist_market_result(session, book.id, result)
+    registry.failed_provider_names.update(cache.failed_provider_names or [])
+    return _pass_stat(cache)
 
 
 async def _run_wave(
@@ -170,7 +186,13 @@ async def refresh_book_prices_task(
     if registry is None:
         registry = ProviderRegistry()
 
-    stats = {"processed": 0, "available": 0, "unavailable": 0, "errors": 0}
+    stats = {
+        "processed": 0,
+        "available": 0,
+        "unavailable": 0,
+        "degraded": 0,
+        "errors": 0,
+    }
     books = await _select_books(session, incremental, batch_size)
 
     if not books:
@@ -206,11 +228,12 @@ async def refresh_book_prices_task(
 
     logger.info(
         "Rafraîchissement BD terminé (%s) : %d traités, %d avec prix, "
-        "%d indisponibles, %d erreurs.",
+        "%d indisponibles, %d dégradés, %d erreurs.",
         mode_label,
         stats["processed"],
         stats["available"],
         stats["unavailable"],
+        stats["degraded"],
         stats["errors"],
     )
 
@@ -233,6 +256,12 @@ async def refresh_book_prices_task(
         errors=stats["errors"],
         failed_providers=tuple(sorted(registry.failed_provider_names)),
     )
-    await notify_high_error_ratio(stats["processed"], stats["errors"], mode_label=mode_label)
+    await notify_high_error_ratio(
+        stats["processed"],
+        stats["errors"],
+        mode_label=mode_label,
+        failed_providers=tuple(sorted(registry.failed_provider_names)),
+        degraded=stats["degraded"],
+    )
 
     return stats
