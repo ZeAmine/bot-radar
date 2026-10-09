@@ -12,6 +12,7 @@ from app.core import tasks
 async def registry(monkeypatch):
     registered = set()
     monkeypatch.setattr(tasks, "_background_tasks", registered)
+    monkeypatch.setattr(tasks, "_cleanup_tasks", set())
     yield registered
     for task in tuple(registered):
         if not task.done():
@@ -24,6 +25,34 @@ async def checkpoint():
     reached = asyncio.Event()
     asyncio.get_running_loop().call_soon(reached.set)
     await reached.wait()
+
+
+async def test_cleanup_role_not_name_controls_cancellation(registry):
+    release, ordinary_cancelled = asyncio.Event(), asyncio.Event()
+
+    async def cleanup():
+        await release.wait()
+
+    async def ordinary():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            ordinary_cancelled.set()
+
+    protected = tasks.safe_create_task(cleanup(), name="other-name", cleanup=True)
+    work = tasks.safe_create_task(ordinary(), name="ingest_rollback")
+    await checkpoint()
+    draining = asyncio.create_task(tasks.wait_all_background_tasks(timeout=0))
+    try:
+        await ordinary_cancelled.wait()
+        assert work.cancelling() == 1
+        assert protected.cancelling() == 0
+        assert not draining.done()
+    finally:
+        release.set()
+        await draining
+    assert not registry
+    assert not tasks._cleanup_tasks
 
 
 async def test_parent_child_is_still_awaited_after_parent_has_finished(registry):

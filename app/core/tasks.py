@@ -10,6 +10,8 @@ logger = logging.getLogger("radar.tasks")
 
 # Ensemble retenant les références fortes vers les tâches en cours d'exécution
 _background_tasks: set[asyncio.Task[Any]] = set()
+# Nettoyages SQL explicitement enregistrés : à attendre, jamais à annuler par le drainage.
+_cleanup_tasks: set[asyncio.Task[Any]] = set()
 # Réveiller uniquement les drainages actifs si une nouvelle tâche est enregistrée.
 _drain_events: set[asyncio.Event] = set()
 
@@ -17,17 +19,23 @@ _drain_events: set[asyncio.Event] = set()
 def safe_create_task[T](
     coro: Coroutine[Any, Any, T],
     name: str | None = None,
+    *,
+    cleanup: bool = False,
 ) -> asyncio.Task[T]:
     """Crée une tâche asyncio d'arrière-plan protégée contre la collecte intempestive du GC.
 
     Attache un callback automatique qui journalise toute exception non gérée
     et retire la référence forte une fois la tâche terminée.
+    cleanup réserve au nettoyage sa fin coopérative, même après l'échéance du drainage.
     """
     task = asyncio.create_task(coro, name=name)
     _background_tasks.add(task)
+    if cleanup:
+        _cleanup_tasks.add(task)
 
     def _on_task_done(t: asyncio.Task[Any]) -> None:
         _background_tasks.discard(t)
+        _cleanup_tasks.discard(t)
         if not t.cancelled():
             exc = t.exception()
             if exc:
@@ -70,13 +78,13 @@ async def wait_all_background_tasks(timeout: float = 5.0) -> None:
             if cancelling:
                 newly_cancelled = pending - cancelled
                 for task in newly_cancelled:
-                    # Ne pas interrompre un rollback qui traite déjà une annulation.
-                    if not task.cancelling():
+                    # Les finally déjà engagés et les nettoyages explicites doivent finir.
+                    if task not in _cleanup_tasks and not task.cancelling():
                         task.cancel()
                 cancelled.update(pending)
                 if newly_cancelled:
                     logger.warning(
-                        "Drainage non terminé : annulation demandée, nettoyage attendu pour %s.",
+                        "Drainage non terminé : travaux ordinaires annulés, fin attendue pour %s.",
                         sorted(t.get_name() for t in newly_cancelled),
                     )
                 remaining = None
