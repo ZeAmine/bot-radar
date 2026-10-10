@@ -127,24 +127,16 @@ class StatsRepository:
         }
 
     async def get_notification_latency_ms(self, days: int = 7) -> dict[str, Any]:
-        """Délai entre l'ingestion d'une annonce et l'envoi de son alerte, en ms.
+        """Écart des timestamps réception persistée → marquage, pas durée jusqu'au commit.
 
-        C'est le seul délai mesurable de bout en bout : `Listings.published_at` est
-        vide, car la charge utile de Vinted ne porte aucun horodatage de publication.
-        Le délai face à la publication — le seul qui dirait si l'on est parmi les
-        premiers — reste donc hors de portée sans cette donnée amont.
-
-        Ce que la mesure couvre, c'est ce que l'application contrôle : matcher,
-        comparer, construire le message et l'envoyer. Mesuré à 0,98 s en p50 en
-        production, dont ~0,85 s pour la photo que Telegram doit télécharger.
-
-        Le percentile est calculé en Python sur les `LATENCY_SAMPLE_SIZE` notifications
-        les plus récentes, et non par `percentile_cont` : cette fonction n'existe que
-        sur PostgreSQL, alors que les tests tournent par défaut sur SQLite. L'échantillon
-        est borné pour que la requête reste peu coûteuse quel que soit le volume.
-        L'interpolation elle-même est celle de `percentile_cont`, partagée avec la
-        cadence de scrutation (`interpolated_percentile`) pour que les deux nombres
-        affichés par `/status` se lisent pareil.
+        Seuls les matches notifiés dont la réception est dans la fenêtre `days`
+        participent, au plus LATENCY_SAMPLE_SIZE lignes triées par réception
+        décroissante (pas par date de notification). Les écarts négatifs sont
+        exclus. Les pending et tentatives sans accusé ne sont pas ce dénominateur.
+        F01 conserve la réception initiale ; une reprise SQL F03-B peut déplacer
+        le timestamp du marquage, posé avant l'UPDATE et son commit. Aucun
+        horodatage de publication Vinted n'est transmis par le poller actuel.
+        Percentiles interpolés en Python, même sémantique sur SQLite/PostgreSQL.
         """
         threshold = datetime.now(UTC) - timedelta(days=days)
         stmt = (
