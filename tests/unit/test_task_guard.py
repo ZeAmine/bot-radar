@@ -485,6 +485,38 @@ def test_grep_and_rg_reject_secret_and_escaping_link(active_state: tv.TaskState)
     )
 
 
+def test_shell_rejects_pytest_outside_the_approved_proof(active_state: tv.TaskState) -> None:
+    trust = Path(active_state.trust_root)
+    venv_pytest = trust / ".venv" / "bin" / "pytest"
+    foreign = trust / "other" / "pytest"
+    approved = f"{venv_pytest} tests/unit/foo.py -q"
+    missing = f"{venv_pytest} tests/unit/other.py -q"
+    bare = "pytest tests/unit/foo.py -q"
+    alien = f"{foreign} tests/unit/foo.py -q"
+    for command in (approved, missing, bare, alien):
+        payload = hook_payload(active_state, "beforeShellExecution", command=command)
+        assert tg.handle_hook(payload, autonomy_home())["permission"] == "deny"
+
+
+def test_failed_status_rejects_modification(active_state: tv.TaskState) -> None:
+    state_path = tv.state_path(autonomy_home(), "g1")
+    state = tv.load_state(state_path)
+    state.status = "failed"
+    state.tool_call_count = 4
+    tv.save_state(state_path, state)
+    payload = hook_payload(
+        active_state,
+        "preToolUse",
+        tool_name="Write",
+        tool_input={"file_path": "allowed.txt"},
+        tool_use_id="tu-failed",
+    )
+    assert tg.handle_hook(payload, autonomy_home())["permission"] == "deny"
+    saved = tv.load_state(state_path)
+    assert saved.status == "failed"
+    assert saved.tool_call_count == 4
+
+
 def test_git_metadata_write_is_denied(
     active_state: tv.TaskState,
     monkeypatch: pytest.MonkeyPatch,

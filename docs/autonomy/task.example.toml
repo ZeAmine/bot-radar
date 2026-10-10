@@ -22,6 +22,7 @@ proof = [
 ]
 
 # Les preuves sont des argv exacts : pas de ; && | ` $ < >.
+# Le shell n'accepte que le binaire .venv/bin correspondant, pas un nom du PATH.
 # pytest ne reçoit que des chemins sous tests/. Un test déjà versionné
 # au base_sha ne se modifie pas : cela arrête la tâche pour revue.
 

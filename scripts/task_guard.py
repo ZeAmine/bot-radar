@@ -138,7 +138,7 @@ def _read_decision(path_str: str, state: TaskState) -> GuardDecision:
 
 
 def _shell_mode(status: str) -> ShellMode:
-    if status == "stopped":
+    if status in {"stopped", "failed"}:
         return "stopped"
     if status == "ready_for_review":
         return "review"
@@ -146,12 +146,19 @@ def _shell_mode(status: str) -> ShellMode:
 
 
 def _command_decision(command: str, state: TaskState) -> GuardDecision:
+    proof: list[str] = []
+    if state.status == "active":
+        try:
+            proof = load_task(Path(state.task_path)).proof
+        except (OSError, ValueError):
+            return GuardDecision(False, "fiche illisible")
     allowed = shell_command_allowed(
         command,
         Path(state.trust_root),
         task_id=state.task_id,
         worktree=Path(state.worktree_path),
         mode=_shell_mode(state.status),
+        proof=proof,
     )
     if allowed:
         return GuardDecision(True)
@@ -197,7 +204,7 @@ def _decide_tool(payload: dict[str, Any], state: TaskState) -> GuardDecision:
             return GuardDecision(False, "commande manquante")
         return _command_decision(command, state)
     if tool_name in {"Write", "Delete"}:
-        if state.status in {"stopped", "ready_for_review"}:
+        if state.status in {"stopped", "failed", "ready_for_review"}:
             return GuardDecision(False, "écriture refusée dans l'état actuel")
         file_path = tool_input.get("file_path")
         if not isinstance(file_path, str) or not file_path:

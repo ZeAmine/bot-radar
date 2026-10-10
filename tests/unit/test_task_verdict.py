@@ -486,6 +486,165 @@ def test_proof_environment_drops_production_and_foreign_path(
         tv.run_proof_commands(task, tmp_path, trust)
 
 
+def test_shell_uses_only_approved_proof_executables(tmp_path: Path) -> None:
+    trust = tmp_path / "trust"
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    proof = ["pytest tests/unit/foo.py -v", "ruff check ."]
+    venv_pytest = trust / ".venv" / "bin" / "pytest"
+    venv_ruff = trust / ".venv" / "bin" / "ruff"
+    assert tv.shell_command_allowed(
+        f"{venv_pytest} tests/unit/foo.py -v",
+        trust,
+        worktree=worktree,
+        proof=proof,
+    )
+    assert tv.shell_command_allowed(
+        f"{venv_ruff} check .",
+        trust,
+        worktree=worktree,
+        proof=proof,
+    )
+    assert not tv.shell_command_allowed(
+        f"{venv_pytest} tests/unit/other.py -v",
+        trust,
+        worktree=worktree,
+        proof=proof,
+    )
+    assert not tv.shell_command_allowed(
+        "pytest tests/unit/foo.py -v",
+        trust,
+        worktree=worktree,
+        proof=proof,
+    )
+    assert not tv.shell_command_allowed(
+        f"{tmp_path / 'bin' / 'pytest'} tests/unit/foo.py -v",
+        trust,
+        worktree=worktree,
+        proof=proof,
+    )
+
+
+def test_deadline_is_recomputed_before_each_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+    clock = {"now": started + timedelta(seconds=10)}
+    monkeypatch.setattr(tv, "utc_now", lambda: clock["now"])
+    task = tv.TaskSpec(
+        id="t1",
+        base_sha="abc1234",
+        objective="o",
+        allowed_write=["README.md"],
+        proof=["ruff check ."],
+        max_minutes=1,
+    )
+    state = tv.TaskState(
+        task_id="t1",
+        fingerprint="x",
+        base_sha="abc1234",
+        trust_root=str(tmp_path),
+        worktree_path=str(tmp_path),
+        task_path=str(tmp_path / "task.toml"),
+        status="active",
+        started_at=started.isoformat(),
+        approved_at=started.isoformat(),
+    )
+    launches: list[float] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, int | float)
+        launches.append(float(timeout))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tv.subprocess, "run", fake_run)
+    with tv.arm_call_timeout(state, task):
+        tv.run_bounded(["git", "status"], tmp_path)
+        clock["now"] = started + timedelta(seconds=40)
+        tv.run_bounded(["git", "diff"], tmp_path)
+        clock["now"] = started + timedelta(seconds=61)
+        with pytest.raises(RuntimeError, match="échéance"):
+            tv.run_bounded(["git", "log"], tmp_path)
+    assert len(launches) == 2
+    assert launches[0] > launches[1] > 0
+
+
+def test_report_invalidates_ready_when_digest_changes(
+    autonomy_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boot_task(autonomy_env, monkeypatch)
+    monkeypatch.setattr(
+        tv,
+        "run_proof_commands",
+        lambda *_a, **_k: [("ruff check .", 0, "ok")],
+    )
+    assert tv.cmd_verify(SimpleNamespace(task_id="t1")) == 0
+    state_path = tv.state_path(autonomy_env["autonomy"], "t1")
+    ready = tv.load_state(state_path)
+    assert ready.status == "ready_for_review"
+    cycles = ready.verify_count
+    calls = ready.tool_call_count
+    readme = Path(ready.worktree_path) / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "hors revue\n", encoding="utf-8")
+    assert tv.cmd_report(SimpleNamespace(task_id="t1", consumption_after=None)) == 0
+    saved = tv.load_state(state_path)
+    assert saved.status == "active"
+    assert saved.review_digest is None
+    assert saved.verify_count == cycles
+    assert saved.tool_call_count == calls
+    report = tv.report_path(autonomy_env["autonomy"], "t1").read_text(encoding="utf-8")
+    assert "périmée" in report
+
+
+def test_reserve_keeps_stopped_and_failed(
+    autonomy_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boot_task(autonomy_env, monkeypatch)
+    state_path = tv.state_path(autonomy_env["autonomy"], "t1")
+    state = tv.load_state(state_path)
+    state.status = "stopped"
+    state.stopped_reason = "arrêt concurrent"
+    state.verify_count = 2
+    state.tool_call_count = 5
+    state.reserved_shell_pending = True
+    state.reserved_shell_command = "git status"
+    tv.save_state(state_path, state)
+    reason = tv.reserve_tool_call(
+        autonomy_env["autonomy"],
+        "t1",
+        tool_use_id="tu-stopped",
+        command="git status",
+    )
+    assert reason
+    stopped = tv.load_state(state_path)
+    assert stopped.status == "stopped"
+    assert stopped.stopped_reason == "arrêt concurrent"
+    assert stopped.verify_count == 2
+    assert stopped.tool_call_count == 5
+    assert tv.cmd_verify(SimpleNamespace(task_id="t1")) == 2
+    after_verify = tv.load_state(state_path)
+    assert after_verify.status == "stopped"
+    assert after_verify.verify_count == 2
+    after_verify.status = "failed"
+    after_verify.stopped_reason = "échec"
+    tv.save_state(state_path, after_verify)
+    failed_reason = tv.reserve_tool_call(
+        autonomy_env["autonomy"],
+        "t1",
+        tool_use_id="tu-failed",
+        command=None,
+    )
+    assert failed_reason
+    failed = tv.load_state(state_path)
+    assert failed.status == "failed"
+    assert failed.tool_call_count == 5
+    assert failed.verify_count == 2
+
+
 def test_timeout_uses_remaining_budget(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

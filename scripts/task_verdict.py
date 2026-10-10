@@ -101,11 +101,6 @@ CONTROL_MARKERS = (
     "métadonnées git",
     "contenu modifié",
 )
-_call_timeout: contextvars.ContextVar[float] = contextvars.ContextVar(
-    "botradar_call_timeout",
-    default=float(SUBPROCESS_TIMEOUT_SECONDS),
-)
-
 Status = Literal["active", "stopped", "ready_for_review", "failed"]
 ShellMode = Literal["active", "review", "stopped"]
 
@@ -124,8 +119,12 @@ def default_tasks_root() -> Path:
     return Path.home() / "Projets/bot-radar-tasks"
 
 
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 def utc_now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+    return utc_now().replace(microsecond=0).isoformat()
 
 
 def sha256_file(path: Path) -> str:
@@ -227,6 +226,12 @@ class TaskState:
             reserved_shell_command=data.get("reserved_shell_command"),
             reserved_shell_pending=bool(data.get("reserved_shell_pending", False)),
         )
+
+
+_deadline: contextvars.ContextVar[tuple[TaskState, TaskSpec] | None] = contextvars.ContextVar(
+    "botradar_deadline",
+    default=None,
+)
 
 
 @dataclass
@@ -464,23 +469,36 @@ def verdict_argv_allowed(
     return extra == []
 
 
-def tool_argv_allowed(argv: list[str], trust_root: Path, worktree: Path | None) -> bool:
-    if not argv:
+def approved_proof_argv(
+    argv: list[str],
+    trust_root: Path,
+    worktree: Path | None,
+    proof: list[str],
+) -> bool:
+    if not argv or not Path(argv[0]).is_absolute():
         return False
     name = Path(argv[0]).name
     if name not in {"pytest", "ruff", "mypy"}:
         return False
-    if Path(argv[0]).is_absolute():
-        expected = trust_root / ".venv" / "bin" / name
-        if Path(argv[0]) != expected:
-            return False
-    elif argv[0] != name:
+    try:
+        given = Path(argv[0]).resolve()
+        expected = (trust_root / ".venv" / "bin" / name).resolve()
+    except OSError:
         return False
-    if name == "pytest":
-        return pytest_args_ok(argv[1:], worktree)
-    if name == "ruff":
-        return ruff_args_ok(argv[1:])
-    return argv[1:] == ["app"]
+    if given != expected:
+        return False
+    for item in proof:
+        spec = split_command(item)
+        if spec is None or spec[0] != name or spec[1:] != argv[1:]:
+            continue
+        if not proof_command_allowed(item):
+            return False
+        if name == "pytest":
+            return pytest_args_ok(argv[1:], worktree)
+        if name == "ruff":
+            return ruff_args_ok(argv[1:])
+        return argv[1:] == ["app"]
+    return False
 
 
 def shell_command_allowed(
@@ -490,6 +508,7 @@ def shell_command_allowed(
     task_id: str | None = None,
     worktree: Path | None = None,
     mode: ShellMode = "active",
+    proof: list[str] | None = None,
 ) -> bool:
     argv = split_command(command)
     if argv is None:
@@ -504,7 +523,7 @@ def shell_command_allowed(
         return True
     if mode != "active":
         return False
-    return tool_argv_allowed(argv, trust_root, worktree)
+    return approved_proof_argv(argv, trust_root, worktree, proof or [])
 
 
 def task_dir(autonomy_home: Path, task_id: str) -> Path:
@@ -572,6 +591,8 @@ def reserve_tool_call(
     command: str | None,
 ) -> str | None:
     with locked_state(autonomy_home, task_id) as state:
+        if state.status != "active":
+            return f"modification refusée : statut {state.status}"
         task = load_task(Path(state.task_path))
         time_error = check_time_budget(state, task)
         if time_error:
@@ -638,10 +659,15 @@ def run_bounded(
     timeout: float | None = None,
     text: bool = True,
 ) -> subprocess.CompletedProcess[Any]:
-    limit = _call_timeout.get()
-    chosen = limit if timeout is None else min(float(timeout), limit)
+    armed = _deadline.get()
+    if armed is not None:
+        chosen = remaining_timeout(armed[0], armed[1])
+        if timeout is not None:
+            chosen = min(float(timeout), chosen)
+    else:
+        chosen = float(SUBPROCESS_TIMEOUT_SECONDS if timeout is None else timeout)
     if chosen <= 0:
-        raise RuntimeError(f"timeout : {' '.join(argv)}")
+        raise RuntimeError(f"échéance dépassée : {' '.join(argv)}")
     try:
         return subprocess.run(
             argv,
@@ -807,7 +833,7 @@ def remaining_timeout(state: TaskState, task: TaskSpec) -> float:
     started = datetime.fromisoformat(state.started_at)
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)
-    remain = task.max_minutes * 60 - (datetime.now(UTC) - started).total_seconds()
+    remain = task.max_minutes * 60 - (utc_now() - started).total_seconds()
     if remain < 0:
         remain = 0
     return min(float(SUBPROCESS_TIMEOUT_SECONDS), remain)
@@ -815,11 +841,11 @@ def remaining_timeout(state: TaskState, task: TaskSpec) -> float:
 
 @contextlib.contextmanager
 def arm_call_timeout(state: TaskState, task: TaskSpec) -> Iterator[None]:
-    token = _call_timeout.set(remaining_timeout(state, task))
+    token = _deadline.set((state, task))
     try:
         yield
     finally:
-        _call_timeout.reset(token)
+        _deadline.reset(token)
 
 
 def read_tracked_file_at(worktree: Path, base_sha: str, relative: str) -> str | None:
@@ -904,7 +930,7 @@ def check_trust_scripts(state: TaskState) -> str | None:
 
 def check_time_budget(state: TaskState, task: TaskSpec) -> str | None:
     started = datetime.fromisoformat(state.started_at)
-    elapsed = datetime.now(UTC) - started
+    elapsed = utc_now() - started
     if elapsed.total_seconds() > task.max_minutes * 60:
         return f"plafond de durée dépassé ({task.max_minutes} min)"
     return None
@@ -1278,7 +1304,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             state.stopped_reason = f"plafond de cycles verify atteint ({task.max_cycles})"
             print(state.stopped_reason, file=sys.stderr)
             return 2
-        if state.status == "stopped":
+        if state.status in {"stopped", "failed"}:
             print(f"tâche arrêtée : {state.stopped_reason}", file=sys.stderr)
             return 2
         inconsistency = ensure_consistent_active(autonomy_home, state)
@@ -1321,7 +1347,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             signature=signature,
             evidence=list(working.evidence),
             digest_after=digest_after if digest_before == digest_after else None,
-            preserve_stop=fresh.status == "stopped",
+            preserve_stop=fresh.status in {"stopped", "failed"},
         )
         if fresh.status == "ready_for_review":
             append_journal(journal_path(autonomy_home, args.task_id), "verify vert")
@@ -1377,7 +1403,15 @@ def cmd_report(args: argparse.Namespace) -> int:
         current_digest = None
         if worktree.is_dir():
             current_digest = compute_review_digest(worktree, state.base_sha)
-        stale = not state.evidence or current_digest != state.review_digest
+        digest_changed = current_digest != state.review_digest
+        if state.status == "ready_for_review" and digest_changed:
+            state.status = "active"
+            state.review_digest = None
+            append_journal(
+                journal_path(autonomy_home, args.task_id),
+                "invalidation du digest de revue",
+            )
+        stale = not state.evidence or digest_changed
         lines = [
             f"# Rapport autonomie — {task.id}",
             "",

@@ -50,9 +50,9 @@ Les contrôles statiques s'exécutent avant toute collecte pytest et avant les p
 - Taille du diff ≤ `max_diff_lines`, non suivis compris ; un binaire n'est pas compté comme zéro ligne
 - Motif de secret dans le diff, dans un fichier non suivi ou dans son nom
 - Scripts de confiance inchangés depuis l'approbation
-- Plafonds : durée, cycles `verify` (compteur persisté avant les preuves), appels d'outils. Une violation de contrôle arrête dès la première vérification. Le timeout d'un sous-processus ne dépasse pas le temps restant.
+- Plafonds : durée, cycles `verify` (compteur persisté avant les preuves), appels d'outils. Une violation de contrôle arrête dès la première vérification. Le temps restant est recalculé avant chaque sous-processus ; aucun nouveau lancement n'a lieu après l'échéance.
 - Le digest est relevé avant et après les preuves. S'il change, ou si un arrêt concurrent est apparu, le résultat n'est pas publié comme vert.
-- Commandes `proof` : argv exact, exécutées seulement par les binaires du venv de confiance. L'environnement transmis ne reprend pas les variables du processus parent.
+- Commandes `proof` : argv exact, exécutées seulement par les binaires du venv de confiance. Le shell de la session liée n'accepte que ces mêmes binaires et ces mêmes commandes. Un nom nu, ou un pytest absent de la fiche, est refusé. L'environnement transmis ne reprend pas les variables du processus parent.
 
 ## Hooks Cursor (installation manuelle, hors dépôt)
 
@@ -90,9 +90,9 @@ Le garde lit le schéma documenté par Cursor : `hook_event_name`, `conversation
 
 La session est liée par `conversation_id` au premier appel dont `workspace_roots` contient le worktree. L'identité ne dépend pas du répertoire courant : un `cwd` ou un `working_directory` hors worktree est refusé. Une autre conversation ouverte sur le même worktree est refusée. Une session dont les racines ne contiennent pas ce worktree n'est pas bloquée.
 
-Dans la session liée, le défaut est le refus : événement inconnu, outil inconnu, champ manquant, fiche ou approbation incohérente. Une conversation déjà liée est reconnue avant toute décision fondée sur les racines : des racines absentes ou différentes refusent la session, au lieu de la traiter comme une autre session. Le garde relit la fiche, l'approbation et l'état avant l'action. La réservation d'un appel est atomique. Un même `tool_use_id` ne compte qu'une fois, et `beforeShellExecution` du même appel shell reste autorisé lorsque `preToolUse` vient de prendre la dernière place. Les lectures passent par le chemin résolu : secret, métadonnées `.git` et lien sortant sont refusés, y compris pour `Grep` et `rg`.
+Dans la session liée, le défaut est le refus : événement inconnu, outil inconnu, champ manquant, fiche ou approbation incohérente. Une conversation déjà liée est reconnue avant toute décision fondée sur les racines : des racines absentes ou différentes refusent la session, au lieu de la traiter comme une autre session. Le garde relit la fiche, l'approbation et l'état avant l'action. La réservation d'un appel est atomique et relit le statut sous le verrou : `stopped` ou `failed` n'autorise aucune nouvelle modification, ne remet pas les compteurs à zéro et ne reprend pas la tâche. Un même `tool_use_id` ne compte qu'une fois, et `beforeShellExecution` du même appel shell reste autorisé lorsque `preToolUse` vient de prendre la dernière place, tant que le statut est encore `active`. Les lectures passent par le chemin résolu : secret, métadonnées `.git` et lien sortant sont refusés, y compris pour `Grep` et `rg`.
 
-En `ready_for_review`, les écritures et les commandes de modification sont refusées. `verify` ou `report` recalcule le digest ; s'il a changé, la tâche redevient `active` et un nouveau `verify` est exigé. `resume` (humain) invalide aussi cet état, sans remettre les compteurs à zéro.
+En `ready_for_review`, les écritures et les commandes de modification sont refusées. `verify` ou `report` recalcule le digest ; s'il a changé, le statut redevient `active`, le digest est effacé, et un nouveau `verify` est exigé. Les compteurs ne sont pas remis à zéro. `resume` (humain) invalide aussi cet état, sans remettre les compteurs à zéro. Un arrêt `stopped` ou `failed` n'est pas repris par `report`.
 
 `failClosed: true` ne couvre qu'un crash, un timeout ou une sortie invalide du hook. Il ne corrige pas une décision `allow` incorrecte.
 
@@ -110,7 +110,7 @@ Sans tâche active (`autonomy/active.json` absent), le garde laisse passer : les
 2. Tenter `rsync --version` → **attendu** : refus.
 3. Tenter `docker --version` → **attendu** : refus.
 4. Tenter `python scripts/task_verdict.py approve …` → **attendu** : refus (réservé humain).
-5. Tenter `pytest tests/unit/…` autorisé par la fiche → **attendu** : allow (si chemin dans la preuve).
+5. Tenter le binaire `.venv/bin/pytest` d'une commande présente dans `proof` → **attendu** : allow. Un pytest absent de la fiche, ou un exécutable hors de ce venv, est refusé.
 
 **Critères d'échec du lot côté hooks** : l'une des commandes 1–4 passe, ou `approve` passe depuis l'agent.
 
@@ -125,7 +125,7 @@ Sans tâche active (`autonomy/active.json` absent), le garde laisse passer : les
 | Arrêt | Effectif sur outils hookés ; pas sur une réponse chat seule. Arrêt manuel toujours possible. Les sous-processus de `verify` ont un timeout. |
 | Consommation | Non lue par les scripts ; relevé humain ou « non mesurée » dans le rapport. Plafonds = durée, cycles, appels d'outils. |
 | Hooks | Comportement réel dépend de Cursor ; les tests du dépôt couvrent le schéma JSON documenté et la logique de décision, pas l'IDE. `failClosed` ne compense pas un `allow` incorrect. |
-| Rapport | Les preuves affichées sont celles enregistrées par `verify` (commande, code, durée, fin de sortie). Un digest différent rend la preuve périmée, sans relancer les commandes. |
+| Rapport | Les preuves affichées sont celles enregistrées par `verify` (commande, code, durée, fin de sortie). Un digest différent invalide `ready_for_review` et marque la preuve périmée, sans relancer les commandes ni remettre les compteurs à zéro. |
 
 ## Commandes utiles
 
