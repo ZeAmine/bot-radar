@@ -1,0 +1,244 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "pair": {
+        "alert": {
+          "name": "Blacksad",
+          "category_slug": "bd_comics",
+          "include_keywords": [
+            "blacksad"
+          ],
+          "max_item_price_cents": 1500
+        },
+        "listing": {
+          "title": "BD Blacksad",
+          "category_slug": "bd_comics",
+          "item_price_cents": 1000,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "accepter",
+        "source": "business_test"
+      }
+    },
+    {
+      "pair": {
+        "alert": {
+          "name": "Blacksad",
+          "category_slug": "bd_comics",
+          "include_keywords": [
+            "blacksad"
+          ],
+          "max_item_price_cents": 1500
+        },
+        "listing": {
+          "title": "BD Blacksad",
+          "category_slug": "bd_comics",
+          "item_price_cents": 1600,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "rejeter",
+        "source": "business_test"
+      }
+    },
+    {
+      "pair": {
+        "alert": {
+          "name": "Blacksad",
+          "category_slug": "bd_comics",
+          "include_keywords": [
+            "blacksad"
+          ],
+          "max_item_price_cents": 1500
+        },
+        "listing": {
+          "title": "Blacksad poster",
+          "category_slug": "bd_comics",
+          "item_price_cents": 1000,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "rejeter",
+        "source": "business_test"
+      }
+    },
+    {
+      "pair": {
+        "alert": {
+          "name": "Blacksad",
+          "category_slug": "bd_comics",
+          "include_keywords": [
+            "blacksad"
+          ],
+          "max_item_price_cents": 1500,
+          "variants": [
+            "chat detective"
+          ]
+        },
+        "listing": {
+          "title": "Chat detective",
+          "category_slug": "bd_comics",
+          "item_price_cents": 1000,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "accepter",
+        "source": "business_test"
+      }
+    },
+    {
+      "pair": {
+        "alert": {
+          "name": "Blacksad",
+          "category_slug": "bd_comics",
+          "include_keywords": [
+            "blacksad"
+          ],
+          "max_item_price_cents": 1500,
+          "isbn": "9782205049657"
+        },
+        "listing": {
+          "title": "BD Blacksad",
+          "category_slug": "bd_comics",
+          "item_price_cents": 1000,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "accepter",
+        "source": "business_test"
+      }
+    },
+    {
+      "pair": {
+        "alert": {
+          "name": "Blacksad",
+          "category_slug": "bd_comics",
+          "include_keywords": [
+            "blacksad"
+          ],
+          "max_item_price_cents": 1500,
+          "status": "paused"
+        },
+        "listing": {
+          "title": "BD Blacksad",
+          "category_slug": "bd_comics",
+          "item_price_cents": 1000,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "rejeter",
+        "source": "business_test"
+      }
+    },
+    {
+      "pair": {
+        "alert": {
+          "name": "Jeu exemple",
+          "category_slug": "gaming",
+          "include_keywords": [
+            "jeu exemple"
+          ],
+          "max_item_price_cents": 1500
+        },
+        "listing": {
+          "title": "Jeu exemple en castellano",
+          "category_slug": "gaming",
+          "item_price_cents": 1000,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "rejeter",
+        "source": "business_test"
+      }
+    },
+    {
+      "pair": {
+        "alert": {
+          "name": "Blacksad",
+          "category_slug": "bd_comics",
+          "include_keywords": [
+            "blacksad"
+          ],
+          "max_item_price_cents": 1500,
+          "isbn": "9782205049657"
+        },
+        "listing": {
+          "title": "Un autre ouvrage ISBN 9782205049657",
+          "category_slug": "bd_comics",
+          "item_price_cents": 1000,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "indetermine",
+        "source": "business_test"
+      }
+    },
+    {
+      "pair": {
+        "alert": {
+          "name": "Blacksad",
+          "category_slug": "bd_comics",
+          "include_keywords": [
+            "blacksad"
+          ],
+          "max_item_price_cents": 1500,
+          "variants": [
+            "chat detective"
+          ]
+        },
+        "listing": {
+          "title": "Blacksad autre edition",
+          "category_slug": "bd_comics",
+          "item_price_cents": 1000,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "non_etiquete",
+        "source": "none"
+      }
+    },
+    {
+      "pair": {
+        "alert": {
+          "name": "Blacksad",
+          "category_slug": "bd_comics",
+          "include_keywords": [
+            "blacksad"
+          ],
+          "max_item_price_cents": 1500
+        },
+        "listing": {
+          "title": "Lot Blacksad et autres ouvrages",
+          "category_slug": "bd_comics",
+          "item_price_cents": 1000,
+          "condition": "Très bon état"
+        }
+      },
+      "origin": "synthetic",
+      "annotation": {
+        "expected": "non_etiquete",
+        "source": "none"
+      }
+    }
+  ]
+}
