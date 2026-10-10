@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,6 +26,7 @@ from app.schemas.listing import ListingIngestPayload
 from app.use_cases.ingest_listing import ProcessListingUseCase
 from app.use_cases.listing_ingestion_gate import ListingIngestionGate
 from tests.database import FreshDatabase, postgres_replayed_database
+from tests.telegram_fakes import telegram_message
 
 
 @dataclass
@@ -91,7 +91,7 @@ async def journey(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IngestionJou
 
         async def send(chat_id: int, **kwargs):
             deliveries.append((chat_id, kwargs["text"]))
-            return SimpleNamespace(message_id=len(deliveries))
+            return telegram_message(chat_id, len(deliveries))
 
         bot.send_message.side_effect = send
         monkeypatch.setattr(settings, "AI_ENABLED", False)
@@ -115,7 +115,7 @@ async def test_same_listing_waits_before_reading_and_sends_once(journey, existin
         journey.deliveries.append((chat_id, kwargs["text"]))
         entered.set()
         await release.wait()
-        return SimpleNamespace(message_id=42)
+        return telegram_message(chat_id)
 
     journey.bot.send_message.side_effect = send
     first = asyncio.create_task(journey.ingest())
@@ -162,7 +162,7 @@ async def test_distinct_listings_progress_while_another_send_waits(journey):
         if len(journey.deliveries) == 1:
             entered.set()
             await release.wait()
-        return SimpleNamespace(message_id=42)
+        return telegram_message(chat_id)
 
     journey.bot.send_message.side_effect = send
     first = asyncio.create_task(journey.ingest())
@@ -194,7 +194,7 @@ async def test_partial_success_is_reread_after_waiting(journey):
             await release.wait()
             raise RuntimeError("Échec factice du second destinataire")
         journey.deliveries.append((chat_id, kwargs["text"]))
-        return SimpleNamespace(message_id=len(journey.deliveries))
+        return telegram_message(chat_id, len(journey.deliveries))
 
     async def second_ingestion():
         started.set()
@@ -255,7 +255,7 @@ async def test_waiter_refreshes_preloaded_listing_and_user(journey):
 
         async def success(chat_id: int, **kwargs):
             journey.deliveries.append((chat_id, kwargs["text"]))
-            return SimpleNamespace(message_id=42)
+            return telegram_message(chat_id)
 
         journey.bot.send_message.side_effect = success
         release.set()
@@ -298,7 +298,7 @@ async def test_holder_cancellation_leaves_persisted_state_and_allows_retry(
                 entered.set()
                 await never.wait()
             journey.deliveries.append((chat_id, kwargs["text"]))
-            return SimpleNamespace(message_id=42)
+            return telegram_message(chat_id)
 
         monkeypatch.setattr(session, "commit", commit)
         journey.bot.send_message.side_effect = send
@@ -322,7 +322,7 @@ async def test_holder_cancellation_leaves_persisted_state_and_allows_retry(
     monkeypatch.setattr("app.tasks.vinted_poller.AsyncSessionLocal", journey.database.maker)
     assert ("console-1" in await load_initial_seen_ids()) == (stage == "after_commit")
     journey.bot.send_message.side_effect = None
-    journey.bot.send_message.return_value = SimpleNamespace(message_id=99)
+    journey.bot.send_message.return_value = telegram_message(message_id=99)
     result = await journey.ingest()
     assert len(result.matches) == (0 if stage == "after_commit" else 1)
     assert all(match.notified_at is not None for match in await journey.matches())
@@ -371,7 +371,7 @@ async def test_cancellation_during_rollback_does_not_release_key_early(
         await rollback_started.wait()
         first.cancel()  # Annulation pendant le rollback, pas pendant le traitement initial.
         journey.bot.send_message.side_effect = None
-        journey.bot.send_message.return_value = SimpleNamespace(message_id=99)
+        journey.bot.send_message.return_value = telegram_message(message_id=99)
         async with journey.database.maker() as second_session:
             use_case = ProcessListingUseCase(second_session, journey.bot)
             original_read = use_case.listing_repo.get_by_source_and_external_id
@@ -506,7 +506,7 @@ async def test_ambiguous_delivery_remains_pending_and_can_duplicate(journey, mon
         journey.deliveries.append((chat_id, kwargs["text"]))
         if failure == "timeout" and len(journey.deliveries) == 1:
             raise TimeoutError("Réponse factice perdue après acceptation")
-        return SimpleNamespace(message_id=len(journey.deliveries))
+        return telegram_message(chat_id, len(journey.deliveries))
 
     journey.bot.send_message.side_effect = send
     if failure == "commit":
@@ -604,7 +604,7 @@ async def test_api_and_poller_share_the_same_listing_protection(journey, monkeyp
         journey.deliveries.append((chat_id, kwargs["text"]))
         entered.set()
         await release.wait()
-        return SimpleNamespace(message_id=42)
+        return telegram_message(chat_id)
 
     journey.bot.send_message.side_effect = send
     app = FastAPI()

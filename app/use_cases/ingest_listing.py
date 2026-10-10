@@ -4,10 +4,12 @@ import asyncio
 import logging
 import sys
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from aiogram import Bot
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.bot_instance import bot as default_bot
@@ -45,7 +47,7 @@ from app.services.market_price_service import (
     extract_tome_number_from_title,
     has_usable_price,
 )
-from app.services.telegram_service import send_listing_alert
+from app.services.telegram_service import DeliveryResult, send_listing_alert, usable_receipt
 from app.use_cases.listing_ingestion_gate import listing_ingestion_gate
 from app.utils.isbn import normalize_listing_isbn
 from app.utils.text import normalize_text
@@ -318,6 +320,18 @@ def _get_send_listing_alert() -> Any:
 PendingSend = tuple[Any, Any, str | None, bool, Book | None]
 
 
+@dataclass
+class _NotificationContext:
+    """Identifiants retenus avant tout rollback ; les objets restent propres à cette session."""
+
+    listing: Listing
+    listing_id: uuid.UUID
+    alert_ids: list[uuid.UUID]
+    book_ids: list[uuid.UUID | None]
+    live_alerts: set[uuid.UUID]
+    live_books: set[uuid.UUID]
+
+
 class ProcessListingUseCase:
     """Orchestre la déduplication, le matching, la comparaison de prix et les alertes."""
 
@@ -469,26 +483,63 @@ class ProcessListingUseCase:
         self.db.add(event)
         await self.db.commit()
 
+        alert_ids = [alert.id for alert, *_ in pending_sends]
+        book_ids = [book.id if book is not None else None for *_, book in pending_sends]
+        context = _NotificationContext(
+            listing,
+            listing.id,
+            alert_ids,
+            book_ids,
+            set(alert_ids),
+            {value for value in book_ids if value is not None},
+        )
+        committed_deliveries: list[tuple[uuid.UUID, uuid.UUID, DeliveryResult]] = []
         match_items: list[ListingMatchItem] = []
         needs_retry = False
         books_to_price: set[uuid.UUID] = set()
         catalog_tasks: list[dict[str, Any]] = []
         send_alert_fn = _get_send_listing_alert()
-        for alert, _match_result, market_line, catalog_ready, book in pending_sends:
+        for index, pending in enumerate(pending_sends):
+            alert, _match_result, market_line, catalog_ready, book = pending
+            alert_id = context.alert_ids[index]
+            if alert_id not in context.live_alerts:
+                continue
+            if context.book_ids[index] not in context.live_books:
+                book = None
             notification_sent = False
             if _alert_has_telegram_chat(alert):
                 alert_kws = alert.include_keywords or ([alert.name] if alert.name else None)
-                notification_sent = await send_alert_fn(
+                attempt_id = uuid.uuid4()
+                delivery = await send_alert_fn(
                     bot=self.bot,
                     chat_id=alert.user.telegram_user_id,
                     listing=listing,
                     market_comparison_line=market_line,
                     alert_keywords=alert_kws,
                     alert=alert,
+                    attempt_id=attempt_id,
+                )
+                if not isinstance(delivery, DeliveryResult):
+                    delivery = DeliveryResult("unknown", "none", reason="invalid_sender_result")
+                    logger.error(
+                        "Résultat d'envoi inexploitable.",
+                        extra=delivery.diagnostics(
+                            alert_id=alert_id,
+                            listing_id=context.listing_id,
+                            attempt_id=attempt_id,
+                            persistence_stage="not_started",
+                        ),
+                    )
+                notification_sent = bool(delivery) and usable_receipt(
+                    delivery.receipt, alert.user.telegram_user_id
                 )
                 if notification_sent:
-                    await self.listing_repo.mark_notified([(alert.id, listing.id)])
-                    await self.db.commit()
+                    if await self._persist_confirmed_delivery(
+                        delivery, alert_id, attempt_id, context
+                    ):
+                        committed_deliveries.append((alert_id, attempt_id, delivery))
+                    if context.book_ids[index] not in context.live_books:
+                        book = None
                 else:
                     needs_retry = True
             if listing.category_slug == CategorySlug.BD_COMICS.value:
@@ -502,15 +553,20 @@ class ProcessListingUseCase:
                 if book is not None and not has_usable_price(book.market_cache):
                     books_to_price.add(book.id)
                 if not catalog_ready:
-                    catalog_tasks.append({
-                        "alert_id": alert.id, "alert_name": alert.name,
-                        "alert_isbn": getattr(alert, "isbn", None),
-                        "alert_snapshot": BibliographicSnapshot.capture(alert),
-                        "listing_title": listing.title, "listing_description": listing.description,
-                        "listing_isbn13": effective_isbn,
-                        "alert_preparation": getattr(alert, "preparation", None)
-                        if isinstance(getattr(alert, "preparation", None), dict) else None,
-                    })
+                    catalog_tasks.append(
+                        {
+                            "alert_id": alert.id,
+                            "alert_name": alert.name,
+                            "alert_isbn": getattr(alert, "isbn", None),
+                            "alert_snapshot": BibliographicSnapshot.capture(alert),
+                            "listing_title": listing.title,
+                            "listing_description": listing.description,
+                            "listing_isbn13": effective_isbn,
+                            "alert_preparation": getattr(alert, "preparation", None)
+                            if isinstance(getattr(alert, "preparation", None), dict)
+                            else None,
+                        }
+                    )
             match_items.append(
                 ListingMatchItem(
                     alert_id=alert.id,
@@ -528,7 +584,11 @@ class ProcessListingUseCase:
         # `alert_books` est chargé en eager par `get_active_alerts_by_category`
         # pour les BD : la boucle ne rouvre aucune session.
         if listing.category_slug == CategorySlug.BD_COMICS.value:
-            for alert, _match_result, _line, _ready, _book in pending_sends:
+            for alert_id, (alert, _match_result, _line, _ready, _book) in zip(
+                context.alert_ids, pending_sends, strict=True
+            ):
+                if alert_id not in context.live_alerts:
+                    continue
                 if getattr(alert, "isbn", None):
                     continue
                 links = getattr(alert, "alert_books", None)
@@ -543,12 +603,28 @@ class ProcessListingUseCase:
             schedule_book_pricing(book_id, reason="alert_sent")
 
         for arguments in catalog_tasks:
-            safe_create_task(_link_bd_catalog_background(**arguments),
-                             name=f"bd_catalog_{arguments['alert_id']}")
+            safe_create_task(
+                _link_bd_catalog_background(**arguments), name=f"bd_catalog_{arguments['alert_id']}"
+            )
 
         # Écriture locale après tous les envois, jamais ajoutée à un lecteur pré-alerte.
-        await recalculate_invalidated_series(self.db)
-        await self.db.commit()
+        try:
+            await recalculate_invalidated_series(self.db)
+            await self.db.commit()
+        except BaseException as exc:
+            for alert_id, attempt_id, delivery in committed_deliveries:
+                logger.warning(
+                    "Échec final après marquage durable, sans remise en attente.",
+                    extra=delivery.diagnostics(
+                        alert_id=alert_id,
+                        listing_id=context.listing_id,
+                        attempt_id=attempt_id,
+                        persistence_stage="final_commit_failed",
+                        persistence_result="notified",
+                        persistence_error=type(exc).__name__,
+                    ),
+                )
+            raise
 
         return ListingIngestResponse(
             listing_id=listing.id,
@@ -558,6 +634,80 @@ class ProcessListingUseCase:
             needs_retry=needs_retry,
             warnings=warnings,
         )
+
+    async def _persist_confirmed_delivery(
+        self,
+        delivery: DeliveryResult,
+        alert_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+        context: _NotificationContext,
+    ) -> bool:
+        """Un nouvel essai SQL au plus, jamais de renvoi Telegram ni de reprise après annulation."""
+        stage = "marking"
+        sql_attempt = 1
+
+        def diagnostic(result: str, error: BaseException | None = None) -> None:
+            logger.log(
+                logging.WARNING if error else logging.INFO,
+                "État de persistance de la notification.",
+                extra=delivery.diagnostics(
+                    alert_id=alert_id,
+                    listing_id=context.listing_id,
+                    attempt_id=attempt_id,
+                    persistence_stage=stage,
+                    persistence_result=result,
+                    sql_attempt=sql_attempt,
+                    persistence_error=type(error).__name__ if error else None,
+                ),
+            )
+
+        try:
+            for sql_attempt in (1, 2):
+                stage = "marking" if sql_attempt == 1 else "retry_marking"
+                try:
+                    diagnostic("pending")
+                    marked = await self.listing_repo.mark_notified(
+                        [(alert_id, context.listing_id)]
+                    )
+                    stage = "committing"
+                    await self.db.commit()
+                    stage = "committed" if marked else "match_missing"
+                    diagnostic("notified" if marked else "unknown")
+                    return bool(marked)
+                except (SQLAlchemyError, TimeoutError, OSError) as exc:
+                    diagnostic("unknown", exc)
+                    stage = "rollback"
+                    await self._rollback_before_release()
+                    diagnostic("unknown")
+                    if sql_attempt == 2:
+                        raise
+                    stage = "reread"
+                    notified, pending = await self.listing_repo.match_notification_state(
+                        context.listing_id
+                    )
+                    (
+                        context.live_alerts,
+                        context.live_books,
+                    ) = await self.listing_repo.refresh_notification_context(
+                        context.listing,
+                        context.alert_ids,
+                        [value for value in context.book_ids if value is not None],
+                    )
+                    if alert_id in notified:
+                        stage = "reread_committed"
+                        diagnostic("notified")
+                        return True
+                    if alert_id not in pending:
+                        stage = "match_missing"
+                        diagnostic("unknown", exc)
+                        raise
+            raise AssertionError("Les deux tentatives de marquage doivent terminer ou échouer.")
+        except asyncio.CancelledError as exc:
+            diagnostic("unknown", exc)
+            raise
+        except Exception as exc:
+            diagnostic("unknown", exc)
+            raise
 
     async def _comparison_from_catalog_isbn(
         self,

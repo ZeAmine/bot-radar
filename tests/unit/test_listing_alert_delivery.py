@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.core.constants import CategorySlug
 from app.db.models.listing import Listing
 from app.services.telegram_service import PHOTO_CAPTION_LIMIT, send_listing_alert
+from tests.telegram_fakes import telegram_message
 
 CHAT_ID = 6429948805
 PHOTO_URL = "https://images1.vinted.net/t/02_0185e_AhDBMrrRQHGNdMPBKvDGus8k/f800/bf60c809.webp?s=41210d6a"
@@ -51,7 +52,7 @@ def _bot(*, photo_side_effect=None):
     """Bot doublon : la photo échoue comme Telegram l'a fait, le message part toujours."""
     bot = MagicMock()
     bot.send_photo = AsyncMock(side_effect=photo_side_effect)
-    bot.send_message = AsyncMock(return_value=MagicMock(message_id=2))
+    bot.send_message = AsyncMock(return_value=telegram_message(CHAT_ID, 2))
     return bot
 
 
@@ -67,11 +68,12 @@ async def test_photo_sent_on_the_first_attempt_without_touching_the_text(monkeyp
     """Chemin nominal inchangé : une photo acceptée part en légende, jamais en texte."""
     monkeypatch.setattr(settings, "AI_ENABLED", False)
     bot = _bot(photo_side_effect=None)
-    bot.send_photo.return_value = MagicMock(message_id=1)
+    bot.send_photo.return_value = telegram_message(CHAT_ID, 1)
 
     sent = await send_listing_alert(bot, CHAT_ID, _listing())
 
-    assert sent is True
+    assert sent.outcome == "acknowledged"
+    assert sent.receipt is not None
     bot.send_photo.assert_awaited_once()
     assert bot.send_photo.await_args.kwargs["photo"] == PHOTO_URL
     bot.send_message.assert_not_awaited()
@@ -85,12 +87,13 @@ async def test_photo_refused_by_telegram_is_attempted_once_more(monkeypatch):
     téléchargement de Telegram, et le second essai, lui, réussit.
     """
     monkeypatch.setattr(settings, "AI_ENABLED", False)
-    bot = _bot(photo_side_effect=[_telegram_refusal(), MagicMock(message_id=1)])
+    bot = _bot(photo_side_effect=[_telegram_refusal(), telegram_message(CHAT_ID, 1)])
 
     with patch("asyncio.sleep", new_callable=AsyncMock) as pause:
         sent = await send_listing_alert(bot, CHAT_ID, _listing())
 
-    assert sent is True
+    assert sent.outcome == "acknowledged"
+    assert sent.receipt is not None
     assert bot.send_photo.await_count == 2
     pause.assert_awaited_once()
     bot.send_message.assert_not_awaited()
@@ -110,7 +113,8 @@ async def test_alert_falls_back_to_text_after_two_failures_and_says_so(
     ):
         sent = await send_listing_alert(bot, CHAT_ID, _listing())
 
-    assert sent is True
+    assert sent.outcome == "acknowledged"
+    assert sent.receipt is not None
     assert bot.send_photo.await_count == 2
     bot.send_message.assert_awaited_once()
     assert bot.send_message.call_args.kwargs["text"].startswith("🆕 <b>Cauchon")
@@ -131,7 +135,8 @@ async def test_missing_photo_goes_straight_to_text_and_is_traceable(monkeypatch,
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
         sent = await send_listing_alert(bot, CHAT_ID, _listing(photos=[]))
 
-    assert sent is True
+    assert sent.outcome == "acknowledged"
+    assert sent.receipt is not None
     bot.send_photo.assert_not_awaited()
     bot.send_message.assert_awaited_once()
     assert any("sans photo" in record.getMessage() for record in caplog.records)
@@ -148,7 +153,8 @@ async def test_photo_url_not_https_never_reaches_telegram(monkeypatch, caplog):
             bot, CHAT_ID, _listing(photos=["http://images.vinted.fr/cover.jpg"])
         )
 
-    assert sent is True
+    assert sent.outcome == "acknowledged"
+    assert sent.receipt is not None
     bot.send_photo.assert_not_awaited()
     bot.send_message.assert_awaited_once()
     assert any("URL de photo invalide" in record.getMessage() for record in caplog.records)
@@ -164,7 +170,8 @@ async def test_caption_over_the_photo_limit_keeps_the_whole_text(monkeypatch, ca
     with caplog.at_level(logging.ERROR, logger=LOGGER_NAME):
         sent = await send_listing_alert(bot, CHAT_ID, _listing(title=long_title))
 
-    assert sent is True
+    assert sent.outcome == "acknowledged"
+    assert sent.receipt is not None
     bot.send_photo.assert_not_awaited()
     bot.send_message.assert_awaited_once()
     caption = bot.send_message.call_args.kwargs["text"]

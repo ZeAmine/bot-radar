@@ -32,6 +32,7 @@ from app.services.book_metadata_service import (
 from app.use_cases import ingest_listing as ingestion
 from app.use_cases import listing_book_confirmation as confirmation
 from tests.database import postgres_replayed_database
+from tests.telegram_fakes import acknowledged_delivery
 
 ISBN = "9782369903062"
 
@@ -77,7 +78,7 @@ async def journey(monkeypatch):
         async def send(**kwargs):
             order.append("telegram")
             captions.append(kwargs["market_comparison_line"])
-            return True
+            return acknowledged_delivery(**kwargs)
 
         notice = BookMetadata(title="Cible BD", author="Auteur A", publisher="Éditeur", isbn13=ISBN)
         report = BibliographicReport(

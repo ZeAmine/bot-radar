@@ -25,6 +25,7 @@ from app.services.vinted_scraper import ScrapedVintedItem, to_ingest_payload
 from app.tasks.vinted_poller import FifoSet, load_initial_seen_ids, poll_vinted_once
 from app.use_cases.ingest_listing import ProcessListingUseCase
 from tests.database import FreshDatabase, postgres_replayed_database
+from tests.telegram_fakes import telegram_message, telegram_reply
 
 
 @dataclass
@@ -93,7 +94,7 @@ async def journey(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[RestartJourn
             photo_url=None,
         )
         bot = AsyncMock(spec=Bot)
-        bot.send_message.return_value = SimpleNamespace(message_id=42)
+        bot.send_message.side_effect = telegram_reply
         monkeypatch.setattr(settings, "AI_ENABLED", False)
         monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [])
         monkeypatch.setattr("app.tasks.vinted_poller.AsyncSessionLocal", database.maker)
@@ -123,7 +124,7 @@ async def test_failed_notification_is_retried_after_seen_reconstruction(
     assert journey.item.external_id not in seen
 
     journey.bot.send_message.reset_mock()
-    journey.bot.send_message.side_effect = None
+    journey.bot.send_message.side_effect = telegram_reply
     assert await journey.collect(seen) == 1
     assert [call.kwargs["chat_id"] for call in journey.bot.send_message.call_args_list] == [
         telegram_id
@@ -141,7 +142,7 @@ async def test_partial_success_retries_only_the_pending_recipient(journey: Resta
     async def send(chat_id: int, **_kwargs: object) -> SimpleNamespace:
         if chat_id == 602:
             raise RuntimeError("Envoi Telegram factice indisponible")
-        return SimpleNamespace(message_id=42)
+        return telegram_message(chat_id)
 
     journey.bot.send_message.side_effect = send
     assert (await journey.ingest()).needs_retry is True
@@ -152,7 +153,7 @@ async def test_partial_success_retries_only_the_pending_recipient(journey: Resta
     assert journey.item.external_id not in seen
 
     journey.bot.send_message.reset_mock()
-    journey.bot.send_message.side_effect = None
+    journey.bot.send_message.side_effect = telegram_reply
     assert await journey.collect(seen) == 1
     assert [call.kwargs["chat_id"] for call in journey.bot.send_message.call_args_list] == [602]
     matches = await journey.matches()
