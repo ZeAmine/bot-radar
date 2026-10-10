@@ -38,16 +38,20 @@ L'agent ne doit pas exécuter `approve`, `start`, `resume` ni modifier les scrip
 
 ## Critères de `verify`
 
+Les contrôles statiques s'exécutent avant toute collecte pytest et avant les preuves. Un échec statique n'exécute pas le code des tests.
+
 - Cohérence fiche / approbation / `active.json`
 - `HEAD` descendant du `base_sha`
-- Fichiers touchés (y compris non suivis, suppressions, renommages) dans `allowed_write`, hors `forbidden`
-- Pas d'affaiblissement des tests existants (assertions, `skip`, `xfail`, `# noqa`, `# type: ignore`)
-- Nombre de tests collectés ≥ baseline au démarrage
-- Taille du diff ≤ `max_diff_lines`
-- Pas de motif de secret dans le diff
+- Fichiers touchés dans `allowed_write`, hors `forbidden` : suivis, non suivis, suppressions, et les deux chemins d'un renommage ou d'une copie
+- Lien symbolique non suivi qui sort du worktree
+- Modification d'un test déjà présent au `base_sha` : arrêt immédiat pour revue humaine
+- Pas d'affaiblissement d'un nouveau test (assertions, `skip`, `xfail`, `# noqa`, `# type: ignore`)
+- Nombre de tests collectés ≥ baseline au démarrage, seulement si les contrôles statiques passent
+- Taille du diff ≤ `max_diff_lines`, non suivis compris ; un binaire n'est pas compté comme zéro ligne
+- Motif de secret dans le diff, dans un fichier non suivi ou dans son nom
 - Scripts de confiance inchangés depuis l'approbation
-- Plafonds : durée, cycles `verify`, appels d'outils
-- Commandes `proof` (liste blanche : `pytest …`, `ruff check …`, `mypy app`)
+- Plafonds : durée, cycles `verify` (compteur persisté avant les preuves), appels d'outils
+- Commandes `proof` : argv exact, sans métacaractère de shell (`pytest` limité à `tests/`, `ruff check`, `mypy app`)
 
 ## Hooks Cursor (installation manuelle, hors dépôt)
 
@@ -81,6 +85,16 @@ Ne pas versionner `~/.cursor/hooks.json` depuis ce dépôt. Exemple à adapter a
 
 Rendre le script exécutable : `chmod +x scripts/task_guard.py`.
 
+Le garde lit le schéma documenté par Cursor : `hook_event_name`, `conversation_id`, `workspace_roots`, et pour `preToolUse` les champs `tool_name` et `tool_input`. Les événements acceptés sont `beforeShellExecution`, `preToolUse` et `subagentStart`. Les outils acceptés sont `Shell`, `Read`, `Write`, `Delete`, `Grep` et `Task`. Un outil `MCP:*` est refusé. Les alias inventés (`event`, `toolName`, `input`) ne sont pas lus.
+
+La session est liée par `conversation_id` au premier appel dont `workspace_roots` contient le worktree. L'identité ne dépend pas du répertoire courant : un `cwd` ou un `working_directory` hors worktree est refusé. Une autre conversation ouverte sur le même worktree est refusée. Une session dont les racines ne contiennent pas ce worktree n'est pas bloquée.
+
+Dans la session liée, le défaut est le refus : événement inconnu, outil inconnu, champ manquant, fiche ou approbation incohérente. Le garde relit la fiche, l'approbation et l'état avant l'action. Les plafonds de durée et d'appels sont appliqués avant l'action. Un appel `Shell` compte une fois, via `preToolUse`, pas une seconde fois via `beforeShellExecution`.
+
+En `ready_for_review`, les écritures et les commandes de modification sont refusées. `verify` ou `report` recalcule le digest ; s'il a changé, la tâche redevient `active` et un nouveau `verify` est exigé. `resume` (humain) invalide aussi cet état, sans remettre les compteurs à zéro.
+
+`failClosed: true` ne couvre qu'un crash, un timeout ou une sortie invalide du hook. Il ne corrige pas une décision `allow` incorrecte.
+
 Sans tâche active (`autonomy/active.json` absent), le garde laisse passer : les autres sessions Cursor ne sont pas bloquées.
 
 ### Essai réel des hooks (non exécuté automatiquement)
@@ -105,11 +119,12 @@ Sans tâche active (`autonomy/active.json` absent), le garde laisse passer : les
 
 | Sujet | Limite |
 | --- | --- |
-| Réseau | `verify` lance `pytest` / outils locaux ; seul Telegram réel est bloqué dans `tests/conftest.py`. Pas de preuve d'absence d'autres appels sortants. |
-| Sécurité | Liste blanche shell et périmètre d'écriture ; pas de sandbox du code exécuté **dans** un test écrit par l'agent. |
-| Arrêt | Effectif sur outils hookés ; pas sur une réponse chat seule. Arrêt manuel toujours possible. |
+| Réseau | `verify` lance `pytest` / outils locaux ; seul Telegram réel est bloqué dans `tests/conftest.py`. Aucune garantie réseau supplémentaire n'est ajoutée. |
+| Sécurité | Liste blanche exacte des argv et périmètre d'écriture. Pas de sandbox du code pytest. |
+| Arrêt | Effectif sur outils hookés ; pas sur une réponse chat seule. Arrêt manuel toujours possible. Les sous-processus de `verify` ont un timeout. |
 | Consommation | Non lue par les scripts ; relevé humain ou « non mesurée » dans le rapport. Plafonds = durée, cycles, appels d'outils. |
-| Hooks | Comportement réel dépend de Cursor ; les tests du dépôt couvrent le schéma JSON et la logique `decide`, pas l'IDE. |
+| Hooks | Comportement réel dépend de Cursor ; les tests du dépôt couvrent le schéma JSON documenté et la logique de décision, pas l'IDE. `failClosed` ne compense pas un `allow` incorrect. |
+| Rapport | Les preuves affichées sont celles enregistrées par `verify` (commande, code, durée, fin de sortie). Un digest différent rend la preuve périmée, sans relancer les commandes. |
 
 ## Commandes utiles
 

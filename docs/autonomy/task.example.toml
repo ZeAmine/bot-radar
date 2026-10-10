@@ -21,6 +21,10 @@ proof = [
   "mypy app",
 ]
 
+# Les preuves sont des argv exacts : pas de ; && | ` $ < >.
+# pytest ne reçoit que des chemins sous tests/. Un test déjà versionné
+# au base_sha ne se modifie pas : cela arrête la tâche pour revue.
+
 # Valeurs par défaut si omises :
 max_minutes = 45
 max_cycles = 4

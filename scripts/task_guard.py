@@ -10,17 +10,27 @@ from pathlib import Path
 from typing import Any
 
 from task_verdict import (
-    AGENT_BLOCKED_SUBCOMMANDS,
     GuardDecision,
+    ShellMode,
+    TaskState,
+    check_time_budget,
     default_autonomy_home,
+    default_tasks_root,
     load_active_task,
+    load_task,
+    locked_state,
     matches_any,
+    path_is_under,
+    preexisting_test_path,
     resolve_under_root,
     shell_command_allowed,
     task_guard_increment_tool_call,
+    validate_task_context,
 )
 
 READ_FORBIDDEN_RE = re.compile(r"(^|/)\.env(\.|$)|/\.ssh/")
+KNOWN_EVENTS = frozenset({"beforeShellExecution", "preToolUse", "subagentStart"})
+KNOWN_TOOLS = frozenset({"Shell", "Read", "Write", "Delete", "Grep", "Task"})
 
 
 def hook_allow(message: str = "") -> dict[str, str]:
@@ -38,174 +48,269 @@ def hook_deny(reason: str) -> dict[str, str]:
     }
 
 
-def parse_hook_payload(raw: str) -> dict[str, Any]:
-    if not raw.strip():
-        return {}
-    data: Any = json.loads(raw)
-    if not isinstance(data, dict):
-        return {}
-    return data
+def _workspace_targets_task(roots: list[Path], tasks_root: Path) -> bool:
+    try:
+        tasks_resolved = tasks_root.resolve()
+    except OSError:
+        return False
+    return any(path_is_under(tasks_resolved, root) or root == tasks_resolved for root in roots)
 
 
-def extract_shell_command(payload: dict[str, Any]) -> str:
-    for key in ("command", "shellCommand", "cmd"):
-        value = payload.get(key)
-        if isinstance(value, str):
-            return value.strip()
-    return ""
-
-
-def extract_tool_name(payload: dict[str, Any]) -> str:
-    for key in ("tool_name", "toolName", "name", "tool"):
-        value = payload.get(key)
-        if isinstance(value, str):
-            return value
-    return ""
-
-
-def extract_file_path(payload: dict[str, Any]) -> str:
-    for key in ("path", "file_path", "filePath", "target"):
-        value = payload.get(key)
-        if isinstance(value, str):
-            return value
-    inner = payload.get("input") or payload.get("arguments") or {}
-    if isinstance(inner, dict):
-        for key in ("path", "file_path", "filePath", "target"):
-            value = inner.get(key)
-            if isinstance(value, str):
-                return value
-    return ""
-
-
-def task_verdict_subcommand(command: str) -> str | None:
-    match = re.search(r"task_verdict\.py\s+(\w+)", command)
-    if match:
-        return match.group(1)
-    match = re.search(r"task_verdict\s+(\w+)", command)
-    if match:
-        return match.group(1)
+def task_for_payload(
+    payload: dict[str, Any],
+    autonomy_home: Path,
+) -> tuple[str, TaskState] | str | None:
+    roots = payload.get("workspace_roots")
+    if not isinstance(roots, list) or not all(isinstance(item, str) and item for item in roots):
+        return None
+    resolved: list[Path] = []
+    for item in roots:
+        try:
+            resolved.append(Path(item).resolve())
+        except OSError:
+            return None
+    try:
+        active = load_active_task(autonomy_home)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        if _workspace_targets_task(resolved, default_tasks_root()):
+            return "état de tâche illisible"
+        return None
+    if active is None:
+        return None
+    task_id, state = active
+    try:
+        worktree = Path(state.worktree_path).resolve()
+    except OSError:
+        return "worktree illisible"
+    linked = any(
+        root == worktree or path_is_under(worktree, root) or path_is_under(root, worktree)
+        for root in resolved
+    )
+    if linked:
+        return task_id, state
     return None
 
 
-def decide_shell_for_active_task(command: str, autonomy_home: Path) -> GuardDecision:
-    active = load_active_task(autonomy_home)
-    if active is None:
-        return GuardDecision(True)
-    _task_id, state = active
-    if state.status == "stopped":
-        allowed = re.search(r"task_verdict\.py\s+(status|report|note)\b", command)
-        if not allowed:
-            return GuardDecision(
-                False,
-                "tâche arrêtée : seuls status, report et note sont autorisés",
-            )
-    sub = task_verdict_subcommand(command)
-    if sub in AGENT_BLOCKED_SUBCOMMANDS:
-        return GuardDecision(False, f"sous-commande réservée à l'humain : {sub}")
-    if not shell_command_allowed(command, Path(state.trust_root)):
-        return GuardDecision(False, "commande shell non autorisée pour la tâche active")
-    task_guard_increment_tool_call(autonomy_home, state.task_id)
-    return GuardDecision(True)
+def _cwd_denied(payload: dict[str, Any], worktree: Path) -> str | None:
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        return "cwd manquant"
+    if not path_is_under(worktree, Path(cwd)):
+        return "répertoire de travail hors du worktree de la tâche"
+    return None
 
 
-def decide_write_for_active_task(path_str: str, autonomy_home: Path) -> GuardDecision:
-    active = load_active_task(autonomy_home)
-    if active is None:
-        return GuardDecision(True)
-    task_id, state = active
-    if state.status == "stopped":
-        return GuardDecision(False, "tâche arrêtée : écriture refusée")
-    worktree = Path(state.worktree_path)
-    relative = path_str
+def _relative_target(worktree: Path, path_str: str) -> str | None:
     if Path(path_str).is_absolute():
-        try:
-            relative = str(Path(path_str).resolve().relative_to(worktree.resolve()))
-        except ValueError:
-            return GuardDecision(False, "écriture hors worktree de la tâche")
-    else:
-        resolved = resolve_under_root(worktree, relative)
-        if resolved is None:
-            return GuardDecision(False, "chemin relatif ou lien symbolique hors worktree")
-        relative = str(resolved.relative_to(worktree.resolve()))
+        candidate = Path(path_str)
+        if not path_is_under(worktree, candidate):
+            return None
+        return str(candidate.resolve().relative_to(worktree.resolve()))
+    resolved = resolve_under_root(worktree, path_str)
+    if resolved is None:
+        return None
+    return str(resolved.relative_to(worktree.resolve()))
 
-    from task_verdict import load_task
 
+def _write_decision(path_str: str, state: TaskState) -> GuardDecision:
+    worktree = Path(state.worktree_path)
+    relative = _relative_target(worktree, path_str)
+    if relative is None:
+        return GuardDecision(False, "écriture hors worktree de la tâche")
+    try:
+        if preexisting_test_path(worktree, state.base_sha, relative):
+            return GuardDecision(False, f"revue humaine : test existant modifié : {relative}")
+    except RuntimeError as exc:
+        return GuardDecision(False, str(exc))
     task = load_task(Path(state.task_path))
     if matches_any(relative, task.all_forbidden()):
         return GuardDecision(False, f"écriture interdite : {relative}")
     if not matches_any(relative, task.allowed_write):
         return GuardDecision(False, f"écriture hors périmètre : {relative}")
-    task_guard_increment_tool_call(autonomy_home, task_id)
     return GuardDecision(True)
 
 
-def decide_read_for_active_task(path_str: str) -> GuardDecision:
+def _read_decision(path_str: str, state: TaskState) -> GuardDecision:
     if READ_FORBIDDEN_RE.search(path_str.replace("\\", "/")):
         return GuardDecision(False, "lecture de secrets interdite")
+    if _relative_target(Path(state.worktree_path), path_str) is None:
+        return GuardDecision(False, "lecture hors worktree de la tâche")
     return GuardDecision(True)
 
 
-def decide_subagent_for_active_task(autonomy_home: Path) -> GuardDecision:
-    active = load_active_task(autonomy_home)
-    if active is None:
-        return GuardDecision(True)
-    _task_id, state = active
-    from task_verdict import load_task
+def _shell_mode(status: str) -> ShellMode:
+    if status == "stopped":
+        return "stopped"
+    if status == "ready_for_review":
+        return "review"
+    return "active"
 
+
+def _command_decision(command: str, state: TaskState) -> GuardDecision:
+    allowed = shell_command_allowed(
+        command,
+        Path(state.trust_root),
+        task_id=state.task_id,
+        worktree=Path(state.worktree_path),
+        mode=_shell_mode(state.status),
+    )
+    if allowed:
+        return GuardDecision(True)
+    if state.status == "stopped":
+        return GuardDecision(False, "tâche arrêtée : seuls status, report et note sont autorisés")
+    if state.status == "ready_for_review":
+        return GuardDecision(False, "revue en cours : modification refusée sans invalidation")
+    return GuardDecision(False, "commande shell non autorisée pour la tâche active")
+
+
+def _tool_input(payload: dict[str, Any]) -> dict[str, Any] | None:
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    return tool_input
+
+
+def _working_directory_denied(tool_input: dict[str, Any], worktree: Path) -> str | None:
+    raw = tool_input.get("working_directory")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not path_is_under(worktree, Path(raw)):
+        return "working_directory hors du worktree de la tâche"
+    return None
+
+
+def _decide_tool(payload: dict[str, Any], state: TaskState) -> GuardDecision:
+    tool_name = payload.get("tool_name")
+    if not isinstance(tool_name, str) or tool_name not in KNOWN_TOOLS:
+        return GuardDecision(False, "outil non documenté refusé")
+    if tool_name.startswith("MCP:"):
+        return GuardDecision(False, "outil MCP refusé")
+    tool_input = _tool_input(payload)
+    if tool_input is None:
+        return GuardDecision(False, "tool_input manquant")
+    worktree = Path(state.worktree_path)
+    directory_error = _working_directory_denied(tool_input, worktree)
+    if directory_error:
+        return GuardDecision(False, directory_error)
+    if tool_name == "Shell":
+        command = tool_input.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return GuardDecision(False, "commande manquante")
+        return _command_decision(command, state)
+    if tool_name in {"Write", "Delete"}:
+        if state.status in {"stopped", "ready_for_review"}:
+            return GuardDecision(False, "écriture refusée dans l'état actuel")
+        file_path = tool_input.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            return GuardDecision(False, "file_path manquant")
+        return _write_decision(file_path, state)
+    if tool_name == "Read":
+        file_path = tool_input.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            return GuardDecision(False, "file_path manquant")
+        return _read_decision(file_path, state)
+    if tool_name == "Grep":
+        raw_path = tool_input.get("path") or tool_input.get("file_path")
+        if raw_path is None:
+            return GuardDecision(True)
+        if not isinstance(raw_path, str) or _relative_target(worktree, raw_path) is None:
+            return GuardDecision(False, "grep hors worktree")
+        return GuardDecision(True)
     task = load_task(Path(state.task_path))
     if task.allow_subagents:
         return GuardDecision(True)
     return GuardDecision(False, "sous-agent interdit pour cette tâche")
 
 
-def handle_hook(event: str, payload: dict[str, Any], autonomy_home: Path) -> dict[str, str]:
-    if event in {"beforeShellExecution", "before_shell_execution"}:
-        command = extract_shell_command(payload)
-        if not command:
-            return hook_allow()
-        decision = decide_shell_for_active_task(command, autonomy_home)
-        return hook_allow() if decision.allowed else hook_deny(decision.reason)
+def _budget_reason(state: TaskState) -> str | None:
+    task = load_task(Path(state.task_path))
+    started_error = check_time_budget(state, task)
+    if started_error:
+        return started_error
+    if state.tool_call_count >= task.max_tool_calls:
+        return f"plafond d'appels d'outils atteint ({task.max_tool_calls})"
+    return None
 
-    if event in {"preToolUse", "pre_tool_use"}:
-        tool = extract_tool_name(payload)
-        if tool in {"Task", "task", "subagent", "Subagent"}:
-            decision = decide_subagent_for_active_task(autonomy_home)
-            return hook_allow() if decision.allowed else hook_deny(decision.reason)
-        if tool in {"Write", "write", "StrReplace", "str_replace", "ApplyPatch", "apply_patch"}:
-            path_str = extract_file_path(payload)
-            if not path_str:
-                return hook_allow()
-            decision = decide_write_for_active_task(path_str, autonomy_home)
-            return hook_allow() if decision.allowed else hook_deny(decision.reason)
-        if tool in {"Read", "read"}:
-            path_str = extract_file_path(payload)
-            if not path_str:
-                return hook_allow()
-            decision = decide_read_for_active_task(path_str)
-            return hook_allow() if decision.allowed else hook_deny(decision.reason)
-        if tool in {"Shell", "shell"}:
-            command = extract_shell_command(payload)
-            if not command:
-                return hook_allow()
-            decision = decide_shell_for_active_task(command, autonomy_home)
-            return hook_allow() if decision.allowed else hook_deny(decision.reason)
+
+def _stop(autonomy_home: Path, task_id: str, reason: str) -> None:
+    with locked_state(autonomy_home, task_id) as state:
+        state.status = "stopped"
+        state.stopped_reason = reason
+
+
+def _bind(autonomy_home: Path, task_id: str, conversation_id: str) -> str | None:
+    with locked_state(autonomy_home, task_id) as state:
+        if state.conversation_id is None:
+            state.conversation_id = conversation_id
+            return None
+        if state.conversation_id != conversation_id:
+            return "autre session refusée pour cette tâche"
+    return None
+
+
+def handle_hook(payload: dict[str, Any], autonomy_home: Path) -> dict[str, str]:
+    matched = task_for_payload(payload, autonomy_home)
+    if matched is None:
         return hook_allow()
-
-    if event in {"subagentStart", "subagent_start"}:
-        decision = decide_subagent_for_active_task(autonomy_home)
+    if isinstance(matched, str):
+        return hook_deny(matched)
+    task_id, _state = matched
+    event = payload.get("hook_event_name")
+    if not isinstance(event, str) or event not in KNOWN_EVENTS:
+        return hook_deny("événement de hook inconnu ou non documenté")
+    conversation_id = payload.get("conversation_id")
+    if not isinstance(conversation_id, str) or not conversation_id:
+        return hook_deny("conversation_id manquant")
+    bind_error = _bind(autonomy_home, task_id, conversation_id)
+    if bind_error:
+        return hook_deny(bind_error)
+    _task_id, state = load_active_task(autonomy_home) or (task_id, _state)
+    context_error = validate_task_context(autonomy_home, state)
+    if context_error:
+        return hook_deny(context_error)
+    worktree = Path(state.worktree_path)
+    cwd_error = _cwd_denied(payload, worktree)
+    if cwd_error:
+        return hook_deny(cwd_error)
+    if state.status == "active":
+        budget = _budget_reason(state)
+        if budget:
+            _stop(autonomy_home, task_id, budget)
+            return hook_deny(budget)
+    if event == "beforeShellExecution":
+        command = payload.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return hook_deny("commande manquante")
+        decision = _command_decision(command, state)
         return hook_allow() if decision.allowed else hook_deny(decision.reason)
-
-    return hook_allow()
+    if event == "subagentStart":
+        parent = payload.get("parent_conversation_id")
+        if parent != state.conversation_id:
+            return hook_deny("sous-agent hors de la session liée")
+        task = load_task(Path(state.task_path))
+        if state.status != "active":
+            return hook_deny("sous-agent refusé dans l'état actuel")
+        if not task.allow_subagents:
+            return hook_deny("sous-agent interdit pour cette tâche")
+        return hook_allow()
+    decision = _decide_tool(payload, state)
+    if decision.allowed:
+        task_guard_increment_tool_call(autonomy_home, task_id)
+        return hook_allow()
+    return hook_deny(decision.reason)
 
 
 def main() -> int:
     raw = sys.stdin.read()
-    payload = parse_hook_payload(raw)
-    event = str(payload.get("event") or payload.get("hook_event") or payload.get("type") or "")
-    if not event:
-        event = str(payload.get("hook") or "beforeShellExecution")
-    autonomy_home = default_autonomy_home()
-    result = handle_hook(event, payload, autonomy_home)
+    try:
+        parsed: Any = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        sys.stdout.write(json.dumps(hook_deny("JSON invalide")))
+        return 0
+    if not isinstance(parsed, dict):
+        sys.stdout.write(json.dumps(hook_deny("payload invalide")))
+        return 0
+    result = handle_hook(parsed, default_autonomy_home())
     sys.stdout.write(json.dumps(result))
     return 0
 
