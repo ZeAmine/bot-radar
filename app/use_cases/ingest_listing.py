@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.bot_instance import bot as default_bot
+from app.core import alert_latency as latency
 from app.core.constants import AlertStatus, CategorySlug
 from app.core.tasks import safe_create_task
 from app.db.models.book import Book
@@ -55,6 +56,7 @@ from app.utils.text import normalize_text
 logger = logging.getLogger("radar.use_cases.ingest_listing")
 
 
+@latency.observe_background("bibliography_series")
 async def link_books_from_bnf(
     title: str,
     alert_id: uuid.UUID,
@@ -219,6 +221,7 @@ def comparison_line_from_loaded_books(
     return absence, True, book
 
 
+@latency.observe_background("bibliography")
 async def _link_bd_catalog_background(
     *,
     alert_id: uuid.UUID,
@@ -350,14 +353,65 @@ class ProcessListingUseCase:
         raw_payload: dict[str, Any],
     ) -> ListingIngestResponse:
         """Sérialise l'annonce avant toute décision et jusqu'aux commits de notification."""
-        async with listing_ingestion_gate.protect(payload.source_name, payload.external_id):
+        timing = latency.current() or latency.AlertTiming(ingestion_id=uuid.uuid4())
+        timing.entered_at = latency.clock()
+        outcome = "error"
+        acquired = False
+        waiting_at = latency.clock()
+        with latency.timing_context(timing):
+            if timing.discovered_at is not None:
+                latency.emit(
+                    timing,
+                    "discovery_to_entry",
+                    timing.discovered_at,
+                    timing.entered_at,
+                    result="entered",
+                )
             try:
-                return await self._execute_serialized(payload, raw_payload)
-            except BaseException:
-                # Libérer aussi les écritures SQL avant d'admettre le prochain traitement.
-                # L'envoi reste attendu ici : aucune tâche de livraison n'est détachée.
-                await self._rollback_before_release()
+                async with listing_ingestion_gate.protect(payload.source_name, payload.external_id):
+                    acquired = True
+                    timing.acquired_at = latency.clock()
+                    latency.emit(
+                        timing, "guard_wait", waiting_at, timing.acquired_at, result="acquired"
+                    )
+                    try:
+                        response = await self._execute_serialized(payload, raw_payload)
+                        outcome = (
+                            "attempted"
+                            if timing.attempts
+                            else "duplicate_no_send"
+                            if response.is_duplicate
+                            else "no_match"
+                            if not response.matches
+                            else "no_eligible_recipient"
+                        )
+                        return response
+                    except BaseException:
+                        # Le rollback et F09 conservent leur protection et leur ordre.
+                        await self._rollback_before_release()
+                        raise
+            except BaseException as exc:
+                outcome = "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
+                if not acquired:
+                    latency.emit(
+                        timing,
+                        "guard_wait",
+                        waiting_at,
+                        latency.clock(),
+                        result=outcome,
+                        error_type=type(exc).__name__,
+                    )
                 raise
+            finally:
+                timing.alert_id = timing.attempt_id = None
+                latency.emit(
+                    timing,
+                    "ingestion_terminal",
+                    timing.entered_at,
+                    latency.clock(),
+                    result=outcome,
+                    attempts=timing.attempts,
+                )
 
     async def _rollback_before_release(self) -> None:
         """Termine le rollback sous protection, même si l'appelant est annulé pendant celui-ci."""
@@ -395,6 +449,9 @@ class ProcessListingUseCase:
             listing = await self.listing_repo.create_from_payload(payload, raw_dict=raw_payload)
             is_duplicate = False
 
+        timing = latency.current()
+        if timing is not None:
+            timing.listing_id = listing.id
         effective_isbn = normalize_listing_isbn(listing.isbn13)
         warnings: list[ListingIngestWarning] = []
         if payload.isbn_invalid_ignored or (listing.isbn13 is not None and effective_isbn is None):
@@ -483,6 +540,9 @@ class ProcessListingUseCase:
         self.db.add(event)
         await self.db.commit()
 
+        if timing is not None:
+            timing.recipients_ready_at = latency.clock()
+        attempt_ids: dict[uuid.UUID, uuid.UUID] = {}
         alert_ids = [alert.id for alert, *_ in pending_sends]
         book_ids = [book.id if book is not None else None for *_, book in pending_sends]
         context = _NotificationContext(
@@ -510,6 +570,13 @@ class ProcessListingUseCase:
             if _alert_has_telegram_chat(alert):
                 alert_kws = alert.include_keywords or ([alert.name] if alert.name else None)
                 attempt_id = uuid.uuid4()
+                attempt_ids[alert_id] = attempt_id
+                if timing is not None:
+                    timing.alert_id, timing.attempt_id = alert_id, attempt_id
+                    timing.ack_at = None
+                    timing.attempts += 1
+                    latency.emit(timing, "recipient_wait", timing.recipients_ready_at,
+                                 latency.clock(), result="ready")
                 delivery = await send_alert_fn(
                     bot=self.bot,
                     chat_id=alert.user.telegram_user_id,
@@ -600,22 +667,64 @@ class ProcessListingUseCase:
                         books_to_price.add(linked.id)
 
         for book_id in books_to_price:
-            schedule_book_pricing(book_id, reason="alert_sent")
+            if timing is None:
+                schedule_book_pricing(book_id, reason="alert_sent")
+            else:
+                with latency.timing_context(
+                    replace(timing, book_id=book_id, alert_id=None, attempt_id=None)
+                ):
+                    schedule_book_pricing(book_id, reason="alert_sent")
 
         for arguments in catalog_tasks:
-            safe_create_task(
-                _link_bd_catalog_background(**arguments), name=f"bd_catalog_{arguments['alert_id']}"
+            task_timing = (
+                replace(
+                    timing,
+                    alert_id=arguments["alert_id"],
+                    attempt_id=attempt_ids.get(arguments["alert_id"]),
+                )
+                if timing
+                else None
             )
+            with latency.timing_context(task_timing):
+                safe_create_task(
+                    _link_bd_catalog_background(**arguments),
+                    name=f"bd_catalog_{arguments['alert_id']}",
+                )
 
         # Écriture locale après tous les envois, jamais ajoutée à un lecteur pré-alerte.
+        final_started = None
+        final_called = False
+        final_result = "committed"
         try:
-            await recalculate_invalidated_series(self.db)
+            recalculation_started = latency.clock()
+            recalculation_result = "returned"
+            try:
+                await recalculate_invalidated_series(self.db)
+            except BaseException as exc:
+                recalculation_result = (
+                    "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
+                )
+                raise
+            finally:
+                if timing is not None:
+                    latency.emit(
+                        replace(timing, alert_id=None, attempt_id=None),
+                        "post_send_recalculation",
+                        recalculation_started,
+                        latency.clock(),
+                        result=recalculation_result,
+                    )
+            final_started = latency.clock()
+            final_called = True
             await self.db.commit()
         except BaseException as exc:
+            final_result = "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
             for alert_id, attempt_id, delivery in committed_deliveries:
-                logger.warning(
+                latency.safe_log(
+                    logger,
+                    logging.WARNING,
                     "Échec final après marquage durable, sans remise en attente.",
-                    extra=delivery.diagnostics(
+                    delivery.diagnostics(
                         alert_id=alert_id,
                         listing_id=context.listing_id,
                         attempt_id=attempt_id,
@@ -625,6 +734,11 @@ class ProcessListingUseCase:
                     ),
                 )
             raise
+        finally:
+            if timing is not None and final_called:
+                with latency.timing_context(replace(timing, alert_id=None, attempt_id=None)):
+                    latency.emit(latency.current() or timing, "final_commit", final_started,
+                                 latency.clock(), result=final_result)
 
         return ListingIngestResponse(
             listing_id=listing.id,
@@ -645,12 +759,14 @@ class ProcessListingUseCase:
         """Un nouvel essai SQL au plus, jamais de renvoi Telegram ni de reprise après annulation."""
         stage = "marking"
         sql_attempt = 1
+        persistence_result = "unknown"
+        timing = latency.current()
 
         def diagnostic(result: str, error: BaseException | None = None) -> None:
-            logger.log(
-                logging.WARNING if error else logging.INFO,
+            latency.safe_log(
+                logger, logging.WARNING if error else logging.INFO,
                 "État de persistance de la notification.",
-                extra=delivery.diagnostics(
+                delivery.diagnostics(
                     alert_id=alert_id,
                     listing_id=context.listing_id,
                     attempt_id=attempt_id,
@@ -672,7 +788,8 @@ class ProcessListingUseCase:
                     stage = "committing"
                     await self.db.commit()
                     stage = "committed" if marked else "match_missing"
-                    diagnostic("notified" if marked else "unknown")
+                    persistence_result = "notified" if marked else "unknown"
+                    diagnostic(persistence_result)
                     return bool(marked)
                 except (SQLAlchemyError, TimeoutError, OSError) as exc:
                     diagnostic("unknown", exc)
@@ -695,6 +812,7 @@ class ProcessListingUseCase:
                     )
                     if alert_id in notified:
                         stage = "reread_committed"
+                        persistence_result = "notified"
                         diagnostic("notified")
                         return True
                     if alert_id not in pending:
@@ -703,11 +821,18 @@ class ProcessListingUseCase:
                         raise
             raise AssertionError("Les deux tentatives de marquage doivent terminer ou échouer.")
         except asyncio.CancelledError as exc:
+            persistence_result = "cancelled"
             diagnostic("unknown", exc)
             raise
         except Exception as exc:
             diagnostic("unknown", exc)
             raise
+        finally:
+            if timing is not None:
+                latency.emit(timing, "ack_to_persistence", timing.ack_at, latency.clock(),
+                             result=persistence_result, sql_attempt=sql_attempt,
+                             persistence_stage=stage,
+                             message_id=delivery.receipt.message_id if delivery.receipt else None)
 
     async def _comparison_from_catalog_isbn(
         self,

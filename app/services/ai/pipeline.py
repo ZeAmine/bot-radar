@@ -7,6 +7,7 @@ from typing import Any
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
+from app.core.alert_latency import observe_background
 from app.db.models.listing import Listing
 from app.providers.llm.base import LLMClient
 from app.providers.llm.registry import llm_client
@@ -28,6 +29,7 @@ class AIPostAlertPipeline:
     def __init__(self, client: LLMClient | None = None) -> None:
         self.client: LLMClient = client or llm_client
 
+    @observe_background("ai_post_alert")
     async def enrich_alert(
         self,
         bot: Bot,

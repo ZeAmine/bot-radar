@@ -1,21 +1,20 @@
 """Benchmark reproductible du chemin critique ingestion → matching → alerte Telegram.
 
-Invariant n°1 (AGENTS.md) : l'alerte Telegram doit partir en **moins de 500 ms**.
-Aucun appel réseau externe (BNF, eBay, DeepSeek, Telegram) n'est autorisé sur ce
-chemin : ce benchmark le vérifie en mesurant, avec un réseau entièrement mocké :
+L'invariant n°1 impose l'ordre Telegram avant les fournisseurs. Le seuil existant
+500 ms est un garde-fou p95/p99 avec doubles, pas un délai de livraison réelle.
 
-1. le chemin complet : dédoublonnage SQL → création annonce → requête groupée des
-   alertes actives → matching CPU réel (80 alertes) → cote BD depuis le cache
-   local → create_match + BotEvent → commit → `send_listing_alert` (réel) avec
-   un Bot mocké → `mark_notified` → commit ;
-2. le raccourci de ré-ingestion d'un doublon `(source_name, external_id)`;
-3. le matching CPU seul (`evaluate_listing_against_alert` × alertes actives),
-   comparé à l'ordre de grandeur annoncé par ADR-003 (< 100 µs par évaluation).
+1. le chrono débute juste avant execute et finit à son retour : admission,
+   dédoublonnage, SQL, matching/cache, formatage, accusé Telegram doublé, marquage,
+   commit de notification et commit final sont inclus. Payload et bot sont créés
+   avant ; collecte, réseau réel et achèvement des tâches de fond sont exclus.
+   81 alertes sont semées, dont 41 BD évaluées sur ce scénario filtré par catégorie.
+2. le doublon utilise la même frontière, sans envoi.
+3. le CPU mesure une passe sur 81 alertes ; le seuil ADR-003 compare la médiane
+   des moyennes par évaluation sur 20 passes, pas un percentile par appel.
 
-Les valeurs mesurées sont de l'ordre de quelques millisecondes : le seuil de 500 ms
-n'est pas une jauge de précision mais un **garde-fou anti-régression** (il détecte
-l'introduction d'un appel bloquant, d'un `sleep` ou d'un SELECT par alerte).
-L'écart mesuré/le budget offre ~100x de marge pour rester stable en CI.
+Les tâches de fond peuvent partager l'event loop et la DB en production ; leur
+programmation peut précéder le retour. Réseau doublé et IA coupée ne mesurent pas
+leur contention réelle. Aucun chronomètre ne mesure publication ou lecture humaine.
 
 Usage :
     make bench
@@ -55,7 +54,7 @@ N_ACTIVE_ALERTS = N_BD_ALERTS + N_TECH_ALERTS
 WARMUP_ITERATIONS = 10
 MEASURED_ITERATIONS = 150
 BLACKSAD_ISBN = "9782205049657"
-BUDGET_MS = 500.0  # Invariant n°1
+BUDGET_MS = 500.0  # Garde-fou existant : cas d’usage complet avec doubles.
 
 # ADR-003 : < 100 µs par évaluation alerte×annonce. La constante existe pour que le
 # seuil et son message ne puissent pas diverger, comme c'était le cas avec un 500 µs
@@ -235,7 +234,7 @@ async def test_benchmark_full_alert_path(
     benchmark_db: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Chemin complet ingestion → matching → alerte : p99 < 500 ms (invariant n°1)."""
+    """Execute complet avec doubles, marquage et commit final inclus : p99 < 500 ms."""
     monkeypatch.setattr(settings, "AI_ENABLED", False)
     session = benchmark_db
 
@@ -253,11 +252,18 @@ async def test_benchmark_full_alert_path(
         f"(n={MEASURED_ITERATIONS}, {N_ACTIVE_ALERTS} alertes actives, "
         "SQLite in-memory, réseau mocké)"
     )
-    print(_report_line("ingestion → matching → alerte", durations))
-    print(f"  Budget invariant n°1 : {BUDGET_MS:.0f} ms — marge observée ×{BUDGET_MS / p95:.0f}")
+    print(_report_line("cas d’usage complet (doubles)", durations))
+    print(
+        f"  Garde-fou local avec doubles : {BUDGET_MS:.0f} ms "
+        f"— marge observée ×{BUDGET_MS / p95:.0f}"
+    )
 
-    assert p95 < BUDGET_MS, f"p95={p95:.1f} ms dépasse l'invariant des {BUDGET_MS:.0f} ms"
-    assert p99 < BUDGET_MS, f"p99={p99:.1f} ms dépasse l'invariant des {BUDGET_MS:.0f} ms"
+    assert p95 < BUDGET_MS, (
+        f"p95={p95:.1f} ms dépasse le garde-fou local avec doubles des {BUDGET_MS:.0f} ms"
+    )
+    assert p99 < BUDGET_MS, (
+        f"p99={p99:.1f} ms dépasse le garde-fou local avec doubles des {BUDGET_MS:.0f} ms"
+    )
 
 
 @pytest.mark.asyncio
@@ -294,7 +300,9 @@ async def test_benchmark_duplicate_ingestion_short_circuit(
     )
     print(_report_line("dédoublonnage (short-circuit)", durations))
 
-    assert p95 < BUDGET_MS, f"p95={p95:.1f} ms dépasse l'invariant des {BUDGET_MS:.0f} ms"
+    assert p95 < BUDGET_MS, (
+        f"p95={p95:.1f} ms dépasse le garde-fou local avec doubles des {BUDGET_MS:.0f} ms"
+    )
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ from aiogram.types import Message
 
 from app.bot.keyboards.listings import get_listing_alert_keyboard
 from app.bot.labels import abbreviate_condition, escape_html, join_list
+from app.core import alert_latency as latency
 from app.core.config import settings
 from app.core.tasks import safe_create_task
 from app.db.models.listing import Listing
@@ -135,23 +136,31 @@ def _photo_url_for_alert(listing: Listing, caption: str) -> str | None:
     alerte partie sans image ne doit plus être silencieuse.
     """
     if not listing.photos:
-        logger.info("Alerte %s sans photo : aucune couverture, envoi en texte", listing.id)
+        latency.safe_log(
+            logger,
+            logging.INFO,
+            f"Alerte {listing.id} sans photo : aucune couverture, envoi en texte",
+            {},
+        )
         return None
 
     photo_url = listing.photos[0]
     if not isinstance(photo_url, str) or not photo_url.startswith("https://"):
-        logger.warning(
-            "Alerte %s : URL de photo invalide, envoi en texte",
-            listing.id,
+        latency.safe_log(
+            logger,
+            logging.WARNING,
+            f"Alerte {listing.id} : URL de photo invalide, envoi en texte",
+            {},
         )
         return None
 
     if len(caption) > PHOTO_CAPTION_LIMIT:
-        logger.error(
-            "Alerte %s : légende de %d caractères (limite photo %d), envoi en texte",
-            listing.id,
-            len(caption),
-            PHOTO_CAPTION_LIMIT,
+        latency.safe_log(
+            logger,
+            logging.ERROR,
+            f"Alerte {listing.id} : légende de {len(caption)} caractères "
+            f"(limite photo {PHOTO_CAPTION_LIMIT}), envoi en texte",
+            {},
         )
         return None
 
@@ -171,177 +180,288 @@ async def send_listing_alert(
 
     La photo est tentée deux fois par URL avant tout repli : Telegram télécharge lui-
     même le contenu, et un CDN qui renvoie une page HTML à sa place fait échouer la
-    première tentative sans que l'annonce soit en faute. Le repli texte reste garanti —
-    une panne photo ne fait jamais perdre l'alerte.
+    première tentative sans que l’annonce soit en faute. Le repli texte garde
+    sa politique existante ; un accusé exploitable n’est jamais garanti.
     """
     attempt_id = attempt_id or uuid.uuid4()
     alert_id = getattr(alert, "id", None)
 
-    def diagnostic(result: DeliveryResult, number: int = 0) -> None:
-        logger.log(
-            logging.INFO if result else logging.ERROR,
-            "Résultat de la tentative Telegram.",
-            extra=result.diagnostics(
-                alert_id=alert_id,
-                listing_id=listing.id,
-                attempt_id=attempt_id,
-                persistence_stage="not_started",
-                transport_attempt=number,
-            ),
-        )
-
-    # Ces opérations sont locales : leur échec précède tout appel client.
-    try:
-        caption = build_listing_caption(listing, market_comparison_line, alert_keywords)
-        keyboard = get_listing_alert_keyboard(
-            listing_id=listing.id,
-            listing_url=listing.url,
-            category_slug=listing.category_slug,
-        )
-        photo_url = _photo_url_for_alert(listing, caption)
-    except Exception as exc:
-        result = DeliveryResult(
-            "rejected", "none", reason="local_validation", error_type=type(exc).__name__
-        )
-        diagnostic(result)
-        return result
-
-    unknown_seen = False
-
-    async def request(
-        transport: Literal["photo", "text"], operation: Awaitable[Message], number: int
-    ) -> tuple[DeliveryResult, bool]:
-        """Le booléen indique une exception client, pour conserver la politique de reprises."""
-        nonlocal unknown_seen
+    timing = latency.current() or latency.AlertTiming()
+    timing.listing_id, timing.alert_id, timing.attempt_id = listing.id, alert_id, attempt_id
+    started_at = latency.clock()
+    completed = False
+    terminal_result = "unknown"
+    terminal_error = None
+    result: DeliveryResult | None = None
+    with latency.timing_context(timing):
         try:
-            message = await operation
-        except asyncio.CancelledError:
-            diagnostic(DeliveryResult("unknown", transport, reason="cancelled"), number)
-            raise
-        except Exception as exc:
-            # aiogram BaseSession.check_response traduit les réponses négatives
-            # 400/401/403/404 en ces types. Réseau, décodage, 5xx et exceptions
-            # non documentées ne prouvent pas l'absence d'acceptation.
-            rejected = isinstance(
-                exc,
-                (
-                    TelegramBadRequest,
-                    TelegramUnauthorizedError,
-                    TelegramForbiddenError,
-                    TelegramNotFound,
-                ),
-            )
-            result = DeliveryResult(
-                "rejected" if rejected else "unknown",
-                transport,
-                reason="api_rejected" if rejected else "client_result_unknown",
-                error_type=type(exc).__name__,
-            )
-            unknown_seen = unknown_seen or result.outcome == "unknown"
-            diagnostic(result, number)
-            return result, True
-        result = (
-            DeliveryResult("acknowledged", transport, receipt=message)
-            if usable_receipt(message, chat_id)
-            else DeliveryResult("unknown", transport, reason="unusable_receipt")
-        )
-        unknown_seen = unknown_seen or result.outcome == "unknown"
-        diagnostic(result, number)
-        return result, False
 
-    result = DeliveryResult("unknown", "text")
-    if photo_url is not None:
-        for number in (1, 2):
-            result, raised = await request(
-                "photo",
-                bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo_url,
-                    caption=caption,
-                    reply_markup=keyboard,
-                ),
-                number,
-            )
-            if result:
-                logger.info(
-                    "Résultat photo Telegram : %s",
-                    "sent" if number == 1 else "retry_sent",
-                    extra={
+            def diagnostic(result: DeliveryResult, number: int = 0) -> None:
+                latency.safe_log(
+                    logger,
+                    logging.INFO if result else logging.ERROR,
+                    "Résultat de la tentative Telegram.",
+                    result.diagnostics(
+                        alert_id=alert_id,
+                        listing_id=listing.id,
+                        attempt_id=attempt_id,
+                        persistence_stage="not_started",
+                        transport_attempt=number,
+                    ),
+                )
+
+            # Ces opérations sont locales : leur échec précède tout appel client.
+            try:
+                caption = build_listing_caption(listing, market_comparison_line, alert_keywords)
+                keyboard = get_listing_alert_keyboard(
+                    listing_id=listing.id,
+                    listing_url=listing.url,
+                    category_slug=listing.category_slug,
+                )
+                photo_url = _photo_url_for_alert(listing, caption)
+            except Exception as exc:
+                result = DeliveryResult(
+                    "rejected", "none", reason="local_validation", error_type=type(exc).__name__
+                )
+                diagnostic(result)
+                completed = True
+                return result
+
+            unknown_seen = False
+
+            async def request(
+                transport: Literal["photo", "text"], operation: Awaitable[Message], number: int
+            ) -> tuple[DeliveryResult, bool]:
+                """Le booléen indique une exception client et conserve les reprises existantes."""
+                nonlocal unknown_seen
+                started_at = latency.clock()
+                first_call = not timing.first_call_seen
+                if first_call:
+                    timing.first_call_seen = True
+                    timing.first_call_at = started_at
+
+                def record_transport(result: str, ended_at: float | None) -> None:
+                    # Capturer le début avant le client, mais émettre après : le log
+                    # de préparation ne doit pas gonfler le chrono du transport.
+                    if first_call:
+                        latency.emit(
+                            timing,
+                            "pre_first_telegram_call",
+                            timing.acquired_at,
+                            started_at,
+                            result="calling",
+                        )
+                    latency.emit(
+                        timing,
+                        "transport_attempt",
+                        started_at,
+                        ended_at,
+                        result=result,
+                        transport=transport,
+                        transport_attempt=number,
+                    )
+
+                try:
+                    message = await operation
+                except asyncio.CancelledError:
+                    record_transport("cancelled", latency.clock())
+                    diagnostic(DeliveryResult("unknown", transport, reason="cancelled"), number)
+                    raise
+                except Exception as exc:
+                    # aiogram BaseSession.check_response traduit les réponses négatives
+                    # 400/401/403/404 en ces types. Réseau, décodage, 5xx et exceptions
+                    # non documentées ne prouvent pas l'absence d'acceptation.
+                    rejected = isinstance(
+                        exc,
+                        (
+                            TelegramBadRequest,
+                            TelegramUnauthorizedError,
+                            TelegramForbiddenError,
+                            TelegramNotFound,
+                        ),
+                    )
+                    result = DeliveryResult(
+                        "rejected" if rejected else "unknown",
+                        transport,
+                        reason="api_rejected" if rejected else "client_result_unknown",
+                        error_type=type(exc).__name__,
+                    )
+                    unknown_seen = unknown_seen or result.outcome == "unknown"
+                    record_transport(result.outcome, latency.clock())
+                    diagnostic(result, number)
+                    return result, True
+                result = (
+                    DeliveryResult("acknowledged", transport, receipt=message)
+                    if usable_receipt(message, chat_id)
+                    else DeliveryResult("unknown", transport, reason="unusable_receipt")
+                )
+                ended_at = latency.clock()
+                unknown_seen = unknown_seen or result.outcome == "unknown"
+                record_transport(result.outcome, ended_at)
+                if result:
+                    timing.ack_at = ended_at
+                    if timing.entered_at is not None:
+                        latency.emit(
+                            timing,
+                            "entry_to_ack",
+                            timing.entered_at,
+                            ended_at,
+                            result="acknowledged",
+                            transport=transport,
+                            message_id=message.message_id,
+                        )
+                diagnostic(result, number)
+                return result, False
+
+            result = DeliveryResult("unknown", "text")
+            if photo_url is not None:
+                for number in (1, 2):
+                    result, raised = await request(
+                        "photo",
+                        bot.send_photo(
+                            chat_id=chat_id,
+                            photo=photo_url,
+                            caption=caption,
+                            reply_markup=keyboard,
+                        ),
+                        number,
+                    )
+                    if result:
+                        latency.safe_log(
+                            logger,
+                            logging.INFO,
+                            "Résultat photo Telegram : "
+                            + ("sent" if number == 1 else "retry_sent"),
+                            {
+                                "event": "photo_delivery",
+                                "listing_id": str(listing.id),
+                                "status": "sent" if number == 1 else "retry_sent",
+                            },
+                        )
+                    else:
+                        latency.safe_log(
+                            logger,
+                            logging.ERROR,
+                            f"Échec {number}/2 de l'appel photo sans accusé exploitable.",
+                            {},
+                        )
+                    # Aucun nouvel essai photo lorsque le client est revenu sans exception,
+                    # comme auparavant (y compris le cas anormal None).
+                    if not raised:
+                        break
+                    if number == 1:
+                        pause_started = latency.clock()
+                        pause_result = "waited"
+                        try:
+                            await asyncio.sleep(PHOTO_RETRY_DELAY_SECONDS)
+                        except asyncio.CancelledError:
+                            pause_result = "cancelled"
+                            diagnostic(
+                                DeliveryResult("unknown", "photo", reason="cancelled_before_retry"),
+                                number,
+                            )
+                            raise
+                        except BaseException:
+                            pause_result = "error"
+                            raise
+                        finally:
+                            latency.emit(
+                                timing,
+                                "retry_pause",
+                                pause_started,
+                                latency.clock(),
+                                result=pause_result,
+                                transport="photo",
+                                requested_delay_ms=PHOTO_RETRY_DELAY_SECONDS * 1000,
+                            )
+                if not result:
+                    latency.safe_log(
+                        logger,
+                        logging.ERROR,
+                        "Aucun accusé photo exploitable ; repli sur message texte.",
+                        {},
+                    )
+            if not result:
+                text = caption + (
+                    "\n\n<i>Photo indisponible ; l'annonce reste accessible via son lien.</i>"
+                    if photo_url is not None
+                    else ""
+                )
+                result, _ = await request(
+                    "text",
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        reply_markup=keyboard,
+                    ),
+                    1,
+                )
+                latency.safe_log(
+                    logger,
+                    logging.INFO if result else logging.ERROR,
+                    "Résultat du transport texte.",
+                    {
                         "event": "photo_delivery",
                         "listing_id": str(listing.id),
-                        "status": "sent" if number == 1 else "retry_sent",
+                        "status": ("text_fallback" if photo_url else "text_only")
+                        if result
+                        else "failed",
                     },
                 )
-            else:
-                logger.error("Échec %d/2 de l'appel photo sans accusé exploitable.", number)
-            # Aucun nouvel essai photo lorsque le client est revenu sans exception,
-            # comme auparavant (y compris le cas anormal None).
-            if not raised:
-                break
-            if number == 1:
+
+            if result.outcome == "rejected" and unknown_seen:
+                result = DeliveryResult(
+                    "unknown", result.transport, reason="earlier_transport_unknown"
+                )
+                diagnostic(result)
+
+            if result and result.receipt is not None and settings.AI_ENABLED:
+                enrichment = None
                 try:
-                    await asyncio.sleep(PHOTO_RETRY_DELAY_SECONDS)
-                except asyncio.CancelledError:
-                    diagnostic(
-                        DeliveryResult("unknown", "photo", reason="cancelled_before_retry"), number
+                    enrichment = ai_post_alert_pipeline.enrich_alert(
+                        bot=bot,
+                        chat_id=chat_id,
+                        message_id=result.receipt.message_id,
+                        listing=listing,
+                        alert=alert,
                     )
-                    raise
-        if not result:
-            logger.error("Aucun accusé photo exploitable ; repli sur message texte.")
-    if not result:
-        text = caption + (
-            "\n\n<i>Photo indisponible ; l'annonce reste accessible via son lien.</i>"
-            if photo_url is not None
-            else ""
-        )
-        result, _ = await request(
-            "text",
-            bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=keyboard,
-            ),
-            1,
-        )
-        logger.log(
-            logging.INFO if result else logging.ERROR,
-            "Résultat du transport texte.",
-            extra={
-                "event": "photo_delivery",
-                "listing_id": str(listing.id),
-                "status": ("text_fallback" if photo_url else "text_only") if result else "failed",
-            },
-        )
-
-    if result.outcome == "rejected" and unknown_seen:
-        result = DeliveryResult("unknown", result.transport, reason="earlier_transport_unknown")
-        diagnostic(result)
-
-    if result and result.receipt is not None and settings.AI_ENABLED:
-        enrichment = None
-        try:
-            enrichment = ai_post_alert_pipeline.enrich_alert(
-                bot=bot,
-                chat_id=chat_id,
-                message_id=result.receipt.message_id,
-                listing=listing,
-                alert=alert,
+                    safe_create_task(enrichment, name=f"ai_enrich_{listing.id}")
+                except Exception as exc:
+                    if enrichment is not None:
+                        enrichment.close()
+                    latency.safe_log(
+                        logger,
+                        logging.WARNING,
+                        "Enrichissement non planifié après accusé Telegram.",
+                        result.diagnostics(
+                            alert_id=alert_id,
+                            listing_id=listing.id,
+                            attempt_id=attempt_id,
+                            persistence_stage="not_started",
+                            postprocessing_error=type(exc).__name__,
+                        ),
+                    )
+            completed = True
+            return result
+        except BaseException as exc:
+            terminal_result = "cancelled" if isinstance(exc, asyncio.CancelledError) else "unknown"
+            terminal_error = type(exc).__name__
+            raise
+        finally:
+            latency.emit(
+                timing,
+                "delivery_terminal",
+                started_at,
+                latency.clock(),
+                result=result.outcome if completed and result is not None else terminal_result,
+                entry_to_ack_ms=latency.elapsed(timing.entered_at, timing.ack_at)
+                if completed and result is not None and result
+                else None,
+                error_type=terminal_error,
+                message_id=result.receipt.message_id
+                if completed and result is not None and result.receipt is not None
+                else None,
             )
-            safe_create_task(enrichment, name=f"ai_enrich_{listing.id}")
-        except Exception as exc:
-            if enrichment is not None:
-                enrichment.close()
-            logger.warning(
-                "Enrichissement non planifié après accusé Telegram.",
-                extra=result.diagnostics(
-                    alert_id=alert_id,
-                    listing_id=listing.id,
-                    attempt_id=attempt_id,
-                    persistence_stage="not_started",
-                    postprocessing_error=type(exc).__name__,
-                ),
-            )
-    return result
 
 
 async def notify_admins(

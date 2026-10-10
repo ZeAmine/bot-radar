@@ -6,6 +6,7 @@ import json
 import logging
 import random
 import time
+import uuid
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from sqlalchemy import select
 
+from app.core import alert_latency as latency
 from app.core.config import settings
 from app.core.constants import AlertStatus, CategorySlug
 from app.core.redis import get_redis_client
@@ -327,16 +329,39 @@ async def _ingest_scraped_item(item: Any, category_slug: str) -> ScrapedIngestRe
     from app.schemas.listing import ListingIngestPayload
     from app.use_cases.ingest_listing import ProcessListingUseCase
 
+    discovered_at, collection_id = latency.discovery()
+    timing = latency.AlertTiming(
+        ingestion_id=uuid.uuid4(), collection_id=collection_id, discovered_at=discovered_at
+    )
     payload_dict = to_ingest_payload(item, category_slug=category_slug)
     payload = ListingIngestPayload.model_validate(payload_dict)
-    async with _get_ingest_semaphore(), AsyncSessionLocal() as session:
-        use_case = ProcessListingUseCase(session)
-        response = await use_case.execute(payload, raw_payload=payload_dict)
-        notified_count = sum(1 for match in response.matches if match.notification_sent)
-        return ScrapedIngestResult(
-            notified_count=notified_count,
-            needs_retry=response.needs_retry,
-        )
+    waiting_at = latency.clock()
+    acquired = False
+    with latency.timing_context(timing):
+        try:
+            async with _get_ingest_semaphore():
+                acquired = True
+                latency.emit(
+                    timing, "semaphore_wait", waiting_at, latency.clock(), result="acquired"
+                )
+                async with AsyncSessionLocal() as session:
+                    use_case = ProcessListingUseCase(session)
+                    response = await use_case.execute(payload, raw_payload=payload_dict)
+                    notified_count = sum(1 for match in response.matches if match.notification_sent)
+                    return ScrapedIngestResult(
+                        notified_count=notified_count, needs_retry=response.needs_retry
+                    )
+        except BaseException as exc:
+            if not acquired:
+                latency.emit(
+                    timing,
+                    "semaphore_wait",
+                    waiting_at,
+                    latency.clock(),
+                    result="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
+                    error_type=type(exc).__name__,
+                )
+            raise
 
 
 def _log_window_coverage(received: int, category_slug: str, cycle_index: int) -> None:
@@ -379,7 +404,18 @@ async def poll_vinted_once(
 
     Retourne le nombre de nouvelles annonces ingérées avec succès.
     """
-    items = await fetch_vinted_page(target_url, vinted_client)
+    collection_timing = latency.AlertTiming(collection_id=uuid.uuid4())
+    collection_started = latency.clock()
+    try:
+        items = await fetch_vinted_page(target_url, vinted_client)
+    except BaseException as exc:
+        latency.emit(collection_timing, "collection", collection_started, latency.clock(),
+                     result="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
+                     error_type=type(exc).__name__)
+        raise
+    discovered_at = latency.clock()
+    latency.emit(collection_timing, "collection", collection_started, discovered_at,
+                 result="returned", item_count=len(items))
     _log_window_coverage(len(items), category_slug, cycle_index)
     if not items:
         return 0
@@ -397,10 +433,11 @@ async def poll_vinted_once(
     for item in new_items:
         seen_ids.add(item.external_id)
 
-    results = await asyncio.gather(
-        *(_ingest_scraped_item(item, category_slug) for item in new_items),
-        return_exceptions=True,
-    )
+    with latency.discovery_context(discovered_at, collection_timing.collection_id):
+        results = await asyncio.gather(
+            *(_ingest_scraped_item(item, category_slug) for item in new_items),
+            return_exceptions=True,
+        )
     ingested_count = 0
     for item, result in zip(new_items, results, strict=True):
         if isinstance(result, BaseException):
