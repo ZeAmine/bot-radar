@@ -61,6 +61,7 @@ from app.services.book_metadata_service import (
     ambiguity_note,
     consulted_authorities,
     failed_authorities,
+    matches_requested_volume,
     provenance_note,
     title_similarity,
 )
@@ -84,8 +85,8 @@ class BookWorkChoice:
     vaut `None` quand elle n'est pas réellement connue, jamais une provenance
     par champ déduite d'une provenance globale. Les rôles des contributeurs ne
     sont pas portés : le service ne les préserve pas (un seul nom d'auteur,
-    mentions de rôle retirées). La langue ne figure pas : aucune source lue ici
-    ne la donne de façon fiable, et le préfixe 979 ne prouve aucune langue.
+    mentions de rôle retirées). La langue provient uniquement de la notice de l’édition exacte ;
+    aucun préfixe ISBN ne prouve une langue.
     Le caractère numérique non plus : `printType` n'est même pas lu, et
     `printType=BOOK` ne serait pas une preuve d'édition papier.
     """
@@ -96,18 +97,22 @@ class BookWorkChoice:
     publisher: str | None = None
     publication_year: int | None = None
     provenance: str | None = None
+    volume_number: int | None = None
+    language: str | None = None
 
 
 @dataclass(frozen=True)
 class BookEditionChoice:
     """Une édition d'ISBN donné, jamais fusionnée avec une autre. Champs
-    inconnus à `None` (pas de langue, pas de rôles, pas de flag numérique)."""
+    inconnus à `None`, langue d’édition attestée uniquement."""
 
     isbn13: str
     publisher: str | None = None
     publication_year: int | None = None
     format_detail: str | None = None
     provenance: str | None = None
+    volume_number: int | None = None
+    language: str | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +163,8 @@ def _work_choice(meta: BookMetadata) -> BookWorkChoice:
         publisher=meta.publisher,
         publication_year=meta.publication_year,
         provenance=meta.source,
+        volume_number=meta.volume_number,
+        language=meta.language,
     )
 
 
@@ -171,6 +178,8 @@ def _edition_choice(meta: BookMetadata, provenance: str | None) -> BookEditionCh
         publication_year=meta.publication_year,
         format_detail=meta.format_detail,
         provenance=provenance,
+        volume_number=meta.volume_number,
+        language=meta.language,
     )
 
 
@@ -276,7 +285,10 @@ def result_from_isbn_verdict(
         verdict.outcome == "confirme"
         and notice is not None
         and bool(expected_title)
-        and title_similarity(notice.title, expected_title) < TITLE_SIMILARITY_MIN
+        and (
+            title_similarity(notice.title, expected_title) < TITLE_SIMILARITY_MIN
+            or not matches_requested_volume(notice, expected_title or "")
+        )
     )
     if verdict.outcome == "confirme" and not contradicts and notice is not None:
         reference = _edition_choice(notice, notice.source)
@@ -445,6 +457,8 @@ def metadata_from_result(result: BookSearchResult) -> BookMetadata | None:
         # elle vit sur la référence, pas sur l'œuvre.
         format_detail=result.reference.format_detail if result.reference else None,
         source=result.confirmed.provenance or AUTORITE_BNF,
+        volume_number=result.confirmed.volume_number,
+        language=result.reference.language if result.reference else None,
     )
 
 

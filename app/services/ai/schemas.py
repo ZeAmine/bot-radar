@@ -26,6 +26,8 @@ class BookContext(BaseModel):
     publication_year: int | None = Field(default=None, description="Année de la référence")
     format_detail: str | None = Field(default=None, description="Format éditorial (pages, cm)")
     isbn13: str | None = Field(default=None, description="ISBN de l'édition de référence")
+    volume_number: int | None = None
+    language: str | None = None
     is_series: bool = Field(default=False, description="True pour une série multi-tomes")
 
     def as_facts(self) -> list[str]:
@@ -60,12 +62,15 @@ def book_context_from(meta: BookMetadata, *, is_series: bool = False) -> BookCon
         format_detail=meta.format_detail,
         isbn13=meta.isbn13,
         is_series=is_series,
+        volume_number=meta.volume_number,
+        language=meta.language,
     )
 
 
 class NaturalAddResult(BaseModel):
     """Résultat du parsing en langage naturel d'une commande /add."""
 
+    requested_volume: int | None = None
     name: str = Field(description="Nom ou titre principal de l'alerte")
     category_slug: str = Field(
         default="bd_comics",

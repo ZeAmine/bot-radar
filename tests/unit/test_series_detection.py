@@ -344,5 +344,5 @@ async def test_creation_keeps_the_isbn_when_the_query_names_a_tome():
 
     assert stored["is_series"] is False
     assert stored["isbn"] == ISBN_VOLUME_2
-    assert stored["name"] == f"{SERIES_TITLE} Vol. 2"
+    assert stored["name"] == f"{SERIES_TITLE} - Volume 2"
     assert "series_note" not in stored

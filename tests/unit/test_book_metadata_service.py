@@ -872,6 +872,8 @@ async def test_resolve_for_alert_does_not_call_a_lookalike_a_homonym():
     """Un titre voisin n'est pas un homonyme : il ne doit pas déclencher d'avertissement."""
     service = BookMetadataService()
     records = _homonym_records()
+    records[0].title += " tome 2"
+    records[0].volume_number = 2
 
     with _mock_bnf_typed(service, records):
         resolution = await service.resolve_for_alert("Les enfants perdus tome 2")
@@ -1198,7 +1200,9 @@ async def test_les_autorites_consultees_suivent_les_appels_effectifs():
     )
 
     assert repli.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
-    assert len(repli_client.openlibrary_queries) == 1, "l'ordre des appels est celui de la liste"
+    assert len(repli_client.openlibrary_queries) == 2
+    assert "/search.json?isbn=" in repli_client.openlibrary_queries[0]
+    assert "/isbn/9782369903086.json" in repli_client.openlibrary_queries[1]
 
 
 @pytest.mark.asyncio

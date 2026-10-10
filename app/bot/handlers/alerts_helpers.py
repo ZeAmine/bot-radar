@@ -46,6 +46,7 @@ from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
 from app.domain.enums import BookSearchStatus
+from app.domain.rules.book_volume import requested_volume, volume_title
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
@@ -53,9 +54,11 @@ from app.services.book_metadata_service import (
     AUTORITE_BNF,
     AUTORITE_GOOGLE_BOOKS,
     AUTORITE_OPENLIBRARY,
+    TITLE_SIMILARITY_MIN,
     format_edition_fragments,
     generate_recommended_keywords,
     parse_query_title_and_author,
+    title_similarity,
 )
 from app.use_cases.book_search import (
     BookSearchResult,
@@ -331,6 +334,9 @@ def creation_card(
             # de tête, la ligne dit seulement que le champ est vide.
             lines.append(f"<b>{FIELD_ISBN} :</b> introuvable")
 
+    volume_issue = creation_volume_issue(data)
+    if volume_issue:
+        lines.extend([f"<i>{html.escape(volume_issue)}</i>", ""])
     lines.append(f"<b>{FIELD_TITLE} :</b> {html.escape(title)}")
     # Un auteur ou un éditeur manquant s'affiche « Non renseigné » quand aucune source
     # n'a identifié l'ouvrage : la ligne disparaissait, et son absence se lisait comme
@@ -343,6 +349,13 @@ def creation_card(
         lines.append(f"<b>{FIELD_PUBLISHER} :</b> {html.escape(publisher)}")
     elif book_unidentified or data.get("identity_unconfirmed"):
         lines.append(f"<b>{FIELD_PUBLISHER} :</b> {NOT_PROVIDED}")
+    if expects_isbn and not is_series:
+        language = str(data.get("language") or "")
+        label = {
+            "en": "Anglais", "fr": "Français", "de": "Allemand", "es": "Espagnol",
+            "it": "Italien", "pt": "Portugais", "ja": "Japonais",
+        }.get(language)
+        lines.append(f"<b>Langue :</b> {html.escape(label or language or 'Inconnue')}")
     # L'édition surveillée complète l'identité du livre : elle se lit juste après
     # l'éditeur, avec lequel l'utilisateur la recoupe, et avant que la carte ne passe
     # aux critères de veille. Elle n'apparaît que quand il y a un choix à faire.
@@ -563,6 +576,28 @@ def format_edition_line(
     ]
 
 
+def creation_volume_issue(data: dict[str, Any]) -> str | None:
+    """Bloque aussi les anciens boutons si le volume n'a pas de preuve liée à l'ISBN."""
+    if data.get("category_slug", CategorySlug.BD_COMICS.value) != CategorySlug.BD_COMICS.value:
+        return None
+    number = data.get("requested_volume") or requested_volume(str(data.get("name") or ""))
+    if number is None:
+        return None
+    context = data.get("book_context") or {}
+    if (
+        not data.get("is_series")
+        and data.get("isbn")
+        and context.get("isbn13") == data["isbn"]
+        and context.get("volume_number") == number
+        and title_similarity(context.get("title"), data.get("name")) >= TITLE_SIMILARITY_MIN
+    ):
+        return None
+    return (
+        f"Le volume {number} demandé n’a pas pu être confirmé. "
+        "Aucun autre volume ne sera ajouté à sa place."
+    )
+
+
 def creation_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
     """Clavier du récap : œuvres homonymes, éditions numérotées, puis validation.
 
@@ -573,13 +608,21 @@ def creation_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
     """
     alternatives = data.get("edition_alternatives")
     works = data.get("work_choices")
-    return get_alert_confirmation_keyboard(
+    keyboard = get_alert_confirmation_keyboard(
         show_variants_btn=not data.get("keywords_finalized"),
         edition_alternatives=alternatives,
         edition_labels=build_edition_labels(alternatives),
         work_choices=works,
         work_labels=build_work_labels(works),
     )
+
+    if creation_volume_issue(data):
+        keyboard.inline_keyboard = [
+            [button for button in row if button.callback_data != "alert_create_confirm"]
+            for row in keyboard.inline_keyboard
+        ]
+        keyboard.inline_keyboard = [row for row in keyboard.inline_keyboard if row]
+    return keyboard
 
 
 def build_creation_recap(data: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
@@ -682,6 +725,8 @@ def _edition_choice_to_dict(edition: Any) -> dict[str, Any]:
         "publisher": edition.publisher,
         "publication_year": edition.publication_year,
         "format_detail": edition.format_detail,
+        "volume_number": edition.volume_number,
+        "language": edition.language,
     }
 
 
@@ -706,6 +751,8 @@ def draft_updates_from_search(
     - `not_found` / `unavailable` laissent l'identité vide, avec un avertissement
       distinct selon le motif réel.
     """
+    number = requested_volume(query_title)
+    query_title = volume_title(query_title, number) if number else query_title
     confirmed = result.confirmed
     is_found = result.status == BookSearchStatus.FOUND and confirmed is not None
     is_ambiguous = result.status == BookSearchStatus.AMBIGUOUS
@@ -717,6 +764,8 @@ def draft_updates_from_search(
         includes, _excludes, _variants = generate_recommended_keywords(query_title, None)
         return {
             "category_id": category_id,
+            "requested_volume": number,
+            "language": result.reference.language if result.reference else None,
             "category_slug": category_slug,
             "name": query_title,
             "isbn": None,
@@ -737,12 +786,16 @@ def draft_updates_from_search(
 
     if is_found:
         assert confirmed is not None
-        name = confirmed.title
+        meta = metadata_from_result(result)
+        assert meta is not None
+        name = volume_title(confirmed.title, number) if number else confirmed.title
         includes, excludes, variants = generate_recommended_keywords(
             name, confirmed.author
         )
         return {
             "category_id": category_id,
+            "requested_volume": number,
+            "language": result.reference.language if result.reference else None,
             "category_slug": category_slug,
             "name": name,
             "isbn": result.reference.isbn13 if result.reference else None,
@@ -758,7 +811,7 @@ def draft_updates_from_search(
             "edition_alternatives": [
                 _edition_choice_to_dict(edition) for edition in result.editions
             ],
-            "book_context": None,
+            "book_context": book_context_from(meta).model_dump(),
             "book_unidentified": False,
             "identity_unconfirmed": False,
         }
@@ -768,6 +821,8 @@ def draft_updates_from_search(
         includes, _excludes, _variants = generate_recommended_keywords(name, None)
         return {
             "category_id": category_id,
+            "requested_volume": number,
+            "language": result.reference.language if result.reference else None,
             "category_slug": category_slug,
             "name": name,
             "isbn": None,
@@ -801,6 +856,8 @@ def draft_updates_from_search(
         note = None
     return {
         "category_id": category_id,
+        "requested_volume": number,
+        "language": result.reference.language if result.reference else None,
         "category_slug": category_slug,
         "name": name,
         "isbn": None,
@@ -935,6 +992,9 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
     et une notice de repli n'y vaut jamais confirmation.
     """
     title = str(draft.get("name") or "").strip()
+    number = draft.get("requested_volume") or requested_volume(title)
+    if number:
+        title = volume_title(title, number)
 
     # Consomme le contrat partagé, avec contrôle du titre : une panne BNF ne peut pas
     # faire passer un repli pour une confirmation (T9), et une contradiction reste un
@@ -964,6 +1024,9 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
                 "isbn_note": _isbn_verification_note(result),
                 "author": meta.author,
                 "publisher": meta.publisher,
+                "language": meta.language,
+                "name": volume_title(title, number) if number else title,
+                "requested_volume": number,
                 "edition_alternatives": await _resolve_edition_choices(title, meta.author),
                 "book_context": book_context_from(meta).model_dump(),
             }
@@ -992,9 +1055,17 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
             "Vérification bibliographique incomplète : %s", result.unavailable
         )
 
+    if number:
+        return IsbnRealignment(
+            conflict=(
+                f"Le volume {number} demandé n’a pas pu être confirmé. "
+                "Aucun autre volume ne sera ajouté à sa place."
+            )
+        )
     return IsbnRealignment(
         updates={
             **KEYWORDS_FROM_PREVIOUS_WORK,
+            "language": None,
             "isbn": isbn,
             "is_series": False,
             "isbn_note": _isbn_verification_note(result),

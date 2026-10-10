@@ -19,6 +19,7 @@ from app.bot.handlers.alerts_helpers import (
     _bump_search_token,
     build_creation_recap,
     creation_card,
+    creation_volume_issue,
     extract_inline_price_and_clean_query,
     keyword_note,
     process_bd_query_lookup,
@@ -339,6 +340,8 @@ async def start_add_alert(
                 "name": parsed.name,
                 "category_slug": parsed.category_slug,
                 "isbn": parsed.isbn13,
+                "requested_volume": parsed.requested_volume,
+                "language": parsed.book_context.language if parsed.book_context else None,
                 "is_series": parsed.is_series,
                 "author": parsed.author,
                 "publisher": parsed.publisher,
@@ -678,6 +681,11 @@ async def save_alert(
     """Enregistre l'alerte validée en base de données, lie le livre et préchauffe la cote."""
     await callback.answer()
     data = await state.get_data()
+    if creation_volume_issue(data):
+        recap_text, keyboard = build_creation_recap(data)
+        if callback.message and hasattr(callback.message, "edit_text"):
+            await callback.message.edit_text(recap_text, reply_markup=keyboard)
+        return
 
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
     name = data.get("name") or "Alerte"
@@ -747,6 +755,7 @@ async def save_alert(
                     isbn13=isbn,
                     author=author,
                     publisher=publisher,
+                    language=data.get("language") or "und",
                 )
                 # `create` rend un objet dont `market_cache` n'est pas chargé : la
                 # confirmation lit cette relation (`format_cote_lines`) après le commit,
