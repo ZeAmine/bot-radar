@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -91,7 +92,7 @@ def autonomy_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, P
 
 
 def boot_task(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tv, "collect_test_count", lambda _wt: 10)
+    monkeypatch.setattr(tv, "collect_test_count", lambda *_a, **_k: 10)
     tv.cmd_approve(approve_args(env))
     tv.cmd_start(start_args(env))
 
@@ -374,3 +375,151 @@ def test_ready_digest_invalidation_and_report(
     assert tv.cmd_report(SimpleNamespace(task_id="t1", consumption_after=None)) == 0
     stale = tv.report_path(autonomy_env["autonomy"], "t1").read_text(encoding="utf-8")
     assert "périmée" in stale
+
+
+def test_tree_change_during_proof_is_not_published(
+    autonomy_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boot_task(autonomy_env, monkeypatch)
+    state = tv.load_state(tv.state_path(autonomy_env["autonomy"], "t1"))
+    readme = Path(state.worktree_path) / "README.md"
+
+    def mutate(*_args: object, **_kwargs: object) -> list[tuple[str, int, str, float]]:
+        readme.write_text(readme.read_text(encoding="utf-8") + "pendant\n", encoding="utf-8")
+        return [("ruff check .", 0, "ok", 0.0)]
+
+    monkeypatch.setattr(tv, "run_proof_commands", mutate)
+    assert tv.cmd_verify(SimpleNamespace(task_id="t1")) == 1
+    saved = tv.load_state(tv.state_path(autonomy_env["autonomy"], "t1"))
+    assert saved.status != "ready_for_review"
+
+
+def test_concurrent_stop_survives_successful_proof(
+    autonomy_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boot_task(autonomy_env, monkeypatch)
+
+    def stop_during_proof(*_args: object, **_kwargs: object) -> list[tuple[str, int, str, float]]:
+        with tv.locked_state(autonomy_env["autonomy"], "t1") as state:
+            state.status = "stopped"
+            state.stopped_reason = "arrêt concurrent"
+        return [("ruff check .", 0, "ok", 0.0)]
+
+    monkeypatch.setattr(tv, "run_proof_commands", stop_during_proof)
+    assert tv.cmd_verify(SimpleNamespace(task_id="t1")) == 1
+    saved = tv.load_state(tv.state_path(autonomy_env["autonomy"], "t1"))
+    assert saved.status == "stopped"
+    assert saved.stopped_reason == "arrêt concurrent"
+
+
+def test_static_violation_stops_on_first_verify(
+    autonomy_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boot_task(autonomy_env, monkeypatch)
+    state = tv.load_state(tv.state_path(autonomy_env["autonomy"], "t1"))
+    evil = Path(state.worktree_path) / "scripts" / "evil.py"
+    evil.parent.mkdir(parents=True, exist_ok=True)
+    evil.write_text("# x\n", encoding="utf-8")
+    assert tv.cmd_verify(SimpleNamespace(task_id="t1")) == 1
+    saved = tv.load_state(tv.state_path(autonomy_env["autonomy"], "t1"))
+    assert saved.status == "stopped"
+    assert saved.verify_count == 1
+
+
+def test_invalid_identity_and_ceilings(tmp_path: Path) -> None:
+    escaped = tmp_path / "escaped.toml"
+    escaped.write_text(
+        'id="../evil"\nbase_sha="abc1234"\nobjective="o"\n'
+        'allowed_write=["README.md"]\nproof=["ruff check ."]\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="identifiant"):
+        tv.load_task(escaped)
+    ceilings = tmp_path / "ceilings.toml"
+    ceilings.write_text(
+        'id="ok-1"\nbase_sha="abc1234"\nobjective="o"\n'
+        'allowed_write=["README.md"]\nproof=["ruff check ."]\n'
+        "max_minutes = -1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="max_minutes"):
+        tv.load_task(ceilings)
+    typed = tmp_path / "typed.toml"
+    typed.write_text(
+        'id="ok-1"\nbase_sha="abc1234"\nobjective="o"\n'
+        'allowed_write=["README.md"]\nproof=["ruff check ."]\n'
+        'max_tool_calls = "10"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="max_tool_calls"):
+        tv.load_task(typed)
+
+
+def test_proof_environment_drops_production_and_foreign_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgres://example.invalid/prod")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "production-token-not-real")
+    trust = tmp_path / "trust"
+    trust.mkdir()
+    env = tv.ci_env(trust)
+    assert "DATABASE_URL" not in env
+    assert env.get("TELEGRAM_BOT_TOKEN") != "production-token-not-real"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "ruff"
+    fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin")
+    task = tv.TaskSpec(
+        id="t1",
+        base_sha="abc1234",
+        objective="o",
+        allowed_write=["README.md"],
+        proof=["ruff check ."],
+    )
+    with pytest.raises(RuntimeError, match="approuv"):
+        tv.run_proof_commands(task, tmp_path, trust)
+
+
+def test_timeout_uses_remaining_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    task = tv.TaskSpec(
+        id="t1",
+        base_sha="abc1234",
+        objective="o",
+        allowed_write=["README.md"],
+        proof=["ruff check ."],
+        max_minutes=45,
+    )
+    started = datetime.now(UTC) - timedelta(seconds=45 * 60 - 4)
+    state = tv.TaskState(
+        task_id="t1",
+        fingerprint="x",
+        base_sha="abc1234",
+        trust_root=str(tmp_path),
+        worktree_path=str(tmp_path),
+        task_path=str(tmp_path / "task.toml"),
+        status="active",
+        started_at=started.replace(microsecond=0).isoformat(),
+        approved_at=started.replace(microsecond=0).isoformat(),
+    )
+    assert tv.remaining_timeout(state, task) <= 4
+    seen: dict[str, float] = {}
+
+    def boom(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, int | float)
+        seen["timeout"] = float(timeout)
+        raise subprocess.TimeoutExpired(cmd=["git", "status"], timeout=seen["timeout"])
+
+    monkeypatch.setattr(tv.subprocess, "run", boom)
+    with tv.arm_call_timeout(state, task), pytest.raises(RuntimeError, match="timeout"):
+        tv.run_bounded(["git", "status"], tmp_path)
+    assert seen["timeout"] <= 4

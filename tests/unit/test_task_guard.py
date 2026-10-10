@@ -371,6 +371,173 @@ def test_ready_for_review_blocks_writes(active_state: tv.TaskState) -> None:
     assert tg.handle_hook(status, autonomy_home())["permission"] == "allow"
 
 
+def test_linked_session_denies_missing_or_changed_roots(active_state: tv.TaskState) -> None:
+    missing = hook_payload(active_state, "beforeShellExecution", command="git status")
+    missing.pop("workspace_roots")
+    assert tg.handle_hook(missing, autonomy_home())["permission"] == "deny"
+    changed = hook_payload(
+        active_state,
+        "beforeShellExecution",
+        command="git status",
+        workspace_roots=["/tmp/autre-projet"],
+    )
+    assert tg.handle_hook(changed, autonomy_home())["permission"] == "deny"
+
+
+def test_repeated_tool_use_counts_once(active_state: tv.TaskState) -> None:
+    payload = hook_payload(
+        active_state,
+        "preToolUse",
+        tool_name="Write",
+        tool_input={"file_path": "allowed.txt"},
+        tool_use_id="tu-repeat",
+    )
+    assert tg.handle_hook(payload, autonomy_home())["permission"] == "allow"
+    assert tg.handle_hook(payload, autonomy_home())["permission"] == "allow"
+    state = tv.load_state(tv.state_path(autonomy_home(), "g1"))
+    assert state.tool_call_count == 1
+    assert state.status == "active"
+
+
+def test_one_slot_allows_a_single_call(active_state: tv.TaskState) -> None:
+    state_path = tv.state_path(autonomy_home(), "g1")
+    state = tv.load_state(state_path)
+    task = tv.load_task(Path(state.task_path))
+    state.tool_call_count = task.max_tool_calls - 1
+    tv.save_state(state_path, state)
+    first = hook_payload(
+        active_state,
+        "preToolUse",
+        tool_name="Write",
+        tool_input={"file_path": "allowed.txt"},
+        tool_use_id="tu-last",
+    )
+    second = hook_payload(
+        active_state,
+        "preToolUse",
+        tool_name="Write",
+        tool_input={"file_path": "allowed.txt"},
+        tool_use_id="tu-overflow",
+    )
+    assert tg.handle_hook(first, autonomy_home())["permission"] == "allow"
+    assert tg.handle_hook(second, autonomy_home())["permission"] == "deny"
+    saved = tv.load_state(state_path)
+    assert saved.tool_call_count == task.max_tool_calls
+    assert saved.status == "stopped"
+
+
+def test_last_shell_call_stays_allowed_for_its_pair(active_state: tv.TaskState) -> None:
+    state_path = tv.state_path(autonomy_home(), "g1")
+    state = tv.load_state(state_path)
+    task = tv.load_task(Path(state.task_path))
+    state.tool_call_count = task.max_tool_calls - 1
+    tv.save_state(state_path, state)
+    command = "git status --short"
+    pre = hook_payload(
+        active_state,
+        "preToolUse",
+        tool_name="Shell",
+        tool_input={"command": command},
+        tool_use_id="tu-pair",
+    )
+    before = hook_payload(active_state, "beforeShellExecution", command=command)
+    assert tg.handle_hook(pre, autonomy_home())["permission"] == "allow"
+    assert tg.handle_hook(before, autonomy_home())["permission"] == "allow"
+    saved = tv.load_state(state_path)
+    assert saved.tool_call_count == task.max_tool_calls
+    assert saved.status == "active"
+
+
+def test_grep_and_rg_reject_secret_and_escaping_link(active_state: tv.TaskState) -> None:
+    worktree = Path(active_state.worktree_path)
+    outside = worktree.parent / "outside.txt"
+    outside.write_text("x\n", encoding="utf-8")
+    link = worktree / "escape"
+    link.symlink_to(outside)
+    secret = hook_payload(
+        active_state,
+        "preToolUse",
+        tool_name="Grep",
+        tool_input={"pattern": "token", "path": str(worktree / ".env")},
+        tool_use_id="tu-grep-env",
+    )
+    escaping = hook_payload(
+        active_state,
+        "preToolUse",
+        tool_name="Grep",
+        tool_input={"pattern": "x", "path": str(link)},
+        tool_use_id="tu-grep-link",
+    )
+    assert tg.handle_hook(secret, autonomy_home())["permission"] == "deny"
+    assert tg.handle_hook(escaping, autonomy_home())["permission"] == "deny"
+    trust = Path(active_state.trust_root)
+    assert not tv.shell_command_allowed(
+        "rg token .env",
+        trust,
+        task_id=active_state.task_id,
+        worktree=worktree,
+    )
+    assert not tv.shell_command_allowed(
+        "rg token escape",
+        trust,
+        task_id=active_state.task_id,
+        worktree=worktree,
+    )
+
+
+def test_git_metadata_write_is_denied(
+    active_state: tv.TaskState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = tv.load_task(Path(active_state.task_path))
+    task.allowed_write = ["allowed.txt", ".git/config"]
+    monkeypatch.setattr(tg, "load_task", lambda _path: task)
+    monkeypatch.setattr(tv, "load_task", lambda _path: task)
+    payload = hook_payload(
+        active_state,
+        "preToolUse",
+        tool_name="Write",
+        tool_input={"file_path": ".git/config"},
+        tool_use_id="tu-git",
+    )
+    result = tg.handle_hook(payload, autonomy_home())
+    assert result["permission"] == "deny"
+
+
+def test_one_remaining_slot_is_reserved_once(active_state: tv.TaskState) -> None:
+    state_path = tv.state_path(autonomy_home(), "g1")
+    state = tv.load_state(state_path)
+    task = tv.load_task(Path(state.task_path))
+    state.tool_call_count = task.max_tool_calls - 1
+    tv.save_state(state_path, state)
+    results: list[str] = []
+    barrier = threading.Barrier(2)
+
+    def call(tool_use_id: str) -> None:
+        barrier.wait()
+        payload = hook_payload(
+            active_state,
+            "preToolUse",
+            tool_name="Write",
+            tool_input={"file_path": "allowed.txt"},
+            tool_use_id=tool_use_id,
+        )
+        results.append(tg.handle_hook(payload, autonomy_home())["permission"])
+
+    threads = [
+        threading.Thread(target=call, args=(f"tu-race-{index}",))
+        for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    saved = tv.load_state(state_path)
+    assert results.count("allow") == 1
+    assert saved.tool_call_count == task.max_tool_calls
+    assert saved.status == "stopped"
+
+
 @pytest.mark.usefixtures("active_state")
 def test_locked_state_keeps_every_increment() -> None:
     home = autonomy_home()

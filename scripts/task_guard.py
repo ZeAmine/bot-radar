@@ -4,16 +4,15 @@
 from __future__ import annotations
 
 import json
-import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from task_verdict import (
     GuardDecision,
     ShellMode,
     TaskState,
-    check_time_budget,
+    blocked_read_reason,
     default_autonomy_home,
     default_tasks_root,
     load_active_task,
@@ -22,13 +21,12 @@ from task_verdict import (
     matches_any,
     path_is_under,
     preexisting_test_path,
+    reserve_tool_call,
     resolve_under_root,
     shell_command_allowed,
-    task_guard_increment_tool_call,
     validate_task_context,
 )
 
-READ_FORBIDDEN_RE = re.compile(r"(^|/)\.env(\.|$)|/\.ssh/")
 KNOWN_EVENTS = frozenset({"beforeShellExecution", "preToolUse", "subagentStart"})
 KNOWN_TOOLS = frozenset({"Shell", "Read", "Write", "Delete", "Grep", "Task"})
 
@@ -117,6 +115,8 @@ def _write_decision(path_str: str, state: TaskState) -> GuardDecision:
     relative = _relative_target(worktree, path_str)
     if relative is None:
         return GuardDecision(False, "écriture hors worktree de la tâche")
+    if ".git" in PurePosixPath(relative).parts:
+        return GuardDecision(False, f"métadonnées git interdites : {relative}")
     try:
         if preexisting_test_path(worktree, state.base_sha, relative):
             return GuardDecision(False, f"revue humaine : test existant modifié : {relative}")
@@ -131,10 +131,9 @@ def _write_decision(path_str: str, state: TaskState) -> GuardDecision:
 
 
 def _read_decision(path_str: str, state: TaskState) -> GuardDecision:
-    if READ_FORBIDDEN_RE.search(path_str.replace("\\", "/")):
-        return GuardDecision(False, "lecture de secrets interdite")
-    if _relative_target(Path(state.worktree_path), path_str) is None:
-        return GuardDecision(False, "lecture hors worktree de la tâche")
+    reason = blocked_read_reason(Path(state.worktree_path), path_str)
+    if reason:
+        return GuardDecision(False, reason)
     return GuardDecision(True)
 
 
@@ -211,10 +210,11 @@ def _decide_tool(payload: dict[str, Any], state: TaskState) -> GuardDecision:
         return _read_decision(file_path, state)
     if tool_name == "Grep":
         raw_path = tool_input.get("path") or tool_input.get("file_path")
-        if raw_path is None:
-            return GuardDecision(True)
-        if not isinstance(raw_path, str) or _relative_target(worktree, raw_path) is None:
+        if not isinstance(raw_path, str) or not raw_path:
             return GuardDecision(False, "grep hors worktree")
+        reason = blocked_read_reason(worktree, raw_path)
+        if reason:
+            return GuardDecision(False, reason)
         return GuardDecision(True)
     task = load_task(Path(state.task_path))
     if task.allow_subagents:
@@ -222,20 +222,43 @@ def _decide_tool(payload: dict[str, Any], state: TaskState) -> GuardDecision:
     return GuardDecision(False, "sous-agent interdit pour cette tâche")
 
 
-def _budget_reason(state: TaskState) -> str | None:
-    task = load_task(Path(state.task_path))
-    started_error = check_time_budget(state, task)
-    if started_error:
-        return started_error
-    if state.tool_call_count >= task.max_tool_calls:
-        return f"plafond d'appels d'outils atteint ({task.max_tool_calls})"
-    return None
+def _workspace_covers(payload: dict[str, Any], worktree: Path) -> bool:
+    roots = payload.get("workspace_roots")
+    if not isinstance(roots, list) or not all(isinstance(item, str) and item for item in roots):
+        return False
+    resolved: list[Path] = []
+    for item in roots:
+        try:
+            resolved.append(Path(item).resolve())
+        except OSError:
+            return False
+    try:
+        root = worktree.resolve()
+    except OSError:
+        return False
+    return any(
+        candidate == root or path_is_under(root, candidate) or path_is_under(candidate, root)
+        for candidate in resolved
+    )
 
 
-def _stop(autonomy_home: Path, task_id: str, reason: str) -> None:
-    with locked_state(autonomy_home, task_id) as state:
-        state.status = "stopped"
-        state.stopped_reason = reason
+def _consume(
+    autonomy_home: Path,
+    state: TaskState,
+    payload: dict[str, Any],
+    command: str | None,
+) -> str | None:
+    if state.status != "active":
+        return None
+    tool_use_id = payload.get("tool_use_id")
+    if tool_use_id is not None and not isinstance(tool_use_id, str):
+        return "tool_use_id invalide"
+    return reserve_tool_call(
+        autonomy_home,
+        state.task_id,
+        tool_use_id=tool_use_id if isinstance(tool_use_id, str) else None,
+        command=command,
+    )
 
 
 def _bind(autonomy_home: Path, task_id: str, conversation_id: str) -> str | None:
@@ -248,23 +271,26 @@ def _bind(autonomy_home: Path, task_id: str, conversation_id: str) -> str | None
     return None
 
 
-def handle_hook(payload: dict[str, Any], autonomy_home: Path) -> dict[str, str]:
-    matched = task_for_payload(payload, autonomy_home)
-    if matched is None:
-        return hook_allow()
-    if isinstance(matched, str):
-        return hook_deny(matched)
-    task_id, _state = matched
+def _linked_decision(
+    payload: dict[str, Any],
+    autonomy_home: Path,
+    task_id: str,
+    state: TaskState,
+) -> dict[str, str]:
     event = payload.get("hook_event_name")
     if not isinstance(event, str) or event not in KNOWN_EVENTS:
         return hook_deny("événement de hook inconnu ou non documenté")
     conversation_id = payload.get("conversation_id")
     if not isinstance(conversation_id, str) or not conversation_id:
         return hook_deny("conversation_id manquant")
-    bind_error = _bind(autonomy_home, task_id, conversation_id)
-    if bind_error:
-        return hook_deny(bind_error)
-    _task_id, state = load_active_task(autonomy_home) or (task_id, _state)
+    if state.conversation_id != conversation_id:
+        bind_error = _bind(autonomy_home, task_id, conversation_id)
+        if bind_error:
+            return hook_deny(bind_error)
+        loaded = load_active_task(autonomy_home)
+        if loaded is None:
+            return hook_deny("tâche active introuvable")
+        _task_id, state = loaded
     context_error = validate_task_context(autonomy_home, state)
     if context_error:
         return hook_deny(context_error)
@@ -272,17 +298,15 @@ def handle_hook(payload: dict[str, Any], autonomy_home: Path) -> dict[str, str]:
     cwd_error = _cwd_denied(payload, worktree)
     if cwd_error:
         return hook_deny(cwd_error)
-    if state.status == "active":
-        budget = _budget_reason(state)
-        if budget:
-            _stop(autonomy_home, task_id, budget)
-            return hook_deny(budget)
     if event == "beforeShellExecution":
         command = payload.get("command")
         if not isinstance(command, str) or not command.strip():
             return hook_deny("commande manquante")
         decision = _command_decision(command, state)
-        return hook_allow() if decision.allowed else hook_deny(decision.reason)
+        if not decision.allowed:
+            return hook_deny(decision.reason)
+        consumed = _consume(autonomy_home, state, payload, command)
+        return hook_allow() if consumed is None else hook_deny(consumed)
     if event == "subagentStart":
         parent = payload.get("parent_conversation_id")
         if parent != state.conversation_id:
@@ -294,10 +318,45 @@ def handle_hook(payload: dict[str, Any], autonomy_home: Path) -> dict[str, str]:
             return hook_deny("sous-agent interdit pour cette tâche")
         return hook_allow()
     decision = _decide_tool(payload, state)
-    if decision.allowed:
-        task_guard_increment_tool_call(autonomy_home, task_id)
+    if not decision.allowed:
+        return hook_deny(decision.reason)
+    command = None
+    tool_input = payload.get("tool_input")
+    if payload.get("tool_name") == "Shell" and isinstance(tool_input, dict):
+        raw_command = tool_input.get("command")
+        command = raw_command if isinstance(raw_command, str) else None
+    consumed = _consume(autonomy_home, state, payload, command)
+    return hook_allow() if consumed is None else hook_deny(consumed)
+
+
+def handle_hook(payload: dict[str, Any], autonomy_home: Path) -> dict[str, str]:
+    conversation_id = payload.get("conversation_id")
+    try:
+        active = load_active_task(autonomy_home)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        active = None
+        roots = payload.get("workspace_roots")
+        if isinstance(roots, list) and all(isinstance(item, str) for item in roots):
+            resolved = [Path(item) for item in roots]
+            if _workspace_targets_task(resolved, default_tasks_root()):
+                return hook_deny("état de tâche illisible")
+    if (
+        isinstance(conversation_id, str)
+        and conversation_id
+        and active is not None
+        and active[1].conversation_id == conversation_id
+    ):
+        task_id, state = active
+        if not _workspace_covers(payload, Path(state.worktree_path)):
+            return hook_deny("racines de workspace absentes ou modifiées")
+        return _linked_decision(payload, autonomy_home, task_id, state)
+    matched = task_for_payload(payload, autonomy_home)
+    if matched is None:
         return hook_allow()
-    return hook_deny(decision.reason)
+    if isinstance(matched, str):
+        return hook_deny(matched)
+    task_id, state = matched
+    return _linked_decision(payload, autonomy_home, task_id, state)
 
 
 def main() -> int:

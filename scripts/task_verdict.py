@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import fcntl
 import fnmatch
 import hashlib
@@ -12,9 +13,9 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from collections.abc import Iterator
@@ -50,6 +51,8 @@ DEFAULT_FORBIDDEN: tuple[str, ...] = (
     "CONTEXT.md",
     "memory.md",
     "subjects.md",
+    ".git",
+    ".git/**",
     "**/conftest.py",
     "pytest.ini",
     "setup.cfg",
@@ -86,6 +89,22 @@ VERDICT_SUBCOMMANDS = frozenset({"verify", "status", "note", "report"})
 READONLY_VERDICT = frozenset({"status", "note", "report"})
 
 AGENT_BLOCKED_SUBCOMMANDS = frozenset({"approve", "start", "resume", "reset-counters"})
+TASK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+READ_FORBIDDEN_RE = re.compile(r"(^|/)\.env(\.|$)|/\.ssh/|(^|/)\.git(/|$)")
+CONTROL_MARKERS = (
+    "hors périmètre",
+    "secret",
+    "binaire",
+    "revue humaine",
+    "lien symbolique",
+    "confiance",
+    "métadonnées git",
+    "contenu modifié",
+)
+_call_timeout: contextvars.ContextVar[float] = contextvars.ContextVar(
+    "botradar_call_timeout",
+    default=float(SUBPROCESS_TIMEOUT_SECONDS),
+)
 
 Status = Literal["active", "stopped", "ready_for_review", "failed"]
 ShellMode = Literal["active", "review", "stopped"]
@@ -171,6 +190,9 @@ class TaskState:
     conversation_id: str | None = None
     review_digest: str | None = None
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    seen_tool_ids: list[str] = field(default_factory=list)
+    reserved_shell_command: str | None = None
+    reserved_shell_pending: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -178,6 +200,7 @@ class TaskState:
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TaskState:
         evidence = data.get("evidence", [])
+        seen = data.get("seen_tool_ids", [])
         return cls(
             task_id=str(data["task_id"]),
             fingerprint=str(data["fingerprint"]),
@@ -200,6 +223,9 @@ class TaskState:
             conversation_id=data.get("conversation_id"),
             review_digest=data.get("review_digest"),
             evidence=list(evidence) if isinstance(evidence, list) else [],
+            seen_tool_ids=list(seen) if isinstance(seen, list) else [],
+            reserved_shell_command=data.get("reserved_shell_command"),
+            reserved_shell_pending=bool(data.get("reserved_shell_pending", False)),
         )
 
 
@@ -226,35 +252,68 @@ class GuardDecision:
         return not self.allowed
 
 
+def _require_string_list(raw: dict[str, Any], key: str) -> list[str]:
+    value = raw[key]
+    items_ok = isinstance(value, list) and bool(value)
+    items_ok = items_ok and all(isinstance(item, str) and item for item in value)
+    if not items_ok:
+        raise ValueError(f"{key} doit être une liste de chaînes non vides")
+    return list(value)
+
+
+def _optional_string_list(raw: dict[str, Any], key: str) -> list[str]:
+    value = raw.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{key} doit être une liste de chaînes")
+    return list(value)
+
+
+def _positive_int(raw: dict[str, Any], key: str, default: int) -> int:
+    if key not in raw:
+        return default
+    value = raw[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{key} doit être un entier positif")
+    return value
+
+
 def load_task(path: Path) -> TaskSpec:
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     required = ("id", "base_sha", "objective", "allowed_write", "proof")
     missing = [key for key in required if key not in raw]
     if missing:
         raise ValueError(f"champs manquants dans la fiche : {', '.join(missing)}")
-    if not raw["allowed_write"]:
-        raise ValueError("allowed_write ne peut pas être vide")
-    if not raw["proof"]:
-        raise ValueError("proof ne peut pas être vide")
-    proof = [str(command).strip() for command in raw["proof"]]
+    task_id = raw["id"]
+    if not isinstance(task_id, str) or TASK_ID_RE.fullmatch(task_id) is None:
+        raise ValueError("identifiant de tâche invalide")
+    allowed_write = _require_string_list(raw, "allowed_write")
+    proof = [item.strip() for item in _require_string_list(raw, "proof")]
     for command in proof:
         if not proof_command_allowed(command):
             raise ValueError(f"commande de preuve non autorisée : {command}")
+    if "allow_subagents" in raw and not isinstance(raw["allow_subagents"], bool):
+        raise ValueError("allow_subagents doit être un booléen")
+    objective = raw["objective"]
+    base_sha = raw["base_sha"]
+    if not isinstance(objective, str) or not objective:
+        raise ValueError("objective doit être une chaîne non vide")
+    if not isinstance(base_sha, str) or not base_sha:
+        raise ValueError("base_sha doit être une chaîne non vide")
     return TaskSpec(
-        id=str(raw["id"]),
-        base_sha=str(raw["base_sha"]),
-        objective=str(raw["objective"]),
-        allowed_write=[str(item) for item in raw["allowed_write"]],
+        id=task_id,
+        base_sha=base_sha,
+        objective=objective,
+        allowed_write=allowed_write,
         proof=proof,
-        non_goals=[str(item) for item in raw.get("non_goals", [])],
-        forbidden=[str(item) for item in raw.get("forbidden", [])],
-        max_minutes=int(raw.get("max_minutes", DEFAULT_MAX_MINUTES)),
-        max_cycles=int(raw.get("max_cycles", DEFAULT_MAX_CYCLES)),
-        max_tool_calls=int(raw.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)),
-        max_diff_lines=int(raw.get("max_diff_lines", DEFAULT_MAX_DIFF_LINES)),
+        non_goals=_optional_string_list(raw, "non_goals"),
+        forbidden=_optional_string_list(raw, "forbidden"),
+        max_minutes=_positive_int(raw, "max_minutes", DEFAULT_MAX_MINUTES),
+        max_cycles=_positive_int(raw, "max_cycles", DEFAULT_MAX_CYCLES),
+        max_tool_calls=_positive_int(raw, "max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+        max_diff_lines=_positive_int(raw, "max_diff_lines", DEFAULT_MAX_DIFF_LINES),
         escalate_on=str(raw.get("escalate_on", "")),
-        human_review=[str(item) for item in raw.get("human_review", [])],
-        allow_subagents=bool(raw.get("allow_subagents", False)),
+        human_review=_optional_string_list(raw, "human_review"),
+        allow_subagents=raw.get("allow_subagents", False) is True,
     )
 
 
@@ -337,15 +396,17 @@ def _plain_arg_ok(arg: str) -> bool:
     return not arg.startswith("-") and ".." not in Path(arg).parts and not arg.startswith("/")
 
 
-def rg_argv_allowed(argv: list[str]) -> bool:
+def rg_argv_allowed(argv: list[str], worktree: Path | None = None) -> bool:
     if not argv or argv[0] != "rg":
         return False
+    positional: list[str] = []
     for arg in argv[1:]:
         if arg in RG_OPTIONS or arg == "--":
             continue
         if not _plain_arg_ok(arg):
             return False
-    return True
+        positional.append(arg)
+    return all(blocked_read_reason(worktree, path) is None for path in positional[1:])
 
 
 def ls_argv_allowed(argv: list[str]) -> bool:
@@ -435,7 +496,9 @@ def shell_command_allowed(
         return False
     if mode == "stopped":
         return verdict_argv_allowed(argv, trust_root, task_id, readonly=True)
-    if argv == ["pwd"] or git_argv_allowed(argv) or rg_argv_allowed(argv) or ls_argv_allowed(argv):
+    readonly = argv == ["pwd"] or git_argv_allowed(argv) or ls_argv_allowed(argv)
+    readonly = readonly or rg_argv_allowed(argv, worktree)
+    if readonly:
         return mode in {"active", "review"}
     if verdict_argv_allowed(argv, trust_root, task_id, readonly=mode != "active"):
         return True
@@ -496,8 +559,54 @@ def locked_state(autonomy_home: Path, task_id: str) -> Iterator[TaskState]:
 
 
 def task_guard_increment_tool_call(autonomy_home: Path, task_id: str) -> None:
+    reason = reserve_tool_call(autonomy_home, task_id, tool_use_id=None, command=None)
+    if reason:
+        raise RuntimeError(reason)
+
+
+def reserve_tool_call(
+    autonomy_home: Path,
+    task_id: str,
+    *,
+    tool_use_id: str | None,
+    command: str | None,
+) -> str | None:
     with locked_state(autonomy_home, task_id) as state:
+        task = load_task(Path(state.task_path))
+        time_error = check_time_budget(state, task)
+        if time_error:
+            state.status = "stopped"
+            state.stopped_reason = time_error
+            return time_error
+        if tool_use_id and tool_use_id in state.seen_tool_ids:
+            return None
+        stripped = command.strip() if command else None
+        paired = bool(
+            stripped
+            and state.reserved_shell_pending
+            and state.reserved_shell_command == stripped
+        )
+        if paired:
+            state.reserved_shell_pending = False
+            _remember_tool_use(state, tool_use_id)
+            return None
+        if state.tool_call_count >= task.max_tool_calls:
+            state.status = "stopped"
+            state.stopped_reason = f"plafond d'appels d'outils atteint ({task.max_tool_calls})"
+            return state.stopped_reason
         state.tool_call_count += 1
+        _remember_tool_use(state, tool_use_id)
+        if stripped:
+            state.reserved_shell_command = stripped
+            state.reserved_shell_pending = True
+        return None
+
+
+def _remember_tool_use(state: TaskState, tool_use_id: str | None) -> None:
+    if not tool_use_id or tool_use_id in state.seen_tool_ids:
+        return
+    state.seen_tool_ids.append(tool_use_id)
+    del state.seen_tool_ids[:-32]
 
 
 def append_journal(path: Path, line: str) -> None:
@@ -526,9 +635,13 @@ def run_bounded(
     cwd: Path,
     *,
     env: dict[str, str] | None = None,
-    timeout: float = SUBPROCESS_TIMEOUT_SECONDS,
+    timeout: float | None = None,
     text: bool = True,
 ) -> subprocess.CompletedProcess[Any]:
+    limit = _call_timeout.get()
+    chosen = limit if timeout is None else min(float(timeout), limit)
+    if chosen <= 0:
+        raise RuntimeError(f"timeout : {' '.join(argv)}")
     try:
         return subprocess.run(
             argv,
@@ -537,7 +650,7 @@ def run_bounded(
             text=text,
             env=env,
             check=False,
-            timeout=timeout,
+            timeout=chosen,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"timeout : {' '.join(argv)}") from exc
@@ -652,33 +765,61 @@ def count_changed_lines(worktree: Path, base_sha: str) -> tuple[int, str | None]
     return total, binary_reason
 
 
-def resolve_python(repo: Path) -> Path:
-    local = repo / ".venv" / "bin" / "python"
-    if local.exists():
-        return local
-    trust = REPO_ROOT / ".venv" / "bin" / "python"
-    if trust.exists():
-        return trust
-    found = shutil.which("python3")
-    if not found:
-        raise RuntimeError("interpréteur Python introuvable")
-    return Path(found)
-
-
 def resolve_tool(trust_root: Path, name: str) -> list[str]:
     local = trust_root / ".venv" / "bin" / name
-    if local.exists():
+    if local.is_file():
         return [str(local)]
-    found = shutil.which(name)
-    if not found:
-        raise RuntimeError(f"outil introuvable : {name}")
-    return [found]
+    raise RuntimeError(f"exécutable non approuvé : {name}")
 
 
-def ci_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.update(CI_TOKENS)
-    return env
+def ci_env(trust_root: Path) -> dict[str, str]:
+    return {
+        "PATH": str((trust_root / ".venv" / "bin").resolve()),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "TMPDIR": tempfile.gettempdir(),
+        **CI_TOKENS,
+    }
+
+
+def blocked_read_reason(worktree: Path | None, path_str: str) -> str | None:
+    normalized = path_str.replace("\\", "/")
+    if READ_FORBIDDEN_RE.search(normalized):
+        return "lecture de secrets ou de métadonnées git interdite"
+    if worktree is None:
+        return None
+    if Path(path_str).is_absolute():
+        if not path_is_under(worktree, Path(path_str)):
+            return "lecture hors worktree"
+        relative = str(Path(path_str).resolve().relative_to(worktree.resolve()))
+    else:
+        resolved = resolve_under_root(worktree, path_str)
+        if resolved is None:
+            return "lecture hors worktree"
+        relative = str(resolved.relative_to(worktree.resolve()))
+    if ".git" in PurePosixPath(relative).parts or READ_FORBIDDEN_RE.search(relative):
+        return "lecture de secrets ou de métadonnées git interdite"
+    return None
+
+
+def remaining_timeout(state: TaskState, task: TaskSpec) -> float:
+    started = datetime.fromisoformat(state.started_at)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    remain = task.max_minutes * 60 - (datetime.now(UTC) - started).total_seconds()
+    if remain < 0:
+        remain = 0
+    return min(float(SUBPROCESS_TIMEOUT_SECONDS), remain)
+
+
+@contextlib.contextmanager
+def arm_call_timeout(state: TaskState, task: TaskSpec) -> Iterator[None]:
+    token = _call_timeout.set(remaining_timeout(state, task))
+    try:
+        yield
+    finally:
+        _call_timeout.reset(token)
 
 
 def read_tracked_file_at(worktree: Path, base_sha: str, relative: str) -> str | None:
@@ -817,7 +958,7 @@ def run_proof_commands(task: TaskSpec, worktree: Path, trust_root: Path) -> list
             raise RuntimeError(f"commande inconnue : {command}")
         executable = resolve_tool(trust_root, argv[0])
         started = time.monotonic()
-        proc = run_bounded([*executable, *argv[1:]], worktree, env=ci_env())
+        proc = run_bounded([*executable, *argv[1:]], worktree, env=ci_env(trust_root))
         duration = time.monotonic() - started
         tail = redact_text((str(proc.stdout) + str(proc.stderr)).strip()[-2000:])
         results.append((command, int(proc.returncode), tail, duration))
@@ -882,6 +1023,11 @@ def verify_task(
     task: TaskSpec,
     _autonomy_home: Path,
 ) -> tuple[bool, list[str]]:
+    with arm_call_timeout(state, task):
+        return _verify_task_bounded(state, task)
+
+
+def _verify_task_bounded(state: TaskState, task: TaskSpec) -> tuple[bool, list[str]]:
     errors: list[str] = []
     worktree = Path(state.worktree_path)
     if not worktree.is_dir():
@@ -923,7 +1069,7 @@ def verify_task(
         return False, errors
 
     try:
-        collected = collect_test_count(worktree)
+        collected = collect_test_count(worktree, Path(state.trust_root))
     except RuntimeError as exc:
         errors.append(str(exc))
         _record_evidence(state, worktree, state.base_sha, errors, [])
@@ -948,12 +1094,13 @@ def verify_task(
     return not errors, errors
 
 
-def collect_test_count(worktree: Path) -> int:
-    python = resolve_python(worktree)
+def collect_test_count(worktree: Path, trust_root: Path | None = None) -> int:
+    root = trust_root or worktree
+    python = resolve_tool(root, "python")
     proc = run_bounded(
-        [str(python), "-m", "pytest", "--collect-only", "-q"],
+        [*python, "-m", "pytest", "--collect-only", "-q"],
         worktree,
-        env=ci_env(),
+        env=ci_env(root),
     )
     if proc.returncode != 0:
         raise RuntimeError(str(proc.stderr).strip() or str(proc.stdout).strip())
@@ -1027,7 +1174,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 2
     worktree.parent.mkdir(parents=True, exist_ok=True)
     git_in(trust_root, "worktree", "add", "--detach", str(worktree), approval.base_sha)
-    baseline = collect_test_count(worktree)
+    baseline = collect_test_count(worktree, trust_root)
     state = TaskState(
         task_id=task.id,
         fingerprint=fingerprint,
@@ -1078,6 +1225,13 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def _control_violation(errors: list[str]) -> str | None:
+    for err in errors:
+        if any(marker in err for marker in CONTROL_MARKERS):
+            return err
+    return None
+
+
 def _apply_verify_result(
     fresh: TaskState,
     *,
@@ -1086,14 +1240,19 @@ def _apply_verify_result(
     repeat: int,
     signature: str | None,
     evidence: list[dict[str, Any]],
+    digest_after: str | None,
+    preserve_stop: bool,
 ) -> None:
     fresh.evidence = evidence
     fresh.repeat_error_count = repeat
     fresh.last_error_signature = signature
-    human = next((err for err in errors if "revue humaine" in err), None)
-    if human:
+    if preserve_stop:
+        fresh.review_digest = None
+        return
+    violation = _control_violation(errors)
+    if violation:
         fresh.status = "stopped"
-        fresh.stopped_reason = human
+        fresh.stopped_reason = violation
         fresh.review_digest = None
         return
     if repeat >= 2 and errors:
@@ -1101,9 +1260,9 @@ def _apply_verify_result(
         fresh.stopped_reason = "même erreur deux fois de suite"
         fresh.review_digest = None
         return
-    if ok:
+    if ok and digest_after is not None:
         fresh.status = "ready_for_review"
-        fresh.review_digest = compute_review_digest(Path(fresh.worktree_path), fresh.base_sha)
+        fresh.review_digest = digest_after
         fresh.stopped_reason = None
         return
     fresh.status = "active"
@@ -1140,9 +1299,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
         state.verify_count += 1
         previous_signature = state.last_error_signature
         previous_repeat = state.repeat_error_count
+        digest_before = compute_review_digest(Path(state.worktree_path), state.base_sha)
         working = state
 
     ok, errors = verify_task(working, task, autonomy_home)
+    digest_after = compute_review_digest(Path(working.worktree_path), working.base_sha)
+    if digest_before != digest_after:
+        ok = False
+        errors = [*errors, "contenu modifié pendant les preuves"]
     signature = errors[0][:200] if errors else None
     if previous_signature == signature and errors and signature is not None:
         repeat = previous_repeat + 1
@@ -1156,12 +1320,15 @@ def cmd_verify(args: argparse.Namespace) -> int:
             repeat=repeat,
             signature=signature,
             evidence=list(working.evidence),
+            digest_after=digest_after if digest_before == digest_after else None,
+            preserve_stop=fresh.status == "stopped",
         )
         if fresh.status == "ready_for_review":
             append_journal(journal_path(autonomy_home, args.task_id), "verify vert")
         elif errors:
             append_journal(journal_path(autonomy_home, args.task_id), f"verify rouge : {errors[0]}")
-    if ok and not any("revue humaine" in err for err in errors):
+        published = fresh.status == "ready_for_review"
+    if published:
         print("verify : vert")
         return 0
     for err in errors:
