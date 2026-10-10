@@ -261,7 +261,8 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     assert lines[5] == "<b>Titre :</b> whoogys dailycieux"
     assert lines[6] == "<b>Auteur :</b> Non renseigné"
     assert lines[7] == "<b>Éditeur :</b> Non renseigné"
-    assert lines[8] == "<b>Prix maximum :</b> 30,00 €"
+    assert lines[8] == "<b>Langue :</b> Inconnue"
+    assert lines[9] == "<b>Prix maximum :</b> 30,00 €"
     assert "🔎" not in recap
 
     # 5. « Créer l'alerte » : la confirmation dit la même chose, et l'alerte existe.

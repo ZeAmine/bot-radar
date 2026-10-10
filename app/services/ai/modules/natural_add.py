@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.core.constants import STANDARD_CONDITIONS, CategorySlug
 from app.domain.enums import BookSearchStatus
+from app.domain.rules.book_volume import requested_volume, volume_title
 from app.domain.rules.series_detection import SeriesSignal
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import (
@@ -104,6 +105,8 @@ def _editions_of(result: BookSearchResult) -> list[EditionAlternative]:
             publisher=edition.publisher,
             publication_year=edition.publication_year,
             format_detail=edition.format_detail,
+            volume_number=edition.volume_number,
+            language=edition.language,
         )
         for edition in result.editions
     ]
@@ -219,7 +222,12 @@ class NaturalAddModule(BaseAIModule):
                 if k and str(k).strip()
             ]
 
-            is_series = payload.is_series
+            number = (
+                requested_volume(user_text) if category == CategorySlug.BD_COMICS.value else None
+            )
+            if number is not None:
+                clean_name = volume_title(clean_name, number)
+            is_series = False if number is not None else payload.is_series
             author = payload.author.strip() if payload.author else None
             publisher = payload.publisher.strip() if payload.publisher else None
 
@@ -263,6 +271,7 @@ class NaturalAddModule(BaseAIModule):
 
             return NaturalAddResult(
                 name=clean_name,
+                requested_volume=number,
                 category_slug=category,
                 isbn13=None if series.is_series else resolved.isbn13,
                 is_series=is_series,

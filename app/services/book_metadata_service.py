@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.constants import MatchConfidence, ProviderQueryStatus
 from app.core.http_client import get_shared_http_client
+from app.domain.rules.book_volume import is_collection, notice_volume, requested_volume
 from app.domain.rules.series_detection import SeriesSignal, detect_series
 from app.providers.google_books import (
     GoogleBooksClient,
@@ -91,9 +92,15 @@ class BookMetadata:
     format_detail: str | None = None
     # Titre de la notice portant son numéro de tome, tel que la détection de série le
     # lit (« … Tome 2 »). `None` quand la notice n'en porte aucun. C'est un titre de
-    # secours pour la seule détection : l'affichage, le score de similarité et le
-    # filtre de candidats restent sur `title`, le titre de base.
+    # conservé pour détecter les séries et vérifier le volume demandé ; la
+    # similarité de l’œuvre reste calculée sur `title`, le titre de base.
     volume_title: str | None = None
+    volume_number: int | None = None
+    language: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.volume_number is None:
+            self.volume_number = notice_volume(self.volume_title or self.title)
 
 
 class EditionAlternative(BaseModel):
@@ -103,6 +110,8 @@ class EditionAlternative(BaseModel):
     publisher: str | None = None
     publication_year: int | None = None
     format_detail: str | None = None
+    volume_number: int | None = None
+    language: str | None = None
 
 
 class WorkAlternative(BaseModel):
@@ -207,6 +216,8 @@ class BookResolution:
                     publisher=meta.publisher,
                     publication_year=meta.publication_year,
                     format_detail=meta.format_detail,
+                    volume_number=meta.volume_number,
+                    language=meta.language,
                 )
             )
         return editions
@@ -472,6 +483,27 @@ def title_similarity(first: str | None, second: str | None) -> float:
     if shorter in longer and len(shorter) / len(longer) >= 0.75:
         ratio = max(ratio, SAME_WORK_TITLE_SIMILARITY_MIN)
     return ratio
+
+
+def normalize_edition_language(raw: str | None) -> str | None:
+    """Normalise les codes attestés par une notice d'édition, sans les deviner."""
+    if not raw:
+        return None
+    code = raw.strip().lower().rsplit("/", 1)[-1]
+    if code in {"und", "mul", "zxx"}:
+        return None
+    return {"eng": "en", "fre": "fr", "fra": "fr", "en": "en", "fr": "fr"}.get(
+        code, code if re.fullmatch(r"[a-z]{2,3}", code) else None
+    )
+
+
+def matches_requested_volume(meta: BookMetadata, title: str) -> bool:
+    """Une notice doit prouver le numéro demandé et désigner un volume individuel."""
+    number = requested_volume(title)
+    return number is None or (
+        meta.volume_number == number
+        and not is_collection(meta.volume_title or meta.title)
+    )
 
 
 def format_edition_fragments(format_detail: str | None) -> str:
@@ -855,7 +887,9 @@ class BookMetadataService:
                 kind="isbn",
                 verdict=IsbnVerdict(
                     outcome="silence" if panne else "confirme",
-                    notice=ol_works[0].meta,
+                    notice=await self._openlibrary_edition_metadata(
+                        ol_works[0].meta, require_volume=True
+                    ),
                     consulted=consulted,
                     panne=panne,
                 ),
@@ -922,7 +956,10 @@ class BookMetadataService:
         if not expected_title or not verdict.confirme or verdict.notice is None:
             return verdict
 
-        if title_similarity(verdict.notice.title, expected_title) < TITLE_SIMILARITY_MIN:
+        if (
+            title_similarity(verdict.notice.title, expected_title) < TITLE_SIMILARITY_MIN
+            or not matches_requested_volume(verdict.notice, expected_title)
+        ):
             logger.info(
                 "ISBN %s écarté : les autorités le rattachent à « %s » et non à « %s »",
                 isbn13,
@@ -984,6 +1021,7 @@ class BookMetadataService:
             record
             for record in records
             if title_similarity(record.title, title) >= TITLE_SIMILARITY_MIN
+            and matches_requested_volume(record, title)
         ]
         only_other_authors = bool(author_hint and author_hint.strip()) and bool(candidates) and all(
             self._author_hint_match(candidate, author_hint) == "conflicts"
@@ -1330,6 +1368,18 @@ class BookMetadataService:
         """
         if not meta.isbn13 or extract_tome_number_from_title(meta.title) is not None:
             return meta
+        return await self._openlibrary_edition_metadata(meta)
+
+    async def _openlibrary_edition_metadata(
+        self, meta: BookMetadata, *, require_volume: bool = False
+    ) -> BookMetadata:
+        """Titre, numéro et langue de l'édition exacte ; les langues d'œuvre sont ignorées."""
+        fallback = replace(meta, language=None)
+        if require_volume:
+            # Un numéro sur l'œuvre agrégée ne confirme pas l'édition de cet ISBN.
+            fallback.volume_number = None
+        if not meta.isbn13:
+            return fallback
         try:
             client = self.http_client or get_shared_http_client()
             response = await client.get(
@@ -1338,20 +1388,37 @@ class BookMetadataService:
                 timeout=self.timeout_seconds,
             )
             if response.status_code != 200:
-                return meta
+                return fallback
             payload = response.json()
             if not isinstance(payload, dict) or meta.isbn13 not in payload.get("isbn_13", []):
-                return meta
+                return fallback
             title = payload.get("title")
+            subtitle = payload.get("subtitle")
+            if isinstance(title, str) and isinstance(subtitle, str):
+                title = f"{title} : {subtitle}"
             if (
-                isinstance(title, str)
-                and extract_tome_number_from_title(title) is not None
-                and title_similarity(title, meta.title) >= TITLE_SIMILARITY_MIN
+                not isinstance(title, str)
+                or title_similarity(title, meta.title) < TITLE_SIMILARITY_MIN
             ):
-                return replace(meta, title=title, volume_title=title)
+                return fallback
+            languages = payload.get("languages")
+            language = None
+            if isinstance(languages, list) and len(languages) == 1:
+                entry = languages[0]
+                if isinstance(entry, dict) and isinstance(entry.get("key"), str):
+                    language = normalize_edition_language(entry["key"])
+            number = notice_volume(title)
+            edition = replace(
+                meta, title=title if number is not None else meta.title,
+                volume_title=title if number is not None else meta.volume_title,
+                volume_number=number, language=language,
+            )
+            if require_volume:
+                edition.volume_number = number
+            return edition
         except Exception as exc:
-            logger.debug("Notice de volume OpenLibrary indisponible : %s", type(exc).__name__)
-        return meta
+            logger.debug("Notice d'édition OpenLibrary indisponible : %s", type(exc).__name__)
+        return fallback
 
     async def _bnf_records_result(
         self,
@@ -1463,6 +1530,8 @@ class BookMetadataService:
                     ".//{http://purl.org/dc/elements/1.1/}publisher") if p.text]
                 dates = [d.text for d in record.findall(
                     ".//{http://purl.org/dc/elements/1.1/}date") if d.text]
+                languages = [lang.text for lang in record.findall(
+                    ".//{http://purl.org/dc/elements/1.1/}language") if lang.text]
                 formats = [f.text for f in record.findall(
                     ".//{http://purl.org/dc/elements/1.1/}format") if f.text]
 
@@ -1480,11 +1549,17 @@ class BookMetadataService:
                 if not isbn13:
                     continue
 
+                raw_identity = re.split(r"\s*/\s*", titles[0], maxsplit=1)[0]
                 main_title = clean_bnf_title(titles[0])
                 series_title = clean_bnf_series_title(titles[0])
                 # Le titre de secours n'est conservé que s'il apprend quelque chose : un
                 # marqueur de tome que le titre de base n'a plus.
                 volume_title = series_title if series_title != main_title else None
+                # Le sous-titre complet peut nommer un lot ou porter le numéro au milieu.
+                # Le titre épuré seul ne doit ni fabriquer ni effacer cette preuve.
+                if is_collection(raw_identity):
+                    volume_title = raw_identity
+                number = notice_volume(raw_identity)
                 author_name = clean_bnf_creator(creators[0]) if creators else None
                 pub_name = clean_bnf_publisher(publishers[0]) if publishers else None
                 publication_year = _parse_year(dates[0]) if dates else None
@@ -1538,6 +1613,10 @@ class BookMetadataService:
                     publication_year=publication_year,
                     format_detail=format_detail,
                     volume_title=volume_title,
+                    volume_number=number,
+                    language=(
+                        normalize_edition_language(languages[0]) if len(languages) == 1 else None
+                    ),
                 )
                 results.append((score, meta))
         except ET.ParseError as exc:
@@ -1586,18 +1665,25 @@ class BookMetadataService:
 
         works, docs_result = await self._openlibrary_works(params)
         attempt = _attempt(AUTORITE_OPENLIBRARY, "title", docs_result)
+        if requested_volume(title) is not None:
+            for work in works:
+                work.meta = await self._openlibrary_edition_metadata(work.meta, require_volume=True)
         candidates = [
             work for work in works
             if title_similarity(work.meta.title, title) >= TITLE_SIMILARITY_MIN
+            and matches_requested_volume(work.meta, title)
         ]
         if not candidates:
             return None, attempt
 
         best = candidates[0].meta
+        if requested_volume(title) is None:
+            best = await self._openlibrary_edition_metadata(best)
         alternatives = [
-            replace(best, isbn13=isbn)
+            replace(best, isbn13=isbn, language=None)
             for isbn in candidates[0].edition_isbns
-            if isbn != best.isbn13 and isbn.startswith(FRENCH_ISBN_PREFIXES)
+            if requested_volume(title) is None
+            and isbn != best.isbn13 and isbn.startswith(FRENCH_ISBN_PREFIXES)
         ][:MAX_ALTERNATIVE_EDITIONS]
         # Chaque document OpenLibrary est une œuvre : deux documents de même titre et
         # d'auteurs différents sont des homonymes, pas des éditions.
@@ -1666,6 +1752,7 @@ class BookMetadataService:
             meta
             for meta in candidates
             if title_similarity(meta.title, title) >= TITLE_SIMILARITY_MIN
+            and matches_requested_volume(meta, title)
         ]
         if not candidates:
             return None, tuple(attempts)
@@ -1735,6 +1822,7 @@ class BookMetadataService:
             confidence=MatchConfidence.MEDIUM,
             publication_year=volume.publication_year,
             format_detail=f"{volume.page_count} p." if volume.page_count else None,
+            language=normalize_edition_language(volume.language),
         )
 
     async def _openlibrary_works(

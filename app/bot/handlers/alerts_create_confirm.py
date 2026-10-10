@@ -35,14 +35,14 @@ from app.core.constants import (
     CategorySlug,
 )
 from app.domain.enums import BookSearchStatus
+from app.domain.rules.book_volume import requested_volume, volume_title
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import (
     AlertServiceError,
     parse_comma_separated_list,
     parse_price_to_cents,
 )
-from app.services.book_metadata_service import BookMetadata
-from app.use_cases.book_search import BookSearchUseCase
+from app.use_cases.book_search import BookSearchUseCase, metadata_from_result
 from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger("radar.alerts_create_confirm")
@@ -151,9 +151,17 @@ async def select_alert_creation_edition(
         )
         return
 
-    updates: dict[str, object] = {"isbn": isbn13, "is_series": False, "isbn_note": None}
+    meta = metadata_from_result(confirmed)
+    if meta is None:
+        await callback.answer("Édition non confirmée.", show_alert=True)
+        return
+    updates: dict[str, object] = {
+        "isbn": isbn13, "is_series": False, "isbn_note": None,
+        "language": meta.language, "book_context": book_context_from(meta).model_dump(),
+        "author": meta.author, "publisher": meta.publisher,
+    }
     # L'éditeur et l'année décrits par la BNF suivent l'édition choisie.
-    if chosen.get("publisher"):
+    if meta.publisher is None and chosen.get("publisher"):
         updates["publisher"] = chosen["publisher"]
 
     await state.update_data(data=updates)
@@ -224,14 +232,11 @@ async def select_alert_creation_work(
         )
         return
 
-    author = str(chosen.get("author") or "").strip() or None
-    chosen_meta = BookMetadata(
-        title=str(chosen.get("title") or title),
-        author=author,
-        publisher=chosen.get("publisher"),
-        isbn13=isbn13,
-        publication_year=chosen.get("publication_year"),
-    )
+    chosen_meta = metadata_from_result(confirmed)
+    if chosen_meta is None:
+        await callback.answer("Œuvre non confirmée.", show_alert=True)
+        return
+    author = chosen_meta.author
 
     updates: dict[str, object] = {
         # D'abord l'état vierge laissé par l'ouvrage précédent, ensuite la fiche de
@@ -241,7 +246,8 @@ async def select_alert_creation_work(
         "is_series": False,
         "isbn_note": None,
         "author": author,
-        "publisher": chosen.get("publisher") or None,
+        "publisher": chosen_meta.publisher,
+        "language": chosen_meta.language,
         "edition_alternatives": await _resolve_edition_choices(title, author),
         "book_context": book_context_from(chosen_meta).model_dump(),
     }
@@ -477,7 +483,12 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
         if len(raw_text) < 2:
             await message.answer("⚠️ Le nom doit comporter au moins 2 caractères. Réessaie :")
             return
-        await state.update_data(name=raw_text)
+        data = await state.get_data()
+        number = requested_volume(raw_text) or data.get("requested_volume")
+        await state.update_data(
+            name=volume_title(raw_text, number) if number else raw_text,
+            requested_volume=number,
+        )
 
     elif field == "isbn":
         # `isbn_note` décrit la provenance de l'ISBN ou de son absence : changer l'ISBN
@@ -486,7 +497,8 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
         if raw_text.lower() in ("/skip", "-", "aucun", "aucune", "clear"):
             await state.update_data(
                 isbn=None,
-                is_series=True,
+                is_series=not bool(data.get("requested_volume")),
+                language=None,
                 isbn_note=None,
                 # Les éditions proposal étaient celles de l'ISBN abandonné.
                 edition_alternatives=[],

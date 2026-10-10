@@ -80,3 +80,41 @@ async def test_creation_waits_for_price_before_activating_and_confirming(
     assert state.data == {"name": "Nouveau brouillon"}
     assert "<b>Prix du marché :</b> 18,00 €" in message.edit_text.call_args.args[0]
     assert "en cours de calcul" not in message.edit_text.call_args.args[0]
+
+
+async def test_volume_creation_persists_number_and_confirmed_edition_language(
+    preparation_db, monkeypatch
+):
+    from app.bot.handlers.alerts_helpers import draft_updates_from_search
+    from app.services.book_metadata_service import BookMetadata, BookResolution
+    from app.use_cases.book_search import result_from_resolution
+
+    database, user = preparation_db
+    notice = BookMetadata(
+        title="The Sad Ghost Club", volume_title="The Sad Ghost Club Volume 4",
+        isbn13="9781444977387", author="Lize Meddings", language="en",
+    )
+    result = result_from_resolution(BookResolution(best=notice), "The Sad Ghost Club Volume 4")
+    state = DraftState()
+    state.data = draft_updates_from_search(result, query_title="The Sad Ghost Club Volume 4")
+    callback, message = confirm_press()
+    price = cached_market_price()
+
+    async def collect(book_id, *, reason):
+        assert reason == "alert_created"
+        async with database.maker() as observer:
+            price.book_id = book_id
+            observer.add(price)
+            await observer.commit()
+        return price
+
+    monkeypatch.setattr(preparation, "price_book_now", collect)
+    await save_alert(callback, state, user, database.session)
+    async with database.maker() as observer:
+        alert = (await observer.execute(select(Alert))).scalar_one()
+        book = (await observer.execute(select(Book))).scalar_one()
+        assert alert.name == "The Sad Ghost Club - Volume 4"
+        assert alert.isbn == "9781444977387"
+        assert book.language == "en"
+    assert "The Sad Ghost Club - Volume 4" in message.edit_text.call_args.args[0]
+    assert "<b>Langue :</b> Anglais" in message.edit_text.call_args.args[0]

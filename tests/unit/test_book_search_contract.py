@@ -246,7 +246,7 @@ def test_notice_sans_isbn_est_partielle() -> None:
 
 
 def test_metadonnees_inconnues_restent_nulles() -> None:
-    """Auteur et éditeur inconnus à `None`, sans langue, rôle ni flag numérique."""
+    """Auteur et éditeur inconnus à `None`, sans langue inventée, rôle ni flag numérique."""
     notice = _notice(author=None, publisher=None, publication_year=None)
     verdict = IsbnVerdict(
         outcome="confirme", notice=notice, consulted=(AUTORITE_BNF,)
@@ -258,7 +258,7 @@ def test_metadonnees_inconnues_restent_nulles() -> None:
     assert resultat.reference is not None
     assert resultat.reference.publisher is None
     assert resultat.reference.publication_year is None
-    assert not hasattr(resultat.reference, "language")
+    assert resultat.reference.language is None
     assert not hasattr(resultat.reference, "roles")
     assert not hasattr(resultat.reference, "is_ebook")
 
