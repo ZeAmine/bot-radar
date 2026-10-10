@@ -18,7 +18,7 @@ Ce fichier mesure cette séparation, avec un réseau entièrement mocké :
    cotations, BNF et marchands mockés.
 
 Les seuils sont des garde-fous anti-régression, pas des jauges de précision : le
-budget de 500 ms est celui de l'invariant n°1 et offre une marge de ~100x.
+seuil de 500 ms est un garde-fou local existant, pas une promesse de transport.
 
 Usage :
     make bench
@@ -59,7 +59,7 @@ SERIES_NAME = "The Grocery"
 SERIES_KEYWORD = "the grocery"
 WARMUP_ITERATIONS = 3
 MEASURED_ITERATIONS = 20
-BUDGET_MS = 500.0  # Invariant n°1 : l'alerte part en moins de 500 ms
+BUDGET_MS = 500.0  # Execute complet avec doubles, y compris ses commits.
 BNF_LATENCY_MS = 300.0  # Latence simulée de la BNF, bien au-dessus du budget
 SERIES_NOTICES = 6  # taille du jeu de tomes simulé dans ce fichier
 # Sélection sur 60 notices : CPU pur de filtrage. Le seuil est serré parce que
@@ -71,9 +71,7 @@ SERIES_LOOKUP_BUDGET_MS = 5.0
 SERIES_LINK_BUDGET_MS = 100.0
 
 
-async def _empty_openlibrary(
-    *_args: Any, **_kwargs: Any
-) -> ProviderQueryResult[dict[str, Any]]:
+async def _empty_openlibrary(*_args: Any, **_kwargs: Any) -> ProviderQueryResult[dict[str, Any]]:
     """OpenLibrary neutralisée : ces benchmarks mesurent le chemin BNF, pas le repli.
 
     Depuis que `lookup_series_notices` complète par OpenLibrary quand la BNF rend
@@ -235,7 +233,6 @@ async def series_db() -> AsyncGenerator[tuple[AsyncSession, async_sessionmaker],
         yield session, session_maker
 
 
-
 @pytest.mark.asyncio
 async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
     series_db: tuple[AsyncSession, async_sessionmaker],
@@ -248,7 +245,13 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
     l'alerte de 300 ms — l'exact contraire de ce qu'elle doit faire gagner, qui
     est de donner une cote à l'*alerte suivante*.
 
-    Deux mesures, dont la seconde est la vraie : l'ordre. La durée seule ne
+    Le chrono débute avant execute et finit à son retour, après marquage et
+    commit final ; il n'est pas arrêté au marqueur d'envoi. Le harness retient
+    les coroutines et les exécute après retour. L'ordre BNF après retour est
+    donc propre au test : en production, le fond peut commencer dès un await
+    de la transaction finale. Sa programmation reste après l'envoi.
+
+    Deux mesures, dont la seconde contrôle l'ordre de programmation. La durée seule ne
     prouverait rien, une tâche rapide mais exécutée avant l'envoi passerait le
     budget sans jamais faire attendre l'utilisateur.
 
@@ -285,9 +288,7 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
         return _typed_bnf(_series_notices())
 
     monkeypatch.setattr(BookMetadataService, "_bnf_records_result", _slow_bnf)
-    monkeypatch.setattr(
-        BookMetadataService, "_query_openlibrary_result", _empty_openlibrary
-    )
+    monkeypatch.setattr(BookMetadataService, "_query_openlibrary_result", _empty_openlibrary)
 
     priced: list[tuple[uuid.UUID, str | None]] = []
     monkeypatch.setattr(
@@ -338,13 +339,15 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
         "\n📊 Benchmark résolution de série — alerte BD sans ISBN "
         f"(n={MEASURED_ITERATIONS}, SQLite in-memory, BNF mockée à {BNF_LATENCY_MS:.0f} ms)"
     )
-    print(_report_line("envoi (alerte partie)", durations))
+    print(_report_line("cas d’usage complet (doubles)", durations))
     print(_report_line("résolution de série (après)", [series_ms]))
     print(f"  Ordre observé : {' → '.join(order)}")
     print(f"  Livres cotés en arrière-plan : {len(priced)} ({priced})")
 
     p95 = _percentile(durations, 95)
-    assert p95 < BUDGET_MS, f"p95={p95:.1f} ms dépasse l'invariant des {BUDGET_MS:.0f} ms"
+    assert p95 < BUDGET_MS, (
+        f"p95={p95:.1f} ms dépasse le garde-fou local avec doubles des {BUDGET_MS:.0f} ms"
+    )
     assert series_ms >= BNF_LATENCY_MS, (
         f"la BNF mockée a mis {series_ms:.0f} ms : le test ne prouve plus rien si elle "
         "répond instantanément"
@@ -384,9 +387,7 @@ async def test_benchmark_series_lookup_selects_six_tomes(monkeypatch: pytest.Mon
         return _typed_bnf(response)
 
     monkeypatch.setattr(BookMetadataService, "_bnf_records_result", _instant_bnf)
-    monkeypatch.setattr(
-        BookMetadataService, "_query_openlibrary_result", _empty_openlibrary
-    )
+    monkeypatch.setattr(BookMetadataService, "_query_openlibrary_result", _empty_openlibrary)
 
     async def _one_lookup() -> list[BookMetadata]:
         verdict = await service.lookup_series_notices(SERIES_NAME, author_hint="Tyler Johnson")
@@ -439,9 +440,7 @@ async def test_benchmark_series_link_writes_six_links_and_prices_them(
         return _typed_bnf(_series_notices())
 
     monkeypatch.setattr(BookMetadataService, "_bnf_records_result", _instant_bnf)
-    monkeypatch.setattr(
-        BookMetadataService, "_query_openlibrary_result", _empty_openlibrary
-    )
+    monkeypatch.setattr(BookMetadataService, "_query_openlibrary_result", _empty_openlibrary)
 
     priced: list[tuple[uuid.UUID, str | None]] = []
     monkeypatch.setattr(

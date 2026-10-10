@@ -68,19 +68,14 @@ async def handle_status(message: Message, db_session: Any) -> None:
     else:
         poller_status = "🟢 <b>Active</b>"
 
-    # Latence d'ingestion → alerte Telegram. C'est la part du délai que l'application
-    # contrôle : `published_at` est vide (Vinted ne dore pas sa charge utile d'un
-    # horodatage de publication), donc le délai face à la publication reste hors de
-    # portée. La cadence de scrutation, elle, est l'autre moitié du délai — et la
-    # seule que l'on puisse encore réduire.
-    # Une seule mesure par ligne : les percentiles et l'effectif sont du détail
-    # d'exploitation, illisible sur un écran de statut lu depuis un téléphone. Les
-    # valeurs restent mesurées et disponibles en base — seul l'affichage change.
+    # Timestamp de réception persistée → timestamp du marquage, avant commit.
+    # Succès notifiés seulement ; recollectes et reprises SQL ne sont pas isolées.
+    # Ce n'est ni publication → découverte, ni le délai d'un accusé ou d'une lecture.
     latency = await StatsRepository(db_session).get_notification_latency_ms(days=7)
     if latency["count"] and latency["p50_ms"] is not None:
-        latency_line = f"<b>Détection → alerte :</b> {latency['p50_ms']} ms"
+        latency_line = f"<b>Réception → marquage :</b> {latency['p50_ms']} ms <i>(notifiés)</i>"
     else:
-        latency_line = "<b>Détection → alerte :</b> Indisponible"
+        latency_line = "<b>Réception → marquage :</b> Indisponible"
 
     cycle_p50 = (poller_data or {}).get("cycle_gap_p50_s")
     if cycle_p50:

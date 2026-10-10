@@ -40,5 +40,9 @@ class DeterministicListingMatcher(ListingMatcherProtocol):
             price_matches=legacy_result.price_matches,
             confidence=conf,
             reason=legacy_result.reason,
+            reason_code=legacy_result.reason_code,
+            acceptance_path=legacy_result.acceptance_path,
+            decisive_details=legacy_result.decisive_details,
+            evaluated_steps=legacy_result.evaluated_steps,
+            not_evaluated_steps=legacy_result.not_evaluated_steps,
         )
-

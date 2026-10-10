@@ -50,7 +50,7 @@ bench:
 
 lint:
 	$(RUFF) check .
-	$(MYPY) app
+	$(MYPY) app scripts/matching_diagnostics.py
 
 # Le verrouillage n'a de valeur que s'il suit `pyproject.toml`. Ce contrôle est
 # hors réseau : il échoue si une dépendance a été ajoutée sans être épinglée.

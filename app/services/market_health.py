@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Any
 
+from app.core.alert_latency import observe_background
 from app.core.redis import get_redis_client
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.services.market_price_service import (
@@ -413,6 +414,7 @@ def classify_sent_cote_state(market_line: str | None) -> str:
     return "real"
 
 
+@observe_background("cote_state")
 async def record_sent_cote_state(state: str) -> None:
     """Incrémente le compteur d'un état. Ne lève jamais : une mesure n'est pas une alerte."""
     try:

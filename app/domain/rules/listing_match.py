@@ -16,6 +16,18 @@ from app.domain.rules.keyword_hygiene import (
 )
 from app.utils.text import contains_keyword, contains_normalized_keyword, normalize_text
 
+MATCH_STEPS = (
+    "status",
+    "category",
+    "price",
+    "isbn",
+    "default_exclusions",
+    "user_exclusions",
+    "gaming_language",
+    "includes",
+    "condition",
+)
+
 
 class MatchResult:
     """Résultat d'évaluation d'une annonce contre une alerte."""
@@ -27,12 +39,30 @@ class MatchResult:
         condition_matches: bool = True,
         price_matches: bool = True,
         reason: str = "",
+        reason_code: str = "unexplained",
+        acceptance_path: str | None = None,
+        decisive_details: tuple[tuple[str, int | bool], ...] = (),
+        evaluated_count: int = 0,
     ) -> None:
         self.is_match = is_match
         self.keyword_match_score = keyword_match_score
         self.condition_matches = condition_matches
         self.price_matches = price_matches
         self.reason = reason
+        self.reason_code = reason_code
+        self.acceptance_path = acceptance_path
+        self.decisive_details = decisive_details
+        self._evaluated_count = evaluated_count
+
+    @property
+    def evaluated_steps(self) -> tuple[str, ...]:
+        """Étapes atteintes ; sans contrainte applicable, leur garde est néanmoins évaluée."""
+        return MATCH_STEPS[: self._evaluated_count]
+
+    @property
+    def not_evaluated_steps(self) -> tuple[str, ...]:
+        """Étapes non atteintes après le premier rejet, jamais présumées réussies."""
+        return MATCH_STEPS[self._evaluated_count :]
 
 
 DEFAULT_BD_GOODIES_EXCLUSIONS: list[str] = [
@@ -346,7 +376,12 @@ def evaluate_listing_against_alert(
     """Évalue si une annonce correspond aux critères d'une alerte."""
     # 1. Vérification du statut de l'alerte
     if alert.status != AlertStatus.ACTIVE:
-        return MatchResult(is_match=False, reason="Alerte non active")
+        return MatchResult(
+            is_match=False,
+            reason="Alerte non active",
+            reason_code="alert_inactive",
+            evaluated_count=1,
+        )
 
     # 2. Vérification de la catégorie
     alert_cat_slug: str | None = None
@@ -357,7 +392,12 @@ def evaluate_listing_against_alert(
         alert_cat_slug = cat_val.value if hasattr(cat_val, "value") else str(cat_val)
 
     if alert_cat_slug and alert_cat_slug != listing_category_slug:
-        return MatchResult(is_match=False, reason="Catégorie différente")
+        return MatchResult(
+            is_match=False,
+            reason="Catégorie différente",
+            reason_code="category_mismatch",
+            evaluated_count=2,
+        )
 
     # 3. Vérification du prix maximum de l'article
     if price_is_above_max(alert.max_item_price_cents, listing_item_price_cents):
@@ -365,6 +405,8 @@ def evaluate_listing_against_alert(
             is_match=False,
             price_matches=False,
             reason="Prix supérieur au seuil maximum",
+            reason_code="price_above_max",
+            evaluated_count=3,
         )
 
     # Texte consultable normalisé une fois : les regex n'enlèvent pas les accents.
@@ -376,6 +418,7 @@ def evaluate_listing_against_alert(
     # Si l'alerte est configurée avec un ISBN spécifique, la correspondance
     # DOIT être exacte sur cet ISBN.
     hybrid_matched = False
+    isbn_route = ""
     if getattr(alert, "isbn", None):
         clean_alert_isbn = isbn_digits(alert.isbn)
         isbn_matched = False
@@ -384,6 +427,7 @@ def evaluate_listing_against_alert(
             clean_listing_isbn = isbn_digits(listing_isbn13)
             if clean_alert_isbn == clean_listing_isbn:
                 isbn_matched = True
+                isbn_route = "isbn_field"
 
         if not isbn_matched and clean_alert_isbn:
             raw_text = (
@@ -394,6 +438,7 @@ def evaluate_listing_against_alert(
             raw_clean = re.sub(r"[- ]", "", raw_text)
             if clean_alert_isbn in raw_clean:
                 isbn_matched = True
+                isbn_route = "isbn_text"
 
         if not isbn_matched:
             # Fallback hybride pour vendeurs occasionnels sans ISBN renseigné
@@ -487,6 +532,8 @@ def evaluate_listing_against_alert(
                         is_match=False,
                         keyword_match_score=0,
                         reason=f"ISBN '{alert.isbn}' non trouvé et mots-clés requis absents",
+                        reason_code="isbn_keywords_missing",
+                        evaluated_count=4,
                     )
 
                 if is_franchise:
@@ -549,7 +596,12 @@ def evaluate_listing_against_alert(
                     is_match=False,
                     keyword_match_score=0,
                     reason=f"ISBN '{alert.isbn}' non trouvé et fallback titre non satisfait",
+                    reason_code="isbn_fallback_rejected",
+                    evaluated_count=4,
                 )
+
+    if hybrid_matched:
+        isbn_route = "isbn_hybrid"
 
     # 5. Vérification des exclusions par défaut selon la catégorie
     if listing_category_slug == "bd_comics":
@@ -571,6 +623,9 @@ def evaluate_listing_against_alert(
         return MatchResult(
             is_match=False,
             reason=f"Élément exclu automatiquement par défaut : '{default_hit}'",
+            reason_code="default_exclusion",
+            evaluated_count=5,
+            decisive_details=(("expanded_exclusion_index", expanded_defaults.index(default_hit)),),
         )
 
     # Vérification des mots-clés exclus configurés par l'utilisateur (avec extension multilingue)
@@ -582,6 +637,11 @@ def evaluate_listing_against_alert(
         return MatchResult(
             is_match=False,
             reason=f"Mot-clé exclu détecté : '{user_hit}'",
+            reason_code="user_exclusion",
+            evaluated_count=6,
+            decisive_details=(
+                ("expanded_exclusion_index", expanded_user_excludes.index(user_hit)),
+            ),
         )
 
     # 5bis. Filtre qualité Jeux Vidéo : Rejet des éditions étrangères non-PAL-FR
@@ -599,6 +659,8 @@ def evaluate_listing_against_alert(
                 return MatchResult(
                     is_match=False,
                     reason="Édition étrangère non-PAL-FR rejetée (jaquette non française)",
+                    reason_code="gaming_language_rejected",
+                    evaluated_count=7,
                 )
 
     # 6. Vérification des mots-clés inclus (Règle stricte anti-faux-positifs)
@@ -617,17 +679,23 @@ def evaluate_listing_against_alert(
         if clean_alert_isbn and clean_alert_isbn in raw_clean:
             isbn_textually_present = True
 
+    inclusion_route = "unconstrained"
+    details: tuple[tuple[str, int | bool], ...] = ()
     if isbn_textually_present:
+        inclusion_route = "isbn_text"
         all_includes_match = True
     elif alert.include_keywords:
+        inclusion_route = "includes"
         all_includes_match = True
-        for raw_kw in alert.include_keywords:
+        for keyword_index, raw_kw in enumerate(alert.include_keywords):
             if clean_alert_isbn and isbn_digits(raw_kw) == clean_alert_isbn:
                 if not hybrid_matched:
                     all_includes_match = False
+                    details = (("missing_include_index", keyword_index),)
                     break
             elif not contains_normalized_keyword(searchable_text, raw_kw):
                 all_includes_match = False
+                details = (("missing_include_index", keyword_index),)
                 break
     else:
         all_includes_match = True
@@ -635,9 +703,13 @@ def evaluate_listing_against_alert(
     if not all_includes_match:
         # Vérification des variantes alternatives (OU logique entre variantes)
         variant_matched = False
-        for raw_variant in usable_variants(alert.variants, clean_alert_isbn):
+        for variant_index, raw_variant in enumerate(
+            usable_variants(alert.variants, clean_alert_isbn)
+        ):
             if contains_normalized_keyword(searchable_text, raw_variant):
                 variant_matched = True
+                inclusion_route = "variant"
+                details = (("usable_variant_index", variant_index),)
                 break
 
         if not variant_matched:
@@ -645,6 +717,9 @@ def evaluate_listing_against_alert(
                 is_match=False,
                 keyword_match_score=0,
                 reason="Mots-clés requis non trouvés",
+                reason_code="required_keywords_missing",
+                evaluated_count=8,
+                decisive_details=details,
             )
 
     matched_keywords_count = len(alert.include_keywords or [])
@@ -655,6 +730,8 @@ def evaluate_listing_against_alert(
             is_match=False,
             condition_matches=False,
             reason="État de l'article non accepté",
+            reason_code="condition_rejected",
+            evaluated_count=9,
         )
 
     # Tous les critères sont validés
@@ -664,4 +741,12 @@ def evaluate_listing_against_alert(
         condition_matches=True,
         price_matches=True,
         reason="Match confirmé",
+        reason_code="accepted",
+        evaluated_count=9,
+        acceptance_path=(
+            f"{isbn_route}/{inclusion_route}"
+            if isbn_route and inclusion_route != "isbn_text"
+            else inclusion_route
+        ),
+        decisive_details=details,
     )

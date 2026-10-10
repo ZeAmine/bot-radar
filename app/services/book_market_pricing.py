@@ -20,11 +20,13 @@ import asyncio
 import logging
 import threading
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import alert_latency
+from app.core.alert_latency import observe_background
 from app.core.constants import ComparisonStatus, MatchConfidence
 from app.core.tasks import safe_create_task
 from app.db.models.book import Book
@@ -378,12 +380,15 @@ def schedule_book_pricing(book_id: uuid.UUID, *, reason: str) -> None:
             logger.debug("Cotation déjà en vol pour le livre ID %s (%s).", book_id, reason)
             return
         _pricing_in_flight.add(book_id)
-    safe_create_task(
-        _price_in_background(book_id, reason),
-        name=f"market_price_{book_id}",
-    )
+    parent = alert_latency.current()
+    with alert_latency.timing_context(replace(parent, book_id=book_id) if parent else None):
+        safe_create_task(
+            _price_in_background(book_id, reason),
+            name=f"market_price_{book_id}",
+        )
 
 
+@observe_background("book_pricing")
 async def _price_in_background(book_id: uuid.UUID, reason: str) -> None:
     """Exécute la cotation puis libère le livre pour une nouvelle passe."""
     try:

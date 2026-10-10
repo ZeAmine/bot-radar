@@ -16,3 +16,9 @@ class MatchResult:
     confidence: MatchConfidence = MatchConfidence.HIGH
     reason: str = ""
     matched_keywords: list[str] = field(default_factory=list)
+
+    reason_code: str = "unexplained"
+    acceptance_path: str | None = None
+    decisive_details: tuple[tuple[str, int | bool], ...] = ()
+    evaluated_steps: tuple[str, ...] = ()
+    not_evaluated_steps: tuple[str, ...] = ()
