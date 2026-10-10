@@ -3,7 +3,9 @@
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -112,7 +114,17 @@ async def journey(monkeypatch):
                         assert await session.scalar(text("SELECT pg_backend_pid()")) != reader_pid
                     yield session
 
-            value.states, value.writer = states, writer
+            async def moments():
+                async with AsyncSession(bind=reader_connection) as reader:
+                    return dict(
+                        (
+                            await reader.execute(
+                                select(ListingMatch.alert_id, ListingMatch.notified_at)
+                            )
+                        ).all()
+                    )
+
+            value.states, value.writer, value.moments = states, writer, moments
             yield value
             await tasks.wait_all_background_tasks(timeout=0)
 
@@ -138,24 +150,30 @@ async def test_confirmed_receipt_recovers_sql_without_resending(journey, applied
     async with journey.writer() as session:
         original = session.commit
         calls = 0
+        applied_moments = None
 
         async def commit():
-            nonlocal calls
+            nonlocal calls, applied_moments
             calls += 1
             if calls == 2:
                 if applied:
                     await original()
+                    applied_moments = await journey.moments()
                 raise SQLAlchemyError("synthetic notification commit error")
             await original()
 
         session.commit = commit
-        response = await ingestion.ProcessListingUseCase(session, journey.bot).execute(
-            journey.payload, {}
-        )
+        use = ingestion.ProcessListingUseCase(session, journey.bot)
+        use.listing_repo.mark_notified = AsyncMock(wraps=use.listing_repo.mark_notified)
+        response = await use.execute(journey.payload, {})
+        assert use.listing_repo.mark_notified.await_count == (1 if applied else 2)
     assert response.matches[0].notification_sent
     assert journey.deliveries == [601]
     assert await journey.states() == {journey.alert_ids[0]: True}
     assert journey.payload.external_id in await poller.load_initial_seen_ids()
+    if applied:
+        assert applied_moments is not None
+        assert await journey.moments() == applied_moments
     assert calls == (3 if applied else 4)  # commit final toujours joué
 
 
@@ -439,3 +457,84 @@ async def test_disappeared_match_does_not_claim_durable_marking(journey, monkeyp
     assert not any(getattr(r, "persistence_result", None) == "notified" for r in records)
     assert any(getattr(r, "persistence_stage", None) == "match_missing" for r in records)
     assert journey.deliveries == [601]
+
+
+async def test_repeated_marking_keeps_durable_timestamp_strictly_unchanged(journey):
+    await ingest(journey)
+    before = await journey.moments()
+    assert before[journey.alert_ids[0]] is not None
+    async with journey.writer() as session:
+        listing_id = await session.scalar(select(ListingMatch.listing_id))
+        repo = ingestion.ListingRepository(session)
+        for _ in range(2):
+            assert await repo.mark_notified([(journey.alert_ids[0], listing_id)])
+            await session.commit()
+            assert await journey.moments() == before
+    assert journey.deliveries == [601]
+
+
+@pytest.mark.skipif(
+    not os.environ.get("TEST_DATABASE_URL"), reason="Entrelacement PostgreSQL requis"
+)
+@pytest.mark.parametrize("change", ["notified", "deleted"])
+async def test_match_changes_between_pending_read_and_retry_update(
+    journey, caplog, change
+):
+    from sqlalchemy import delete, update
+
+    pending_read, release = asyncio.Event(), asyncio.Event()
+    durable_at = datetime(2026, 1, 2, 3, 4, 5, 123456, tzinfo=UTC)
+    async with journey.writer() as session:
+        use = ingestion.ProcessListingUseCase(session, journey.bot)
+        original_commit, original_read = session.commit, use.listing_repo.match_notification_state
+        calls, active_pid = 0, None
+
+        async def commit():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise SQLAlchemyError("synthetic commit failure before application")
+            await original_commit()
+
+        async def read(listing_id):
+            nonlocal active_pid
+            result = await original_read(listing_id)
+            if calls == 2:
+                assert journey.alert_ids[0] in result[1]
+                active_pid = await session.scalar(text("SELECT pg_backend_pid()"))
+                pending_read.set()
+                await release.wait()
+            return result
+
+        session.commit, use.listing_repo.match_notification_state = commit, read
+        use.listing_repo.mark_notified = AsyncMock(wraps=use.listing_repo.mark_notified)
+        with caplog.at_level(logging.INFO):
+            running = asyncio.create_task(use.execute(journey.payload, {}))
+            try:
+                await asyncio.wait_for(pending_read.wait(), 3)
+                async with journey.writer() as other:
+                    assert await other.scalar(text("SELECT pg_backend_pid()")) != active_pid
+                    stmt = (
+                        update(ListingMatch).values(notified_at=durable_at)
+                        if change == "notified"
+                        else delete(ListingMatch)
+                    ).where(ListingMatch.alert_id == journey.alert_ids[0])
+                    await other.execute(stmt)
+                    await other.commit()
+                release.set()
+                response = await asyncio.wait_for(running, 3)
+            finally:
+                release.set()
+                await asyncio.gather(running, return_exceptions=True)
+        assert response.matches[0].notification_sent
+        assert use.listing_repo.mark_notified.await_count == 2
+        assert calls == 4  # premier commit, échec, reprise, commit final inconditionnel
+    assert journey.deliveries == [601]
+    records = [r for r in caplog.records if getattr(r, "event", "") == "notification_delivery"]
+    if change == "notified":
+        assert await journey.moments() == {journey.alert_ids[0]: durable_at}
+        assert any(getattr(r, "persistence_result", None) == "notified" for r in records)
+    else:
+        assert await journey.moments() == {}
+        assert not any(getattr(r, "persistence_result", None) == "notified" for r in records)
+        assert any(getattr(r, "persistence_stage", None) == "match_missing" for r in records)

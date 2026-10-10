@@ -213,7 +213,7 @@ class ListingRepository:
         return {alert.id for alert in alerts}, {book.id for book in books}
 
     async def mark_notified(self, pairs: list[tuple[uuid.UUID, uuid.UUID]]) -> bool:
-        """Horodate les notifications Telegram déjà parties."""
+        """Horodate un pending sans réécrire un accusé déjà durable ; absence rend False."""
         now = datetime.now(UTC)
         complete = True
         for alert_id, listing_id in pairs:
@@ -222,12 +222,24 @@ class ListingRepository:
                 .where(
                     ListingMatch.alert_id == alert_id,
                     ListingMatch.listing_id == listing_id,
+                    ListingMatch.notified_at.is_(None),
                 )
                 .values(notified_at=now)
                 .returning(ListingMatch.id)
             )
             result = await self.session.execute(stmt)
-            complete = result.scalar_one_or_none() is not None and complete
+            marked = result.scalar_one_or_none() is not None
+            if not marked:
+                # Colonnes scalaires : aucune valeur ORM éventuellement périmée.
+                # READ COMMITTED voit le marqueur posé par la transaction concurrente.
+                persisted_at = await self.session.scalar(
+                    select(ListingMatch.notified_at).where(
+                        ListingMatch.alert_id == alert_id,
+                        ListingMatch.listing_id == listing_id,
+                    )
+                )
+                marked = persisted_at is not None
+            complete = marked and complete
         return complete
 
     async def create_match(

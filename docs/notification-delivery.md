@@ -27,6 +27,10 @@ le marquage est commité pour ce seul destinataire. Une erreur SQL ordinaire
 lecture fraîche : un marqueur déjà durable termine la reprise ; un match pending
 permet **un seul** nouvel essai de marquage/commit, sans renvoyer Telegram. Un match
 disparu n'est pas recréé et ne permet pas d'affirmer un marquage durable.
+Le marquage ne modifie que `notified_at IS NULL`. Si l'UPDATE ne rend aucune ligne,
+une lecture scalaire fraîche distingue un marqueur déjà présent d'un match disparu ;
+un timestamp durable n'est jamais remplacé. Cela couvre aussi un marqueur posé
+entre la relecture pending et le nouvel UPDATE.
 
 Le rollback expire les objets ORM : la reprise recharge l'annonce et les
 alertes/livres encore présents, avec leurs relations, avant de servir les autres
