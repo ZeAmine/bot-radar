@@ -1,0 +1,40 @@
+# Gabarit de fiche — copier hors dépôt, puis approuver avec :
+# python scripts/task_verdict.py approve /chemin/vers/task.toml
+
+id = "exemple-001"
+base_sha = "446766f3c2ae63388d146da6a9ae435657c5575f"
+objective = "Décrire le résultat attendu en une phrase vérifiable."
+
+non_goals = [
+  "Ne pas toucher au chemin d'alerte.",
+]
+
+allowed_write = [
+  "tests/unit/mon_test.py",
+]
+
+forbidden = []
+
+proof = [
+  "pytest tests/unit/mon_test.py -v",
+  "ruff check .",
+  "mypy app",
+]
+
+# Les preuves sont des argv exacts : pas de ; && | ` $ < >.
+# Le shell n'accepte que le binaire .venv/bin correspondant, pas un nom du PATH.
+# pytest ne reçoit que des chemins sous tests/. Un test déjà versionné
+# au base_sha ne se modifie pas : cela arrête la tâche pour revue.
+
+# Valeurs par défaut si omises :
+max_minutes = 45
+max_cycles = 4
+max_tool_calls = 120
+max_diff_lines = 300
+allow_subagents = false
+
+escalate_on = "Migration, changement produit, fichier sensible, test existant à modifier."
+human_review = [
+  "Pertinence des nouveaux tests.",
+  "Diff complet avant PR.",
+]
