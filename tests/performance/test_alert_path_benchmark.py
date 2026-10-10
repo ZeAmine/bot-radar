@@ -29,7 +29,7 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +46,7 @@ from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import ListingIngestPayload
 from app.use_cases.ingest_listing import ProcessListingUseCase
 from tests.database import sqlite_only_database
+from tests.telegram_fakes import telegram_reply
 
 # ---------------------------------------------------------------- scorers fixés
 N_BD_ALERTS = 40
@@ -207,10 +208,8 @@ def _make_payload(iteration: int | None) -> ListingIngestPayload:
 def _make_mock_bot() -> AsyncMock:
     """Bot aiogram mocké : uniquement l'I/O Telegram est simulée, le formatage est réel."""
     bot = AsyncMock()
-    sent = MagicMock()
-    sent.message_id = 42
-    bot.send_photo.return_value = sent
-    bot.send_message.return_value = sent
+    bot.send_photo.side_effect = telegram_reply
+    bot.send_message.side_effect = telegram_reply
     return bot
 
 

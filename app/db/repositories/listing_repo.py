@@ -170,19 +170,77 @@ class ListingRepository:
                 pending.add(alert_id)
         return notified, pending
 
-    async def mark_notified(self, pairs: list[tuple[uuid.UUID, uuid.UUID]]) -> None:
-        """Horodate les notifications Telegram déjà parties."""
+    async def refresh_notification_context(
+        self,
+        listing: Listing,
+        alert_ids: list[uuid.UUID],
+        book_ids: list[uuid.UUID],
+    ) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
+        """Relit en groupe les objets expirés par le rollback, sans écriture ni réseau."""
+        await self.session.refresh(listing)
+        alerts = (
+            (
+                await self.session.execute(
+                    select(Alert)
+                    .where(Alert.id.in_(alert_ids))
+                    .options(
+                        selectinload(Alert.category),
+                        selectinload(Alert.user),
+                        selectinload(Alert.alert_books)
+                        .selectinload(AlertBook.book)
+                        .selectinload(Book.market_cache),
+                    )
+                    .execution_options(populate_existing=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        books = (
+            (
+                await self.session.execute(
+                    select(Book)
+                    .where(Book.id.in_(book_ids))
+                    .options(selectinload(Book.market_cache))
+                    .execution_options(populate_existing=True)
+                )
+            )
+            .scalars()
+            .all()
+            if book_ids
+            else []
+        )
+        return {alert.id for alert in alerts}, {book.id for book in books}
+
+    async def mark_notified(self, pairs: list[tuple[uuid.UUID, uuid.UUID]]) -> bool:
+        """Horodate un pending sans réécrire un accusé déjà durable ; absence rend False."""
         now = datetime.now(UTC)
+        complete = True
         for alert_id, listing_id in pairs:
             stmt = (
                 update(ListingMatch)
                 .where(
                     ListingMatch.alert_id == alert_id,
                     ListingMatch.listing_id == listing_id,
+                    ListingMatch.notified_at.is_(None),
                 )
                 .values(notified_at=now)
+                .returning(ListingMatch.id)
             )
-            await self.session.execute(stmt)
+            result = await self.session.execute(stmt)
+            marked = result.scalar_one_or_none() is not None
+            if not marked:
+                # Colonnes scalaires : aucune valeur ORM éventuellement périmée.
+                # READ COMMITTED voit le marqueur posé par la transaction concurrente.
+                persisted_at = await self.session.scalar(
+                    select(ListingMatch.notified_at).where(
+                        ListingMatch.alert_id == alert_id,
+                        ListingMatch.listing_id == listing_id,
+                    )
+                )
+                marked = persisted_at is not None
+            complete = marked and complete
+        return complete
 
     async def create_match(
         self,

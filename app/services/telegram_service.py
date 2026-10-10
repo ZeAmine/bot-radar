@@ -1,8 +1,18 @@
 import asyncio
 import logging
-from typing import Any
+import uuid
+from collections.abc import Awaitable
+from dataclasses import dataclass
+from typing import Any, Literal, TypeGuard
 
 from aiogram import Bot
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNotFound,
+    TelegramUnauthorizedError,
+)
+from aiogram.types import Message
 
 from app.bot.keyboards.listings import get_listing_alert_keyboard
 from app.bot.labels import abbreviate_condition, escape_html, join_list
@@ -23,6 +33,53 @@ PHOTO_CAPTION_LIMIT = 1024
 # Reprise après un refus de Telegram : le refus porte sur le contenu téléchargé à
 # l'instant, une seconde tentative immédiate reprendrait le même résultat en cache.
 PHOTO_RETRY_DELAY_SECONDS = 1.0
+
+
+def usable_receipt(value: object, chat_id: int | None = None) -> TypeGuard[Message]:
+    """Reçu de l'API ; zéro ou mauvais destinataire reste inconnu, sans preuve de lecture."""
+    return (
+        isinstance(value, Message)
+        and type(value.message_id) is int
+        and value.message_id > 0
+        and (chat_id is None or value.chat.id == chat_id)
+    )
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    """Résultat transitoire : le reçu ne quitte pas la mémoire du traitement."""
+
+    outcome: Literal["acknowledged", "rejected", "unknown"]
+    transport: Literal["photo", "text", "none"]
+    receipt: Message | None = None
+    reason: str = ""
+    error_type: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.outcome == "acknowledged" and usable_receipt(self.receipt)
+
+    def diagnostics(
+        self,
+        *,
+        alert_id: uuid.UUID | None,
+        listing_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+        persistence_stage: str,
+        **details: Any,
+    ) -> dict[str, Any]:
+        return {
+            "event": "notification_delivery",
+            "alert_id": str(alert_id) if alert_id else None,
+            "listing_id": str(listing_id),
+            "attempt_id": str(attempt_id),
+            "transport": self.transport,
+            "delivery_result": self.outcome,
+            "message_id": self.receipt.message_id if usable_receipt(self.receipt) else None,
+            "reason": self.reason,
+            "error_type": self.error_type,
+            "persistence_stage": persistence_stage,
+            **details,
+        }
 
 
 def build_listing_caption(
@@ -84,9 +141,8 @@ def _photo_url_for_alert(listing: Listing, caption: str) -> str | None:
     photo_url = listing.photos[0]
     if not isinstance(photo_url, str) or not photo_url.startswith("https://"):
         logger.warning(
-            "Alerte %s : URL de photo invalide (%r), envoi en texte",
+            "Alerte %s : URL de photo invalide, envoi en texte",
             listing.id,
-            photo_url,
         )
         return None
 
@@ -109,7 +165,8 @@ async def send_listing_alert(
     market_comparison_line: str | None = None,
     alert_keywords: list[str] | None = None,
     alert: Any | None = None,
-) -> bool:
+    attempt_id: uuid.UUID | None = None,
+) -> DeliveryResult:
     """Envoie l'alerte à l'utilisateur Telegram avec photo principale et clavier adapté.
 
     La photo est tentée deux fois par URL avant tout repli : Telegram télécharge lui-
@@ -117,96 +174,174 @@ async def send_listing_alert(
     première tentative sans que l'annonce soit en faute. Le repli texte reste garanti —
     une panne photo ne fait jamais perdre l'alerte.
     """
-    caption = build_listing_caption(
-        listing,
-        market_comparison_line=market_comparison_line,
-        alert_keywords=alert_keywords,
-    )
-    keyboard = get_listing_alert_keyboard(
-        listing_id=listing.id,
-        listing_url=listing.url,
-        category_slug=listing.category_slug,
-    )
+    attempt_id = attempt_id or uuid.uuid4()
+    alert_id = getattr(alert, "id", None)
 
-    sent_msg = None
+    def diagnostic(result: DeliveryResult, number: int = 0) -> None:
+        logger.log(
+            logging.INFO if result else logging.ERROR,
+            "Résultat de la tentative Telegram.",
+            extra=result.diagnostics(
+                alert_id=alert_id,
+                listing_id=listing.id,
+                attempt_id=attempt_id,
+                persistence_stage="not_started",
+                transport_attempt=number,
+            ),
+        )
+
+    # Ces opérations sont locales : leur échec précède tout appel client.
     try:
+        caption = build_listing_caption(listing, market_comparison_line, alert_keywords)
+        keyboard = get_listing_alert_keyboard(
+            listing_id=listing.id,
+            listing_url=listing.url,
+            category_slug=listing.category_slug,
+        )
         photo_url = _photo_url_for_alert(listing, caption)
-        if photo_url is not None:
-            for attempt in (1, 2):
-                try:
-                    sent_msg = await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=photo_url,
-                        caption=caption,
-                        reply_markup=keyboard,
-                    )
-                    logger.info(
-                        "Résultat photo Telegram : %s",
-                        "sent" if attempt == 1 else "retry_sent",
-                        extra={
-                            "event": "photo_delivery",
-                            "listing_id": str(listing.id),
-                            "status": "sent" if attempt == 1 else "retry_sent",
-                        },
-                    )
-                    break
-                except Exception as photo_exc:
-                    logger.error(
-                        "Échec %d/2 de l'envoi de la photo (listing %s, %s): %s",
-                        attempt,
-                        listing.id,
-                        photo_url.split("?", 1)[0],
-                        photo_exc,
-                    )
-                    if attempt == 1:
-                        await asyncio.sleep(PHOTO_RETRY_DELAY_SECONDS)
-            if sent_msg is None:
-                logger.error(
-                    "Photo non envoyée après 2 tentatives (listing %s), repli sur message texte",
-                    listing.id,
-                )
+    except Exception as exc:
+        result = DeliveryResult(
+            "rejected", "none", reason="local_validation", error_type=type(exc).__name__
+        )
+        diagnostic(result)
+        return result
 
-        if not sent_msg:
-            text = caption
-            if photo_url is not None:
-                text += "\n\n<i>Photo indisponible ; l'annonce reste accessible via son lien.</i>"
-            sent_msg = await bot.send_message(
+    unknown_seen = False
+
+    async def request(
+        transport: Literal["photo", "text"], operation: Awaitable[Message], number: int
+    ) -> tuple[DeliveryResult, bool]:
+        """Le booléen indique une exception client, pour conserver la politique de reprises."""
+        nonlocal unknown_seen
+        try:
+            message = await operation
+        except asyncio.CancelledError:
+            diagnostic(DeliveryResult("unknown", transport, reason="cancelled"), number)
+            raise
+        except Exception as exc:
+            # aiogram BaseSession.check_response traduit les réponses négatives
+            # 400/401/403/404 en ces types. Réseau, décodage, 5xx et exceptions
+            # non documentées ne prouvent pas l'absence d'acceptation.
+            rejected = isinstance(
+                exc,
+                (
+                    TelegramBadRequest,
+                    TelegramUnauthorizedError,
+                    TelegramForbiddenError,
+                    TelegramNotFound,
+                ),
+            )
+            result = DeliveryResult(
+                "rejected" if rejected else "unknown",
+                transport,
+                reason="api_rejected" if rejected else "client_result_unknown",
+                error_type=type(exc).__name__,
+            )
+            unknown_seen = unknown_seen or result.outcome == "unknown"
+            diagnostic(result, number)
+            return result, True
+        result = (
+            DeliveryResult("acknowledged", transport, receipt=message)
+            if usable_receipt(message, chat_id)
+            else DeliveryResult("unknown", transport, reason="unusable_receipt")
+        )
+        unknown_seen = unknown_seen or result.outcome == "unknown"
+        diagnostic(result, number)
+        return result, False
+
+    result = DeliveryResult("unknown", "text")
+    if photo_url is not None:
+        for number in (1, 2):
+            result, raised = await request(
+                "photo",
+                bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo_url,
+                    caption=caption,
+                    reply_markup=keyboard,
+                ),
+                number,
+            )
+            if result:
+                logger.info(
+                    "Résultat photo Telegram : %s",
+                    "sent" if number == 1 else "retry_sent",
+                    extra={
+                        "event": "photo_delivery",
+                        "listing_id": str(listing.id),
+                        "status": "sent" if number == 1 else "retry_sent",
+                    },
+                )
+            else:
+                logger.error("Échec %d/2 de l'appel photo sans accusé exploitable.", number)
+            # Aucun nouvel essai photo lorsque le client est revenu sans exception,
+            # comme auparavant (y compris le cas anormal None).
+            if not raised:
+                break
+            if number == 1:
+                try:
+                    await asyncio.sleep(PHOTO_RETRY_DELAY_SECONDS)
+                except asyncio.CancelledError:
+                    diagnostic(
+                        DeliveryResult("unknown", "photo", reason="cancelled_before_retry"), number
+                    )
+                    raise
+        if not result:
+            logger.error("Aucun accusé photo exploitable ; repli sur message texte.")
+    if not result:
+        text = caption + (
+            "\n\n<i>Photo indisponible ; l'annonce reste accessible via son lien.</i>"
+            if photo_url is not None
+            else ""
+        )
+        result, _ = await request(
+            "text",
+            bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 reply_markup=keyboard,
-            )
-            logger.info(
-                "Résultat photo Telegram : text_fallback",
-                extra={
-                    "event": "photo_delivery",
-                    "listing_id": str(listing.id),
-                    "status": "text_fallback" if photo_url else "text_only",
-                },
-            )
-
-        # Pipeline IA asynchrone, post-alerte et non bloquant
-        if sent_msg and settings.AI_ENABLED:
-            safe_create_task(
-                ai_post_alert_pipeline.enrich_alert(
-                    bot=bot,
-                    chat_id=chat_id,
-                    message_id=sent_msg.message_id,
-                    listing=listing,
-                    alert=alert,
-                ),
-                name=f"ai_enrich_{listing.id}",
-            )
-
-        return True
-    except Exception as exc:
-        logger.error(
-            "Échec de l'envoi de l'alerte Telegram (chat_id: %s, listing_id: %s): %s",
-            chat_id,
-            listing.id,
-            exc,
-            extra={"event": "photo_delivery", "listing_id": str(listing.id), "status": "failed"},
+            ),
+            1,
         )
-        return False
+        logger.log(
+            logging.INFO if result else logging.ERROR,
+            "Résultat du transport texte.",
+            extra={
+                "event": "photo_delivery",
+                "listing_id": str(listing.id),
+                "status": ("text_fallback" if photo_url else "text_only") if result else "failed",
+            },
+        )
+
+    if result.outcome == "rejected" and unknown_seen:
+        result = DeliveryResult("unknown", result.transport, reason="earlier_transport_unknown")
+        diagnostic(result)
+
+    if result and result.receipt is not None and settings.AI_ENABLED:
+        enrichment = None
+        try:
+            enrichment = ai_post_alert_pipeline.enrich_alert(
+                bot=bot,
+                chat_id=chat_id,
+                message_id=result.receipt.message_id,
+                listing=listing,
+                alert=alert,
+            )
+            safe_create_task(enrichment, name=f"ai_enrich_{listing.id}")
+        except Exception as exc:
+            if enrichment is not None:
+                enrichment.close()
+            logger.warning(
+                "Enrichissement non planifié après accusé Telegram.",
+                extra=result.diagnostics(
+                    alert_id=alert_id,
+                    listing_id=listing.id,
+                    attempt_id=attempt_id,
+                    persistence_stage="not_started",
+                    postprocessing_error=type(exc).__name__,
+                ),
+            )
+    return result
 
 
 async def notify_admins(

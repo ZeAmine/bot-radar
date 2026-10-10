@@ -15,6 +15,7 @@ from app.domain.rules.matcher import DeterministicListingMatcher
 from app.schemas.listing import ListingIngestPayload
 from app.use_cases.enrich_listing_ai import AsyncEnrichListingUseCase
 from app.use_cases.ingest_listing import ProcessListingUseCase
+from tests.telegram_fakes import acknowledged_delivery
 
 
 @pytest.fixture(autouse=True)
@@ -188,7 +189,7 @@ def test_deterministic_matcher_adapter() -> None:
 @pytest.mark.asyncio
 async def test_process_listing_bd_resolves_local_market_comparison(mock_db: AsyncMock) -> None:
     """La ligne de cote locale est transmise à l'envoi Telegram."""
-    mock_send_alert = AsyncMock(return_value=True)
+    mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
 
     market_line = "<b>Prix bas constaté (T6) :</b> 5,12 €\n<b>Écart :</b> +13,16 € ⛔️"
     with (
@@ -333,9 +334,9 @@ async def test_bd_alert_without_price_is_priced_in_background(mock_db: AsyncMock
     """
     calls: list[str] = []
 
-    async def _send(**_kwargs: object) -> bool:
+    async def _send(**_kwargs: object) -> object:
         calls.append("send")
-        return True
+        return acknowledged_delivery(**_kwargs)
 
     def _schedule(_book_id: object, *, reason: str) -> None:
         calls.append(f"price:{reason}")
@@ -397,7 +398,7 @@ async def test_bd_alert_whose_pass_found_nothing_is_dated_instead_of_pending(
         historical_low_1y_cents=None,
         checked_at=datetime(2026, 10, 6, 9, 30, tzinfo=UTC),
     )
-    mock_send_alert = AsyncMock(return_value=True)
+    mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
 
     with (
         patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
@@ -442,7 +443,7 @@ async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> No
         comparison_status=ComparisonStatus.AVAILABLE,
         historical_low_1y_cents=1000,
     )
-    mock_send_alert = AsyncMock(return_value=True)
+    mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
 
     with (
         patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
@@ -484,9 +485,9 @@ async def test_series_alert_prices_every_linked_volume_after_the_send(mock_db: A
     """
     calls: list[str] = []
 
-    async def _send(**_kwargs: object) -> bool:
+    async def _send(**_kwargs: object) -> object:
         calls.append("send")
-        return True
+        return acknowledged_delivery(**_kwargs)
 
     def _schedule(book_id: object, *, reason: str) -> None:
         calls.append(f"price:{reason}:{book_id}")
@@ -537,9 +538,9 @@ async def test_series_alert_does_not_reprice_a_priced_sibling(mock_db: AsyncMock
 
     calls: list[str] = []
 
-    async def _send(**_kwargs: object) -> bool:
+    async def _send(**_kwargs: object) -> object:
         calls.append("send")
-        return True
+        return acknowledged_delivery(**_kwargs)
 
     def _schedule(book_id: object, *, reason: str) -> None:
         calls.append(f"price:{reason}:{book_id}")
@@ -593,9 +594,9 @@ async def test_isbn_alert_does_not_price_siblings(mock_db: AsyncMock) -> None:
     """E1 : une alerte ISBN ne déclenche pas la couverture de série — elle n'a pas de série."""
     calls: list[str] = []
 
-    async def _send(**_kwargs: object) -> bool:
+    async def _send(**_kwargs: object) -> object:
         calls.append("send")
-        return True
+        return acknowledged_delivery(**_kwargs)
 
     def _schedule(book_id: object, *, reason: str) -> None:
         calls.append(f"price:{reason}:{book_id}")
@@ -675,11 +676,11 @@ async def test_mark_notified_commits_before_the_next_send(mock_db: AsyncMock) ->
 
     send_calls = {"n": 0}
 
-    async def _send(**_kwargs: object) -> bool:
+    async def _send(**_kwargs: object) -> object:
         send_calls["n"] += 1
         if send_calls["n"] == 2:
             raise RuntimeError("telegram down")
-        return True
+        return acknowledged_delivery(**_kwargs)
 
     use_case = ProcessListingUseCase(db=mock_db)
     use_case.listing_repo = mock_repo
@@ -802,7 +803,7 @@ async def test_bd_alert_without_a_resolvable_book_announces_the_search(
     """Sans livre résolu, l'alerte annonce la recherche, jamais le silence."""
     from app.services.market_price_service import SEARCHING_BOOK_LINE
 
-    mock_send_alert = AsyncMock(return_value=True)
+    mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
     scheduled: list[str] = []
 
     def _close_task(coro, **_kwargs):
@@ -846,7 +847,7 @@ async def test_bd_alert_records_the_cote_state_it_shipped(mock_db: AsyncMock) ->
     """La mesure porte sur l'état réellement transmis, et part après l'envoi."""
     from app.use_cases import ingest_listing as mod
 
-    mock_send_alert = AsyncMock(return_value=True)
+    mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
     seen_states: list[str] = []
     scheduled: list[str] = []
 
@@ -1160,7 +1161,7 @@ async def test_the_alert_of_an_uncatalogued_series_says_it(mock_db: AsyncMock) -
     from app.services.market_health import classify_sent_cote_state
     from app.services.market_price_service import NO_CATALOGUE_LINE
 
-    mock_send_alert = AsyncMock(return_value=True)
+    mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
     with (
         patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(

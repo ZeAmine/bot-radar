@@ -29,6 +29,7 @@ from app.services.telegram_service import send_listing_alert
 from app.use_cases import ingest_listing as ingestion
 from app.use_cases.view_market_details import ViewMarketDetailsUseCase
 from tests.database import postgres_replayed_database
+from tests.telegram_fakes import telegram_message
 
 
 @pytest.fixture
@@ -146,7 +147,7 @@ async def test_real_ingestion_and_market_panel_agree(journey, monkeypatch, case)
         item_price_cents=100,
     )
     bot = AsyncMock()
-    bot.send_message.return_value = SimpleNamespace(message_id=42)
+    bot.send_message.return_value = telegram_message()
     async with journey.db.maker() as session:
         result = await ingestion.ProcessListingUseCase(session, bot).execute(payload, {})
         assert result.matches[0].notification_sent

@@ -31,7 +31,7 @@ import uuid
 from collections.abc import AsyncGenerator, Coroutine
 from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, select
@@ -52,6 +52,7 @@ from app.services.book_metadata_service import BookMetadata, BookMetadataService
 from app.use_cases import ingest_listing
 from app.use_cases.ingest_listing import ProcessListingUseCase
 from tests.database import sqlite_only_database
+from tests.telegram_fakes import telegram_reply
 
 # ---------------------------------------------------------------- scorers fixés
 SERIES_NAME = "The Grocery"
@@ -195,10 +196,8 @@ def _make_payload(iteration: int) -> ListingIngestPayload:
 def _make_mock_bot() -> AsyncMock:
     """Bot aiogram mocké : seul l'I/O Telegram est simulé, le formatage est réel."""
     bot = AsyncMock()
-    sent = MagicMock()
-    sent.message_id = 42
-    bot.send_photo.return_value = sent
-    bot.send_message.return_value = sent
+    bot.send_photo.side_effect = telegram_reply
+    bot.send_message.side_effect = telegram_reply
     return bot
 
 
@@ -362,11 +361,9 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
     assert {reason for _book_id, reason in priced} == {"bnf_link"}, priced
 
 
-def _mark_sent(events: list[str]) -> MagicMock:
+def _mark_sent(events: list[str]):
     events.append("envoi")
-    sent = MagicMock()
-    sent.message_id = 42
-    return sent
+    return telegram_reply(chat_id=123456)
 
 
 @pytest.mark.asyncio

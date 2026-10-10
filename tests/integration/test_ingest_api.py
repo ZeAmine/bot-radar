@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.db.models.category import Category
 from app.main import app
 from tests.database import postgres_replayed_database
+from tests.telegram_fakes import acknowledged_delivery
 
 
 @pytest.fixture
@@ -200,7 +201,7 @@ async def test_ingest_bd_listing_with_market_comparison(
     with patch(
         "app.api.routes.ingest.send_listing_alert", new_callable=AsyncMock
     ) as mock_send_alert:
-        mock_send_alert.return_value = True
+        mock_send_alert.side_effect = acknowledged_delivery
 
         response = await authenticated_client.post("/api/v1/ingest/listings", json=payload)
         assert response.status_code == 200

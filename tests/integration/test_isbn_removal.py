@@ -33,6 +33,7 @@ from app.services.book_metadata_service import BookMetadata, BookMetadataService
 from app.use_cases import ingest_listing as ingestion
 from tests.add_fakes import DraftState
 from tests.database import postgres_replayed_database
+from tests.telegram_fakes import acknowledged_delivery
 
 OLD = "9782369903086"
 NEW = "9782369904151"
@@ -299,7 +300,7 @@ async def test_new_title_discovery_after_removal_is_allowed(journey, monkeypatch
 
 async def test_new_ingestion_does_not_use_removed_reference(journey, monkeypatch):
     await journey.change()
-    sender = AsyncMock(return_value=True)
+    sender = AsyncMock(side_effect=acknowledged_delivery)
     monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: sender)
     # La confirmation n'est pas le sujet : aucun travail réseau détaché dans ce scénario.
     monkeypatch.setattr(ingestion, "safe_create_task", lambda coro, **_kwargs: coro.close())

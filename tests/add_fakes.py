@@ -32,6 +32,7 @@ from app.services.book_metadata_service import (
     BookResolution,
     IsbnVerdict,
 )
+from tests.telegram_fakes import telegram_message
 
 # Bandeaux de parcours qui ont disparu au profit d'un titre unique : leur présence
 # signalerait que la carte redeviendrait dépendante du chemin qui l'a produite.
@@ -243,6 +244,6 @@ class FakeTelegramBot:
         self.send_message = AsyncMock(side_effect=self._capture)
         self.send_photo = AsyncMock(side_effect=self._capture)
 
-    async def _capture(self, **kwargs) -> MagicMock:
+    async def _capture(self, **kwargs) -> Message:
         self.sent_to_telegram.append(kwargs)
-        return MagicMock(message_id=len(self.sent_to_telegram))
+        return telegram_message(kwargs["chat_id"], len(self.sent_to_telegram))

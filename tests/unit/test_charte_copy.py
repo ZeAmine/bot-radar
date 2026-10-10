@@ -69,6 +69,7 @@ from tests.add_fakes import (
 )
 from tests.add_journey import defer_task, drain, patched, repositories
 from tests.screens import confirm_press, incoming_message, message_with_recap
+from tests.telegram_fakes import telegram_message
 
 
 def test_help_screen_leads_with_the_charte_title():
@@ -337,7 +338,7 @@ async def test_the_alert_sent_to_telegram_bolds_labels_and_leaves_values_roman()
     from app.services.telegram_service import send_listing_alert
 
     bot = MagicMock()
-    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_message = AsyncMock(return_value=telegram_message(12345, 1))
     listing = Listing(
         id=uuid.uuid4(),
         source_name="authorized-source",
@@ -361,7 +362,8 @@ async def test_the_alert_sent_to_telegram_bolds_labels_and_leaves_values_roman()
     for coro, _nom in postponed:
         coro.close()
 
-    assert sent is True
+    assert sent.outcome == "acknowledged"
+    assert sent.receipt is not None
     caption = bot.send_message.call_args.kwargs["text"]
     assert "<b>État :</b> TBE" in caption
     assert "<b>TBE</b>" not in caption
