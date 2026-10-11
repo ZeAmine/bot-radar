@@ -16,12 +16,12 @@ import subprocess
 import sys
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-HOST, PORT = "127.0.0.1", 55486
-DATABASE, USER = "radar_recipe_f52f786", "radar_recipe_user"
+HOST, PORT = "127.0.0.1", 55512
+DATABASE, USER = "radar_recipe_point7", "radar_recipe_user"
 PASSWORD = "synthetic_recipe_password"
 URL = f"postgresql+asyncpg://{USER}:{PASSWORD}@{HOST}:{PORT}/{DATABASE}?ssl=disable"
 TARGETS = [
@@ -29,6 +29,10 @@ TARGETS = [
     "tests/integration/test_delivery_persistence.py",
     "tests/integration/test_ingest_serialization.py",
     "tests/integration/test_postgresql_notification_reservation.py",
+    "tests/integration/test_annual_market_reference.py",
+    "tests/integration/test_market_refresh_state.py",
+    "tests/integration/test_bd_preparation.py",
+    "tests/integration/test_alert_market_panel.py",
     "tests/integration/test_series_pricing_concurrency.py"
     "::test_two_committing_tomes_leave_the_complete_series_total",
 ]
@@ -141,7 +145,7 @@ async def verify_identity(system_id: str) -> None:
 
 
 async def seed_old_schema() -> dict[str, list[dict[str, Any]]]:
-    """Peuple le véritable schéma 0010 par réflexion, sans create_all."""
+    """Peuple le véritable schéma 0011 par réflexion, sans create_all."""
     from sqlalchemy import MetaData, insert, select, text
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -151,12 +155,12 @@ async def seed_old_schema() -> dict[str, list[dict[str, Any]]]:
     try:
         async with engine.begin() as connection:
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0010_alert_preparation"
+                "0011_notification_state"
             )
             metadata = MetaData()
             await connection.run_sync(metadata.reflect)
             tables = metadata.tables
-            assert "notification_state" not in tables["listing_matches"].c
+            assert "annual_low_cents" not in tables["book_market_cache"].c
             categories = select(tables["categories"].c.id).limit(1)
             cid: Any = (await connection.execute(categories)).scalar_one()
             await connection.execute(insert(tables["users"]), {
@@ -182,9 +186,30 @@ async def seed_old_schema() -> dict[str, list[dict[str, Any]]]:
                     "price_matches": True, "notified_at": now if index == 0 else None,
                     "created_at": now,
                 })
+            bid = uuid.uuid4()
+            await connection.execute(insert(tables["books"]), {
+                "id": bid, "title": "Livre synthétique", "normalized_title": "livre synthetique",
+                "language": "fr", "created_at": now, "updated_at": now,
+            })
+            await connection.execute(insert(tables["book_market_cache"]), {
+                "id": uuid.uuid4(), "book_id": bid, "lowest_delivered_price_cents": 2000,
+                "historical_low_1y_cents": 50, "historical_low_at": now - timedelta(days=500),
+                "checked_at": now, "expires_at": now + timedelta(days=1),
+                "comparison_status": "AVAILABLE", "created_at": now, "updated_at": now,
+            })
+            for price, shipping in [(1200, 0), (0, None), (900, None)]:
+                await connection.execute(insert(tables["market_price_snapshots"]), {
+                    "id": uuid.uuid4(), "book_id": bid, "provider_name": "synthetic",
+                    "item_price_cents": price, "shipping_price_cents": shipping,
+                    "delivered_price_cents": price, "currency": "EUR",
+                    "source_url": "https://example.invalid/item", "item_condition": "Très bon",
+                    "checked_at": now - timedelta(days=80), "is_comparable": True,
+                    "confidence": "HIGH", "raw_payload": {"historical_low_1y_cents": 50},
+                })
             return {name: [dict(row) for row in (await connection.execute(
                 select(tables[name]).order_by(tables[name].c.id)
-            )).mappings()] for name in ("users", "alerts", "listings", "listing_matches")}
+            )).mappings()] for name in ("users", "alerts", "listings", "listing_matches", "books",
+                         "book_market_cache", "market_price_snapshots")}
     finally:
         await engine.dispose()
 
@@ -218,23 +243,18 @@ async def verify_migration(before: dict[str, list[dict[str, Any]]]) -> None:
                     select(*columns).order_by(table.c.id)
                 )).mappings()]
                 assert rows == old_rows, f"Preuves historiques altérées : {name}"
-            matches = (await connection.execute(
-                select(metadata.tables["listing_matches"])
-            )).mappings()
-            for row in matches:
-                assert row["notification_state"] == (
-                    "notified" if row["notified_at"] is not None else "unknown"
-                )
-                for key in ("attempt_count", "attempt_id", "attempt_started_at", "next_attempt_at",
-                            "telegram_chat_id", "telegram_bot_id", "telegram_message_id"):
-                    assert row[key] is None, f"Preuve inventée : {key}"
-                if row["notified_at"] is None:
-                    assert row["notification_reason"] == "legacy_unclassified"
+            for name in ("book_market_cache", "market_price_snapshots"):
+                table = metadata.tables[name]
+                rows_new = (await connection.execute(select(table))).mappings()
+                old_keys = before[name][0].keys()
+                for row in rows_new:
+                    assert all(row[key] is None for key in row if key not in old_keys)
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0011_notification_state"
+                "0012_annual_observations"
             )
-            print("MIGRATION_PROOF", json.dumps({"old_matches": 3, "notified": 1,
-                  "unknown": 2, "old_rows_unchanged": True, "invented_evidence": False}))
+            print("MIGRATION_PROOF", json.dumps({"old_rows_unchanged": True,
+                  "new_provenance_null": True, "old_snapshots": 3,
+                  "revision": "0012_annual_observations"}))
     finally:
         await engine.dispose()
 
@@ -275,10 +295,10 @@ def main() -> int:
             if arguments.reset_synthetic_schema:
                 asyncio.run(reset_synthetic_schema())
             config = Config("alembic.ini")
-            command.upgrade(config, "0010_alert_preparation")
+            command.upgrade(config, "0011_notification_state")
             before = asyncio.run(seed_old_schema())
             asyncio.run(verify_identity(arguments.system_id))
-            command.upgrade(config, "0011_notification_state")
+            command.upgrade(config, "0012_annual_observations")
             asyncio.run(verify_migration(before))
             result = 0
         elif arguments.mode == "typecheck":
@@ -325,7 +345,8 @@ def main() -> int:
                 "--tb=short", *(TARGETS if arguments.mode == "tests" else TARGETS[-1:]),
             ], plugins=plugins))
             if arguments.mode == "tests":
-                assert len(reports) == 78, "Collecte incomplète"
+                print("RECIPE_EXECUTED", len(reports), flush=True)
+                assert len(reports) == 143, "Collecte incomplète (78 antérieurs + 65 du point 7)"
                 assert all(phases == {"setup": "passed", "call": "passed", "teardown": "passed"}
                            for phases in reports.values()), "Scénario non exécuté ou en échec"
     finally:

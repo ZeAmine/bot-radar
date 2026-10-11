@@ -1,7 +1,7 @@
 """Tests unitaires pour ProcessListingUseCase et AsyncEnrichListingUseCase."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -456,6 +456,8 @@ async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> No
         lowest_delivered_price_cents=1200,
         comparison_status=ComparisonStatus.AVAILABLE,
         historical_low_1y_cents=1000,
+        checked_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
     )
     mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
 
@@ -484,7 +486,7 @@ async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> No
     schedule.assert_not_called()
     _, kwargs = mock_send_alert.call_args
     line = kwargs["market_comparison_line"]
-    assert "<b>Prix bas constaté (T6) :</b> 10,00 €" in line
+    assert "<b>Prix du marché (T6) :</b> 12,00 €" in line
     assert "Écart" in line
     assert PENDING_COTE_LINE not in line
     assert book.market_cache is cache
@@ -584,6 +586,8 @@ async def test_series_alert_does_not_reprice_a_priced_sibling(mock_db: AsyncMock
             lowest_delivered_price_cents=800,
             comparison_status=ComparisonStatus.AVAILABLE,
             historical_low_1y_cents=750,
+            checked_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
         )
         alert.alert_books = [MagicMock(book=book), MagicMock(book=sibling)]
         use_case.listing_repo = mock_repo
@@ -1071,6 +1075,8 @@ async def test_bnf_link_for_a_series_links_and_prices_every_tome(wait_for_prices
             lowest_delivered_price_cents=1200,
             comparison_status=ComparisonStatus.AVAILABLE,
             historical_low_1y_cents=1000,
+        checked_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
         )
         repo_cls.return_value.get_by_id = AsyncMock(
             side_effect=lambda book_id: MagicMock(

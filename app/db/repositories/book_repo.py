@@ -39,6 +39,15 @@ class BookRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def _refresh_annual(self, books: list[Book]) -> None:
+        """Projection de lecture groupée : ni nouvelle observation, ni écriture."""
+        from app.db.repositories.market_price_repo import MarketPriceRepository
+
+        await MarketPriceRepository(self.session).refresh_annual_references(
+            [book.id for book in books],
+            persist=False,
+        )
+
     async def get_by_id(self, book_id: uuid.UUID, *, refresh: bool = False) -> Book | None:
         """Récupère un livre par son UUID avec son cache de marché."""
         stmt = (
@@ -48,13 +57,17 @@ class BookRepository:
             .execution_options(populate_existing=refresh)
         )
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        book = result.scalar_one_or_none()
+        await self._refresh_annual([book] if book else [])
+        return book
 
     async def get_by_isbn13(self, isbn13: str) -> Book | None:
         """Recherche un livre par son ISBN-13 exact."""
         stmt = select(Book).options(*self._BOOK_CACHE_LOAD).where(Book.isbn13 == isbn13.strip())
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        book = result.scalar_one_or_none()
+        await self._refresh_annual([book] if book else [])
+        return book
 
     async def get_by_normalized_title(self, normalized_title: str) -> list[Book]:
         """Recherche des livres par titre normalisé."""
@@ -64,7 +77,9 @@ class BookRepository:
             .where(Book.normalized_title == normalized_title.strip())
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        books = list(result.scalars().all())
+        await self._refresh_annual(books)
+        return books
 
     async def create(
         self,
@@ -187,7 +202,9 @@ class BookRepository:
             .distinct()
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        books = list(result.scalars().all())
+        await self._refresh_annual(books)
+        return books
 
     async def get_books_needing_price_refresh(self, limit: int = 8) -> list[Book]:
         """Charge un lot prioritaire de livres BD dont le cache est expiré, absent ou ancien.
@@ -226,7 +243,9 @@ class BookRepository:
             return []
         stmt = select(Book).options(selectinload(Book.market_cache)).where(Book.id.in_(book_ids))
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        books = list(result.scalars().all())
+        await self._refresh_annual(books)
+        return books
 
     async def get_book_for_alert(self, alert_id: uuid.UUID) -> Book | None:
         """Récupère le livre associé à une alerte avec son cache de marché préchargé."""
@@ -259,7 +278,9 @@ class BookRepository:
             .execution_options(populate_existing=True)
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        books = list(result.scalars().all())
+        await self._refresh_annual(books)
+        return books
 
     async def resolve_book_for_listing(
         self,

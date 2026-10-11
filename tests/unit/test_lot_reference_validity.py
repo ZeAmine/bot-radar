@@ -110,15 +110,16 @@ def test_current_single_tome_uses_same_admissibility(expires):
     assert not market.has_usable_price(single.market_cache)
 
 
-def test_historical_policy_is_preserved_without_annual_revalidation():
+def test_undated_legacy_minimum_does_not_make_a_lot_admissible():
     books = [
         book(1, expires=None, historical=800),
         book(2, expires=NOW - timedelta(days=400), historical=900),
     ]
     summary, panel = render(books, [1, 2])
-    assert "17,00" in summary
-    assert "Prix bas constaté" in summary
-    assert "Total du lot :</b> ~17,00" in panel
+    assert "17,00" not in summary
+    assert "Écart" not in summary
+    assert "Total du lot" not in panel
+    assert "indisponible" in summary
 
 
 def test_incoherent_persisted_series_total_is_only_hidden():

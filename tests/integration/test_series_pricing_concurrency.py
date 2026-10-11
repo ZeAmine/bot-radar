@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.engine import make_url
@@ -77,6 +78,7 @@ async def test_two_committing_tomes_leave_the_complete_series_total(monkeypatch)
             async with database.maker() as tx:
                 offer = MarketOffer(
                     provider_name="source",
+                    observed_at=datetime.now(UTC),
                     item_price_cents=price,
                     shipping_price_cents=0,
                     delivered_price_cents=price,

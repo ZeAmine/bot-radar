@@ -42,6 +42,10 @@ class MarketPriceSnapshot(Base, UUIDPrimaryKeyMixin):
         index=True,
         nullable=False,
     )
+    # NULL sur les anciens relevés : leur checked_at garde son sens d'origine.
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    annual_eligible: Mapped[bool | None] = mapped_column(Boolean)
+    observed_merchant: Mapped[str | None] = mapped_column(String(100))
     is_comparable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     confidence: Mapped[MatchConfidence] = mapped_column(
         Enum(MatchConfidence, native_enum=False, length=20),

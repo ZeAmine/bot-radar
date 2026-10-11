@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import uuid
+from datetime import UTC, datetime
 
 import httpx
 
@@ -59,7 +61,7 @@ class ProviderRegistry:
         """Interroge un unique fournisseur sous protection de sémaphore et timeout."""
         async with self._semaphore:
             try:
-                return await asyncio.wait_for(
+                offers = await asyncio.wait_for(
                     provider.get_offers(
                         isbn13=isbn13,
                         title=title,
@@ -68,6 +70,13 @@ class ProviderRegistry:
                     ),
                     timeout=PROVIDER_TIMEOUT_SECONDS,
                 )
+                observed_at = datetime.now(UTC)
+                for offer in offers or []:
+                    if offer.observed_at is None:
+                        offer.observed_at = observed_at
+                    if offer.observation_id is None:
+                        offer.observation_id = uuid.uuid4()
+                return offers
             except Exception as exc:
                 logger.debug(
                     "Erreur lors de l'appel au provider '%s': %s",

@@ -74,7 +74,10 @@ async def test_creation_reloads_a_cache_written_in_another_session(monkeypatch):
                 from app.db.repositories.market_price_repo import MarketPriceRepository
 
                 changed = await MarketPriceRepository(other).get_cache_by_book_id(book_id)
+                from datetime import UTC, datetime, timedelta
                 changed.lowest_delivered_price_cents = 1500
+                changed.checked_at = datetime.now(UTC)
+                changed.expires_at = changed.checked_at + timedelta(hours=24)
                 await other.commit()
                 return changed
 
@@ -84,6 +87,9 @@ async def test_creation_reloads_a_cache_written_in_another_session(monkeypatch):
         monkeypatch.setattr(preparation, "AsyncSessionLocal", database.maker)
         monkeypatch.setattr(preparation, "preparation_runner", preparation.PreparationRunner())
         state = DraftState()
+        # Ce double local doit fournir l'identité FSM utilisée par le guard du point 5.
+        state.storage = object()
+        state.key = ("synthetic", 1414)
         state.data = {
             "name": "Livre",
             "category_slug": "bd_comics",

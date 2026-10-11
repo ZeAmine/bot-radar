@@ -157,7 +157,13 @@ class ListingRepository:
             )
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        alerts = list(result.scalars().all())
+        if category_slug == CategorySlug.BD_COMICS.value:
+            from app.db.repositories.market_price_repo import MarketPriceRepository
+
+            ids = list({link.book_id for alert in alerts for link in alert.alert_books})
+            await MarketPriceRepository(self.session).refresh_annual_references(ids, persist=False)
+        return alerts
 
     async def match_notification_state(
         self,

@@ -15,12 +15,14 @@ def test_market_card_has_one_refresh_date_and_a_warning_below_the_header():
     book = create_book_with_cache()
     book.market_cache.collection_status = "partial"
     book.market_cache.last_attempt_at = datetime(2026, 10, 7, 15, 4, tzinfo=UTC)
-    book.market_cache.historical_low_at = datetime(2026, 10, 6, 20, 45, tzinfo=UTC)
+    book.market_cache.annual_low_observed_at = datetime(2026, 10, 6, 20, 45, tzinfo=UTC)
+    book.market_cache.annual_first_at = book.market_cache.annual_low_observed_at
+    book.market_cache.annual_last_at = book.market_cache.annual_low_observed_at
     book.market_cache.failed_provider_names = ["secret_source"]
     card = MarketPriceService.format_market_details_card(None, book)
     assert card.splitlines()[2] == "<i>⚠️ Actualisation partielle (07/10 à 17:04)</i>"
     assert "📚 <b>Blacksad" in card
-    assert "<b>Minimum sur 1 an :</b> 22,00 € (06/10 à 22:45)" in card
+    assert "<b>Minimum des relevés sur 365 jours :</b> 22,00 € (06/10/2026 20:45:00 UTC)" in card
     assert "<b>Meilleure offre actuelle :</b> 22,00 €" in card
     assert card.count("07/10 à 17:04") == 1
     assert "Dernière tentative" not in card
@@ -41,7 +43,7 @@ def test_a_failed_collection_without_any_price_is_no_longer_in_progress():
     from app.services.market_health import classify_sent_cote_state
     from app.services.market_price_service import cote_absence_line
 
-    book = create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None)
+    book = create_book_with_cache(lowest_delivered_cents=None, annual_low_cents=None)
     book.market_cache.checked_at = None
     book.market_cache.last_attempt_at = datetime(2026, 10, 7, 15, 4, tzinfo=UTC)
     book.market_cache.collection_status = "failed"
@@ -59,7 +61,7 @@ def create_book_with_cache(
     lowest_delivered_cents: int | None = 2200,
     status: ComparisonStatus = ComparisonStatus.AVAILABLE,
     expired: bool = False,
-    historical_low_1y_cents: int | None = 2200,
+    annual_low_cents: int | None = 2200,
 ) -> Book:
     book = Book(
         id=uuid.uuid4(),
@@ -80,8 +82,15 @@ def create_book_with_cache(
         checked_at=now,
         expires_at=expires_at,
         comparison_status=status,
-        historical_low_1y_cents=historical_low_1y_cents,
-        historical_low_at=now if historical_low_1y_cents is not None else None,
+        annual_low_cents=annual_low_cents,
+        annual_low_observed_at=now,
+        annual_low_snapshot_id=uuid.uuid4(),
+        annual_low_provider="synthetic",
+        annual_first_at=now,
+        annual_last_at=now,
+        annual_count=1,
+        annual_computed_at=now,
+        annual_expires_at=now + timedelta(days=365),
     )
     book.market_cache = cache
     return book
@@ -103,49 +112,49 @@ def create_listing(estimated_total_cents: int | None) -> Listing:
 
 
 def test_comparator_vinted_cheaper_than_market():
-    # Vinted total : 13,69 € (1369 cts), Prix bas constaté : 22,00 € (2200 cts) -> Vinted -8,31 €
-    book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=2200)
+    # Total Vinted 13,69 €, référence documentée 22,00 € : écart −8,31 €.
+    book = create_book_with_cache(lowest_delivered_cents=2200, annual_low_cents=2200)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 22,00 €" in summary
+    assert "<b>Minimum des relevés sur 365 jours :</b> 22,00 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart :</b> -8,31 € ✅" in summary
 
 
 def test_comparator_vinted_very_good_deal_fire_badge():
     # Économie importante (>= 10 €) -> Badge ✅
-    book = create_book_with_cache(lowest_delivered_cents=3000, historical_low_1y_cents=3000)
+    book = create_book_with_cache(lowest_delivered_cents=3000, annual_low_cents=3000)
     listing = create_listing(estimated_total_cents=1500)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 30,00 €" in summary
+    assert "<b>Minimum des relevés sur 365 jours :</b> 30,00 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart :</b> -15,00 € ✅" in summary
 
 
 def test_comparator_vinted_more_expensive_than_market():
-    # Vinted total : 25,00 € (2500 cts), Prix bas constaté : 20,00 € (2000 cts) -> Vinted +5,00 €
-    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    # Total Vinted 25,00 €, référence documentée 20,00 € : écart +5,00 €.
+    book = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
     listing = create_listing(estimated_total_cents=2500)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 20,00 €" in summary
+    assert "<b>Minimum des relevés sur 365 jours :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart :</b> +5,00 € ⛔️" in summary
 
 
 def test_comparator_small_difference_warning():
     # Écart très faible (50 centimes) -> Vinted plus cher donc ⛔️
-    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    book = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
     listing = create_listing(estimated_total_cents=2050)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 20,00 €" in summary
+    assert "<b>Minimum des relevés sur 365 jours :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart :</b> +0,50 € ⛔️" in summary
 
@@ -159,9 +168,9 @@ def test_gap_marker_closes_the_line_and_stays_out_of_a_null_gap():
     décalage ne se voit plus. À l'écart nul, « au prix de référence » porte
     déjà le sens : un marqueur vert y serait une approbation de trop.
     """
-    above = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
-    below = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=2200)
-    equal = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    above = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
+    below = create_book_with_cache(lowest_delivered_cents=2200, annual_low_cents=2200)
+    equal = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
 
     summary_above = MarketPriceService.get_comparison_summary(
         create_listing(estimated_total_cents=2500), above
@@ -193,7 +202,7 @@ def test_gap_marker_closes_the_line_and_stays_out_of_a_null_gap():
 
 
 def test_comparator_market_unavailable():
-    book = create_book_with_cache(status=ComparisonStatus.UNAVAILABLE, historical_low_1y_cents=None)
+    book = create_book_with_cache(status=ComparisonStatus.UNAVAILABLE, annual_low_cents=None)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
@@ -201,7 +210,7 @@ def test_comparator_market_unavailable():
 
 
 def test_comparator_market_cache_expired():
-    book = create_book_with_cache(expired=True, historical_low_1y_cents=None)
+    book = create_book_with_cache(expired=True, annual_low_cents=None)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
@@ -217,13 +226,13 @@ def test_comparator_no_book_or_cache():
 def test_comparator_with_historical_low_1y():
     # Vinted total : 13,69 €, Plus bas historique : 18,50 €
     # L'écart est calculé par rapport au prix bas constaté (13,69 - 18,50 = -4,81 €)
-    book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=1850)
+    book = create_book_with_cache(lowest_delivered_cents=2200, annual_low_cents=1850)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     assert "Prix du marché" not in summary
-    assert "<b>Prix bas constaté :</b> 18,50 €" in summary
+    assert "<b>Minimum des relevés sur 365 jours :</b> 18,50 €" in summary
     assert "<b>Écart :</b> -4,81 € ✅" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
@@ -236,7 +245,7 @@ def test_comparator_with_historical_low_1y():
 
 def test_comparator_no_historical_low_falls_back_to_live_market_price():
     """Vérifie que sans historique 1 an, le résumé se replie sur le prix du marché direct."""
-    book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=None)
+    book = create_book_with_cache(lowest_delivered_cents=2200, annual_low_cents=None)
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
@@ -279,20 +288,20 @@ def test_comparator_historical_low_when_status_unavailable():
     book = create_book_with_cache(
         status=ComparisonStatus.UNAVAILABLE,
         lowest_delivered_cents=None,
-        historical_low_1y_cents=1850,
+        annual_low_cents=1850,
     )
     listing = create_listing(estimated_total_cents=1369)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     assert "Prix du marché" not in summary
-    assert "<b>Prix bas constaté :</b> 18,50 €" in summary
+    assert "<b>Minimum des relevés sur 365 jours :</b> 18,50 €" in summary
     assert "<b>Écart :</b> -4,81 € ✅" in summary
 
     # Vérifier que le panneau 'Prix du marché' affiche le prix bas constaté
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "📊 <b>Prix du marché</b>" in card
-    assert "<b>Minimum sur 1 an :</b> 18,50 €" in card
+    assert "<b>Minimum des relevés sur 365 jours :</b> 18,50 €" in card
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
@@ -306,7 +315,7 @@ def test_comparator_single_book_series_fallback():
     # Si book est None mais que books_in_series contient 1 livre
     book = create_book_with_cache(
         lowest_delivered_cents=None,
-        historical_low_1y_cents=1548,
+        annual_low_cents=1548,
     )
     listing = create_listing(estimated_total_cents=1200)
 
@@ -316,14 +325,14 @@ def test_comparator_single_book_series_fallback():
         books_in_series=[book],
     )
     assert "📊 <b>Prix du marché</b>" in card
-    assert "<b>Minimum sur 1 an :</b> 15,48 €" in card
+    assert "<b>Minimum des relevés sur 365 jours :</b> 15,48 €" in card
 
 
 def test_comparator_no_price_at_all_returns_unavailable():
     # Si le cache n'a ni offre directe ni historique 1 an
     book = create_book_with_cache(
         lowest_delivered_cents=None,
-        historical_low_1y_cents=None,
+        annual_low_cents=None,
     )
     listing = create_listing(estimated_total_cents=1200)
 
@@ -432,7 +441,7 @@ def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_
 
     book = create_book_with_cache(
         lowest_delivered_cents=2104,
-        historical_low_1y_cents=548,
+        annual_low_cents=548,
     )
     snap = MarketPriceSnapshot(
         book_id=book.id,
@@ -466,7 +475,7 @@ def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_
     card = MarketPriceService.format_market_details_card(listing, book)
 
     # 1. Vérifier la présence de la cote 1 an
-    assert "<b>Minimum sur 1 an :</b> 5,48 €" in card
+    assert "<b>Minimum des relevés sur 365 jours :</b> 5,48 €" in card
     # 2. Vérifier la présence du comparatif boutique
     assert "<b>Comparatif par boutique :</b>" in card
     assert "• Momox : 21,04 € (Très bon)" in card
@@ -481,21 +490,21 @@ def test_summary_and_card_share_the_same_reference_price():
     Régression : le panneau écrasait la cote 1 an par le prix du jour, si bien que
     les deux écrans affichaient deux références différentes pour le même livre.
     """
-    book = create_book_with_cache(lowest_delivered_cents=2200, historical_low_1y_cents=548)
+    book = create_book_with_cache(lowest_delivered_cents=2200, annual_low_cents=548)
     listing = create_listing(estimated_total_cents=1200)
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     card = MarketPriceService.format_market_details_card(listing, book)
 
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 5,48 €" in summary
-    assert "<b>Minimum sur 1 an :</b> 5,48 €" in card
+    assert "<b>Minimum des relevés sur 365 jours :</b> 5,48 €" in summary
+    assert "<b>Minimum des relevés sur 365 jours :</b> 5,48 €" in card
     assert "<b>Prix du marché :</b> 22,00 €" not in card
 
 
 def test_summary_uses_vinted_total_including_shipping():
     """L'écart compare le total Vinted (port inclus), pas le prix de l'article seul."""
-    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    book = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
     # Prix article 1 500 cts, total estimé 2 400 cts (protection + port)
     listing = create_listing(estimated_total_cents=None)
     listing.item_price_cents = 1500
@@ -509,12 +518,12 @@ def test_summary_uses_vinted_total_including_shipping():
 def test_lot_summary_reports_partial_tome_matching():
     """Un lot dont un tome n'a pas de cote ne doit pas cumuler les tomes non appariées."""
     books = [
-        create_book_with_cache(lowest_delivered_cents=1600, historical_low_1y_cents=1600),
-        create_book_with_cache(lowest_delivered_cents=1850, historical_low_1y_cents=1850),
+        create_book_with_cache(lowest_delivered_cents=1600, annual_low_cents=1600),
+        create_book_with_cache(lowest_delivered_cents=1850, annual_low_cents=1850),
     ]
     books[0].title = "RIP — Tome 1"
     books[1].title = "RIP — Tome 2"
-    tome3 = create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None)
+    tome3 = create_book_with_cache(lowest_delivered_cents=None, annual_low_cents=None)
     tome3.title = "RIP — Tome 3"
     books.append(tome3)
 
@@ -535,8 +544,8 @@ def test_lot_summary_reports_partial_tome_matching():
 def test_inferred_lot_label_says_the_composition_was_deduced():
     """Un lot composé par nous ne doit pas se lire comme un inventaire du vendeur."""
     books = [
-        create_book_with_cache(lowest_delivered_cents=1600, historical_low_1y_cents=1600),
-        create_book_with_cache(lowest_delivered_cents=1850, historical_low_1y_cents=1850),
+        create_book_with_cache(lowest_delivered_cents=1600, annual_low_cents=1600),
+        create_book_with_cache(lowest_delivered_cents=1850, annual_low_cents=1850),
     ]
     books[0].title = "RIP — Tome 1"
     books[1].title = "RIP — Tome 2"
@@ -554,14 +563,15 @@ def test_inferred_lot_label_says_the_composition_was_deduced():
         listing=listing, book=None, books_in_series=books, tome_result=tome_res
     )
     assert summary is not None
-    assert "<b>Prix bas constaté (Lot de 2 tomes, composition déduite) :</b> ~34,50 €" in summary
+    assert ("<b>Somme des minima documentés (dates distinctes) "
+            "(Lot de 2 tomes, composition déduite) :</b> ~34,50 €") in summary
 
 
 def test_inferred_lot_label_keeps_the_partial_coverage():
     """La couverture réelle reste annoncée, même quand la composition est déduite."""
     books = [
-        create_book_with_cache(lowest_delivered_cents=1600, historical_low_1y_cents=1600),
-        create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None),
+        create_book_with_cache(lowest_delivered_cents=1600, annual_low_cents=1600),
+        create_book_with_cache(lowest_delivered_cents=None, annual_low_cents=None),
     ]
     books[0].title = "RIP — Tome 1"
     books[1].title = "RIP — Tome 2"
@@ -586,7 +596,7 @@ def test_inferred_lot_label_keeps_the_partial_coverage():
 
 def test_details_card_rejects_unsafe_offer_link():
     """Une URL non publique ou porteuse de HTML brut ne doit jamais être rendue cliquable."""
-    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    book = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
     book.market_cache.best_source_url = "javascript:alert(1)"
     listing = create_listing(estimated_total_cents=1200)
 
@@ -596,7 +606,7 @@ def test_details_card_rejects_unsafe_offer_link():
 
 def test_details_card_escapes_offer_link():
     """L'URL de l'offre est échappée pour ne pas casser le HTML Telegram."""
-    book = create_book_with_cache(lowest_delivered_cents=2000, historical_low_1y_cents=2000)
+    book = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
     book.market_cache.best_source_url = "https://recyclivre.com/livre?a=1&b=2"
     listing = create_listing(estimated_total_cents=1200)
 
@@ -630,7 +640,7 @@ def _tome_book(title: str, price_cents: int | None) -> Book:
         comparison_status=ComparisonStatus.AVAILABLE,
         checked_at=now,
         expires_at=now + timedelta(hours=24),
-        historical_low_1y_cents=price_cents,
+        annual_low_cents=price_cents,
     )
     return book
 
@@ -725,7 +735,7 @@ def _tome_book_with_settled_absence(title: str, *, checked_at: datetime | None =
         comparison_status=ComparisonStatus.UNAVAILABLE,
         checked_at=datetime.now(UTC) if checked_at is None else checked_at,
         expires_at=None,
-        historical_low_1y_cents=None,
+        annual_low_cents=None,
     )
     return book
 
@@ -879,7 +889,7 @@ def test_lot_status_keeps_a_failed_tome_visible_after_another_tome_succeeds():
 
 
 def test_a_series_with_failed_unpriced_tomes_does_not_promise_pending_prices():
-    book = create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None)
+    book = create_book_with_cache(lowest_delivered_cents=None, annual_low_cents=None)
     book.title = "Série Tome 1"
     book.market_cache.collection_status = "failed"
     other = create_book_with_cache()
@@ -894,7 +904,7 @@ def test_series_with_one_empty_tome_does_not_claim_the_whole_collection_is_empty
     first.title = "Série Tome 1"
     first.market_cache.collection_status = "complete"
     first.market_cache.last_attempt_at = datetime(2026, 10, 6, tzinfo=UTC)
-    second = create_book_with_cache(lowest_delivered_cents=None, historical_low_1y_cents=None)
+    second = create_book_with_cache(lowest_delivered_cents=None, annual_low_cents=None)
     second.title = "Série Tome 2"
     second.market_cache.collection_status = "empty"
     second.market_cache.last_attempt_at = datetime(2026, 10, 7, tzinfo=UTC)

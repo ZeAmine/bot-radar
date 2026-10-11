@@ -26,7 +26,7 @@ fournit la ligne de cote. L'ISBN déclaré par le vendeur n'est pas cette confir
 """
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -112,16 +112,15 @@ EXPECTED_CAPTION = "\n".join(
     ]
 )
 
-# BD : la ligne de cote vient du cache déjà alimenté (prix bas constaté sur un an,
-# ADR-016), comparée au total Vinted calculé par le produit.
+# BD : ancien minimum non vérifiable exclu, repli sur le prix courant frais.
 EXPECTED_CAPTION_BD = "\n".join(
     [
         "🆕 <b>Blacksad — Intégrale</b>",
         "<b>Prix :</b> 9,00 € (13,03 € TTC)",
         "<b>État :</b> TBE",
         "",
-        "<b>Prix bas constaté :</b> 18,00 €",
-        "<b>Écart :</b> -4,97 € ✅",
+        "<b>Prix du marché :</b> 20,00 € (Momox)",
+        "<b>Écart :</b> -6,97 € ✅",
         "",
         "<b>Mots-clés :</b> blacksad",
     ]
@@ -355,3 +354,38 @@ async def test_an_isbn_alert_delivers_the_priced_book_cote_line(
     assert published_caption(bot) == EXPECTED_CAPTION_BD
     bot.send_photo.assert_awaited_once()
     bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_losing_the_historical_reference_does_not_reject_a_matching_listing(
+    ingestion_db: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vrai chemin HTTP/matching/envoi/commit, cote absente et transports simulés."""
+    from sqlalchemy import select
+
+    from app.db.models.listing_match import ListingMatch
+    monkeypatch.setattr(settings, "AI_ENABLED", False)
+    # Le repli de fond est observé sans démarrer de collecte extérieure.
+    pricing = MagicMock()
+    monkeypatch.setattr("app.use_cases.ingest_listing.schedule_book_pricing", pricing)
+    alert = await _seed_alert(
+        ingestion_db, category=Category(slug="bd_comics", label="BD", emoji="B", is_active=True),
+        alert_name="Blacksad", include_keywords=["blacksad"],
+        variants=[], max_item_price_cents=1500,
+    )
+    alert.isbn = BD_ISBN
+    await ingestion_db.commit()
+    await _seed_priced_book(ingestion_db)
+    cache = (await ingestion_db.scalars(select(BookMarketCache))).one()
+    cache.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await ingestion_db.commit()
+    bot = FakeTelegramBot()
+    payload = await _scraped_payload(BD_ITEM_ID, category_slug="bd_comics", isbn13=BD_ISBN)
+    response = await _post_listing(ingestion_db, bot, payload)
+    assert response.status_code == 200
+    assert response.json()["matches"][0]["notification_sent"]
+    assert len(bot.sent_to_telegram) == 1
+    assert "Écart" not in published_caption(bot)
+    async with AsyncSession(bind=ingestion_db.bind, expire_on_commit=False) as reader:
+        row = (await reader.scalars(select(ListingMatch))).one()
+        assert row.notified_at is not None

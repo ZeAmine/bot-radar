@@ -679,3 +679,32 @@ curl -X GET "https://radar.aminezegmou.fr/api/v1/internal/vinted/session" \
 ---
 
 _BotRadar — Conçu avec rigueur et précision pour des acquisitions de seconde main instantanées et éclairées._ 🛰️
+
+### Référence glissante documentée des prix
+
+La comparaison privilégie le minimum des offres livrées comparables effectivement
+conservées dans `T − 365 jours < observed_at ≤ T`, à l'instant UTC `T`. À défaut,
+elle utilise le prix courant encore admissible ; une offre périmée reste seulement
+informative. Les règles de montant, port, état, arrondi et seuil utilisateur sont
+inchangées : perdre une cote ne rejette pas une annonce conforme à ce seuil.
+
+Le cache possède une projection annuelle distincte, recalculée en SQL local groupé
+à échéance, sans appel fournisseur. Une projection expirée n'est jamais admissible.
+Les minima ex æquo privilégient le relevé le plus récent, puis l'identifiant le plus
+petit. La couverture est toujours annoncée partielle, avec nombre et bornes des
+relevés ; une durée d'un an n'atteste aucune observation continue. Les sommes de
+références individuelles ne prétendent pas avoir été observées simultanément.
+
+Les anciens minima et les agrégats sans date du minimum sont conservés comme
+informations non vérifiables, hors calcul annuel. Les snapshots anciens admissibles
+utilisent leur date locale d'enregistrement originale ; aucune date fournisseur
+n'est inventée. Les observations nouvelles portent une date UTC et un identifiant
+stables à travers rollback et nouvelle sauvegarde. Les observations financières
+normalisées admissibles sont conservées 366 jours (marge technique hors fenêtre),
+les payloads bruts 90 jours ; les autres rétentions restent inchangées. Les périodes
+déjà purgées ne sont pas reconstruites.
+
+La migration additive `0012_annual_observations`, après `0011_notification_state`,
+laisse les nouvelles preuves à NULL et conserve les colonnes antérieures. Le retour
+à un ancien code pouvant comparer les minima non vérifiables exige une décision
+explicite ; le downgrade automatique est refusé.
