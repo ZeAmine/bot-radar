@@ -57,7 +57,8 @@ async def handle_status(message: Message, db_session: Any) -> None:
     elif poller_data and poller_data.get("status") == "active":
         last_poll = poller_data.get("last_poll_at")
         if (
-            type(last_poll) not in (int, float) or not 0 < last_poll <= now.timestamp()
+            isinstance(last_poll, bool) or not isinstance(last_poll, (int, float))
+            or not 0 < last_poll <= now.timestamp()
         ):
             poller_status = "⚪ <b>Inconnu</b> (horodatage absent ou invalide)"
         else:

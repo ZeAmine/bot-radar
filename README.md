@@ -1,7 +1,7 @@
 # BotRadar 🛰️
 
 [![CI](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-531%20passed-success?style=flat&logo=pytest)](https://docs.pytest.org/)
+[![Tests](https://img.shields.io/badge/Tests-versionnes-blue?style=flat&logo=pytest)](https://docs.pytest.org/)
 [![Linter](https://img.shields.io/badge/Linter-Ruff%20strict-black?style=flat&logo=ruff)](https://astral.sh/ruff)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=flat&logo=python)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
@@ -249,7 +249,7 @@ Le projet est outillé avec un pipeline d'Intégration Continue via GitHub Actio
 
 - **Ruff** : Linting strict conforme aux règles modernes Python 3.12 (longueur de ligne max 100 caractères, imports ordonnés, conventions PEP).
 - **Pytest & Pytest-Asyncio** : tests versionnés d'ingestion, de matching, du FSM Telegram, du cache, du poller et de l'IA. Les six benchmarks locaux (`make bench`) utilisent des doubles et ne valident pas une latence depuis la publication ou une livraison réelle ; leurs frontières sont détaillées dans [`docs/alert-latency.md`](docs/alert-latency.md). Le nombre de tests et leur résultat dépendent de la révision et du périmètre exécutés.
-- **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml`, **zéro erreur** sur les 134 fichiers de `app/`, vérifié en CI (`mypy app` bloque la pull request).
+- **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml` ; `mypy app` bloque la pull request en cas d'erreur. Le résultat vaut pour la révision exécutée.
 - **Dépendances verrouillées** : [`requirements.lock`](requirements.lock) contraint les versions résolues par le Dockerfile et par la CI. Deux reconstructions de la mêmerevision produisent donc le même environnement. `make check-lock` échoue si une dépendance a été ajoutée à `pyproject.toml` sans être épinglée.
 
 Pour exécuter les vérifications localement :
