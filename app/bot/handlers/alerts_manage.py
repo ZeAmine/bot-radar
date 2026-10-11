@@ -502,9 +502,18 @@ async def handle_edit_condition_toggle(
     db_session: Any,
 ) -> None:
     """Bascule l'état d'une condition pour l'alerte."""
-    parts = callback.data.split(":")  # type: ignore
-    alert_id = uuid.UUID(parts[1])
-    idx = int(parts[2])
+    parts = (callback.data or "").split(":")
+    try:
+        if len(parts) != 3:
+            raise ValueError("Référence invalide")
+        alert_id = uuid.UUID(parts[1])
+        idx = int(parts[2])
+    except ValueError:
+        await callback.answer("Sélection invalide.", show_alert=True)
+        return
+    if not 0 <= idx < len(STANDARD_CONDITIONS):
+        await callback.answer("Sélection invalide.", show_alert=True)
+        return
 
     alert_repo = _get_alert_repo(db_session)
     alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)

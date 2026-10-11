@@ -457,10 +457,13 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
 async def handle_creation_condition_toggle(callback: CallbackQuery, state: FSMContext) -> None:
     """Bascule l'état d'une condition pendant la création d'alerte."""
     parts = (callback.data or "").split(":")
-    if len(parts) < 2 or not parts[1].isdigit():
+    if len(parts) != 2 or not parts[1].isdecimal():
         await callback.answer("Sélection invalide.", show_alert=True)
         return
     idx = int(parts[1])
+    if not 0 <= idx < len(STANDARD_CONDITIONS):
+        await callback.answer("Sélection invalide.", show_alert=True)
+        return
     target_cond = STANDARD_CONDITIONS[idx]
     data = await state.get_data()
     selected = list(data.get("selected_conditions") or STANDARD_CONDITIONS)

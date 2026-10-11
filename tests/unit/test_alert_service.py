@@ -24,6 +24,12 @@ def test_parse_price_to_cents():
         parse_price_to_cents("abc")
 
 
+@pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "Infinity", "1e309", "1e308"])
+def test_non_finite_or_overflowing_amount_is_a_user_validation_error(raw):
+    with pytest.raises(AlertServiceError):
+        parse_price_to_cents(raw)
+
+
 def test_parse_comma_separated_list():
     raw = "blacksad, intégrale, , tome 1, blacksad "
     parsed = parse_comma_separated_list(raw)

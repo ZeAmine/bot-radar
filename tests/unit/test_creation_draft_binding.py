@@ -74,3 +74,34 @@ async def test_current_creation_action_is_decoded_only_for_handler():
     assert handler.await_args.args[0].data == "alert_create_cancel"
     assert callback.data == "alert_create_cancel@current"
     await storage.close()
+
+
+@pytest.mark.parametrize("raw", ["-1", "99", "invalid", "", "²", "0:extra",
+                                 "999999999999999999999999"])
+async def test_invalid_condition_index_does_not_modify_draft(raw):
+    from app.bot.handlers.alerts_create_confirm import handle_creation_condition_toggle
+
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=42, user_id=42))
+    await state.set_data({"name": "B", "selected_conditions": ["Bon état"]})
+    callback = MagicMock()
+    callback.data = f"cond_toggle:{raw}"
+    callback.answer = AsyncMock()
+    await handle_creation_condition_toggle(callback, state)
+    assert await state.get_data() == {"name": "B", "selected_conditions": ["Bon état"]}
+    callback.answer.assert_awaited_once_with("Sélection invalide.", show_alert=True)
+    await storage.close()
+
+
+@pytest.mark.parametrize("raw", ["-1", "99", "bad", "", "0:extra"])
+async def test_invalid_edit_index_is_rejected_before_repository_access(raw, monkeypatch):
+    from app.bot.handlers import alerts_manage
+
+    getter = MagicMock()
+    monkeypatch.setattr(alerts_manage, "_get_alert_repo", getter)
+    callback = MagicMock()
+    callback.data = f"ed_c_tog:00000000-0000-0000-0000-000000000001:{raw}"
+    callback.answer = AsyncMock()
+    await alerts_manage.handle_edit_condition_toggle(callback, MagicMock(), AsyncMock())
+    getter.assert_not_called()
+    callback.answer.assert_awaited_once_with("Sélection invalide.", show_alert=True)
