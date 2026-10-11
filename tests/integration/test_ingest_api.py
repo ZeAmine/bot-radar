@@ -2,6 +2,7 @@
 
 import uuid
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -13,6 +14,12 @@ from app.db.models.category import Category
 from app.main import app
 from tests.database import postgres_replayed_database
 from tests.telegram_fakes import acknowledged_delivery
+
+
+@pytest.fixture(autouse=True)
+def allowed_synthetic_recipient(monkeypatch):
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [987654321])
+    monkeypatch.setattr("app.use_cases.ingest_listing.record_sent_cote_state", AsyncMock())
 
 
 @pytest.fixture

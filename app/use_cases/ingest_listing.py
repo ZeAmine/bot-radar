@@ -23,6 +23,7 @@ from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapsho
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.repositories.listing_repo import ListingRepository
 from app.domain.entities.alert_preparation import PreparationError
+from app.domain.enums import NotificationState
 from app.domain.rules.catalogue_search import is_catalogue_exhausted, is_uncatalogued
 from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import (
@@ -50,6 +51,7 @@ from app.services.market_price_service import (
 )
 from app.services.telegram_service import DeliveryResult, send_listing_alert, usable_receipt
 from app.use_cases.listing_ingestion_gate import listing_ingestion_gate
+from app.use_cases.notification_admission import record_result, reserve
 from app.utils.isbn import normalize_listing_isbn
 from app.utils.text import normalize_text
 
@@ -431,6 +433,8 @@ class ProcessListingUseCase:
         self,
         payload: ListingIngestPayload,
         raw_payload: dict[str, Any],
+        resume_ids: set[uuid.UUID] | None = None,
+        admission_deadline: float | None = None,
     ) -> ListingIngestResponse:
         """Traite l'annonce avec garantie de latence minimale sur l'envoi d'alerte."""
         # 1. Vérification des doublons
@@ -462,6 +466,8 @@ class ProcessListingUseCase:
         active_alerts = await self.listing_repo.get_active_alerts_by_category(payload.category_slug)
         pending_sends: list[PendingSend] = []
         for alert in active_alerts:
+            if resume_ids is not None and alert.id not in resume_ids:
+                continue
             match_result = evaluate_listing_against_alert(
                 alert=alert,
                 listing_category_slug=listing.category_slug,
@@ -473,6 +479,14 @@ class ProcessListingUseCase:
                 listing_raw_url=listing.url,
             )
             if not match_result.is_match or alert.id in notified_ids:
+                if resume_ids is not None and not match_result.is_match:
+                    from app.use_cases.notification_admission import notification_row
+                    row = await notification_row(self.db, alert.id, listing.id)
+                    if row is not None and row.notification_state in {
+                        NotificationState.READY, NotificationState.DEFERRED,
+                    }:
+                        row.notification_state = NotificationState.ABANDONED
+                        row.notification_reason = "matching_changed"
                 continue
             market_line = None
             catalog_ready = False
@@ -511,6 +525,8 @@ class ProcessListingUseCase:
             )
 
         for alert, match_result, _line, _ready, _book in pending_sends:
+            if resume_ids is not None:
+                continue  # La reprise n'invente jamais une association disparue.
             if alert.id in pending_ids:
                 continue
             if not _alert_has_telegram_chat(alert):
@@ -522,6 +538,7 @@ class ProcessListingUseCase:
                 condition_matches=match_result.condition_matches,
                 price_matches=match_result.price_matches,
                 notified=False,
+                known_unsent=not is_duplicate,
             )
 
         actionable_matches_count = sum(
@@ -560,6 +577,10 @@ class ProcessListingUseCase:
         catalog_tasks: list[dict[str, Any]] = []
         send_alert_fn = _get_send_listing_alert()
         for index, pending in enumerate(pending_sends):
+            if admission_deadline is not None:
+                import time
+                if time.monotonic() >= admission_deadline:
+                    break
             alert, _match_result, market_line, catalog_ready, book = pending
             alert_id = context.alert_ids[index]
             if alert_id not in context.live_alerts:
@@ -570,6 +591,10 @@ class ProcessListingUseCase:
             if _alert_has_telegram_chat(alert):
                 alert_kws = alert.include_keywords or ([alert.name] if alert.name else None)
                 attempt_id = uuid.uuid4()
+                if not await reserve(
+                    self.db, listing, alert, self.bot, attempt_id, deadline=admission_deadline,
+                ):
+                    continue
                 attempt_ids[alert_id] = attempt_id
                 if timing is not None:
                     timing.alert_id, timing.attempt_id = alert_id, attempt_id
@@ -586,7 +611,13 @@ class ProcessListingUseCase:
                     alert=alert,
                     attempt_id=attempt_id,
                 )
-                if not isinstance(delivery, DeliveryResult):
+                if (
+                    not isinstance(delivery, DeliveryResult)
+                    or type(delivery.outcome) is not str or type(delivery.transport) is not str
+                    or delivery.outcome not in {"not_sent", "acknowledged", "rejected", "unknown"}
+                    or delivery.transport not in {"none", "photo", "text"}
+                    or (delivery.outcome == "not_sent" and delivery.transport != "none")
+                ):
                     delivery = DeliveryResult("unknown", "none", reason="invalid_sender_result")
                     logger.error(
                         "Résultat d'envoi inexploitable.",
@@ -600,6 +631,10 @@ class ProcessListingUseCase:
                 notification_sent = bool(delivery) and usable_receipt(
                     delivery.receipt, alert.user.telegram_user_id
                 )
+                if not notification_sent:
+                    if delivery.outcome == "acknowledged":
+                        delivery = DeliveryResult("unknown", "none", reason="wrong_destination")
+                    await record_result(self.db, listing, alert_id, attempt_id, delivery)
                 if notification_sent:
                     if await self._persist_confirmed_delivery(
                         delivery, alert_id, attempt_id, context
@@ -608,7 +643,12 @@ class ProcessListingUseCase:
                     if context.book_ids[index] not in context.live_books:
                         book = None
                 else:
-                    needs_retry = True
+                    from app.use_cases.notification_admission import notification_row
+                    current_notification = await notification_row(self.db, alert_id, listing.id)
+                    needs_retry = needs_retry or (
+                        current_notification is not None
+                        and current_notification.notification_state == NotificationState.READY
+                    )
             if listing.category_slug == CategorySlug.BD_COMICS.value:
                 if notification_sent:
                     # Mesure après l'envoi, jamais avant : le diagnostic porte sur la
@@ -781,6 +821,7 @@ class ProcessListingUseCase:
             for sql_attempt in (1, 2):
                 stage = "marking" if sql_attempt == 1 else "retry_marking"
                 try:
+                    await record_result(self.db, context.listing, alert_id, attempt_id, delivery)
                     diagnostic("pending")
                     marked = await self.listing_repo.mark_notified(
                         [(alert_id, context.listing_id)]

@@ -14,6 +14,7 @@ from app.core.constants import AlertStatus
 from app.core.exceptions import EntityNotFoundError
 from app.db.models.alert import Alert
 from app.db.models.category import Category
+from app.db.models.listing_match import ListingMatch
 from app.domain.entities.alert_preparation import preparation_request
 
 
@@ -364,7 +365,8 @@ class AlertRepository:
             sa_or(
                 Alert.status == AlertStatus.DELETED,
                 Alert.deleted_at.is_not(None),
-            )
+            ),
+            ~Alert.matches.any(ListingMatch.notified_at.is_(None)),
         )
         deleted_alerts = list((await self.session.execute(stmt_deleted)).scalars().all())
         deleted_alerts_count = len(deleted_alerts)

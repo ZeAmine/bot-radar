@@ -19,6 +19,20 @@ from tests.telegram_fakes import acknowledged_delivery
 
 
 @pytest.fixture(autouse=True)
+async def admitted_notification_boundary(monkeypatch):
+    """Ces unités doublent déjà les repos ; l'admission SQL est prouvée en intégration."""
+    monkeypatch.setattr("app.use_cases.ingest_listing.reserve", AsyncMock(return_value=True))
+    monkeypatch.setattr("app.use_cases.ingest_listing.record_result", AsyncMock())
+    monkeypatch.setattr("app.use_cases.ingest_listing.record_sent_cote_state", AsyncMock())
+    yield
+    from app.core.tasks import wait_all_background_tasks
+    from app.db.session import engine
+    await wait_all_background_tasks(timeout=1)
+    await engine.dispose()  # DATABASE_URL imposée en SQLite mémoire par le lanceur.
+
+
+
+@pytest.fixture(autouse=True)
 def central_totals(monkeypatch):
     """La persistance centrale est éprouvée avec des sessions réelles en intégration."""
     monkeypatch.setattr("app.use_cases.ingest_listing.recalculate_invalidated_series", AsyncMock())

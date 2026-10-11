@@ -43,9 +43,25 @@ from app.db.models.category import Category
 from app.db.models.user import User
 from app.main import app
 from app.services.vinted_scraper import fetch_vinted_page, to_ingest_payload
-from tests.add_fakes import FakeTelegramBot
+from tests.add_fakes import FakeTelegramBot as _FakeTelegramBot
 from tests.database import sqlite_only_database
 from tests.screens import published_caption
+
+
+class FakeTelegramBot(_FakeTelegramBot):
+    id = 123456789
+
+
+@pytest.fixture(autouse=True)
+async def allowed_synthetic_recipient(monkeypatch):
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [987654321])
+    monkeypatch.setattr("app.use_cases.ingest_listing.record_sent_cote_state", AsyncMock())
+    yield
+    from app.core.tasks import wait_all_background_tasks
+    from app.db.session import engine
+    await wait_all_background_tasks(timeout=1)
+    await engine.dispose()
+
 
 TELEGRAM_CHAT_ID = 987654321
 
