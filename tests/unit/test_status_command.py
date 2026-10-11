@@ -11,6 +11,28 @@ from app.providers.llm.base import LLMHealth
 from app.services.telegram_service import notify_admins
 
 
+@pytest.mark.parametrize(("data", "label"), [
+    (None, "Inconnu"), ({"status": "stopped"}, "Arrêté"),
+    ({"status": "unexpected"}, "Inconnu"),
+    ({"status": "active"}, "Inconnu"),
+    ({"status": "active", "last_poll_at": time.time() + 1000}, "Inconnu"),
+    *[({"status": "active", "last_poll_at": value}, "Inconnu")
+      for value in (0, None, "bad", float("nan"), float("inf"), 10 ** 500)],
+])
+async def test_poller_status_never_claims_active_without_recent_evidence(data, label):
+    message = MagicMock(spec=Message)
+    message.answer = AsyncMock()
+    with (
+        patch("app.bot.handlers.status.is_night_time", return_value=False),
+        patch("app.bot.handlers.status.settings.VINTED_POLLER_ENABLED", True),
+        patch("app.bot.handlers.status.get_poller_status", AsyncMock(return_value=data)),
+    ):
+        await handle_status(message, _two_query_db([], []))
+    text = message.answer.await_args.args[0]
+    assert label in text
+    assert "🟢 <b>Active</b>" not in text
+
+
 def _two_query_db(latency_rows: list[tuple], category_rows: list[tuple]):
     """Session double qui répond à deux requêtes distinctes, dans l'ordre du handler.
 

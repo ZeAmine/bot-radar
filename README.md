@@ -48,7 +48,7 @@ Il surveille quatre univers à forte valeur ajoutée :
 Sur les plateformes de seconde main (notamment Vinted), les affaires exceptionnelles ("pépites") disparaissent généralement en **60 à 90 secondes**. BotRadar est conçu pour maximiser la réactivité de l'acheteur ("snipe") tout en fournissant une analyse décisionnelle instantanée.
 
 ### Ce que BotRadar EST
-- ⚡ **Détecteur instantané** : Ingestion et notification en **< 500 ms** dès publication d'une annonce.
+- ⚡ **Détection prioritaire** : l'alerte précède les enrichissements externes. Le seuil local de 500 ms des benchmarks simulés ne mesure pas le délai depuis la publication ni une livraison Telegram réelle.
 - 📊 **Comparateur de marché réel** : Calcul synchrone de la cote d'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres).
 - 🧠 **Copilote décisionnel et d'auto-apprentissage** : Estimation de revente, coach de négociation et affinage automatique des alertes via IA.
 - 🔒 **Système strictement privé** : Mono-utilisateur avec filtrage par allowlist (`TELEGRAM_ALLOWED_USER_IDS`).
@@ -77,7 +77,7 @@ BotRadar est articulé autour d'un **monolithe asynchrone à processus unique** 
 │    FSM Handlers            Matching CPU              Dédoublonnage          │
 │   (/add, /show...)        (listing_match)             (seen_ids)            │
 │          │                       │                         │                │
-│          │                       ├────────► [ ⚡ ALERTE TELEGRAM < 500ms ]  │
+│          │                       ├────────► [ ⚡ ALERTE PRIORITAIRE ]      │
 │          │                       │                │                         │
 │          │                       ▼                ▼ (safe_create_task)      │
 │          │                  Cote BD Locale      Moteur IA / BNF              │
@@ -97,7 +97,7 @@ BotRadar est articulé autour d'un **monolithe asynchrone à processus unique** 
 
 ### Invariants opérationnels stricts (Constitution AGENTS.md)
 
-1. **Invariant n°1 — L'alerte Telegram d'abord (< 500 ms)** :
+1. **Invariant n°1 — L'alerte Telegram d'abord** :
    - Dédoublonnage instantané `(source_name, external_id)`.
    - Matching en mémoire CPU locale (`evaluate_listing_against_alert`).
    - Cote BD : **cache local PostgreSQL uniquement** (`MarketPriceService.get_comparison_summary` est synchrone, zéro requête HTTP).
@@ -248,7 +248,7 @@ Le poller Vinted intégré ([`app/tasks/vinted_poller.py`](app/tasks/vinted_poll
 Le projet est outillé avec un pipeline d'Intégration Continue via GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) qui s'exécute à chaque push et pull request :
 
 - **Ruff** : Linting strict conforme aux règles modernes Python 3.12 (longueur de ligne max 100 caractères, imports ordonnés, conventions PEP).
-- **Pytest & Pytest-Asyncio** : Suite complète de **531 tests automatisés** couvrant l'ingestion, le matching déterministe, le FSM Telegram, le cache de cotes, le poller Vinted et le sous-système IA, dont **3 benchmarks de performance** (`make bench`) qui vérifient l'invariant de l'alerte < 500 ms (chemin ingestion → matching → Telegram, ré-ingestion de doublon, matching CPU).
+- **Pytest & Pytest-Asyncio** : tests versionnés d'ingestion, de matching, du FSM Telegram, du cache, du poller et de l'IA. Les six benchmarks locaux (`make bench`) utilisent des doubles et ne valident pas une latence depuis la publication ou une livraison réelle ; leurs frontières sont détaillées dans [`docs/alert-latency.md`](docs/alert-latency.md). Le nombre de tests et leur résultat dépendent de la révision et du périmètre exécutés.
 - **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml`, **zéro erreur** sur les 134 fichiers de `app/`, vérifié en CI (`mypy app` bloque la pull request).
 - **Dépendances verrouillées** : [`requirements.lock`](requirements.lock) contraint les versions résolues par le Dockerfile et par la CI. Deux reconstructions de la mêmerevision produisent donc le même environnement. `make check-lock` échoue si une dépendance a été ajoutée à `pyproject.toml` sans être épinglée.
 
@@ -258,10 +258,10 @@ Pour exécuter les vérifications localement :
 # Vérification du style et du linting
 .venv/bin/ruff check .
 
-# Exécution de la suite complète de tests (531 tests)
+# Exécution de la suite complète de tests
 .venv/bin/pytest -v
 
-# Benchmark du chemin d'alerte (invariant < 500 ms)
+# Benchmarks locaux avec transports simulés
 make bench
 
 # Typage statique
@@ -367,8 +367,8 @@ Le [`Makefile`](Makefile) regroupe les actions récurrentes d'exploitation et de
 ```bash
 make help                 # Affiche l'inventaire des commandes disponibles
 make dev                  # Démarre l'application locale avec rechargement à chaud
-make test                 # Exécute la suite complète de 531 tests pytest
-make bench                # Benchmark du chemin d'alerte (invariant 500 ms)
+make test                 # Exécute la suite complète pytest
+make bench                # Benchmarks locaux, sans preuve de livraison réelle
 make lint                 # Contrôle la conformité du code avec Ruff et Mypy
 make lock                 # Régénérer requirements.lock (après une modification de pyproject.toml)
 make check-lock           # Vérifier que le verrou couvre toutes les dépendances déclarées
@@ -471,12 +471,17 @@ Les étapes ci-dessous restent accessibles séparément, pour reprendre un dépl
 5. **Contrôle d'intégrité opérationnel** :
    ```bash
    curl -s https://radar.aminezegmou.fr/health
-   # Réponse attendue : {"status":"ok","environment":"production","ai":{"status":"operational",...}}
+   # HTTP 200 : vivacité HTTP ; la sonde IA existante est exposée séparément.
+   # scope=http_liveness ; SQL, Redis, scheduler et poller sont unchecked.
 
    make verify-deploy
    # Rejoue les contrôles du pré-vol, cette fois en fail-fast : un écart de code
    # entre le dépôt et le VPS fait échouer la commande.
    ```
+
+   `/health` n'est pas un contrôle de disponibilité métier : un HTTP 200 ne prouve
+   ni la collecte Vinted, ni une écriture SQL, ni une réception Telegram. `/status`
+   distingue un scanner arrêté, inconnu ou en retard ; un état absent n'est pas actif.
 
 ---
 

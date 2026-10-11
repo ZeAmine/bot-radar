@@ -55,18 +55,23 @@ async def handle_status(message: Message, db_session: Any) -> None:
         else:
             poller_status = "🟡 <b>Fin de pause : reprise du scan imminente</b>"
     elif poller_data and poller_data.get("status") == "active":
-        last_poll = poller_data.get("last_poll_at", 0)
-        elapsed = max(0, int(now.timestamp() - last_poll))
-        if elapsed <= 120:
-            poller_status = f"🟢 <b>Active</b> (scan -{elapsed}s)"
+        last_poll = poller_data.get("last_poll_at")
+        if (
+            type(last_poll) not in (int, float) or not 0 < last_poll <= now.timestamp()
+        ):
+            poller_status = "⚪ <b>Inconnu</b> (horodatage absent ou invalide)"
         else:
-            elapsed_m = elapsed // 60
-            elapsed_s = elapsed % 60
-            poller_status = (
-                f"🟠 <b>En retard</b> (scan -{elapsed_m}m{elapsed_s:02d}s)"
-            )
+            elapsed = int(now.timestamp() - last_poll)
+            if elapsed <= 120:
+                poller_status = f"🟢 <b>Active</b> (scan -{elapsed}s)"
+            else:
+                elapsed_m = elapsed // 60
+                elapsed_s = elapsed % 60
+                poller_status = f"🟠 <b>En retard</b> (scan -{elapsed_m}m{elapsed_s:02d}s)"
+    elif poller_data and poller_data.get("status") == "stopped":
+        poller_status = "🔴 <b>Arrêté</b>"
     else:
-        poller_status = "🟢 <b>Active</b>"
+        poller_status = "⚪ <b>Inconnu</b> (aucun état exploitable)"
 
     # Timestamp de réception persistée → timestamp du marquage, avant commit.
     # Succès notifiés seulement ; recollectes et reprises SQL ne sont pas isolées.

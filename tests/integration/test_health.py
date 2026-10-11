@@ -12,6 +12,8 @@ async def test_health_endpoint(async_client: AsyncClient):
 
     data = response.json()
     assert data["status"] == "ok"
+    assert data["scope"] == "http_liveness"
+    assert data["unchecked"] == ["database", "redis", "scheduler", "poller"]
     assert "environment" in data
     assert "ai" in data
     assert data["ai"]["status"] in ("active", "unconfigured", "disabled", "error")
