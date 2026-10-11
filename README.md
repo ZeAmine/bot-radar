@@ -708,3 +708,13 @@ La migration additive `0012_annual_observations`, après `0011_notification_stat
 laisse les nouvelles preuves à NULL et conserve les colonnes antérieures. Le retour
 à un ancien code pouvant comparer les minima non vérifiables exige une décision
 explicite ; le downgrade automatique est refusé.
+
+### Sauvegarde et restauration synthétiques
+
+L'[outillage du point 9](docs/backup-recovery.md) vérifie un dump custom PostgreSQL,
+un chiffrement à clé publique, une publication locale simulée et une restauration
+vide avec quarantaine durable. Il ne configure aucune sauvegarde indépendante et
+n'active aucune planification ou rétention. L'ancien appel sans paramètres de
+`scripts/backup_db.sh` échoue explicitement ; `--synthetic-exercise` lance uniquement
+l'exercice jetable. Le document détaille les objectifs UTC, les limites et les
+prérequis opérationnels avant tout remplacement de la sauvegarde réelle.
