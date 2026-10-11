@@ -39,6 +39,13 @@ CONTRACT_SCENARIOS = (
     "pause_preparation",
     "safe_diagnostics",
     "diagnostic_concurrent_creation",
+    "creation_independent", "creation_replace", "creation_before_write", "creation_after_flush",
+    "creation_commit_failure", "creation_commit_ambiguous", "creation_close_failure",
+    "creation_present_failure", "creation_cancel_write", "creation_cancel_commit",
+    "creation_cancel_close", "creation_cancel_waiter",
+    "creation_legacy_concurrent", "creation_bd_preparation_release",
+    "creation_close_ambiguous", "creation_cancel_presentation",
+    "creation_direct_repeated",
 )
 SCENARIOS = HISTORICAL_SCENARIOS + OPEN_BOUNDARIES + CONTRACT_SCENARIOS
 # Observations acceptées AVANT correction, pas des attentes du code corrigé.
@@ -263,12 +270,18 @@ def test_webhook_characterization_in_isolated_subprocess() -> None:
     for row in report["evidence"]:
         if row["scenario"] in OPEN_BOUNDARIES:
             print("OPEN_BOUNDARY_VERIFIED", json.dumps(row, ensure_ascii=False, sort_keys=True))
+        if (
+            row["scenario"].startswith("creation_")
+            or row["scenario"] == "diagnostic_concurrent_creation"
+        ):
+            print("CREATION_VERIFIED", json.dumps(row, ensure_ascii=False, sort_keys=True))
 
 
 @pytest.mark.parametrize("fault", [
     "exit_failure", "timeout", "no_execution", "missing_ambiguous_commit",
     *[f"missing_{scenario}" for scenario in OPEN_BOUNDARIES],
     "missing_diagnostic_concurrent_creation",
+    "missing_creation_commit_ambiguous",
 ])
 def test_parent_rejects_incomplete_subprocess(monkeypatch: Any, fault: str) -> None:
     """Injecte à la frontière subprocess ; le vrai test parent doit lever."""
@@ -315,6 +328,7 @@ def test_parent_rejects_incomplete_subprocess(monkeypatch: Any, fault: str) -> N
         "missing_ambiguous_commit": "Scénarios enfant manquants",
         **{f"missing_{scenario}": "Scénarios enfant manquants" for scenario in OPEN_BOUNDARIES},
         "missing_diagnostic_concurrent_creation": "Scénarios enfant manquants",
+        "missing_creation_commit_ambiguous": "Scénarios enfant manquants",
     }[fault]
     with pytest.raises(AssertionError, match=expected):
         test_webhook_characterization_in_isolated_subprocess()
@@ -962,62 +976,8 @@ async def _verify_pause_contract_guards(
         assert errors[0].exc_info is None
         assert "synthetic-sensitive-response" not in caplog.text
         assert "synthetic-sensitive-response" not in JSONFormatter().format(errors[0])
-    elif scenario == "diagnostic_concurrent_creation":
-        # Diagnostic point 5 : deux confirmations admises AVANT la fin du brouillon.
-        from sqlalchemy import select
-
-        from app.bot.bot_instance import bot, dp
-        from app.bot.states.alert_creation import AlertCreationState
-
-        async with journey.maker() as reader:
-            category_id = (await reader.get(Alert, journey.alert_id)).category_id
-        state = dp.fsm.get_context(bot=bot, chat_id=424242, user_id=424242)
-        await state.set_data({
-            "creation_token": "diagnostic", "category_slug": "tech",
-            "category_id": str(category_id), "name": "Nouvelle console",
-            "include_keywords": ["console"],
-        })
-        await state.set_state(AlertCreationState.confirm_creation)
-        entered, release = asyncio.Event(), asyncio.Event()
-        participants = []
-        original_create = AlertRepository.create
-
-        async def create(repo, **values):
-            connection = await repo.session.connection()
-            participants.append(connection.sync_connection.connection.dbapi_connection)
-            if len(participants) == 2:
-                entered.set()
-            await release.wait()
-            return await original_create(repo, **values)
-
-        monkeypatch.setattr(AlertRepository, "create", create)
-        payload = {**journey.payload, "callback_query": {
-            **journey.payload["callback_query"], "data": "alert_create_confirm@diagnostic",
-        }}
-        other = {**payload, "update_id": 77002, "callback_query": {
-            **payload["callback_query"], "id": "second-synthetic-confirmation",
-        }}
-        tasks = [asyncio.create_task(journey.send(value)) for value in (payload, other)]
-        try:
-            await asyncio.wait_for(entered.wait(), timeout=5)
-            assert participants[0] is not participants[1]
-            release.set()
-            responses = await asyncio.gather(*tasks)
-            assert all(response.json() == {"status": "ok"} for response in responses)
-            async with journey.maker() as reader:
-                rows = list((await reader.execute(select(Alert).where(
-                    Alert.name == "Nouvelle console"
-                ))).scalars())
-                assert len(rows) == 2  # Constat actuel, pas un comportement souhaité.
-                assert all(row.status == AlertStatus.ACTIVE for row in rows)
-            assert sum(kind == "card" for kind, _text in trace.delivered) == 2
-            diagnostic_evidence = {"created_alerts": 2, "independent_connections": True}
-        finally:
-            release.set()
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+    elif scenario == "diagnostic_concurrent_creation" or scenario.startswith("creation_"):
+        diagnostic_evidence = await _verify_creation_case(journey, monkeypatch, scenario)
     else:
         assert scenario == "pause_preparation"
         from app.domain.entities.alert_preparation import PreparationRequest
@@ -1038,6 +998,281 @@ async def _verify_pause_contract_guards(
     request.node.user_properties.append(("webhook_evidence", {
         "scenario": scenario, **diagnostic_evidence,
     }))
+
+
+async def _verify_creation_case(journey: Any, monkeypatch: Any, scenario: str) -> dict[str, Any]:
+    """Vrai parcours HTTP ; les pannes portent sur des frontières, jamais sur son résultat."""
+    from contextlib import asynccontextmanager
+
+    from aiogram.client.session.aiohttp import AiohttpSession
+    from aiogram.fsm.context import FSMContext
+    from aiogram.methods import EditMessageText
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.bot import creation_drafts
+    from app.bot.bot_instance import bot, dp
+    from app.bot.handlers import _alerts_router, alerts_create
+    from app.bot.states.alert_creation import AlertCreationState
+    from app.db.models.alert import Alert
+    from app.db.repositories.alert_repo import AlertRepository
+
+    assert not creation_drafts._entries
+    state = dp.fsm.get_context(bot=bot, chat_id=424242, user_id=424242)
+    async with journey.maker() as reader:
+        category_id = (await reader.get(Alert, journey.alert_id)).category_id
+    draft = {
+        "creation_token": "diagnostic", "category_slug": "tech", "category_id": str(category_id),
+        "name": "Nouvelle console", "include_keywords": ["console"],
+    }
+    await state.set_data(draft)
+    await state.set_state(AlertCreationState.confirm_creation)
+    payload = {**journey.payload, "callback_query": {
+        **journey.payload["callback_query"], "data": "alert_create_confirm@diagnostic",
+    }}
+    if scenario == "creation_legacy_concurrent":
+        await state.set_data({
+            key: value for key, value in draft.items() if key != "creation_token"
+        })
+        payload["callback_query"]["data"] = "alert_create_confirm"
+    if scenario == "creation_bd_preparation_release":
+        from app.db.models.category import Category
+
+        async with journey.maker() as writer:
+            category = await writer.get(Category, category_id)
+            category.slug = "bd_comics"
+            await writer.commit()
+        await state.update_data(category_slug="bd_comics")
+
+        async def interrupted_preparation(_alert_id):
+            nonlocal injected
+            assert not creation_drafts._entries
+            injected += 1
+            raise RuntimeError("Préparation synthétique échouée après commit")
+
+        monkeypatch.setattr(alerts_create, "prepare_bd_alert", interrupted_preparation)
+    original_create = AlertRepository.create
+    original_commit = AsyncSession.commit
+    original_clear = FSMContext.clear
+    original_transport = AiohttpSession.make_request
+    original_guard = _alerts_router.draft_guard
+    entered, release, waiter = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    second_create = asyncio.Event()
+    calls, injected = 0, 0
+    attempts = []
+
+    @asynccontextmanager
+    async def observed_guard(context):
+        # La seconde invocation est effectivement à la frontière d'acquisition.
+        if entered.is_set():
+            waiter.set()
+        async with original_guard(context) as attempt:
+            attempts.append(attempt)
+            yield attempt
+
+    async def create(repo, **values):
+        nonlocal calls, injected
+        calls += 1
+        if calls == 2:
+            second_create.set()
+        if scenario in {"diagnostic_concurrent_creation", "creation_cancel_waiter",
+                        "creation_independent", "creation_legacy_concurrent"}:
+            entered.set()
+            await release.wait()
+        if calls == 1 and scenario == "creation_before_write":
+            injected += 1
+            raise RuntimeError("Panne synthétique avant création")
+        result = await original_create(repo, **values)
+        if calls == 1 and scenario in {"creation_after_flush", "creation_cancel_write"}:
+            assert await rows(repo.session) == []  # Le flush n'est pas un commit.
+            injected += 1
+            if scenario == "creation_cancel_write":
+                raise asyncio.CancelledError()
+            raise RuntimeError("Panne synthétique après flush non commité")
+        return result
+
+    async def commit(session):
+        nonlocal injected
+        is_business = sys._getframe(1).f_code.co_name == "commit_and_close"
+        if is_business:
+            assert any(isinstance(value, Alert) for value in session.identity_map.values())
+        if is_business and injected == 0 and scenario in {
+            "creation_commit_failure", "creation_commit_ambiguous", "creation_cancel_commit",
+        }:
+            injected += 1
+            if scenario == "creation_commit_ambiguous":
+                await original_commit(session)  # Vrai commit, puis retour contrôlé en échec.
+                assert len(await rows(session)) == 1
+            if scenario == "creation_cancel_commit":
+                raise asyncio.CancelledError()
+            raise RuntimeError("Retour synthétique du commit")
+        await original_commit(session)
+
+    async def clear(context):
+        nonlocal injected
+        if context.key == state.key and injected == 0 and scenario in {
+            "creation_close_failure", "creation_cancel_close", "creation_close_ambiguous",
+        }:
+            injected += 1
+            if scenario == "creation_close_ambiguous":
+                await original_clear(context)
+            if scenario == "creation_cancel_close":
+                raise asyncio.CancelledError()
+            raise RuntimeError("Fermeture synthétique échouée")
+        await original_clear(context)
+
+    async def transport(session, client_bot, method, **kwargs):
+        nonlocal injected
+        if (
+            isinstance(method, EditMessageText) and injected == 0
+            and scenario in {"creation_present_failure", "creation_cancel_presentation"}
+        ):
+            assert not creation_drafts._entries  # Le verrou est déjà nettoyé avant présentation.
+            injected += 1
+            if scenario == "creation_cancel_presentation":
+                raise asyncio.CancelledError()
+            raise RuntimeError("Présentation synthétique échouée")
+        return await original_transport(session, client_bot, method, **kwargs)
+
+    monkeypatch.setattr(_alerts_router, "draft_guard", observed_guard)
+    monkeypatch.setattr(alerts_create, "draft_guard", observed_guard)
+    monkeypatch.setattr(AlertRepository, "create", create)
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    monkeypatch.setattr(FSMContext, "clear", clear)
+    monkeypatch.setattr(AiohttpSession, "make_request", transport)
+
+    async def rows(writer=None):
+        async with journey.maker() as reader:
+            if writer is not None:
+                reader_conn = await reader.connection()
+                writer_conn = await writer.connection()
+                assert reader is not writer
+                assert (reader_conn.sync_connection.connection.dbapi_connection
+                        is not writer_conn.sync_connection.connection.dbapi_connection)
+            return list((await reader.execute(select(Alert.id).where(
+                Alert.name == "Nouvelle console"
+            ))).scalars())
+
+    assert await rows() == []
+    concurrent = scenario in {"diagnostic_concurrent_creation", "creation_cancel_waiter",
+                              "creation_independent", "creation_legacy_concurrent"}
+    if concurrent:
+        first = asyncio.create_task(journey.send(payload))
+        await asyncio.wait_for(entered.wait(), 5)
+        other = {**payload, "update_id": 77002, "callback_query": {
+            **payload["callback_query"], "id": "second-synthetic-confirmation",
+        }}
+        if scenario == "creation_independent":
+            # Un contexte indépendant (autre chat), sans élargir l'allowlist utilisateur.
+            second_state = dp.fsm.get_context(bot=bot, chat_id=-424243, user_id=424242)
+            await second_state.set_data(draft)
+            await second_state.set_state(AlertCreationState.confirm_creation)
+            other["callback_query"]["message"] = {
+                **other["callback_query"]["message"], "chat": {"id": -424243, "type": "group"},
+            }
+        second = asyncio.create_task(journey.send(other))
+        try:
+            await asyncio.wait_for(waiter.wait(), 5)
+            if scenario == "creation_independent":
+                # Les deux créations entrent sans attendre la libération de la première.
+                await asyncio.wait_for(second_create.wait(), 5)
+                assert calls == 2
+            else:
+                assert calls == 1
+                assert next(iter(creation_drafts._entries.values())).users == 2
+            if scenario == "creation_cancel_waiter":
+                second.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await second
+                assert next(iter(creation_drafts._entries.values())).users == 1
+            release.set()
+            await first
+            if not second.cancelled():
+                await second
+        finally:
+            release.set()
+            for task in (first, second):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(first, second, return_exceptions=True)
+    elif scenario.startswith("creation_cancel_"):
+        from app.api.routes.telegram import handle_telegram_webhook
+        from app.core.config import settings
+
+        # Comme les annulations de pause : endpoint réel sans adaptation BaseHTTPMiddleware,
+        # qui convertit une CancelledError injectée en « No response returned ».
+        with pytest.raises(asyncio.CancelledError):
+            await handle_telegram_webhook(
+                settings.TELEGRAM_WEBHOOK_SECRET.get_secret_value(), payload,
+            )
+        assert any(name == "__call__" and path.endswith("/_alerts_router.py")
+                   for name, path in journey.trace.propagated_frames)
+    elif scenario == "creation_direct_repeated":
+        from aiogram.types import CallbackQuery
+
+        from app.db.models.user import User
+
+        callback = CallbackQuery.model_validate(payload["callback_query"], context={"bot": bot})
+        async with journey.maker() as writer:
+            initial = await writer.get(Alert, journey.alert_id)
+            user = await writer.get(User, initial.user_id)
+            await alerts_create.save_alert(callback, state, user, writer)
+        async with journey.maker() as writer:
+            await alerts_create.save_alert(callback, state, user, writer)
+    else:
+        await journey.send(payload)
+
+    expected_first = 2 if scenario == "creation_independent" else (
+        0 if scenario in {"creation_before_write", "creation_after_flush", "creation_cancel_write",
+                          "creation_commit_failure", "creation_cancel_commit"} else 1
+    )
+    assert len(await rows()) == expected_first
+    assert not creation_drafts._entries
+    cards_first = sum(kind == "card" for kind, _text in journey.trace.delivered)
+    assert cards_first == (
+        expected_first if scenario in {
+            "diagnostic_concurrent_creation", "creation_independent", "creation_replace",
+            "creation_cancel_waiter", "creation_legacy_concurrent",
+            "creation_bd_preparation_release",
+            "creation_direct_repeated",
+        } else 0
+    )
+    if scenario == "creation_bd_preparation_release":
+        assert [text for kind, text in journey.trace.delivered if kind == "card"] == [
+            "📊 <i>Préparation des prix du marché…</i>",
+        ]  # Une carte de préparation n'est pas une confirmation de succès global.
+    expected_effect = (
+        "unknown" if scenario in {"creation_commit_failure", "creation_commit_ambiguous",
+                                  "creation_cancel_commit"} else
+        "not_applied" if expected_first == 0 else "committed"
+    )
+    assert attempts[0].effect == expected_effect
+    if scenario == "creation_replace":
+        callback = MagicMock()
+        callback.answer = AsyncMock()
+        callback.message.edit_text = AsyncMock()
+        await alerts_create.start_add_alert(callback, state)
+        replacement = await state.get_data()
+        assert replacement["creation_token"] != draft["creation_token"]
+    first_ids = await rows()
+    await journey.send(payload)  # Même update_id ET même contenu, injections à usage unique.
+    retry_allowed = scenario in {
+        "creation_before_write", "creation_after_flush", "creation_cancel_write",
+    }
+    assert len(await rows()) == (1 if retry_allowed else expected_first)
+    if not retry_allowed:
+        assert await rows() == first_ids
+    if scenario == "creation_replace":
+        assert await state.get_data() == replacement
+    if expected_effect == "unknown":
+        assert (await state.get_data())["creation_outcome"] == "unknown"
+    assert not creation_drafts._entries
+    assert injected == (
+        0 if concurrent or scenario in {"creation_replace", "creation_direct_repeated"} else 1
+    )
+    return {"created_first": expected_first, "created_after_replay": len(await rows()),
+            "cards_first": cards_first,
+            "injections": injected, "effect": expected_effect, "historical_concurrent_count": 2}
 
 
 if os.environ.get("BOTRADAR_WEBHOOK_ROLE") == "child":

@@ -10,6 +10,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from app.bot.creation_drafts import CreationAttempt, draft_guard
 from app.bot.handlers._alerts_router import (
     STALE_CREATION_MESSAGE,
     bind_creation_keyboard,
@@ -71,7 +72,8 @@ async def handle_cancel_command(message: Message, state: FSMContext) -> None:
         await message.answer("ℹ️ Aucune opération en cours à annuler.")
         return
 
-    await state.clear()
+    async with draft_guard(state):
+        await state.clear()
     await message.answer("❌ Opération annulée avec succès.")
 
 
@@ -101,10 +103,17 @@ async def stale_alert_create_confirm(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "alert_create_cancel")
-async def cancel_alert_creation(callback: CallbackQuery, state: FSMContext) -> None:
+async def cancel_alert_creation(
+    callback: CallbackQuery, state: FSMContext, creation_attempt: CreationAttempt | None = None,
+) -> None:
     """Annule la création de l'alerte via bouton inline."""
-    await callback.answer()
-    await state.clear()
+    if creation_attempt is None:
+        await callback.answer()
+        async with draft_guard(state):
+            await state.clear()
+    else:
+        await state.clear()
+        creation_attempt.release()
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text("❌ Création de l'alerte annulée.")
 

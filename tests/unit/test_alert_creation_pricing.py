@@ -2,6 +2,8 @@
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import EditMessageText
 from sqlalchemy import select
 
@@ -12,9 +14,19 @@ from app.db.models.book import Book
 from app.db.models.category import Category
 from app.db.models.user import User
 from app.use_cases import prepare_bd_alert as preparation
-from tests.add_fakes import DraftState, cached_market_price
+from tests.add_fakes import DraftState as _DraftState
+from tests.add_fakes import cached_market_price
 from tests.database import sqlite_only_database
 from tests.screens import confirm_press
+
+
+class DraftState(_DraftState):
+    """Identité FSM locale, sans modifier le double partagé."""
+
+    def __init__(self):
+        super().__init__()
+        self.storage = MemoryStorage()
+        self.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
 
 
 @pytest.fixture

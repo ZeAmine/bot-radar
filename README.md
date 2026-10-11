@@ -485,6 +485,14 @@ Les étapes ci-dessous restent accessibles séparément, pour reprendre un dépl
    La sonde IA atteste une réponse HTTP (avec cache court), pas une génération
    réussie ni la validité d'une réponse JSON métier.
 
+   La confirmation d'un brouillon de création est sérialisée dans le processus
+   courant : identité et état sont relus sous protection jusqu'au commit et à la
+   fermeture du brouillon. Les autres contextes FSM progressent indépendamment ;
+   préparation BD et présentation se déroulent ensuite sans ce verrou. Un retour
+   de commit échoué laisse le résultat inconnu et interdit de réutiliser ce
+   brouillon. Cette protection locale ne constitue pas une garantie « exactement
+   une fois » après crash, perte du stockage FSM ou avec plusieurs processus.
+
 ---
 
 ## 14. Exemples d'Utilisation API & Webhook

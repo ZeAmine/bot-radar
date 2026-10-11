@@ -6,6 +6,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.bot.handlers.alerts import (
@@ -428,6 +430,8 @@ class DraftState:
     """
 
     def __init__(self) -> None:
+        self.storage = MemoryStorage()
+        self.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
         self.data: dict = {}
         self.state = None
 

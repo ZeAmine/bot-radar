@@ -16,6 +16,8 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.bot.handlers.alerts_create import (
     handle_category_selected,
@@ -33,11 +35,11 @@ from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
     ISBN_INCONNU,
-    DraftState,
     deepseek_payload,
     fake_bnf,
     fake_deepseek,
 )
+from tests.add_fakes import DraftState as _DraftState
 from tests.add_journey import drain, patched, repositories
 from tests.screens import (
     confirm_press,
@@ -45,6 +47,15 @@ from tests.screens import (
     index_of_line,
     message_with_recap,
 )
+
+
+class DraftState(_DraftState):
+    """Identité FSM locale pour exercer la coordination, sans modifier le double partagé."""
+
+    def __init__(self):
+        super().__init__()
+        self.storage = MemoryStorage()
+        self.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
 
 
 @pytest.mark.asyncio
