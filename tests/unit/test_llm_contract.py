@@ -174,6 +174,13 @@ async def test_http_error_never_logs_external_body(name, network, caplog):
 
 
 @pytest.mark.parametrize("name", ADAPTER_NAMES)
+async def test_health_message_only_attests_the_http_probe(name, network):
+    health = await make_client(network, name).check_health(force=True)
+    assert health.status == "active"
+    assert health.message.startswith("Sonde HTTP accessible")
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
 @pytest.mark.asyncio
 async def test_unusable_response_falls_back_to_none(name: str, network: FakeNetwork) -> None:
     """Une réponse sans contenu exploitable rend `None` sans lever."""

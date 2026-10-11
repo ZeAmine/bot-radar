@@ -482,6 +482,8 @@ Les étapes ci-dessous restent accessibles séparément, pour reprendre un dépl
    `/health` n'est pas un contrôle de disponibilité métier : un HTTP 200 ne prouve
    ni la collecte Vinted, ni une écriture SQL, ni une réception Telegram. `/status`
    distingue un scanner arrêté, inconnu ou en retard ; un état absent n'est pas actif.
+   La sonde IA atteste une réponse HTTP (avec cache court), pas une génération
+   réussie ni la validité d'une réponse JSON métier.
 
 ---
 

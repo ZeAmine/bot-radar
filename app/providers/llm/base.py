@@ -263,7 +263,7 @@ class BaseLLMClient(ABC):
                     status=STATUS_ACTIVE,
                     model=self.model,
                     latency_ms=elapsed_ms,
-                    message=f"Opérationnel ({elapsed_ms}ms)",
+                    message=f"Sonde HTTP accessible ({elapsed_ms}ms)",
                 )
             elif response.status_code in (401, 403):
                 health = LLMHealth(
