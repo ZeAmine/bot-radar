@@ -12,7 +12,7 @@ STALE_CREATION_MESSAGE = (
 
 
 def _creation_action(data: str) -> bool:
-    return data.startswith(("alert_create_", "al_create_", "cond_", "add_cat:"))
+    return data.startswith(("alert_create_", "al_create_", "cond_", "add_cat:", "upd_alert_price:"))
 
 
 def bind_creation_keyboard(
@@ -27,7 +27,10 @@ def bind_creation_keyboard(
         for button in row:
             raw = button.callback_data
             if raw and _creation_action(raw):
-                button = button.model_copy(update={"callback_data": f"{raw.split('@')[0]}@{token}"})
+                base = raw.split("@")[0]
+                if base.startswith("upd_alert_price:"):
+                    base = "upd_alert_price:"  # ID/prix déjà dans le FSM ; respecter les 64 octets.
+                button = button.model_copy(update={"callback_data": f"{base}@{token}"})
             bound.append(button)
         rows.append(bound)
     return keyboard.model_copy(update={"inline_keyboard": rows})

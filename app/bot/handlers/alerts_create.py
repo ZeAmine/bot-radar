@@ -552,8 +552,17 @@ async def handle_update_existing_alert_price(
     """Met à jour directement le prix d'une alerte déjà existante."""
     await callback.answer()
     parts = callback.data.split(":")  # type: ignore
-    alert_id_str = parts[1]
-    price_cents = int(parts[2])
+    data = await state.get_data()
+    if data.get("creation_token") or parts == ["upd_alert_price", ""]:
+        # Le bouton lié désigne la proposition serveur, jamais un ID/prix libre du callback.
+        alert_id_str = str(data.get("existing_alert_id") or "")
+        proposed_price = data.get("new_max_price_cents")
+        if not alert_id_str or proposed_price is None:
+            return
+        price_cents = int(proposed_price)
+    else:
+        alert_id_str = parts[1]
+        price_cents = int(parts[2])
 
     alert_repo = _get_alert_repo(db_session)
     existing = await alert_repo.get_by_id(uuid.UUID(alert_id_str))

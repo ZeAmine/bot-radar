@@ -287,6 +287,37 @@ async def test_new_add_replaces_button_generation(driver, db_session):
     assert (await state.get_data())["category_slug"] == "bd_comics"
 
 
+@pytest.mark.parametrize("action", ["keep", "update"])
+@pytest.mark.parametrize("new_price", [0, 2000])
+async def test_existing_alert_buttons_are_bound_and_current_ones_work(
+    driver, db_session, action, new_price
+):
+    from app.bot.handlers.alerts_helpers import render_existing_alert_response
+
+    bot, dispatcher = driver
+    user = await _add_user(db_session)
+    category = (await db_session.execute(select(Category))).scalar_one()
+    existing = Alert(
+        user_id=user.id, category_id=category.id, name="Existante",
+        include_keywords=["existante"], max_item_price_cents=1500,
+    )
+    db_session.add(existing)
+    await db_session.commit()
+    await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=CHAT_ID, user_id=TG_USER_ID)
+    token = (await state.get_data())["creation_token"]
+    message = _message_update("Existante 20€").message.as_(bot)
+    await render_existing_alert_response(message, state, existing, new_price_cents=new_price)
+    prefix = "alert_create_cancel" if action == "keep" else "upd_alert_price:"
+    button = _buttons_matching(bot, prefix)[0]
+    assert button.endswith(f"@{token}")
+    assert len(button.encode()) <= 64
+    await _feed(bot, dispatcher, _callback_update(button), db_session, user)
+    await db_session.refresh(existing)
+    assert existing.max_item_price_cents == (1500 if action == "keep" else new_price)
+    assert await state.get_data() == {}
+
+
 async def _add_user(session: AsyncSession) -> User:
     user = User(id=uuid.uuid4(), telegram_user_id=TG_USER_ID)
     session.add(user)

@@ -15,7 +15,7 @@ from app.bot.handlers._alerts_router import router
 
 @pytest.mark.parametrize("action", [
     "alert_create_cancel", "alert_create_confirm", "al_create_edition:0",
-    "al_create_work:0", "al_create_edit:name", "cond_toggle:0", "add_cat:tech",
+    "al_create_work:0", "al_create_edit:name", "cond_toggle:0", "add_cat:tech", "upd_alert_price:",
 ])
 @pytest.mark.parametrize("suffix", ["@old-draft", ""])
 async def test_old_creation_action_cannot_reach_handler(action, suffix, monkeypatch):

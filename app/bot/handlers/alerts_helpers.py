@@ -1178,6 +1178,7 @@ async def render_existing_alert_response(
             ]
         )
 
+    keyboard = bind_creation_keyboard(keyboard, (await state.get_data()).get("creation_token"))
     edit_msg: Any = target_msg
     if edit_msg is None and isinstance(event, CallbackQuery) and event.message:
         edit_msg = event.message

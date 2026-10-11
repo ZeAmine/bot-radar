@@ -665,8 +665,11 @@ async def test_start_add_alert_natural_add_interrupts_when_already_watched():
         # Clavier avec mise à jour et conservation
         kb = loading_message.edit_text.call_args[1]["reply_markup"]
         callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
-        assert f"upd_alert_price:{already.id}:2000" in callbacks
-        assert "alert_create_cancel" in callbacks
+        token = state.data["creation_token"]
+        assert f"upd_alert_price:@{token}" in callbacks
+        assert f"alert_create_cancel@{token}" in callbacks
+        assert state.data["existing_alert_id"] == str(already.id)
+        assert state.data["new_max_price_cents"] == 2000
 
         # Le récapitulatif de création n'est jamais proposé
         assert "Confirmer la création de cette alerte ?" not in edited_text
