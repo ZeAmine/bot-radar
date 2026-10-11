@@ -10,6 +10,7 @@ Ces tests verrouillent les deux défauts qui faisaient partir une alerte sans pr
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -184,10 +185,12 @@ async def test_price_book_keeps_history_without_stock() -> None:
 async def test_persist_keeps_a_fresh_price_when_every_provider_is_silent() -> None:
     """Un silence réseau ne doit pas priver l'utilisateur d'un prix encore frais."""
     book = _book()
+    expires = datetime.now(UTC) + timedelta(hours=2)
     existing = BookMarketCache(
         id=uuid.uuid4(),
         book_id=book.id,
         lowest_delivered_price_cents=470,
+        expires_at=expires,
         comparison_status=ComparisonStatus.AVAILABLE,
     )
     market_repo = MagicMock()
@@ -208,7 +211,7 @@ async def test_persist_keeps_a_fresh_price_when_every_provider_is_silent() -> No
 
     market_repo.update_or_create_cache.assert_not_called()
     assert cache is existing
-    assert cache.expires_at is not None
+    assert cache.expires_at == expires
 
 
 @pytest.mark.asyncio

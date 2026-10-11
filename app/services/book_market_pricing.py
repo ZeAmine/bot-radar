@@ -21,7 +21,7 @@ import logging
 import threading
 import uuid
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,8 +49,6 @@ logger = logging.getLogger(__name__)
 
 # Durée maximale d'interrogation d'un livre, tous fournisseurs compris.
 BOOK_FETCH_TIMEOUT_SECONDS = 20.0
-# Rafraîchissement minimal du cache conservé pour résilience après un silence réseau.
-CACHE_HOURS_RESILIENT_REFRESH = 6
 # Durée de validité du cache selon la qualité de la donnée collectée.
 CACHE_HOURS_WITH_PRICE = 24
 CACHE_HOURS_WITHOUT_PRICE = 6
@@ -251,9 +249,8 @@ async def persist_market_result(
                 existing.historical_low_1y_cents = await repo.clamp_historical_low_by_observations(
                     book_id, existing.historical_low_1y_cents
                 )
-            now = datetime.now(UTC)
             _stamp_collection(existing, result)
-            existing.expires_at = now + timedelta(hours=CACHE_HOURS_RESILIENT_REFRESH)
+            # Conserver le relevé informatif, jamais renouveler sa validité sans observation.
             await _refresh_series_totals(session, book_id)
             return existing
 
