@@ -95,7 +95,7 @@ class OpenAICompatibleClient(BaseLLMClient):
             return None
         choices = data.get("choices") or []
         if not choices:
-            logger.warning("Réponse LLM vide ou sans 'choices' : %s", data)
+            logger.warning("Réponse LLM vide ou sans 'choices'.")
             return None
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         if not isinstance(message, dict):

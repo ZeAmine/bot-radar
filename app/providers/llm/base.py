@@ -196,22 +196,20 @@ class BaseLLMClient(ABC):
                 timeout=self.timeout if timeout is None else timeout,
             )
             response.raise_for_status()
+            return self.extract_text(response.json())
         except httpx.TimeoutException:
             logger.warning("Timeout lors de l'appel LLM (%ss) sur %s", self.timeout, self.model)
             return None
         except httpx.HTTPStatusError as exc:
             logger.error(
-                "Erreur HTTP %s du moteur LLM %s : %s",
+                "Erreur HTTP %s du moteur LLM %s",
                 exc.response.status_code,
                 self.vendor,
-                exc.response.text[:200],
             )
             return None
-        except Exception as exc:  # pragma: no cover - filet réseau
-            logger.exception("Erreur inattendue lors de l'appel au moteur LLM : %s", exc)
+        except Exception as exc:
+            logger.warning("Réponse ou appel LLM inexploitable (%s).", type(exc).__name__)
             return None
-
-        return self.extract_text(response.json())
 
     async def generate_json(
         self,
