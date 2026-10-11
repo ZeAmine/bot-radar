@@ -160,6 +160,20 @@ async def test_invalid_wire_response_is_absorbed_without_logging_body(name, body
 
 
 @pytest.mark.parametrize("name", ADAPTER_NAMES)
+async def test_http_error_never_logs_external_body(name, network, caplog):
+    client = make_client(network, name)
+
+    def respond(request):
+        network.captured.append(request)
+        return httpx.Response(403, text="synthetic-private-body")
+
+    network.handler = respond
+    assert await client.complete(system_prompt="s", user_prompt="u") is None
+    assert len(network.captured) == 1
+    assert "synthetic-private-body" not in caplog.text
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
 @pytest.mark.asyncio
 async def test_unusable_response_falls_back_to_none(name: str, network: FakeNetwork) -> None:
     """Une réponse sans contenu exploitable rend `None` sans lever."""

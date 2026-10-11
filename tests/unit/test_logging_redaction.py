@@ -168,6 +168,34 @@ def test_existing_sensitive_extras_stay_redacted_in_emitted_logs(
     assert payload["request_id"] == "req-42"
 
 
+@pytest.mark.parametrize("location", ["message", "exception", "nested"])
+@pytest.mark.parametrize(("text", "secret"), [
+    ("https://api.telegram.org/bot123456789:synthetic_token_abcdefghijklmnopqrstuvwxyz/sendMessage",
+     "123456789:synthetic_token_abcdefghijklmnopqrstuvwxyz"),
+    ('{"api_key": "synthetic-private-key"}', "synthetic-private-key"),
+    ("secret='synthetic alpha beta'", "synthetic alpha beta"),
+    ("TELEGRAM_BOT_TOKEN=synthetic-bot-value", "synthetic-bot-value"),
+    ('{"access_token": "synthetic-access-value"}', "synthetic-access-value"),
+    ("AI_API_KEY=synthetic-engine-value", "synthetic-engine-value"),
+])
+def test_url_and_quoted_secrets_are_redacted(captured_log, location, text, secret):
+    logger, stream = captured_log
+    if location == "message":
+        logger.error("Échec : %s", text)
+    elif location == "nested":
+        logger.error("Échec", extra={"context": [{"detail": (text,)}]})
+    else:
+        try:
+            raise RuntimeError(text)
+        except RuntimeError:
+            logger.exception("Échec")
+    output = stream.getvalue()
+    assert secret not in output
+    assert all(part not in output for part in secret.split())
+    assert "[REDACTED]" in output
+    json.loads(output)
+
+
 def test_public_paths_and_diagnostics_stay_readable(
     captured_log: tuple[logging.Logger, io.StringIO],
 ) -> None:
