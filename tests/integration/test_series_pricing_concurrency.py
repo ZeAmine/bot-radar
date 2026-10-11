@@ -4,6 +4,7 @@ import asyncio
 import os
 
 import pytest
+from sqlalchemy.engine import make_url
 
 from app.core.constants import AlertStatus, ComparisonStatus
 from app.db.models.alert import Alert
@@ -18,10 +19,14 @@ from app.services.book_market_pricing import BookPricingResult, persist_market_r
 from tests.database import postgres_replayed_database
 
 
-@pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"), reason="Verrou PostgreSQL réel requis")
+@pytest.mark.skipif(
+    make_url(os.environ.get("TEST_DATABASE_URL", "sqlite://")).get_backend_name() != "postgresql",
+    reason="Non applicable sous SQLite : transactions et verrou PostgreSQL réels requis",
+)
 async def test_two_committing_tomes_leave_the_complete_series_total(monkeypatch):
     async with postgres_replayed_database() as database:
         s = database.session
+        assert s.get_bind().dialect.name == "postgresql"
         user = User(telegram_user_id=123, is_allowed=True)
         category = Category(slug="bd_comics", label="BD", emoji="📚", is_active=True)
         s.add_all([user, category])
@@ -82,8 +87,17 @@ async def test_two_committing_tomes_leave_the_complete_series_total(monkeypatch)
                 await persist_market_result(tx, book_id, result)
                 await tx.commit()
 
-        await asyncio.wait_for(
-            asyncio.gather(update(books[0].id, 200), update(books[1].id, 300)), 5
-        )
+        participants = [
+            asyncio.create_task(update(books[0].id, 200)),
+            asyncio.create_task(update(books[1].id, 300)),
+        ]
+        try:
+            await asyncio.wait_for(asyncio.gather(*participants), 5)
+        finally:
+            ready.set()
+            for participant in participants:
+                if not participant.done():
+                    participant.cancel()
+            await asyncio.wait_for(asyncio.gather(*participants, return_exceptions=True), 3)
         await s.refresh(alert)
         assert alert.series_total_cents == 500

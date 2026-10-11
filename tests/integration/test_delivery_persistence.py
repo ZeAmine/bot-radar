@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -480,7 +481,7 @@ async def test_repeated_marking_keeps_durable_timestamp_strictly_unchanged(journ
 )
 @pytest.mark.parametrize("change", ["notified", "deleted"])
 async def test_match_changes_between_pending_read_and_retry_update(
-    journey, caplog, change
+    journey, caplog, change, record_property
 ):
     from sqlalchemy import delete, update
 
@@ -490,10 +491,12 @@ async def test_match_changes_between_pending_read_and_retry_update(
         use = ingestion.ProcessListingUseCase(session, journey.bot)
         original_commit, original_read = session.commit, use.listing_repo.match_notification_state
         calls, active_pid = 0, None
+        commit_stages = []
 
         async def commit():
             nonlocal calls
             calls += 1
+            commit_stages.append(sys._getframe(1).f_code.co_name)
             if calls == 3:
                 raise SQLAlchemyError("synthetic commit failure before application")
             await original_commit()
@@ -515,7 +518,9 @@ async def test_match_changes_between_pending_read_and_retry_update(
             try:
                 await asyncio.wait_for(pending_read.wait(), 3)
                 async with journey.writer() as other:
-                    assert await other.scalar(text("SELECT pg_backend_pid()")) != active_pid
+                    other_pid = await other.scalar(text("SELECT pg_backend_pid()"))
+                    assert other_pid != active_pid
+                    record_property("postgres_recipe", {"participants": [active_pid, other_pid]})
                     stmt = (
                         update(ListingMatch).values(notified_at=durable_at)
                         if change == "notified"
@@ -530,7 +535,12 @@ async def test_match_changes_between_pending_read_and_retry_update(
                 await asyncio.gather(running, return_exceptions=True)
         assert response.matches[0].notification_sent
         assert use.listing_repo.mark_notified.await_count == 2
-        assert calls == 4  # premier commit, échec, reprise, commit final inconditionnel
+        # Point 6 : la réservation durable précède le marquage (échoué puis repris).
+        assert calls == 5
+        assert commit_stages == [
+            "_execute_serialized", "reserve", "_persist_confirmed_delivery",
+            "_persist_confirmed_delivery", "_execute_serialized",
+        ]
     assert journey.deliveries == [601]
     records = [r for r in caplog.records if getattr(r, "event", "") == "notification_delivery"]
     if change == "notified":
