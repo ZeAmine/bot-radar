@@ -252,6 +252,41 @@ async def _state_of(bot: Bot, dispatcher: Dispatcher):
     return await context.get_state()
 
 
+@pytest.mark.parametrize("action", [
+    "alert_create_cancel", "alert_create_confirm", "al_create_edition:0",
+    "al_create_edit:name", "cond_toggle:0",
+])
+async def test_old_draft_buttons_leave_new_draft_and_database_untouched(driver, db_session, action):
+    from app.bot.states.alert_creation import AlertCreationState
+
+    bot, dispatcher = driver
+    user = await _add_user(db_session)
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=CHAT_ID, user_id=TG_USER_ID)
+    draft = {"creation_token": "new-draft", "category_slug": "tech", "name": "B"}
+    await state.set_data(draft)
+    await state.set_state(AlertCreationState.confirm_creation)
+    await _feed(bot, dispatcher, _callback_update(action + "@old-draft"), db_session, user)
+    assert await state.get_data() == draft
+    assert await state.get_state() == AlertCreationState.confirm_creation.state
+    assert (await db_session.execute(select(Alert))).scalars().all() == []
+
+
+async def test_new_add_replaces_button_generation(driver, db_session):
+    bot, dispatcher = driver
+    user = await _add_user(db_session)
+    await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
+    old_category = _buttons_matching(bot, "add_cat:")[0]
+    await _feed(bot, dispatcher, _message_update("/add", 2), db_session, user)
+    new_category = _buttons_matching(bot, "add_cat:")[0]
+    assert new_category != old_category
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=CHAT_ID, user_id=TG_USER_ID)
+    before = await state.get_data()
+    await _feed(bot, dispatcher, _callback_update(old_category), db_session, user)
+    assert await state.get_data() == before
+    await _feed(bot, dispatcher, _callback_update(new_category), db_session, user)
+    assert (await state.get_data())["category_slug"] == "bd_comics"
+
+
 async def _add_user(session: AsyncSession) -> User:
     user = User(id=uuid.uuid4(), telegram_user_id=TG_USER_ID)
     session.add(user)
@@ -355,22 +390,24 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
         await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
 
         category_data = _buttons_matching(bot, "add_cat:")[0]
-        assert category_data == f"add_cat:{CategorySlug.BD_COMICS.value}"
+        assert category_data.partition("@")[0] == f"add_cat:{CategorySlug.BD_COMICS.value}"
+        token = category_data.partition("@")[2]
+        assert len(token) == 12
         await _feed(bot, dispatcher, _callback_update(category_data, update_id=2), db_session, user)
 
         await _feed(bot, dispatcher, _message_update("La couleur des choses", 3), db_session, user)
         await _feed(bot, dispatcher, _message_update("12", 4), db_session, user)
 
         editions = _buttons_matching(bot, "al_create_edition:")
-        assert editions == ["al_create_edition:0", "al_create_edition:1"]
+        assert editions == [f"al_create_edition:0@{token}", f"al_create_edition:1@{token}"]
         chosen = editions[1]
         await _feed(bot, dispatcher, _callback_update(chosen, update_id=5), db_session, user)
 
-        assert _buttons_matching(bot, "alert_create_confirm") == ["alert_create_confirm"]
+        assert _buttons_matching(bot, "alert_create_confirm") == [f"alert_create_confirm@{token}"]
         await _feed(
             bot,
             dispatcher,
-            _callback_update("alert_create_confirm", update_id=6),
+            _callback_update(_buttons_matching(bot, "alert_create_confirm")[0], update_id=6),
             db_session,
             user,
         )
@@ -479,7 +516,7 @@ async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_c
         await _feed(
             bot,
             dispatcher,
-            _callback_update("alert_create_confirm", update_id=6),
+            _callback_update(_buttons_matching(bot, "alert_create_confirm")[0], update_id=6),
             db_session,
             user,
         )

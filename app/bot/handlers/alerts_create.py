@@ -13,7 +13,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.handlers._alerts_router import router
+from app.bot.handlers._alerts_router import bind_creation_keyboard, router
 from app.bot.handlers.alerts_helpers import (
     ALERT_CREATED_TITLE,
     _bump_search_token,
@@ -158,7 +158,7 @@ def _draft_matches(current: dict[str, Any], snapshot: dict[str, Any]) -> bool:
         return False
     return all(
         current.get(key) == snapshot.get(key)
-        for key in ("name", "category_slug", "isbn", "author")
+        for key in ("name", "category_slug", "isbn", "author", "creation_token")
     )
 
 
@@ -269,6 +269,8 @@ async def start_add_alert(
 ) -> None:
     """Point d'entrée unifié pour l'ajout d'alertes multi-catégories."""
     await state.clear()
+    token = uuid.uuid4().hex[:12]
+    await state.update_data(creation_token=token)
 
     inline_query: str | None = None
     if isinstance(event, Message):
@@ -337,6 +339,7 @@ async def start_add_alert(
                     return
 
             state_data = {
+                "creation_token": token,
                 "name": parsed.name,
                 "category_slug": parsed.category_slug,
                 "isbn": parsed.isbn13,
@@ -420,7 +423,7 @@ async def start_add_alert(
             "<i>Choisis la catégorie de ce produit.</i>"
         )
         await state.set_state(AlertCreationState.waiting_for_category)
-        keyboard = get_category_selection_keyboard()
+        keyboard = bind_creation_keyboard(get_category_selection_keyboard(), token)
         await _finalize_loading_message(loading_msg, event, prompt_text, keyboard)
         return
 
@@ -438,7 +441,7 @@ async def start_add_alert(
         )
 
     await state.set_state(AlertCreationState.waiting_for_category)
-    keyboard = get_category_selection_keyboard()
+    keyboard = bind_creation_keyboard(get_category_selection_keyboard(), token)
 
     if isinstance(event, CallbackQuery):
         await event.answer()
@@ -643,6 +646,8 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     outcome = await keyword_variants_module.generate_variants_and_exclusions(
         name, category_slug=category_slug, context=book_context
     )
+    if data.get("creation_token") and not _draft_matches(await state.get_data(), data):
+        return
 
     # « Rien de pertinent » et « personne n'a répondu » sont deux réponses : la note
     # les dit, et le brouillon la conserve pour les rendus suivants. Un échec laisse

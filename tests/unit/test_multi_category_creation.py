@@ -54,7 +54,10 @@ async def test_start_add_alert_shows_category_keyboard():
     args, kwargs = message.answer.call_args
     assert "Choisis la catégorie" in args[0]
     keyboard = kwargs["reply_markup"]
-    callbacks = [btn[0].callback_data for btn in keyboard.inline_keyboard]
+    token = state.update_data.await_args.kwargs["creation_token"]
+    assert len(token) == 12
+    assert all(btn[0].callback_data.endswith(f"@{token}") for btn in keyboard.inline_keyboard)
+    callbacks = [btn[0].callback_data.partition("@")[0] for btn in keyboard.inline_keyboard]
     assert "add_cat:bd_comics" in callbacks
     assert "add_cat:tech" in callbacks
     assert "add_cat:gaming" in callbacks
@@ -568,7 +571,7 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     # Et il ne laisse pas cette carte sans issue : le bouton de relance est dessous.
     keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
     assert any(
-        button.callback_data == "alert_create_ai_variants"
+        button.callback_data == f"alert_create_ai_variants@{state.data['creation_token']}"
         for row in keyboard.inline_keyboard
         for button in row
     )

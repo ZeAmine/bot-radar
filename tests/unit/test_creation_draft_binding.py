@@ -1,0 +1,76 @@
+"""Les callbacks du brouillon A n'agissent pas sur le brouillon B."""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aiogram import Bot
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import CallbackQuery, User
+
+from app.bot.handlers._alerts_router import router
+
+
+@pytest.mark.parametrize("action", [
+    "alert_create_cancel", "alert_create_confirm", "al_create_edition:0",
+    "al_create_work:0", "al_create_edit:name", "cond_toggle:0", "add_cat:tech",
+])
+@pytest.mark.parametrize("suffix", ["@old-draft", ""])
+async def test_old_creation_action_cannot_reach_handler(action, suffix, monkeypatch):
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=123456789, chat_id=42, user_id=42))
+    await state.set_state("new-state")
+    await state.set_data({"creation_token": "new-draft", "name": "B"})
+    callback = CallbackQuery(
+        id="synthetic", from_user=User(id=42, is_bot=False, first_name="Test"),
+        chat_instance="test", data=action + suffix,
+    ).as_(Bot(token="123456789:AAG_ci_test_dummy_token_abc123"))
+    handler = AsyncMock()
+    answer = AsyncMock()
+    monkeypatch.setattr(CallbackQuery, "answer", answer)
+    middleware = router.callback_query.outer_middleware[0]
+    await middleware(handler, callback, {"state": state})
+    handler.assert_not_awaited()
+    answer.assert_awaited_once()
+    assert await state.get_data() == {"creation_token": "new-draft", "name": "B"}
+    assert await state.get_state() == "new-state"
+    await storage.close()
+
+
+async def test_late_keyword_result_does_not_change_new_draft_for_same_title(monkeypatch):
+    from app.bot.handlers.alerts_create import handle_create_ai_variants, keyword_variants_module
+
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=42, user_id=42))
+    draft = {"creation_token": "old", "name": "Console", "category_slug": "tech"}
+    await state.set_data(draft)
+
+    async def delayed(*_args, **_kwargs):
+        await state.set_data({**draft, "creation_token": "new"})
+        return SimpleNamespace(answered=True, variants=["ps5"], exclusions=[])
+
+    monkeypatch.setattr(keyword_variants_module, "generate_variants_and_exclusions", delayed)
+    callback = MagicMock()
+    callback.answer = AsyncMock()
+    callback.message.edit_text = AsyncMock()
+    await handle_create_ai_variants(callback, state)
+    assert await state.get_data() == {**draft, "creation_token": "new"}
+    await storage.close()
+
+
+async def test_current_creation_action_is_decoded_only_for_handler():
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=42, user_id=42))
+    await state.set_data({"creation_token": "current"})
+    callback = CallbackQuery(
+        id="synthetic", from_user=User(id=42, is_bot=False, first_name="Test"),
+        chat_instance="test", data="alert_create_cancel@current",
+    )
+    handler = AsyncMock()
+    middleware = router.callback_query.outer_middleware[0]
+    await middleware(handler, callback, {"state": state})
+    assert handler.await_args.args[0].data == "alert_create_cancel"
+    assert callback.data == "alert_create_cancel@current"
+    await storage.close()
