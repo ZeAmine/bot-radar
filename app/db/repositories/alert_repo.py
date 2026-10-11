@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.constants import AlertStatus
+from app.core.exceptions import EntityNotFoundError
 from app.db.models.alert import Alert
 from app.db.models.category import Category
 from app.domain.entities.alert_preparation import preparation_request
@@ -260,9 +261,13 @@ class AlertRepository:
         self,
         alert: Alert,
         status: AlertStatus,
+        *,
+        require_editable: bool = False,
     ) -> Alert:
-        """Modifie le statut d'une alerte (active / paused)."""
+        """Modifie le statut ; le mode strict distingue le refus du verrou d'une mutation."""
         if not await self.lock_for_edit(alert):
+            if require_editable:
+                raise EntityNotFoundError("Alerte introuvable.")
             return alert
         request = preparation_request(alert)
         if request is not None and status in (AlertStatus.PAUSED, AlertStatus.ACTIVE):

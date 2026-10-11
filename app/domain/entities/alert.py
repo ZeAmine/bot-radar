@@ -2,9 +2,20 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from app.domain.enums import AlertStatus, CategorySlug
+
+
+@dataclass(slots=True)
+class PauseActionProgress:
+    """Connaissance locale d'une invocation : un commit échoué ne prouve pas son absence."""
+
+    effect: Literal["not_started", "not_applied", "unknown", "committed"] = "not_started"
+    stage: Literal[
+        "dispatch", "lookup", "mutation", "commit", "confirmation", "card", "handler_returned"
+    ] = "dispatch"
 
 
 @dataclass(slots=True)

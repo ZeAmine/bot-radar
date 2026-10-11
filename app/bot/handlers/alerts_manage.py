@@ -44,11 +44,13 @@ from app.bot.labels import (
 )
 from app.bot.states.alert_creation import AlertEditState
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
+from app.core.exceptions import EntityNotFoundError
 from app.core.tasks import safe_create_task
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
 from app.db.repositories.category_repo import CategoryRepository
 from app.db.session import AsyncSessionLocal
+from app.domain.entities.alert import PauseActionProgress
 from app.domain.entities.alert_preparation import preparation_request
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.keyword_variants import keyword_variants_module
@@ -1140,19 +1142,36 @@ async def toggle_pause_alert(
     callback: CallbackQuery,
     db_user: User,
     db_session: Any,
+    pause_progress: PauseActionProgress | None = None,
 ) -> None:
     """Met en pause une alerte active."""
+    progress = pause_progress if pause_progress is not None else PauseActionProgress()
+    progress.stage = "lookup"
     alert_id = uuid.UUID(callback.data.split(":")[1])  # type: ignore
     alert_repo = _get_alert_repo(db_session)
     alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
     if not alert:
+        progress.effect = "not_applied"
         await callback.answer("Alerte introuvable.", show_alert=True)
         return
 
-    await alert_repo.set_status(alert, AlertStatus.PAUSED)
+    progress.stage = "mutation"
+    progress.effect = "not_applied"
+    try:
+        await alert_repo.set_status(alert, AlertStatus.PAUSED, require_editable=True)
+    except EntityNotFoundError:
+        await callback.answer("Alerte introuvable.", show_alert=True)
+        return
+    # La mutation a été admise sous verrou ; son flush n'est pas un commit.
+    progress.stage = "commit"
+    progress.effect = "unknown"
     await db_session.commit()
+    progress.effect = "committed"
+    progress.stage = "confirmation"
     await callback.answer("⏸ Alerte mise en pause.")
+    progress.stage = "card"
     await view_single_alert(callback, db_user, db_session)
+    progress.stage = "handler_returned"
 
 
 @router.message(Command("resume"))
