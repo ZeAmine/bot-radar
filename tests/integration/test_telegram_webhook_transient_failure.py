@@ -38,6 +38,7 @@ CONTRACT_SCENARIOS = (
     "isolated_concurrent_progress", "non_pause_callback", "unauthorized", "foreign_alert",
     "pause_preparation",
     "safe_diagnostics",
+    "diagnostic_concurrent_creation",
 )
 SCENARIOS = HISTORICAL_SCENARIOS + OPEN_BOUNDARIES + CONTRACT_SCENARIOS
 # Observations acceptées AVANT correction, pas des attentes du code corrigé.
@@ -267,6 +268,7 @@ def test_webhook_characterization_in_isolated_subprocess() -> None:
 @pytest.mark.parametrize("fault", [
     "exit_failure", "timeout", "no_execution", "missing_ambiguous_commit",
     *[f"missing_{scenario}" for scenario in OPEN_BOUNDARIES],
+    "missing_diagnostic_concurrent_creation",
 ])
 def test_parent_rejects_incomplete_subprocess(monkeypatch: Any, fault: str) -> None:
     """Injecte à la frontière subprocess ; le vrai test parent doit lever."""
@@ -312,6 +314,7 @@ def test_parent_rejects_incomplete_subprocess(monkeypatch: Any, fault: str) -> N
         "no_execution": "Scénarios enfant manquants",
         "missing_ambiguous_commit": "Scénarios enfant manquants",
         **{f"missing_{scenario}": "Scénarios enfant manquants" for scenario in OPEN_BOUNDARIES},
+        "missing_diagnostic_concurrent_creation": "Scénarios enfant manquants",
     }[fault]
     with pytest.raises(AssertionError, match=expected):
         test_webhook_characterization_in_isolated_subprocess()
@@ -830,7 +833,7 @@ async def _characterize_pause_open_boundaries(
 
 @pytest.mark.parametrize("scenario", CONTRACT_SCENARIOS)
 async def _verify_pause_contract_guards(
-    pause_journey: Any, scenario: str, request: Any, caplog: Any
+    pause_journey: Any, scenario: str, request: Any, caplog: Any, monkeypatch: Any
 ) -> None:
     """Compatibilité, annulation et suivi serveur sans contamination entre invocations."""
     from app.core.exceptions import EntityNotFoundError
@@ -840,6 +843,7 @@ async def _verify_pause_contract_guards(
     from app.domain.enums import AlertStatus
 
     journey, trace = pause_journey, pause_journey.trace
+    diagnostic_evidence = {}
     assert await journey.durable() == ("ACTIVE", "Avant", 1)
     if scenario.startswith("cancel_"):
         trace.failure = scenario
@@ -958,6 +962,62 @@ async def _verify_pause_contract_guards(
         assert errors[0].exc_info is None
         assert "synthetic-sensitive-response" not in caplog.text
         assert "synthetic-sensitive-response" not in JSONFormatter().format(errors[0])
+    elif scenario == "diagnostic_concurrent_creation":
+        # Diagnostic point 5 : deux confirmations admises AVANT la fin du brouillon.
+        from sqlalchemy import select
+
+        from app.bot.bot_instance import bot, dp
+        from app.bot.states.alert_creation import AlertCreationState
+
+        async with journey.maker() as reader:
+            category_id = (await reader.get(Alert, journey.alert_id)).category_id
+        state = dp.fsm.get_context(bot=bot, chat_id=424242, user_id=424242)
+        await state.set_data({
+            "creation_token": "diagnostic", "category_slug": "tech",
+            "category_id": str(category_id), "name": "Nouvelle console",
+            "include_keywords": ["console"],
+        })
+        await state.set_state(AlertCreationState.confirm_creation)
+        entered, release = asyncio.Event(), asyncio.Event()
+        participants = []
+        original_create = AlertRepository.create
+
+        async def create(repo, **values):
+            connection = await repo.session.connection()
+            participants.append(connection.sync_connection.connection.dbapi_connection)
+            if len(participants) == 2:
+                entered.set()
+            await release.wait()
+            return await original_create(repo, **values)
+
+        monkeypatch.setattr(AlertRepository, "create", create)
+        payload = {**journey.payload, "callback_query": {
+            **journey.payload["callback_query"], "data": "alert_create_confirm@diagnostic",
+        }}
+        other = {**payload, "update_id": 77002, "callback_query": {
+            **payload["callback_query"], "id": "second-synthetic-confirmation",
+        }}
+        tasks = [asyncio.create_task(journey.send(value)) for value in (payload, other)]
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert participants[0] is not participants[1]
+            release.set()
+            responses = await asyncio.gather(*tasks)
+            assert all(response.json() == {"status": "ok"} for response in responses)
+            async with journey.maker() as reader:
+                rows = list((await reader.execute(select(Alert).where(
+                    Alert.name == "Nouvelle console"
+                ))).scalars())
+                assert len(rows) == 2  # Constat actuel, pas un comportement souhaité.
+                assert all(row.status == AlertStatus.ACTIVE for row in rows)
+            assert sum(kind == "card" for kind, _text in trace.delivered) == 2
+            diagnostic_evidence = {"created_alerts": 2, "independent_connections": True}
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
     else:
         assert scenario == "pause_preparation"
         from app.domain.entities.alert_preparation import PreparationRequest
@@ -975,7 +1035,9 @@ async def _verify_pause_contract_guards(
             assert current.status == AlertStatus.PAUSED
             assert current.preparation["activation_requested"] is False
             assert current.preparation["token"] != pending["token"]
-    request.node.user_properties.append(("webhook_evidence", {"scenario": scenario}))
+    request.node.user_properties.append(("webhook_evidence", {
+        "scenario": scenario, **diagnostic_evidence,
+    }))
 
 
 if os.environ.get("BOTRADAR_WEBHOOK_ROLE") == "child":

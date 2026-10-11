@@ -315,3 +315,17 @@ async def test_pending_exclusion_does_not_expand_the_recent_listing_window(
     assert journey.item.external_id not in seen
     assert "old-2998" in seen
     assert "old-2999" not in seen
+
+
+async def test_pending_without_recollection_is_not_retried(journey, monkeypatch):
+    """Diagnostic point 6 : reconstruire les vus ne constitue pas une file de reprise."""
+    await journey.add_alert()
+    journey.bot.send_message.side_effect = RuntimeError("Échec synthétique")
+    assert (await journey.ingest()).needs_retry is True
+    seen = await load_initial_seen_ids()
+    assert journey.item.external_id not in seen
+    monkeypatch.setattr("app.tasks.vinted_poller.fetch_vinted_page", AsyncMock(return_value=[]))
+    journey.bot.send_message.reset_mock()
+    assert await journey.collect(seen) == 0
+    journey.bot.send_message.assert_not_awaited()
+    assert (await journey.matches())[0].notified_at is None
