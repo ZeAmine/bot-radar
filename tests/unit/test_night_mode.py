@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.core.config import settings
 from app.tasks.vinted_poller import (
     get_active_custom_searches_cached,
     get_adaptive_poll_interval,
@@ -102,7 +103,8 @@ def test_anti_block_cooldown_backoff():
 
 
 @pytest.mark.asyncio
-async def test_poller_night_mode_suspension():
+async def test_poller_night_mode_suspension(monkeypatch):
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
     """Vérifie que le poller suspend les requêtes en mode nuit et s'arrête proprement."""
     import asyncio
 

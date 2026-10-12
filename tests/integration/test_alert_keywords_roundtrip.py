@@ -27,6 +27,7 @@ ces deux frontières-là.
 
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -467,6 +468,7 @@ async def test_new_edition_is_prepared_in_database_before_surveillance_resumes(
                 [
                     MarketOffer(
                         provider_name="test_market",
+                        observed_at=datetime.now(UTC),
                         item_price_cents=2000,
                         shipping_price_cents=300,
                         delivered_price_cents=2300,
@@ -528,8 +530,9 @@ async def test_new_edition_is_prepared_in_database_before_surveillance_resumes(
     # Le résultat de préparation doit être visible, pas seulement enregistré en base.
     shown = "\n".join(texts)
     if collection == "price":
-        assert "19,00 €" in shown
+        assert "Minimum des relevés sur 365 jours" in shown
         assert "23,00 €" in shown
+        assert "19,00 €" not in shown  # Agrégat non daté : aucune preuve annuelle.
     elif collection == "empty":
         assert "Aucune offre" in shown
     else:

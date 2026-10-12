@@ -9,6 +9,27 @@ from app.bot.handlers.help import HELP_TEXT, handle_help
 from app.bot.handlers.start import START_TEXT, handle_start
 
 
+@pytest.fixture
+async def pause_database():
+    from tests.database import sqlite_only_database
+    async with sqlite_only_database() as db:
+        yield db
+
+
+async def assert_pause_authorization(db, alert):
+    from sqlalchemy import select
+
+    from app.db.models.pause_action import PauseAction
+    async with db.maker() as reader:
+        action = (await reader.scalars(select(PauseAction))).one()
+        assert action.id is not None
+        assert action.alert_id == alert.id
+        assert action.user_id == alert.user_id
+        assert action.expected_version == 0
+        assert action.applied_at is None
+        return f"al_pause:p_{action.id.hex}"
+
+
 @pytest.mark.asyncio
 async def test_handle_start():
     """Vérifie le message et le clavier retournés par /start."""
@@ -96,7 +117,7 @@ async def test_handle_categories_dynamic_with_emoji():
 
 
 @pytest.mark.asyncio
-async def test_handle_show_with_query():
+async def test_handle_show_with_query(pause_database):
     """Vérifie que /show <query> filtre et affiche l'alerte ciblée."""
     import uuid
 
@@ -124,7 +145,9 @@ async def test_handle_show_with_query():
     message.text = "/show Soli"
     message.answer = AsyncMock()
 
-    mock_session = AsyncMock()
+    mock_session = pause_database.session
+    mock_session.add_all([db_user, mock_alert])
+    await mock_session.commit()
     mock_repo = MagicMock()
     mock_repo.search_by_user = AsyncMock(return_value=[mock_alert])
 
@@ -136,6 +159,10 @@ async def test_handle_show_with_query():
     message.answer.assert_called_once()
     args, kwargs = message.answer.call_args
     assert "Soli Deo Gloria" in args[0]
+    keyboard = kwargs["reply_markup"]
+
+    token = await assert_pause_authorization(pause_database, mock_alert)
+    assert any(button.callback_data == token for row in keyboard.inline_keyboard for button in row)
 
 
 @pytest.mark.asyncio
@@ -181,7 +208,7 @@ async def test_handle_edit_command_shows_categories():
 
 
 @pytest.mark.asyncio
-async def test_handle_select_edit_category():
+async def test_handle_select_edit_category(pause_database):
     """Vérifie que cliquer sur une catégorie affiche la première alerte filtrée."""
     import uuid
 
@@ -210,7 +237,9 @@ async def test_handle_select_edit_category():
     callback.message = MagicMock()
     callback.message.edit_text = AsyncMock()
 
-    mock_session = AsyncMock()
+    mock_session = pause_database.session
+    mock_session.add_all([db_user, tech_alert])
+    await mock_session.commit()
     mock_alert_repo = MagicMock()
     mock_alert_repo.count_by_user = AsyncMock(return_value=1)
     mock_alert_repo.list_by_user = AsyncMock(return_value=[tech_alert])
@@ -229,6 +258,9 @@ async def test_handle_select_edit_category():
         for row in keyboard.inline_keyboard
         for btn in row
     )
+
+    token = await assert_pause_authorization(pause_database, tech_alert)
+    assert any(button.callback_data == token for row in keyboard.inline_keyboard for button in row)
 
 
 @pytest.mark.asyncio
@@ -270,7 +302,7 @@ async def test_handle_edit_category_menu():
 
 
 @pytest.mark.asyncio
-async def test_paginate_alerts_with_category_slug():
+async def test_paginate_alerts_with_category_slug(pause_database):
     """Vérifie que la pagination préserve le slug de catégorie."""
     import uuid
 
@@ -299,7 +331,9 @@ async def test_paginate_alerts_with_category_slug():
     callback.message = MagicMock()
     callback.message.edit_text = AsyncMock()
 
-    mock_session = AsyncMock()
+    mock_session = pause_database.session
+    mock_session.add_all([db_user, clothes_alert])
+    await mock_session.commit()
     mock_alert_repo = MagicMock()
     mock_alert_repo.count_by_user = AsyncMock(return_value=3)
     mock_alert_repo.list_by_user = AsyncMock(return_value=[clothes_alert])
@@ -319,6 +353,9 @@ async def test_paginate_alerts_with_category_slug():
     # Vérifier que le bouton précédent pointe vers al_page:clothes:0
     nav_buttons = keyboard.inline_keyboard[1]
     assert any("al_page:clothes:0" in b.callback_data for b in nav_buttons)
+
+    token = await assert_pause_authorization(pause_database, clothes_alert)
+    assert any(button.callback_data == token for row in keyboard.inline_keyboard for button in row)
 
 
 @pytest.mark.asyncio

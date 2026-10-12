@@ -51,6 +51,9 @@ def payload(code=ISBN, title="Cible BD", external_id="1"):
 
 @pytest.fixture
 async def journey(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [601, 602])
     async with postgres_replayed_database() as db:
         monkeypatch.setattr(tasks, "_background_tasks", set())
         monkeypatch.setattr(tasks, "_cleanup_tasks", set())
@@ -103,9 +106,9 @@ async def journey(monkeypatch):
 
         async def ingest(raw):
             async with db.maker() as session:
-                return await ingestion.ProcessListingUseCase(session, AsyncMock()).execute(
-                    ListingIngestPayload(**raw), raw
-                )
+                return await ingestion.ProcessListingUseCase(
+                    session, SimpleNamespace(id=123456789)
+                ).execute(ListingIngestPayload(**raw), raw)
 
         yield SimpleNamespace(
             db=db,
@@ -392,12 +395,27 @@ async def test_existing_coherent_book_metadata_is_preserved(journey):
 
 async def test_legacy_invalid_isbn_is_ignored_without_rewriting_listing(journey, monkeypatch):
     original = ingestion._get_send_listing_alert
-    monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: AsyncMock(return_value=False))
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.models.listing_match import ListingMatch
+    from app.services.telegram_service import DeliveryResult
+
+    monkeypatch.setattr(
+        ingestion,
+        "_get_send_listing_alert",
+        lambda: AsyncMock(
+            return_value=DeliveryResult("rejected", "text", reason="api_rejected", retry_after=1)
+        ),
+    )
     assert (await journey.ingest(payload(None))).needs_retry
     await tasks.wait_all_background_tasks()
     async with journey.db.maker() as session:
         listing = (await session.execute(select(Listing))).scalar_one()
         listing.isbn13 = "invalide"
+        row = (await session.scalars(select(ListingMatch))).one()
+        assert row.notification_state == "ready"
+        assert row.notified_at is None
+        row.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
         await session.commit()
     monkeypatch.setattr(ingestion, "_get_send_listing_alert", original)
     result = await journey.ingest(payload(None))

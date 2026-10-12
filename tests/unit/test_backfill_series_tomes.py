@@ -422,6 +422,9 @@ async def _written_state(session: Any) -> dict[str, Any]:
         ),
         "market_cents": sorted(cents for cents in market_cents if cents is not None),
         "lowest_cents": sorted(cents for cents in lowest_cents if cents is not None),
+        "annual_cents": sorted((await session.scalars(
+            select(BookMarketCache.annual_low_cents)
+        )).all()),
         "series_total_cents": await session.scalar(select(Alert.series_total_cents)),
     }
 
@@ -460,7 +463,9 @@ async def test_a_write_pass_links_and_prices_every_tome_of_the_series() -> None:
     assert written["links"] == len(EXPECTED_ISBNS)
     assert written["market_cents"] == sorted(MARKET_CENTS.values())
     assert written["lowest_cents"] == sorted(LOWEST_CENTS.values())
-    assert written["series_total_cents"] == sum(LOWEST_CENTS.values())
+    # L'agrégat fournisseur non daté reste informatif, pas un minimum annuel prouvé.
+    assert written["annual_cents"] == sorted(MARKET_CENTS.values())
+    assert written["series_total_cents"] == sum(MARKET_CENTS.values())
     # Le repli a réellement servi : sans lui, deux tomes manqueraient.
     assert fake_http.openlibrary_queries
     # Une interrogation marchande par tome lié — pas une de plus, pas une de moins —
@@ -484,5 +489,5 @@ async def test_a_second_write_pass_adds_neither_book_link_nor_total() -> None:
             second = await _written_state(fresh.session)
 
     assert (first_code, second_code) == (bf.EXIT_CLEAN, bf.EXIT_CLEAN)
-    assert first["series_total_cents"] == sum(LOWEST_CENTS.values())
+    assert first["series_total_cents"] == sum(MARKET_CENTS.values())
     assert second == first

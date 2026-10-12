@@ -65,7 +65,10 @@ def test_local_alembic_head_matches_the_repository():
     """La tête est déduite des fichiers, sans base : elle doit être la vraie."""
     head = pf.local_alembic_head()
 
-    assert head == "0010_alert_preparation"
+    assert head == "0013_pause_actions"
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    assert ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini"))).get_heads() == [head]
 
     # `sys.executable`, pas `.venv/bin/python` : ce test tourne aussi dans le
     # worktree jetable de `check-history`, qui n'a pas de venv.

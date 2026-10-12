@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -127,8 +127,10 @@ async def driver(monkeypatch, db_session) -> AsyncGenerator[tuple[Bot, Dispatche
             if book.market_cache is not None:
                 return book.market_cache
             cache = BookMarketCache(
-                book_id=book_id, comparison_status=ComparisonStatus.UNAVAILABLE,
-                checked_at=datetime.now(UTC), collection_status="empty",
+                book_id=book_id,
+                comparison_status=ComparisonStatus.UNAVAILABLE,
+                checked_at=datetime.now(UTC),
+                collection_status="empty",
             )
             session.add(cache)
             await session.commit()
@@ -252,10 +254,16 @@ async def _state_of(bot: Bot, dispatcher: Dispatcher):
     return await context.get_state()
 
 
-@pytest.mark.parametrize("action", [
-    "alert_create_cancel", "alert_create_confirm", "al_create_edition:0",
-    "al_create_edit:name", "cond_toggle:0",
-])
+@pytest.mark.parametrize(
+    "action",
+    [
+        "alert_create_cancel",
+        "alert_create_confirm",
+        "al_create_edition:0",
+        "al_create_edit:name",
+        "cond_toggle:0",
+    ],
+)
 async def test_old_draft_buttons_leave_new_draft_and_database_untouched(driver, db_session, action):
     from app.bot.states.alert_creation import AlertCreationState
 
@@ -298,8 +306,11 @@ async def test_existing_alert_buttons_are_bound_and_current_ones_work(
     user = await _add_user(db_session)
     category = (await db_session.execute(select(Category))).scalar_one()
     existing = Alert(
-        user_id=user.id, category_id=category.id, name="Existante",
-        include_keywords=["existante"], max_item_price_cents=1500,
+        user_id=user.id,
+        category_id=category.id,
+        name="Existante",
+        include_keywords=["existante"],
+        max_item_price_cents=1500,
     )
     db_session.add(existing)
     await db_session.commit()
@@ -630,6 +641,8 @@ async def _seed_series(session: AsyncSession) -> tuple[User, Listing, list[Book]
                 lowest_delivered_price_cents=price,
                 comparison_status=ComparisonStatus.AVAILABLE,
                 historical_low_1y_cents=price,
+                checked_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
             )
         )
         session.add(AlertBook(alert_id=alert.id, book_id=book.id))
@@ -827,18 +840,47 @@ async def test_price_write_recomputes_the_series_total(db_session):
     est réécrit là où elles le sont (`persist_market_result`, chemin unique).
     """
     from app.core.constants import MatchConfidence
+    from app.providers.base import MarketOffer
     from app.services.book_market_pricing import BookPricingResult, persist_market_result
 
     alert, books = await _seed_series_without_prices(db_session)
     assert alert.series_total_cents is None
+
+    from app.db.repositories.market_price_repo import MarketPriceRepository
+
+    for book, historical in zip(books[:2], (300, 450), strict=True):
+        await MarketPriceRepository(db_session).save_snapshot(
+            book.id,
+            MarketOffer(
+                provider_name="synthetic",
+                source_url="https://example.invalid/observed",
+                item_price_cents=historical,
+                delivered_price_cents=historical,
+                shipping_price_cents=0,
+                item_condition="Très bon",
+                observed_at=datetime.now(UTC) - timedelta(days=30),
+            ),
+        )
+    await db_session.commit()
 
     # Premier volume coté : le total ne porte que sur ce qui est connu.
     await persist_market_result(
         db_session,
         books[0].id,
         BookPricingResult(
-            offers=[],
+            offers=[
+                MarketOffer(
+                    provider_name="synthetic",
+                    source_url="https://example.invalid/observed",
+                    item_price_cents=500,
+                    delivered_price_cents=500,
+                    shipping_price_cents=0,
+                    item_condition="Très bon",
+                    observed_at=datetime.now(UTC),
+                )
+            ],
             lowest_delivered_price_cents=500,
+            current_observed_at=datetime.now(UTC),
             best_provider_name="test",
             best_source_url=None,
             confidence=MatchConfidence.HIGH,
@@ -856,8 +898,19 @@ async def test_price_write_recomputes_the_series_total(db_session):
         db_session,
         books[1].id,
         BookPricingResult(
-            offers=[],
+            offers=[
+                MarketOffer(
+                    provider_name="synthetic",
+                    source_url="https://example.invalid/observed",
+                    item_price_cents=700,
+                    delivered_price_cents=700,
+                    shipping_price_cents=0,
+                    item_condition="Très bon",
+                    observed_at=datetime.now(UTC),
+                )
+            ],
             lowest_delivered_price_cents=700,
+            current_observed_at=datetime.now(UTC),
             best_provider_name="test",
             best_source_url=None,
             confidence=MatchConfidence.HIGH,
