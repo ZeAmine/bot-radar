@@ -10,6 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.constants import AlertStatus, CategorySlug
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
@@ -18,6 +19,7 @@ from app.db.models.category import Category
 from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
+from app.domain.enums import NotificationState
 from app.schemas.listing import ListingIngestPayload
 from app.services.price_calculator import calculate_estimated_total
 from app.utils.text import normalize_text
@@ -32,10 +34,10 @@ class ListingRepository:
     async def get_initial_seen_external_ids(self, source_name: str) -> list[str]:
         """Lit les annonces récentes sans notification éligible encore en attente.
 
-        L'attente est le même `notified_at` nul que dans `match_notification_state`.
-        Comme `_alert_has_telegram_chat`, le destinataire est un utilisateur lié
-        avec un identifiant Telegram non nul et différent de zéro. Les alertes
-        actives seules participent au chemin d'envoi.
+        Seuls ready/deferred sans marqueur participent à la recollecte : unknown
+        et sending ne prouvent pas l'absence d'envoi. Le destinataire doit rester
+        autorisé, avec un identifiant Telegram non nul. L'admission relit ensuite
+        échéance, âge et budget sous le gate commun.
 
         La fenêtre reste celle des 3 000 annonces récentes, avant exclusion des
         attentes : les annonces plus anciennes ne deviennent pas déjà vues.
@@ -54,7 +56,12 @@ class ListingRepository:
             .where(
                 ListingMatch.listing_id == recent.c.id,
                 ListingMatch.notified_at.is_(None),
+                ListingMatch.notification_state.in_([
+                    NotificationState.READY, NotificationState.DEFERRED,
+                ]),
                 Alert.status == AlertStatus.ACTIVE,
+                User.is_allowed.is_(True),
+                User.telegram_user_id.in_(settings.TELEGRAM_ALLOWED_USER_IDS),
                 User.telegram_user_id != 0,
             )
             .exists()
@@ -150,7 +157,13 @@ class ListingRepository:
             )
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        alerts = list(result.scalars().all())
+        if category_slug == CategorySlug.BD_COMICS.value:
+            from app.db.repositories.market_price_repo import MarketPriceRepository
+
+            ids = list({link.book_id for alert in alerts for link in alert.alert_books})
+            await MarketPriceRepository(self.session).refresh_annual_references(ids, persist=False)
+        return alerts
 
     async def match_notification_state(
         self,
@@ -224,7 +237,8 @@ class ListingRepository:
                     ListingMatch.listing_id == listing_id,
                     ListingMatch.notified_at.is_(None),
                 )
-                .values(notified_at=now)
+                .values(notified_at=now, notification_state=NotificationState.NOTIFIED,
+                        next_attempt_at=None)
                 .returning(ListingMatch.id)
             )
             result = await self.session.execute(stmt)
@@ -250,6 +264,7 @@ class ListingRepository:
         condition_matches: bool = True,
         price_matches: bool = True,
         notified: bool = False,
+        known_unsent: bool = True,
     ) -> ListingMatch:
         """Enregistre une correspondance alerte-annonce."""
         now = datetime.now(UTC)
@@ -261,6 +276,12 @@ class ListingRepository:
             "condition_matches": condition_matches,
             "price_matches": price_matches,
             "notified_at": now if notified else None,
+            "notification_state": (
+                NotificationState.NOTIFIED if notified else
+                NotificationState.READY if known_unsent else NotificationState.UNKNOWN
+            ),
+            "attempt_count": 0 if known_unsent else None,
+            "notification_reason": None if known_unsent else "missing_match_evidence",
             "created_at": now,
         }
         bind = self.session.get_bind()

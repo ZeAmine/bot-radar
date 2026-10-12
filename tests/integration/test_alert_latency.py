@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -46,6 +47,7 @@ def events(caplog, phase):
 
 @pytest.fixture
 async def journey(monkeypatch):
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [601, 602])
     clock = Clock()
     from app.core import alert_latency
 
@@ -74,6 +76,7 @@ async def journey(monkeypatch):
 
         await add(601)
         bot = AsyncMock()
+        bot.id = 123456789
 
         async def send(chat_id, **_kwargs):
             clock.advance(0.2)
@@ -130,14 +133,16 @@ async def test_recipient_transport_ack_persistence_and_final_are_distinct(journe
     assert all(m.notification_sent for m in response.matches)
     assert all(await journey.states())
     assert [r.duration_ms for r in events(caplog, "transport_attempt")] == pytest.approx([200, 200])
-    assert [r.duration_ms for r in events(caplog, "entry_to_ack")] == pytest.approx([300, 800])
+    # Six commits : ingestion, réservation 1, reçu 1, réservation 2, reçu 2, final.
+    # Les deux réservations durables font partie du travail depuis le point 6.
+    assert [r.duration_ms for r in events(caplog, "entry_to_ack")] == pytest.approx([600, 1500])
     assert [r.duration_ms for r in events(caplog, "ack_to_persistence")] == pytest.approx(
         [300, 300]
     )
-    assert [r.duration_ms for r in events(caplog, "recipient_wait")] == pytest.approx([0, 500])
-    assert events(caplog, "pre_first_telegram_call")[0].duration_ms == pytest.approx(100)
-    assert events(caplog, "final_commit")[0].duration_ms == pytest.approx(400)
-    assert events(caplog, "ingestion_terminal")[0].duration_ms == pytest.approx(1500)
+    assert [r.duration_ms for r in events(caplog, "recipient_wait")] == pytest.approx([300, 1200])
+    assert events(caplog, "pre_first_telegram_call")[0].duration_ms == pytest.approx(400)
+    assert events(caplog, "final_commit")[0].duration_ms == pytest.approx(300)
+    assert events(caplog, "ingestion_terminal")[0].duration_ms == pytest.approx(2100)
     records = [r for r in caplog.records if getattr(r, "event", "") == "alert_latency"]
     assert records
     assert all(r.duration_unit == "ms" for r in records)
@@ -167,8 +172,12 @@ async def test_no_ack_duration_for_unsuccessful_results(journey, caplog, outcome
         response = await ingestion.ProcessListingUseCase(journey.db.session, journey.bot).execute(
             journey.payload, {}
         )
-    assert response.needs_retry
+    assert response.needs_retry is False
     assert await journey.states() == [None]
+    from app.db.models.listing_match import ListingMatch
+    async with journey.db.maker() as reader:
+        row = (await reader.scalars(select(ListingMatch))).one()
+        assert row.notification_state == ("abandoned" if outcome == "rejected" else "unknown")
     assert not events(caplog, "entry_to_ack")
     records = events(caplog, "delivery_terminal")
     assert len(records) == 1
@@ -211,7 +220,8 @@ async def test_sql_recovery_included_without_second_transport(journey, caplog):
     async def commit():
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == 3:
+            assert sys._getframe(1).f_code.co_name == "_persist_confirmed_delivery"
             journey.clock.advance(0.5)
             raise SQLAlchemyError("SENSITIVE_BODY")
         journey.clock.advance(0.1)
@@ -225,7 +235,7 @@ async def test_sql_recovery_included_without_second_transport(journey, caplog):
     assert response.matches[0].notification_sent
     journey.bot.send_message.assert_awaited_once()
     assert all(await journey.states())
-    assert events(caplog, "entry_to_ack")[0].duration_ms == pytest.approx(300)
+    assert events(caplog, "entry_to_ack")[0].duration_ms == pytest.approx(400)
     assert events(caplog, "ack_to_persistence")[0].duration_ms == pytest.approx(600)
     assert events(caplog, "ack_to_persistence")[0].result == "notified"
     assert events(caplog, "final_commit")[0].duration_ms == pytest.approx(100)
@@ -356,7 +366,7 @@ async def test_diagnostic_and_clock_failures_do_not_change_ack_or_sql_error(jour
     async def commit():
         nonlocal calls
         calls += 1
-        if calls in (2, 3):
+        if calls in (3, 4):
             raise error
         await original()
 
@@ -366,7 +376,7 @@ async def test_diagnostic_and_clock_failures_do_not_change_ack_or_sql_error(jour
             journey.payload.model_copy(update={"external_id": "sql-error"}), {}
         )
     assert captured.value is error
-    assert calls == 3
+    assert calls == 4
 
 
 async def test_final_commit_failure_is_separate_from_post_send_recalculation(
@@ -382,7 +392,7 @@ async def test_final_commit_failure_is_separate_from_post_send_recalculation(
     async def commit():
         nonlocal calls
         calls += 1
-        if calls == 3:
+        if sys._getframe(1).f_locals.get("final_called") is True:
             journey.clock.advance(0.7)
             raise error
         await original()
@@ -424,7 +434,7 @@ async def test_real_bibliography_background_can_start_before_return(journey, mon
     async def commit():
         nonlocal calls
         calls += 1
-        if calls == 3:
+        if sys._getframe(1).f_locals.get("final_called") is True:
             final_entered.set()
             await release_final.wait()
         await original()

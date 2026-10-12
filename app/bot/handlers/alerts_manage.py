@@ -49,6 +49,7 @@ from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
 from app.db.repositories.category_repo import CategoryRepository
 from app.db.session import AsyncSessionLocal
+from app.domain.entities.alert import PauseActionProgress
 from app.domain.entities.alert_preparation import preparation_request
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.keyword_variants import keyword_variants_module
@@ -67,6 +68,7 @@ from app.services.market_price_service import (
     cote_absence_line,
     format_cote_lines,
 )
+from app.use_cases.pause_alert import issue_pause_button
 from app.use_cases.prepare_bd_alert import prepare_bd_alert
 from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text
@@ -185,6 +187,7 @@ async def handle_select_edit_category(
         total_pages=total_count,
         category_slug=category_slug,
         preparation=getattr(alert, "preparation", None),
+        pause_callback=await issue_pause_button(alert, db_session),
     )
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(card_text, reply_markup=keyboard)
@@ -500,9 +503,18 @@ async def handle_edit_condition_toggle(
     db_session: Any,
 ) -> None:
     """Bascule l'état d'une condition pour l'alerte."""
-    parts = callback.data.split(":")  # type: ignore
-    alert_id = uuid.UUID(parts[1])
-    idx = int(parts[2])
+    parts = (callback.data or "").split(":")
+    try:
+        if len(parts) != 3:
+            raise ValueError("Référence invalide")
+        alert_id = uuid.UUID(parts[1])
+        idx = int(parts[2])
+    except ValueError:
+        await callback.answer("Sélection invalide.", show_alert=True)
+        return
+    if not 0 <= idx < len(STANDARD_CONDITIONS):
+        await callback.answer("Sélection invalide.", show_alert=True)
+        return
 
     alert_repo = _get_alert_repo(db_session)
     alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
@@ -1045,8 +1057,10 @@ async def _save_edited_field_value(
         request = preparation_request(alert)
         if book_to_price is not None and request is None:
             alert.status = AlertStatus.PAUSED
+            alert.decision_version += 1
         from app.services.book_market_pricing import recalculate_invalidated_series
         await recalculate_invalidated_series(db_session)
+        prepared_version = alert.decision_version
         await db_session.commit()
         if field == "isbn" and alert.isbn != original_isbn:
             pop_pending_variants(alert.id)
@@ -1075,6 +1089,7 @@ async def _save_edited_field_value(
                 alert.isbn != clean_isbn
                 or alert.status != AlertStatus.PAUSED
                 or alert.name != prepared_name
+                or alert.decision_version != prepared_version
             ):
                 await db_session.rollback()
                 return
@@ -1088,6 +1103,7 @@ async def _save_edited_field_value(
                 ]
             await db_session.refresh(alert, ["alert_books"])
             alert.status = previous_status
+            alert.decision_version += 1
             await db_session.commit()
 
         cat_slug = alert.category.slug if alert.category else "all"
@@ -1106,6 +1122,7 @@ async def _save_edited_field_value(
                 total_pages=total_count,
                 category_slug=cat_slug,
                 preparation=getattr(alert, "preparation", None),
+                pause_callback=await issue_pause_button(alert, db_session),
             ),
         )
 
@@ -1140,19 +1157,44 @@ async def toggle_pause_alert(
     callback: CallbackQuery,
     db_user: User,
     db_session: Any,
+    pause_progress: PauseActionProgress | None = None,
 ) -> None:
     """Met en pause une alerte active."""
-    alert_id = uuid.UUID(callback.data.split(":")[1])  # type: ignore
-    alert_repo = _get_alert_repo(db_session)
-    alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
-    if not alert:
-        await callback.answer("Alerte introuvable.", show_alert=True)
-        return
+    progress = pause_progress if pause_progress is not None else PauseActionProgress()
+    from app.use_cases.pause_alert import apply_pause
 
-    await alert_repo.set_status(alert, AlertStatus.PAUSED)
-    await db_session.commit()
+    parts = (callback.data or "").split(":")
+    try:
+        if len(parts) != 2 or not parts[1].startswith("p_"):
+            raise ValueError("Ancien bouton")
+        progress.token = uuid.UUID(parts[1][2:])
+    except ValueError:
+        progress.effect, progress.result = "not_applied", "legacy"
+        await callback.answer("Bouton périmé. Actualise la carte avec /show.", show_alert=True)
+        return
+    progress.user_id = db_user.id
+    if not progress.callback_id:
+        progress.callback_id = callback.id
+    result = await apply_pause(db_session, progress)
+    if result in {"replay", "unknown"}:
+        return  # Aucune seconde confirmation ou édition au rejeu.
+    if result != "applied":
+        text = "Alerte introuvable." if result == "refused" else (
+            "Ce bouton a déjà été utilisé." if result == "consumed" else
+            "Bouton périmé. Actualise la carte avec /show."
+        )
+        await callback.answer(text, show_alert=True)
+        return
+    progress.stage = "confirmation"
     await callback.answer("⏸ Alerte mise en pause.")
-    await view_single_alert(callback, db_user, db_session)
+    progress.stage = "card"
+    # Le navigateur de carte attend un UUID d'alerte, pas le jeton du bouton.
+    from app.db.models.pause_action import PauseAction
+    action = await db_session.get(PauseAction, progress.token)
+    assert action is not None
+    card_callback = callback.model_copy(update={"data": f"al_view:{action.alert_id}"})
+    await view_single_alert(card_callback, db_user, db_session)
+    progress.stage = "handler_returned"
 
 
 @router.message(Command("resume"))

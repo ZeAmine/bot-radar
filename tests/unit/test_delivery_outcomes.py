@@ -70,7 +70,8 @@ async def test_valid_receipt_is_retained_in_memory():
     [
         (
             TelegramBadRequest(
-                method=SendMessage(chat_id=601, text="synthetic"), message="synthetic rejection"
+                method=SendMessage(chat_id=601, text="synthetic"),
+                message="Bad Request: wrong type of the web page content"
             ),
             "rejected",
         ),
@@ -98,7 +99,7 @@ async def test_local_failure_is_proven_before_call(monkeypatch):
     monkeypatch.setattr("app.services.telegram_service.get_listing_alert_keyboard", refuse)
     bot = AsyncMock()
     result = await send_listing_alert(bot, 601, listing())
-    assert result.outcome == "rejected"
+    assert result.outcome == "not_sent"
     bot.send_message.assert_not_awaited()
     bot.send_photo.assert_not_awaited()
 
@@ -129,8 +130,7 @@ async def test_final_json_diagnostics_are_correlated_and_exclude_content(caplog)
 
 
 @pytest.mark.parametrize("errors", [1, 2])
-async def test_ambiguous_photo_keeps_retries_and_text_fallback_visible(monkeypatch, caplog, errors):
-    from app.services.telegram_service import PHOTO_RETRY_DELAY_SECONDS
+async def test_ambiguous_photo_stops_without_retry_or_fallback(monkeypatch, caplog, errors):
 
     accepted = []
     bot = AsyncMock()
@@ -146,7 +146,8 @@ async def test_ambiguous_photo_keeps_retries_and_text_fallback_visible(monkeypat
                 message="RAW_BODY_SYNTHETIC response lost",
             )
         raise TelegramBadRequest(
-            method=SendMessage(chat_id=601, text="synthetic"), message="synthetic rejection"
+            method=SendMessage(chat_id=601, text="synthetic"),
+                message="Bad Request: wrong type of the web page content"
         )
 
     async def text(**_kwargs):
@@ -158,35 +159,30 @@ async def test_ambiguous_photo_keeps_retries_and_text_fallback_visible(monkeypat
     bot.send_photo.side_effect, bot.send_message.side_effect = photo, text
     with caplog.at_level(logging.INFO):
         result = await send_listing_alert(bot, 601, listing(["https://example.invalid/photo.jpg"]))
-    assert result.outcome == "acknowledged"
-    assert result.transport == "text"
-    assert accepted == ["photo"] * errors + ["text"]
-    assert bot.send_photo.await_count == 2
-    assert bot.send_message.await_count == 1
-    pause.assert_awaited_once_with(PHOTO_RETRY_DELAY_SECONDS)
+    assert result.outcome == "unknown"
+    assert accepted == ["photo"]
+    assert bot.send_photo.await_count == 1
+    bot.send_message.assert_not_awaited()
+    pause.assert_not_awaited()
     records = [
         record
         for record in caplog.records
         if getattr(record, "event", "") == "notification_delivery"
     ]
-    assert [r.delivery_result for r in records] == (
-        ["unknown", "rejected", "acknowledged"]
-        if errors == 1
-        else ["unknown", "unknown", "acknowledged"]
-    )
+    assert [r.delivery_result for r in records] == ["unknown"]
 
 
-async def test_none_photo_receipt_keeps_existing_single_attempt_then_text(monkeypatch):
+async def test_none_photo_receipt_stops_without_text_fallback(monkeypatch):
     bot = AsyncMock()
     bot.send_photo.return_value = None
     bot.send_message.return_value = telegram_message()
     pause = AsyncMock()
     monkeypatch.setattr("app.services.telegram_service.asyncio.sleep", pause)
     result = await send_listing_alert(bot, 601, listing(["https://example.invalid/photo.jpg"]))
-    assert result
-    assert result.transport == "text"
+    assert not result
+    assert result.outcome == "unknown"
     bot.send_photo.assert_awaited_once()
-    bot.send_message.assert_awaited_once()
+    bot.send_message.assert_not_awaited()
     pause.assert_not_awaited()
 
 
@@ -216,7 +212,9 @@ async def test_invalid_photo_url_is_not_exposed_in_final_log(caplog):
 @pytest.mark.parametrize("unknown_photo", [True, False])
 async def test_rejected_fallback_does_not_erase_earlier_uncertainty(monkeypatch, unknown_photo):
     method = SendMessage(chat_id=601, text="synthetic")
-    rejection = TelegramBadRequest(method=method, message="synthetic rejection")
+    rejection = TelegramBadRequest(
+        method=method, message="Bad Request: wrong type of the web page content",
+    )
     bot = AsyncMock()
     bot.send_photo.side_effect = [
         TelegramNetworkError(method=method, message="synthetic response lost")
@@ -229,5 +227,5 @@ async def test_rejected_fallback_does_not_erase_earlier_uncertainty(monkeypatch,
     result = await send_listing_alert(bot, 601, listing(["https://example.invalid/photo.jpg"]))
     assert not result
     assert result.outcome == ("unknown" if unknown_photo else "rejected")
-    assert bot.send_photo.await_count == 2
-    bot.send_message.assert_awaited_once()
+    assert bot.send_photo.await_count == (1 if unknown_photo else 2)
+    assert bot.send_message.await_count == (0 if unknown_photo else 1)

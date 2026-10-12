@@ -194,6 +194,7 @@ def _make_payload(iteration: int) -> ListingIngestPayload:
 def _make_mock_bot() -> AsyncMock:
     """Bot aiogram mocké : seul l'I/O Telegram est simulé, le formatage est réel."""
     bot = AsyncMock()
+    bot.id = 123456789
     bot.send_photo.side_effect = telegram_reply
     bot.send_message.side_effect = telegram_reply
     return bot
@@ -261,6 +262,7 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
     `test_benchmark_series_link_writes_six_links_and_prices_them`.
     """
     monkeypatch.setattr(settings, "AI_ENABLED", False)
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [123456])
     session, session_maker = series_db
     events: list[str] = []
     deferred: list[tuple[str, Coroutine[Any, Any, Any]]] = []
@@ -427,6 +429,7 @@ async def test_benchmark_series_link_writes_six_links_and_prices_them(
     six cotations, aucune perdue.
     """
     monkeypatch.setattr(settings, "AI_ENABLED", False)
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [123456])
     session, session_maker = series_db
     result = await session.execute(select(Alert.id))
     alert_id = result.scalar_one()

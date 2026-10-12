@@ -139,6 +139,48 @@ async def test_http_error_falls_back_to_none(name: str, network: FakeNetwork) ->
 
 
 @pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize("body", [
+    "<html>synthetic-private-marker</html>",
+    '{"choices": 4, "content": 4}',
+    '{"choices": {"wrong": 1}, "content": [{"type": "text", "text": 42}]}',
+    '{"choices": [], "content": [], "echo": "synthetic-private-marker"}',
+])
+async def test_invalid_wire_response_is_absorbed_without_logging_body(name, body, network, caplog):
+    client = make_client(network, name)
+
+    def respond(request):
+        network.captured.append(request)
+        return httpx.Response(200, text=body)
+
+    network.handler = respond
+    assert await client.complete(system_prompt="s", user_prompt="u") is None
+    assert await client.generate_json("s", "u") is None
+    assert len(network.captured) == 2  # Un POST par appel, aucune tentative supplémentaire.
+    assert "synthetic-private-marker" not in caplog.text
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
+async def test_http_error_never_logs_external_body(name, network, caplog):
+    client = make_client(network, name)
+
+    def respond(request):
+        network.captured.append(request)
+        return httpx.Response(403, text="synthetic-private-body")
+
+    network.handler = respond
+    assert await client.complete(system_prompt="s", user_prompt="u") is None
+    assert len(network.captured) == 1
+    assert "synthetic-private-body" not in caplog.text
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
+async def test_health_message_only_attests_the_http_probe(name, network):
+    health = await make_client(network, name).check_health(force=True)
+    assert health.status == "active"
+    assert health.message.startswith("Sonde HTTP accessible")
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
 @pytest.mark.asyncio
 async def test_unusable_response_falls_back_to_none(name: str, network: FakeNetwork) -> None:
     """Une réponse sans contenu exploitable rend `None` sans lever."""

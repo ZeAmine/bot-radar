@@ -3,6 +3,17 @@
 from enum import StrEnum
 
 
+class NotificationState(StrEnum):
+    """Progression persistée ; unknown n'autorise jamais un nouvel envoi."""
+
+    READY = "ready"
+    SENDING = "sending"
+    NOTIFIED = "notified"
+    UNKNOWN = "unknown"
+    DEFERRED = "deferred"
+    ABANDONED = "abandoned"
+
+
 class CategorySlug(StrEnum):
     """Identifiants des catégories d'articles surveillées."""
 

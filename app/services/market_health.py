@@ -91,12 +91,12 @@ def format_stale_certified_lows(
     tail = f"\n• … et {remainder} autre(s)" if remainder > 0 else ""
 
     return (
-        "⚠️ <b>Cotes de marché figées</b>\n\n"
-        f"{affected} livre(s) affichent encore un prix bas constaté que plus aucun "
+        "⚠️ <b>Agrégats historiques non actualisés</b>\n\n"
+        f"{affected} livre(s) conservent un ancien minimum déclaré que plus aucun "
         "relevé ne nourrit :\n\n"
         f"{lines}{tail}\n\n"
-        "Ces valeurs restent affichées tant qu'une source ne les corrige pas : elles ne "
-        "se périment pas toutes seules.\n"
+        "Ces valeurs sont informatives, hors référence glissante vérifiable. "
+        "Ce signal ne mesure pas la fraîcheur des observations locales.\n"
         "<code>scripts/sync_chasse_session.py</code> relance la série 1 an."
     )
 

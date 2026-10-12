@@ -1,5 +1,6 @@
 """Service métier pour la gestion et validation des alertes."""
 
+from math import isfinite
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -20,6 +21,8 @@ def parse_price_to_cents(price_str: str) -> int:
     cleaned = price_str.strip().replace("€", "").replace(" ", "").replace(",", ".")
     try:
         amount_float = float(cleaned)
+        if not isfinite(amount_float) or not isfinite(amount_float * 100):
+            raise AlertServiceError("Le prix doit être un montant fini.")
         if amount_float < 0:
             raise AlertServiceError("Le prix doit être positif.")
         return round(amount_float * 100)

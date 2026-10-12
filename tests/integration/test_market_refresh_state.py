@@ -1,6 +1,6 @@
 """Le prix ancien et le résultat de la nouvelle collecte restent distincts."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,7 +11,47 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.providers.base import MarketOffer, MarketOffers
 from app.services import book_market_pricing
 from app.services.book_market_pricing import price_book
+from app.services.market_price_service import admissible_reference_price
 from tests.database import postgres_replayed_database
+
+
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("validity", ["expired", "fresh", "unknown"])
+async def test_empty_collection_never_renews_price_validity(failed, validity):
+    """Un relevé informatif reste conservé sans devenir une nouvelle observation."""
+    async with postgres_replayed_database() as db:
+        now = datetime.now(UTC)
+        expires = {
+            "expired": now - timedelta(days=2),
+            "fresh": now + timedelta(hours=2), "unknown": None,
+        }[validity]
+        book = Book(title="Livre", normalized_title="livre")
+        db.session.add(book)
+        await db.session.flush()
+        cache = BookMarketCache(
+            book_id=book.id, lowest_delivered_price_cents=1500,
+            checked_at=now - timedelta(days=3), expires_at=expires,
+            comparison_status=ComparisonStatus.AVAILABLE,
+        )
+        db.session.add(cache)
+        await db.session.commit()
+        registry = MagicMock()
+        registry.fetch_all_offers = AsyncMock(return_value=MarketOffers(
+            failed_providers=("source",) if failed else (),
+        ))
+        for _ in range(2):
+            await price_book(db.session, book, registry=registry)
+            await db.session.commit()
+        async with db.maker() as reader:
+            persisted = await reader.get(BookMarketCache, cache.id)
+            stored_expiry = persisted.expires_at
+            assert (stored_expiry.replace(tzinfo=UTC) if stored_expiry else None) == expires
+            assert persisted.lowest_delivered_price_cents == 1500
+            assert persisted.checked_at.replace(tzinfo=UTC) == now - timedelta(days=3)
+            assert persisted.collection_status == ("failed" if failed else "empty")
+            assert admissible_reference_price(persisted) == (
+                (1500, False) if validity == "fresh" else (None, False)
+            )
 
 
 async def test_failed_refresh_preserves_real_observation_date_and_names_source():

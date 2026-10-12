@@ -20,8 +20,8 @@ import asyncio
 import logging
 import threading
 import uuid
-from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime, timedelta
+from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,8 +49,6 @@ logger = logging.getLogger(__name__)
 
 # Durée maximale d'interrogation d'un livre, tous fournisseurs compris.
 BOOK_FETCH_TIMEOUT_SECONDS = 20.0
-# Rafraîchissement minimal du cache conservé pour résilience après un silence réseau.
-CACHE_HOURS_RESILIENT_REFRESH = 6
 # Durée de validité du cache selon la qualité de la donnée collectée.
 CACHE_HOURS_WITH_PRICE = 24
 CACHE_HOURS_WITHOUT_PRICE = 6
@@ -73,6 +71,8 @@ class BookPricingResult:
     cache_duration_hours: int
     historical_low_1y_cents: int | None
     failed_providers: tuple[str, ...] = ()
+    current_observed_at: datetime | None = None
+    collected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def has_data(self) -> bool:
@@ -108,6 +108,7 @@ class BookPricingResult:
                 cache_duration_hours=CACHE_HOURS_WITH_PRICE,
                 historical_low_1y_cents=historical_low_cents,
                 failed_providers=getattr(offers, "failed_providers", ()),
+                current_observed_at=best_offer.observed_at,
             )
 
         if historical_low_cents is not None:
@@ -160,7 +161,7 @@ async def fetch_offers_for_book(
     """
     active_registry = registry or ProviderRegistry()
     try:
-        return await asyncio.wait_for(
+        offers = await asyncio.wait_for(
             active_registry.fetch_all_offers(
                 isbn13=normalize_search_isbn(book.isbn13),
                 title=book.title,
@@ -169,6 +170,13 @@ async def fetch_offers_for_book(
             ),
             timeout=BOOK_FETCH_TIMEOUT_SECONDS,
         )
+        observed_at = datetime.now(UTC)
+        for offer in offers:
+            if offer.observed_at is None:
+                offer.observed_at = observed_at
+            if offer.observation_id is None:
+                offer.observation_id = uuid.uuid4()
+        return offers
     except TimeoutError:
         names = tuple(provider.name for provider in active_registry.providers)
         logger.warning("Délai global de collecte dépassé pour %s", book.id)
@@ -245,15 +253,9 @@ async def persist_market_result(
                 book_id,
                 existing.lowest_delivered_price_cents,
             )
-            # Un silence réseau n'empêche pas de réparer une cote surestimée :
-            # nos relevés sont déjà en base.
-            if existing.historical_low_1y_cents is not None:
-                existing.historical_low_1y_cents = await repo.clamp_historical_low_by_observations(
-                    book_id, existing.historical_low_1y_cents
-                )
-            now = datetime.now(UTC)
+            await repo.refresh_annual_references([book_id], force=True)
             _stamp_collection(existing, result)
-            existing.expires_at = now + timedelta(hours=CACHE_HOURS_RESILIENT_REFRESH)
+            # Conserver le relevé informatif, jamais renouveler sa validité sans observation.
             await _refresh_series_totals(session, book_id)
             return existing
 
@@ -266,7 +268,10 @@ async def persist_market_result(
         comparison_status=result.comparison_status,
         cache_duration_hours=result.cache_duration_hours,
         historical_low_1y_cents=result.historical_low_1y_cents,
+        observed_at=(result.current_observed_at if result.lowest_delivered_price_cents is not None
+                     else result.collected_at),
     )
+    await repo.refresh_annual_references([book_id], force=True)
     _stamp_collection(cache, result)
     await _refresh_series_totals(session, book_id)
     return cache
@@ -274,11 +279,15 @@ async def persist_market_result(
 
 def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None:
     """Conserve le résultat de tentative séparément de la date du dernier prix."""
-    cache.last_attempt_at = datetime.now(UTC)
+    cache.last_attempt_at = result.collected_at
     cache.failed_provider_names = list(result.failed_providers)
     retained_offers = cache.current_offers
     cache.current_offers = [
-        asdict(offer)
+        {
+            key: value
+            for key, value in asdict(offer).items()
+            if key not in {"observed_at", "observation_id"}
+        }
         for offer in result.offers
         if is_comparable_secondhand_offer(offer)
         and offer.is_available
@@ -311,13 +320,13 @@ async def price_book(
     )
     cache = await persist_market_result(session, book.id, result)
     logger.info(
-        "Cote du livre ID %s (%s) : marché %s, plus bas 1 an %s (%s).",
+        "Cote du livre ID %s (%s) : marché %s, minimum des observations conservées %s (%s).",
         book.id,
         book.title,
         format_cents(cache.lowest_delivered_price_cents)
         if cache.lowest_delivered_price_cents
         else "inconnu",
-        format_cents(cache.historical_low_1y_cents) if cache.historical_low_1y_cents else "inconnu",
+        format_cents(cache.annual_low_cents) if cache.annual_low_cents else "inconnu",
         pricing_stat(cache),
     )
     return cache

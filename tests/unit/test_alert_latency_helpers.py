@@ -38,8 +38,8 @@ async def test_photo_transport_retry_pause_and_text_ack_are_separate(monkeypatch
         calls += 1
         values[0] += 0.2 if calls == 1 else 0.3
         if calls == 1:
-            raise TelegramNetworkError(method=method, message="synthetic unknown")
-        raise TelegramBadRequest(method=method, message="synthetic rejection")
+            raise TelegramBadRequest(method=method, message="photo_invalid")
+        raise TelegramBadRequest(method=method, message="photo_invalid")
 
     async def pause(seconds):
         assert seconds == 1
@@ -51,6 +51,7 @@ async def test_photo_transport_retry_pause_and_text_ack_are_separate(monkeypatch
         return telegram_message(601)
 
     bot = AsyncMock()
+    bot.id = 123456789
     bot.send_photo.side_effect, bot.send_message.side_effect = photo, text
     monkeypatch.setattr(
         telegram, "asyncio", SimpleNamespace(sleep=pause, CancelledError=asyncio.CancelledError)
@@ -172,6 +173,7 @@ async def test_formatter_failure_cannot_refuse_or_drop_valid_ack(monkeypatch, ca
 
     monkeypatch.setattr(telegram.logger, "handle", broken)
     bot = AsyncMock()
+    bot.id = 123456789
     receipt = telegram_message(601)
     bot.send_message.return_value = receipt
     listing = Listing(
@@ -190,3 +192,21 @@ async def test_formatter_failure_cannot_refuse_or_drop_valid_ack(monkeypatch, ca
     assert result.outcome == "acknowledged"
     assert result.receipt is receipt
     bot.send_message.assert_awaited_once()
+
+
+async def test_photo_network_failure_has_no_retry_or_text_fallback(monkeypatch):
+    """Un transport incertain ne prouve pas que Telegram n'a rien accepté."""
+    monkeypatch.setattr(settings, "AI_ENABLED", False)
+    bot = AsyncMock()
+    bot.id = 123456789
+    bot.send_photo.side_effect = TelegramNetworkError(
+        method=SendMessage(chat_id=601, text="synthetic"), message="synthetic uncertainty"
+    )
+    listing = Listing(id=uuid.uuid4(), source_name="synthetic", external_id="unknown",
+        title="Console", url="https://example.invalid", category_slug="tech",
+        item_price_cents=100, photos=["https://example.invalid/photo"])
+    result = await telegram.send_listing_alert(bot, 601, listing)
+    assert result.outcome == "unknown"
+    assert result.receipt is None
+    bot.send_photo.assert_awaited_once()
+    bot.send_message.assert_not_awaited()

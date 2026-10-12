@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.bot.formatter import alert_status_text, format_cents_to_euros
+from app.bot.handlers._alerts_router import bind_creation_keyboard
 from app.bot.keyboards.alerts import edition_ordinal, get_alert_confirmation_keyboard
 from app.bot.labels import (
     FIELD_AUTHOR,
@@ -622,7 +623,7 @@ def creation_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
             for row in keyboard.inline_keyboard
         ]
         keyboard.inline_keyboard = [row for row in keyboard.inline_keyboard if row]
-    return keyboard
+    return bind_creation_keyboard(keyboard, data.get("creation_token"))
 
 
 def build_creation_recap(data: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
@@ -1177,6 +1178,7 @@ async def render_existing_alert_response(
             ]
         )
 
+    keyboard = bind_creation_keyboard(keyboard, (await state.get_data()).get("creation_token"))
     edit_msg: Any = target_msg
     if edit_msg is None and isinstance(event, CallbackQuery) and event.message:
         edit_msg = event.message

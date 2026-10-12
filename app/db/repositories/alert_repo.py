@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.constants import AlertStatus
+from app.core.exceptions import EntityNotFoundError
 from app.db.models.alert import Alert
 from app.db.models.category import Category
+from app.db.models.listing_match import ListingMatch
 from app.domain.entities.alert_preparation import preparation_request
 
 
@@ -137,6 +139,7 @@ class AlertRepository:
         """Seules les dépendances bibliographiques changent la version du travail."""
         request = preparation_request(alert)
         if request is not None:
+            alert.decision_version += 1
             await self.reset_bibliographic_identity(alert)
             alert.preparation = request.restart(
                 activate=request.activation_requested, author_hint=author_hint
@@ -260,9 +263,13 @@ class AlertRepository:
         self,
         alert: Alert,
         status: AlertStatus,
+        *,
+        require_editable: bool = False,
     ) -> Alert:
-        """Modifie le statut d'une alerte (active / paused)."""
+        """Modifie le statut ; le mode strict distingue le refus du verrou d'une mutation."""
         if not await self.lock_for_edit(alert):
+            if require_editable:
+                raise EntityNotFoundError("Alerte introuvable.")
             return alert
         request = preparation_request(alert)
         if request is not None and status in (AlertStatus.PAUSED, AlertStatus.ACTIVE):
@@ -275,6 +282,7 @@ class AlertRepository:
             alert.status = AlertStatus.PAUSED
         else:
             alert.status = status
+        alert.decision_version += 1
         await self.session.flush()
         return alert
 
@@ -301,6 +309,7 @@ class AlertRepository:
         if not await self.lock_for_edit(alert):
             return alert
         alert.status = AlertStatus.DELETED
+        alert.decision_version += 1
         alert.deleted_at = datetime.now(UTC)
         await self.session.flush()
         return alert
@@ -359,7 +368,8 @@ class AlertRepository:
             sa_or(
                 Alert.status == AlertStatus.DELETED,
                 Alert.deleted_at.is_not(None),
-            )
+            ),
+            ~Alert.matches.any(ListingMatch.notified_at.is_(None)),
         )
         deleted_alerts = list((await self.session.execute(stmt_deleted)).scalars().all())
         deleted_alerts_count = len(deleted_alerts)

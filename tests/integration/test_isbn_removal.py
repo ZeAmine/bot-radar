@@ -299,6 +299,9 @@ async def test_new_title_discovery_after_removal_is_allowed(journey, monkeypatch
 
 
 async def test_new_ingestion_does_not_use_removed_reference(journey, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [journey.user.telegram_user_id])
     await journey.change()
     sender = AsyncMock(side_effect=acknowledged_delivery)
     monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: sender)
@@ -313,7 +316,9 @@ async def test_new_ingestion_does_not_use_removed_reference(journey, monkeypatch
         item_price_cents=100,
     )
     async with journey.db.maker() as session:
-        result = await ingestion.ProcessListingUseCase(session, AsyncMock()).execute(payload, {})
+        result = await ingestion.ProcessListingUseCase(
+            session, SimpleNamespace(id=123456789)
+        ).execute(payload, {})
     assert result.matches[0].notification_sent
     assert "16,00" not in sender.call_args.kwargs["market_comparison_line"]
 
@@ -545,3 +550,23 @@ async def test_result_waiting_for_edit_lock_cannot_restore_removed_link(journey,
         await session.commit()
     assert await task is False
     assert (await journey.read()).alert_books == []
+
+
+async def test_new_pause_during_pricing_survives_an_active_paused_roundtrip(journey, monkeypatch):
+    """Le statut revenu en pause ne réhabilite pas une activation ancienne."""
+    from app.db.repositories.alert_repo import AlertRepository
+
+    async def price(*_args, **_kwargs):
+        async with journey.db.maker() as session:
+            repo = AlertRepository(session)
+            current = await repo.get_by_id(journey.alert.id)
+            assert current.status == AlertStatus.PAUSED
+            await repo.set_status(current, AlertStatus.ACTIVE)
+            await repo.set_status(current, AlertStatus.PAUSED)
+            await session.commit()
+
+    monkeypatch.setattr(edit, "price_book_now", price)
+    await journey.change(NEW)
+    current = await journey.read()
+    assert current.isbn == NEW
+    assert current.status == AlertStatus.PAUSED

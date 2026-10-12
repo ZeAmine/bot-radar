@@ -26,6 +26,20 @@ Ne pas installer Agent OS, ECC, BMad, GSD ni Spec Kit dans ce dépôt : leurs wo
 
 Mise à jour du submodule : seulement quand un commit est choisi. Pas d’upgrade automatique dans un correctif.
 
+### Pilotage autonome borné
+
+Ce mode s’applique aux audits, corrections et nouvelles fonctionnalités, quel que soit l’outil.
+
+- Le plan et l’objectif validés restent la référence. Chaque tâche possède un mandat qui précise son périmètre, ses permissions, ses interdictions et ses critères de réussite.
+- Dans ce mandat, l’agent analyse, poursuit les opérations déjà autorisées, vérifie les résultats et corrige son travail sans demander confirmation à chaque résultat intermédiaire. Sans permission de modification, la tâche reste en lecture seule.
+- Il distingue ce que montre la lecture du code, ce qui reste une hypothèse, ce qu’un test vérifie et ce qui a été réellement observé en exécution. Une preuve locale ne vaut pas preuve pour tout le projet.
+- Il vérifie son implémentation et effectue une auto-revue du diff et des critères de réussite. Il ne modifie pas les attentes de tests uniquement pour les faire passer ; toute adaptation doit correspondre à un changement de comportement voulu et justifié.
+- Il ne clôture pas une priorité lorsque seul un sous-problème est traité. Le rapport final présente les changements, les preuves et leur portée, les limites et l’état du lot : terminé, partiel ou bloqué, avec le travail restant.
+- Il demande un arbitrage en cas de permission manquante, de changement de périmètre, de décision importante non couverte par le plan ou de blocage empêchant la suite. Il peut poursuivre les actions indépendantes déjà autorisées.
+- Les opérations sensibles restent soumises aux autorisations explicites et aux garde-fous du dépôt. Le mandat borne l’application des workflows Git, de vérification et de déploiement : leur description n’autorise pas une opération interdite par la tâche. Un contrôle non autorisé reste non exécuté et signalé ; les critères de qualité ne sont pas abaissés.
+
+Ce fichier ne remplace ni les permissions techniques des outils ni une revue indépendante.
+
 ## Définition de terminé
 
 Un changement est terminé seulement si :
@@ -40,7 +54,7 @@ Un changement est terminé seulement si :
 Le dépôt est protégé : le status check `check` est obligatoire sur une branche à jour (`strict=true`) et `enforce_admins` est actif, donc le push direct sur `main` est refusé, **y compris par le propriétaire**. Ce n’est pas une précaution de style : la CI ne peut pas jouer le rôle de `check` sur un commit qui n’existe pas encore sur GitHub. La branche est donc la seule voie, et elle est aussi la bonne.
 
 - **Une feature = une branche**, issue de `main`, nommée `feat/`, `fix/`, `docs/` ou `chore/` selon l’intention. Jamais de commit direct sur `main`.
-- **Commit et push sur la branche sont libres**, sans demande préalable : c’est le prix de la protection, et la branche supprimée après merge en garde la trace dans l’historique.
+- **Commit et push sur la branche sont libres lorsque le mandat les autorise**, sans confirmation intermédiaire : c’est le prix de la protection, et la branche supprimée après merge en garde la trace dans l’historique.
 - **PR via `gh pr create`, merge en squash**, aligné sur l’historique (`(#12)`, `(#11)`, …).
 - **Double vérification** avant merge, les deux passes exigées :
   1. la CI verte — job `check` (et `test-postgres`) au vert sur la PR ;
@@ -53,7 +67,7 @@ make pr MESSAGE="…" TITLE="…" [BRANCH=fix/isbn] [STAGE="app/… tests/…"] 
 make verify                                                            # second passage local + attente CI verte
 ```
 
-Un agent qui implémente une feature travaille donc ainsi : branche depuis `main`, commits, `make pr`, `make verify`, puis merge squash. S’il n’est pas Explicitement demandé de merger, il s’arrête à la PR verte et le dit.
+Lorsque le mandat autorise les opérations Git correspondantes, un agent qui implémente une feature travaille donc ainsi : branche depuis `main`, commits, `make pr`, `make verify`, puis merge squash. S’il n’est pas explicitement demandé de merger, il s’arrête à la PR verte et le dit. Sinon, il s’arrête à la limite autorisée et indique les étapes restantes.
 
 ## Produit
 

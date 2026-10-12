@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -41,6 +42,7 @@ async def journey(monkeypatch):
         db.session.add(category)
         await db.session.commit()
         bot = AsyncMock()
+        bot.id = 123456789
         deliveries = []
 
         async def send(chat_id, **_kwargs):
@@ -48,6 +50,7 @@ async def journey(monkeypatch):
             return telegram_message(chat_id, len(deliveries))
 
         bot.send_message.side_effect = send
+        monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [601, 602])
         monkeypatch.setattr(settings, "AI_ENABLED", False)
         monkeypatch.setattr(tasks, "_background_tasks", set())
         monkeypatch.setattr(tasks, "_cleanup_tasks", set())
@@ -136,13 +139,13 @@ async def ingest(journey):
         )
 
 
-async def test_none_receipt_never_marks_notified_and_stays_f01_eligible(journey):
+async def test_none_receipt_never_marks_notified_and_is_not_recollected(journey):
     journey.bot.send_message.side_effect = None
     journey.bot.send_message.return_value = None
     response = await ingest(journey)
-    assert response.needs_retry
+    assert not response.needs_retry
     assert await journey.states() == {journey.alert_ids[0]: False}
-    assert journey.payload.external_id not in await poller.load_initial_seen_ids()
+    assert journey.payload.external_id in await poller.load_initial_seen_ids()
 
 
 @pytest.mark.parametrize("applied", [False, True])
@@ -155,7 +158,7 @@ async def test_confirmed_receipt_recovers_sql_without_resending(journey, applied
         async def commit():
             nonlocal calls, applied_moments
             calls += 1
-            if calls == 2:
+            if calls == 3:
                 if applied:
                     await original()
                     applied_moments = await journey.moments()
@@ -174,10 +177,10 @@ async def test_confirmed_receipt_recovers_sql_without_resending(journey, applied
     if applied:
         assert applied_moments is not None
         assert await journey.moments() == applied_moments
-    assert calls == (3 if applied else 4)  # commit final toujours joué
+    assert calls == (4 if applied else 5)  # commit final toujours joué
 
 
-async def test_second_sql_failure_stays_pending_and_f01_retries(journey):
+async def test_second_sql_failure_preserves_unknown_without_resending(journey):
     async with journey.writer() as session:
         original = session.commit
         calls = 0
@@ -185,19 +188,19 @@ async def test_second_sql_failure_stays_pending_and_f01_retries(journey):
         async def commit():
             nonlocal calls
             calls += 1
-            if calls in (2, 3):
+            if calls in (3, 4):
                 raise SQLAlchemyError("synthetic SQL unavailable")
             await original()
 
         session.commit = commit
         with pytest.raises(SQLAlchemyError):
             await ingestion.ProcessListingUseCase(session, journey.bot).execute(journey.payload, {})
-    assert calls == 3
+    assert calls == 4
     assert journey.deliveries == [601]
     assert await journey.states() == {journey.alert_ids[0]: False}
-    assert journey.payload.external_id not in await poller.load_initial_seen_ids()
+    assert journey.payload.external_id in await poller.load_initial_seen_ids()
     await ingest(journey)
-    assert journey.deliveries == [601, 601]
+    assert journey.deliveries == [601]
 
 
 async def test_recovery_keeps_other_recipients_independent(journey):
@@ -209,7 +212,7 @@ async def test_recovery_keeps_other_recipients_independent(journey):
         async def commit():
             nonlocal calls
             calls += 1
-            if calls == 2:
+            if calls == 3:
                 raise SQLAlchemyError("synthetic first recipient commit failed")
             await original()
 
@@ -231,7 +234,7 @@ async def test_failure_of_second_recipient_preserves_first_durable_marker(journe
         async def commit():
             nonlocal calls
             calls += 1
-            if calls in (3, 4):
+            if calls in (5, 6):
                 raise SQLAlchemyError("synthetic second recipient commit error")
             await original()
 
@@ -243,7 +246,7 @@ async def test_failure_of_second_recipient_preserves_first_durable_marker(journe
     mapping = dict(zip((601, 602), journey.alert_ids, strict=True))
     assert await journey.states() == {mapping[first]: True, mapping[second]: False}
     await ingest(journey)
-    assert journey.deliveries == [first, second, second]
+    assert journey.deliveries == [first, second]
 
 
 async def test_final_commit_error_does_not_reopen_durable_notification(journey, caplog):
@@ -254,7 +257,7 @@ async def test_final_commit_error_does_not_reopen_durable_notification(journey, 
         async def commit():
             nonlocal calls
             calls += 1
-            if calls == 3:
+            if calls == 4:
                 raise SQLAlchemyError("synthetic final commit error")
             await original()
 
@@ -271,7 +274,7 @@ async def test_final_commit_error_does_not_reopen_durable_notification(journey, 
     assert journey.deliveries == [601]
 
 
-async def test_unknown_send_is_recollected_by_real_f01_path(journey, monkeypatch):
+async def test_unknown_send_is_not_recollected_by_real_poller_path(journey, monkeypatch):
     async def lost(chat_id, **_kwargs):
         journey.deliveries.append(chat_id)
         raise TelegramNetworkError(
@@ -279,10 +282,10 @@ async def test_unknown_send_is_recollected_by_real_f01_path(journey, monkeypatch
         )
 
     journey.bot.send_message.side_effect = lost
-    assert (await ingest(journey)).needs_retry
+    assert not (await ingest(journey)).needs_retry
     assert await journey.states() == {journey.alert_ids[0]: False}
     seen = await poller.load_initial_seen_ids()
-    assert journey.payload.external_id not in seen
+    assert journey.payload.external_id in seen
     item = ScrapedVintedItem(
         external_id=journey.payload.external_id,
         title="Console",
@@ -300,9 +303,9 @@ async def test_unknown_send_is_recollected_by_real_f01_path(journey, monkeypatch
         return telegram_message(chat_id)
 
     journey.bot.send_message.side_effect = success
-    assert await poller.poll_vinted_once(seen, AsyncMock(), category_slug="tech") == 1
-    assert journey.deliveries == [601, 601]
-    assert await journey.states() == {journey.alert_ids[0]: True}
+    assert await poller.poll_vinted_once(seen, AsyncMock(), category_slug="tech") == 0
+    assert journey.deliveries == [601]
+    assert await journey.states() == {journey.alert_ids[0]: False}
 
 
 async def test_sql_diagnostics_keep_correlation_and_receipt_without_payload(journey, caplog):
@@ -313,7 +316,7 @@ async def test_sql_diagnostics_keep_correlation_and_receipt_without_payload(jour
         async def commit():
             nonlocal calls
             calls += 1
-            if calls == 2:
+            if calls == 3:
                 raise SQLAlchemyError("RAW_BODY_SYNTHETIC https://example.invalid/sensitive_path")
             await original()
 
@@ -371,9 +374,9 @@ async def test_cancellation_preserves_gate_cleanup_and_f01_state(
         async def commit():
             nonlocal calls
             calls += 1
-            if calls == 2 and boundary in {"rollback", "read", "retry_commit"}:
+            if calls == 3 and boundary in {"rollback", "read", "retry_commit"}:
                 raise SQLAlchemyError("synthetic initial SQL error")
-            if calls == 3 and boundary in {"retry_commit", "final"}:
+            if calls == 4 and boundary in {"retry_commit", "final"}:
                 entered.set()
                 await never.wait()
             await original_commit()
@@ -478,7 +481,7 @@ async def test_repeated_marking_keeps_durable_timestamp_strictly_unchanged(journ
 )
 @pytest.mark.parametrize("change", ["notified", "deleted"])
 async def test_match_changes_between_pending_read_and_retry_update(
-    journey, caplog, change
+    journey, caplog, change, record_property
 ):
     from sqlalchemy import delete, update
 
@@ -488,18 +491,20 @@ async def test_match_changes_between_pending_read_and_retry_update(
         use = ingestion.ProcessListingUseCase(session, journey.bot)
         original_commit, original_read = session.commit, use.listing_repo.match_notification_state
         calls, active_pid = 0, None
+        commit_stages = []
 
         async def commit():
             nonlocal calls
             calls += 1
-            if calls == 2:
+            commit_stages.append(sys._getframe(1).f_code.co_name)
+            if calls == 3:
                 raise SQLAlchemyError("synthetic commit failure before application")
             await original_commit()
 
         async def read(listing_id):
             nonlocal active_pid
             result = await original_read(listing_id)
-            if calls == 2:
+            if calls == 3:
                 assert journey.alert_ids[0] in result[1]
                 active_pid = await session.scalar(text("SELECT pg_backend_pid()"))
                 pending_read.set()
@@ -513,7 +518,9 @@ async def test_match_changes_between_pending_read_and_retry_update(
             try:
                 await asyncio.wait_for(pending_read.wait(), 3)
                 async with journey.writer() as other:
-                    assert await other.scalar(text("SELECT pg_backend_pid()")) != active_pid
+                    other_pid = await other.scalar(text("SELECT pg_backend_pid()"))
+                    assert other_pid != active_pid
+                    record_property("postgres_recipe", {"participants": [active_pid, other_pid]})
                     stmt = (
                         update(ListingMatch).values(notified_at=durable_at)
                         if change == "notified"
@@ -528,7 +535,12 @@ async def test_match_changes_between_pending_read_and_retry_update(
                 await asyncio.gather(running, return_exceptions=True)
         assert response.matches[0].notification_sent
         assert use.listing_repo.mark_notified.await_count == 2
-        assert calls == 4  # premier commit, échec, reprise, commit final inconditionnel
+        # Point 6 : la réservation durable précède le marquage (échoué puis repris).
+        assert calls == 5
+        assert commit_stages == [
+            "_execute_serialized", "reserve", "_persist_confirmed_delivery",
+            "_persist_confirmed_delivery", "_execute_serialized",
+        ]
     assert journey.deliveries == [601]
     records = [r for r in caplog.records if getattr(r, "event", "") == "notification_delivery"]
     if change == "notified":

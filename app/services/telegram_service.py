@@ -10,6 +10,7 @@ from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
     TelegramNotFound,
+    TelegramRetryAfter,
     TelegramUnauthorizedError,
 )
 from aiogram.types import Message
@@ -48,13 +49,13 @@ def usable_receipt(value: object, chat_id: int | None = None) -> TypeGuard[Messa
 
 @dataclass(frozen=True)
 class DeliveryResult:
-    """Résultat transitoire : le reçu ne quitte pas la mémoire du traitement."""
-
-    outcome: Literal["acknowledged", "rejected", "unknown"]
+    """Observation du sender ; l'orchestrateur persiste les champs utiles du reçu."""
+    outcome: Literal["not_sent", "acknowledged", "rejected", "unknown"]
     transport: Literal["photo", "text", "none"]
     receipt: Message | None = None
     reason: str = ""
     error_type: str | None = None
+    retry_after: int | None = None
 
     def __bool__(self) -> bool:
         return self.outcome == "acknowledged" and usable_receipt(self.receipt)
@@ -178,10 +179,9 @@ async def send_listing_alert(
 ) -> DeliveryResult:
     """Envoie l'alerte à l'utilisateur Telegram avec photo principale et clavier adapté.
 
-    La photo est tentée deux fois par URL avant tout repli : Telegram télécharge lui-
-    même le contenu, et un CDN qui renvoie une page HTML à sa place fait échouer la
-    première tentative sans que l’annonce soit en faute. Le repli texte garde
-    sa politique existante ; un accusé exploitable n’est jamais garanti.
+    Un refus photo reconnu permet une seconde tentative puis un repli texte.
+    Un résultat inconnu arrête tout nouvel appel. L'accusé de l'API ne prouve
+    jamais une lecture par l'utilisateur.
     """
     attempt_id = attempt_id or uuid.uuid4()
     alert_id = getattr(alert, "id", None)
@@ -221,19 +221,17 @@ async def send_listing_alert(
                 photo_url = _photo_url_for_alert(listing, caption)
             except Exception as exc:
                 result = DeliveryResult(
-                    "rejected", "none", reason="local_validation", error_type=type(exc).__name__
+                    "not_sent", "none", reason="local_validation", error_type=type(exc).__name__
                 )
                 diagnostic(result)
                 completed = True
                 return result
 
-            unknown_seen = False
 
             async def request(
                 transport: Literal["photo", "text"], operation: Awaitable[Message], number: int
             ) -> tuple[DeliveryResult, bool]:
-                """Le booléen indique une exception client et conserve les reprises existantes."""
-                nonlocal unknown_seen
+                """Le booléen indique une exception ; seul un refus reconnu autorise un repli."""
                 started_at = latency.clock()
                 first_call = not timing.first_call_seen
                 if first_call:
@@ -278,15 +276,23 @@ async def send_listing_alert(
                             TelegramUnauthorizedError,
                             TelegramForbiddenError,
                             TelegramNotFound,
+                            TelegramRetryAfter,
                         ),
                     )
                     result = DeliveryResult(
                         "rejected" if rejected else "unknown",
                         transport,
-                        reason="api_rejected" if rejected else "client_result_unknown",
+                        reason=("photo_content_rejected" if transport == "photo"
+                                and isinstance(exc, TelegramBadRequest)
+                                and any(fragment in exc.message.lower() for fragment in (
+                                    "wrong type of the web page content",
+                                    "failed to get http url content", "photo_invalid",
+                                )) else "api_rejected" if rejected else "client_result_unknown"),
                         error_type=type(exc).__name__,
+                        retry_after=(exc.retry_after if isinstance(exc, TelegramRetryAfter)
+                                     and type(exc.retry_after) is int
+                                     and exc.retry_after > 0 else None),
                     )
-                    unknown_seen = unknown_seen or result.outcome == "unknown"
                     record_transport(result.outcome, latency.clock())
                     diagnostic(result, number)
                     return result, True
@@ -296,7 +302,6 @@ async def send_listing_alert(
                     else DeliveryResult("unknown", transport, reason="unusable_receipt")
                 )
                 ended_at = latency.clock()
-                unknown_seen = unknown_seen or result.outcome == "unknown"
                 record_transport(result.outcome, ended_at)
                 if result:
                     timing.ack_at = ended_at
@@ -323,6 +328,7 @@ async def send_listing_alert(
                             photo=photo_url,
                             caption=caption,
                             reply_markup=keyboard,
+                            request_timeout=10,
                         ),
                         number,
                     )
@@ -345,8 +351,21 @@ async def send_listing_alert(
                             f"Échec {number}/2 de l'appel photo sans accusé exploitable.",
                             {},
                         )
+                    if (result.outcome == "rejected"
+                            and result.error_type == "TelegramBadRequest"
+                            and result.reason != "photo_content_rejected"):
+                        completed = True
+                        return result
                     # Aucun nouvel essai photo lorsque le client est revenu sans exception,
                     # comme auparavant (y compris le cas anormal None).
+                    if result.outcome == "unknown":
+                        completed = True
+                        return result
+                    if result.retry_after is not None or result.error_type in {
+                        "TelegramUnauthorizedError", "TelegramForbiddenError", "TelegramNotFound",
+                    }:
+                        completed = True
+                        return result
                     if not raised:
                         break
                     if number == 1:
@@ -393,6 +412,7 @@ async def send_listing_alert(
                         chat_id=chat_id,
                         text=text,
                         reply_markup=keyboard,
+                        request_timeout=10,
                     ),
                     1,
                 )
@@ -408,12 +428,6 @@ async def send_listing_alert(
                         else "failed",
                     },
                 )
-
-            if result.outcome == "rejected" and unknown_seen:
-                result = DeliveryResult(
-                    "unknown", result.transport, reason="earlier_transport_unknown"
-                )
-                diagnostic(result)
 
             if result and result.receipt is not None and settings.AI_ENABLED:
                 enrichment = None

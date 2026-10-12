@@ -207,6 +207,7 @@ def _make_payload(iteration: int | None) -> ListingIngestPayload:
 def _make_mock_bot() -> AsyncMock:
     """Bot aiogram mocké : uniquement l'I/O Telegram est simulée, le formatage est réel."""
     bot = AsyncMock()
+    bot.id = 123456789
     bot.send_photo.side_effect = telegram_reply
     bot.send_message.side_effect = telegram_reply
     return bot
@@ -236,6 +237,7 @@ async def test_benchmark_full_alert_path(
 ) -> None:
     """Execute complet avec doubles, marquage et commit final inclus : p99 < 500 ms."""
     monkeypatch.setattr(settings, "AI_ENABLED", False)
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [123456])
     session = benchmark_db
 
     for i in range(WARMUP_ITERATIONS):
@@ -273,6 +275,7 @@ async def test_benchmark_duplicate_ingestion_short_circuit(
 ) -> None:
     """Ré-ingestion d'un doublon : dédoublonnage immédiat, aucun renvoi d'alerte."""
     monkeypatch.setattr(settings, "AI_ENABLED", False)
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [123456])
     session = benchmark_db
 
     payload = _make_payload(None)

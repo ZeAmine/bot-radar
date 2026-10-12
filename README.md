@@ -1,7 +1,7 @@
 # BotRadar 🛰️
 
 [![CI](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeAmine/bot-radar/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-531%20passed-success?style=flat&logo=pytest)](https://docs.pytest.org/)
+[![Tests](https://img.shields.io/badge/Tests-versionnes-blue?style=flat&logo=pytest)](https://docs.pytest.org/)
 [![Linter](https://img.shields.io/badge/Linter-Ruff%20strict-black?style=flat&logo=ruff)](https://astral.sh/ruff)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=flat&logo=python)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
@@ -48,7 +48,7 @@ Il surveille quatre univers à forte valeur ajoutée :
 Sur les plateformes de seconde main (notamment Vinted), les affaires exceptionnelles ("pépites") disparaissent généralement en **60 à 90 secondes**. BotRadar est conçu pour maximiser la réactivité de l'acheteur ("snipe") tout en fournissant une analyse décisionnelle instantanée.
 
 ### Ce que BotRadar EST
-- ⚡ **Détecteur instantané** : Ingestion et notification en **< 500 ms** dès publication d'une annonce.
+- ⚡ **Détection prioritaire** : l'alerte précède les enrichissements externes. Le seuil local de 500 ms des benchmarks simulés ne mesure pas le délai depuis la publication ni une livraison Telegram réelle.
 - 📊 **Comparateur de marché réel** : Calcul synchrone de la cote d'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres).
 - 🧠 **Copilote décisionnel et d'auto-apprentissage** : Estimation de revente, coach de négociation et affinage automatique des alertes via IA.
 - 🔒 **Système strictement privé** : Mono-utilisateur avec filtrage par allowlist (`TELEGRAM_ALLOWED_USER_IDS`).
@@ -77,7 +77,7 @@ BotRadar est articulé autour d'un **monolithe asynchrone à processus unique** 
 │    FSM Handlers            Matching CPU              Dédoublonnage          │
 │   (/add, /show...)        (listing_match)             (seen_ids)            │
 │          │                       │                         │                │
-│          │                       ├────────► [ ⚡ ALERTE TELEGRAM < 500ms ]  │
+│          │                       ├────────► [ ⚡ ALERTE PRIORITAIRE ]      │
 │          │                       │                │                         │
 │          │                       ▼                ▼ (safe_create_task)      │
 │          │                  Cote BD Locale      Moteur IA / BNF              │
@@ -97,7 +97,7 @@ BotRadar est articulé autour d'un **monolithe asynchrone à processus unique** 
 
 ### Invariants opérationnels stricts (Constitution AGENTS.md)
 
-1. **Invariant n°1 — L'alerte Telegram d'abord (< 500 ms)** :
+1. **Invariant n°1 — L'alerte Telegram d'abord** :
    - Dédoublonnage instantané `(source_name, external_id)`.
    - Matching en mémoire CPU locale (`evaluate_listing_against_alert`).
    - Cote BD : **cache local PostgreSQL uniquement** (`MarketPriceService.get_comparison_summary` est synchrone, zéro requête HTTP).
@@ -248,8 +248,8 @@ Le poller Vinted intégré ([`app/tasks/vinted_poller.py`](app/tasks/vinted_poll
 Le projet est outillé avec un pipeline d'Intégration Continue via GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) qui s'exécute à chaque push et pull request :
 
 - **Ruff** : Linting strict conforme aux règles modernes Python 3.12 (longueur de ligne max 100 caractères, imports ordonnés, conventions PEP).
-- **Pytest & Pytest-Asyncio** : Suite complète de **531 tests automatisés** couvrant l'ingestion, le matching déterministe, le FSM Telegram, le cache de cotes, le poller Vinted et le sous-système IA, dont **3 benchmarks de performance** (`make bench`) qui vérifient l'invariant de l'alerte < 500 ms (chemin ingestion → matching → Telegram, ré-ingestion de doublon, matching CPU).
-- **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml`, **zéro erreur** sur les 134 fichiers de `app/`, vérifié en CI (`mypy app` bloque la pull request).
+- **Pytest & Pytest-Asyncio** : tests versionnés d'ingestion, de matching, du FSM Telegram, du cache, du poller et de l'IA. Les six benchmarks locaux (`make bench`) utilisent des doubles et ne valident pas une latence depuis la publication ou une livraison réelle ; leurs frontières sont détaillées dans [`docs/alert-latency.md`](docs/alert-latency.md). Le nombre de tests et leur résultat dépendent de la révision et du périmètre exécutés.
+- **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml` ; `mypy app` bloque la pull request en cas d'erreur. Le résultat vaut pour la révision exécutée.
 - **Dépendances verrouillées** : [`requirements.lock`](requirements.lock) contraint les versions résolues par le Dockerfile et par la CI. Deux reconstructions de la mêmerevision produisent donc le même environnement. `make check-lock` échoue si une dépendance a été ajoutée à `pyproject.toml` sans être épinglée.
 
 Pour exécuter les vérifications localement :
@@ -258,10 +258,10 @@ Pour exécuter les vérifications localement :
 # Vérification du style et du linting
 .venv/bin/ruff check .
 
-# Exécution de la suite complète de tests (531 tests)
+# Exécution de la suite complète de tests
 .venv/bin/pytest -v
 
-# Benchmark du chemin d'alerte (invariant < 500 ms)
+# Benchmarks locaux avec transports simulés
 make bench
 
 # Typage statique
@@ -367,8 +367,8 @@ Le [`Makefile`](Makefile) regroupe les actions récurrentes d'exploitation et de
 ```bash
 make help                 # Affiche l'inventaire des commandes disponibles
 make dev                  # Démarre l'application locale avec rechargement à chaud
-make test                 # Exécute la suite complète de 531 tests pytest
-make bench                # Benchmark du chemin d'alerte (invariant 500 ms)
+make test                 # Exécute la suite complète pytest
+make bench                # Benchmarks locaux, sans preuve de livraison réelle
 make lint                 # Contrôle la conformité du code avec Ruff et Mypy
 make lock                 # Régénérer requirements.lock (après une modification de pyproject.toml)
 make check-lock           # Vérifier que le verrou couvre toutes les dépendances déclarées
@@ -471,12 +471,90 @@ Les étapes ci-dessous restent accessibles séparément, pour reprendre un dépl
 5. **Contrôle d'intégrité opérationnel** :
    ```bash
    curl -s https://radar.aminezegmou.fr/health
-   # Réponse attendue : {"status":"ok","environment":"production","ai":{"status":"operational",...}}
+   # HTTP 200 : vivacité HTTP ; la sonde IA existante est exposée séparément.
+   # scope=http_liveness ; SQL, Redis, scheduler et poller sont unchecked.
 
    make verify-deploy
    # Rejoue les contrôles du pré-vol, cette fois en fail-fast : un écart de code
    # entre le dépôt et le VPS fait échouer la commande.
    ```
+
+   `/health` n'est pas un contrôle de disponibilité métier : un HTTP 200 ne prouve
+   ni la collecte Vinted, ni une écriture SQL, ni une réception Telegram. `/status`
+   distingue un scanner arrêté, inconnu ou en retard ; un état absent n'est pas actif.
+   La sonde IA atteste une réponse HTTP (avec cache court), pas une génération
+   réussie ni la validité d'une réponse JSON métier.
+
+   La confirmation d'un brouillon de création est sérialisée dans le processus
+   courant : identité et état sont relus sous protection jusqu'au commit et à la
+   fermeture du brouillon. Les autres contextes FSM progressent indépendamment ;
+   préparation BD et présentation se déroulent ensuite sans ce verrou. Un retour
+   de commit échoué laisse le résultat inconnu et interdit de réutiliser ce
+   brouillon. Cette protection locale ne constitue pas une garantie « exactement
+   une fois » après crash, perte du stockage FSM ou avec plusieurs processus.
+
+
+### Reprise bornée des notifications (schéma `0011_notification_state`)
+
+Une notification est suivie par couple annonce–alerte, avec sa destination
+Telegram réservée. Plusieurs alertes d'un utilisateur restent des notifications
+distinctes. `notified_at` est un marqueur d'accusé exploitable persisté, jamais une
+preuve de lecture par l'utilisateur. Les anciens marqueurs restent inchangés ; les
+anciens pending deviennent `unknown`, sans reconstruire leurs compteurs ou reçus.
+
+| État persisté | Traitement |
+| --- | --- |
+| `ready` | Non-envoi ou refus récupérable établi ; attendre l'échéance. |
+| `sending` | Réservation commitée avant l'appel. Sous le gate commun, un propriétaire actif termine avant toute relecture de reprise. Sans propriétaire et sans reçu conservé, l'état devient `unknown`. |
+| `notified` | Marquage durable ; aucun nouvel envoi. |
+| `unknown` | Aucun renvoi automatique, aucune déclaration de livraison, aucune expiration en « non envoyé ». Un reçu complet conservé permet uniquement de finir le marquage SQL. |
+| `deferred` | Admission momentanément refusée (pause, préparation, autorisation) ; relire avant un nouvel envoi. |
+| `abandoned` | Échec certain permanent ou budget/âge dépassé ; conserver le motif, sans reprise automatique. |
+
+Les catégories du sender (`not_sent`, `rejected`, `acknowledged`, `unknown`) sont
+ses observations transitoires, pas les états de la base. `not_sent` désigne un
+échec local avant tout appel ; un timeout, un décodage invalide ou un reçu
+inexploitable désignent `unknown`. Un refus photo reconnu autorise deux appels
+photo au plus puis un repli texte ; un inconnu arrête immédiatement les replis.
+
+Le job du scheduler existant passe chaque minute : dix destinataires au plus,
+traités séquentiellement, sans nouvelle admission après vingt secondes.
+Un appel déjà réservé et son nettoyage SQL peuvent terminer plus tard. Trois
+cycles réservés maximum (premier compris), chacun de trois appels Telegram au
+plus : neuf appels possibles au total, pas neuf livraisons. Timeout de dix
+secondes par appel ; refus récupérable différé d'une minute, puis cinq minutes,
+sans raccourcir `retry_after`. La limite d'âge est trente minutes depuis la
+réception persistée initiale ; ni recollecte ni tentative ne la rajeunit.
+
+La reprise charge les matches et l'annonce persistés, sans recollecter ni créer
+un nouveau match. API, poller et reprise partagent le gate local de l'annonce.
+Une association absente sur une annonce déjà ingérée ne constitue pas une preuve
+de non-envoi : l'ingestion la classe inconnue, sans inventer de reçu. Matching,
+alerte/préparation, autorisation, destination, échéance, budget et âge sont relus
+avant réservation. Une destination déjà tentée ne peut pas être remplacée.
+
+La purge automatique conserve les alertes supprimées portant encore des matches
+non marqués ; la suppression utilisateur explicite garde son contrat de purge par
+cascade. Une preuve effacée par cette suppression n'est pas reconstruite. Aucun
+nouveau worker, verrou distribué, interface ni politique de conservation annuelle.
+Cette protection est limitée au processus unique ; crash et perte des preuves
+peuvent laisser des notifications inconnues, y compris des notifications non
+parties. Elle ne promet ni récupération de tous les anciens pending ni livraison
+« exactement une fois ».
+
+**Livraison proposée, non exécutée localement :** utiliser la procédure ordonnée
+existante (pré-vol, arrêt confirmé de l'application, synchronisation de la cible,
+construction de l'image cible, migration depuis cette image sans services,
+lecture de la révision, démarrage cible puis contrôles). La révision attendue pour
+ce lot est `0011_notification_state`, après `0010_alert_preparation`.
+Le nouveau code ne fonctionne pas sur l'ancien schéma. Après migration, l'ancien
+code peut ignorer `unknown` et renvoyer des messages : le redémarrer n'est pas un
+rollback sûr. En cas d'échec, conserver l'application arrêtée et les données ;
+choisir une réparation compatible avec ce protocole ou une restauration
+explicitement validée. Le downgrade destructeur de cette migration est refusé.
+Les index sont créés dans la transaction de migration ; durée et volume de
+production restent non mesurés. Ne pas lancer plusieurs versions/processus en
+parallèle, ni appliquer cette migration en production dans ce mandat.
 
 ---
 
@@ -601,3 +679,42 @@ curl -X GET "https://radar.aminezegmou.fr/api/v1/internal/vinted/session" \
 ---
 
 _BotRadar — Conçu avec rigueur et précision pour des acquisitions de seconde main instantanées et éclairées._ 🛰️
+
+### Référence glissante documentée des prix
+
+La comparaison privilégie le minimum des offres livrées comparables effectivement
+conservées dans `T − 365 jours < observed_at ≤ T`, à l'instant UTC `T`. À défaut,
+elle utilise le prix courant encore admissible ; une offre périmée reste seulement
+informative. Les règles de montant, port, état, arrondi et seuil utilisateur sont
+inchangées : perdre une cote ne rejette pas une annonce conforme à ce seuil.
+
+Le cache possède une projection annuelle distincte, recalculée en SQL local groupé
+à échéance, sans appel fournisseur. Une projection expirée n'est jamais admissible.
+Les minima ex æquo privilégient le relevé le plus récent, puis l'identifiant le plus
+petit. La couverture est toujours annoncée partielle, avec nombre et bornes des
+relevés ; une durée d'un an n'atteste aucune observation continue. Les sommes de
+références individuelles ne prétendent pas avoir été observées simultanément.
+
+Les anciens minima et les agrégats sans date du minimum sont conservés comme
+informations non vérifiables, hors calcul annuel. Les snapshots anciens admissibles
+utilisent leur date locale d'enregistrement originale ; aucune date fournisseur
+n'est inventée. Les observations nouvelles portent une date UTC et un identifiant
+stables à travers rollback et nouvelle sauvegarde. Les observations financières
+normalisées admissibles sont conservées 366 jours (marge technique hors fenêtre),
+les payloads bruts 90 jours ; les autres rétentions restent inchangées. Les périodes
+déjà purgées ne sont pas reconstruites.
+
+La migration additive `0012_annual_observations`, après `0011_notification_state`,
+laisse les nouvelles preuves à NULL et conserve les colonnes antérieures. Le retour
+à un ancien code pouvant comparer les minima non vérifiables exige une décision
+explicite ; le downgrade automatique est refusé.
+
+### Sauvegarde et restauration synthétiques
+
+L'[outillage du point 9](docs/backup-recovery.md) vérifie un dump custom PostgreSQL,
+un chiffrement à clé publique, une publication locale simulée et une restauration
+vide avec quarantaine durable. Il ne configure aucune sauvegarde indépendante et
+n'active aucune planification ou rétention. L'ancien appel sans paramètres de
+`scripts/backup_db.sh` échoue explicitement ; `--synthetic-exercise` lance uniquement
+l'exercice jetable. Le document détaille les objectifs UTC, les limites et les
+prérequis opérationnels avant tout remplacement de la sauvegarde réelle.

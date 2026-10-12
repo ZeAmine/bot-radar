@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -127,8 +127,10 @@ async def driver(monkeypatch, db_session) -> AsyncGenerator[tuple[Bot, Dispatche
             if book.market_cache is not None:
                 return book.market_cache
             cache = BookMarketCache(
-                book_id=book_id, comparison_status=ComparisonStatus.UNAVAILABLE,
-                checked_at=datetime.now(UTC), collection_status="empty",
+                book_id=book_id,
+                comparison_status=ComparisonStatus.UNAVAILABLE,
+                checked_at=datetime.now(UTC),
+                collection_status="empty",
             )
             session.add(cache)
             await session.commit()
@@ -252,6 +254,81 @@ async def _state_of(bot: Bot, dispatcher: Dispatcher):
     return await context.get_state()
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        "alert_create_cancel",
+        "alert_create_confirm",
+        "al_create_edition:0",
+        "al_create_edit:name",
+        "cond_toggle:0",
+    ],
+)
+async def test_old_draft_buttons_leave_new_draft_and_database_untouched(driver, db_session, action):
+    from app.bot.states.alert_creation import AlertCreationState
+
+    bot, dispatcher = driver
+    user = await _add_user(db_session)
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=CHAT_ID, user_id=TG_USER_ID)
+    draft = {"creation_token": "new-draft", "category_slug": "tech", "name": "B"}
+    await state.set_data(draft)
+    await state.set_state(AlertCreationState.confirm_creation)
+    await _feed(bot, dispatcher, _callback_update(action + "@old-draft"), db_session, user)
+    assert await state.get_data() == draft
+    assert await state.get_state() == AlertCreationState.confirm_creation.state
+    assert (await db_session.execute(select(Alert))).scalars().all() == []
+
+
+async def test_new_add_replaces_button_generation(driver, db_session):
+    bot, dispatcher = driver
+    user = await _add_user(db_session)
+    await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
+    old_category = _buttons_matching(bot, "add_cat:")[0]
+    await _feed(bot, dispatcher, _message_update("/add", 2), db_session, user)
+    new_category = _buttons_matching(bot, "add_cat:")[0]
+    assert new_category != old_category
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=CHAT_ID, user_id=TG_USER_ID)
+    before = await state.get_data()
+    await _feed(bot, dispatcher, _callback_update(old_category), db_session, user)
+    assert await state.get_data() == before
+    await _feed(bot, dispatcher, _callback_update(new_category), db_session, user)
+    assert (await state.get_data())["category_slug"] == "bd_comics"
+
+
+@pytest.mark.parametrize("action", ["keep", "update"])
+@pytest.mark.parametrize("new_price", [0, 2000])
+async def test_existing_alert_buttons_are_bound_and_current_ones_work(
+    driver, db_session, action, new_price
+):
+    from app.bot.handlers.alerts_helpers import render_existing_alert_response
+
+    bot, dispatcher = driver
+    user = await _add_user(db_session)
+    category = (await db_session.execute(select(Category))).scalar_one()
+    existing = Alert(
+        user_id=user.id,
+        category_id=category.id,
+        name="Existante",
+        include_keywords=["existante"],
+        max_item_price_cents=1500,
+    )
+    db_session.add(existing)
+    await db_session.commit()
+    await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=CHAT_ID, user_id=TG_USER_ID)
+    token = (await state.get_data())["creation_token"]
+    message = _message_update("Existante 20€").message.as_(bot)
+    await render_existing_alert_response(message, state, existing, new_price_cents=new_price)
+    prefix = "alert_create_cancel" if action == "keep" else "upd_alert_price:"
+    button = _buttons_matching(bot, prefix)[0]
+    assert button.endswith(f"@{token}")
+    assert len(button.encode()) <= 64
+    await _feed(bot, dispatcher, _callback_update(button), db_session, user)
+    await db_session.refresh(existing)
+    assert existing.max_item_price_cents == (1500 if action == "keep" else new_price)
+    assert await state.get_data() == {}
+
+
 async def _add_user(session: AsyncSession) -> User:
     user = User(id=uuid.uuid4(), telegram_user_id=TG_USER_ID)
     session.add(user)
@@ -355,22 +432,24 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
         await _feed(bot, dispatcher, _message_update("/add", 1), db_session, user)
 
         category_data = _buttons_matching(bot, "add_cat:")[0]
-        assert category_data == f"add_cat:{CategorySlug.BD_COMICS.value}"
+        assert category_data.partition("@")[0] == f"add_cat:{CategorySlug.BD_COMICS.value}"
+        token = category_data.partition("@")[2]
+        assert len(token) == 12
         await _feed(bot, dispatcher, _callback_update(category_data, update_id=2), db_session, user)
 
         await _feed(bot, dispatcher, _message_update("La couleur des choses", 3), db_session, user)
         await _feed(bot, dispatcher, _message_update("12", 4), db_session, user)
 
         editions = _buttons_matching(bot, "al_create_edition:")
-        assert editions == ["al_create_edition:0", "al_create_edition:1"]
+        assert editions == [f"al_create_edition:0@{token}", f"al_create_edition:1@{token}"]
         chosen = editions[1]
         await _feed(bot, dispatcher, _callback_update(chosen, update_id=5), db_session, user)
 
-        assert _buttons_matching(bot, "alert_create_confirm") == ["alert_create_confirm"]
+        assert _buttons_matching(bot, "alert_create_confirm") == [f"alert_create_confirm@{token}"]
         await _feed(
             bot,
             dispatcher,
-            _callback_update("alert_create_confirm", update_id=6),
+            _callback_update(_buttons_matching(bot, "alert_create_confirm")[0], update_id=6),
             db_session,
             user,
         )
@@ -479,7 +558,7 @@ async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_c
         await _feed(
             bot,
             dispatcher,
-            _callback_update("alert_create_confirm", update_id=6),
+            _callback_update(_buttons_matching(bot, "alert_create_confirm")[0], update_id=6),
             db_session,
             user,
         )
@@ -562,6 +641,8 @@ async def _seed_series(session: AsyncSession) -> tuple[User, Listing, list[Book]
                 lowest_delivered_price_cents=price,
                 comparison_status=ComparisonStatus.AVAILABLE,
                 historical_low_1y_cents=price,
+                checked_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
             )
         )
         session.add(AlertBook(alert_id=alert.id, book_id=book.id))
@@ -759,18 +840,47 @@ async def test_price_write_recomputes_the_series_total(db_session):
     est réécrit là où elles le sont (`persist_market_result`, chemin unique).
     """
     from app.core.constants import MatchConfidence
+    from app.providers.base import MarketOffer
     from app.services.book_market_pricing import BookPricingResult, persist_market_result
 
     alert, books = await _seed_series_without_prices(db_session)
     assert alert.series_total_cents is None
+
+    from app.db.repositories.market_price_repo import MarketPriceRepository
+
+    for book, historical in zip(books[:2], (300, 450), strict=True):
+        await MarketPriceRepository(db_session).save_snapshot(
+            book.id,
+            MarketOffer(
+                provider_name="synthetic",
+                source_url="https://example.invalid/observed",
+                item_price_cents=historical,
+                delivered_price_cents=historical,
+                shipping_price_cents=0,
+                item_condition="Très bon",
+                observed_at=datetime.now(UTC) - timedelta(days=30),
+            ),
+        )
+    await db_session.commit()
 
     # Premier volume coté : le total ne porte que sur ce qui est connu.
     await persist_market_result(
         db_session,
         books[0].id,
         BookPricingResult(
-            offers=[],
+            offers=[
+                MarketOffer(
+                    provider_name="synthetic",
+                    source_url="https://example.invalid/observed",
+                    item_price_cents=500,
+                    delivered_price_cents=500,
+                    shipping_price_cents=0,
+                    item_condition="Très bon",
+                    observed_at=datetime.now(UTC),
+                )
+            ],
             lowest_delivered_price_cents=500,
+            current_observed_at=datetime.now(UTC),
             best_provider_name="test",
             best_source_url=None,
             confidence=MatchConfidence.HIGH,
@@ -788,8 +898,19 @@ async def test_price_write_recomputes_the_series_total(db_session):
         db_session,
         books[1].id,
         BookPricingResult(
-            offers=[],
+            offers=[
+                MarketOffer(
+                    provider_name="synthetic",
+                    source_url="https://example.invalid/observed",
+                    item_price_cents=700,
+                    delivered_price_cents=700,
+                    shipping_price_cents=0,
+                    item_condition="Très bon",
+                    observed_at=datetime.now(UTC),
+                )
+            ],
             lowest_delivered_price_cents=700,
+            current_observed_at=datetime.now(UTC),
             best_provider_name="test",
             best_source_url=None,
             confidence=MatchConfidence.HIGH,

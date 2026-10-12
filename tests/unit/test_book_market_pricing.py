@@ -10,6 +10,7 @@ Ces tests verrouillent les deux défauts qui faisaient partir une alerte sans pr
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -118,6 +119,7 @@ async def test_price_book_keeps_the_lowest_historical_across_merchants() -> None
         comparison_status=ComparisonStatus.AVAILABLE,
     )
     market_repo = MagicMock()
+    market_repo.refresh_annual_references = AsyncMock()
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -142,6 +144,7 @@ async def test_price_book_keeps_the_lowest_historical_across_merchants() -> None
 async def test_price_book_saves_a_silent_book_as_unavailable() -> None:
     """Aucun marchand ne répond : la cote est marquée indisponible, pas laissée vide."""
     market_repo = MagicMock()
+    market_repo.refresh_annual_references = AsyncMock()
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -184,13 +187,16 @@ async def test_price_book_keeps_history_without_stock() -> None:
 async def test_persist_keeps_a_fresh_price_when_every_provider_is_silent() -> None:
     """Un silence réseau ne doit pas priver l'utilisateur d'un prix encore frais."""
     book = _book()
+    expires = datetime.now(UTC) + timedelta(hours=2)
     existing = BookMarketCache(
         id=uuid.uuid4(),
         book_id=book.id,
         lowest_delivered_price_cents=470,
+        expires_at=expires,
         comparison_status=ComparisonStatus.AVAILABLE,
     )
     market_repo = MagicMock()
+    market_repo.refresh_annual_references = AsyncMock()
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=existing)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -208,7 +214,7 @@ async def test_persist_keeps_a_fresh_price_when_every_provider_is_silent() -> No
 
     market_repo.update_or_create_cache.assert_not_called()
     assert cache is existing
-    assert cache.expires_at is not None
+    assert cache.expires_at == expires
 
 
 @pytest.mark.asyncio

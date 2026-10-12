@@ -1,23 +1,14 @@
-"""Service de comparaison instantanée des prix de marché d'occasion.
+"""Comparaison locale : observations datées sur 365 jours, sinon prix courant valide.
 
-Deux rendus, tous deux **synchrones et sans aucun appel réseau** (invariant n°1 :
-l'alerte Telegram part avant toute requête) :
-
-- `get_comparison_summary` : la ligne compacte affichée sous l'annonce dans l'alerte ;
-- `format_market_details_card` : le panneau détaillé du bouton « 📊 Prix du marché ».
-
-Référence de prix, règle unique appliquée partout : le **prix le plus bas que
-nous puissions constater** pour cet ouvrage s'il est connu, sinon le **prix du
-marché du jour**. Ce plus bas est borné par nos propres relevés : une cotation
-agrégateur supérieure à un prix livré que nous avons vu pour le même livre
-serait une cote fausse. L'écart affiché compare toujours le total Vinted
-(article + protection + port) à cette référence.
+Les agrégats non datés et anciens minima restent informatifs. Les fenêtres sont
+partielles ; les sommes de références ne constituent pas une observation simultanée.
+Les montants livrés et règles d'arrondi du comparateur sont inchangés.
 """
 
 import html
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -148,27 +139,45 @@ def extract_tome_number_from_title(title: str | None) -> int | None:
 
 
 def reference_price(cache: BookMarketCache | None) -> tuple[int | None, bool]:
-    """Prix de référence d'un livre et nature de cette référence.
-
-    Le prix le plus bas constaté sur 1 an prime toujours : c'est le « meilleur prix
-    connu » de l'ouvrage. Le prix du marché du jour ne sert que de repli quand
-    aucun historique certifié n'a encore été collecté.
-
-    Returns:
-        tuple (prix en centimes ou ``None``, ``True`` si l'historique 1 an est la source)
-    """
+    """Projection documentée encore valide, sinon offre courante admissible."""
     if cache is None:
         return None, False
-    historical_low = _positive(cache.historical_low_1y_cents)
-    if historical_low is not None:
-        return historical_low, True
-    return _positive(cache.lowest_delivered_price_cents), False
+    now = datetime.now(UTC)
+    annual = _positive(cache.annual_low_cents)
+    dates = (
+        cache.annual_computed_at,
+        cache.annual_expires_at,
+        cache.annual_low_observed_at,
+        cache.annual_first_at,
+        cache.annual_last_at,
+    )
+    if annual is not None and all(value is not None for value in dates):
+        computed, expiry, observed, first, last = [_aware_checked_at(value) for value in dates]
+        if (
+            computed <= now < expiry
+            and now - timedelta(days=365) < first <= observed <= last <= now
+            and isinstance(cache.annual_count, int)
+            and cache.annual_count > 0
+            and cache.annual_low_snapshot_id is not None
+            and cache.annual_low_provider
+        ):
+            return annual, True
+    current = _positive(cache.lowest_delivered_price_cents)
+    if (
+        current is not None
+        and cache.comparison_status == ComparisonStatus.AVAILABLE
+        and cache.checked_at is not None
+        and _aware_checked_at(cache.checked_at) <= now
+        and not MarketPriceService._is_expired(cache)
+    ):
+        return current, False
+    return None, False
 
 
 def has_usable_price(cache: BookMarketCache | None) -> bool:
     """Vrai si le cache suffit à comparer une annonce à un prix de référence.
 
-    Une cote ``UNAVAILABLE`` sans historique 1 an ne l'est pas : elle dit qu'une
+    Une cote ``UNAVAILABLE`` sans observation annuelle admissible ne l'est pas : elle dit qu'une
     passe n'a rien trouvé, pas que l'ouvrage n'a aucun prix.
     """
     reference_cents, _ = admissible_reference_price(cache)
@@ -176,7 +185,7 @@ def has_usable_price(cache: BookMarketCache | None) -> bool:
 
 
 def admissible_reference_price(cache: BookMarketCache | None) -> tuple[int | None, bool]:
-    """Historique inchangé ; prix courant disponible avec une validité connue et non expirée."""
+    """Même sélection documentée pour tous les rendus et totaux."""
     price, historical = reference_price(cache)
     if price is None or historical:
         return price, historical
@@ -191,11 +200,13 @@ def _reference_reason(book: Book) -> str | None:
     cache = _loaded_market_cache(book)
     if has_usable_price(cache):
         return None
-    if cache is not None and reference_price(cache)[0] is not None:
+    if cache is not None and _positive(cache.lowest_delivered_price_cents) is not None:
         if cache.expires_at is None:
             return "validité du prix courant inconnue"
         if MarketPriceService._is_expired(cache):
             return "prix courant expiré"
+    if cache is not None and cache.historical_low_1y_cents is not None:
+        return "ancien minimum non vérifiable sur 365 jours"
     return "cote indisponible"
 
 
@@ -244,11 +255,18 @@ def lot_reference(books: list[Book], wanted: list[int]) -> LotReference:
 
 
 def _reference_detail(book: Book) -> str:
-    price, _ = reference_price(_loaded_market_cache(book))
+    cache = _loaded_market_cache(book)
+    price, historical = reference_price(cache)
     reason = _reference_reason(book)
     value = format_cents(price) if price is not None else "cote indisponible"
     qualifier = f" ({reason})" if reason and price is not None else ""
-    return f"• {clean_tome_display_title(book.title)} : {value}{qualifier}"
+    line = f"• {clean_tome_display_title(book.title)} : {value}{qualifier}"
+    if cache is not None and historical:
+        line += f" — minimum documenté ({_format_annual_date(cache.annual_low_observed_at)})"
+        line += f"\n{annual_coverage(cache)}"
+    elif price is not None:
+        line += " — prix courant"
+    return line
 
 
 def _lot_unavailable(reference: LotReference) -> str:
@@ -295,7 +313,10 @@ def cote_absence_line(book: Book | None) -> str | None:
     if book is None:
         return None
     cache = _loaded_market_cache(book)
-    if cache is not None and reference_price(cache)[0] is not None and not has_usable_price(cache):
+    if (cache is not None and not has_usable_price(cache)
+            and (_positive(cache.lowest_delivered_price_cents) is not None
+                 or cache.historical_low_1y_cents is not None
+                 or cache.annual_low_cents is not None)):
         reason = _reference_reason(book) or "cote indisponible"
         return f"{COTE_UNAVAILABLE_LINE} ({reason})."
     if cache is not None and cache.collection_status == "failed":
@@ -322,10 +343,13 @@ def format_cote_lines(book: Book | None) -> list[str]:
     lines: list[str] = []
     market_cents = _positive(cache.lowest_delivered_price_cents)
     if market_cents is not None:
-        lines.append(f"<b>Prix du marché :</b> {format_cents(market_cents)}")
-    historical_cents = _positive(cache.historical_low_1y_cents)
-    if historical_cents is not None:
-        lines.append(f"<b>Prix bas constaté :</b> {format_cents(historical_cents)}")
+        label = ("Prix du marché" if reference_price(cache) == (market_cents, False)
+                 else "Dernière offre connue (informative)")
+        lines.append(f"<b>{label} :</b> {format_cents(market_cents)}")
+    historical_cents, historical = reference_price(cache)
+    if historical and historical_cents is not None:
+        lines.append(f"<b>Minimum des relevés sur 365 jours :</b> {format_cents(historical_cents)}")
+        lines.append(annual_coverage(cache))
     return lines
 
 
@@ -460,6 +484,13 @@ def _series_total_line(total_cents: int, books: list[Book]) -> str:
     listed = listable_series_books(books)
     priced = sum(1 for book in listed if has_usable_price(_loaded_market_cache(book)))
     coverage = f" ({priced}/{len(listed)} tomes)" if priced < len(listed) else ""
+    references = [admissible_reference_price(_loaded_market_cache(book)) for book in listed]
+    kinds = {historical for price, historical in references if price is not None}
+    coverage += (
+        " — références mixtes, dates distinctes"
+        if len(kinds) > 1
+        else " — références individuelles, dates distinctes"
+    )
     return f"<b>Total de la série :</b> ~{format_cents(total_cents)}{coverage}"
 
 
@@ -658,7 +689,9 @@ class MarketPriceService:
             f" (T{tome_result.tome_number})" if (tome_result and tome_result.tome_number) else ""
         )
         lines = [
-            f"<b>Prix bas constaté{tome_suffix} :</b> {format_cents(reference_cents)}"
+            f"<b>Minimum des relevés sur 365 jours{tome_suffix} :</b> "
+            f"{format_cents(reference_cents)}\n"
+            f"{annual_coverage(cache)}"
             if is_historical
             else MarketPriceService._market_price_line(cache, tome_suffix)
         ]
@@ -703,8 +736,17 @@ class MarketPriceService:
         if reference.total_cents is None:
             return _lot_unavailable(reference)
         cumulated = reference.total_cents
+        kinds = {
+            admissible_reference_price(_loaded_market_cache(book))[1] for book in reference.books
+        }
         expected_count = len(set(lot_tomes))
-        label = "Prix bas constaté" if reference.historical else "Prix du marché"
+        label = (
+            "Somme des minima documentés (dates distinctes)"
+            if reference.historical
+            else "Référence du lot"
+        )
+        if len(kinds) > 1:
+            label += " (références mixtes, dates distinctes)"
         label += _lot_label(
             expected_count,
             len(reference.books),
@@ -843,6 +885,9 @@ class MarketPriceService:
         lot_total = reference.total_cents
         if lot_total is not None:
             lines.append(f"<b>Total du lot :</b> ~{format_cents(lot_total)}")
+            kinds = {reference_price(_loaded_market_cache(book))[1] for book in target_books}
+            lines.append("Références mixtes, dates distinctes." if len(kinds) > 1
+                         else "Somme de références individuelles, dates distinctes.")
         else:
             lines.append(
                 f"⚠️ {(reference.reason or 'composition non identifiée').capitalize()} : "
@@ -893,7 +938,9 @@ class MarketPriceService:
         """Panneau d'un tome résolu : cote 1 an, comparatif par boutique, série."""
         cache = book.market_cache if book else None
         reference_cents, is_historical = reference_price(cache)
-        if cache is None or reference_cents is None:
+        if cache is None or (reference_cents is None
+                             and cache.lowest_delivered_price_cents is None
+                             and cache.historical_low_1y_cents is None):
             return MarketPriceService._no_market_price_card(book)
 
         snapshots = book.__dict__.get("snapshots")
@@ -921,21 +968,28 @@ class MarketPriceService:
             if reason:
                 lines.append(f"⚠️ {reason.capitalize()} : comparaison indisponible.")
 
-        if is_historical:
+        if cache.historical_low_1y_cents is not None:
             lines.append(
-                f"<b>Minimum sur 1 an :</b> {format_cents(reference_cents)} "
-                f"({_format_checked_at(cache.historical_low_at)})"
+                f"Ancien minimum de provenance temporelle non vérifiable : "
+                f"{format_cents(cache.historical_low_1y_cents)} (informatif)"
+            )
+        if is_historical and reference_cents is not None:
+            lines.append(
+                f"<b>Minimum des relevés sur 365 jours :</b> {format_cents(reference_cents)} "
+                f"({_format_annual_date(cache.annual_low_observed_at)})\n{annual_coverage(cache)}"
             )
 
         if partners:
             if is_historical:
                 lines.append(
                     "\n<b>Dernières offres connues :</b>"
-                    if cache.collection_status == "failed"
+                    if cache.collection_status == "failed" or MarketPriceService._is_expired(cache)
                     else "\n<b>Comparatif par boutique :</b>"
                 )
             else:
-                lines.append("<b>Comparatif par boutique :</b>")
+                lines.append("<b>Dernières offres connues (informatives) :</b>"
+                             if MarketPriceService._is_expired(cache)
+                             else "<b>Comparatif par boutique :</b>")
             for merchant, data in sorted(
                 partners.items(), key=lambda item: _positive(item[1].get("total_cents")) or 0
             )[:MAX_PARTNERS_SHOWN]:
@@ -1031,3 +1085,17 @@ class MarketPriceService:
             else ""
         )
         return f"📊 <b>Prix du marché</b>\n\n{title}{absence}"
+
+
+def annual_coverage(cache: BookMarketCache) -> str:
+    """Dates et nombre de relevés ; jamais une promesse de couverture continue."""
+    return (
+        f"Couverture partielle : {cache.annual_count} relevé(s), "
+        f"du {_format_annual_date(cache.annual_first_at)} "
+        f"au {_format_annual_date(cache.annual_last_at)}."
+    )
+
+
+def _format_annual_date(moment: datetime | None) -> str:
+    """Année et fuseau explicites pour une fenêtre traversant deux années."""
+    return _aware_checked_at(moment).astimezone(UTC).strftime("%d/%m/%Y %H:%M:%S UTC")

@@ -2,10 +2,11 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import cast
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.constants import AlertStatus, CategorySlug, ComparisonStatus, MatchConfidence
 from app.db.models.alert import Alert
@@ -14,6 +15,7 @@ from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.category import Category
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
+from app.domain.rules.market_offer import is_comparable_secondhand_offer, is_merchant_excluded
 from app.providers.base import MarketOffer
 
 # Présence de la cote certifiée dans le `raw_payload` d'un relevé : c'est cette clé
@@ -37,7 +39,32 @@ class MarketPriceRepository:
         offer: MarketOffer,
     ) -> MarketPriceSnapshot:
         """Enregistre un snapshot d'offre de marché."""
+        if offer.observation_id is None:
+            offer.observation_id = uuid.uuid4()
+        previous = await self.session.get(MarketPriceSnapshot, offer.observation_id)
+        if previous is not None:
+            fields = ("provider_name", "item_price_cents", "shipping_price_cents",
+                      "delivered_price_cents", "currency", "item_condition", "source_url",
+                      "is_comparable")
+            old_date = _utc(previous.observed_at) if previous.observed_at is not None else None
+            new_date = _utc(offer.observed_at) if offer.observed_at is not None else None
+            merchant = (offer.raw_payload or {}).get("best_merchant")
+            new_merchant = merchant if isinstance(merchant, str) else None
+            if (previous.book_id != book_id or old_date != new_date
+                    or previous.observed_merchant != new_merchant
+                    or any(getattr(previous, name) != getattr(offer, name) for name in fields)):
+                raise ValueError("Identité d'observation réutilisée pour un autre relevé")
+            return previous
+        observed = _utc(offer.observed_at) if offer.observed_at is not None else None
+        now = datetime.now(UTC)
+        merchant = (offer.raw_payload or {}).get("best_merchant")
         snapshot = MarketPriceSnapshot(
+            id=offer.observation_id,
+            observed_at=observed,
+            annual_eligible=(
+                observed is not None and _utc(observed) <= now and _offer_eligible(offer)
+            ),
+            observed_merchant=merchant if isinstance(merchant, str) else None,
             book_id=book_id,
             provider_name=offer.provider_name,
             item_price_cents=offer.item_price_cents,
@@ -46,7 +73,7 @@ class MarketPriceRepository:
             currency=offer.currency,
             item_condition=offer.item_condition,
             source_url=offer.source_url,
-            checked_at=datetime.now(UTC),
+            checked_at=observed if observed is not None and observed <= now else now,
             is_comparable=offer.is_comparable,
             confidence=offer.confidence,
             raw_payload=offer.raw_payload,
@@ -54,6 +81,135 @@ class MarketPriceRepository:
         self.session.add(snapshot)
         await self.session.flush()
         return snapshot
+
+    async def qualify_legacy_observations(
+        self,
+        book_ids: list[uuid.UUID] | None = None,
+        *,
+        persist: bool = True,
+    ) -> list[uuid.UUID]:
+        """Classe les anciens relevés sur leurs faits, sans modifier leurs dates."""
+        stmt = select(MarketPriceSnapshot).where(MarketPriceSnapshot.annual_eligible.is_(None))
+        if book_ids is not None:
+            stmt = stmt.where(MarketPriceSnapshot.book_id.in_(book_ids))
+        rows = (await self.session.scalars(stmt)).all()
+        now = datetime.now(UTC)
+        eligible_ids = []
+        for row in rows:
+            merchant = (row.raw_payload or {}).get("best_merchant")
+            offer = MarketOffer(
+                provider_name=row.provider_name,
+                item_price_cents=row.item_price_cents,
+                shipping_price_cents=row.shipping_price_cents,
+                delivered_price_cents=row.delivered_price_cents,
+                source_url=row.source_url,
+                currency=row.currency,
+                item_condition=row.item_condition,
+                is_comparable=row.is_comparable,
+                raw_payload=row.raw_payload,
+                price_includes_shipping=(
+                    (row.raw_payload or {}).get("price_includes_shipping") is True
+                ),
+            )
+            eligible = _utc(row.checked_at) <= now and _offer_eligible(offer)
+            if eligible:
+                eligible_ids.append(row.id)
+            if persist:
+                row.observed_merchant = merchant if isinstance(merchant, str) else None
+                row.annual_eligible = eligible
+        if persist:
+            await self.session.flush()
+        return eligible_ids
+
+    async def refresh_annual_references(
+        self,
+        book_ids: list[uuid.UUID],
+        *,
+        now: datetime | None = None,
+        force: bool = False,
+        persist: bool = True,
+    ) -> None:
+        """Recalcule en une requête groupée les projections échues, sans collecte."""
+        if not book_ids:
+            return
+        now = _utc(now or datetime.now(UTC))
+        caches = list(
+            (
+                await self.session.scalars(
+                    select(BookMarketCache).where(BookMarketCache.book_id.in_(book_ids))
+                )
+            ).all()
+        )
+        due = [
+            cache
+            for cache in caches
+            if force
+            or cache.annual_computed_at is None
+            or cache.annual_expires_at is None
+            or _utc(cache.annual_expires_at) <= now
+            or _utc(cache.annual_computed_at) > now
+        ]
+        if not due:
+            return
+        ids = [cache.book_id for cache in due]
+        legacy_ids = await self.qualify_legacy_observations(ids, persist=persist)
+        at = func.coalesce(MarketPriceSnapshot.observed_at, MarketPriceSnapshot.checked_at)
+        ranked = (
+            select(
+                MarketPriceSnapshot.book_id.label("book_id"),
+                MarketPriceSnapshot.id.label("snapshot_id"),
+                MarketPriceSnapshot.delivered_price_cents.label("price"),
+                MarketPriceSnapshot.provider_name.label("provider"),
+                at.label("at"),
+                func.count().over(partition_by=MarketPriceSnapshot.book_id).label("count"),
+                func.min(at).over(partition_by=MarketPriceSnapshot.book_id).label("first"),
+                func.max(at).over(partition_by=MarketPriceSnapshot.book_id).label("last"),
+                func.row_number()
+                .over(
+                    partition_by=MarketPriceSnapshot.book_id,
+                    order_by=[
+                        MarketPriceSnapshot.delivered_price_cents.asc(),
+                        at.desc(),
+                        MarketPriceSnapshot.id.asc(),
+                    ],
+                )
+                .label("rank"),
+            )
+            .where(
+                MarketPriceSnapshot.book_id.in_(ids),
+                or_(
+                    MarketPriceSnapshot.annual_eligible.is_(True),
+                    MarketPriceSnapshot.id.in_(legacy_ids),
+                ),
+                at > now - timedelta(days=365),
+                at <= now,
+            )
+            .subquery()
+        )
+        rows = (await self.session.execute(select(ranked).where(ranked.c.rank == 1))).mappings()
+        by_book = {row["book_id"]: row for row in rows}
+        for cache in due:
+            row = by_book.get(cache.book_id)
+            values = {
+                "annual_low_cents": row["price"] if row else None,
+                "annual_low_snapshot_id": row["snapshot_id"] if row else None,
+                "annual_low_provider": row["provider"] if row else None,
+                "annual_low_observed_at": row["at"] if row else None,
+                "annual_first_at": row["first"] if row else None,
+                "annual_last_at": row["last"] if row else None,
+                "annual_count": row["count"] if row else 0,
+                "annual_computed_at": now,
+                "annual_expires_at": (
+                    _utc(row["first"]) + timedelta(days=365) if row else now + timedelta(days=1)
+                ),
+            }
+            for name, value in values.items():
+                if persist:
+                    setattr(cache, name, value)
+                else:
+                    set_committed_value(cache, name, value)
+        if persist:
+            await self.session.flush()
 
     async def get_latest_snapshot(self, book_id: uuid.UUID) -> MarketPriceSnapshot | None:
         """Récupère le snapshot le plus récent enregistré pour un livre."""
@@ -94,61 +250,6 @@ class MarketPriceRepository:
         """Sérialise le calcul du total avant la relecture des caches des tomes."""
         await self.session.execute(select(Alert.id).where(Alert.id == alert_id).with_for_update())
 
-    async def get_historical_low_1y(self, book_id: uuid.UUID) -> int | None:
-        """Calcule le prix le plus bas constaté sur les 365 derniers jours
-        à partir des données certifiées stockées dans les snapshots (raw_payload).
-        """
-        one_year_ago = datetime.now(UTC) - timedelta(days=365)
-        stmt = select(MarketPriceSnapshot.raw_payload).where(
-            MarketPriceSnapshot.book_id == book_id,
-            MarketPriceSnapshot.checked_at >= one_year_ago,
-            MarketPriceSnapshot.is_comparable.is_(True),
-        )
-        result = await self.session.execute(stmt)
-        payloads: list[Any] = list(result.scalars().all())
-        hist_lows: list[int] = [
-            int(p["historical_low_1y_cents"])
-            for p in payloads
-            if isinstance(p, dict) and p.get("historical_low_1y_cents") is not None
-        ]
-        return min(hist_lows) if hist_lows else None
-
-    async def get_observed_low_cents(self, book_id: uuid.UUID) -> int | None:
-        """Plus bas prix livré que nos propres relevés attestent pour un livre.
-
-        Les relevés comparables conservés (90 jours, cf. `cleanup`) font autorité
-        sous une cotation d'agrégateur : une cote supérieure à un prix livré que
-        nous avons constaté pour ce même livre est une cote fausse, pas une cote
-        haute. L'offre vide émise quand aucune occasion n'est en stock
-        (`delivered_price_cents = 0`, « Occasion indisponible ») n'est pas un prix
-        et n'entre donc pas dans le minimum.
-        """
-        stmt = select(func.min(MarketPriceSnapshot.delivered_price_cents)).where(
-            MarketPriceSnapshot.book_id == book_id,
-            MarketPriceSnapshot.is_comparable.is_(True),
-            MarketPriceSnapshot.delivered_price_cents > 0,
-        )
-        result = await self.session.execute(stmt)
-        observed: int | None = result.scalar_one_or_none()
-        return observed if observed and observed > 0 else None
-
-    async def clamp_historical_low_by_observations(
-        self,
-        book_id: uuid.UUID,
-        low_cents: int,
-    ) -> int:
-        """Abaisse une cote sous le plus bas prix livré que nos relevés attestent.
-
-        Cette méthode ne crée jamais de référence : sans cote préexistante à
-        corriger, la référence reste le prix du marché du jour. Un plancher
-        appliqué dans ce sens ferait basculer des dizaines de livres en « prix
-        bas constaté » pour leur seul prix du jour.
-        """
-        observed = await self.get_observed_low_cents(book_id)
-        if observed is None:
-            return low_cents
-        return min(low_cents, observed)
-
     async def find_stale_certified_lows(
         self,
         *,
@@ -158,7 +259,7 @@ class MarketPriceRepository:
         """Livres dont la cote 1 an affichée n'est plus nourrie par aucun relevé.
 
         Une cote affichée sans nouvelle observation reste un chiffre, et le
-        `historical_low_at` est réécrit à chaque passe : rien ne dit qu'elle a vieilli.
+        `historical_low_at` ne prouve pas la date du minimum fournisseur.
         Cette requête regarde ce qui a réellement été constaté, et non ce qui est
         affiché. Ne remontent que les livres d'une alerte BD active — une cote que
         personne ne regarde n'a pas besoin d'alerte.
@@ -268,53 +369,32 @@ class MarketPriceRepository:
         comparison_status: ComparisonStatus,
         cache_duration_hours: int = 24,
         historical_low_1y_cents: int | None = None,
+        observed_at: datetime | None = None,
     ) -> BookMarketCache:
         """Crée ou met à jour le cache consolidé du prix d'occasion d'un livre."""
-        now = datetime.now(UTC)
+        observed_at = _utc(observed_at) if observed_at is not None else None
+        if observed_at is not None and observed_at > datetime.now(UTC):
+            observed_at = None
+        now = observed_at or datetime.now(UTC)
         expires_at = (
             now + timedelta(hours=cache_duration_hours)
-            if comparison_status == ComparisonStatus.AVAILABLE
+            if comparison_status == ComparisonStatus.AVAILABLE and observed_at is not None
             else None
         )
 
         cache = await self.get_cache_by_book_id(book_id)
 
-        # Calcul ou conservation du plus bas historique certifié sur 1 an
-        computed_hist_low: int | None = historical_low_1y_cents
-        if computed_hist_low is None:
-            # Si le fournisseur courant n'a pas renvoyé d'historique, préserver le cache
-            # ou chercher dans les snapshots certifiés
-            if cache and cache.historical_low_1y_cents is not None:
-                computed_hist_low = cache.historical_low_1y_cents
-            else:
-                computed_hist_low = await self.get_historical_low_1y(book_id)
-        elif cache and cache.historical_low_1y_cents is not None:
-            # Si le fournisseur et le cache ont tous deux un historique certifié,
-            # conserver le plus bas
-            computed_hist_low = min(cache.historical_low_1y_cents, computed_hist_low)
-
-        # Plancher sur nos relevés : une cote 1 an plus haute qu'un prix livré
-        # que nous avons vu pour ce livre est une cote fausse.
-        if computed_hist_low is not None:
-            computed_hist_low = await self.clamp_historical_low_by_observations(
-                book_id, computed_hist_low
-            )
-
-        # Ne JAMAIS inventer un historique bas à partir du prix du jour
-        # (lowest_delivered_price_cents)
+        # L'ancien minimum reste informatif : aucune nouvelle preuve n'est inventée.
+        computed_hist_low = cache.historical_low_1y_cents if cache else historical_low_1y_cents
 
         if cache:
             cache.lowest_delivered_price_cents = lowest_delivered_price_cents
             cache.best_provider_name = best_provider_name
             cache.best_source_url = best_source_url
             cache.confidence = confidence
-            cache.checked_at = now
+            cache.checked_at = observed_at
             cache.expires_at = expires_at
             cache.comparison_status = comparison_status
-            if (
-                historical_low_1y_cents is not None and historical_low_1y_cents == computed_hist_low
-            ) or computed_hist_low != cache.historical_low_1y_cents:
-                cache.historical_low_at = now if computed_hist_low is not None else None
             cache.historical_low_1y_cents = computed_hist_low
             await self.session.flush()
             return cache
@@ -325,12 +405,28 @@ class MarketPriceRepository:
             best_provider_name=best_provider_name,
             best_source_url=best_source_url,
             confidence=confidence,
-            checked_at=now,
+            checked_at=observed_at,
             expires_at=expires_at,
             comparison_status=comparison_status,
             historical_low_1y_cents=computed_hist_low,
-            historical_low_at=now if historical_low_1y_cents is not None else None,
+            historical_low_at=None,
         )
         self.session.add(cache)
         await self.session.flush()
         return cache
+
+
+def _utc(moment: datetime) -> datetime:
+    return moment.astimezone(UTC) if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _offer_eligible(offer: MarketOffer) -> bool:
+    merchant = (offer.raw_payload or {}).get("best_merchant")
+    return (
+        offer.currency == "EUR"
+        and offer.delivered_price_cents > 0
+        and offer.is_available
+        and (offer.shipping_price_cents is not None or offer.price_includes_shipping)
+        and is_comparable_secondhand_offer(offer)
+        and not is_merchant_excluded(merchant if isinstance(merchant, str) else None)
+    )

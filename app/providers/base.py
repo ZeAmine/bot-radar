@@ -1,7 +1,9 @@
 """Protocole et modèles de données de base pour les fournisseurs de prix de marché."""
 
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from app.core.constants import MatchConfidence
@@ -24,6 +26,8 @@ class MarketOffer:
     is_comparable: bool = True
     price_includes_shipping: bool = False
     raw_payload: dict[str, Any] | None = None
+    observed_at: datetime | None = None
+    observation_id: uuid.UUID | None = None
 
 
 class MarketOffers(list[MarketOffer]):

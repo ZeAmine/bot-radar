@@ -89,7 +89,7 @@ class AnthropicClient(BaseLLMClient):
             return None
         blocks = data.get("content") or []
         if not blocks:
-            logger.warning("Réponse LLM vide ou sans contenu : %s", data)
+            logger.warning("Réponse LLM vide ou sans contenu.")
             return None
         parts = [
             block["text"]

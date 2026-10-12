@@ -13,7 +13,14 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.handlers._alerts_router import router
+from app.bot.creation_drafts import CreationAttempt, draft_guard
+from app.bot.handlers._alerts_router import (
+    STALE_CREATION_MESSAGE,
+    UNKNOWN_CREATION_MESSAGE,
+    bind_creation_keyboard,
+    creation_callback_matches,
+    router,
+)
 from app.bot.handlers.alerts_helpers import (
     ALERT_CREATED_TITLE,
     _bump_search_token,
@@ -158,7 +165,7 @@ def _draft_matches(current: dict[str, Any], snapshot: dict[str, Any]) -> bool:
         return False
     return all(
         current.get(key) == snapshot.get(key)
-        for key in ("name", "category_slug", "isbn", "author")
+        for key in ("name", "category_slug", "isbn", "author", "creation_token")
     )
 
 
@@ -268,7 +275,10 @@ async def start_add_alert(
     db_user: User | None = None,
 ) -> None:
     """Point d'entrée unifié pour l'ajout d'alertes multi-catégories."""
-    await state.clear()
+    token = uuid.uuid4().hex[:12]
+    async with draft_guard(state):
+        await state.clear()
+        await state.update_data(creation_token=token)
 
     inline_query: str | None = None
     if isinstance(event, Message):
@@ -337,6 +347,7 @@ async def start_add_alert(
                     return
 
             state_data = {
+                "creation_token": token,
                 "name": parsed.name,
                 "category_slug": parsed.category_slug,
                 "isbn": parsed.isbn13,
@@ -420,7 +431,7 @@ async def start_add_alert(
             "<i>Choisis la catégorie de ce produit.</i>"
         )
         await state.set_state(AlertCreationState.waiting_for_category)
-        keyboard = get_category_selection_keyboard()
+        keyboard = bind_creation_keyboard(get_category_selection_keyboard(), token)
         await _finalize_loading_message(loading_msg, event, prompt_text, keyboard)
         return
 
@@ -438,7 +449,7 @@ async def start_add_alert(
         )
 
     await state.set_state(AlertCreationState.waiting_for_category)
-    keyboard = get_category_selection_keyboard()
+    keyboard = bind_creation_keyboard(get_category_selection_keyboard(), token)
 
     if isinstance(event, CallbackQuery):
         await event.answer()
@@ -549,8 +560,17 @@ async def handle_update_existing_alert_price(
     """Met à jour directement le prix d'une alerte déjà existante."""
     await callback.answer()
     parts = callback.data.split(":")  # type: ignore
-    alert_id_str = parts[1]
-    price_cents = int(parts[2])
+    data = await state.get_data()
+    if data.get("creation_token") or parts == ["upd_alert_price", ""]:
+        # Le bouton lié désigne la proposition serveur, jamais un ID/prix libre du callback.
+        alert_id_str = str(data.get("existing_alert_id") or "")
+        proposed_price = data.get("new_max_price_cents")
+        if not alert_id_str or proposed_price is None:
+            return
+        price_cents = int(proposed_price)
+    else:
+        alert_id_str = parts[1]
+        price_cents = int(parts[2])
 
     alert_repo = _get_alert_repo(db_session)
     existing = await alert_repo.get_by_id(uuid.UUID(alert_id_str))
@@ -643,6 +663,8 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     outcome = await keyword_variants_module.generate_variants_and_exclusions(
         name, category_slug=category_slug, context=book_context
     )
+    if data.get("creation_token") and not _draft_matches(await state.get_data(), data):
+        return
 
     # « Rien de pertinent » et « personne n'a répondu » sont deux réponses : la note
     # les dit, et le brouillon la conserve pour les rendus suivants. Un échec laisse
@@ -677,11 +699,39 @@ async def save_alert(
     state: FSMContext,
     db_user: User,
     db_session: Any,
+    creation_attempt: CreationAttempt | None = None,
 ) -> None:
-    """Enregistre l'alerte validée en base de données, lie le livre et préchauffe la cote."""
+    """Consomme le brouillon, y compris pour un appel direct hors du dispatcher."""
+    if creation_attempt is not None:
+        await _save_alert(callback, state, db_user, db_session, creation_attempt)
+        return
     await callback.answer()
+    async with draft_guard(state) as attempt:
+        draft = await state.get_data()
+        if (
+            not draft or draft.get("creation_outcome") in {"unknown", "committed"}
+            or (
+                isinstance(callback, CallbackQuery)
+                and not creation_callback_matches(callback.data or "", draft)
+            )
+        ):
+            attempt.release()
+            await callback.answer(
+                UNKNOWN_CREATION_MESSAGE
+                if draft.get("creation_outcome") == "unknown" else STALE_CREATION_MESSAGE
+            )
+            return
+        await _save_alert(callback, state, db_user, db_session, attempt)
+
+
+async def _save_alert(
+    callback: CallbackQuery, state: FSMContext, db_user: User, db_session: Any,
+    creation_attempt: CreationAttempt,
+) -> None:
+    """Écrit l'alerte sous protection, puis prépare et présente hors de celle-ci."""
     data = await state.get_data()
     if creation_volume_issue(data):
+        creation_attempt.release()
         recap_text, keyboard = build_creation_recap(data)
         if callback.message and hasattr(callback.message, "edit_text"):
             await callback.message.edit_text(recap_text, reply_markup=keyboard)
@@ -804,10 +854,7 @@ async def save_alert(
         alert.preparation = PreparationRequest(author_hint=author).stored()
         from app.services.book_market_pricing import recalculate_invalidated_series
         await recalculate_invalidated_series(db_session)
-        await db_session.commit()
-        # Le brouillon est terminé avant toute attente : un nouveau /add peut
-        # commencer sans être effacé par la fin de cette préparation.
-        await state.clear()
+        await creation_attempt.commit_and_close(db_session)
         if isinstance(callback.message, Message):
             try:
                 await callback.message.edit_text("📊 <i>Préparation des prix du marché…</i>")
@@ -824,6 +871,7 @@ async def save_alert(
         if not prepared or alert.status != AlertStatus.ACTIVE:
             from app.bot.formatter import format_alert_card
             from app.bot.keyboards.alerts import get_alert_card_keyboard
+            from app.use_cases.pause_alert import issue_pause_button
 
             if callback.message and hasattr(callback.message, "edit_text"):
                 with contextlib.suppress(Exception):
@@ -832,6 +880,7 @@ async def save_alert(
                         reply_markup=get_alert_card_keyboard(
                             alert.id, alert.status, 0, 1, category_slug,
                             preparation=alert.preparation,
+                            pause_callback=await issue_pause_button(alert, db_session),
                         ),
                     )
             return
@@ -887,8 +936,7 @@ async def save_alert(
             accepted_conditions=conditions,
             vinted_search_url=vinted_url,
         )
-        await db_session.commit()
-        await state.clear()
+        await creation_attempt.commit_and_close(db_session)
 
         # Même carte que le récap, avec son propre en-tête : un produit se relit comme
         # un livre, à la ligne d'identifiant près, qu'il n'a pas — sa catégorie dit

@@ -1,7 +1,11 @@
 """La création prépare les cotes avant d'activer la surveillance."""
 
+import uuid
+
 import pytest
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import EditMessageText
 from sqlalchemy import select
 
@@ -12,9 +16,47 @@ from app.db.models.book import Book
 from app.db.models.category import Category
 from app.db.models.user import User
 from app.use_cases import prepare_bd_alert as preparation
-from tests.add_fakes import DraftState, cached_market_price
+from tests.add_fakes import DraftState as _DraftState
 from tests.database import sqlite_only_database
 from tests.screens import confirm_press
+
+
+class DraftState(_DraftState):
+    """Identité FSM locale, sans modifier le double partagé."""
+
+    def __init__(self):
+        super().__init__()
+        self.storage = MemoryStorage()
+        self.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
+
+
+def cached_market_price():
+    """Offre courante admissible ; ancien minimum sans preuve annuelle."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.constants import ComparisonStatus
+    from app.db.models.book_market_cache import BookMarketCache
+
+    now = datetime.now(UTC)
+    return BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=uuid.uuid4(),
+        lowest_delivered_price_cents=1800,
+        checked_at=now,
+        expires_at=now + timedelta(days=1),
+        comparison_status=ComparisonStatus.AVAILABLE,
+        best_provider_name="synthetic",
+        historical_low_1y_cents=1650,
+        annual_low_cents=None,
+        annual_low_observed_at=None,
+        annual_low_snapshot_id=None,
+        annual_low_provider=None,
+        annual_first_at=None,
+        annual_last_at=None,
+        annual_count=0,
+        annual_computed_at=None,
+        annual_expires_at=None,
+    )
 
 
 @pytest.fixture
@@ -91,8 +133,11 @@ async def test_volume_creation_persists_number_and_confirmed_edition_language(
 
     database, user = preparation_db
     notice = BookMetadata(
-        title="The Sad Ghost Club", volume_title="The Sad Ghost Club Volume 4",
-        isbn13="9781444977387", author="Lize Meddings", language="en",
+        title="The Sad Ghost Club",
+        volume_title="The Sad Ghost Club Volume 4",
+        isbn13="9781444977387",
+        author="Lize Meddings",
+        language="en",
     )
     result = result_from_resolution(BookResolution(best=notice), "The Sad Ghost Club Volume 4")
     state = DraftState()

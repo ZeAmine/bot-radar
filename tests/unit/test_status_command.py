@@ -11,6 +11,29 @@ from app.providers.llm.base import LLMHealth
 from app.services.telegram_service import notify_admins
 
 
+@pytest.mark.parametrize(("data", "label"), [
+    (None, "Inconnu"), ({"status": "stopped"}, "Arrêté"),
+    ({"status": "unexpected"}, "Inconnu"),
+    ({"status": "active"}, "Inconnu"),
+    ({"status": "active", "last_poll_at": time.time() + 1000}, "Inconnu"),
+    ({"status": "cooldown", "cooldown_until": time.time() - 60}, "reprise non confirmée"),
+    *[({"status": "active", "last_poll_at": value}, "Inconnu")
+      for value in (0, None, True, "bad", float("nan"), float("inf"), 10 ** 500)],
+])
+async def test_poller_status_never_claims_active_without_recent_evidence(data, label):
+    message = MagicMock(spec=Message)
+    message.answer = AsyncMock()
+    with (
+        patch("app.bot.handlers.status.is_night_time", return_value=False),
+        patch("app.bot.handlers.status.settings.VINTED_POLLER_ENABLED", True),
+        patch("app.bot.handlers.status.get_poller_status", AsyncMock(return_value=data)),
+    ):
+        await handle_status(message, _two_query_db([], []))
+    text = message.answer.await_args.args[0]
+    assert label in text
+    assert "🟢 <b>Active</b>" not in text
+
+
 def _two_query_db(latency_rows: list[tuple], category_rows: list[tuple]):
     """Session double qui répond à deux requêtes distinctes, dans l'ordre du handler.
 
@@ -193,7 +216,8 @@ async def test_handle_status_ai_active():
 
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
-        assert "<b>Moteur IA</b> (un-modele-choisi) : 🟢 <b>Actif</b>" in text
+        assert "<b>Moteur IA</b> (sonde) : 🟢 <b>Sonde accessible</b>" in text
+        assert "un-modele-choisi" not in text
         assert "latence" not in text
         assert "115ms" not in text
 
@@ -225,7 +249,7 @@ async def test_handle_status_ai_error():
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
         assert (
-            "<b>Moteur IA</b> (un-modele-choisi) : 🔴 <b>Indisponible</b> "
+            "<b>Moteur IA</b> (sonde) : 🔴 <b>Indisponible</b> "
             "(Clé API invalide ou refusée)"
             in text
         )

@@ -7,18 +7,37 @@ from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
+from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.db.repositories.book_repo import resolve_loaded_books
 from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceService
 from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 
 
-def _create_mock_book(title: str, price_cents: int | None) -> Book:
+def _create_mock_book(
+    title: str, price_cents: int | None, *, annual_cents: int | None = None
+) -> Book:
     """Helper pour créer un livre factice avec un cache de prix actif."""
     book = Book(
         id=uuid.uuid4(),
         title=title,
         normalized_title=title.lower(),
         language="fr",
+    )
+    at = datetime.now(UTC) - timedelta(hours=1)
+    observed_price = price_cents if annual_cents is None else annual_cents
+    observed_at = at if annual_cents is None else at - timedelta(days=30)
+    observation = MarketPriceSnapshot(
+        id=uuid.uuid4(),
+        book_id=book.id,
+        provider_name="synthetic",
+        delivered_price_cents=observed_price,
+        item_price_cents=observed_price,
+        shipping_price_cents=0,
+        checked_at=at,
+        observed_at=observed_at,
+        item_condition="Très bon",
+        annual_eligible=True,
+        is_comparable=True,
     )
     cache = BookMarketCache(
         lowest_delivered_price_cents=price_cents,
@@ -27,7 +46,17 @@ def _create_mock_book(title: str, price_cents: int | None) -> Book:
         best_source_url="https://example.com/chasse",
         comparison_status=ComparisonStatus.AVAILABLE,
         confidence=MatchConfidence.HIGH,
-        expires_at=datetime.now(UTC) + timedelta(hours=24),
+        checked_at=at,
+        annual_low_cents=observation.delivered_price_cents,
+        annual_low_observed_at=observed_at,
+        annual_low_snapshot_id=observation.id,
+        annual_low_provider=observation.provider_name,
+        annual_first_at=observed_at,
+        annual_last_at=at,
+        annual_count=1 if annual_cents is None else 2,
+        annual_computed_at=at,
+        annual_expires_at=observed_at + timedelta(days=365),
+        expires_at=at + timedelta(hours=24),
     )
     book.market_cache = cache
     return book
@@ -54,7 +83,7 @@ def test_series_matching_specific_tome_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "<b>Prix bas constaté (T2) :</b> 18,50 €" in summary
+    assert "<b>Minimum des relevés sur 365 jours (T2) :</b> 18,50 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart :</b> -6,50 € ✅" in summary
 
@@ -86,7 +115,7 @@ def test_series_matching_lot_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "<b>Prix bas constaté (Lot) :</b> ~54,50 €" in summary
+    assert "<b>Somme des minima documentés (dates distinctes) (Lot) :</b> ~54,50 €" in summary
     assert "Prix du marché" not in summary
     # Gain : 25.00 - 54.50 = -29.50 €
     assert "<b>Écart :</b> -29,50 € ✅" in summary
@@ -159,16 +188,17 @@ def test_series_matching_lot_card():
 def test_series_matching_chateau_des_animaux_lot_1_2_3():
     """Vérifie le cas réel de 'Le château des animaux 1.2.3' avec historique."""
     b1 = _create_mock_book("Le Château des animaux — Tome 1 (Miss Bengalore)", 1267)
-    b1.market_cache.historical_low_1y_cents = 1267
+    b1.market_cache.annual_low_cents = 1267
 
     b2 = _create_mock_book("Le Château des animaux — Tome 2 (Les Marguerites d'hiver)", 1548)
-    b2.market_cache.historical_low_1y_cents = 1548
+    b2.market_cache.annual_low_cents = 1548
 
-    b3 = _create_mock_book("Le Château des animaux — Tome 3 (La Nuit des justes)", 2223)
-    b3.market_cache.historical_low_1y_cents = 1415
+    b3 = _create_mock_book(
+        "Le Château des animaux — Tome 3 (La Nuit des justes)", 2223, annual_cents=1415
+    )
 
     b4 = _create_mock_book("Le Château des animaux — Tome 4 (Le Sang du roi)", 1563)
-    b4.market_cache.historical_low_1y_cents = 1563
+    b4.market_cache.annual_low_cents = 1563
 
     books = [b1, b2, b3, b4]
 
@@ -200,7 +230,7 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     assert summary is not None
     assert "Prix du marché" not in summary
     # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
-    assert "<b>Prix bas constaté (Lot) :</b> ~42,30 €" in summary
+    assert "<b>Somme des minima documentés (dates distinctes) (Lot) :</b> ~42,30 €" in summary
     # Écart vs prix bas: 37.18 - 42.30 = -5.12 €
     assert "<b>Écart :</b> -5,12 € ✅" in summary
 
@@ -255,6 +285,11 @@ def test_series_matching_lot_variations_matrix(
         tome_result=tome_res,
     )
     assert summary is not None
+    # Les ids historiques du paramétrage restent stables ; le contrat d'affichage
+    # qualifie désormais cette somme de minima observés à des dates distinctes.
+    expected_label = expected_label.replace(
+        "Prix bas constaté", "Somme des minima documentés (dates distinctes)"
+    )
     assert expected_label in summary
     assert f"<b>Écart :</b> {expected_diff} {expected_icon}" in summary
 
@@ -340,6 +375,9 @@ async def test_handle_market_tome_select():
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
+    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
+    mock_session.execute.return_value = MagicMock()
+    mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
         patch("app.bot.handlers.callbacks.ListingRepository") as mock_l_repo_cls,
         patch("app.bot.handlers.callbacks.BookRepository") as mock_b_repo_cls,
@@ -405,6 +443,9 @@ async def test_market_tome_view_keeps_the_tome_selection_when_series_has_several
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
+    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
+    mock_session.execute.return_value = MagicMock()
+    mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
         patch("app.bot.handlers.callbacks.ListingRepository") as mock_l_repo_cls,
         patch("app.bot.handlers.callbacks.BookRepository") as mock_b_repo_cls,
@@ -468,6 +509,9 @@ async def test_series_panel_offers_tome_selection_even_when_the_tome_is_resolved
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
+    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
+    mock_session.execute.return_value = MagicMock()
+    mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
         patch("app.use_cases.view_market_details.ListingRepository") as mock_l_cls,
         patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
@@ -526,6 +570,9 @@ async def test_handle_view_market_details_success():
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
+    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
+    mock_session.execute.return_value = MagicMock()
+    mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
         patch("app.use_cases.view_market_details.ListingRepository") as mock_l_cls,
         patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
@@ -586,6 +633,9 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
+    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
+    mock_session.execute.return_value = MagicMock()
+    mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
         patch("app.use_cases.view_market_details.ListingRepository") as mock_l_cls,
         patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
@@ -1018,7 +1068,11 @@ def test_counted_lot_resolves_to_the_whole_series_and_prices_it():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "<b>Prix bas constaté (Lot de 4 tomes, composition déduite) :</b> ~40,77 €" in summary
+    assert (
+        "<b>Somme des minima documentés (dates distinctes) "
+        "(Lot de 4 tomes, composition déduite) :</b> ~40,77 €"
+        in summary
+    )
     assert "<b>Écart :</b> +15,31 € ⛔️" in summary
 
 
@@ -1164,3 +1218,25 @@ def test_a_missing_cache_is_not_presented_as_an_ongoing_calculation():
     assert "Cote indisponible" in line
     assert "à l’envoi" in line
     assert "calcul" not in line
+
+
+@pytest.mark.parametrize("date_kind", ["unknown", "expired"])
+def test_legacy_minimum_without_observation_never_becomes_annual_reference(date_kind):
+    """L'ancien montant ne reçoit pas une provenance lors d'une lecture de cote."""
+    book = Book(id=uuid.uuid4(), title="Série Tome 1", normalized_title="serie tome 1")
+    at = datetime.now(UTC) - timedelta(days=2)
+    book.market_cache = BookMarketCache(
+        historical_low_1y_cents=100, lowest_delivered_price_cents=200,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=None if date_kind == "unknown" else at,
+        expires_at=at + timedelta(hours=24),
+    )
+    before = (book.market_cache.checked_at, book.market_cache.historical_low_at)
+    listing = Listing(title="Série Tome 1", item_price_cents=50, estimated_total_cents=60)
+    assert MarketPriceService.get_comparison_summary(
+        listing=listing, book=book, tome_result=TomeMatchResult(is_lot=False, tome_number=1)
+    ) is None
+    panel = MarketPriceService.format_market_details_card(listing, book, [], None)
+    assert "informatif" in panel
+    assert "Minimum des relevés sur 365 jours" not in panel
+    assert (book.market_cache.checked_at, book.market_cache.historical_low_at) == before

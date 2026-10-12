@@ -2,13 +2,15 @@
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from aiogram import Bot
+from aiogram.exceptions import TelegramRetryAfter
+from aiogram.methods import SendMessage
 from sqlalchemy import event, insert, select
 
 from app.core.config import settings
@@ -94,9 +96,10 @@ async def journey(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[RestartJourn
             photo_url=None,
         )
         bot = AsyncMock(spec=Bot)
+        bot.id = 123456789
         bot.send_message.side_effect = telegram_reply
         monkeypatch.setattr(settings, "AI_ENABLED", False)
-        monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [])
+        monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [601, 602, -601])
         monkeypatch.setattr("app.tasks.vinted_poller.AsyncSessionLocal", database.maker)
         monkeypatch.setattr("app.use_cases.ingest_listing.default_bot", bot)
         monkeypatch.setattr("app.tasks.vinted_poller._ingest_semaphore", None)
@@ -112,8 +115,16 @@ async def test_failed_notification_is_retried_after_seen_reconstruction(
 ) -> None:
     """Un vrai match persisté en attente revient au prochain catalogue après redémarrage."""
     await journey.add_alert(telegram_id, is_allowed=is_allowed)
-    journey.bot.send_message.side_effect = RuntimeError("Envoi Telegram factice indisponible")
+    journey.bot.send_message.side_effect = TelegramRetryAfter(
+        method=SendMessage(chat_id=601, text="synthetic"),
+        message="synthetic refusal", retry_after=1,
+    )
     first = await journey.ingest()
+    if not is_allowed:
+        assert not first.needs_retry
+        assert (await journey.matches())[0].notification_state == "deferred"
+        journey.bot.send_message.assert_not_awaited()
+        return
     assert first.needs_retry is True
     assert first.matches[0].notification_sent is False
     matches = await journey.matches()
@@ -123,6 +134,13 @@ async def test_failed_notification_is_retried_after_seen_reconstruction(
     seen = await load_initial_seen_ids()
     assert journey.item.external_id not in seen
 
+    async with journey.database.maker() as session:
+        rows = list((await session.scalars(select(ListingMatch))).all())
+        for row in rows:
+            if row.notification_state == "ready":
+                assert row.next_attempt_at is not None
+                row.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
     journey.bot.send_message.reset_mock()
     journey.bot.send_message.side_effect = telegram_reply
     assert await journey.collect(seen) == 1
@@ -141,7 +159,10 @@ async def test_partial_success_retries_only_the_pending_recipient(journey: Resta
 
     async def send(chat_id: int, **_kwargs: object) -> SimpleNamespace:
         if chat_id == 602:
-            raise RuntimeError("Envoi Telegram factice indisponible")
+            raise TelegramRetryAfter(
+        method=SendMessage(chat_id=601, text="synthetic"),
+        message="synthetic refusal", retry_after=1,
+    )
         return telegram_message(chat_id)
 
     journey.bot.send_message.side_effect = send
@@ -152,6 +173,13 @@ async def test_partial_success_retries_only_the_pending_recipient(journey: Resta
     seen = await load_initial_seen_ids()
     assert journey.item.external_id not in seen
 
+    async with journey.database.maker() as session:
+        rows = list((await session.scalars(select(ListingMatch))).all())
+        for row in rows:
+            if row.notification_state == "ready":
+                assert row.next_attempt_at is not None
+                row.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
     journey.bot.send_message.reset_mock()
     journey.bot.send_message.side_effect = telegram_reply
     assert await journey.collect(seen) == 1
@@ -195,7 +223,10 @@ async def test_pending_inactive_recipient_does_not_make_the_listing_unseen(
     journey: RestartJourney, status: AlertStatus
 ) -> None:
     alert, _ = await journey.add_alert()
-    journey.bot.send_message.side_effect = RuntimeError("Envoi Telegram factice indisponible")
+    journey.bot.send_message.side_effect = TelegramRetryAfter(
+        method=SendMessage(chat_id=601, text="synthetic"),
+        message="synthetic refusal", retry_after=1,
+    )
     assert (await journey.ingest()).needs_retry is True
     async with journey.database.maker() as session:
         loaded = await session.get(Alert, alert.id)
@@ -218,7 +249,10 @@ async def test_pending_inactive_recipient_does_not_make_the_listing_unseen(
 
 async def test_pending_user_without_a_telegram_chat_stays_seen(journey: RestartJourney) -> None:
     _, user = await journey.add_alert()
-    journey.bot.send_message.side_effect = RuntimeError("Envoi Telegram factice indisponible")
+    journey.bot.send_message.side_effect = TelegramRetryAfter(
+        method=SendMessage(chat_id=601, text="synthetic"),
+        message="synthetic refusal", retry_after=1,
+    )
     assert (await journey.ingest()).needs_retry is True
     async with journey.database.maker() as session:
         loaded = await session.get(User, user.id)
@@ -240,7 +274,10 @@ async def test_seen_reconstruction_reads_all_notification_states_in_one_query(
 ) -> None:
     await journey.add_alert(601)
     await journey.add_alert(602)
-    journey.bot.send_message.side_effect = RuntimeError("Envoi Telegram factice indisponible")
+    journey.bot.send_message.side_effect = TelegramRetryAfter(
+        method=SendMessage(chat_id=601, text="synthetic"),
+        message="synthetic refusal", retry_after=1,
+    )
     for external_id in ("first-pending", "second-pending"):
         journey.item.external_id = external_id
         await journey.ingest()
@@ -286,7 +323,10 @@ async def test_pending_exclusion_does_not_expand_the_recent_listing_window(
 ) -> None:
     """Retirer une attente ne masque pas une annonce au-delà de la fenêtre initiale."""
     await journey.add_alert()
-    journey.bot.send_message.side_effect = RuntimeError("Envoi Telegram factice indisponible")
+    journey.bot.send_message.side_effect = TelegramRetryAfter(
+        method=SendMessage(chat_id=601, text="synthetic"),
+        message="synthetic refusal", retry_after=1,
+    )
     assert (await journey.ingest()).needs_retry is True
     async with journey.database.maker() as session:
         pending = (await session.execute(select(Listing))).scalar_one()
@@ -315,3 +355,18 @@ async def test_pending_exclusion_does_not_expand_the_recent_listing_window(
     assert journey.item.external_id not in seen
     assert "old-2998" in seen
     assert "old-2999" not in seen
+
+
+async def test_pending_without_recollection_is_not_retried(journey, monkeypatch):
+    """Diagnostic point 6 : reconstruire les vus ne constitue pas une file de reprise."""
+    await journey.add_alert()
+    journey.bot.send_message.side_effect = RuntimeError("Échec synthétique")
+    assert not (await journey.ingest()).needs_retry
+    assert (await journey.matches())[0].notification_state == "unknown"
+    seen = await load_initial_seen_ids()
+    assert journey.item.external_id in seen
+    monkeypatch.setattr("app.tasks.vinted_poller.fetch_vinted_page", AsyncMock(return_value=[]))
+    journey.bot.send_message.reset_mock()
+    assert await journey.collect(seen) == 0
+    journey.bot.send_message.assert_not_awaited()
+    assert (await journey.matches())[0].notified_at is None

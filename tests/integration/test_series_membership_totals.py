@@ -34,6 +34,8 @@ from tests.telegram_fakes import telegram_message
 
 @pytest.fixture
 async def journey(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [601, 602])
     async with postgres_replayed_database() as db:
         db.maker.configure(autoflush=False)
         monkeypatch.setattr("app.db.session.AsyncSessionLocal", db.maker)
@@ -147,6 +149,7 @@ async def test_real_ingestion_and_market_panel_agree(journey, monkeypatch, case)
         item_price_cents=100,
     )
     bot = AsyncMock()
+    bot.id = 123456789
     bot.send_message.return_value = telegram_message()
     async with journey.db.maker() as session:
         result = await ingestion.ProcessListingUseCase(session, bot).execute(payload, {})
@@ -280,6 +283,7 @@ async def test_recalculation_reads_links_after_waiting_for_mutation(journey, mon
             offer = MarketOffer(
                 provider_name="synthetic",
                 item_price_cents=1500,
+                observed_at=datetime.now(UTC),
                 shipping_price_cents=0,
                 delivered_price_cents=1500,
                 source_url="https://example.invalid/book",

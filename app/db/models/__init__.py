@@ -10,10 +10,12 @@ from app.db.models.category import Category
 from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
+from app.db.models.pause_action import PauseAction
 from app.db.models.user import User
 
 __all__ = [
     "Base",
+    "PauseAction",
     "User",
     "Category",
     "Alert",

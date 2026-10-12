@@ -28,13 +28,52 @@ from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
     ROUTE_BANNERS,
-    DraftState,
     deepseek_payload,
     fake_bnf,
     fake_deepseek,
 )
-from tests.add_journey import drain, patched, repositories
+from tests.add_fakes import (
+    DraftState as _SharedDraftState,
+)
+from tests.add_journey import drain, patched
+from tests.add_journey import repositories as _shared_repositories
 from tests.screens import confirm_press, message_with_recap, recap_text
+
+
+class DraftState(_SharedDraftState):
+    """Contexte local identifié pour le verrou de consommation, données inchangées."""
+    def __init__(self):
+        from aiogram.fsm.storage.base import StorageKey
+        from aiogram.fsm.storage.memory import MemoryStorage
+        super().__init__()
+        self.storage = MemoryStorage()
+        self.key = StorageKey(bot_id=123456789, chat_id=123, user_id=123)
+
+
+
+def cached_market_price():
+    """Projection de deux relevés factices livrés comparables (1650 puis 1800)."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.constants import ComparisonStatus
+    from app.db.models.book_market_cache import BookMarketCache
+    now = datetime.now(UTC)
+    old = now - timedelta(days=30)
+    return BookMarketCache(id=uuid.uuid4(), book_id=uuid.uuid4(),
+        lowest_delivered_price_cents=1800, checked_at=now, expires_at=now+timedelta(days=1),
+        comparison_status=ComparisonStatus.AVAILABLE, best_provider_name="synthetic",
+        historical_low_1y_cents=1650, annual_low_cents=1650, annual_low_observed_at=old,
+        annual_low_snapshot_id=uuid.uuid4(), annual_low_provider="synthetic",
+        annual_first_at=old, annual_last_at=now, annual_count=2,
+        annual_computed_at=now, annual_expires_at=old+timedelta(days=365))
+
+
+def repositories(*args, **kwargs):
+    repos = _shared_repositories(*args, **kwargs)
+    book = repos["book_repo"].get_by_id.return_value
+    if book.market_cache is not None:
+        book.market_cache = cached_market_price()
+    return repos
 
 
 @pytest.mark.asyncio
@@ -139,8 +178,8 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
     Trois choix-tenus de l'affichage de création :
 
     - le prix du marché est donné seul, sans le nom du fournisseur ;
-    - le prix bas constaté est donné sans date — `historical_low_at` est réécrit à
-      chaque rafraîchissement de la cote, elle daterait de la création et non du prix ;
+    - le minimum annuel vient de relevés datés admissibles ; le prix courant
+      reste affiché séparément, sans réinterpréter `historical_low_at` ;
     - le pied annonce la notification, sans la promesse « 24/24 sur Vinted ».
 
     Le livre est déjà au catalogue et déjà coté : la confirmation relit le prix
@@ -169,8 +208,8 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         confirmation = confirm_message.edit_text.call_args[0][0]
 
         # La cote et le bas constaté, tous deux déjà connus du catalogue.
-        assert "<b>Prix du marché :</b> 18,00 €" in confirmation
-        assert "<b>Prix bas constaté :</b> 16,50 €" in confirmation
+        assert "<b>Dernière offre connue (informative) :</b> 18,00 €" in confirmation
+        assert "<b>Minimum des relevés sur 365 jours :</b> 16,50 €" in confirmation
         # Ni la plateforme, ni une date qui daterait du moment de la création.
         assert "Momox" not in confirmation
         assert "chasse_aux_livres" not in confirmation

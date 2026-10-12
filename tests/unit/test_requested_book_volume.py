@@ -9,8 +9,19 @@ from app.domain.enums import BookSearchStatus
 from app.services.ai.modules.natural_add import natural_add_module
 from app.services.book_metadata_service import BookMetadataService
 from app.use_cases.book_search import BookSearchUseCase, metadata_from_result
-from tests.add_fakes import DraftState
+from tests.add_fakes import DraftState as _SharedDraftState
 from tests.fakes_catalogue import BNF_RECORD_TEMPLATE, FakeCatalogueClient
+
+
+class DraftState(_SharedDraftState):
+    """Identité locale de stockage pour la consommation du brouillon."""
+    def __init__(self):
+        from aiogram.fsm.storage.base import StorageKey
+        from aiogram.fsm.storage.memory import MemoryStorage
+        super().__init__()
+        self.storage = MemoryStorage()
+        self.key = StorageKey(bot_id=123456789, chat_id=123, user_id=123)
+
 
 VOLUME_4_ISBN = "9781444977387"
 VOLUME_1_ISBN = "9782019467500"

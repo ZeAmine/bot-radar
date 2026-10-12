@@ -53,20 +53,26 @@ async def handle_status(message: Message, db_session: Any) -> None:
                 f"<b>Reprise dans :</b> {rem_m} min {rem_s:02d}s (à {resume_time})"
             )
         else:
-            poller_status = "🟡 <b>Fin de pause : reprise du scan imminente</b>"
+            poller_status = "🟡 <b>Pause prévue terminée ; reprise non confirmée</b>"
     elif poller_data and poller_data.get("status") == "active":
-        last_poll = poller_data.get("last_poll_at", 0)
-        elapsed = max(0, int(now.timestamp() - last_poll))
-        if elapsed <= 120:
-            poller_status = f"🟢 <b>Active</b> (scan -{elapsed}s)"
+        last_poll = poller_data.get("last_poll_at")
+        if (
+            isinstance(last_poll, bool) or not isinstance(last_poll, (int, float))
+            or not 0 < last_poll <= now.timestamp()
+        ):
+            poller_status = "⚪ <b>Inconnu</b> (horodatage absent ou invalide)"
         else:
-            elapsed_m = elapsed // 60
-            elapsed_s = elapsed % 60
-            poller_status = (
-                f"🟠 <b>En retard</b> (scan -{elapsed_m}m{elapsed_s:02d}s)"
-            )
+            elapsed = int(now.timestamp() - last_poll)
+            if elapsed <= 120:
+                poller_status = f"🟢 <b>Active</b> (scan -{elapsed}s)"
+            else:
+                elapsed_m = elapsed // 60
+                elapsed_s = elapsed % 60
+                poller_status = f"🟠 <b>En retard</b> (scan -{elapsed_m}m{elapsed_s:02d}s)"
+    elif poller_data and poller_data.get("status") == "stopped":
+        poller_status = "🔴 <b>Arrêté</b>"
     else:
-        poller_status = "🟢 <b>Active</b>"
+        poller_status = "⚪ <b>Inconnu</b> (aucun état exploitable)"
 
     # Timestamp de réception persistée → timestamp du marquage, avant commit.
     # Succès notifiés seulement ; recollectes et reprises SQL ne sont pas isolées.
@@ -101,7 +107,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
 
     ai_info = await llm_client.check_health()
     if ai_info.status == "active":
-        ai_status = "🟢 <b>Actif</b>"
+        ai_status = "🟢 <b>Sonde accessible</b>"
     elif ai_info.status == "disabled":
         ai_status = "<b>Désactivé</b>"
     elif ai_info.status == "unconfigured":
@@ -113,7 +119,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
         "<b>État du service</b>\n\n"
         f"<b>Heure locale :</b> {time_str} ({tz_label})\n"
         f"<b>Scanner Vinted :</b> {poller_status}\n"
-        f"<b>Moteur IA</b> ({ai_info.model}) : {ai_status}\n"
+        f"<b>Moteur IA</b> (sonde) : {ai_status}\n"
         f"<b>Plage de veille :</b> {night_hours_info}\n\n"
         "<b>Latence</b>\n"
         f"{latency_line}\n"

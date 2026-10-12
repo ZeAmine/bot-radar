@@ -87,6 +87,7 @@ async def journey(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IngestionJou
         database.session.add(category)
         await database.session.commit()
         bot = AsyncMock(spec=Bot)
+        bot.id = 123456789
         deliveries: list[tuple[int, str]] = []
 
         async def send(chat_id: int, **kwargs):
@@ -94,6 +95,7 @@ async def journey(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IngestionJou
             return telegram_message(chat_id, len(deliveries))
 
         bot.send_message.side_effect = send
+        monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [601, 602])
         monkeypatch.setattr(settings, "AI_ENABLED", False)
         monkeypatch.setattr("app.use_cases.ingest_listing.default_bot", bot)
         monkeypatch.setattr(
@@ -105,10 +107,15 @@ async def journey(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IngestionJou
 @pytest.mark.parametrize("existing_pending", [False, True])
 async def test_same_listing_waits_before_reading_and_sends_once(journey, existing_pending):
     """Sans acquisition avant lecture, le second traitement décide sur un état périmé."""
-    await journey.add_alert()
+    alert = await journey.add_alert()
     if existing_pending:
-        journey.bot.send_message.side_effect = RuntimeError("Échec factice")
-        assert (await journey.ingest()).needs_retry
+        # Attente dont le non-envoi est établi par le semis, pas par une erreur réseau.
+        async with journey.database.maker() as session:
+            repo = ListingRepository(session)
+            value = journey.payload()
+            listing = await repo.create_from_payload(value, value.model_dump(mode="json"))
+            await repo.create_match(alert.id, listing.id)
+            await session.commit()
     entered, release, started, read = (asyncio.Event() for _ in range(4))
 
     async def send(chat_id: int, **kwargs):
@@ -134,7 +141,7 @@ async def test_same_listing_waits_before_reading_and_sends_once(journey, existin
             payload = journey.payload()
             return await use_case.execute(payload, payload.model_dump(mode="json"))
 
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 3)
         second = asyncio.create_task(second_ingestion())
         try:
             await started.wait()
@@ -166,7 +173,7 @@ async def test_distinct_listings_progress_while_another_send_waits(journey):
 
     journey.bot.send_message.side_effect = send
     first = asyncio.create_task(journey.ingest())
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 3)
     try:
         async with asyncio.timeout(2):
             result = await journey.ingest("console-2")
@@ -202,23 +209,28 @@ async def test_partial_success_is_reread_after_waiting(journey):
 
     journey.bot.send_message.side_effect = send
     first = asyncio.create_task(journey.ingest())
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 3)
     second = asyncio.create_task(second_ingestion())
     await started.wait()
     release.set()
     results = await asyncio.gather(first, second)
-    assert results[0].needs_retry
+    assert not results[0].needs_retry
     assert not results[1].needs_retry
-    assert attempts in ([601, 602, 602], [602, 601, 601])
-    assert [chat for chat, _ in journey.deliveries] in ([601, 602], [602, 601])
-    assert all(match.notified_at is not None for match in await journey.matches())
+    assert attempts in ([601, 602], [602, 601])
+    assert len(journey.deliveries) == 1
+    assert sum(match.notified_at is not None for match in await journey.matches()) == 1
+    assert sum(match.notification_state == "unknown" for match in await journey.matches()) == 1
 
 
 async def test_waiter_refreshes_preloaded_listing_and_user(journey):
     """Une session gardant des objets ORM ne doit pas envoyer le titre ou le chat périmé."""
     alert = await journey.add_alert()
-    journey.bot.send_message.side_effect = RuntimeError("Échec factice")
-    await journey.ingest()
+    async with journey.database.maker() as seed:
+        repo = ListingRepository(seed)
+        payload = journey.payload()
+        listing = await repo.create_from_payload(payload, payload.model_dump(mode="json"))
+        await repo.create_match(alert.id, listing.id)
+        await seed.commit()
     entered, release, started = (asyncio.Event() for _ in range(3))
 
     async def fail_after_wait(**_kwargs):
@@ -235,7 +247,7 @@ async def test_waiter_refreshes_preloaded_listing_and_user(journey):
         await session.commit()  # Objets conservés, transaction de lecture terminée.
         journey.bot.send_message.side_effect = fail_after_wait
         first = asyncio.create_task(journey.ingest())
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 3)
 
         async def second_ingestion():
             started.set()
@@ -260,8 +272,10 @@ async def test_waiter_refreshes_preloaded_listing_and_user(journey):
         journey.bot.send_message.side_effect = success
         release.set()
         await asyncio.gather(first, second)
-    assert [chat for chat, _ in journey.deliveries] == [602]
-    assert "Console actualisée" in journey.deliveries[0][1]
+    assert journey.deliveries == []
+    assert listing.title == "Console actualisée"
+    assert alerts[0].user.telegram_user_id == 602
+    assert (await journey.matches())[0].notification_state == "unknown"
 
 
 @pytest.mark.parametrize(
@@ -284,12 +298,12 @@ async def test_holder_cancellation_leaves_persisted_state_and_allows_retry(
             nonlocal commits
             commits += 1
             if (stage == "before_commit" and commits == 1) or (
-                stage == "before_mark_commit" and commits == 2
+                stage == "before_mark_commit" and commits == 3
             ):
                 entered.set()
                 await never.wait()
             await original_commit()
-            if stage == "after_commit" and commits == 2:
+            if stage == "after_commit" and commits == 3:
                 entered.set()
                 await never.wait()
 
@@ -304,7 +318,7 @@ async def test_holder_cancellation_leaves_persisted_state_and_allows_retry(
         journey.bot.send_message.side_effect = send
         payload = journey.payload()
         task = asyncio.create_task(ProcessListingUseCase(session, journey.bot).execute(payload, {}))
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 3)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -320,12 +334,14 @@ async def test_holder_cancellation_leaves_persisted_state_and_allows_retry(
         assert len(matches) == 1
         assert (matches[0].notified_at is not None) == (stage == "after_commit")
     monkeypatch.setattr("app.tasks.vinted_poller.AsyncSessionLocal", journey.database.maker)
-    assert ("console-1" in await load_initial_seen_ids()) == (stage == "after_commit")
+    assert ("console-1" in await load_initial_seen_ids()) == (stage != "before_commit")
     journey.bot.send_message.side_effect = None
     journey.bot.send_message.return_value = telegram_message(message_id=99)
     result = await journey.ingest()
-    assert len(result.matches) == (0 if stage == "after_commit" else 1)
-    assert all(match.notified_at is not None for match in await journey.matches())
+    assert len(result.matches) == (1 if stage == "before_commit" else 0)
+    assert ((await journey.matches())[0].notified_at is not None) == (
+        stage in {"before_commit", "after_commit"}
+    )
 
 
 @pytest.mark.parametrize("trigger", ["error", "cancellation"])
@@ -366,7 +382,7 @@ async def test_cancellation_during_rollback_does_not_release_key_early(
             ProcessListingUseCase(session, journey.bot).execute(journey.payload(), {})
         )
         if trigger == "cancellation":
-            await entered.wait()
+            await asyncio.wait_for(entered.wait(), 3)
             first.cancel()
         await rollback_started.wait()
         first.cancel()  # Annulation pendant le rollback, pas pendant le traitement initial.
@@ -404,7 +420,9 @@ async def test_cancellation_during_rollback_does_not_release_key_early(
     assert rollback_completed
     assert not listing_ingestion_gate._entries
     assert listing_ingestion_gate._participants == 0
-    assert (await journey.matches())[0].notified_at is not None
+    assert ((await journey.matches())[0].notified_at is not None) == (trigger == "error")
+    if trigger == "cancellation":
+        assert (await journey.matches())[0].notification_state == "unknown"
 
 
 @pytest.mark.parametrize("trigger", ["error", "cancellation", "drain_cancellation"])
@@ -456,7 +474,7 @@ async def test_drain_preserves_ingestion_rollback_until_sql_finishes(
             ProcessListingUseCase(session, journey.bot).execute(journey.payload(), {}),
             name="synthetic-ingestion",
         )
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 3)
         if trigger != "drain_cancellation":
             if trigger == "cancellation":
                 first.cancel()
@@ -495,7 +513,7 @@ async def test_drain_preserves_ingestion_rollback_until_sql_finishes(
 
 
 @pytest.mark.parametrize("failure", ["commit", "timeout"])
-async def test_ambiguous_delivery_remains_pending_and_can_duplicate(journey, monkeypatch, failure):
+async def test_ambiguous_delivery_remains_unknown_without_duplicate(journey, monkeypatch, failure):
     """La protection ne transforme pas une réponse perdue ou un commit échoué en succès."""
     from app.tasks.vinted_poller import load_initial_seen_ids
     from app.use_cases.ingest_listing import listing_ingestion_gate
@@ -517,7 +535,7 @@ async def test_ambiguous_delivery_remains_pending_and_can_duplicate(journey, mon
             async def commit():
                 nonlocal commits
                 commits += 1
-                if commits == 2:
+                if commits == 3:
                     raise RuntimeError("Échec factice avant commit du marquage")
                 await original_commit()
 
@@ -526,14 +544,15 @@ async def test_ambiguous_delivery_remains_pending_and_can_duplicate(journey, mon
                 await ProcessListingUseCase(session, journey.bot).execute(journey.payload(), {})
             assert not session.in_transaction()
     else:
-        assert (await journey.ingest()).needs_retry
+        assert not (await journey.ingest()).needs_retry
     assert not listing_ingestion_gate._entries
     assert (await journey.matches())[0].notified_at is None
     monkeypatch.setattr("app.tasks.vinted_poller.AsyncSessionLocal", journey.database.maker)
-    assert "console-1" not in await load_initial_seen_ids()
-    assert (await journey.ingest()).matches[0].notification_sent
-    assert len(journey.deliveries) == 2
-    assert (await journey.matches())[0].notified_at is not None
+    assert "console-1" in await load_initial_seen_ids()
+    assert (await journey.ingest()).matches == []
+    assert len(journey.deliveries) == 1
+    assert (await journey.matches())[0].notified_at is None
+    assert (await journey.matches())[0].notification_state == "unknown"
 
 
 @pytest.mark.parametrize("reason", ["saturated", "timeout"])
@@ -623,7 +642,7 @@ async def test_api_and_poller_share_the_same_listing_protection(journey, monkeyp
                 headers={"Authorization": f"Bearer {settings.INGEST_API_TOKEN.get_secret_value()}"},
             )
         )
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 3)
         item = ScrapedVintedItem(
             external_id="console-1",
             title="Console de jeu",

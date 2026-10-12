@@ -9,6 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.core.config import settings
 from app.tasks.cleanup import cleanup_old_data_task
 from app.tasks.proactive_autotune import run_proactive_autotune_scan
+from app.tasks.recover_notifications import recover_notifications
 from app.tasks.refresh_book_prices import refresh_book_prices_task
 from app.use_cases.prepare_bd_alert import recover_bd_preparations
 
@@ -23,6 +24,11 @@ def create_scheduler() -> AsyncIOScheduler:
         next_run_time=datetime.now(UTC), id="recover_bd_preparations",
         name="Reprise des préparations BD", replace_existing=True,
         max_instances=1, coalesce=True,
+    )
+
+    scheduler.add_job(
+        recover_notifications, "interval", minutes=1, id="recover_notifications",
+        max_instances=1, coalesce=True, replace_existing=True,
     )
 
     # Parsing des horaires configurés (ex: '07:00,19:00')

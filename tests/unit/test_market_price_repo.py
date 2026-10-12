@@ -22,8 +22,6 @@ async def test_update_or_create_cache_never_uses_live_price_as_historical_low():
 
     # Simuler qu'aucun cache n'existe encore, et qu'aucun relevé ne l'atteste
     repo.get_cache_by_book_id = AsyncMock(return_value=None)
-    repo.get_historical_low_1y = AsyncMock(return_value=None)
-    repo.get_observed_low_cents = AsyncMock(return_value=None)
 
     book_id = uuid.uuid4()
     cache = await repo.update_or_create_cache(
@@ -59,7 +57,6 @@ async def test_update_or_create_cache_preserves_existing_certified_historical_lo
         comparison_status=ComparisonStatus.AVAILABLE,
     )
     repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
-    repo.get_observed_low_cents = AsyncMock(return_value=None)
 
     # Nouvelle offre en direct à 21,89 € sans historique fourni
     cache = await repo.update_or_create_cache(
@@ -78,8 +75,8 @@ async def test_update_or_create_cache_preserves_existing_certified_historical_lo
 
 
 @pytest.mark.asyncio
-async def test_update_or_create_cache_updates_to_lower_certified_historical_low():
-    """Vérifie que si le fournisseur fournit un historique encore plus bas, il est mis à jour."""
+async def test_new_undated_aggregate_preserves_legacy_value():
+    """Un nouvel agrégat non daté ne réécrit pas une ancienne valeur conservée."""
     session = AsyncMock()
     repo = MarketPriceRepository(session)
 
@@ -93,7 +90,6 @@ async def test_update_or_create_cache_updates_to_lower_certified_historical_low(
         comparison_status=ComparisonStatus.AVAILABLE,
     )
     repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
-    repo.get_observed_low_cents = AsyncMock(return_value=None)
 
     cache = await repo.update_or_create_cache(
         book_id=book_id,
@@ -105,35 +101,19 @@ async def test_update_or_create_cache_updates_to_lower_certified_historical_low(
         historical_low_1y_cents=450,  # Nouveau plus bas certifié
     )
 
-    assert cache.historical_low_1y_cents == 450
+    assert cache.historical_low_1y_cents == 670
+    assert cache.annual_low_cents is None
+
+
+def test_undated_aggregate_is_not_an_annual_reference():
+    from app.services.market_price_service import reference_price
+    cache = BookMarketCache(historical_low_1y_cents=670)
+    assert reference_price(cache) == (None, False)
 
 
 @pytest.mark.asyncio
-async def test_get_historical_low_1y_reads_from_raw_payload():
-    """Vérifie que get_historical_low_1y extrait les cotes certifiées depuis raw_payload."""
-    session = AsyncMock()
-    repo = MarketPriceRepository(session)
-
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.all.return_value = [
-        {"historical_low_1y_cents": 850, "other": "data"},
-        {"historical_low_1y_cents": 670, "other": "data"},
-        {"delivered_price_cents": 2189},  # Sans historical_low_1y_cents
-        None,
-    ]
-    session.execute = AsyncMock(return_value=mock_result)
-
-    hist_low = await repo.get_historical_low_1y(uuid.uuid4())
-    assert hist_low == 670
-
-
-@pytest.mark.asyncio
-async def test_update_or_create_cache_lowers_certified_low_to_our_own_observation():
-    """Une cote 1 an plus haute qu'un prix livre que nous avons releve est fausse.
-
-    Regression Dead Train : cote certifiee 22,90 EUR contre 13,57 EUR observes le
-    30/09. Le plancher prend le plus bas des deux, sans jamais exceeder la cote.
-    """
+async def test_legacy_value_is_not_rewritten_by_a_recomputation():
+    """La projection nouvelle ne réécrit ni montant ni date de l’ancien minimum."""
     session = AsyncMock()
     repo = MarketPriceRepository(session)
 
@@ -147,7 +127,6 @@ async def test_update_or_create_cache_lowers_certified_low_to_our_own_observatio
         comparison_status=ComparisonStatus.AVAILABLE,
     )
     repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
-    repo.get_observed_low_cents = AsyncMock(return_value=1357)  # 13,57 EUR vus
 
     cache = await repo.update_or_create_cache(
         book_id=book_id,
@@ -159,7 +138,8 @@ async def test_update_or_create_cache_lowers_certified_low_to_our_own_observatio
         historical_low_1y_cents=2290,
     )
 
-    assert cache.historical_low_1y_cents == 1357
+    assert cache.historical_low_1y_cents == 2290
+    assert cache.annual_low_cents is None
 
 
 @pytest.mark.asyncio
@@ -178,7 +158,6 @@ async def test_update_or_create_cache_never_raises_the_low_above_observations():
         comparison_status=ComparisonStatus.AVAILABLE,
     )
     repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
-    repo.get_observed_low_cents = AsyncMock(return_value=2189)
 
     cache = await repo.update_or_create_cache(
         book_id=book_id,
@@ -206,8 +185,6 @@ async def test_update_or_create_cache_does_not_invent_a_low_from_observations_on
 
     book_id = uuid.uuid4()
     repo.get_cache_by_book_id = AsyncMock(return_value=None)
-    repo.get_historical_low_1y = AsyncMock(return_value=None)
-    repo.get_observed_low_cents = AsyncMock(return_value=390)
 
     cache = await repo.update_or_create_cache(
         book_id=book_id,
@@ -223,24 +200,28 @@ async def test_update_or_create_cache_does_not_invent_a_low_from_observations_on
 
 
 @pytest.mark.asyncio
-async def test_get_observed_low_cents_reads_the_lowest_comparable_delivered_price():
-    """Le minimum porte sur le prix livre, et l'offre vide du fournisseur est exclue."""
-    session = AsyncMock()
-    repo = MarketPriceRepository(session)
+async def test_normalized_observations_replace_the_unbounded_minimum():
+    from datetime import timedelta
 
-    result = MagicMock()
-    result.scalar_one_or_none.return_value = 1357
-    session.execute = AsyncMock(return_value=result)
-
-    book_id = uuid.uuid4()
-    assert await repo.get_observed_low_cents(book_id) == 1357
-
-    stmt = session.execute.await_args.args[0]
-    sql = str(stmt)
-    assert "min(market_price_snapshots.delivered_price_cents)" in sql
-    assert "delivered_price_cents > " in sql
-    assert "is_comparable IS true" in sql
-
-    # Un agregat vide ne vaut pas un prix nul : la cote reste la sienne.
-    result.scalar_one_or_none.return_value = None
-    assert await repo.get_observed_low_cents(book_id) is None
+    from app.db.models.book import Book
+    from app.providers.base import MarketOffer
+    from tests.database import sqlite_only_database
+    async with sqlite_only_database() as database:
+        book = Book(title="Preuve", normalized_title="preuve")
+        database.session.add(book)
+        await database.session.flush()
+        cache = BookMarketCache(book_id=book.id, historical_low_1y_cents=1)
+        database.session.add(cache)
+        await database.session.flush()
+        repo = MarketPriceRepository(database.session)
+        now = datetime.now(UTC)
+        for days, price in [(400, 100), (80, 1357), (0, 2000)]:
+            await repo.save_snapshot(book.id, MarketOffer(
+                provider_name="synthetic", item_price_cents=price, shipping_price_cents=0,
+                delivered_price_cents=price, source_url="https://example.invalid",
+                item_condition="Très bon", observed_at=now-timedelta(days=days),
+            ))
+        await repo.refresh_annual_references([book.id], now=now, force=True)
+        assert cache.annual_low_cents == 1357
+        assert cache.annual_count == 2
+        assert cache.historical_low_1y_cents == 1

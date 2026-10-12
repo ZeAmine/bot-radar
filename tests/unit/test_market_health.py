@@ -34,7 +34,8 @@ def test_message_says_what_is_frozen_and_for_how_long():
     assert "jamais observée" in message
     assert "3,90 €" in message
     # Le message explique pourquoi le chiffre reste là.
-    assert "ne se périment pas toutes seules" in message
+    assert "hors référence glissante vérifiable" in message
+    assert "ne mesure pas la fraîcheur des observations locales" in message
 
 
 def test_no_stale_book_means_no_message():
@@ -244,6 +245,9 @@ async def test_an_incomplete_pass_is_reported():
 
         mp.setattr(market_health, "notify_admins", fake_notify)
 
+        client = MagicMock()
+        client.set = AsyncMock(return_value=True)
+        mp.setattr(market_health, "get_redis_client", lambda: client)
         await market_health.notify_incomplete_refresh(5, 12, mode_label="complet (12 livres)")
 
     assert len(sent) == 1
@@ -394,6 +398,10 @@ async def test_a_high_error_ratio_is_reported_with_a_meaningful_minimum():
             sent.append(text)
 
         mp.setattr(market_health, "notify_admins", fake_notify)
+
+        client = MagicMock()
+        client.set = AsyncMock(return_value=True)
+        mp.setattr(market_health, "get_redis_client", lambda: client)
 
         # 1 erreur sur 2 livres : ratio élevé mais nombre trop faible.
         await market_health.notify_high_error_ratio(2, 1, mode_label="complet (2 livres)")

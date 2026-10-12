@@ -25,5 +25,10 @@ def test_preparation_status_and_button_distinguish_work_pause_and_retry(
     alert = Alert(id=uuid.uuid4(), status=AlertStatus.PAUSED)
     alert.preparation = PreparationRequest(state=state, activation_requested=activate).stored()
     assert text in alert_status_text(alert)
-    keyboard = get_alert_card_keyboard(alert.id, alert.status, 0, 1, preparation=alert.preparation)
-    assert keyboard.inline_keyboard[0][1].callback_data == f"al_{action}:{alert.id}"
+    token = f"al_pause:p_{uuid.uuid4().hex}"
+    keyboard = get_alert_card_keyboard(
+        alert.id, alert.status, 0, 1, preparation=alert.preparation, pause_callback=token
+    )
+    assert keyboard.inline_keyboard[0][1].callback_data == (
+        token if action == "pause" else f"al_resume:{alert.id}"
+    )

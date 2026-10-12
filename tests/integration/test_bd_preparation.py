@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import select
 
 from app.bot.handlers.alerts_create import save_alert
@@ -15,9 +17,18 @@ from app.domain.entities.alert_preparation import PreparationRequest
 from app.domain.enums import AlertStatus
 from app.providers.base import MarketOffers
 from app.services.book_metadata_service import BookMetadata, CatalogueVerdict
-from tests.add_fakes import DraftState
+from tests.add_fakes import DraftState as _DraftState
 from tests.database import postgres_replayed_database
 from tests.screens import confirm_press
+
+
+class DraftState(_DraftState):
+    """Identité FSM locale, sans modifier le double partagé."""
+
+    def __init__(self):
+        super().__init__()
+        self.storage = MemoryStorage()
+        self.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
 
 
 @pytest.mark.parametrize("isbn", [None, "9782369904151"])
@@ -109,10 +120,12 @@ async def test_textual_preparation_completes_without_catalogue_or_price(preparat
         consulted=("BNF",), unavailable=("BNF",) if unavailable else ()
     )
     alert_id = await p.create()
+    before_version = (await p.read(alert_id)).decision_version
     assert await p.module.prepare_bd_alert(alert_id)
     alert = await p.read(alert_id)
     assert alert.status == AlertStatus.ACTIVE
     assert alert.preparation is None
+    assert alert.decision_version == before_version + 1
     assert (alert.book_search_exhausted_at is not None) == (not unavailable)
 
 

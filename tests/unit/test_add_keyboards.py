@@ -13,14 +13,26 @@ Le harnais (doubles, câblage, lecture des écrans) est partagé : `tests/add_fa
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 
 from app.bot.handlers.alerts_create import start_add_alert
 from app.bot.handlers.alerts_create_confirm import select_alert_creation_work
 from app.services.book_metadata_service import BookMetadata, BookResolution
-from tests.add_fakes import DraftState, fake_bnf, fake_book_search, fake_deepseek
+from tests.add_fakes import DraftState as _DraftState
+from tests.add_fakes import fake_bnf, fake_book_search, fake_deepseek
 from tests.add_journey import drain, patched, repositories
 from tests.screens import message_with_recap, recap_text, work_buttons
+
+
+class DraftState(_DraftState):
+    """Identité FSM locale pour exercer la coordination, sans modifier le double partagé."""
+
+    def __init__(self):
+        super().__init__()
+        self.storage = MemoryStorage()
+        self.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
 
 
 @pytest.mark.asyncio

@@ -36,8 +36,12 @@ _RESERVED_LOG_ATTRS = frozenset(
 )
 
 _ASSIGNMENT_SECRET = re.compile(
-    r"(?i)(\b(?:authorization|bot_token|client_secret|api_key|api-key|token|secret|password|key)\b\s*[=:]\s*)(\S+)"
+    r'''(?i)(\b(?:authorization|bot_token|telegram_bot_token|access_token|refresh_token|'''
+    r'''ingest_api_token|internal_api_token|telegram_webhook_secret|ai_api_key|'''
+    r'''ebay_client_secret|google_books_api_key|client_secret|api_key|api-key|token|'''
+    r'''secret|password|key)\b["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''
 )
+_TELEGRAM_TOKEN = re.compile(r"(?:\bbot|\b)\d{5,}:[A-Za-z0-9_-]{20,}")
 _BEARER_SECRET = re.compile(r"(?i)(\bBearer\s+)(\S+)")
 _PREFIXED_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{8,}\b")
 _WEBHOOK_SECRET = re.compile(r"(/api/v1/telegram/webhook/)[^/\s?#\"']+")
@@ -59,6 +63,7 @@ def redact_text(text: str) -> str:
     text = _WEBHOOK_SECRET.sub(r"\1[REDACTED]", text)
     text = _DUIH_SECRET.sub(r"\1[REDACTED]", text)
     text = _COOKIE_HEADER.sub(r"\1[REDACTED]", text)
+    text = _TELEGRAM_TOKEN.sub("[REDACTED]", text)
     return _PREFIXED_SECRET.sub("[REDACTED]", text)
 
 
@@ -77,7 +82,7 @@ def _redact_value(key: str, value: Any) -> Any:
 
 
 class JSONFormatter(logging.Formatter):
-    """Formateur de logs en JSON structuré, garantissant l'absence de fuite de secrets."""
+    """Formateur JSON masquant les formats de secrets reconnus, y compris dans les exceptions."""
 
     SENSITIVE_KEYS = frozenset(
         {

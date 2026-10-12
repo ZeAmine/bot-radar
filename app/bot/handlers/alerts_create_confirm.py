@@ -10,7 +10,12 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.handlers._alerts_router import router
+from app.bot.creation_drafts import CreationAttempt, draft_guard
+from app.bot.handlers._alerts_router import (
+    STALE_CREATION_MESSAGE,
+    bind_creation_keyboard,
+    router,
+)
 from app.bot.handlers.alerts_create import relaunch_keyword_search
 from app.bot.handlers.alerts_helpers import (
     KEYWORDS_FROM_PREVIOUS_WORK,
@@ -67,7 +72,8 @@ async def handle_cancel_command(message: Message, state: FSMContext) -> None:
         await message.answer("ℹ️ Aucune opération en cours à annuler.")
         return
 
-    await state.clear()
+    async with draft_guard(state):
+        await state.clear()
     await message.answer("❌ Opération annulée avec succès.")
 
 
@@ -75,9 +81,7 @@ async def handle_cancel_command(message: Message, state: FSMContext) -> None:
 # défaut afficherait « Titre : Alerte » et des critères vides, que l'utilisateur
 # lirait comme une création en cours. On le dit, et on retire le clavier qui n'a
 # plus d'objet.
-DRAFT_GONE_MESSAGE = (
-    "ℹ️ Cette création est terminée. Utilise /add pour créer une nouvelle alerte."
-)
+DRAFT_GONE_MESSAGE = STALE_CREATION_MESSAGE
 EMPTY_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[])
 
 
@@ -99,10 +103,17 @@ async def stale_alert_create_confirm(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "alert_create_cancel")
-async def cancel_alert_creation(callback: CallbackQuery, state: FSMContext) -> None:
+async def cancel_alert_creation(
+    callback: CallbackQuery, state: FSMContext, creation_attempt: CreationAttempt | None = None,
+) -> None:
     """Annule la création de l'alerte via bouton inline."""
-    await callback.answer()
-    await state.clear()
+    if creation_attempt is None:
+        await callback.answer()
+        async with draft_guard(state):
+            await state.clear()
+    else:
+        await state.clear()
+        creation_attempt.release()
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text("❌ Création de l'alerte annulée.")
 
@@ -164,6 +175,11 @@ async def select_alert_creation_edition(
     if meta.publisher is None and chosen.get("publisher"):
         updates["publisher"] = chosen["publisher"]
 
+    if data.get("creation_token") and (
+        (await state.get_data()).get("creation_token") != data["creation_token"]
+    ):
+        await callback.answer(STALE_CREATION_MESSAGE)
+        return
     await state.update_data(data=updates)
     updated_data = await state.get_data()
     await state.set_state(AlertCreationState.confirm_creation)
@@ -251,6 +267,11 @@ async def select_alert_creation_work(
         "edition_alternatives": await _resolve_edition_choices(title, author),
         "book_context": book_context_from(chosen_meta).model_dump(),
     }
+    if data.get("creation_token") and (
+        (await state.get_data()).get("creation_token") != data["creation_token"]
+    ):
+        await callback.answer(STALE_CREATION_MESSAGE)
+        return
     await state.update_data(data=updates)
     updated_data = await state.get_data()
     await state.set_state(AlertCreationState.confirm_creation)
@@ -333,6 +354,7 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
     ])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    keyboard = bind_creation_keyboard(keyboard, data.get("creation_token"))
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(text, reply_markup=keyboard)
 
@@ -366,6 +388,7 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(text=BTN_BACK_TO_MENU, callback_data="al_create_edit:menu")
         ])
+        keyboard = bind_creation_keyboard(keyboard, data.get("creation_token"))
         if callback.message and hasattr(callback.message, "edit_text"):
             await callback.message.edit_text(text, reply_markup=keyboard)
         return
@@ -434,6 +457,7 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
             ],
         ]
     )
+    keyboard = bind_creation_keyboard(keyboard, data.get("creation_token"))
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(text, reply_markup=keyboard)
 
@@ -442,10 +466,13 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
 async def handle_creation_condition_toggle(callback: CallbackQuery, state: FSMContext) -> None:
     """Bascule l'état d'une condition pendant la création d'alerte."""
     parts = (callback.data or "").split(":")
-    if len(parts) < 2 or not parts[1].isdigit():
+    if len(parts) != 2 or not parts[1].isdecimal():
         await callback.answer("Sélection invalide.", show_alert=True)
         return
     idx = int(parts[1])
+    if not 0 <= idx < len(STANDARD_CONDITIONS):
+        await callback.answer("Sélection invalide.", show_alert=True)
+        return
     target_cond = STANDARD_CONDITIONS[idx]
     data = await state.get_data()
     selected = list(data.get("selected_conditions") or STANDARD_CONDITIONS)
@@ -459,6 +486,7 @@ async def handle_creation_condition_toggle(callback: CallbackQuery, state: FSMCo
     keyboard.inline_keyboard.append([
         InlineKeyboardButton(text=BTN_BACK_TO_MENU, callback_data="al_create_edit:menu")
     ])
+    keyboard = bind_creation_keyboard(keyboard, data.get("creation_token"))
     if callback.message and hasattr(callback.message, "edit_reply_markup"):
         await callback.message.edit_reply_markup(reply_markup=keyboard)
 
