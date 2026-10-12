@@ -22,7 +22,7 @@ n’est pas utilisé seul : les fichiers hôte/runtime comparables ont été emp
 Revalider ces identités après GO ; toute différence impose une nouvelle préparation.
 
 Mac : `/Users/aminezegmou/BotRadar-recovery/` (0700), copies sous `backups/<UUID>/`,
-trousseau privé `private-gnupg/`, attestations sous `procedures/`. Serveur :
+trousseau privé `private-gnupg-v2/`, attestations sous `procedures/`. Serveur :
 `/home/ubuntu/bot-radar-recovery/{public-gnupg,staging,docker-client}/` (0700).
 Le dossier docker-client est vide et le socket Unix explicite. Aucun trousseau ou
 fichier existant n’est remplacé. Aucun homedir personnel implicite GnuPG utilisé.
@@ -197,7 +197,7 @@ Comparer aussi le SHA256 du reçu entre serveur et Mac (confiance dans la source
 Déchiffrement dans un espace local 0700, hors tests, jamais en stdout/rapport :
 
 ```sh
-gpg --no-options --homedir /Users/aminezegmou/BotRadar-recovery/private-gnupg \
+gpg --no-options --homedir /Users/aminezegmou/BotRadar-recovery/private-gnupg-v2 \
   --no-auto-key-retrieve --auto-key-locate clear \
   --output "$PRIVATE_WORK/bundle.tar" --decrypt \
   /Users/aminezegmou/BotRadar-recovery/backups/$UUID/backup.tar.gpg
@@ -322,8 +322,8 @@ La recette synthétique vérifie le mécanisme, pas les 493 Mo réels ni le dél
 restauration. GPG assure confidentialité ; checksums reçus via SSH + source attestée
 assurent le contrôle prévu, pas une preuve universelle contre une source compromise.
 Pas de garantie exactement une fois ou de sauvegarde régulière indépendante.
-Clé privée accessible, seconde copie physique, fingerprint serveur et créneau de GO
-restent des prérequis personnels à attester. Aucun nettoyage ne supprime ces clés.
+Clé privée accessible et fingerprint serveur sont attestés ci-dessous. Seconde copie
+physique et créneau de GO restent à confirmer. Aucun nettoyage ne supprime ces clés.
 
 ## Preuves du complément préparatoire
 
@@ -353,6 +353,34 @@ restent des prérequis personnels à attester. Aucun nettoyage ne supprime ces c
 Pendant cette préparation, seuls les répertoires dédiés autorisés ont été créés sur
 le serveur ; aucun fichier de runtime/configuration active ni cron modifié. Sur Mac,
 répertoires 0700, script de saisie personnelle et attestation source de 202 fichiers
-Git (prompts inclus), sans configuration réelle. À la dernière inspection, aucune
-clé privée réelle présente : génération personnelle, challenge de déchiffrement,
-export public vers serveur et seconde copie physique restent à effectuer avant GO.
+Git (prompts inclus), sans configuration réelle. Lors du complément initial
+097c694, la clé réelle n’était pas encore créée ; cette situation est remplacée par
+l’attestation ci-dessous. La seconde copie physique reste à effectuer avant GO.
+
+
+## Attestation de la clé de récupération — 12 octobre 2026
+
+Le premier trousseau `/Users/aminezegmou/BotRadar-recovery/private-gnupg/` contient
+uniquement de l’initialisation ; il est conservé sans suppression ni réutilisation.
+Le script initial de génération ne doit plus être réexécuté pour cette clé.
+
+Trousseau effectif : `/Users/aminezegmou/BotRadar-recovery/private-gnupg-v2/`, 0700.
+Empreinte publique primaire : `F4F552BC8787BE8E5AA12EA95AD4800AD25D5A43`.
+La présence de la clé secrète correspondante est attestée ; aucun contenu privé
+n’a été affiché ou exporté. Chiffrement d’un petit fichier exclusivement factice
+et déchiffrement après saisie personnelle dans Pinentry : contenu identique relu.
+Cela établit l’accès privé à cet instant, pas la seconde copie ou une restauration réelle.
+
+Export **public uniquement** sur Mac et reçu/importé dans le trousseau public serveur
+`/home/ubuntu/bot-radar-recovery/public-gnupg/`, 0700. Même empreinte primaire ;
+zéro clé secrète listée sur le serveur. SHA256 de l’export public identique des deux côtés :
+`e5233c11644fb83a0b3a4c04bc8fcd81df18c1cf6e95ea1c814b12ee3902a5fc`.
+Le fichier public porte le nom `recovery-F4F552BC8787BE8E5AA12EA95AD4800AD25D5A43.asc`.
+Pour les commandes de phase B, fixer explicitement
+`FINGERPRINT=F4F552BC8787BE8E5AA12EA95AD4800AD25D5A43` après recontrôle ;
+aucune phrase secrète dans les variables/arguments/logs.
+
+Seconde copie sur support physique distinct : **non réalisée, non disponible**.
+Support chiffré et point de montage doivent être fournis avant toute copie ; ne pas
+confondre le premier trousseau et le nouveau sur le même Mac avec une seconde sauvegarde.
+Aucun GO de phase B, merge, maintenance, sauvegarde réelle, migration ou déploiement.
