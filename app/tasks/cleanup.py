@@ -96,6 +96,9 @@ async def cleanup_old_data_task(
             alert_repo = AlertRepository(session)
             orphan_stats = await alert_repo.purge_orphans_and_deleted()
 
+            from app.db.repositories.pause_action_repo import PauseActionRepository
+
+            await PauseActionRepository(session).purge()
             await session.commit()
             events_count = getattr(res_events, "rowcount", 0)
             snapshots_count = getattr(res_snapshots, "rowcount", 0)

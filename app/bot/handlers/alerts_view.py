@@ -21,6 +21,7 @@ from app.core.constants import AlertStatus, CategorySlug
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
+from app.use_cases.pause_alert import issue_pause_button
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,7 @@ async def show_alerts(
             keyboard = get_alert_card_keyboard(
                 alert.id, alert.status, current_page=0, total_pages=1,
                 preparation=getattr(alert, "preparation", None),
+                pause_callback=await issue_pause_button(alert, db_session),
             )
             await message.answer(card_text, reply_markup=keyboard)
             return
@@ -136,6 +138,7 @@ async def show_alerts(
     keyboard = get_alert_card_keyboard(
         alert.id, alert.status, current_page=0, total_pages=total_count,
         preparation=getattr(alert, "preparation", None),
+        pause_callback=await issue_pause_button(alert, db_session),
     )
     await message.answer(card_text, reply_markup=keyboard)
 
@@ -190,6 +193,7 @@ async def paginate_alerts(
         total_pages=total_count,
         category_slug=category_slug,
         preparation=getattr(alert, "preparation", None),
+        pause_callback=await issue_pause_button(alert, db_session),
     )
 
     if callback.message and hasattr(callback.message, "edit_text"):
@@ -232,6 +236,7 @@ async def view_single_alert(
         total_pages=total_count,
         category_slug=cat_slug,
         preparation=getattr(alert, "preparation", None),
+        pause_callback=await issue_pause_button(alert, db_session),
     )
     if isinstance(callback.message, Message):
         await callback.message.edit_text(card_text, reply_markup=keyboard)

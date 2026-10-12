@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "0012_annual_observations"
+SCHEMA = "0013_pause_actions"
 FORMAT = 1
 
 
@@ -520,44 +520,7 @@ async def restore(
     stamp = time.monotonic()
     connection = await target.connect()
     try:
-        if await connection.fetchval("SELECT version_num FROM alembic_version") != SCHEMA:
-            raise ValueError("Schéma non pris en charge, aucune quarantaine appliquée")
-        known = await connection.fetch(
-            "SELECT id, notified_at, telegram_message_id, "
-            "telegram_chat_id, telegram_bot_id FROM listing_matches WHERE notified_at IS NOT NULL "
-            "ORDER BY id"
-        )
-        async with connection.transaction():
-            await connection.execute(
-                "UPDATE listing_matches SET notification_state='unknown', "
-                "notification_reason='restore_boundary_unknown' WHERE notified_at IS NULL "
-                "AND notification_state IN ('ready','deferred','sending')"
-            )
-            await connection.execute("UPDATE alerts SET status='PAUSED' WHERE status='ACTIVE'")
-            await connection.execute(
-                "UPDATE alerts SET preparation=jsonb_set(jsonb_set(preparation, "
-                "'{activation_requested}', 'false'::jsonb), "
-                "'{token}', to_jsonb(gen_random_uuid()::text)) "
-                "WHERE preparation IS NOT NULL"
-            )
-        preserved = await connection.fetch(
-            "SELECT id, notified_at, telegram_message_id, "
-            "telegram_chat_id, telegram_bot_id FROM listing_matches WHERE notified_at IS NOT NULL "
-            "ORDER BY id"
-        )
-        if known != preserved:
-            raise ValueError("Marqueurs durables modifiés")
-        if (
-            await connection.fetchval("SELECT count(*) FROM alerts WHERE status='ACTIVE'")
-            or await connection.fetchval(
-                "SELECT count(*) FROM listing_matches "
-                "WHERE notified_at IS NULL AND notification_state IN ('ready','deferred','sending')"
-            )
-            or await connection.fetchval(
-                "SELECT count(*) FROM alerts WHERE preparation->>'activation_requested'='true'"
-            )
-        ):
-            raise ValueError("Quarantaine non établie ; reprise interdite")
+        await quarantine_connection(connection)
     finally:
         await connection.close(timeout=5)
     return {
@@ -569,6 +532,52 @@ async def restore(
         "data_check_seconds": checks_seconds,
         "quarantine_seconds": time.monotonic() - stamp,
     }
+
+
+async def quarantine_connection(connection: Any) -> None:
+    """Schéma explicitement pris en charge ; aucune libération métier."""
+    if await connection.fetchval("SELECT version_num FROM alembic_version") != SCHEMA:
+        raise ValueError("Schéma non pris en charge, aucune quarantaine appliquée")
+    known = await connection.fetch(
+        "SELECT id, notified_at, telegram_message_id, "
+        "telegram_chat_id, telegram_bot_id FROM listing_matches WHERE notified_at IS NOT NULL "
+        "ORDER BY id"
+    )
+    async with connection.transaction():
+        await connection.execute(
+            "UPDATE listing_matches SET notification_state='unknown', "
+            "notification_reason='restore_boundary_unknown' WHERE notified_at IS NULL "
+            "AND notification_state IN ('ready','deferred','sending')"
+        )
+        await connection.execute("UPDATE alerts SET decision_version=decision_version+1")
+        await connection.execute(
+            "UPDATE pause_actions SET invalidated=true WHERE applied_at IS NULL"
+        )
+        await connection.execute("UPDATE alerts SET status='PAUSED' WHERE status='ACTIVE'")
+        await connection.execute(
+            "UPDATE alerts SET preparation=jsonb_set(jsonb_set(preparation, "
+            "'{activation_requested}', 'false'::jsonb), "
+            "'{token}', to_jsonb(gen_random_uuid()::text)) "
+            "WHERE preparation IS NOT NULL"
+        )
+    preserved = await connection.fetch(
+        "SELECT id, notified_at, telegram_message_id, "
+        "telegram_chat_id, telegram_bot_id FROM listing_matches WHERE notified_at IS NOT NULL "
+        "ORDER BY id"
+    )
+    if known != preserved:
+        raise ValueError("Marqueurs durables modifiés")
+    if (
+        await connection.fetchval("SELECT count(*) FROM alerts WHERE status='ACTIVE'")
+        or await connection.fetchval(
+            "SELECT count(*) FROM listing_matches "
+            "WHERE notified_at IS NULL AND notification_state IN ('ready','deferred','sending')"
+        )
+        or await connection.fetchval(
+            "SELECT count(*) FROM alerts WHERE preparation->>'activation_requested'='true'"
+        )
+    ):
+        raise ValueError("Quarantaine non établie ; reprise interdite")
 
 
 def main() -> int:

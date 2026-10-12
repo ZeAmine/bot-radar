@@ -33,6 +33,15 @@ OPEN_BOUNDARIES = (
     "card_edit_after_confirmation", "final_middleware_commit", "inadmissible_before_lock",
 )
 CONTRACT_SCENARIOS = (
+    "legacy_pause_after_resume",
+    "protected_other_click", "protected_aba", "protected_expired", "protected_purged",
+    "protected_preparation", "protected_restore", "protected_unknown",
+    "protected_timeout", "protected_cancel_reconcile", "protected_http503",
+    "protected_permanent_error", "protected_proof_expired", "protected_price_version",
+    "protected_new_card", "protected_card_issue", "protected_time_bounds",
+    "protected_preparation_revision", "protected_purged_proof",
+    "protected_cancel_close_not_applied", "protected_cancel_close_committed",
+    "protected_replay_after_resume", "protected_commit_operational",
     "cancel_business_commit", "cancel_confirmation", "cancel_card_edit", "cancel_final_commit",
     "repository_default", "repository_strict", "isolated_sequential_progress",
     "isolated_concurrent_progress", "non_pause_callback", "unauthorized", "foreign_alert",
@@ -212,12 +221,19 @@ if __name__ == "__main__":
 pytest = importlib.import_module("pytest")
 
 
+def _replay_response() -> dict[str, str]:
+    return {"status": "ok", "action": "committed", "result": "replay", "current_status": "paused"}
+
+
 def _corrected_response(scenario: str) -> dict[str, str]:
     """Contrat corrigé : les preuves durables restent vérifiées séparément du JSON."""
     if scenario == "before_first_commit":
         return {"status": "error", "action": "not_started", "message": "Erreur interne traitée"}
-    if scenario in {"after_flush", "ambiguous_business_commit"}:
-        return {"status": "error", "action": "unknown", "message": "Erreur interne traitée"}
+    if scenario == "after_flush":
+        return {"status": "error", "action": "not_applied", "message": "Erreur interne traitée"}
+    if scenario == "ambiguous_business_commit":
+        return {"status": "ok", "action": "committed", "result": "reconciled",
+                "current_status": "paused", "post_action": "not_attempted"}
     if scenario in {
         "after_business_commit", "card_edit_after_confirmation", "final_middleware_commit",
     }:
@@ -281,7 +297,8 @@ def test_webhook_characterization_in_isolated_subprocess() -> None:
     "exit_failure", "timeout", "no_execution", "missing_ambiguous_commit",
     *[f"missing_{scenario}" for scenario in OPEN_BOUNDARIES],
     "missing_diagnostic_concurrent_creation",
-    "missing_creation_commit_ambiguous",
+    "missing_creation_commit_ambiguous", "missing_protected_unknown",
+    "missing_protected_time_bounds",
 ])
 def test_parent_rejects_incomplete_subprocess(monkeypatch: Any, fault: str) -> None:
     """Injecte à la frontière subprocess ; le vrai test parent doit lever."""
@@ -329,6 +346,8 @@ def test_parent_rejects_incomplete_subprocess(monkeypatch: Any, fault: str) -> N
         **{f"missing_{scenario}": "Scénarios enfant manquants" for scenario in OPEN_BOUNDARIES},
         "missing_diagnostic_concurrent_creation": "Scénarios enfant manquants",
         "missing_creation_commit_ambiguous": "Scénarios enfant manquants",
+        "missing_protected_unknown": "Scénarios enfant manquants",
+        "missing_protected_time_bounds": "Scénarios enfant manquants",
     }[fault]
     with pytest.raises(AssertionError, match=expected):
         test_webhook_characterization_in_isolated_subprocess()
@@ -377,6 +396,11 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
         db.session.add(alert)
         await db.session.commit()
         alert_id, user_id = alert.id, user.id
+        from app.db.repositories.pause_action_repo import PauseActionRepository
+        action = await PauseActionRepository(db.session).issue(alert)
+        await db.session.commit()
+        assert action is not None
+        pause_token = action.id
         trace = SimpleNamespace(
             failure=None, injected=0, commits=0, rollbacks=0, redis_calls=0,
             attempts=[], delivered=[], boundary=None, local_status=None,
@@ -410,7 +434,7 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
             trace.commits += 1
             caller_name = sys._getframe(1).f_code.co_name
             if (
-                trace.failure == "cancel_business_commit" and caller_name == "toggle_pause_alert"
+                trace.failure == "cancel_business_commit" and caller_name == "apply_pause"
             ) or (
                 trace.failure == "cancel_final_commit" and trace.commits == 3
             ):
@@ -450,13 +474,15 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
                 trace.boundary = await durable(session)
                 trace.injected += 1
                 raise SQLAlchemyError("Panne transitoire SQL synthétique avant commit")
-            ambiguous = trace.failure == "ambiguous_business_commit" and trace.commits == 2
+            ambiguous = trace.failure in {
+                "ambiguous_business_commit", "ambiguous_operational",
+            } and trace.commits == 2
             if ambiguous:
                 # Identifier l'appel réel, pas seulement son rang après la synchronisation.
                 caller = sys._getframe(1)
-                assert caller.f_code.co_name == "toggle_pause_alert"
+                assert caller.f_code.co_name == "apply_pause"
                 assert Path(caller.f_code.co_filename).as_posix().endswith(
-                    "/app/bot/handlers/alerts_manage.py"
+                    "/app/use_cases/pause_alert.py"
                 )
                 trace.business_caller = caller.f_code.co_name
                 trace.local_status = await session.scalar(
@@ -469,6 +495,11 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
                 trace.business_commit_applied = True
                 trace.boundary = await durable(session)
                 trace.injected += 1
+                if trace.failure == "ambiguous_operational":
+                    from sqlalchemy.exc import OperationalError
+
+                    raise OperationalError("synthetic", {}, RuntimeError("synthetic"),
+                                           connection_invalidated=True)
                 raise SQLAlchemyError("Retour de commit métier échoué après application réelle")
 
         async def rollback(session: AsyncSession) -> None:
@@ -481,7 +512,7 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
             caller = sys._getframe(1).f_code.co_name
             if (
                 trace.failure == "inadmissible_before_lock"
-                and caller == "set_status" and not trace.competition_started
+                and caller == "acquire" and not trace.competition_started
             ):
                 # La lecture initiale du handler a eu lieu ; le vrai verrou n'est pas acquis.
                 assert current.status == AlertStatus.ACTIVE
@@ -506,7 +537,7 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
                     trace.competing_commits += 1
                 trace.injected += 1
             admitted = await original_lock(repo, current, **kwargs)
-            if caller == "set_status" and trace.competition_started:
+            if caller == "acquire" and trace.competition_started:
                 trace.pause_lock_results.append(admitted)
                 trace.stale_status = current.status.name
                 trace.boundary = await durable(repo.session)
@@ -519,6 +550,8 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
                 effect = ("card", method.text)
             else:
                 raise AssertionError(f"Transport Telegram inattendu : {type(method).__name__}")
+            if isinstance(method, EditMessageText):
+                trace.last_keyboard = method.reply_markup
             trace.attempts.append(effect)
             if trace.failure == "safe_diagnostics":
                 raise TelegramNetworkError(
@@ -580,6 +613,7 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
         memory = MemoryStorage()
         monkeypatch.setattr(dp.fsm, "storage", memory)
         monkeypatch.setattr("app.bot.middlewares.auth.AsyncSessionLocal", db.maker)
+        monkeypatch.setattr("app.use_cases.pause_alert.AsyncSessionLocal", db.maker)
         monkeypatch.setattr(AsyncSession, "commit", commit)
         monkeypatch.setattr(AsyncSession, "rollback", rollback)
         monkeypatch.setattr(AlertRepository, "lock_for_edit", lock_for_edit)
@@ -610,7 +644,7 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
             "callback_query": {
                 "id": "synthetic-callback-77001", "chat_instance": "synthetic-chat",
                 "from": {"id": 424242, "is_bot": False, "first_name": "Après"},
-                "data": f"al_pause:{alert_id}",
+                "data": f"al_pause:p_{pause_token.hex}",
                 "message": {
                     "message_id": 101, "date": 1725900000,
                     "chat": {"id": 424242, "type": "private"}, "text": "Carte initiale",
@@ -631,13 +665,16 @@ async def pause_journey(monkeypatch: Any, tmp_path: Path) -> AsyncIterator[Any]:
                 )
 
             async def direct_send() -> Any:
+                from fastapi import Response
+
                 return await telegram.handle_telegram_webhook(
                     settings.TELEGRAM_WEBHOOK_SECRET.get_secret_value(), json.loads(body),
+                    Response(),
                 )
 
             yield SimpleNamespace(
                 trace=trace, durable=durable, send=send, direct_send=direct_send,
-                maker=db.maker, alert_id=alert_id, payload=payload,
+                maker=db.maker, alert_id=alert_id, payload=payload, token=pause_token,
             )
         await memory.close()
 
@@ -681,11 +718,11 @@ async def _characterize_pause_webhook_and_identical_replay(
         elif failure == "before_first_commit":
             assert trace.local_status.name == "ACTIVE"
         elif failure == "ambiguous_business_commit":
-            assert trace.business_caller == "toggle_pause_alert"
+            assert trace.business_caller == "apply_pause"
             assert trace.before_business_commit == ("ACTIVE", "Après", 1)
             assert trace.local_status.name == "PAUSED"
             assert trace.business_commit_applied is True
-            assert response.json()["action"] == "unknown"
+            assert response.json()["action"] == "committed"
         errors = [record for record in caplog.records if record.name == "app.api.routes.telegram"]
         assert len(errors) == 1
         assert errors[0].exc_info is None  # Les messages d'erreur externes ne sont plus loggés.
@@ -709,30 +746,34 @@ async def _characterize_pause_webhook_and_identical_replay(
     injected_before_replay = trace.injected
     replay = await journey.send()
     assert replay.status_code == 200
-    assert replay.json() == _corrected_response("control")
+    already_applied = failure not in {"before_first_commit", "after_flush"}
+    assert replay.json() == (
+        _replay_response() if already_applied else _corrected_response("control")
+    )
     assert trace.injected == injected_before_replay
-    assert trace.commits == first_commits + 3
-    assert trace.rollbacks == first_rollbacks
+    assert trace.commits == first_commits + (2 if already_applied else 3)
+    assert trace.rollbacks == first_rollbacks + int(already_applied)
     assert trace.redis_calls == first_redis + 2
     assert await journey.durable() == ("PAUSED", "Après", 1)
     replay_effects = trace.delivered[len(first_effects):]
-    assert len(replay_effects) == 3
-    assert replay_effects[0] == ("callback", "⏸ Alerte mise en pause.")
-    assert replay_effects[1] == ("callback", None)
-    assert replay_effects[2][0] == "card"
-    assert "pause" in replay_effects[2][1].lower()
+    assert len(replay_effects) == (0 if already_applied else 3)
+    if not already_applied:
+        assert replay_effects[0] == ("callback", "⏸ Alerte mise en pause.")
+        assert replay_effects[1] == ("callback", None)
+        assert replay_effects[2][0] == "card"
+        assert "pause" in replay_effects[2][1].lower()
     if failure == "ambiguous_business_commit":
         assert trace.before_business_commit == ("ACTIVE", "Après", 1)
         assert trace.boundary == ("PAUSED", "Après", 1)
         assert first_attempts == []
         assert first_effects == []
-        assert len(trace.attempts) == 3
+        assert trace.attempts == []
     request.node.user_properties.append(("webhook_evidence", {
         "scenario": failure or "control", "http": response.status_code,
         "body_status": response.json()["status"], "durable": expected_state,
         "injections": trace.injected, "delivered_first": len(first_effects),
         "commits_attempted_first": first_commits, "explicit_rollbacks_first": first_rollbacks,
-        "redis_calls_first": first_redis, "commits_attempted_replay": 3,
+        "redis_calls_first": first_redis, "commits_attempted_replay": trace.commits - first_commits,
         "http_replay": replay.status_code, "delivered_replay": len(replay_effects),
         "durable_replay": await journey.durable(),
         "response_first": response.json(), "response_replay": replay.json(),
@@ -763,7 +804,7 @@ async def _characterize_pause_open_boundaries(
     assert trace.boundary == expected_state
     assert trace.injected == 1
     assert trace.commits == (3 if failure == "final_middleware_commit" else 2)
-    assert trace.rollbacks == (0 if no_mutation else 1)
+    assert trace.rollbacks == 1
     assert trace.redis_calls == 2
     if not no_mutation:
         assert trace.attempts[0] == ("callback", "⏸ Alerte mise en pause.")
@@ -777,8 +818,8 @@ async def _characterize_pause_open_boundaries(
         assert errors == []
         assert trace.before_competition == ("ACTIVE", "Après", 1)
         assert trace.competing_commits == 1
-        assert trace.pause_lock_results == [False]
-        assert trace.stale_status == "ACTIVE"
+        assert trace.pause_lock_results == [True]
+        assert trace.stale_status == "DELETED"
         assert trace.no_pause_mutation_confirmed is True
         assert trace.delivered == [("callback", "Alerte introuvable.")]
         assert trace.attempts == trace.delivered
@@ -803,28 +844,21 @@ async def _characterize_pause_open_boundaries(
     replay = await journey.send()
     assert replay.status_code == 200
     assert replay.json() == _corrected_response(
-        "inadmissible_before_lock" if no_mutation else "control"
-    )
+        "inadmissible_before_lock"
+    ) if no_mutation else replay.json() == _replay_response()
     assert trace.injected == 1
-    assert trace.commits == first_commits + (2 if no_mutation else 3)
-    assert trace.rollbacks == first_rollbacks
+    assert trace.commits == first_commits + 2
+    assert trace.rollbacks == first_rollbacks + 1
     assert trace.redis_calls == 4
     assert await journey.durable() == expected_state
     replay_attempts = trace.attempts[len(first_attempts):]
     replay_delivered = trace.delivered[len(first_delivered):]
-    assert len(replay_attempts) == (1 if no_mutation else 3)
+    assert len(replay_attempts) == (1 if no_mutation else 0)
     assert replay_delivered == replay_attempts
-    if not no_mutation:
-        assert replay_delivered[:2] == [
-            ("callback", "⏸ Alerte mise en pause."), ("callback", None),
-        ]
-        assert replay_delivered[2][0] == "card"
     if no_mutation:
         assert trace.competing_commits == 1
-        assert trace.pause_lock_results == [False, False]
+        assert trace.pause_lock_results == [True, True]
         assert replay_delivered == [("callback", "Alerte introuvable.")]
-    else:
-        assert "pause" in replay_delivered[2][1].lower()
     request.node.user_properties.append(("webhook_evidence", {
         "scenario": failure, "http": response.status_code, "response_first": response.json(),
         "historical_response_first": HISTORICAL_RESULTS[failure],
@@ -857,6 +891,31 @@ async def _verify_pause_contract_guards(
     from app.domain.enums import AlertStatus
 
     journey, trace = pause_journey, pause_journey.trace
+    if scenario == "legacy_pause_after_resume":
+        from app.db.repositories.alert_repo import AlertRepository
+        from app.domain.enums import AlertStatus
+
+        async with journey.maker() as session:
+            repo = AlertRepository(session)
+            current = await repo.get_by_id(journey.alert_id)
+            await repo.set_status(current, AlertStatus.PAUSED)
+            await session.commit()
+            await repo.set_status(current, AlertStatus.ACTIVE)
+            await session.commit()
+        trace.commits = 0
+        legacy = json.loads(json.dumps(journey.payload))
+        legacy["callback_query"]["data"] = f"al_pause:{journey.alert_id}"
+        await journey.send(legacy)
+        assert await journey.durable() == ("ACTIVE", "Après", 1)
+        assert ("callback", "⏸ Alerte mise en pause.") not in trace.delivered
+        request.node.user_properties.append(("webhook_evidence", {"scenario": scenario}))
+        return
+    if scenario.startswith("protected_"):
+        evidence = await _verify_protected_pause(journey, monkeypatch, scenario)
+        request.node.user_properties.append((
+            "webhook_evidence", {"scenario": scenario, **evidence},
+        ))
+        return
     diagnostic_evidence = {}
     assert await journey.durable() == ("ACTIVE", "Avant", 1)
     if scenario.startswith("cancel_"):
@@ -876,7 +935,10 @@ async def _verify_pause_contract_guards(
             "cancel_card_edit": 2, "cancel_final_commit": 3,
         }[scenario]
         trace.failure = None
-        assert await journey.direct_send() == _corrected_response("control")
+        assert await journey.direct_send() == (
+            _corrected_response("control") if scenario == "cancel_business_commit"
+            else _replay_response()
+        )
         assert await journey.durable() == ("PAUSED", "Après", 1)
         assert trace.invocations[0] is not trace.invocations[1]
         assert trace.invocations[0].effect == (
@@ -888,12 +950,14 @@ async def _verify_pause_contract_guards(
             current = await repo.get_by_id(journey.alert_id)
             await repo.soft_delete(current)
             await session.commit()
+            assert current.decision_version == 1
             if scenario == "repository_default":
                 assert await repo.set_status(current, AlertStatus.PAUSED) is current
             else:
                 with pytest.raises(EntityNotFoundError):
                     await repo.set_status(current, AlertStatus.PAUSED, require_editable=True)
             assert not session.dirty
+            assert current.decision_version == 1
         assert await journey.durable() == ("DELETED", "Avant", 1)
         assert trace.attempts == []
     elif scenario == "isolated_sequential_progress":
@@ -907,7 +971,7 @@ async def _verify_pause_contract_guards(
         assert second.json() == _corrected_response("control")
         assert await journey.durable() == ("PAUSED", "Après", 1)
         assert trace.invocations[0] is not trace.invocations[1]
-        assert trace.invocations[0].effect == "unknown"
+        assert trace.invocations[0].effect == "not_applied"
         assert trace.invocations[1].effect == "committed"
     elif scenario == "isolated_concurrent_progress":
         trace.failure = "concurrent_confirmation"
@@ -916,14 +980,14 @@ async def _verify_pause_contract_guards(
             await asyncio.wait_for(trace.confirmation_started.wait(), timeout=5)
             assert await journey.durable() == ("PAUSED", "Après", 1)
             second = await journey.send()
-            assert second.json() == _corrected_response("control")
+            assert second.json() == _replay_response()
             trace.release_confirmation.set()
             first = await first_task
             assert first.json() == _corrected_response("after_business_commit")
             assert await journey.durable() == ("PAUSED", "Après", 1)
             assert trace.invocations[0] is not trace.invocations[1]
             assert trace.invocations[0].stage == "confirmation"
-            assert trace.invocations[1].stage == "handler_returned"
+            assert trace.invocations[1].stage == "lookup"
         finally:
             trace.release_confirmation.set()
             if not first_task.done():
@@ -988,7 +1052,14 @@ async def _verify_pause_contract_guards(
             current.status = AlertStatus.PAUSED
             current.preparation = pending
             await session.commit()
-        response = await journey.send()
+        from app.db.repositories.pause_action_repo import PauseActionRepository
+        async with journey.maker() as session:
+            current = await session.get(Alert, journey.alert_id)
+            action = await PauseActionRepository(session).issue(current)
+            await session.commit()
+        payload = json.loads(json.dumps(journey.payload))
+        payload["callback_query"]["data"] = f"al_pause:p_{action.id.hex}"
+        response = await journey.send(payload)
         assert response.json() == _corrected_response("control")
         async with journey.maker() as reader:
             current = await reader.get(Alert, journey.alert_id)
@@ -1196,6 +1267,8 @@ async def _verify_creation_case(journey: Any, monkeypatch: Any, scenario: str) -
                     task.cancel()
             await asyncio.gather(first, second, return_exceptions=True)
     elif scenario.startswith("creation_cancel_"):
+        from fastapi import Response
+
         from app.api.routes.telegram import handle_telegram_webhook
         from app.core.config import settings
 
@@ -1204,6 +1277,7 @@ async def _verify_creation_case(journey: Any, monkeypatch: Any, scenario: str) -
         with pytest.raises(asyncio.CancelledError):
             await handle_telegram_webhook(
                 settings.TELEGRAM_WEBHOOK_SECRET.get_secret_value(), payload,
+                Response(),
             )
         assert any(name == "__call__" and path.endswith("/_alerts_router.py")
                    for name, path in journey.trace.propagated_frames)
@@ -1279,3 +1353,300 @@ if os.environ.get("BOTRADAR_WEBHOOK_ROLE") == "child":
     test_pause_webhook_and_identical_replay = _characterize_pause_webhook_and_identical_replay
     test_pause_open_boundaries = _characterize_pause_open_boundaries
     test_pause_contract_guards = _verify_pause_contract_guards
+
+
+async def _verify_protected_pause(journey: Any, monkeypatch: Any, scenario: str) -> dict[str, Any]:
+    from datetime import timedelta
+
+    from sqlalchemy.exc import OperationalError, SQLAlchemyError
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.models.alert import Alert
+    from app.db.models.pause_action import PauseAction
+    from app.db.repositories.alert_repo import AlertRepository
+    from app.db.repositories.pause_action_repo import PauseActionRepository
+    from app.domain.entities.alert_preparation import PreparationRequest
+    from app.domain.enums import AlertStatus
+
+    trace = journey.trace
+    payload = json.loads(json.dumps(journey.payload))
+    expected = "ACTIVE"
+    if scenario.startswith("protected_cancel_close_"):
+        from contextlib import asynccontextmanager
+
+        from app.use_cases import pause_alert
+
+        original_factory = pause_alert.AsyncSessionLocal
+        triggered = []
+
+        @asynccontextmanager
+        async def cancel_reader_close():
+            async with original_factory() as reader:
+                yield reader
+                triggered.append(True)
+                asyncio.current_task().cancel()
+                await asyncio.sleep(0)
+
+        monkeypatch.setattr(pause_alert, "AsyncSessionLocal", cancel_reader_close)
+        committed = scenario == "protected_cancel_close_committed"
+        trace.failure = "ambiguous_business_commit" if committed else "after_flush"
+        task = asyncio.create_task(journey.direct_send())
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert triggered == [True]
+        assert trace.invocations[0].effect == ("committed" if committed else "unknown")
+        assert (await journey.durable())[0] == ("PAUSED" if committed else "ACTIVE")
+        assert trace.attempts == []
+        trace.failure = None
+        monkeypatch.setattr(pause_alert, "AsyncSessionLocal", original_factory)
+        assert (await journey.send()).json() == (
+            _replay_response() if committed else _corrected_response("control")
+        )
+        assert (await journey.durable())[0] == "PAUSED"
+        assert len(trace.attempts) == (0 if committed else 3)
+        return {"reader_close_cancelled": True, "historical_commit": committed}
+    elif scenario == "protected_replay_after_resume":
+        assert (await journey.send()).json() == _corrected_response("control")
+        first = list(trace.attempts)
+        async with journey.maker() as session:
+            repo = AlertRepository(session)
+            current = await repo.get_by_id(journey.alert_id)
+            await repo.set_status(current, AlertStatus.ACTIVE)
+            await session.commit()
+            version = current.decision_version
+        response = await journey.send()
+        assert response.json() == {
+            "status": "ok", "action": "committed", "result": "replay", "current_status": "active",
+        }
+        assert trace.attempts == first
+        assert (await journey.durable())[0] == "ACTIVE"
+        async with journey.maker() as reader:
+            assert (await reader.get(Alert, journey.alert_id)).decision_version == version
+            assert (await reader.get(PauseAction, journey.token)).applied_version < version
+        return {"historical_success_current_active": True}
+    elif scenario == "protected_card_issue":
+        payload["callback_query"]["data"] = f"al_view:{journey.alert_id}"
+        assert (await journey.send(payload)).json() == {"status": "ok"}
+        button = trace.last_keyboard.inline_keyboard[0][1]
+        assert button.callback_data.startswith("al_pause:p_")
+        import uuid
+        token = uuid.UUID(button.callback_data.split("p_")[1])
+        async with journey.maker() as reader:
+            issued = await reader.get(PauseAction, token)
+            current = await reader.get(Alert, journey.alert_id)
+            assert issued.user_id == current.user_id
+            assert issued.expected_version == current.decision_version
+            assert issued.applied_at is None  # Présentation n'est pas une demande.
+        payload["callback_query"]["data"] = button.callback_data
+        payload["update_id"] += 1
+        payload["callback_query"]["id"] += "-new"
+        assert (await journey.send(payload)).json() == _corrected_response("control")
+        async with journey.maker() as reader:
+            assert (await reader.get(PauseAction, token)).applied_at is not None
+        assert (await journey.durable())[0] == "PAUSED"
+        return {"issued_before_presentation": True}
+    elif scenario == "protected_purged_proof":
+        assert (await journey.send()).json() == _corrected_response("control")
+        first = list(trace.attempts)
+        async with journey.maker() as session:
+            action = await session.get(PauseAction, journey.token)
+            action.issued_at = datetime.now(UTC) - timedelta(hours=48)
+            await session.flush()
+            await PauseActionRepository(session).purge()
+            await session.commit()
+        async with journey.maker() as reader:
+            assert await reader.get(PauseAction, journey.token) is None
+        response = await journey.send()
+        assert response.json()["action"] == "unknown"
+        assert response.json()["status"] == "error"
+        assert trace.attempts == first
+        assert (await journey.durable())[0] == "PAUSED"
+        return {"purged_proof_unknown": True}
+    elif scenario == "protected_time_bounds":
+        from app.db.repositories.pause_action_repo import utc
+        from app.use_cases.pause_alert import classify
+        async with journey.maker() as session:
+            action = await session.get(PauseAction, journey.token)
+            alert = await session.get(Alert, journey.alert_id)
+            at = utc(action.expires_at)
+            assert classify(action, alert, 1, "a", now=at-timedelta(microseconds=1)) == "ready"
+            assert classify(action, alert, 1, "a", now=at) == "expired"
+            assert classify(action, alert, 1, "a", now=at+timedelta(microseconds=1)) == "expired"
+            action.issued_at = datetime.now(UTC) - timedelta(hours=48)
+            await session.flush()
+            await PauseActionRepository(session).purge()
+            await session.commit()
+        async with journey.maker() as reader:
+            assert await reader.get(PauseAction, journey.token) is None
+        return {"exact_bounds": True}
+    elif scenario == "protected_preparation_revision":
+        async with journey.maker() as session:
+            alert = await session.get(Alert, journey.alert_id)
+            alert.preparation = PreparationRequest().stored()
+            alert.status = AlertStatus.PAUSED
+            await session.commit()
+            repo = AlertRepository(session)
+            assert await repo.lock_for_edit(alert)
+            before = alert.decision_version
+            await repo.invalidate_preparation(alert, author_hint=None)
+            await session.commit()
+        async with journey.maker() as reader:
+            assert (await reader.get(Alert, journey.alert_id)).decision_version == before + 1
+        assert (await journey.send()).json()["result"] == "superseded"
+        assert (await journey.durable())[0] == "PAUSED"
+        return {"real_preparation_invalidation": True}
+    elif scenario in {"protected_other_click", "protected_proof_expired"}:
+        assert (await journey.send()).json() == _corrected_response("control")
+        initial_attempts = list(trace.attempts)
+        expected = "PAUSED"
+        if scenario == "protected_other_click":
+            payload["update_id"] += 1
+            payload["callback_query"]["id"] += "-another"
+        else:
+            async with journey.maker() as session:
+                action = await session.get(PauseAction, journey.token)
+                action.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                await session.commit()
+        response = await journey.send(payload)
+        assert response.json()["result"] == (
+            "consumed" if scenario == "protected_other_click" else "replay"
+        )
+        assert trace.attempts[len(initial_attempts):] == (
+            [("callback", "Ce bouton a déjà été utilisé.")]
+            if scenario == "protected_other_click" else []
+        )
+    elif scenario in {
+        "protected_unknown", "protected_timeout", "protected_cancel_reconcile",
+        "protected_commit_operational",
+    }:
+        original = PauseActionRepository.acquire
+        attempts = []
+        entered = asyncio.Event()
+
+        async def fail_reconcile(repo: Any, *args: Any, **kwargs: Any) -> Any:
+            if sys._getframe(1).f_code.co_name == "reconcile":
+                attempts.append(True)
+                entered.set()
+                if scenario in {"protected_unknown", "protected_commit_operational"}:
+                    raise SQLAlchemyError("relecture synthétique indisponible")
+                await asyncio.Event().wait()
+            return await original(repo, *args, **kwargs)
+
+        monkeypatch.setattr(PauseActionRepository, "acquire", fail_reconcile)
+        trace.failure = (
+            "ambiguous_operational" if scenario == "protected_commit_operational"
+            else "ambiguous_business_commit"
+        )
+        if scenario == "protected_cancel_reconcile":
+            task = asyncio.create_task(journey.direct_send())
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert trace.invocations[0].effect == "unknown"
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        else:
+            response = await journey.send()
+            assert response.status_code == 200
+            assert response.json()["action"] == "unknown"
+        assert attempts == [True]
+        assert trace.business_commit_applied
+        assert trace.attempts == []
+        expected = "PAUSED"
+        trace.failure = None
+        monkeypatch.setattr(PauseActionRepository, "acquire", original)
+        response = await journey.send()
+        assert response.json() == _replay_response()
+        assert trace.attempts == []
+    elif scenario in {"protected_http503", "protected_permanent_error"}:
+        original_commit = AsyncSession.commit
+        triggered = []
+
+        async def fail_first(session: Any) -> None:
+            if not triggered:
+                triggered.append(True)
+                raise OperationalError(
+                    "synthetic", {}, RuntimeError("synthetic"),
+                    connection_invalidated=scenario == "protected_http503",
+                )
+            await original_commit(session)
+
+        monkeypatch.setattr(AsyncSession, "commit", fail_first)
+        response = await journey.send()
+        assert response.status_code == (503 if scenario == "protected_http503" else 200)
+        assert response.json()["action"] == "not_started"
+        assert trace.attempts == []
+        assert await journey.durable() == ("ACTIVE", "Avant", 1)
+        # Même panne hors pause : préserver le contrat HTTP 200 existant.
+        triggered.clear()
+        other = json.loads(json.dumps(payload))
+        other["callback_query"]["data"] = f"al_view:{journey.alert_id}"
+        assert (await journey.send(other)).status_code == 200
+        monkeypatch.setattr(AsyncSession, "commit", original_commit)
+        assert (await journey.send()).json() == _corrected_response("control")
+        expected = "PAUSED"
+    else:
+        async with journey.maker() as session:
+            alert = await session.get(Alert, journey.alert_id)
+            action = await session.get(PauseAction, journey.token)
+            repo = AlertRepository(session)
+            if scenario in {"protected_aba", "protected_new_card"}:
+                await repo.set_status(alert, AlertStatus.PAUSED)
+                await repo.set_status(alert, AlertStatus.ACTIVE)
+            elif scenario == "protected_expired":
+                action.issued_at = datetime.now(UTC) - timedelta(hours=24)
+                action.expires_at = datetime.now(UTC)
+            elif scenario == "protected_purged":
+                action.issued_at = datetime.now(UTC) - timedelta(hours=48)
+                await session.flush()
+                await PauseActionRepository(session).purge()
+            elif scenario == "protected_preparation":
+                alert.preparation = PreparationRequest().stored()
+                alert.status = AlertStatus.PAUSED
+                alert.decision_version += 1
+                expected = "PAUSED"
+            elif scenario == "protected_restore":
+                alert.status = AlertStatus.PAUSED
+                alert.decision_version += 1
+                action.invalidated = True
+                expected = "PAUSED"
+            else:
+                assert scenario == "protected_price_version"
+                alert.max_item_price_cents = 5000
+                assert alert.decision_version == 0
+            await session.commit()
+        response = await journey.send()
+        result = response.json().get("result")
+        if scenario == "protected_price_version":
+            assert response.json() == _corrected_response("control")
+            expected = "PAUSED"
+        else:
+            assert result == {
+                "protected_aba": "superseded", "protected_new_card": "superseded",
+                "protected_expired": "expired", "protected_purged": "unknown",
+                "protected_preparation": "superseded", "protected_restore": "unknown",
+            }[scenario]
+            assert ("callback", "⏸ Alerte mise en pause.") not in trace.attempts
+        if scenario == "protected_new_card":
+            async with journey.maker() as session:
+                alert = await session.get(Alert, journey.alert_id)
+                fresh = await PauseActionRepository(session).issue(alert)
+                await session.commit()
+            payload["callback_query"]["data"] = f"al_pause:p_{fresh.id.hex}"
+            payload["update_id"] += 1
+            payload["callback_query"]["id"] += "-fresh"
+            assert (await journey.send(payload)).json() == _corrected_response("control")
+            expected = "PAUSED"
+    assert (await journey.durable())[0] == expected
+    async with journey.maker() as reader:
+        alert = await reader.get(Alert, journey.alert_id)
+        action = await reader.get(PauseAction, journey.token)
+        if expected == "ACTIVE":
+            assert action is None or action.applied_at is None
+        elif scenario not in {"protected_preparation", "protected_restore", "protected_new_card"}:
+            assert action.applied_at is not None
+            assert action.applied_version == alert.decision_version
+    return {"durable_status": expected, "attempts": len(trace.attempts)}

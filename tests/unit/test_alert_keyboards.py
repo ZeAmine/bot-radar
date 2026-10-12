@@ -105,11 +105,15 @@ def test_get_edit_category_selection_keyboard():
 def test_get_alert_card_keyboard():
     alert_id = uuid.uuid4()
     # Test avec statut ACTIVE et pagination sans filtre spécifique
-    keyboard = get_alert_card_keyboard(alert_id, AlertStatus.ACTIVE, current_page=0, total_pages=2)
+    token = f"al_pause:p_{uuid.uuid4().hex}"
+    keyboard = get_alert_card_keyboard(
+        alert_id, AlertStatus.ACTIVE, current_page=0, total_pages=2, pause_callback=token
+    )
     rows = keyboard.inline_keyboard
     assert len(rows) == 3
     assert rows[0][0].callback_data == f"al_edit:{alert_id}"
-    assert rows[0][1].callback_data == f"al_pause:{alert_id}"
+    assert rows[0][1].callback_data == token
+    assert len(token.encode()) <= 64
     assert rows[0][2].callback_data == f"al_del:{alert_id}"
     assert rows[1][0].callback_data == "al_page:1"
     assert rows[2][0].callback_data == "al_list_cat:all:0"

@@ -120,10 +120,12 @@ async def test_textual_preparation_completes_without_catalogue_or_price(preparat
         consulted=("BNF",), unavailable=("BNF",) if unavailable else ()
     )
     alert_id = await p.create()
+    before_version = (await p.read(alert_id)).decision_version
     assert await p.module.prepare_bd_alert(alert_id)
     alert = await p.read(alert_id)
     assert alert.status == AlertStatus.ACTIVE
     assert alert.preparation is None
+    assert alert.decision_version == before_version + 1
     assert (alert.book_search_exhausted_at is not None) == (not unavailable)
 
 

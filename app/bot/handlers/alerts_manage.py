@@ -44,7 +44,6 @@ from app.bot.labels import (
 )
 from app.bot.states.alert_creation import AlertEditState
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
-from app.core.exceptions import EntityNotFoundError
 from app.core.tasks import safe_create_task
 from app.db.models.user import User
 from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
@@ -69,6 +68,7 @@ from app.services.market_price_service import (
     cote_absence_line,
     format_cote_lines,
 )
+from app.use_cases.pause_alert import issue_pause_button
 from app.use_cases.prepare_bd_alert import prepare_bd_alert
 from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text
@@ -187,6 +187,7 @@ async def handle_select_edit_category(
         total_pages=total_count,
         category_slug=category_slug,
         preparation=getattr(alert, "preparation", None),
+        pause_callback=await issue_pause_button(alert, db_session),
     )
     if callback.message and hasattr(callback.message, "edit_text"):
         await callback.message.edit_text(card_text, reply_markup=keyboard)
@@ -1056,8 +1057,10 @@ async def _save_edited_field_value(
         request = preparation_request(alert)
         if book_to_price is not None and request is None:
             alert.status = AlertStatus.PAUSED
+            alert.decision_version += 1
         from app.services.book_market_pricing import recalculate_invalidated_series
         await recalculate_invalidated_series(db_session)
+        prepared_version = alert.decision_version
         await db_session.commit()
         if field == "isbn" and alert.isbn != original_isbn:
             pop_pending_variants(alert.id)
@@ -1086,6 +1089,7 @@ async def _save_edited_field_value(
                 alert.isbn != clean_isbn
                 or alert.status != AlertStatus.PAUSED
                 or alert.name != prepared_name
+                or alert.decision_version != prepared_version
             ):
                 await db_session.rollback()
                 return
@@ -1099,6 +1103,7 @@ async def _save_edited_field_value(
                 ]
             await db_session.refresh(alert, ["alert_books"])
             alert.status = previous_status
+            alert.decision_version += 1
             await db_session.commit()
 
         cat_slug = alert.category.slug if alert.category else "all"
@@ -1117,6 +1122,7 @@ async def _save_edited_field_value(
                 total_pages=total_count,
                 category_slug=cat_slug,
                 preparation=getattr(alert, "preparation", None),
+                pause_callback=await issue_pause_button(alert, db_session),
             ),
         )
 
@@ -1155,31 +1161,39 @@ async def toggle_pause_alert(
 ) -> None:
     """Met en pause une alerte active."""
     progress = pause_progress if pause_progress is not None else PauseActionProgress()
-    progress.stage = "lookup"
-    alert_id = uuid.UUID(callback.data.split(":")[1])  # type: ignore
-    alert_repo = _get_alert_repo(db_session)
-    alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
-    if not alert:
-        progress.effect = "not_applied"
-        await callback.answer("Alerte introuvable.", show_alert=True)
-        return
+    from app.use_cases.pause_alert import apply_pause
 
-    progress.stage = "mutation"
-    progress.effect = "not_applied"
+    parts = (callback.data or "").split(":")
     try:
-        await alert_repo.set_status(alert, AlertStatus.PAUSED, require_editable=True)
-    except EntityNotFoundError:
-        await callback.answer("Alerte introuvable.", show_alert=True)
+        if len(parts) != 2 or not parts[1].startswith("p_"):
+            raise ValueError("Ancien bouton")
+        progress.token = uuid.UUID(parts[1][2:])
+    except ValueError:
+        progress.effect, progress.result = "not_applied", "legacy"
+        await callback.answer("Bouton périmé. Actualise la carte avec /show.", show_alert=True)
         return
-    # La mutation a été admise sous verrou ; son flush n'est pas un commit.
-    progress.stage = "commit"
-    progress.effect = "unknown"
-    await db_session.commit()
-    progress.effect = "committed"
+    progress.user_id = db_user.id
+    if not progress.callback_id:
+        progress.callback_id = callback.id
+    result = await apply_pause(db_session, progress)
+    if result in {"replay", "unknown"}:
+        return  # Aucune seconde confirmation ou édition au rejeu.
+    if result != "applied":
+        text = "Alerte introuvable." if result == "refused" else (
+            "Ce bouton a déjà été utilisé." if result == "consumed" else
+            "Bouton périmé. Actualise la carte avec /show."
+        )
+        await callback.answer(text, show_alert=True)
+        return
     progress.stage = "confirmation"
     await callback.answer("⏸ Alerte mise en pause.")
     progress.stage = "card"
-    await view_single_alert(callback, db_user, db_session)
+    # Le navigateur de carte attend un UUID d'alerte, pas le jeton du bouton.
+    from app.db.models.pause_action import PauseAction
+    action = await db_session.get(PauseAction, progress.token)
+    assert action is not None
+    card_callback = callback.model_copy(update={"data": f"al_view:{action.alert_id}"})
+    await view_single_alert(card_callback, db_user, db_session)
     progress.stage = "handler_returned"
 
 

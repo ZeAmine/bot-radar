@@ -183,6 +183,7 @@ class PreparationRunner:
                         return "superseded"
                     # Relecture des caches dans cette session, pas des objets du collecteur.
                     await BookRepository(session).get_all_books_for_alert(alert_id)
+                    current.decision_version += 1
                     current.status = AlertStatus.ACTIVE
                     current.preparation = None
                     await session.commit()

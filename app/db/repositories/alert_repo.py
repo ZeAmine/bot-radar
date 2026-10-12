@@ -139,6 +139,7 @@ class AlertRepository:
         """Seules les dépendances bibliographiques changent la version du travail."""
         request = preparation_request(alert)
         if request is not None:
+            alert.decision_version += 1
             await self.reset_bibliographic_identity(alert)
             alert.preparation = request.restart(
                 activate=request.activation_requested, author_hint=author_hint
@@ -281,6 +282,7 @@ class AlertRepository:
             alert.status = AlertStatus.PAUSED
         else:
             alert.status = status
+        alert.decision_version += 1
         await self.session.flush()
         return alert
 
@@ -307,6 +309,7 @@ class AlertRepository:
         if not await self.lock_for_edit(alert):
             return alert
         alert.status = AlertStatus.DELETED
+        alert.decision_version += 1
         alert.deleted_at = datetime.now(UTC)
         await self.session.flush()
         return alert

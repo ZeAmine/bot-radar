@@ -871,6 +871,7 @@ async def _save_alert(
         if not prepared or alert.status != AlertStatus.ACTIVE:
             from app.bot.formatter import format_alert_card
             from app.bot.keyboards.alerts import get_alert_card_keyboard
+            from app.use_cases.pause_alert import issue_pause_button
 
             if callback.message and hasattr(callback.message, "edit_text"):
                 with contextlib.suppress(Exception):
@@ -879,6 +880,7 @@ async def _save_alert(
                         reply_markup=get_alert_card_keyboard(
                             alert.id, alert.status, 0, 1, category_slug,
                             preparation=alert.preparation,
+                            pause_callback=await issue_pause_button(alert, db_session),
                         ),
                     )
             return

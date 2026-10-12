@@ -79,6 +79,8 @@ class Alert(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # Statut de l'alerte
+    decision_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0,
+                                                 server_default="0")
     status: Mapped[AlertStatus] = mapped_column(
         Enum(AlertStatus, native_enum=False, length=20),
         default=AlertStatus.ACTIVE,
