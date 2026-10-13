@@ -236,7 +236,7 @@ Le poller Vinted intégré ([`app/tasks/vinted_poller.py`](app/tasks/vinted_poll
 
 - 🚀 **API Interne JSON First (`/svc-catalogue/items`)** : Le catalogue JSON évite le coût du catalogue HTML complet ; volumes et latences dépendent de la réponse et ne constituent pas une garantie.
 - 🛡️ **Repli Transparent (Fallback HTML)** : En cas d'anomalie sur le format JSON, le poller bascule automatiquement sur le catalogue HTML classique lorsque ce repli répond ; il ne garantit pas la disponibilité de la marketplace.
-- ⚡ **Cadence Adaptative** : Intervalle de scrutation de **12s** en heures de pointe (11h30-14h00 et 18h00-22h30 Paris), **15s** en heures standard, et passage automatique à **8s** dès configuration d'un proxy résidentiel (`VINTED_PROXY_URL`).
+- ⚡ **Cadence Adaptative** : `VINTED_POLL_INTERVAL_SECONDS` (défaut **12 s**) fixe la cadence standard et plafonne les modes accélérés — proxy résidentiel à **8 s** en pointe (11h30-14h00 et 18h00-22h30 Paris) et **10 s** hors pointe (`VINTED_PROXY_URL`).
 - 🌙 **Mode Nuit Automatique** : Suspension ou ralentissement de la scrutation entre 00:00 et 07:00 (Paris) pour préserver la réputation de l'IP.
 - 🔀 **Ordonnancement Entrelacé (Staggered Interleaving)** : Espacement calculé (1,2s à 2,0s) entre les requêtes de différentes catégories pour lisser la charge réseau.
 - 📷 **Photo de couverture** : L'annonce est affichée avec l'image de couverture renvoyée par `svc-catalogue/items` (voir ADR-012). Aucune requête Vinted supplémentaire n'est faite pour une annonce.
@@ -352,7 +352,7 @@ Les paramètres applicatifs sont déclarés et typés dans [`app/core/config.py`
 | `EBAY_ENV` | `PRODUCTION` / `SANDBOX` | Non | Environnement de l'API eBay Browse (défaut : `PRODUCTION`). |
 | `CHASSE_AUX_LIVRES_DUIH` | Chaîne de session | Non | Session utilisateur pour l'historique de cotes BD 1 an. |
 | `VINTED_POLLER_ENABLED` | `true` / `false` | Non | Active la boucle de détection Vinted dans le conteneur applicatif. |
-| `VINTED_POLL_INTERVAL_SECONDS` | Entier (défaut `15`) | Non | Fréquence de scrutation standard hors heures de pointe. |
+| `VINTED_POLL_INTERVAL_SECONDS` | Entier (défaut `12`) | Non | Cadence de scrutation standard ; sert aussi de plafond aux cadences accélérées (pointe, proxy). |
 | `VINTED_PROXY_URL` | URL HTTP/SOCKS5 | Non | Proxy résidentiel optionnel pour accélérer la scrutation à 8s. |
 | `NIGHT_MODE_ENABLED` | `true` / `false` | Non | Suspension nocturne pour préserver la réputation IP (défaut : `true`). |
 | `NIGHT_MODE_START_HOUR` | Entier (défaut `0`) | Non | Heure de début de la plage de nuit (00:00). |

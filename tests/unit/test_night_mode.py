@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.tasks.vinted_poller import (
     get_active_custom_searches_cached,
     get_adaptive_poll_interval,
@@ -180,20 +180,33 @@ def test_is_peak_hours():
 
 
 def test_get_adaptive_poll_interval():
+    """La variable est l'intervalle standard et un plafond des modes accélérés."""
     with (
-        patch("app.tasks.vinted_poller.settings.VINTED_POLL_INTERVAL_SECONDS", 15),
+        patch("app.tasks.vinted_poller.settings.VINTED_POLL_INTERVAL_SECONDS", 12),
         patch("app.tasks.vinted_poller.settings.VINTED_PROXY_URL", None),
     ):
-        # VPS en heure de pointe : accélère à 12s
+        # VPS en heure de pointe : le plafond de pointe s'applique.
         with patch("app.tasks.vinted_poller.is_peak_hours", return_value=True):
             assert get_adaptive_poll_interval() == 12.0
-        # VPS en heure standard : 15s
+        # VPS en heure standard : l'intervalle est servi tel quel.
         with patch("app.tasks.vinted_poller.is_peak_hours", return_value=False):
-            assert get_adaptive_poll_interval() == 15.0
+            assert get_adaptive_poll_interval() == 12.0
+
+    # Une valeur plus haute est honorée hors pointe — l'ancien `max(base, 15.0)` en
+    # faisait un plancher, si bien que la variable n'y avait aucun effet.
+    with (
+        patch("app.tasks.vinted_poller.settings.VINTED_POLL_INTERVAL_SECONDS", 20),
+        patch("app.tasks.vinted_poller.settings.VINTED_PROXY_URL", None),
+    ):
+        with patch("app.tasks.vinted_poller.is_peak_hours", return_value=False):
+            assert get_adaptive_poll_interval() == 20.0
+        # …mais la pointe reste un plafond.
+        with patch("app.tasks.vinted_poller.is_peak_hours", return_value=True):
+            assert get_adaptive_poll_interval() == 12.0
 
     # Avec proxy résidentiel (Raspberry Pi)
     with (
-        patch("app.tasks.vinted_poller.settings.VINTED_POLL_INTERVAL_SECONDS", 15),
+        patch("app.tasks.vinted_poller.settings.VINTED_POLL_INTERVAL_SECONDS", 12),
         patch("app.tasks.vinted_poller.settings.VINTED_PROXY_URL", "http://192.168.1.50:8888"),
     ):
         # Proxy en heure de pointe : 8s
@@ -202,4 +215,9 @@ def test_get_adaptive_poll_interval():
         # Proxy en heure standard : 10s
         with patch("app.tasks.vinted_poller.is_peak_hours", return_value=False):
             assert get_adaptive_poll_interval() == 10.0
+
+
+def test_declared_default_standard_cadence_is_twelve_seconds():
+    """Le défaut déclaré du dépôt est la cadence standard visée : 12 s."""
+    assert Settings.model_fields["VINTED_POLL_INTERVAL_SECONDS"].default == 12
 
