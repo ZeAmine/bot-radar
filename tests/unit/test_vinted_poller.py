@@ -1,7 +1,7 @@
 """Tests des métriques du poller Vinted : cadence et couverture de fenêtre."""
 
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -10,10 +10,15 @@ from app.services.vinted_parsing import CATALOG_PAGE_SIZE
 from app.services.vinted_scraper import ScrapedVintedItem
 from app.tasks.vinted_poller import (
     MAX_MEANINGFUL_CYCLE_GAP_S,
+    MIN_CYCLE_GAP_SECONDS,
     WINDOW_LOG_EVERY_CYCLES,
     CycleCadence,
+    dedupe_custom_searches,
+    load_active_custom_searches,
     load_initial_seen_ids,
     poll_vinted_once,
+    remaining_cycle_sleep,
+    run_vinted_poller,
 )
 
 
@@ -188,3 +193,103 @@ class _MockIngest:
 
     notified_count = 0
     needs_retry = False
+
+
+def test_remaining_cycle_sleep_subtracts_the_work_from_the_pause() -> None:
+    """Le travail du cycle est déduit de la pause : 15 s de pause, 0,4 s de travail → 14,6 s."""
+    assert remaining_cycle_sleep(15.0, 0.4) == pytest.approx(14.6)
+
+
+def test_remaining_cycle_sleep_keeps_the_floor_on_a_slow_cycle() -> None:
+    """Un cycle lent ne descend pas sous le plancher : 12 s de travail sur 15 s de pause → 6 s."""
+    assert remaining_cycle_sleep(15.0, 12.0) == MIN_CYCLE_GAP_SECONDS
+
+
+def test_remaining_cycle_sleep_ignores_a_negative_work_measure() -> None:
+    """Une horloge incohérente ne rallonge pas la pause au-delà de la cible."""
+    assert remaining_cycle_sleep(15.0, -3.0) == 15.0
+
+
+def test_dedupe_custom_searches_keeps_categories_apart() -> None:
+    """Les couples identiques fusionnent ; deux catégories sur une URL restent distinctes."""
+    searches = [
+        ("https://v.fr/a", "tech"),
+        ("https://v.fr/a", "tech"),
+        ("https://v.fr/a", "clothes"),
+        ("https://v.fr/b", "tech"),
+    ]
+
+    assert dedupe_custom_searches(searches) == [
+        ("https://v.fr/a", "tech"),
+        ("https://v.fr/a", "clothes"),
+        ("https://v.fr/b", "tech"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_load_active_custom_searches_dedupes_identical_pairs() -> None:
+    """Deux alertes de même catégorie sur la même URL ne prennent qu'un tour de round-robin."""
+    rows = [("https://v.fr/a", "tech"), ("https://v.fr/a", "tech"), (None, "tech")]
+    with patch("app.tasks.vinted_poller.AsyncSessionLocal") as factory:
+        session = AsyncMock()
+        result = MagicMock()
+        result.all.return_value = rows
+        session.execute.return_value = result
+        factory.return_value.__aenter__.return_value = session
+
+        searches = await load_active_custom_searches()
+
+    assert searches == [("https://v.fr/a", "tech")]
+
+
+@pytest.mark.asyncio
+async def test_cycle_sleep_subtracts_the_cycle_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La boucle retire le travail du cycle de la pause au lieu de l'y ajouter.
+
+    Le poller mesurait le travail (collecte, ingestion, envoi) puis dormait la pause
+    complète : une rafale d'annonces allongeait la cadence et retardait la détection des
+    annonces suivantes. Ici, le sommeil demandé doit valoir la pause cible moins le temps
+    réellement écoulé, et le travail mesuré doit être strictement positif.
+    """
+    import asyncio
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
+    stop_event = asyncio.Event()
+    calls: list[tuple[float, float]] = []
+
+    def spy_remaining(sleep_time: float, work_seconds: float) -> float:
+        calls.append((sleep_time, work_seconds))
+        return 0.0
+
+    async def fake_poll(*_args: object, **_kwargs: object) -> int:
+        await asyncio.sleep(0.05)
+        stop_event.set()
+        return 0
+
+    with (
+        patch("app.tasks.vinted_poller.is_night_time", return_value=False),
+        patch(
+            "app.tasks.vinted_poller.load_initial_seen_ids",
+            new_callable=AsyncMock,
+            return_value=set(),
+        ),
+        patch("app.tasks.vinted_poller.poll_vinted_once", side_effect=fake_poll),
+        patch(
+            "app.tasks.vinted_poller.get_active_custom_searches_cached",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch("app.tasks.vinted_poller.save_poller_status", new_callable=AsyncMock),
+        patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
+        patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
+        patch("app.tasks.vinted_poller.random.randint", return_value=10_000),
+        patch("app.tasks.vinted_poller.remaining_cycle_sleep", side_effect=spy_remaining),
+    ):
+        await run_vinted_poller(stop_event)
+
+    assert len(calls) == 1
+    sleep_time, work_seconds = calls[0]
+    assert sleep_time == 15.0
+    assert work_seconds >= 0.05
