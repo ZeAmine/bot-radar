@@ -33,7 +33,7 @@ Il sert de boussole aux modèles de langage (LLMs) et assistants de code pour si
 Détecter les nouvelles annonces Vinted en temps réel et les injecter dans le pipeline interne sans bloquer le système.
 
 ### Fichiers clés
-- [`app/tasks/vinted_poller.py`](app/tasks/vinted_poller.py) : Boucle de polling haute fréquence à cadence adaptative (12s en pointe, 15s standard sur VPS, 8s avec proxy résidentiel), dédoublonnage en mémoire (`seen_ids`), ordonnancement entrelacé (staggered interleaving) des catégories.
+- [`app/tasks/vinted_poller.py`](app/tasks/vinted_poller.py) : Boucle de polling haute fréquence à cadence adaptative (12s standard, 8s en pointe et 10s hors pointe avec proxy résidentiel), dédoublonnage en mémoire (`seen_ids`), ordonnancement entrelacé (staggered interleaving) des catégories.
 - [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py) : Gestionnaire de session Vinted (`VintedSessionManager`), cookies persistés dans Redis, interrogation prioritaire de l'API interne JSON (`svc-catalogue/items`, 38 Ko) avec repli transparent sur le catalogue HTML.
 - [`app/services/vinted_parsing.py`](app/services/vinted_parsing.py) : Parsing pur HTML/JSON (`parse_vinted_catalog_json`, `parse_vinted_catalog_html`) et extraction de la photo de couverture. Aucun réseau.
 - [`app/api/routes/ingest.py`](app/api/routes/ingest.py) : Endpoint interne sécurisé `POST /api/v1/ingest/listings`.
