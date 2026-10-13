@@ -48,6 +48,23 @@ un destinataire unique. Aucun titre, corps, payload, URL, secret ou texte libre
 d'exception n'est ajouté. Les IDs servent aux logs, pas à des labels de métriques
 à cardinalité illimitée.
 
+## Publication → détection : source absente
+
+`listings.published_at` existe (colonne nullable, migration initiale) et le champ d'ingestion
+aussi, mais aucun producteur ne les remplit sur le chemin du poller. Une sonde unique et
+encadrée (`scripts/probe_vinted_published_at.py`, exécutée le 2026-10-13) a listé les clés d'un
+item réellement renvoyé par `/svc-catalogue/items` : `id`, `title`, `price`, `item_box`,
+`photo`, `photos`, `url`, `user`, `view_count`, `total_item_price`, `service_fee`,
+`search_tracking_params`, `promoted`, `show_1st_time_seller_discount`, entre autres.
+**Aucun horodatage de publication n'y figure** — et le seul nom retenu par une détection de
+clés de date, `show_1st_time_seller_discount`, est un booléen : le « time » de « first time ».
+
+Conséquence : la latence publication → détection reste **non mesurable**, faute de source. La
+colonne est conservée pour un appelant d'API externe qui fournirait la date ; elle reste NULL
+sur le chemin du scan, et la mesure publication → détection n'est pas ajoutée à `/status`.
+Couper ou réduire la couverture nocturne (7 h/j de suspension) ne peut donc pas se trancher
+sur des données de publication : il faudrait une autre source.
+
 ## Résultats et fond
 
 Refus établis, inconnus, réponses inutilisables et annulations conservent une durée
