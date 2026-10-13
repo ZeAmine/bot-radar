@@ -83,7 +83,7 @@ def test_series_matching_specific_tome_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "<b>Minimum des relevés sur 365 jours (T2) :</b> 18,50 €" in summary
+    assert "<b>Prix bas constaté (T2) :</b> 18,50 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart :</b> -6,50 € ✅" in summary
 
@@ -115,7 +115,7 @@ def test_series_matching_lot_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "<b>Somme des minima documentés (dates distinctes) (Lot) :</b> ~54,50 €" in summary
+    assert "<b>Prix bas constaté (Lot) :</b> ~54,50 €" in summary
     assert "Prix du marché" not in summary
     # Gain : 25.00 - 54.50 = -29.50 €
     assert "<b>Écart :</b> -29,50 € ✅" in summary
@@ -230,7 +230,7 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     assert summary is not None
     assert "Prix du marché" not in summary
     # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
-    assert "<b>Somme des minima documentés (dates distinctes) (Lot) :</b> ~42,30 €" in summary
+    assert "<b>Prix bas constaté (Lot) :</b> ~42,30 €" in summary
     # Écart vs prix bas: 37.18 - 42.30 = -5.12 €
     assert "<b>Écart :</b> -5,12 € ✅" in summary
 
@@ -285,11 +285,6 @@ def test_series_matching_lot_variations_matrix(
         tome_result=tome_res,
     )
     assert summary is not None
-    # Les ids historiques du paramétrage restent stables ; le contrat d'affichage
-    # qualifie désormais cette somme de minima observés à des dates distinctes.
-    expected_label = expected_label.replace(
-        "Prix bas constaté", "Somme des minima documentés (dates distinctes)"
-    )
     assert expected_label in summary
     assert f"<b>Écart :</b> {expected_diff} {expected_icon}" in summary
 
@@ -1069,7 +1064,7 @@ def test_counted_lot_resolves_to_the_whole_series_and_prices_it():
     )
     assert summary is not None
     assert (
-        "<b>Somme des minima documentés (dates distinctes) "
+        "<b>Prix bas constaté "
         "(Lot de 4 tomes, composition déduite) :</b> ~40,77 €"
         in summary
     )
@@ -1238,5 +1233,5 @@ def test_legacy_minimum_without_observation_never_becomes_annual_reference(date_
     ) is None
     panel = MarketPriceService.format_market_details_card(listing, book, [], None)
     assert "informatif" in panel
-    assert "Minimum des relevés sur 365 jours" not in panel
+    assert "Minimum sur 1 an" not in panel
     assert (book.market_cache.checked_at, book.market_cache.historical_low_at) == before
