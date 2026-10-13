@@ -191,6 +191,7 @@ ou aux données réellement manquantes.
 ## Tests
 
 - Ne supprimer aucun test existant. Adapter si le symbole testé disparaît volontairement.
+- Exception ciblée validée le 13 octobre 2026 : seuls `tests/unit/test_task_verdict.py` et `tests/unit/test_task_guard.py` disparaissent avec leurs scripts retirés. Le manifeste de consolidation retire uniquement leurs nodeids ; les preuves historiques conservent leur révision et leur portée. Cette exception n’autorise aucune autre suppression de test.
 - Le matching, l’idempotence d’ingestion, le calcul de total, le cache marché et le webhook secret sont des filets critiques.
 - Les tests d’ingest patchent l’envoi via un réexport / `sys.modules` : préserver `_get_send_listing_alert()` tant que ce contrat tient.
 - Pas de base globale partagée non isolée à introduire dans `conftest.py`.

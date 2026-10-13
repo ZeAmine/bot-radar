@@ -6,6 +6,17 @@ Référence applicative testée : `bfabcca7dbf4f8f6af2de058b167a93dd80816b8`, su
 
 **Verdict : validation incomplète.** La suite entière a été sélectionnée par backend, sans désélection, skip ou xfail ajouté. Elle est rouge. Aucun commit de vérification créé : les seuls nouveaux fichiers restent locaux.
 
+## Retrait ciblé du garde d’autonomie (13 octobre 2026)
+
+Les résultats historiques de ce document sont conservés ; ils ne sont pas une
+nouvelle exécution. Leur manifeste d’origine est consultable à la révision
+`a303223cf1eff6c1308c7e492b69e6f0572f9d63` dans l’historique Git.
+Le manifeste de travail `docs/consolidation-nodeids.json` retire maintenant
+uniquement les 59 nodeids des deux modules dédiés au garde supprimé,
+par exception explicitement validée. Ses 1706 entrées restantes sont
+inchangées et dans le même ordre ; les compteurs historiques ci-dessous ne sont
+pas recalculés. Aucun autre scénario n’est supprimé ou désélectionné.
+
 ## Exécutions finales
 
 | Exécution | Collectés | Réussis | Échoués | Skips existants | Désélectionnés |
@@ -318,7 +329,7 @@ Les budgets de performance n’ont pas changé. Deux doubles d’envoi étaient 
 | Unitaires et performance, SQLite local selon fixture | 1442 | 1442 | 0 | 0 | 0 |
 | Intégration PostgreSQL 16, sous-processus webhook SQLite selon contrat | 326 | 326 | 0 | 0 | 0 |
 
-1768 nodeids distincts, dont les 1765 initiaux et trois nouveaux. `docs/consolidation-nodeids.json` conserve la référence exacte reconstruite à partir des rapports initiaux. Le lanceur refuse une collecte manquante ou dupliquée et une exécution incomplète, sans désélection ajoutée. Les identifiants de la matrice parametrée restent stables malgré le changement de libellé approuvé. Les rapports finaux n’ont aucun baseline manquant.
+1768 nodeids distincts, dont les 1765 initiaux et trois nouveaux. `docs/consolidation-nodeids.json` conservait alors la référence exacte reconstruite à partir des rapports initiaux ; le retrait ciblé ultérieur est décrit en tête de ce document. Le lanceur refuse une collecte manquante ou dupliquée et une exécution incomplète, sans désélection ajoutée. Les identifiants de la matrice parametrée restent stables malgré le changement de libellé approuvé. Les rapports finaux n’ont aucun baseline manquant.
 
 Commandes finales réellement exécutées :
 
