@@ -671,9 +671,9 @@ inchangées : perdre une cote ne rejette pas une annonce conforme à ce seuil.
 Le cache possède une projection annuelle distincte, recalculée en SQL local groupé
 à échéance, sans appel fournisseur. Une projection expirée n'est jamais admissible.
 Les minima ex æquo privilégient le relevé le plus récent, puis l'identifiant le plus
-petit. La couverture est toujours annoncée partielle, avec nombre et bornes des
-relevés ; une durée d'un an n'atteste aucune observation continue. Les sommes de
-références individuelles ne prétendent pas avoir été observées simultanément.
+petit. La fenêtre annuelle reste partielle — une durée d'un an n'atteste aucune
+observation continue — et les sommes de références individuelles ne prétendent pas
+avoir été observées simultanément.
 
 Les anciens minima et les agrégats sans date du minimum sont conservés comme
 informations non vérifiables, hors calcul annuel. Les snapshots anciens admissibles

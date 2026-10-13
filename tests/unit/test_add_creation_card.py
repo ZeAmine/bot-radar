@@ -209,7 +209,7 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
 
         # La cote et le bas constaté, tous deux déjà connus du catalogue.
         assert "<b>Dernière offre connue (informative) :</b> 18,00 €" in confirmation
-        assert "<b>Minimum des relevés sur 365 jours :</b> 16,50 €" in confirmation
+        assert "<b>Prix bas constaté :</b> 16,50 €" in confirmation
         # Ni la plateforme, ni une date qui daterait du moment de la création.
         assert "Momox" not in confirmation
         assert "chasse_aux_livres" not in confirmation
