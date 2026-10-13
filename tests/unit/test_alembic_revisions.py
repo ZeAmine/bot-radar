@@ -7,10 +7,10 @@ exécuté le DDL de la migration. En production cela veut dire des index créés
 la migration annulée, et un schéma en retard sur le code sans que rien le signale.
 
 C'est exactement ce qu'a produit `0006_composite_indexes_for_alert_and_cache_queries`,
-50 caractères. La CI ne l'a pas vu parce que le job `test-postgres` joue
-`pytest tests/integration/` et jamais `alembic upgrade head` : la chaîne de
-migration n'y est pas exercée. Ce test ferme l'angle sans base de données, et
-échoue à la rédaction plutôt qu'au déploiement.
+50 caractères. La CI historique ne jouait pas toute la chaîne de migration. Le job
+`test-postgres` actuel applique `alembic upgrade head` sur une base vierge puis
+rejoue l’intégration. Ce test conserve le contrôle statique de longueur sans
+base de données ; il ne prouve pas l’application effective des migrations.
 
 `down_revision` est mesuré pour la même raison : un ancêtre trop long doit être
 écrit dans la même colonne dès qu'il devient une tête.

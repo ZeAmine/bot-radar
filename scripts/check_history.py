@@ -3,7 +3,7 @@
 
 Un découpage d'historique qui produit un commit rouge est indétectable sans ce
 garde-fou : les tests passent sur `HEAD` alors qu'un état intermédiaire est cassé.
-Le script crée un worktree jetable par commit, y rejoue Ruff, mypy et Pytest, puis
+Le script crée un worktree jetable par commit, y rejoue Ruff et Pytest (mypy sur option), puis
 sort en erreur au premier commit qui échoue.
 
 Le travail principal n'est jamais touché : ni son index, ni ses fichiers, ni ses
@@ -181,7 +181,7 @@ def check_commit(sha: str, worktree_root: Path, steps: tuple[str, ...]) -> list[
 def parse_args() -> argparse.Namespace:
     """Analyse les arguments de ligne de commande."""
     parser = argparse.ArgumentParser(
-        description="Rejoue Ruff, mypy et Pytest sur chaque commit de la branche.",
+        description="Rejoue Ruff et Pytest sur chaque commit (mypy sur option).",
     )
     parser.add_argument(
         "--base",

@@ -8,7 +8,7 @@ Le nom a changé : les références historiques à `ZeAmine/radar-bot` sont pér
 ### Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-018, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, décisions consignées, dette différée).
 
 ## Méthode de travail
 
@@ -33,10 +33,18 @@ Ce mode s’applique aux audits, corrections et nouvelles fonctionnalités, quel
 - Le plan et l’objectif validés restent la référence. Chaque tâche possède un mandat qui précise son périmètre, ses permissions, ses interdictions et ses critères de réussite.
 - Dans ce mandat, l’agent analyse, poursuit les opérations déjà autorisées, vérifie les résultats et corrige son travail sans demander confirmation à chaque résultat intermédiaire. Sans permission de modification, la tâche reste en lecture seule.
 - Il distingue ce que montre la lecture du code, ce qui reste une hypothèse, ce qu’un test vérifie et ce qui a été réellement observé en exécution. Une preuve locale ne vaut pas preuve pour tout le projet.
-- Il vérifie son implémentation et effectue une auto-revue du diff et des critères de réussite. Il ne modifie pas les attentes de tests uniquement pour les faire passer ; toute adaptation doit correspondre à un changement de comportement voulu et justifié.
+- Il définit des critères d’acceptation observables et les moyens de preuve autorisés avant de modifier. La boucle est : modifier → contrôler → analyser → corriger → revérifier. Elle couvre le comportement demandé et les non-régressions. Chaque nouvelle tentative apporte une information ou teste une hypothèse.
+- Il vérifie son implémentation et effectue une auto-revue du diff, des fichiers indexés et des critères de réussite. Il ne modifie pas les attentes de tests uniquement pour les faire passer ; toute adaptation doit correspondre à un changement de comportement voulu et justifié.
 - Il ne clôture pas une priorité lorsque seul un sous-problème est traité. Le rapport final présente les changements, les preuves et leur portée, les limites et l’état du lot : terminé, partiel ou bloqué, avec le travail restant.
 - Il demande un arbitrage en cas de permission manquante, de changement de périmètre, de décision importante non couverte par le plan ou de blocage empêchant la suite. Il peut poursuivre les actions indépendantes déjà autorisées.
 - Les opérations sensibles restent soumises aux autorisations explicites et aux garde-fous du dépôt. Le mandat borne l’application des workflows Git, de vérification et de déploiement : leur description n’autorise pas une opération interdite par la tâche. Un contrôle non autorisé reste non exécuté et signalé ; les critères de qualité ne sont pas abaissés.
+
+La boucle s’arrête sur réussite vérifiée, permission ou arbitrage manquant, moyen de
+vérification indisponible, absence de progrès observable ou limite du mandat atteinte.
+Les arrêts d’investigation des skills restent applicables. Aucun minimum de durée ni
+objectif de consommation de tokens. Le rapport indique les commandes, la révision,
+les résultats et leur portée. Cette boucle concerne les agents de développement,
+jamais l’autonomie métier du bot, et n’accorde aucune permission supplémentaire.
 
 Ce fichier ne remplace ni les permissions techniques des outils ni une revue indépendante.
 
@@ -44,9 +52,9 @@ Ce fichier ne remplace ni les permissions techniques des outils ni une revue ind
 
 Un changement est terminé seulement si :
 
-- `pytest` est vert, `ruff check .` est vert et `mypy app` est vert (zéro erreur). La CI (`.github/workflows/ci.yml`) bloque la pull request si l’un échoue. Pas de liste d’exceptions Ruff ni de `# type: ignore` sans justification locale.
+- `pytest` est vert, `ruff check .` est vert et `mypy app scripts/matching_diagnostics.py` est vert (zéro erreur). La CI (`.github/workflows/ci.yml`) bloque la pull request si l’un échoue. Pas de liste d’exceptions Ruff ni de `# type: ignore` sans justification locale.
 - Aucun secret n’est loggé.
-- Aucun appel réseau (BNF, places de marché, DeepSeek) n’est ajouté avant l’envoi de l’alerte.
+- Aucun appel réseau (BNF, places de marché, moteur IA) n’est ajouté avant l’envoi de l’alerte.
 - Revue humaine si le diff touche [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py), les formules de prix ou de comparaison marché, ou le chemin ingestion → matching → Telegram.
 
 ### Workflow Git
@@ -69,6 +77,49 @@ make verify                                                            # second 
 
 Lorsque le mandat autorise les opérations Git correspondantes, un agent qui implémente une feature travaille donc ainsi : branche depuis `main`, commits, `make pr`, `make verify`, puis merge squash. S’il n’est pas explicitement demandé de merger, il s’arrête à la PR verte et le dit. Sinon, il s’arrête à la limite autorisée et indique les étapes restantes.
 
+### Tâches concurrentes et worktrees
+
+- Le dossier `/Users/aminezegmou/Projets/bot-radar` reste la référence, généralement
+  sur `main`. Une lecture seule n’exige pas de worktree. Les modifications
+  concurrentes indépendantes utilisent `../bot-radar-worktrees/<sujet>/`, une
+  branche `feat/`, `fix/`, `chore/` ou `docs/` et une PR vers `main` par tâche.
+- Avant création : lire status, branche, SHA, worktrees existants et sous-module.
+  Vérifier que chemin et branche sont libres ; aucune réutilisation automatique.
+  Avec permission réseau, rafraîchir `origin/main`, comparer les références et
+  fixer un SHA de base vérifié. Ne pas basculer ni actualiser automatiquement le
+  dossier principal. Sans réseau, qualifier la base comme locale seulement.
+- Lancer chaque agent dans le chemin absolu de son worktree. Son mandat précise
+  objectif, fichiers autorisés, interdictions, preuves et limites. Aucun agent
+  ne modifie ni ne change la branche de l’espace d’une autre tâche. Les opérations
+  administratives Git et sous-module partagées sont coordonnées.
+- Vérifier Superpowers au commit épinglé et les liens de découverte de l’outil.
+  Initialiser ce sous-module seulement si autorisé, sans upgrade. Un échec de
+  création de worktree arrête la tâche concurrente : le fallback de la skill vers
+  le dossier courant n’autorise pas à travailler dans `main` ou chez un autre agent.
+- Les worktrees n’isolent ni environnements, ports, bases, Redis, conteneurs ni
+  volumes. Si une installation est nécessaire, venv propre et verrou existant ;
+  aucun editable partagé pointant vers une autre tâche. SQLite mémoire suffit aux
+  tests prévus ainsi. Chaque exécution PostgreSQL concurrente a sa base jetable :
+  les fixtures effacent/recréent le schéma. Les conteneurs et ports de Compose sont
+  fixes ; `-p` seul ne les isole pas. Aucun lancement de services non mandaté.
+- Les vérifications utilisent une configuration factice, neutralisent les `.env`
+  réels et les secrets-directory avant imports, et doublent/refusent les transports
+  externes, sous-processus compris. Les tokens factices seuls ne suffisent pas.
+  Benchmarks sans concurrence de vérification. `check-history` crée ses propres
+  worktrees temporaires et hérite de l’environnement : l’autoriser et l’isoler
+  explicitement avant exécution, avec une base nommée.
+- La PR ne contient que la tâche ; utiliser la branche déjà créée avec un index
+  relu et un périmètre explicite. Pas de push direct sur `main`, force-push, merge
+  ou déploiement sans mandat. Un verdict local n’atteste pas la production.
+- Conserver les travaux antérieurs à leur place ; pas de déplacement, stash,
+  récupération ou suppression automatique. Le nettoyage nécessite contrôle du
+  contenu (fichiers ignorés utiles compris), commits non livrés, utilité et agents
+  actifs, puis permission explicite ; aucun retrait forcé ni prune automatique.
+- Support amovible : chemin de montage stable, système de fichiers adapté,
+  dépôt principal accessible et aucune déconnexion pendant une opération Git.
+  `git worktree lock` protège les métadonnées contre l’élagage administratif ;
+  il ne coordonne pas les agents et ne bloque pas leurs écritures.
+
 ## Produit
 
 BotRadar est un bot Telegram **privé** d’aide à la décision pour l’occasion (BD/comics, vêtements, tech, jeux vidéo).
@@ -81,11 +132,11 @@ Utilisateur unique / allowlist (`TELEGRAM_ALLOWED_USER_IDS`). Domaine public : `
 
 ### Clavier d'alerte Telegram
 Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomique :
-- Ligne 1 : `[ 🔗 Annonce ]` (Lien direct Vinted).
+- Ligne 1 : `[ Voir l’annonce ]` (Lien direct Vinted).
 - Ligne 2 (BD uniquement) : `[ Prix du marché ]` (Détails et cotes complètes de la série).
 - Ligne 3 (Ligne 2 si hors-BD) : `[ Faux positif ]` (Enregistrement du dislike pour l'auto-tuning) et `[ Négocier ]` (Coach IA).
 Les boutons « Prix du marché », « Faux positif » et « Négocier » restent sans émoji,
-y compris après confirmation ou annulation d’un faux positif. Les autres émojis sont conservés.
+y compris après confirmation ou annulation d’un faux positif. Le lien « Voir l’annonce » et la confirmation « Signalé » sont aussi sans émoji. Les autres émojis sont conservés.
 
 *(Note : Les anciens boutons factices « Payer » et « Dressing / Lot » ont été définitivement supprimés — voir ADR-007 et ADR-011).*
 
@@ -94,7 +145,7 @@ y compris après confirmation ou annulation d’un faux positif. Les autres émo
 - Python 3.12, FastAPI, aiogram 3, SQLAlchemy asyncio, Alembic, Redis, APScheduler, httpx, Pydantic v2.
 - Un seul processus de production : `uvicorn app.main:app` dans `radar_app` (API + webhook Telegram + scheduler + poller Vinted).
 - PostgreSQL 16, Redis 7, passerelle centralisée `caddy_gateway` via réseau Docker `web_gateway` (HTTPS). Compose : [compose.yml](compose.yml).
-- Tests : pytest + pytest-asyncio (531 tests dont 3 benchmarks). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
+- Tests : pytest + pytest-asyncio (le nombre de nodeids et les résultats sont attribués à la révision et à la sélection exécutées). Lint : Ruff (ligne 100). Typage : mypy `strict`, zéro erreur — tout nouveau code doit rester propre, pas de régression tolérée.
 
 ## Architecture des couches
 
@@ -108,10 +159,10 @@ api / bot  →  use_cases  →  domain
 
 | Couche | Rôle | Interdit |
 | --- | --- | --- |
-| `app/api` | HTTP, auth Bearer, conversion vers use case | SQL métier, appels DeepSeek hors `/health` |
+| `app/api` | HTTP, auth Bearer, conversion vers use case | SQL métier, appels au moteur IA hors `/health` |
 | `app/bot` | Handlers, FSM, claviers, HTML Telegram | Nouvelle logique métier lourde ; garder les handlers existants tant qu’on n’extrait pas volontairement |
 | `app/use_cases` | Orchestration d’un flux | Appels réseau lents **avant** l’envoi Telegram |
-| `app/domain` | Entités, protocoles, règles pures | Importer `app.services` dans du **nouveau** code. L’inversion actuelle (`domain/rules/matcher.py` → `matcher_service`) est de la dette : ne pas l’aggraver |
+| `app/domain` | Entités, protocoles, règles pures | Importer `app.services`. Les règles sont dans `domain/rules/listing_match.py` ; `matcher_service` les réexporte et `DeterministicListingMatcher` appelle le domaine |
 | `app/db` | Modèles, sessions, repositories | Règles de matching ou HTML Telegram |
 | `app/providers` | HTTP externe (timeout, parse) | Écriture Postgres |
 | `app/services` | Métier / orchestration limitée | Bloquer le chemin d’alerte |
@@ -130,7 +181,7 @@ Toute modification du chemin ingestion → matching → Telegram doit respecter 
 3. Cote BD : **cache local uniquement**. `MarketPriceService.get_comparison_summary` est synchrone, zéro HTTP. Référence unique : le prix le plus bas constaté sur 1 an, sinon le prix du marché du jour (ADR-016). Un livre identifié mais sans relevé affiche `COTE_NOT_READY_LINE` (« cote indisponible à l’envoi ») : le message envoyé est un instantané, pas une promesse de mise à jour. Une composition de lot non identifiée affiche `LOT_UNRESOLVED_LINE`, jamais une cote en calcul. Une passe déjà revenue vide ne s'annonce plus comme en cours — `cote_absence_line` rend alors `NO_OFFER_LINE`, datée du relevé : l'attente éternelle était le seul mensonge disponible (ADR-039). Une œuvre sans fiche **parce qu'aucune autorité ne la catalogue** ne s'annonce plus comme une recherche en cours : `NO_CATALOGUE_LINE` le dit, et la ligne reste distincte d'une cote chiffrée jusque dans l'audit d'envoi (ADR-041).
 4. `send_listing_alert` — priorité absolue.
 5. Ensuite seulement, en `safe_create_task` :
-   - enrichissement DeepSeek dans `telegram_service.py` avec le **vrai** `message_id` ;
+   - enrichissement IA dans `telegram_service.py` avec le **vrai** `message_id` ;
    - liaison ISBN BNF (`_link_book_from_bnf`) dans une **autre** session ;
    - cotation du livre sans cote utilisable (`schedule_book_pricing`), une fois **toutes** les alertes parties. Le livre vient alors d'être identifié : son titre et son ISBN partent ensemble chez tous les fournisseurs, repli par titre compris, sinon la cote resterait vide et l’alerte suivante serait à nouveau muette.
 
@@ -144,7 +195,7 @@ Interdit sur ce chemin :
 - `time.sleep` dans `app/`.
 - Calculs lourds ou regex globaux « optimisés » sans benchmark reproductible (`make bench` / `tests/performance/`).
 
-Conséquence assumée : la **première** alerte d’une BD inconnue peut partir sans ligne de cote. L’ISBN BNF sert aux suivantes.
+Conséquence assumée : une BD sans cote utilisable part avec une ligne décrivant l’état à l’envoi, jamais sans bloc de remplacement. La liaison bibliographique et la cotation de fond servent aux annonces suivantes ; elles ne promettent pas de réécrire le message envoyé.
 
 ### Préparation d'une alerte BD (ADR-043)
 
@@ -160,18 +211,18 @@ ou aux données réellement manquantes.
 ## Invariant n°2 — un seul scheduler
 
 - `app/main.py` démarre **toujours** APScheduler. Le poller Vinted est optionnel (`VINTED_POLLER_ENABLED`).
-- Jobs : `max_instances=1`, `coalesce=True` (07:00, 19:00 Europe/Paris + cleanup 03:30).
+- Jobs : `max_instances=1`, `coalesce=True`. Prix à 07:00/19:00 (configurables), lot incrémental à :15/:45, cleanup à 03:30 et auto-tuning à 10:00/14:00/18:00/22:00 Europe/Paris. Reprise des préparations au démarrage puis toutes les cinq minutes ; reprise des notifications chaque minute.
 - Compose n’a pas de service worker et il n’existe pas de module `app.worker`. Tout tourne dans `radar_app`.
 - Pas de verrou Redis tant qu’il n’y a qu’un processus. Ne pas en ajouter « au cas où ».
 
 ## Invariant n°3 — secrets et logs
 
 - Tokens d’accès : `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `INGEST_API_TOKEN`, `INTERNAL_API_TOKEN`.
-- En `APP_ENV=production`, `validate_production_secrets()` refuse de démarrer si l’un est vide. Ne pas contourner.
+- En `APP_ENV=production`, `validate_production_secrets()` refuse de démarrer si l’un est vide. Ne pas contourner. Écart ouvert C11 : le lifespan configure actuellement les commandes Telegram avant cette validation ; les producteurs démarrent après. La validation avant toute configuration Telegram reste un correctif distinct, non réalisé par l’alignement documentaire.
 - Ne jamais logger un secret. `JSONFormatter` masque Bearer, `token=` / `secret=` / `password=` / `key=`, préfixe `sk-`, et les extras dont la clé est sensible. Garder ce comportement.
 - `compare_digest` : un secret attendu **vide** et un secret reçu vide matchent. D’où le garde-fou de démarrage.
 - `.env` local et distant : ne pas les committer, ne pas les coller dans le chat, ne pas les rsyncer depuis un exemple qui écraserait la prod.
-- Clés lues par l’app : uniquement [`.env.example`](.env.example) / [`app/core/config.py`](app/core/config.py). `TELEGRAM_WEBHOOK_URL` et `EBAY_ENVIRONMENT` ne sont **pas** lus. eBay : `EBAY_ENV`.
+- Settings applicatifs : [`.env.example`](.env.example) / [`app/core/config.py`](app/core/config.py). `TELEGRAM_WEBHOOK_URL` et `EBAY_ENVIRONMENT` ne sont **pas** lus. eBay : `EBAY_ENV`. Compose consomme séparément `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` ; les scripts ont leurs propres options et variables. `DOMAIN_NAME` n’a pas de consommateur dans ce dépôt.
 - OpenAPI (`/docs`, `/redoc`, `/openapi.json`) est coupé seulement si `APP_ENV=production`.
 
 ## Qualité de code
@@ -186,7 +237,7 @@ ou aux données réellement manquantes.
 8. Après une modification : Ruff sur les fichiers touchés, puis les tests concernés. Suite complète avant un déploiement.
 9. **Historique vert** : chaque commit passe `ruff` et `pytest` sur son propre arbre. Un refactor ne dépend jamais d’un commit futur ; un découpage qui produit un commit rouge est un mauvais découpage. `make check-history` rejoue la série (base = `$CHECK_HISTORY_BASE`, sinon dernier tag `v*`, sinon `HEAD~5`) et la CI rejoue la même chose à chaque tag. `mypy` n’est pas dans le lot par défaut : c’est un objectif de bout de branche, pas un contrat de commit.
 10. Toute cote de marché passe par les règles pures de [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : occasion, état au moins « Très bon », marchand non exclu. Ne pas réintroduire un filtre d'état local à un fournisseur ou dans un handler.
-11. Toute écriture de cote passe par [`app/services/book_market_pricing.py`](app/services/book_market_pricing.py) : `price_book_now` pour un écran qui attend le résultat, `schedule_book_pricing` pour l'arrière-plan. Ni le handler `/add`, ni le bouton « 📊 Prix du marché », ni l'édition d'un ISBN, ni le job planifié n'ont leur propre collecte d'offres — une copie, c'est une cote qui se contredit selon le chemin qui l'a produite.
+11. Toute écriture de cote passe par [`app/services/book_market_pricing.py`](app/services/book_market_pricing.py) : `price_book_now` pour un écran qui attend le résultat, `schedule_book_pricing` pour l'arrière-plan. Ni le handler `/add`, ni le bouton « Prix du marché », ni l'édition d'un ISBN, ni le job planifié n'ont leur propre collecte d'offres — une copie, c'est une cote qui se contredit selon le chemin qui l'a produite.
 
 ## Tests
 
@@ -194,6 +245,7 @@ ou aux données réellement manquantes.
 - Le matching, l’idempotence d’ingestion, le calcul de total, le cache marché et le webhook secret sont des filets critiques.
 - Les tests d’ingest patchent l’envoi via un réexport / `sys.modules` : préserver `_get_send_listing_alert()` tant que ce contrat tient.
 - Pas de base globale partagée non isolée à introduire dans `conftest.py`.
+- C13 : un avertissement de coroutine non attendue doit être reproduit et attribué à un double avant correction ; ne pas le masquer ni le déclarer résolu par simple lecture du test.
 
 ## Fichiers sensibles — ne pas étendre, ne pas « améliorer » le comportement
 
@@ -225,97 +277,29 @@ Elle s’arrête au premier échec et n’essaie pas l’étape suivante. Après
 
 L’interruption inclut désormais synchronisation, construction, migration et démarrage jusqu’à la santé réelle, sans durée garantie. Un échec après arrêt peut laisser le service arrêté et l’arbre partiellement synchronisé ; ne jamais relancer automatiquement l’ancien code sur cet arbre. Un échec après démarrage peut laisser la cible active. Le bilan d’un déploiement interrompu doit indiquer l’état réellement constaté du conteneur, du code et du schéma avant de choisir la reprise ou la restauration décrite dans `docs/bd-preparation.md`. Aucune restauration automatique.
 
-Le détail de chaque étape, quand on les joue à la main :
+Pour reprendre une interruption, relire `scripts/deploy.py` et la procédure de
+`docs/bd-preparation.md`. Ne pas recopier un ancien ordre de commandes. Le rsync
+exclut le `.env` local : il ne le transmet pas et préserve le fichier distant.
 
-```bash
-make preflight        # APP_ENV, secrets, un seul scheduler, migration en tête, écart de code
-```
-
-Arrêt confirmé **avant** synchronisation des fichiers runtime :
-
-```bash
-ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 'bash -s' <<'SH'
-set -eu
-cd ~/bot-radar
-cid=$(docker compose ps -a -q app)
-test -n "$cid"
-docker compose stop app
-test "$(docker inspect --format '{{.State.Running}}' "$cid")" = false
-SH
-```
-
-Synchronisation (n’exclut pas `.env` distant : **ne pas** envoyer un `.env` local par accident ; le rsync ci-dessous ne cible pas `.env` s’il est absent du filtre, mais un `.env` local **écraserait** la prod s’il est présent — vérifier avant) :
-
-```bash
-rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
-  --exclude '.mypy_cache' --exclude '.ruff_cache' --exclude '.git' --exclude '.env' --exclude 'vendor' \
-  -e "ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no" \
-  ./ ubuntu@88.96.56.44:~/bot-radar/
-```
-
-Rebuild de l’app (obligatoire pour `alembic/` : non monté en volume ; `./app` est bind-mounté) :
-
-```bash
-ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/bot-radar && docker compose build app"
-```
-
-Migration depuis l’image cible construite, application toujours arrêtée :
-
-```bash
-ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/bot-radar && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app upgrade head < /dev/null && docker compose run --rm --no-deps --pull never -T --entrypoint alembic app current < /dev/null"
-```
-
-Démarrage seulement après réussite des deux commandes précédentes, puis attente de santé :
-
-```bash
-ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/bot-radar && docker compose up -d --no-build --pull never app"
-```
-
-Contrôles : `radar_app` healthy, `https://radar.aminezegmou.fr/health` 200, pas de conteneur worker, pas de log `Secrets de production vides`, scheduler démarré. Ne pas dumper de tokens dans les logs collectés.
-
-Puis `make verify-deploy` : les mêmes contrôles, mais cette fois un écart de code est fatal. Un déploiement n’est terminé que lorsqu’il passe.
+`make preflight` contrôle l’état avant synchronisation ; `make verify-deploy`
+répète les contrôles après démarrage et rend l’écart de code fatal. `/health`
+atteste la vivacité HTTP, pas la capacité métier ; sa sonde IA ne prouve pas une
+génération. SQL, Redis, scheduler et poller y sont explicitement non contrôlés.
+Le déploiement exige également les vérifications du conteneur, du schéma, du
+code et du scheduler prévues par les scripts. Aucune de ces lectures ne prouve
+une collecte Vinted ou une réception Telegram réelle.
 
 Ne pas committer ni pousser sauf demande. Ne pas `--force` git.
 
 **Protection de `main`** (actrice, à ne pas défaire) : le status check `check` est obligatoire sur une branche à jour (`strict=true`) et `enforce_admins` est actif, donc **le force-push est refusé, y compris par le propriétaire**. Elle rend le push direct impossible, et pas par prudence : la CI ne peut pas jouer le role `check` sur un commit qui n’existe pas encore sur GitHub. Le chemin normal n’est donc plus de la lever : c’est la branche et la PR (voir « Workflow Git »). `scripts/push_protected.py` a été supprimé avec cette voie — la constitution ne tolère pas un chemin contourné maintenu en vie à côté du chemin réel.
 
-La procédure de restauration ci-dessous reste la référence, pour le cas où la configuration de la branche doit être rétablie à la main. Lever :
-
-```bash
-gh api -X DELETE repos/ZeAmine/bot-radar/branches/main/protection
-```
-
-La remettre ensuite — ce corps reproduit l’état mesuré sur l’API, pas l’intention :
-
-```bash
-gh api -X PUT repos/ZeAmine/bot-radar/branches/main/protection --input - <<'JSON'
-{
-  "required_status_checks": { "strict": true, "contexts": ["check"] },
-  "enforce_admins": true,
-  "required_pull_request_reviews": null,
-  "restrictions": null,
-  "required_linear_history": false,
-  "allow_force_pushes": false,
-  "allow_deletions": false,
-  "required_conversation_resolution": false,
-  "lock_branch": false,
-  "allow_fork_syncing": false
-}
-JSON
-```
-
-Ce que l’API accepte, vérifié par aller-retour `PUT` puis `GET` :
-
-- `required_pull_request_reviews: null` et `restrictions: null` sont acceptés et disparaissent de la réponse : aucune revue exigée, aucune restriction.
-- `allow_fork_syncing` **était documenté à `true` alors que GitHub le laisse à `false`**. Le `PUT` ne signale pas l’écart — il répond `200` — et seul le `GET` ultérieur révèle que la valeur n’a pas pris. Le corps ci-dessus porte donc `false`, la valeur réellement appliquée.
-- `block_creations` et `required_signatures` apparaissent dans le `GET` mais ne se règlent pas par ce `PUT` : ne pas les ajouter au corps, ils seraient ignorés de la même façon.
+La gestion des protections de branche est une opération administrative
+exceptionnelle, hors du workflow de développement. Aucun agent ne les lève pour
+livrer une tâche ; aucune recette de contournement n’est maintenue ici.
 
 Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
 
-Révision Alembic actuelle attendue : `0010_alert_preparation` (préparation durable et reprenable des nouvelles alertes BD, distincte d’une pause volontaire). Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — donc seulement en production. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
+Tête du graphe Alembic au présent état du dépôt : `0013_pause_actions`. Les recettes historiques 0010/0011 conservent leur périmètre ; cette tête de code ne prouve pas la révision d’une base réelle. Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — donc seulement en production. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
 
 ## IA
 
@@ -344,7 +328,7 @@ Chemin **tests / provider Pydantic + cache Redis** : `ListingAnalysisProvider` +
 Modules actifs (`app/services/ai/modules/`) :
 - `natural_add.py` (`AI_FEATURE_NATURAL_ADD=true`) : Création d'alertes en langage naturel (`/add`).
 - `profit_scoring.py` (`AI_FEATURE_PROFIT_SCORING=true`) : Estimation de rentabilité / indice pépite (tech, gaming, vêtements).
-- `negotiation.py` (`AI_FEATURE_NEGOTIATION=true`) : Coach de négociation et message d'offre vendeur (`💬 Négocier`).
+- `negotiation.py` (`AI_FEATURE_NEGOTIATION=true`) : Coach de négociation et message d'offre vendeur (`Négocier`).
 - `keyword_variants.py` (`AI_FEATURE_KEYWORD_VARIANTS=true`) : Suggestions de variantes orthographiques et d’exclusions, ancrées sur la fiche de l’ouvrage. Sur `/add`, la recherche part en arrière-plan (`safe_create_task`) après le jalon « ouvrage trouvé » : le récap n’attend jamais le moteur, et le résultat est fusionné dans le brouillon seulement s’il porte encore sur l’ouvrage affiché.
 - `auto_tuning.py` (`AI_FEATURE_AUTO_TUNING=true`) : Analyse des dislikes et suggestions d'exclusions (`/auto_tune`).
 *(Note : Les modules non pertinents `hidden_condition`, `vision_guard`, `bundle_decomposition`, `price_glitch`, ainsi que `bundle_detector` et le bouton dressing ont été définitivement supprimés — voir ADR-006, ADR-007, ADR-011).*

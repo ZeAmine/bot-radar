@@ -6,7 +6,7 @@ Il sert de boussole aux modèles de langage (LLMs) et assistants de code pour si
 ### Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-013, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, décisions consignées, dette différée).
 
 ---
 
@@ -41,7 +41,7 @@ Détecter les nouvelles annonces Vinted en temps réel et les injecter dans le p
 - [`app/db/repositories/listing_repo.py`](app/db/repositories/listing_repo.py) : Dédoublonnage par `(source_name, external_id)` et contrainte unique `listing_matches (alert_id, listing_id)`.
 
 ### Invariants et contraintes
-- **Zéro blocage Cloudflare & API First** : Le poller interroge le microservice interne `/svc-catalogue/items` avec les en-têtes web actuels (`Platform: web`, `X-Next-App: marketplace-web`), et bascule sur le scraping HTML si l'API interne fait défaut.
+- **API First avec repli HTML** : Le poller interroge le microservice interne `/svc-catalogue/items` avec les en-têtes web actuels (`Platform: web`, `X-Next-App: marketplace-web`), et bascule sur le scraping HTML si l'API interne fait défaut.
 - **Image de couverture** : La photo de couverture est extraite dès le catalogue et affichée directement dans l'alerte Telegram, sans requête Vinted supplémentaire.
 - **Frais acheteur** : Calcul automatique des frais de protection (`calculate_buyer_protection_cents` : 0.70 € + 5%) et frais de port forfaitaires (2.88 €).
 - `to_ingest_payload` génère une description synthétique pour le matching car la description vendeur détaillée n'est pas présente sur le flux catalogue.
@@ -51,13 +51,13 @@ Détecter les nouvelles annonces Vinted en temps réel et les injecter dans le p
 ## Sujet 2 — Normalisation & Matching Déterministe
 
 ### Rôle
-Comparer en quelques microsecondes en mémoire CPU chaque annonce entrante avec l'ensemble des alertes actives de l'utilisateur.
+Comparer chaque annonce entrante avec les alertes actives en mémoire CPU. Les budgets locaux sont ceux des benchmarks simulés, pas une garantie de latence.
 
 ### Fichiers clés
-- [`app/services/matcher_service.py`](app/services/matcher_service.py) : Évaluation multicritère :
-  - `evaluate_listing_against_alert(...)` : vérification du prix max, catégorie, inclusion de mots-clés, variantes, exclusions et états.
-  - `ListingRepository.matched_alert_ids(...)` : matches déjà notifiés pour une annonce, une seule requête SQL. Le matching lui-même est CPU (`evaluate_listing_against_alert`).
-- [`app/domain/rules/matcher.py`](app/domain/rules/matcher.py) : Spécifications métier pures du matching (`DeterministicListingMatcher`).
+- [`app/domain/rules/listing_match.py`](app/domain/rules/listing_match.py) : règles multicritères pures (`evaluate_listing_against_alert`) ; aucune I/O.
+- [`app/services/matcher_service.py`](app/services/matcher_service.py) : réexport de compatibilité, sans implémentation parallèle.
+- [`app/domain/rules/matcher.py`](app/domain/rules/matcher.py) : adaptateur `DeterministicListingMatcher`, appelant les règles du domaine.
+- [`app/db/repositories/listing_repo.py`](app/db/repositories/listing_repo.py) : `match_notification_state`, lecture groupée de l’état durable par annonce ; distincte du calcul CPU.
 - [`app/utils/text.py`](app/utils/text.py) : Normalisation Unicode avancée : passage en minuscules, décomposition NFKD (suppression des accents), remplacement des apostrophes typographiques et séparateurs.
 
 ### Invariants et contraintes
@@ -73,9 +73,9 @@ Comparer en quelques microsecondes en mémoire CPU chaque annonce entrante avec 
 Calculer instantanément la cote et l'écart de prix pour les bandes dessinées et comics par rapport au marché de l'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres).
 
 ### Fichiers clés
-- [`app/services/market_price_service.py`](app/services/market_price_service.py) : `get_comparison_summary(...)` et `format_market_details_card(...)` synchrones, lisant exclusivement le cache local PostgreSQL. `reference_price(cache)` fixe la règle de référence ; `has_usable_price(cache)` dit si une cote permet de comparer, `format_cote_lines(book)` porte les lignes d'attente déjà connues, et `PENDING_COTE_LINE` (« cote en cours ») / `SEARCHING_BOOK_LINE` (« recherche de l'ouvrage en cours ») sont les deux états d'attente d'une alerte BD (ADR-023) ; `cote_absence_line(book)` est **la seule** règle qui choisit entre l'attente et l'absence constatée : sans cache ou sans date de relevé, la cote reste en cours ; avec un cache daté et aucune référence, `NO_OFFER_LINE` (« aucune offre trouvée ») nomme le relevé qui l'a constaté (ADR-039) ; `NO_CATALOGUE_LINE` (« aucune source ne catalogue cet ouvrage ») est le quatrième silence, celui d'une œuvre qu'aucune autorité ne connaît : `format_market_details_card(..., catalogue_exhausted=True)` rend la carte correspondante au lieu d'une section d'attente (ADR-041) ; `_vinted_total_cents`, `_select_secondhand_partners` et `_series_books_lines` sont les helpers partagés (ADR-016). Le déroulé d'une série liste **chaque** tome (les tomes sans prix se comptent en deux lignes — « en cours de cote » et « sans aucune offre trouvée »), le total affiché est celui **persisté** sur l'alerte (`series_reference_total`), et le lot ne porte un total que si tous ses tomes sont cotés (`_lot_reference_total`, ADR-037). La référence est le plus bas prix que nous puissions constater, borné par nos relevés (ADR-019).
-- [`app/services/market_health.py`](app/services/market_health.py) : `notify_stale_certified_lows` signale, une fois par jour, les cotes affichées que plus aucun relevé ne nourrit. Appelée en fin de passe par `refresh_book_prices_task`, jamais fatale (ADR-020). Porte aussi le diagnostic « avec quelle cote une alerte BD part-elle ? » : `classify_sent_cote_state` et `record_sent_cote_state` incrémentent, **après l'envoi**, un compteur Redis par état (`real` / `pending` / `no_offer` / `searching` / `uncatalogued`) ; `read_sent_cote_states` les relit pour `scripts/report_cote_sent_state.py` (ADR-026, ADR-039, ADR-041).
-- [`app/services/book_market_pricing.py`](app/services/book_market_pricing.py) : **unique point de cotation**. `fetch_offers_for_book` interroge tous les fournisseurs avec l'ISBN validé **et** le titre ensemble (le repli par titre est ce qui permet de coter un ouvrage introuvable par code) ; `price_book_now` attend le résultat pour un écran, `schedule_book_pricing` part en arrière-plan avec une garde d'un seul vol par livre, partagé avec les ouvertures de panneaux et le job planifié. L'état de tentative et les offres actuelles sont persistés séparément du dernier prix observé (`0009_market_refresh_state`, ADR-042). Consumé par la création d'alerte, l'édition d'un ISBN, le bouton « 📊 Prix du marché » et le job planifié. `persist_market_result` réécrit à chaque écriture le total de série (`alerts.series_total_cents`) des alertes qui portent le livre, via `series_reference_total` (ADR-037).
+- [`app/services/market_price_service.py`](app/services/market_price_service.py) : résumé synchrone en cache local et panneau marché. `cote_absence_line` distingue attente sans relevé, absence d’offre datée, collecte échouée et référence inutilisable. L’ingestion remplace l’attente sans relevé par `COTE_NOT_READY_LINE` ; une composition inconnue rend `LOT_UNRESOLVED_LINE`. `NO_CATALOGUE_LINE` relève d’un verdict d’autorités conclu, pas d’une panne. Le panneau peut présenter une collecte en cours ; un message envoyé reste un instantané. Totaux et références utilisent les règles existantes, sans collecte avant envoi.
+- [`app/services/market_health.py`](app/services/market_health.py) : diagnostic après envoi (`real`, `pending`, `no_offer`, `searching`, `uncatalogued`, `unavailable`) et signalement des observations non renouvelées. La ligne non chiffrée envoyée n’est pas une promesse de mise à jour ; un lot inconnu appartient au diagnostic `unavailable`.
+- [`app/services/book_market_pricing.py`](app/services/book_market_pricing.py) : **unique point de cotation**. `fetch_offers_for_book` interroge tous les fournisseurs avec l'ISBN validé **et** le titre ensemble (le repli par titre est ce qui permet de coter un ouvrage introuvable par code) ; `price_book_now` attend le résultat pour un écran, `schedule_book_pricing` part en arrière-plan avec une garde d'un seul vol par livre, partagé avec les ouvertures de panneaux et le job planifié. L'état de tentative et les offres actuelles sont persistés séparément du dernier prix observé (`0009_market_refresh_state`, ADR-042). Consumé par la création d'alerte, l'édition d'un ISBN, le bouton « Prix du marché » et le job planifié. `persist_market_result` réécrit à chaque écriture le total de série (`alerts.series_total_cents`) des alertes qui portent le livre, via `series_reference_total` (ADR-037).
 - [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) : règles pures de classification d'une offre (`condition_tier`, `is_merchant_excluded`, `is_comparable_secondhand_offer`). Source unique du filtre d'occasion, partagée par le registre de fournisseurs, Chasse-aux-livres et l'affichage (ADR-016).
 - [`app/domain/rules/catalogue_search.py`](app/domain/rules/catalogue_search.py) : règles pures du verdict de catalogue. `is_catalogue_exhausted(verdict)` est **le seul** prédicat qui dit « aucune source ne catalogue cette œuvre » : au moins une autorité a été interrogée, aucune ne s'est tue, et aucune n'a rendu de notice. `is_uncatalogued(alerte)` lit le verdict persisté (une date, jamais un drapeau). Un silence d'autorité interdit la conclusion (ADR-041).
 - [`app/services/tome_extractor.py`](app/services/tome_extractor.py) : Extraction déterministe des numéros de tomes, intégrales et lots (regex ultra-rapides sans I/O). Un lot dénombré sans numéros posés (« lot de 4 tomes ») remonte `lot_count` ; c'est `resolve_loaded_books` qui décide s'il peut le composer.
@@ -92,16 +92,17 @@ Calculer instantanément la cote et l'écart de prix pour les bandes dessinées 
 - **Choix de l'œuvre, puis de l'édition, avant création** : le récap `/add` décrit l'édition surveillée (« Édition », juste après la ligne « Éditeur ») et le clavier `al_create_edition:*` permet de changer d'ISBN sans refaire la commande ; les boutons sont numérotés `1️⃣ Éditeur - année` comme le récap. Ni la ligne ni les boutons n'apparaissent sous **deux éditions exploitables** : sans alternative, la ligne « Éditeur » suffit. Le rendu passe par `creation_card(draft)` et `creation_keyboard(draft)` : un seul chemin, éditions comprises. La confirmation « ✅ Alerte créée » lit **la même carte** — `header`/`footer` propres, bloc de cote en `extra_lines` — donc les deux écrans ne peuvent plus dériver (ADR-032).
 - **Œuvres homonymes (ADR-021)** : quand plusieurs notices portent le titre demandé sous des auteurs différents, rien n'est rattaché — ni ISBN, ni auteur, ni éditeur — et le clavier propose un bouton par œuvre (`al_create_work:*`, « 1️⃣ Auteur · année · éditeur ») **avant** les éditions. Choisir l'œuvre réécrit la fiche d'identité et relance la recherche de mots-clés, comme le fait toute correction d'ISBN (`realign_draft_to_isbn`).
 - **Zéro HTTP sur le chemin de l'alerte** : `MarketPriceService.get_comparison_summary` lit uniquement la table locale `book_market_cache`. Le refresh complet interroge les providers à 07:00 et 19:00 ; un lot incrémental tourne à `:15` et `:45`.
-- **Aucune alerte BD sans bloc de cote (ADR-023)** : une alerte BD part toujours avec une cote chiffrée, `PENDING_COTE_LINE` (livre identifié, cote en cours), `NO_OFFER_LINE` (livre identifié, une passe a eu lieu et n'a rien trouvé — la ligne est datée du relevé, ADR-039), `NO_CATALOGUE_LINE` (aucune autorité ne catalogue l'œuvre, verdict persisté sur l'alerte — ADR-041) ou `SEARCHING_BOOK_LINE` (aucun livre résolu, recherche réellement annoncée) — et la ligne dit vrai : la résolution de fond est réellement lancée, et un livre sans offre reste demandé aux marchands. La BNF est interrogée par **nom d'alerte** (+ auteur), jamais par titre brut d'annonce. Dès la création d'une série sans ISBN, ses tomes sont cherchés et cotés (`link_books_from_bnf(..., series=True)`, ADR-026).
+- **Préparation et envoi sont distincts** : une nouvelle BD reste en pause pendant les tentatives de préparation durable (ADR-043/046). Une préparation terminée ne garantit ni notice ni prix. À l’ingestion, chaque BD porte un bloc chiffré ou une ligne d’état : indisponibilité sans relevé/échec, aucune offre datée, lot non identifié, catalogue épuisé ou recherche annoncée. Aucun HTTP catalogue/marché n’est ajouté avant Telegram ; les replis de fond servent les prochaines annonces.
+
 - **Référence de prix (ADR-016)** : le **prix le plus bas constaté sur 1 an** prime toujours ; le prix du marché du jour n'est qu'un repli. L'écart compare le **total Vinted, frais de port inclus**, à cette référence. Le résumé d'alerte et le panneau détaillé citent la même référence.
 - **Format d'affichage** :
   ```text
   📉 Prix bas constaté : 12,50 €
   ✅ Écart : -3,50 €
   ```
-- **Zéro faux positif de cotation** : une offre neuve ou en état déclaré inférieur à « Très bon » n'entre jamais dans une cote ; un ISBN invalide n'est jamais utilisé pour interroger un fournisseur ; un lot n'est cumulé que sur les tomes appariés, la couverture étant annoncée (ex: `Lot, 2/3 tomes`).
+- **Règles de comparabilité, sans garantie de faux positifs nuls** : une offre neuve ou en état déclaré inférieur à « Très bon » n'entre jamais dans une cote ; un ISBN invalide n'est jamais utilisé pour interroger un fournisseur ; un lot n'est cumulé que sur les tomes appariés, la couverture étant annoncée (ex: `Lot, 2/3 tomes`).
 - **Lot dénombré** : quand le vendeur donne un compte et aucun numéro (« lot de 4 tomes »), `_resolve_counted_lot` ne compose le lot que si la série compte exactement ce nombre de tomes identifiables, sans doublon d'édition. La composition est alors marquée `composition_inferred` et l'alerte l'affiche comme telle (`Lot de 4 tomes, composition déduite`) : une déduction ne doit jamais se lire comme un inventaire énoncé par le vendeur.
-- **Tome concerné en gras** : Dans les listes d'autres tomes d'une série, le tome ciblé est mis en évidence en gras. Les tomes sans cote disponible sont masqués.
+- **Tome concerné en gras** : Dans les listes d'autres tomes d'une série, le tome ciblé est mis en évidence en gras. Les tomes sans cote utilisable portent leur état dans le panneau ; une absence de prix n’est pas une cote chiffrée.
 
 ---
 
@@ -122,9 +123,9 @@ Interface utilisateur conversationnelle pour piloter les alertes, recevoir les n
   - `dislike:{listing_id}` : Signalement de faux positif avec confirmation.
   - `negotiate:{listing_id}` : Génération d'une proposition de message de négociation.
 - [`app/bot/keyboards/listings.py`](app/bot/keyboards/listings.py) : Clavier Telegram des annonces :
-  - Ligne 1 : `[ 🔗 Annonce ]`
-  - Ligne 2 : `[ 📊 Prix du marché ]` (uniquement si BD/Comics)
-  - Ligne 3 (Ligne 2 si hors-BD) : `[ 👎 Faux positif ]` `[ 💬 Négocier ]`
+  - Ligne 1 : `[ Voir l’annonce ]`
+  - Ligne 2 : `[ Prix du marché ]` (uniquement si BD/Comics)
+  - Ligne 3 (Ligne 2 si hors-BD) : `[ Faux positif ]` `[ Négocier ]`
   *(Note : Les boutons factices « Payer » et « Dressing / Lot » ont été définitivement supprimés).*
 
 ---
@@ -132,7 +133,7 @@ Interface utilisateur conversationnelle pour piloter les alertes, recevoir les n
 ## Sujet 5 — Auto-Tuning & Apprentissage Proactif (Dislikes)
 
 ### Rôle
-Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur clique sur `[👎 Faux positif]`, le moteur IA analyse les motifs parasites récurrents et suggère des mots-clés d'exclusion ciblés pour assainir l'alerte.
+Permettre au bot d'apprendre des rejets de l'utilisateur : quand un utilisateur clique sur `[Faux positif]`, le moteur IA analyse les motifs parasites récurrents et suggère des mots-clés d'exclusion ciblés pour assainir l'alerte.
 
 ### Fichiers clés
 - [`app/bot/handlers/autotune.py`](app/bot/handlers/autotune.py) :
@@ -213,7 +214,7 @@ Persister les entités métier, les alertes, les annonces, le catalogue de livre
   - `book_market_cache.py` : cache de cote (`book_market_cache`). `market_price_snapshot.py` : snapshots (`market_price_snapshots`).
   - `bot_event.py` : Modèle `BotEvent` (suivi des interactions : faux positifs `listing_disliked`, clics).
   - `user.py` : Modèle `User` (identifiant Telegram, configuration).
-- [`alembic/versions/`](alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0006_composite_indexes`.
+- [`alembic/versions/`](alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0013_pause_actions` (tête de code, pas constat d’une base réelle).
 
 ### Invariants et contraintes
 - **Sessions isolées en tâche de fond** : Ne jamais réutiliser la session HTTP/API dans une coroutine d'arrière-plan (`safe_create_task`). Toujours ouvrir un nouveau contexte : `async with AsyncSessionLocal() as session:`.
@@ -228,6 +229,7 @@ Orchestrer le rafraîchissement périodique des cotes du marché et le nettoyage
 ### Fichiers clés
 - [`app/tasks/scheduler.py`](app/tasks/scheduler.py) : Configuration APScheduler unifiée.
 - [`app/tasks/refresh_book_prices.py`](app/tasks/refresh_book_prices.py) : Job à **07:00** et **19:00**, plus un lot incrémental à **:15** et **:45** (Europe/Paris). Il ne fait qu'ordonner les vagues : la collecte et la consolidation viennent de [`app/services/book_market_pricing.py`](app/services/book_market_pricing.py), le même chemin que la création d'une alerte.
+- Reprise BD au démarrage puis toutes les cinq minutes ; reprise des notifications chaque minute ; auto-tuning à 10:00, 14:00, 18:00 et 22:00 Europe/Paris. Les jobs partagent le scheduler unique, avec `max_instances=1` et `coalesce=True`.
 - [`app/tasks/cleanup.py`](app/tasks/cleanup.py) : Job nocturne à **03:30** purgeant les annonces obsolètes et les vieux snapshots.
 
 ### Invariants et contraintes
@@ -239,7 +241,7 @@ Orchestrer le rafraîchissement périodique des cotes du marché et le nettoyage
 ## Sujet 10 — Sécurité, Authentification & Gestion des Secrets
 
 ### Rôle
-Garantir la confidentialité absolue du bot privé, l'intégrité des webhooks et le masquage des secrets dans les logs.
+Protéger la confidentialité du bot privé, l'intégrité des webhooks et le masquage des secrets dans les logs.
 
 ### Fichiers clés
 - [`app/core/config.py`](app/core/config.py) : Validation stricte des variables d'environnement (`SecretStr`).
@@ -263,21 +265,14 @@ Déployer et maintenir le bot en production sur le serveur Ubuntu dédié.
 - **Répertoire** : `~/bot-radar/`
 - **Conteneurs Compose** : `radar_app` (FastAPI + bot + poller), `radar_postgres` (Postgres 16), `radar_redis` (Redis 7), raccordés à la passerelle centralisée `caddy_gateway` via le réseau Docker externe partagé `web_gateway`.
 
-### Procédure de synchronisation et redémarrage
-```bash
-# 1. Synchronisation (sans écraser le .env distant)
-rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude '.git' --exclude '.env' --exclude 'vendor' \
-  -e "ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no" \
-  ./ ubuntu@88.96.56.44:~/bot-radar/
+### Procédure de déploiement
 
-# 2. Redémarrage ou rebuild
-ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "cd ~/bot-radar && docker compose up -d --build app"
-
-# 3. Contrôle de santé
-ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-  "curl -s https://radar.aminezegmou.fr/health"
-```
+Voir [AGENTS.md](AGENTS.md#déploiement-production) et `scripts/deploy.py` :
+`make deploy` arrête et vérifie l’arrêt avant synchronisation, construit l’image,
+migre sans application active, puis démarre et vérifie la cible. Ne pas maintenir
+une seconde recette de commandes ici. `/health` signifie vivacité HTTP ; SQL,
+Redis, scheduler et poller y restent non contrôlés. La sonde IA n’atteste qu’une
+réponse HTTP, pas une génération ni une disponibilité métier.
 
 ---
 
