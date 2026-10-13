@@ -162,7 +162,9 @@ python scripts/prepare_f04_rollback.py --base d8da825 --target <commit-F04-valid
   --output /chemin/nouveau-repertoire
 ```
 
-L'artefact contient le code app/scripts parent, le graphe Alembic cible 0010,
+L'artefact contient le code app/scripts parent, le graphe Alembic cible **0010**
+(cible historique de ce lot ; la tête courante du dépôt est `0013_pause_actions`,
+voir `AGENTS.md`),
 un manifeste d'empreintes, `Dockerfile.rollback`, `rollback.sh` et deux outils :
 
 - `freeze_bd_preparations.py` : lecture seule par défaut ; sous maintenance et

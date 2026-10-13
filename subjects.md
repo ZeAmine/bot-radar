@@ -123,7 +123,7 @@ Interface utilisateur conversationnelle pour piloter les alertes, recevoir les n
   - `dislike:{listing_id}` : Signalement de faux positif avec confirmation.
   - `negotiate:{listing_id}` : Génération d'une proposition de message de négociation.
 - [`app/bot/keyboards/listings.py`](app/bot/keyboards/listings.py) : Clavier Telegram des annonces :
-  - Ligne 1 : `[ Voir l’annonce ]`
+  - Ligne 1 : `[ Voir l'annonce ]`
   - Ligne 2 : `[ Prix du marché ]` (uniquement si BD/Comics)
   - Ligne 3 (Ligne 2 si hors-BD) : `[ Faux positif ]` `[ Négocier ]`
   *(Note : Les boutons factices « Payer » et « Dressing / Lot » ont été définitivement supprimés).*

@@ -63,7 +63,7 @@ Le test des deux prix commités concurrents et celui des réservations condition
 
 | Constat | Preuve / scénario | Classement | Intervention minimale proposée, non appliquée |
 |---|---|---|---|
-| Tête Alembic attendue 0010 | tests/unit/test_preflight_deploy.py:68 attend 0010 alors que la tête constatée est 0013 | Test obsolète, pas échec de migration | Aligner cette attente sur le graphe réel, avec contrôle indépendant |
+| Tête Alembic attendue 0010 **(résolu)** | tests/unit/test_preflight_deploy.py:68 attendait 0010 alors que la tête constatée est 0013 | Test obsolète, pas échec de migration | Résolu depuis : le test attend désormais `0013_pause_actions` (voir « Réalignement autorisé des tests » plus bas) |
 | Faux flush/commit sans identifiant d’autorisation | tests/unit/test_bot_handlers.py:184 ; issue_pause_button, app/use_cases/pause_alert.py:132–140, rencontre id=None avec session AsyncMock | Double SQL incomplet ; cas réel de carte persistée passe | Tester l’émission avec base isolée et relire le jeton, sans supprimer la validation |
 | Prix historique affiché sans preuve temporelle | test_series_matching_lot_card et matrice lot attendent les anciens labels ; app/services/market_price_service.py:141 refuse les minima non vérifiables | Attentes incompatibles avec point 7 validé | Fournir des observations admissibles datées, ou vérifier explicitement l’indisponibilité |
 | Timings d’envoi absents | tests/integration/test_alert_latency.py:60–76 crée chat 601 et bot AsyncMock sans identité exploitable ; admission privée refuse/contraint l’envoi | Fixture incompatible avec admission et reçus persistés | Autoriser le destinataire factice et fournir bot.id/reçu valides ; garder les assertions de séparation des étapes |

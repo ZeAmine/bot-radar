@@ -132,11 +132,11 @@ Utilisateur unique / allowlist (`TELEGRAM_ALLOWED_USER_IDS`). Domaine public : `
 
 ### Clavier d'alerte Telegram
 Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomique :
-- Ligne 1 : `[ Voir l’annonce ]` (Lien direct Vinted).
+- Ligne 1 : `[ Voir l'annonce ]` (Lien direct Vinted).
 - Ligne 2 (BD uniquement) : `[ Prix du marché ]` (Détails et cotes complètes de la série).
 - Ligne 3 (Ligne 2 si hors-BD) : `[ Faux positif ]` (Enregistrement du dislike pour l'auto-tuning) et `[ Négocier ]` (Coach IA).
 Les boutons « Prix du marché », « Faux positif » et « Négocier » restent sans émoji,
-y compris après confirmation ou annulation d’un faux positif. Le lien « Voir l’annonce » et la confirmation « Signalé » sont aussi sans émoji. Les autres émojis sont conservés.
+y compris après confirmation ou annulation d’un faux positif. Le lien « Voir l'annonce » et la confirmation « Signalé » sont aussi sans émoji. Les autres émojis sont conservés.
 
 *(Note : Les anciens boutons factices « Payer » et « Dressing / Lot » ont été définitivement supprimés — voir ADR-007 et ADR-011).*
 

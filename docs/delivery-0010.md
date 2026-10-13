@@ -1,5 +1,9 @@
 # Livraison préparée : sauvegarde 0010 et maintenance Radar
 
+> **Document historique.** Procédure limitée à la révision décrite ci-dessous ;
+> la tête Alembic courante du dépôt est `0013_pause_actions`. La référence
+> opérationnelle de déploiement reste `AGENTS.md` / `make deploy`.
+
 Cette procédure reste arrêtée avant le GO de phase B. Le complément ne modifie ni
 application, migration, lanceur sécurisé ni fixture partagée. Il n’active pas une
 sauvegarde indépendante planifiée. Les commandes de données réelles ci-dessous

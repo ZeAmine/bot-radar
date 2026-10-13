@@ -53,7 +53,7 @@ Sur les plateformes de seconde main (notamment Vinted), les affaires exceptionne
 - 🧠 **Copilote décisionnel et d'auto-apprentissage** : Estimation de revente, coach de négociation et affinage automatique des alertes via IA.
 - 🔒 **Système strictement privé** : Mono-utilisateur avec filtrage par allowlist (`TELEGRAM_ALLOWED_USER_IDS`).
 
-### Ce que BotRadar N'EST PAS (et ne sera jamais)
+### Ce que BotRadar n'est pas (périmètre actuel)
 - ❌ **Pas de bot d'achat automatique** : Aucun checkout automatique, aucun panier automatisé.
 - ❌ **Pas de bot d'interaction marketplace intrusive** : Aucun message automatique envoyé aux vendeurs via l'API marketplace.
 - ❌ **Pas de bot public multi-tenant** : Réservé à un usage privé et sécurisé.
@@ -121,7 +121,7 @@ BotRadar est articulé autour d'un **monolithe asynchrone à processus unique** 
 Chaque notification d'opportunité reçue sur Telegram intègre un clavier inline compact, ergonomique et sans distractions :
 
 ```text
-[ Voir l’annonce ]
+[ Voir l'annonce ]
 [ Prix du marché ]                    # BD uniquement
 [ Faux positif ] [ Négocier ]
 ```
@@ -129,7 +129,7 @@ Chaque notification d'opportunité reçue sur Telegram intègre un clavier inlin
 Le faux positif demande confirmation, puis affiche « Signalé » ; annuler restitue
 les actions initiales. Ces boutons restent sans émoji dans tous ces états.
 
-- **`[ Voir l’annonce ]`** : Ouvre directement la page de l'article dans l'application Vinted avec les moyens de paiement et sessions de l'utilisateur.
+- **`[ Voir l'annonce ]`** : Ouvre directement la page de l'article dans l'application Vinted avec les moyens de paiement et sessions de l'utilisateur.
 - **`[ Prix du marché ]`** *(BD uniquement)* : Consulte le détail des offres d'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres) et l'écart de prix.
 - **`[ Faux positif ]`** : Enregistre le rejet de l'annonce pour alimenter le moteur d'apprentissage `/autotune`. Se transforme en `[ Signalé ]`.
 - **`[ Négocier ]`** : Déclenche le coach IA pour obtenir une estimation d'offre pertinente et un message de négociation pré-rédigé courtois prêt à copier.
@@ -159,7 +159,7 @@ les actions initiales. Ces boutons restent sans émoji dans tous ces états.
 
 ## 4. Moteur de Matching Déterministe CPU
 
-Le moteur de matching ([`app/domain/rules/listing_match.py`](app/domain/rules/listing_match.py)) évalue chaque annonce en mémoire CPU sans I/O. Les budgets locaux sont ceux des scénarios simulés décrits dans [`docs/alert-latency.md`](docs/alert-latency.md) :
+Le moteur de matching ([`app/domain/rules/listing_match.py`](app/domain/rules/listing_match.py)) évalue chaque annonce en mémoire CPU, sans appel fournisseur. La lecture groupée de l'état de notification (point 6) est la seule requête SQL du chemin, distincte du calcul de pertinence. Les budgets locaux sont ceux des scénarios simulés décrits dans [`docs/alert-latency.md`](docs/alert-latency.md) :
 
 1. **Normalisation Unicode NFKD** : Suppression des accents, uniformisation des minuscules, des apostrophes typographiques et des tirets.
 2. **Dictionnaire d'exclusions multilingue** (`MULTILINGUAL_EXCLUSION_MAPPING`) : Traduction et expansion automatique des exclusions en espagnol, allemand, italien et anglais (`boite vide` ➔ `caja vacia`, `nur ovp`, `solo scatola`, etc.).
@@ -385,6 +385,8 @@ make lint                 # Contrôle la conformité du code avec Ruff et Mypy
 make lock                 # Régénérer requirements.lock (après une modification de pyproject.toml)
 make check-lock           # Vérifier que le verrou couvre toutes les dépendances déclarées
 make check-history        # Rejoue Ruff et Pytest sur chaque commit de la branche
+make pr                   # Crée la branche, commit, push et la PR vers main
+make verify               # Second passage local (lint + tests) puis attente de la CI verte
 make preflight            # Vérifie l'état du VPS avant une synchronisation
 make verify-deploy        # Revérifie le VPS après une synchronisation
 make deploy               # Déploiement complet, enchaîné, arrêt au premier échec

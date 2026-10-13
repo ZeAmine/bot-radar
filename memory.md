@@ -71,7 +71,7 @@ Les descriptions opérationnelles actuelles relèvent d’AGENTS.md et de Subjec
 ### ADR-003 : Matching déterministe local en mémoire CPU
 - **Contexte** : Évaluer la pertinence d'une annonce face à des dizaines ou centaines d'alertes utilisateurs.
 - **Décision** : Le matching repose sur une normalisation Unicode NFKD rigoureuse, des expressions régulières compilées et des comparaisons scalaires (prix, état, exclusions) en mémoire vive.
-- **Raison** : Temps d'exécution unitaire < 100 microsecondes. Fiabilité totale : un mot exclu rejettera toujours l'annonce, là où un modèle vectoriel ou LLM peut halluciner ou laisser passer des faux positifs.
+- **Raison** : Temps d'exécution unitaire < 100 microsecondes. Un mot exclu rejette l'annonce de façon déterministe, là où un modèle vectoriel ou LLM peut halluciner ou laisser passer des faux positifs. Le déterminisme du filtre ne garantit pas, à lui seul, l'absence de faux positifs.
 - **Conséquence** : Pas de vector store (Milvus, Chroma, pgvector) ni de LLM sur le chemin critique du matching.
 
 ### ADR-004 : Cache local de cote BD avec rafraîchissement bi-quotidien
@@ -129,7 +129,7 @@ Les descriptions opérationnelles actuelles relèvent d’AGENTS.md et de Subjec
   - Suppression complète des 5 modules/services et de leurs 2 suites de tests associées (~550 lignes supprimées).
   - Épuration du clavier Telegram à 3 lignes pour les BD (`[ 🔗 Annonce ]`, `[ 📊 Prix du marché ]`, `[ 👎 Faux positif ]` `[ 💬 Négocier ]`) et 2 lignes pour les autres catégories.
   - Suppression des flags de configuration désactivés (`AI_FEATURE_VISION_GUARD`, `AI_FEATURE_BUNDLE_DECOMPOSITION`, `AI_FEATURE_PRICE_GLITCH`).
-- **Raison** : Focalisation stricte sur le rôle essentiel de BotRadar : alerte immédiate, matching déterministe infaillible, zéro hallucination et zéro spam.
+- **Raison** : Focalisation stricte sur le rôle essentiel de BotRadar : alerte immédiate, matching déterministe sans hallucination, et aucun envoi en double.
 
 ### ADR-012 : Migration vers l'API interne JSON Vinted (`svc-catalogue`) & Cadence Adaptative
 - **Contexte** :
@@ -142,7 +142,7 @@ Les descriptions opérationnelles actuelles relèvent d’AGENTS.md et de Subjec
   - **Repli HTML conditionnel** : Si l'API interne retourne une réponse non standard, le scraper bascule automatiquement et de manière transparente sur le catalogue HTML historique.
   - **Cadence Adaptative** : Intervalle de 12s en heures de pointe (11h30-14h00 et 18h00-22h30 Paris) et 15s en heures standard, avec passage automatique à 8s dès configuration d'un proxy résidentiel (Raspberry Pi Zero 2 W via `VINTED_PROXY_URL`).
   - **Ordonnancement Entrelacé (Staggered Interleaving)** : Les catégories hors-livres s'intercalent fluidement avec un espacement de 1,2s à 2,0s, évitant les pics concurrentiels sur une même IP.
-- **Raison** : Maximiser la vitesse de détection ("ultra-rapide") pour battre la concurrence tout en préservant l'IP et en garantissant zéro régression.
+- **Raison** : Maximiser la vitesse de détection ("ultra-rapide") pour battre la concurrence tout en préservant l'IP et les comportements existants.
 - **Mise à jour (2026-09-30)** : `svc-catalogue/items` ne renvoie plus qu'une image de couverture dans `photos[]` (souvent length 1). Le scan n'expose donc plus l'information d'images multiples : seule la couverture est conservée (ADR-015).
 
 ### ADR-013 : Passerelle centralisée multi-bots (caddy_gateway) et harmonisation VPS ~/bot-radar/
@@ -494,13 +494,6 @@ correspondant d'`AGENTS.md`. Ce qui suit n'est pas une copie de la constitution.
 - **Vérification** : tests de préparation avant activation, relecture ORM entre sessions, nouveau brouillon pendant la collecte, panne du message de progression, numéro de volume attesté par ISBN et statut agrégé de lot. Une collecte sans donnée ne peut garantir ni prix courant ni historique : l'interface annonce le résultat réel et ne fabrique aucune cote.
 
 
-### ADR-046 : La préparation BD porte une intention durable et une version
-- **Date** : 2026-10-08
-- **Décision validée** : `alerts.preparation` nullable distingue les nouvelles préparations pending/blocked de PAUSED. Les anciennes lignes restent NULL et ne sont jamais reclassées. Le marqueur conserve l’auteur demandé comme indice, le jeton, l’intention et un code d’erreur stable ; une réussite l’efface dans le commit d’activation.
-- **Concurrence** : résultats catalogue, verdict et activation sous garde de version et verrou court commun aux gestes utilisateur ; aucun HTTP sous verrou. Pause retire l’intention, reprise prépare au lieu d’activer directement ; ISBN ou nom textuel changés invalident le travail et son ancien catalogue. Les modifications sans dépendance bibliographique ne relancent rien.
-- **Reprise** : scheduler unique, passe au démarrage puis toutes les cinq minutes, quatre demandes par passe, deux travaux au plus et progression par dernière tentative. Les demandes blocked ou volontairement suspendues attendent un geste explicite. Annuler un appelant ne tue pas le travail partagé.
-- **Limites** : absence d’ISBN, de catalogue ou de cote reste admissible selon ADR-043 ; erreur technique de persistance distincte et visible. Aucun message Telegram durable exactement une fois. Si blocked ne peut être persisté, les fournisseurs ne sont pas relancés sur cette version dans le processus ; le prochain processus ne peut connaître une erreur qui n’a pas été écrite.
-- **Retour arrière** : colonne conservée, aucun downgrade destructeur. L’ancien /resume ignore les intentions : bloquer les updates Telegram en maintenance est obligatoire, l’inhibition automatique seule ne suffit pas. Le graphe Alembic doit rester compatible, sans contourner un contrôle en échec. Procédure et restrictions : [`docs/bd-preparation.md`](docs/bd-preparation.md). Aucune opération production exécutée dans ce lot.
 ### ADR-044 : Changer d’édition réaligne la fiche ; une annonce décrit la cote à l’envoi
 - **Contexte** : l’édition ISBN de « La guerre éternelle — Intégrale » refusait la notice « La guerre éternelle (Nouv. éd.) Marvano, Haldeman », au score 0,712 contre 0,75. Le handler gardait aussi le nom et les inclusions de l’ancien ouvrage, créait une fiche sans ses métadonnées et relançait la cote après activation. Une annonce « Batman Terre-un intégrale » devenait un lot non résolu avec une seule fiche liée, puis annonçait un calcul malgré un cache existant.
 - **Décision** : la vérification d’édition retire uniquement les mentions bibliographiques pour comparer les titres, sans modifier les seuils globaux. Une différence d’auteur connu, de tome ou une identité incertaine demande une confirmation explicite, sans écriture préalable. La confirmation expire avec la saisie ou un changement d’identité. Le nouvel ISBN remplace la fiche, les inclusions dérivées, les variantes/exclusions et la liaison ; sa cote passe par `price_book_now` pendant la pause, puis est relue dans la session d’édition avant reprise. Une alerte déjà en pause le reste. Les réponses bibliographiques et les mots-clés tardifs sont gardés par la saisie et la révision de l’alerte.
@@ -530,3 +523,11 @@ correspondant d'`AGENTS.md`. Ce qui suit n'est pas une copie de la constitution.
   12 œuvres retrouvées par titre contre 11 avant, gain sur *Le Voyage* de Baudoin ;
   11 ISBN exacts confirmés. Les trois nouveautés absentes restent non confirmées.
   Aucun fournisseur, cache, endpoint ni appel avant Telegram ajouté ; F04 séparé.
+
+### ADR-046 : La préparation BD porte une intention durable et une version
+- **Date** : 2026-10-08
+- **Décision validée** : `alerts.preparation` nullable distingue les nouvelles préparations pending/blocked de PAUSED. Les anciennes lignes restent NULL et ne sont jamais reclassées. Le marqueur conserve l’auteur demandé comme indice, le jeton, l’intention et un code d’erreur stable ; une réussite l’efface dans le commit d’activation.
+- **Concurrence** : résultats catalogue, verdict et activation sous garde de version et verrou court commun aux gestes utilisateur ; aucun HTTP sous verrou. Pause retire l’intention, reprise prépare au lieu d’activer directement ; ISBN ou nom textuel changés invalident le travail et son ancien catalogue. Les modifications sans dépendance bibliographique ne relancent rien.
+- **Reprise** : scheduler unique, passe au démarrage puis toutes les cinq minutes, quatre demandes par passe, deux travaux au plus et progression par dernière tentative. Les demandes blocked ou volontairement suspendues attendent un geste explicite. Annuler un appelant ne tue pas le travail partagé.
+- **Limites** : absence d’ISBN, de catalogue ou de cote reste admissible selon ADR-043 ; erreur technique de persistance distincte et visible. Aucun message Telegram durable exactement une fois. Si blocked ne peut être persisté, les fournisseurs ne sont pas relancés sur cette version dans le processus ; le prochain processus ne peut connaître une erreur qui n’a pas été écrite.
+- **Retour arrière** : colonne conservée, aucun downgrade destructeur. L’ancien /resume ignore les intentions : bloquer les updates Telegram en maintenance est obligatoire, l’inhibition automatique seule ne suffit pas. Le graphe Alembic doit rester compatible, sans contourner un contrôle en échec. Procédure et restrictions : [`docs/bd-preparation.md`](docs/bd-preparation.md). Aucune opération production exécutée dans ce lot.
