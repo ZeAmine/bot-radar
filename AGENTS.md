@@ -299,7 +299,7 @@ livrer une tâche ; aucune recette de contournement n’est maintenue ici.
 
 Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
 
-Tête du graphe Alembic au présent état du dépôt : `0013_pause_actions`. Les recettes historiques 0010/0011 conservent leur périmètre ; cette tête de code ne prouve pas la révision d’une base réelle. Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — donc seulement en production. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
+Tête du graphe Alembic au présent état du dépôt : `0013_pause_actions`. Les recettes historiques 0010/0011 conservent leur périmètre ; cette tête de code ne prouve pas la révision d’une base réelle. Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — sur toute base où cette migration est appliquée. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
 
 ## IA
 

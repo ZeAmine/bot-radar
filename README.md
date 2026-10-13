@@ -12,7 +12,7 @@
 [![IA](https://img.shields.io/badge/IA-moteur--interchangeable-blueviolet?style=flat)](app/providers/llm/)
 [![Architecture](https://img.shields.io/badge/Architecture-Single--Process%20Monolith-blue?style=flat)](AGENTS.md)
 
-**BotRadar** est un bot Telegram **privé**, conçu pour une détection réactive, conçu comme un assistant d'aide à la décision pour l'achat de produits de seconde main.
+**BotRadar** est un bot Telegram **privé** qui détecte des annonces et aide à décider d’un achat de seconde main.
 
 Il surveille quatre univers à forte valeur ajoutée :
 - 📚 **BD & Comics / Mangas** (`bd_comics`) — Cotes du marché d'occasion livrée, gestion des tomes et éditions originales.
