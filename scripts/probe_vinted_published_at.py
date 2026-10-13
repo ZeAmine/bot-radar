@@ -17,6 +17,15 @@ premier statut non 200 ou à la première exception, et n'appelle jamais
 Usage :
     python scripts/probe_vinted_published_at.py
 
+**Résultat mesuré le 2026-10-13** (une requête) : la réponse du catalogue porte les clés
+`content_source, favourite_count, id, is_favourite, item_box, photo, photos, price,
+promoted, search_tracking_params, service_fee, show_1st_time_seller_discount, title,
+total_item_price, url, user, view_count` — **aucun horodatage de publication**. Le seul
+nom retenu par la détection est `show_1st_time_seller_discount`, un booléen : le « time »
+de « first time », pas une date. La propagation et la mesure de publication ont été
+closes en « bloqué » sur ce constat. Le script reste pour reproduire ou reverifier la
+chose, pas pour être cru sur parole.
+
 Le script n'affiche que des **clés** et des valeurs courtes. Aucun cookie, jeton,
 `Authorization` ni `X-Anon-Id` n'est imprimé. À exécuter à la main, en local, hors
 CI et hors `pytest`.

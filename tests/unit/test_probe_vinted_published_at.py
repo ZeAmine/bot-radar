@@ -76,3 +76,45 @@ def test_request_params_asks_for_a_single_item():
 
     assert params["per_page"] == "1"
     assert params["order"] == "newest_first"
+
+
+def test_observed_catalogue_schema_exposes_no_publication_timestamp():
+    """Schéma réellement observé le 2026-10-13 : aucune clé de date de publication.
+
+    Les clés sont celles qu'a renvoyées `/svc-catalogue/items` sur un item réel. Le
+    seul nom retenu par la détection est `show_1st_time_seller_discount`, un booléen
+    — la chaîne « time » de « first time », pas un horodatage. Ce test garde le
+    constat sous les yeux : si Vinted ajoute un jour un champ de date, il apparaîtra
+    ici plutôt que dans une hypothèse.
+    """
+    observed = {
+        "content_source": "catalog",
+        "favourite_count": 0,
+        "id": 10113230090,
+        "is_favourite": False,
+        "item_box": {
+            "accessibility_label": "Marvel, État: Neuf sans étiquette, 4.00 €",
+            "exposures": [],
+            "ff_exposures": [],
+            "first_line": "",
+            "item_id": 10113230090,
+            "second_line": "Neuf sans étiquette",
+        },
+        "photo": {"id": 1, "url": "https://images1.vinted.net/cover.webp"},
+        "photos": [{"id": 1, "url": "https://images1.vinted.net/cover.webp"}],
+        "price": {"amount": "4.00", "currency_code": "EUR"},
+        "promoted": False,
+        "search_tracking_params": {},
+        "service_fee": "0.00",
+        "show_1st_time_seller_discount": False,
+        "title": "Tome",
+        "total_item_price": "4.00",
+        "url": "/items/1",
+        "user": {"id": 1, "login": "vendeur"},
+        "view_count": 12,
+    }
+
+    candidates = date_like_keys(observed)
+
+    assert candidates == ["show_1st_time_seller_discount"]
+    assert isinstance(observed[candidates[0]], bool)
