@@ -380,7 +380,7 @@ async def test_natural_add_drops_ai_isbn_with_invalid_check_digit():
 
 @pytest.mark.asyncio
 async def test_natural_add_skips_isbn_for_series_and_non_book_categories():
-    """Série multi-tomes ou produit non littéraire : aucun appel ISBN, aucune latence BNF."""
+    """Une suggestion de série consulte l'autorité, sans accepter l'ISBN du moteur."""
     mock_client = FakeLLM(
         text={
             "name": "One Piece",
@@ -392,7 +392,7 @@ async def test_natural_add_skips_isbn_for_series_and_non_book_categories():
     )
 
     bnf = MagicMock(spec=BookMetadataService)
-    bnf.resolve_for_alert = AsyncMock()
+    bnf.resolve_for_alert = AsyncMock(return_value=None)
     bnf.verify_isbn = AsyncMock()
 
     with patch.object(natural_add_module, "client", mock_client), patch(
@@ -403,7 +403,7 @@ async def test_natural_add_skips_isbn_for_series_and_non_book_categories():
 
     assert res is not None
     assert res.isbn13 is None
-    bnf.resolve_for_alert.assert_not_awaited()
+    bnf.resolve_for_alert.assert_awaited_once_with("One Piece", None)
     bnf.verify_isbn.assert_not_awaited()
 
 

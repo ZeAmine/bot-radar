@@ -2,7 +2,7 @@
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from pydantic import ValidationError
 
@@ -27,6 +27,7 @@ from app.services.book_metadata_service import (
 from app.use_cases.book_search import (
     BookSearchResult,
     BookSearchUseCase,
+    creation_bibliographic_identity,
     metadata_from_result,
 )
 from app.utils.isbn import extract_clean_isbn, is_valid_isbn, normalize_isbn
@@ -150,6 +151,7 @@ class _ResolvedWork:
     # catalogue (un produit, une série) — là, personne n'a cherché. Le récap ne peut
     # pas déduire ce fait de l'absence de données : il le faut explicite.
     unidentified: bool = False
+    search_result: BookSearchResult | None = None
 
 
 class NaturalAddModule(BaseAIModule):
@@ -227,7 +229,8 @@ class NaturalAddModule(BaseAIModule):
             )
             if number is not None:
                 clean_name = volume_title(clean_name, number)
-            is_series = False if number is not None else payload.is_series
+            is_series = (False if number is not None or extract_clean_isbn(user_text)
+                         else payload.is_series)
             author = payload.author.strip() if payload.author else None
             publisher = payload.publisher.strip() if payload.publisher else None
 
@@ -238,6 +241,8 @@ class NaturalAddModule(BaseAIModule):
             # prix de fin de saisie n'est pas un mot d'auteur.
             typed_query = price_suffix_regex.sub("", user_text).strip()
             author_hint = author or parse_query_title_and_author(typed_query)[1]
+            if author_hint and normalize_text(author_hint) == normalize_text(clean_name):
+                author_hint = None
             resolved = await self._resolve_isbn(
                 title=clean_name,
                 category=category,
@@ -255,6 +260,9 @@ class NaturalAddModule(BaseAIModule):
                 publisher = resolved.book.publisher or publisher
 
             book = resolved.book
+            if extract_clean_isbn(user_text) and book and book.volume_number:
+                number = book.volume_number
+                clean_name = volume_title(clean_name, number)
 
             # La résolution peut révéler une œuvre numérotée que le moteur n'avait pas
             # vue — y compris par une notice voisine qu'elle n'a pas retenue. L'ISBN
@@ -270,6 +278,12 @@ class NaturalAddModule(BaseAIModule):
                 clean_includes, _, _ = generate_recommended_keywords(clean_name)
 
             return NaturalAddResult(
+                bibliographic_identity=(creation_bibliographic_identity(resolved.search_result)
+                                        if resolved.search_result else (
+                                            {"author": None, "publisher": None, "language": None,
+                                             "source": None, "publication_year": None,
+                                             "format_detail": None}
+                                            if category == CategorySlug.BD_COMICS.value else {})),
                 name=clean_name,
                 requested_volume=number,
                 category_slug=category,
@@ -330,15 +344,21 @@ class NaturalAddModule(BaseAIModule):
         Un ISBN explicitement saisi par l'utilisateur nomme un tome : la détection de
         série ne le remplace pas, elle ne s'applique qu'à une résolution par titre.
         """
-        if category != CategorySlug.BD_COMICS.value or is_series or not title:
+        if category != CategorySlug.BD_COMICS.value or not title:
             return _ResolvedWork()
 
         typed_isbn, ai_isbn = candidates
+        # Une suggestion de série du moteur ne confirme jamais l'identité.
+        is_series = is_series and not typed_isbn
+        if is_series:
+            ai_isbn = None
         use_case = BookSearchUseCase()
 
         result = None
         try:
-            result = await use_case.search_by_title(title, author_hint)
+            result = await use_case.search_by_title(
+                title, author_hint, include_series_catalogue=not typed_isbn or is_series,
+            )
         except Exception as exc:
             logger.warning("Résolution BNF impossible pour « %s » : %s", title, exc)
 
@@ -363,6 +383,7 @@ class NaturalAddModule(BaseAIModule):
                     isbn13=candidate,
                     book=verified,
                     isbn_note=isbn_result.note,
+                    search_result=isbn_result,
                     edition_alternatives=(
                         [] if ambiguous or result is None else _editions_of(result)
                     ),
@@ -380,7 +401,7 @@ class NaturalAddModule(BaseAIModule):
                     isbn_note=f"{note}. ISBN saisi, non confirmé par la BNF",
                     work_choices=work_choices,
                 )
-            return _ResolvedWork(isbn_note=note, work_choices=work_choices)
+            return _ResolvedWork(isbn_note=note, work_choices=work_choices, search_result=result)
 
         if confirmed is not None and result is not None:
             # Les éditions concurrentes sont portées par `edition_alternatives`, que le
@@ -393,24 +414,32 @@ class NaturalAddModule(BaseAIModule):
                 edition_alternatives=_editions_of(result),
                 # La nature de l'œuvre se lit sur toute la résolution, notices voisines
                 # comprises : la retenue ne porte pas toujours le numéro qui la trahit.
-                series=SeriesSignal(is_series=result.is_series),
+                series=SeriesSignal(is_series=result.is_series and not typed_isbn),
+                search_result=(replace(result, is_series=False, series_volumes=())
+                               if typed_isbn else result),
             )
 
+        if result is not None and result.is_series and not typed_isbn:
+            return _ResolvedWork(
+                series=SeriesSignal(is_series=True), search_result=result, isbn_note=result.note,
+            )
         if typed_isbn:
             return _ResolvedWork(
+                search_result=result,
                 isbn_note=(
                     f"ISBN saisi non confirmé par la BNF : surveillance par titre sur « {title} »"
                 )
             )
         if ai_isbn:
             return _ResolvedWork(
+                search_result=result,
                 isbn_note=(
                     f"Aucun ISBN confirmé par la BNF pour « {title} » : surveillance par titre"
                 )
             )
         # Ni notice, ni ISBN d'aucune sorte : l'ouvrage n'est pas identifié, et c'est
         # un fait à dire à l'utilisateur — pas un vide à afficher.
-        return _ResolvedWork(unidentified=True)
+        return _ResolvedWork(unidentified=True, search_result=result)
 
 
 natural_add_module = NaturalAddModule()

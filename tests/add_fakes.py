@@ -191,7 +191,9 @@ def fake_book_search(
     from app.use_cases.book_search import result_from_report, result_from_verdict_report
 
     class _UseCase:
-        async def search_by_title(self, title: str, author_hint: str | None = None):
+        async def search_by_title(
+            self, title: str, author_hint: str | None = None, **_options,
+        ):
             resolution = await bnf.resolve_for_alert(title, author_hint)
             return result_from_report(
                 BibliographicReport(kind="title", resolution=resolution),

@@ -6,11 +6,14 @@ import sys
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiogram import Bot
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from app.services.book_metadata_service import CatalogueVerdict
 
 from app.bot.bot_instance import bot as default_bot
 from app.core import alert_latency as latency
@@ -68,6 +71,9 @@ async def link_books_from_bnf(
     wait_for_prices: bool = False,
     expected_preparation_token: str | None = None,
     expected_snapshot: BibliographicSnapshot | None = None,
+    catalogue_sink: "list[CatalogueVerdict] | None" = None,
+    initial_volumes: list[dict[str, Any]] | None = None,
+    reference_publisher: str | None = None,
 ) -> bool:
     """Lie les notices BNF d'une œuvre et les cote, sans retarder l'envoi Telegram.
 
@@ -91,7 +97,11 @@ async def link_books_from_bnf(
     d'annoncer une recherche en cours indéfiniment (ADR-041).
     """
     from app.db.session import AsyncSessionLocal
-    from app.services.book_metadata_service import BookMetadataService
+    from app.services.book_metadata_service import (
+        BookMetadataService,
+        SeriesVolume,
+        select_series_volumes,
+    )
 
     query = f"{title} par {author}" if author else title
     try:
@@ -107,9 +117,27 @@ async def link_books_from_bnf(
                 return False
         service = BookMetadataService()
         if series:
-            verdict = await service.lookup_series_notices(title, author_hint=author)
+            options: dict[str, Any] = {"for_creation": True} if wait_for_prices else {}
+            if wait_for_prices and reference_publisher:
+                options["reference_publisher"] = reference_publisher
+            verdict = await service.lookup_series_notices(
+                title, author_hint=author,
+                **options,
+            )
         else:
             verdict = await service.lookup_by_title_and_author(query)
+        if initial_volumes:
+            selected = select_series_volumes([
+                *(SeriesVolume.from_stored(row) for row in initial_volumes), *verdict.volumes,
+            ], publisher=reference_publisher)
+            verdict = replace(
+                verdict, volumes=selected,
+                notices=tuple(replace(v.notice, isbn13=v.isbn13,
+                                      title=v.notice.volume_title or v.notice.title)
+                              for v in selected if v.isbn13),
+            )
+        if catalogue_sink is not None:
+            catalogue_sink.append(verdict)
         notices = [notice for notice in verdict.notices if notice and notice.isbn13]
 
         to_price: list[uuid.UUID] = []
@@ -125,11 +153,15 @@ async def link_books_from_bnf(
                 return False
             if notices:
                 await alert_repo.set_book_search_exhausted(alert_id, None)
-            elif is_catalogue_exhausted(verdict):
+            elif is_catalogue_exhausted(verdict) and not verdict.volumes:
                 await alert_repo.set_book_search_exhausted(alert_id, datetime.now(UTC))
 
             book_repo = BookRepository(session)
             catalog = BookCatalogService(session)
+            if initial_volumes:
+                # Remplace les seuls liens de cette préparation par la sélection
+                # confirmée, dans la même transaction et sous sa garde de version.
+                await book_repo.clear_alert_books(alert_id)
             for notice in notices:
                 isbn13 = notice.isbn13
                 if not isbn13:
@@ -141,6 +173,9 @@ async def link_books_from_bnf(
                         isbn13=isbn13,
                         author=notice.author,
                         publisher=notice.publisher,
+                        language=notice.language or "und",
+                        publication_year=notice.publication_year,
+                        format_book=notice.format_detail,
                     )
                 if not book:
                     continue
@@ -159,6 +194,12 @@ async def link_books_from_bnf(
                 loaded = await book_repo.get_by_id(book.id)
                 if loaded is not None and not has_usable_price(loaded.market_cache):
                     to_price.append(book.id)
+            if wait_for_prices:
+                # Les ISBN déjà confirmés à la création restent liés même si la
+                # seconde découverte est muette. Leurs cotes sont préparées aussi.
+                for linked in await book_repo.get_all_books_for_alert(alert_id):
+                    if linked.id not in to_price and not has_usable_price(linked.market_cache):
+                        to_price.append(linked.id)
             await recalculate_invalidated_series(session)
             await session.commit()
     except Exception as exc:

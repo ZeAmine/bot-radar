@@ -600,12 +600,27 @@ class MarketPriceService:
 
     @staticmethod
     def get_comparison_summary(
-        listing: Listing,
+        listing: Listing | None,
         book: Book | None,
         books_in_series: list[Book] | None = None,
         tome_result: "TomeMatchResult | None" = None,
+        *, for_creation: bool = False,
     ) -> str | None:
         """Génère la ligne de comparaison épurée pour la légende Telegram."""
+        if for_creation:
+            lines = format_cote_lines(book)
+            if not lines:
+                absence = cote_absence_line(book)
+                lines = [absence if absence and "en cours" not in absence
+                         else "<i>⚠️ Cote indisponible</i>"]
+            cache = book.market_cache if book is not None else None
+            if cache is None or _positive(cache.lowest_delivered_price_cents) is None:
+                lines.append("<b>Prix du marché :</b> Non renseigné")
+            if cache is None or not reference_price(cache)[1]:
+                lines.append("<b>Prix bas constaté :</b> Non renseigné")
+            return "\n".join(lines)
+        if listing is None:
+            return None
         books_in_series = books_in_series or []
 
         # 1. Livre précis résolu (tome unique ou one-shot)

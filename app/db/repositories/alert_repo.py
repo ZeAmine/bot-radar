@@ -277,7 +277,8 @@ class AlertRepository:
                 alert.preparation = request.suspend().stored()
             elif not request.activation_requested or request.state == "blocked":
                 alert.preparation = request.restart(
-                    activate=status == AlertStatus.ACTIVE, author_hint=request.author_hint
+                    activate=status == AlertStatus.ACTIVE, author_hint=request.author_hint,
+                    preserve_series_volumes=True,
                 ).stored()
             alert.status = AlertStatus.PAUSED
         else:
