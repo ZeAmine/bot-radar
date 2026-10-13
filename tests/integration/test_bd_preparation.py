@@ -667,7 +667,7 @@ async def test_joiners_follow_a_new_token_created_before_old_work_returns(prepar
 
     async def run(identifier):
         outcome = await original_run(identifier)
-        if outcome == "blocked":
+        if outcome.status == "blocked":
             # Relance committée après le résultat ancien, avant le réveil des appelants.
             async with p.db.maker() as session:
                 repo = AlertRepository(session)

@@ -149,10 +149,10 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     # … et un seul blanc les sépare de la liste des informations.
     assert lines[4] == ""
     assert lines[5].startswith("<b>ISBN :</b>")
-    assert "<b>Auteur :</b> Neyef" in lines
-    # L'ouvrage est décrit par le modèle : aucun trou d'identité n'est annoncé.
-    # « Non renseigné » ne se dit que quand **personne** n'identifie l'ouvrage.
-    assert "Non renseigné" not in recap
+    assert "<b>Auteur :</b> Non renseigné" in lines
+    # Aucune notice n'a confirmé l'identité : l'auteur supposé ne devient pas une donnée.
+    assert "<b>Langue :</b> Non renseigné" in recap
+    assert "<b>Année :</b> Non renseigné" in recap
 
     # « supprime l'espace entre auteur et prix maximum »
     prix = index_of_line(lines, "<b>Prix maximum :</b>")
@@ -192,7 +192,7 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     assert confirmation.count(f"<i>{note_ia}</i>") == 1
     assert confirm_lines[4] == ""
     assert confirm_lines[5].startswith("<b>ISBN :</b>")
-    assert "Non renseigné" not in confirmation
+    assert "<b>Langue :</b> Non renseigné" in confirmation
     prix = index_of_line(confirm_lines, "<b>Prix maximum :</b>")
     assert confirm_lines[prix - 1] != "", "aucune ligne vide avant « Prix maximum »"
     assert "🔎" not in confirmation
@@ -214,7 +214,7 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     class _Service:
         """Aucune autorité ne rend de notice : ni la BNF, ni OpenLibrary, ni Google."""
 
-        async def search_by_title(self, _title, _author_hint=None):
+        async def search_by_title(self, _title, _author_hint=None, **_options):
             return result_from_report(
                 BibliographicReport(kind="title", resolution=None)
             )
@@ -270,10 +270,13 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     assert lines[3] == ""
     assert lines[4] == "<b>ISBN :</b> introuvable"
     assert lines[5] == "<b>Titre :</b> whoogys dailycieux"
-    assert lines[6] == "<b>Auteur :</b> Non renseigné"
-    assert lines[7] == "<b>Éditeur :</b> Non renseigné"
-    assert lines[8] == "<b>Langue :</b> Inconnue"
-    assert lines[9] == "<b>Prix maximum :</b> 30,00 €"
+    assert lines[6] == "<b>Langue :</b> Non renseigné"
+    assert lines[7] == "<b>Auteur :</b> Non renseigné"
+    assert lines[8] == "<b>Éditeur :</b> Non renseigné"
+    assert lines[9] == "<b>Année :</b> Non renseigné"
+    assert lines[10] == "<b>Format :</b> Non renseigné"
+    assert lines[11] == "<b>Source :</b> Non renseigné"
+    assert lines[12] == "<b>Prix maximum :</b> 30,00 €"
     assert "🔎" not in recap
 
     # 5. « Créer l'alerte » : la confirmation dit la même chose, et l'alerte existe.

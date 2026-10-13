@@ -109,7 +109,7 @@ async def test_process_bd_query_lookup_refuses_to_attach_a_homonym():
     )
 
     class _UseCase:
-        async def search_by_title(self, _title, _author=None):
+        async def search_by_title(self, _title, _author=None, **_options):
             return ambiguous
 
     stored: dict = {}
@@ -173,7 +173,7 @@ async def test_process_bd_query_lookup_opens_the_card_when_nothing_is_known():
     not_found = BookSearchResult(status=BookSearchStatus.NOT_FOUND)
 
     class _UseCase:
-        async def search_by_title(self, _title, _author=None):
+        async def search_by_title(self, _title, _author=None, **_options):
             return not_found
 
     stored: dict = {}

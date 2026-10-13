@@ -29,8 +29,10 @@ from app.bot.handlers.alerts_helpers import (
     creation_volume_issue,
     extract_inline_price_and_clean_query,
     keyword_note,
+    populate_creation_prices,
     process_bd_query_lookup,
     process_tech_or_clothes_query,
+    refresh_creation_series,
     render_existing_alert_response,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
@@ -59,10 +61,7 @@ from app.services.alert_service import (
     AlertServiceError,
     parse_price_to_cents,
 )
-from app.services.market_price_service import (
-    cote_absence_line,
-    format_cote_lines,
-)
+from app.services.market_price_service import MarketPriceService
 from app.use_cases.prepare_bd_alert import prepare_bd_alert
 from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text, strip_html_tags
@@ -405,6 +404,9 @@ async def start_add_alert(
                     work.model_dump() for work in parsed.work_choices
                 ],
             }
+            if parsed.bibliographic_identity:
+                state_data.update(parsed.bibliographic_identity)
+            await populate_creation_prices(state_data, _get_book_repo(db_session))
             await state.update_data(data=state_data)
             await state.set_state(AlertCreationState.confirm_creation)
 
@@ -879,10 +881,32 @@ async def _save_alert(
                 vinted_search_url=vinted_url,
             )
 
+        if data.get("is_series"):
+            for volume in data.get("series_volumes") or []:
+                if not volume.get("confirmed") or not volume.get("isbn13"):
+                    continue
+                identified = await book_repo.get_by_isbn13(volume["isbn13"])
+                if identified is None:
+                    identified = await book_repo.create(
+                        title=volume["title"], normalized_title=normalize_text(volume["title"]),
+                        isbn13=volume["isbn13"], author=volume.get("author"),
+                        publisher=volume.get("publisher"), language=volume.get("language") or "und",
+                        publication_year=volume.get("publication_year"),
+                        format_book=volume.get("format_detail"),
+                    )
+                identified.title = volume["title"]
+                identified.normalized_title = normalize_text(volume["title"])
+                await book_repo.link_alert_to_book(alert.id, identified.id, MatchConfidence.HIGH)
+
         # La surveillance ne devient active qu'après la préparation du catalogue
         # et des cotes. L'ingestion reste ensuite une simple lecture du cache.
         alert.status = AlertStatus.PAUSED
-        alert.preparation = PreparationRequest(author_hint=author).stored()
+        alert.preparation = PreparationRequest(
+            author_hint=author,
+            series_reference_publisher=data.get("series_reference_publisher"),
+            series_volumes=[{k: v for k, v in row.items() if k != "price_lines"}
+                            for row in data.get("series_volumes") or []],
+        ).stored()
         from app.services.book_market_pricing import recalculate_invalidated_series
         await recalculate_invalidated_series(db_session)
         await creation_attempt.commit_and_close(db_session)
@@ -892,7 +916,12 @@ async def _save_alert(
             except Exception:
                 logger.warning("Message de préparation indisponible", exc_info=True)
 
-        prepared = await prepare_bd_alert(alert.id)
+        from app.services.book_metadata_service import CatalogueVerdict
+
+        prepared_catalogues: list[CatalogueVerdict] = []
+        prepared = await prepare_bd_alert(
+            alert.id, **({"catalogue_sink": prepared_catalogues} if data.get("is_series") else {}),
+        )
         current = await alert_repo.get_by_id(alert.id, refresh=True)
         if current is None:
             return  # Suppression pendant la préparation : aucun rattachement/écran ancien.
@@ -923,18 +952,19 @@ async def _save_alert(
             selected_conditions=alert.accepted_conditions,
         )
         extra_lines: list[str] = []
-        for priced_book in books:
-            if len(books) > 1:
-                extra_lines.append(f"📚 <b>{html.escape(priced_book.title)}</b>")
-            lines = format_cote_lines(priced_book)
-            if not lines:
-                absence = cote_absence_line(priced_book)
-                lines = [
-                    absence
-                    if absence and "en cours" not in absence
-                    else "<i>⚠️ Cote indisponible</i>"
-                ]
-            extra_lines.extend(lines)
+        if stored_draft.get("is_series"):
+            refresh_creation_series(
+                stored_draft, books,
+                prepared_catalogues[-1] if prepared_catalogues else None,
+            )
+            await populate_creation_prices(stored_draft, book_repo)
+        else:
+            for priced_book in books:
+                summary = MarketPriceService.get_comparison_summary(
+                    None, priced_book, for_creation=True,
+                )
+                if summary:
+                    extra_lines.extend(summary.split("\n"))
         resp_text = creation_card(
             stored_draft,
             header=ALERT_CREATED_TITLE,
