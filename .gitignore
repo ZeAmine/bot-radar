@@ -37,6 +37,7 @@ wheels/
 .agent/*
 !.agent/skills/
 !.agent/skills/**
+.workbuddy-ai/
 *.swp
 *.swo
 .DS_Store
