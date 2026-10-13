@@ -200,7 +200,6 @@ ou aux données réellement manquantes.
 Sans demande **explicite** de l’utilisateur :
 
 - [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py) — cookies Redis, Cloudflare, night mode. Le parsing HTML/JSON vit dans [`app/services/vinted_parsing.py`](app/services/vinted_parsing.py) ; ne pas y remettre de réseau.
-- [`scripts/vinted_autobuy.user.js`](scripts/vinted_autobuy.user.js)
 - [`scripts/sync_vinted_session.py`](scripts/sync_vinted_session.py)
 - Formules de `price_calculator.py` / comparaison marché (une offre sans port ≠ total « article seul »).
 - [`app/providers/chasse_aux_livres.py`](app/providers/chasse_aux_livres.py) — cookies et anti-bot. Son filtrage d'occasion et sa validation de titre s'appuient désormais sur [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) et `title_similarity` (ADR-016) : ne pas y réintroduire de dictionnaire d'œuvres figé. L'ISBN affiché exactement égal à celui de l'alerte prime sur ce veto (`expected_isbn` → `isbn_proven`, ADR-035) : ne pas le replacer sous le titre, ni affaiblir `TITLE_COHERENCE_MIN` pour compenser.

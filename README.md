@@ -58,6 +58,9 @@ Sur les plateformes de seconde main (notamment Vinted), les affaires exceptionne
 - ❌ **Pas de bot d'interaction marketplace intrusive** : Aucun message automatique envoyé aux vendeurs via l'API marketplace.
 - ❌ **Pas de bot public multi-tenant** : Réservé à un usage privé et sécurisé.
 
+Le userscript d’achat a été retiré du dépôt. Cette suppression ne désinstalle pas
+une copie déjà installée dans un navigateur ; son état n’est pas vérifié ici.
+
 ---
 
 ## 2. Architecture Technique & Invariants
