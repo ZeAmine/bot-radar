@@ -17,7 +17,7 @@ def get_listing_alert_keyboard(
     """Génère les boutons d'action d'une alerte d'annonce.
 
     Règles :
-    - Ligne 1 : [🔗 Annonce]
+    - Ligne 1 : [Voir l’annonce]
     - Ligne 2 : [Prix du marché] (si BD/Comics)
     - Ligne 3 (Ligne 2 si hors-BD) : [Faux positif] (ou [Signalé]) et [Négocier]
     """

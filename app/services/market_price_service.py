@@ -302,11 +302,10 @@ def is_no_offer_line(line: str | None) -> bool:
 def cote_absence_line(book: Book | None) -> str | None:
     """Ligne à annoncer quand aucune cote chiffrée n'est disponible pour ce livre.
 
-    Deux silences, deux vérités, et une seule ligne pour les dire : un livre jamais
-    coté attend encore sa passe (« en cours de calcul »), un livre dont la cote est
-    vide **après** une passe a un résultat, et ce résultat est l'absence d'offre —
-    daté du relevé qui l'a constaté. Les confondre faisait lire une attente
-    éternelle là où la réponse était déjà connue.
+    Distingue l’attente sans relevé, l’absence d’offre datée, la tentative échouée
+    et une référence non utilisable. L’ingestion remplace l’attente sans relevé
+    par une indisponibilité à l’envoi : le message reste un instantané. Une
+    composition de lot inconnue relève de LOT_UNRESOLVED_LINE, pas de cette règle.
 
     ``None`` quand il n'y a aucun livre : rien à dire d'une cote sans objet.
     """

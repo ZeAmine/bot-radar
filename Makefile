@@ -26,7 +26,7 @@ help:
 	@echo "  make lint                Vérifier le code avec Ruff et Mypy"
 	@echo "  make lock                Régénérer requirements.lock depuis l'environnement courant"
 	@echo "  make check-lock          Vérifier que le verrou couvre pyproject.toml"
-	@echo "  make check-history       Rejouer Ruff, Mypy et Pytest sur chaque commit"
+	@echo "  make check-history       Rejouer Ruff et Pytest sur chaque commit (Mypy sur option)"
 	@echo "  make preflight           Vérifier le VPS avant une synchronisation"
 	@echo "  make verify-deploy       Revérifier le VPS après une synchronisation"
 	@echo "  make deploy              Déployer (pré-vol → arrêt confirmé → synchro → build → migration → démarrage → contrôle)"

@@ -396,7 +396,8 @@ def classify_sent_cote_state(market_line: str | None) -> str:
     aucune offre. ``searching`` : aucun livre résolu, la recherche est annoncée.
     ``uncatalogued`` : aucun livre résolu, et la recherche a **conclu** qu'aucune
     source ne connaît l'ouvrage. ``unavailable`` : la collecte a échoué sans
-    cote utilisable. Une ligne absente est comptée ``pending`` : c'est
+    cote utilisable, une référence indisponible à l’envoi ou un lot non identifié.
+    Une ligne absente est comptée ``pending`` : c'est
     un livre dont la ligne manque, pas une recherche qui n'a pas lieu.
     """
     if market_line == NO_CATALOGUE_LINE:
