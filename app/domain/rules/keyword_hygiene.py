@@ -16,6 +16,13 @@ services. Il est appelé par les chemins d'écriture (module IA, création, édi
 auto-tuning) et, sous forme de prédicats légers, par le filtrage en lecture — une
 alerte déjà stockée n'a pas besoin d'une migration pour cesser de mal matcher.
 
+Une variante doit en plus **rester une écriture du même produit**. Les deux premières
+familles de règles ne rejettent que ce qui est dégénéré ; elles laissaient donc passer
+« galaxy s24 » pour « Galaxy S23 » (un modèle voisin), « bladerunner » pour
+« Blade Runner 2049 » (le millésime perdu, donc l'œuvre de 1982) ou « op » pour
+« One Piece » (un sigle, pas une orthographe). Comme une variante suffit à valider une
+annonce, chacune de ces écritures élargissait la veille à un autre produit.
+
 Deux plafonds, une seule idée : une liste courte est une décision, une liste longue
 est l'aveu que le moteur n'a pas tranché.
 """
@@ -23,11 +30,11 @@ est l'aveu que le moteur n'a pas tranché.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.utils.text import normalize_text
+from app.utils.text import normalize_text, similarity
 
 # Nombre maximal de variantes conservées sur une alerte. Au-delà, le moteur énumère.
 MAX_VARIANTS = 8
@@ -38,14 +45,32 @@ MAX_EXCLUSIONS = 6
 # Un mot-clé plus long qu'un titre vraisemblable n'est pas un mot-clé.
 _MAX_TERM_LENGTH = 40
 
+# Proximité minimale entre une variante et le titre, sur leurs formes collées. En
+# dessous, la variante n'est plus une façon d'écrire le titre mais un autre mot. Valeur
+# déjà employée pour la cohérence de titre chez un fournisseur (`TITLE_COHERENCE_MIN`,
+# ADR-035). Marge observée sur les cas réels : le plus bas conservé (« one peice »,
+# 0.857) est nettement au-dessus, le plus haut rejeté (« onepiece coffret », 0.696)
+# nettement en dessous.
+VARIANT_SIMILARITY_MIN = 0.72
+
 # Un ISBN est un code, pas une orthographe : « les enfants perdus 9782214080627 »
 # n'est pas une variante du titre.
 _ISBN_LIKE = re.compile(r"\d[\d\-\s]{8,}\d")
 
-# Énumération dégénérée : « 2a », « 10b ». Aucun vendeur n'écrit un titre ainsi ;
-# cette famille n'existe que parce que le moteur a décliné un suffixe sur le numéro
-# du titre. Les lettres collées au chiffre sont le signal : « 13mini » n'est pas
-# concerné (la lettre est suivie d'une autre lettre, donc pas de frontière de mot).
+# Énumération dégénérée : « 2a ». Aucun vendeur n'écrit un titre ainsi ; cette famille
+# n'existe que parce que le moteur a décliné un suffixe sur le numéro du titre. Les lettres
+# collées au chiffre sont le signal : « 13mini » n'est pas concerné (la lettre est suivie
+# d'une autre lettre, donc pas de frontière de mot).
+#
+# Deux limites connues, laissées telles quelles : le motif exige **un seul** chiffre devant
+# les lettres, donc « 10b » (deux chiffres) passe ; et il attrape aussi des suffixes
+# d'unité légitimes (« 5g », « 4k », « 3d »). Le faux positif reste rare — il faut un
+# token chiffre+lettre, un titre qui ne le recouvre pas, et les mêmes nombres des deux
+# côtés (« router 5g » pour « 5G Router ») — et il va dans le sens sûr, celui du retrait.
+# Les deux règles d'identité, elles, ne le rattraperaient pas : elles laisseraient passer
+# cette variante. Le rendre exact demanderait de rendre ce prédicat dépendant du titre, ce
+# qui lui ferait perdre son rôle de frontière titre-indépendante (`Reason.is_degenerate`,
+# `--only-degenerate`). À rouvrir si un cas réel se présente.
 _DEGENERATE_ENUMERATION = re.compile(r"\b\d[a-z]{1,2}\b")
 
 # Mots qui ne désignent qu'un découpage du titre, quand ils suivent celui-ci :
@@ -121,6 +146,61 @@ def _repeats_the_title(value: str, title: str) -> bool:
     return normalized_term in normalized_title or normalized_title in normalized_term
 
 
+def _digit_runs(value: str) -> tuple[str, ...]:
+    """Suites de chiffres d'un texte normalisé, dans l'ordre où elles apparaissent."""
+    return tuple(re.findall(r"\d+", normalize_text(value)))
+
+
+def variant_identity_verdict(value: str, references: Sequence[str]) -> Reason | None:
+    """Motif pour lequel une variante n'est plus une écriture de ce que l'alerte cherche.
+
+    Une variante est une **porte d'entrée** du matching : une seule suffit à valider une
+    annonce quand les mots-clés requis manquent. Elle doit donc rester une écriture de
+    l'intention de recherche, pas d'un produit voisin.
+
+    Les références sont le titre **et** les mots-clés inclus. Une variante existe pour
+    remplacer un mot-clé qui ne matche pas : « blacksad integral » est une écriture
+    légitime d'une alerte dont l'inclusion est « blacksad intégrale », même quand le titre
+    seul est « Blacksad ». Comparer au seul titre refuserait cette variante utile — une
+    annonce manquée, c'est-à-dire le pire des deux défauts.
+
+    Deux refus, dans cet ordre :
+
+    - elle s'écarte de **toutes** les références au point de ne plus en être une écriture
+      (« op » pour « One Piece », « amm » pour « Absolute Martian Manhunter ») : un sigle
+      ouvrirait la veille à toute annonce contenant ces lettres ;
+    - elle change les nombres de la référence la plus proche. Un nombre est une identité,
+      pas une orthographe : « galaxy s24 » n'est pas une écriture de « Galaxy S23 », et
+      « bladerunner » perd le millésime de « Blade Runner 2049 » — l'alerte surveillerait
+      alors l'œuvre de 1982. La comparaison porte sur les **suites de chiffres**, jamais
+      sur les tokens : « iphone13 » garde les chiffres de « iPhone 13 », et c'est
+      exactement l'écriture collée qu'une variante doit rattraper.
+
+    La redondance — une variante qui reprend une référence — n'est **pas** de ce verdict :
+    elle n'élargit rien et ne fait donc pas manquer d'annonce, c'est `_variant_title_verdict`
+    qui la juge à l'écriture. Le filtrage en lecture applique ce verdict-ci seul.
+
+    Le seuil de proximité est un compromis assumé, comme celui de la cohérence de titre
+    (ADR-035) : il écarte aussi quelques abréviations qui perdent un mot (« ip13 ») et les
+    nombres écrits en lettres (« nineteen eighty four » pour « 1984 »). Ces écritures sont
+    peu probables chez un vendeur, et les accepter rouvrirait la porte que la règle ferme.
+
+    Aucune référence exploitable — un brouillon sans nom, une alerte au nom vide — ne
+    décide rien. La comparaison est une inclusion de chaîne, or `'' in terme` est toujours
+    vrai : sans cette garde, le premier passage du nettoyeur effacerait toutes les
+    variantes, y compris dans `scripts/clean_alert_keywords.py`.
+    """
+    usable = tuple(reference for reference in references if normalize_text(reference))
+    if not usable:
+        return None
+    closest = max(usable, key=lambda reference: similarity(value, reference))
+    if similarity(value, closest) < VARIANT_SIMILARITY_MIN:
+        return Reason.DRIFTED_WRITING
+    if _digit_runs(value) != _digit_runs(closest):
+        return Reason.FOREIGN_NUMBER
+    return None
+
+
 def names_only_a_volume(value: str, title: str) -> bool:
     """Le terme n'ajoute au titre qu'un numéro de tome : il ne désigne aucune confusion.
 
@@ -194,6 +274,8 @@ class Reason(StrEnum):
     ENUMERATION = "né d'une énumération de suffixe"
     BARE_TOKEN = "chiffre nu ou caractère seul : ne tranche rien"
     TITLE_VARIANT = "reprend le titre sans rien y ajouter"
+    FOREIGN_NUMBER = "nomme un numéro que le titre ne porte pas, ou perd le sien"
+    DRIFTED_WRITING = "s'écarte trop du titre pour être une écriture du même produit"
     TITLE_EXCLUSION = "tient dans le titre : il tairait l'annonce cible"
     VOLUME_ONLY = "n'ajoute au titre qu'un numéro de tome : il tairait le tome voisin"
     DUPLICATE = "doublon d'un terme déjà présent"
@@ -242,31 +324,53 @@ class SanitizedValues:
 class _Family:
     """Ce en quoi une famille s'écarte de l'autre : plafond, dégénérescence, titre.
 
-    Une variante et une exclusion consultent le titre différemment et dégénèrent
-    différemment. Le verdict du titre est une **fonction qui rend son motif** plutôt
-    qu'un booléen doublé d'un libellé : une exclusion doit maintenant dire laquelle de
-    ses deux façons de ne rien dire face au titre l'a écartée, et deux règles pour un
-    seul libellé forceraient à choisir lequel ment.
+    Une variante et une exclusion consultent les références différemment et dégénèrent
+    différemment. Le verdict est une **fonction qui rend son motif** plutôt qu'un booléen
+    doublé d'un libellé : une exclusion doit maintenant dire laquelle de ses deux façons
+    de ne rien dire face au titre l'a écartée, et deux règles pour un seul libellé
+    forceraient à choisir lequel ment.
+
+    Les références sont une tuple, pas un titre : une variante se juge face au titre
+    **et** aux mots-clés inclus — c'est ce qui l'autorise à être l'écriture d'une
+    inclusion qualifiée —, tandis qu'une exclusion se juge face au titre seul.
     """
 
     max_size: int
     is_degenerate: Callable[[str], bool]
-    title_verdict: Callable[[str, str], Reason | None]
+    title_verdict: Callable[[str, tuple[str, ...]], Reason | None]
     reason_degenerate: Reason
 
 
-def _variant_title_verdict(value: str, title: str) -> Reason | None:
-    """Une variante qui reprend le titre n'ouvre aucune porte de plus."""
-    return Reason.TITLE_VARIANT if _repeats_the_title(value, title) else None
+def _variant_title_verdict(value: str, references: tuple[str, ...]) -> Reason | None:
+    """Le verdict d'écriture d'une variante : redondante, ou étrangère au produit.
+
+    Deux questions distinctes, et c'est le seul endroit qui les pose ensemble : la
+    variante ajoute-t-elle quelque chose (`_repeats_the_title`), et reste-t-elle une
+    écriture du même produit (`variant_identity_verdict`) ?
+
+    Le filtrage en lecture ne reprend que la seconde. Une variante déjà stockée qui
+    reprend une référence n'élargit rien — elle ne fait pas manquer d'annonce — alors que
+    la refuser au matching retirerait une écriture que l'utilisateur a pu vouloir :
+    « blacksad integral » reprend le titre « Blacksad » mais reste l'écriture de
+    l'inclusion « blacksad intégrale », et c'est cette inclusion que l'alerte surveille.
+    Une annonce manquée coûte plus cher qu'une variante redondante.
+    """
+    if any(_repeats_the_title(value, reference) for reference in references):
+        return Reason.TITLE_VARIANT
+    return variant_identity_verdict(value, references)
 
 
-def _exclusion_title_verdict(value: str, title: str) -> Reason | None:
+def _exclusion_title_verdict(value: str, references: tuple[str, ...]) -> Reason | None:
     """Les deux façons pour une exclusion de ne rien dire face au titre.
 
     *Plus étroite* que le titre, elle tairait l'annonce cible (`_swallows_the_title`) ;
     *plus large* d'un simple numéro, elle tairait le tome voisin (`names_only_a_volume`).
     Entre les deux vit la forme utile du rejet, celle qui précise le titre.
+
+    Une exclusion se juge face au **titre seul** : les mots-clés inclus décrivent la
+    veille, pas l'œuvre, et une exclusion qui les reprend ne dit rien de l'ouvrage.
     """
+    title = references[0] if references else ""
     if _swallows_the_title(value, title):
         return Reason.TITLE_EXCLUSION
     if names_only_a_volume(value, title):
@@ -289,7 +393,7 @@ EXCLUSION_FAMILY = _Family(
 )
 
 
-def _removal_reason(value: str, title: str, family: _Family) -> Reason | None:
+def _removal_reason(value: str, references: tuple[str, ...], family: _Family) -> Reason | None:
     """Motif d'un écart, ou `None` si le terme passe les filtres.
 
     L'ordre est celui des filtres, et il est unique : c'est le même enchaînement qui
@@ -299,7 +403,7 @@ def _removal_reason(value: str, title: str, family: _Family) -> Reason | None:
         return Reason.EMPTY
     if carries_isbn_like(value):
         return Reason.ISBN
-    title_verdict = family.title_verdict(value, title)
+    title_verdict = family.title_verdict(value, references)
     if title_verdict is not None:
         return title_verdict
     if family.is_degenerate(value):
@@ -309,13 +413,16 @@ def _removal_reason(value: str, title: str, family: _Family) -> Reason | None:
 
 def _clean_values(
     values: list[str] | None,
-    title: str,
+    references: tuple[str, ...],
     family: _Family,
 ) -> SanitizedValues:
     """Applique les règles communes, rejette les dégénérés, déduplique, plafonne.
 
     Une seule passe décide **et** motive : il n'existe aucun chemin qui puisse écarter
     un terme sans motif, ni aucun motif qui ne provienne pas de cet enchaînement.
+
+    `references` est la tuple sur laquelle le verdict de famille se prononce — le titre
+    d'abord, puis ce que l'appelant y ajoute (les mots-clés inclus, pour les variantes).
 
     La déduplication porte sur la forme **normalisée** : deux écritures qui ne
     diffèrent que par un accent ou un espace sont la même variante, et les garder
@@ -329,7 +436,7 @@ def _clean_values(
 
     for index, raw in enumerate(values or []):
         value = str(raw).strip().lower()
-        reason = _removal_reason(value, title, family)
+        reason = _removal_reason(value, references, family)
         if reason is None:
             key = normalize_text(value)
             if key in seen:
@@ -350,15 +457,24 @@ def _clean_values(
     )
 
 
-def assess_variants(values: list[str] | None, title: str) -> SanitizedValues:
+def assess_variants(
+    values: list[str] | None,
+    title: str,
+    *,
+    references: Sequence[str] = (),
+) -> SanitizedValues:
     """Verdict motivé du côté variantes : ce qui reste, et ce qui part et pourquoi.
 
-    Un titre à numéro est la source de l'explosion : le moteur décline le numéro au
-    lieu d'écrire le titre. Le suffixe collé au chiffre (`is_degenerate_variant`) est
-    le signal qui la coupe ; un terme qui répète le titre est écarté par
-    `_repeats_the_title`. Reste à plafonner.
+    Un titre à numéro est la source de l'explosion : le moteur décline le numéro au lieu
+    d'écrire le titre. Le suffixe collé au chiffre (`is_degenerate_variant`) est le signal
+    qui la coupe ; un terme qui répète une référence est écarté par `_repeats_the_title` ;
+    et les deux règles d'identité (`variant_identity_verdict`) refusent un nombre
+    étranger ou un écart d'écriture trop grand. Reste à plafonner.
+
+    `references` reçoit les mots-clés inclus de l'alerte, quand l'appelant les connaît :
+    une variante peut être l'écriture d'une inclusion qualifiée et pas seulement du titre.
     """
-    return _clean_values(values, title, VARIANT_FAMILY)
+    return _clean_values(values, (title, *references), VARIANT_FAMILY)
 
 
 def assess_exclusions(values: list[str] | None, title: str) -> SanitizedValues:
@@ -370,12 +486,21 @@ def assess_exclusions(values: list[str] | None, title: str) -> SanitizedValues:
     tome voisin. Une exclusion qui le précise, elle, est conservée : c'est la forme
     normale d'un rejet.
     """
-    return _clean_values(values, title, EXCLUSION_FAMILY)
+    return _clean_values(values, (title,), EXCLUSION_FAMILY)
 
 
-def sanitize_variants(values: list[str] | None, title: str) -> list[str]:
-    """Variantes exploitables : capables de valider une annonce, sans énumération."""
-    return assess_variants(values, title).values
+def sanitize_variants(
+    values: list[str] | None,
+    title: str,
+    *,
+    references: Sequence[str] = (),
+) -> list[str]:
+    """Variantes exploitables : capables de valider une annonce, sans énumération.
+
+    `references` porte les mots-clés inclus de l'alerte : la variante est jugée comme
+    une écriture de l'intention de recherche entière, pas du seul titre.
+    """
+    return assess_variants(values, title, references=references).values
 
 
 def sanitize_exclusions(values: list[str] | None, title: str) -> list[str]:
