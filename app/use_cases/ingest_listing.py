@@ -25,7 +25,7 @@ from app.db.models.listing import Listing
 from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.repositories.listing_repo import ListingRepository
-from app.domain.entities.alert_preparation import PreparationError
+from app.domain.entities.alert_preparation import PreparationError, preparation_request
 from app.domain.enums import NotificationState
 from app.domain.rules.catalogue_search import is_catalogue_exhausted, is_uncatalogued
 from app.domain.rules.listing_match import evaluate_listing_against_alert
@@ -128,7 +128,8 @@ async def link_books_from_bnf(
             verdict = await service.lookup_by_title_and_author(query)
         if initial_volumes:
             selected = select_series_volumes([
-                *(SeriesVolume.from_stored(row) for row in initial_volumes), *verdict.volumes,
+                *(SeriesVolume.from_stored(row) for row in initial_volumes
+                  if row.get("isbn13") not in verdict.rejected_isbns), *verdict.volumes,
             ], publisher=reference_publisher)
             verdict = replace(
                 verdict, volumes=selected,
@@ -156,6 +157,11 @@ async def link_books_from_bnf(
             elif is_catalogue_exhausted(verdict) and not verdict.volumes:
                 await alert_repo.set_book_search_exhausted(alert_id, datetime.now(UTC))
 
+            if wait_for_prices:
+                request = preparation_request(current)
+                if request is not None:
+                    request.series_volumes = [volume.stored() for volume in verdict.volumes]
+                    current.preparation = request.stored()
             book_repo = BookRepository(session)
             catalog = BookCatalogService(session)
             if initial_volumes:

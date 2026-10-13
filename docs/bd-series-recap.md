@@ -54,7 +54,9 @@ Les confirmations initiales sont liées avant le commit en pause et conservées 
 la demande JSON de préparation. La préparation transmet ses nouvelles preuves à la
 confirmation et réconcilie ses liens avec la sélection finale ; les livres et leurs
 historiques ne sont pas supprimés. Une panne à la seconde découverte ne perd pas les
-ISBN déjà confirmés. Une reprise des mêmes critères conserve ces preuves ; un
+ISBN déjà confirmés. Une contradiction BNF explicite les invalide toutefois :
+elle se distingue d'une panne et est conservée dans la sélection de préparation.
+Une reprise des mêmes critères conserve ces preuves ; un
 changement d'identité les invalide. Les titres numérotés attestés réalignent les
 anciennes fiches de même ISBN. Aucune migration SQL n'est nécessaire.
 

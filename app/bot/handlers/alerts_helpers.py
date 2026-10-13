@@ -420,7 +420,9 @@ def refresh_creation_series(
     from app.services.book_metadata_service import BookMetadata, SeriesVolume, select_series_volumes
 
     rows = data.get("series_volumes") or []
-    candidates = [SeriesVolume.from_stored(row) for row in rows]
+    rejected = catalogue.rejected_isbns if catalogue is not None else ()
+    candidates = [SeriesVolume.from_stored(row) for row in rows
+                  if row.get("isbn13") not in rejected]
     if catalogue is not None:
         candidates.extend(catalogue.volumes)
         data.update(series_total=catalogue.declared_volume_count,

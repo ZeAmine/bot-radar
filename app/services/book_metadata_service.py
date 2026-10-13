@@ -407,6 +407,7 @@ class CatalogueVerdict:
     truncated: bool = False
     declared_volume_count: int | None = None
     inconsistent_counts: bool = False
+    rejected_isbns: tuple[str, ...] = ()
 
     @property
     def notice(self) -> BookMetadata | None:
@@ -997,7 +998,10 @@ class BookMetadataService:
             attempts=tuple(attempts),
         )
 
-    async def verify_isbn(self, isbn13: str, expected_title: str) -> BookMetadata | None:
+    async def verify_isbn(
+        self, isbn13: str, expected_title: str, *,
+        outcomes: list[IsbnVerdict] | None = None,
+    ) -> BookMetadata | None:
         """Confirme qu'un ISBN désigne bien l'œuvre attendue.
 
         Filet anti-hallucination : un ISBN bien formé mais attribué à une autre œuvre
@@ -1005,6 +1009,8 @@ class BookMetadataService:
         Une notice obtenue pendant une panne ne confirme rien.
         """
         verdict = await self.confirm_isbn_for_title(isbn13, expected_title)
+        if outcomes is not None:
+            outcomes.append(verdict)
         return verdict.notice if verdict.confirme else None
 
     async def confirm_isbn_for_title(
@@ -1354,6 +1360,7 @@ class BookMetadataService:
 
         selected: list[BookMetadata] = []
         candidates: list[SeriesVolume] = []
+        rejected: list[str] = []
         seen: set[str] = set()
         for record in records:
             if (not record.isbn13 and not for_creation) or (
@@ -1408,9 +1415,16 @@ class BookMetadataService:
                 if number is None:
                     continue
                 code = isbn_from_identifier(meta.isbn13)
+                outcomes: list[IsbnVerdict] = []
                 verified = (
-                    await self.verify_isbn(code, meta.volume_title or meta.title) if code else None
+                    await self.verify_isbn(code, meta.volume_title or meta.title, outcomes=outcomes)
+                    if code else None
                 )
+                if code and any(
+                    verdict.outcome == "contradiction" and verdict.notice is not None
+                    and verdict.notice.source == AUTORITE_BNF for verdict in outcomes
+                ):
+                    rejected.append(code)
                 confirmed = (
                     code if verified is not None and verified.source == AUTORITE_BNF
                     and isbn_from_identifier(verified.isbn13) == code
@@ -1440,7 +1454,8 @@ class BookMetadataService:
             return replace(verdict, volumes=volumes, truncated=(
                 result.error_code == "series_limit" or ol_limited or len(volumes) > limit
                 or (total is not None and total > limit)
-            ), declared_volume_count=total, inconsistent_counts=(
+            ), rejected_isbns=tuple(dict.fromkeys(rejected)),
+                declared_volume_count=total, inconsistent_counts=(
                 len(counts) > 1 or (total is not None and any(v.number > total for v in volumes))
             ))
         return _verdict(attempts, *selected)

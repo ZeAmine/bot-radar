@@ -182,7 +182,7 @@ async def test_summary_has_two_explicit_price_fields_when_no_cache():
 
 @pytest.mark.parametrize('discovery', [
     'same', 'confirms_missing', 'unavailable', 'french_replaces_english',
-    'initial_unknown', 'old_book_title',
+    'initial_unknown', 'old_book_title', 'contradiction',
 ])
 async def test_birdking_creation_confirms_four_rows_from_prepared_local_caches(
     monkeypatch, discovery,
@@ -231,6 +231,11 @@ async def test_birdking_creation_confirms_four_rows_from_prepared_local_caches(
     if discovery == 'confirms_missing':
         initial = (*volumes[:3], SeriesVolume(4, bird(4)))
     result = replace(result, series_volumes=initial)
+    if discovery == 'contradiction':
+        catalogue = CatalogueVerdict(
+            notices=tuple(notices[1:]), volumes=(SeriesVolume(1, bird(1)), *volumes[1:]),
+            rejected_isbns=(CODES[0],),
+        )
     if discovery in ('unavailable', 'old_book_title'):
         catalogue = CatalogueVerdict(consulted=('bnf',), unavailable=('bnf',))
     state = State()
@@ -279,7 +284,12 @@ async def test_birdking_creation_confirms_four_rows_from_prepared_local_caches(
         await save_alert(callback, state, user, db.session)
         text = message.edit_text.call_args.args[0]
         assert re.findall(r'📚 <b>Livre (\d+)</b>', text) == ['1', '2', '3', '4']
+        expected_codes = CODES[1:] if discovery == 'contradiction' else CODES
         for n, code in enumerate(CODES, 1):
+            if code not in expected_codes:
+                assert code not in text
+                assert 'Cote indisponible' in text
+                continue
             assert text.count(code) == 1
             assert f'{n}8,00 €' in text
             assert f'{n}6,50 €' in text
@@ -292,8 +302,8 @@ async def test_birdking_creation_confirms_four_rows_from_prepared_local_caches(
             assert alert.isbn is None
             from app.db.repositories.book_repo import BookRepository
             linked = await BookRepository(observer).get_all_books_for_alert(alert.id)
-            assert {b.isbn13 for b in linked} == set(CODES)
-            assert len(linked) == 4
+            assert {b.isbn13 for b in linked} == set(expected_codes)
+            assert len(linked) == len(expected_codes)
             assert all('Livre' in b.title for b in linked)
 
 
@@ -475,7 +485,7 @@ async def test_series_selection_uses_the_reference_publisher_at_equal_priority()
     preferred = bird(1, isbn=CODES[0])
     other = bird(1, isbn=CODES[1])
     other.publisher = 'Autre maison'
-    async def verified(code, _title):
+    async def verified(code, _title, **_options):
         return preferred if code == CODES[0] else other
     with patch.object(service, '_bnf_records_result', AsyncMock(return_value=(
         ProviderQueryResult(items=(other, preferred)), None
@@ -486,3 +496,27 @@ async def test_series_selection_uses_the_reference_publisher_at_equal_priority()
             'Birdking', for_creation=True, reference_publisher='Éditeur test',
         )
     assert [v.isbn13 for v in verdict.volumes] == [CODES[0]]
+
+
+async def test_explicit_bnf_contradiction_is_reported_for_initial_proof_invalidation():
+    import httpx
+
+    from tests.fakes_catalogue import BNF_RECORD_TEMPLATE, SRU_HEADER
+
+    def transport(request):
+        if request.url.host == 'openlibrary.org':
+            return httpx.Response(200, json={'docs': []})
+        query = request.url.params['query']
+        title = 'Autre ouvrage' if 'bib.isbn' in query else 'Birdking Livre 1'
+        record = BNF_RECORD_TEMPLATE.format(
+            ark='123', title=title, creator='Daniel Freedman', publisher='Éditeur test',
+            date='<dc:date>2024</dc:date>', fmt='Album', isbn=CODES[0],
+        )
+        return httpx.Response(200, text=SRU_HEADER.format(count=1, records=record))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        catalogue = await BookMetadataService(http_client=client).lookup_series_notices(
+            'Birdking', for_creation=True,
+        )
+    assert catalogue.rejected_isbns == (CODES[0],)
+    assert catalogue.volumes[0].isbn13 is None
