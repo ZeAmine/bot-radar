@@ -101,6 +101,27 @@ def _merge_keywords(*groups: list[str] | None) -> list[str]:
     return merged
 
 
+def _variants_for_category(
+    category_slug: str,
+    values: list[str] | None,
+    name: str,
+    includes: list[str] | None,
+) -> list[str]:
+    """Variantes retenues pour cette catégorie — aucune hors BD.
+
+    Une variante est l'autre écriture d'un **titre**, un concept bibliographique : le
+    matching ne la consulte qu'en BD (`listing_match`) et l'écran d'édition ne l'offre
+    qu'en BD. En conserver hors BD donnerait une liste qui influence la veille sans aucun
+    moyen de la voir ni de la retirer — exactement le défaut que cette règle supprime.
+
+    Les exclusions, elles, restent utiles aux quatre catégories : elles ne passent pas
+    par ici.
+    """
+    if category_slug != CategorySlug.BD_COMICS.value:
+        return []
+    return sanitize_variants(values, name, references=includes or ())
+
+
 async def _finalize_loading_message(
     loading_msg: Message | bool,
     event: Message | CallbackQuery,
@@ -178,8 +199,8 @@ def relaunch_keyword_search(
 ) -> None:
     """Relance la recherche de mots-clés après un changement d'identité.
 
-    Le même chemin que le départ de `/add` : la tâche part en arrière-plan, le récap est
-    publié tout de suite sans les mots-clés, puis complété sur place. Les variantes et
+    Le même chemin que le départ de `/add` : la tâche part en arrière-plan et c'est elle
+    qui publie le récap, avec le verdict du moteur ou l'échec nommé. Les variantes et
     exclusions de l'ouvrage précédent ne survivent pas à son remplacement.
     """
     book_context = (
@@ -211,9 +232,11 @@ async def _search_keywords_in_background(
 ) -> None:
     """Cherche les variantes et exclusions hors du chemin de l'utilisateur.
 
-    Le jalon « ouvrage trouvé » est déjà parti : l'utilisateur n'attend rien. Quand la
-    réponse arrive — ou quand elle ne vient pas — le récap est publié, avec ou sans
-    les mots-clés trouvés, et en disant lequel des deux cas s'est produit.
+    Le jalon « ouvrage trouvé » est déjà parti, mais le récap n'existe pas encore : c'est
+    cette tâche qui le publie, quand la réponse arrive — ou quand elle ne vient pas, avec
+    l'échec nommé. L'utilisateur attend donc le moteur, et c'est **assumé** : l'alerte
+    naît avec ses mots-clés plutôt qu'amputée, et un échec laisse le bouton de relance
+    sous la carte au lieu de faire passer un silence pour un avis rendu.
     """
     outcome = await keyword_variants_module.generate_variants_and_exclusions(
         name,
@@ -226,13 +249,23 @@ async def _search_keywords_in_background(
         return
 
     # La recherche n'est « définitive » que si le moteur a répondu. Sinon le bouton
-    # « ✨ Variantes & Exclusions IA » reste sous la carte, et un seul appui
+    # « Variantes & Exclusions IA » reste sous la carte, et un seul appui
     # relance : un échec ne doit pas se payer d'un détour par « Modifier ».
     finalized = outcome.answered
 
+    # Les variantes du brouillon sont **remplacées** ici, alors que les exclusions sont
+    # fusionnées — asymétrie assumée : le récap n'est publié que par cette tâche, donc
+    # l'utilisateur n'a pas pu saisir de variante entre-temps, et le brouillon est vide ou
+    # vient d'être remis à zéro par un changement d'ouvrage. Les deux gestes convergeraient
+    # dès que l'écran deviendrait éditable avant le retour du moteur.
     updated = {
         **snapshot,
-        "variants": sanitize_variants(outcome.variants, name),
+        "variants": _variants_for_category(
+            category_slug,
+            outcome.variants,
+            name,
+            snapshot.get("include_keywords"),
+        ),
         "exclude_keywords": sanitize_exclusions(
             _merge_keywords(snapshot.get("exclude_keywords"), outcome.exclusions), name
         ),
@@ -672,8 +705,11 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     finalized = outcome.answered
     updated_draft = {
         **data,
-        "variants": sanitize_variants(
-            _merge_keywords(data.get("variants"), outcome.variants), name
+        "variants": _variants_for_category(
+            category_slug,
+            _merge_keywords(data.get("variants"), outcome.variants),
+            name,
+            data.get("include_keywords"),
         ),
         "exclude_keywords": sanitize_exclusions(
             _merge_keywords(data.get("exclude_keywords"), outcome.exclusions), name
@@ -746,7 +782,7 @@ async def _save_alert(
     # Dernier point de passage avant la base : une liste brute du moteur ne peut pas
     # être stockée, même si un chemin amont a laissé passer une énumération.
     excludes = sanitize_exclusions(data.get("exclude_keywords", []), name)
-    variants = sanitize_variants(data.get("variants", []), name)
+    variants = _variants_for_category(category_slug, data.get("variants", []), name, includes)
     max_price = data.get("max_item_price_cents")
     conditions = data.get("selected_conditions") or (
         list(DEFAULT_BD_CONDITIONS)
