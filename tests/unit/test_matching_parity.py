@@ -2,6 +2,13 @@
 
 Les cinq sorties historiques sont capturées depuis le matcher inchangé de 0cb54b7.
 Le produit cartésien est fixe : aucune sortie F10 ne définit l'attendu.
+
+L'empreinte n'a pas bougé quand la garde d'identité des variantes est arrivée, et
+c'est un résultat voulu. La nouvelle règle lue par le matching ne juge que les
+nombres, et aucune variante du corpus n'en porte : « chat detective » et « blacksad »
+restent donc utilisables exactement comme avant. C'est ce qui rend la garde sûre —
+elle ne refuse au matching que ce qui change un numéro du titre, c'est-à-dire une
+autre œuvre.
 """
 
 import hashlib
