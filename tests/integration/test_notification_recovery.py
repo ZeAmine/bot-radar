@@ -103,7 +103,7 @@ async def test_unknown_is_never_retried(journey):
     assert (await j.row()).notified_at is None
 
 
-async def test_live_sending_owner_is_not_orphaned(journey):
+async def test_live_sending_owner_is_not_orphaned(journey, monkeypatch):
     j = journey
     started, release = asyncio.Event(), asyncio.Event()
 
@@ -116,14 +116,24 @@ async def test_live_sending_owner_is_not_orphaned(journey):
     owner = asyncio.create_task(j.ingest())
     await asyncio.wait_for(started.wait(), 3)
     assert (await j.row()).notification_state == "sending"
+    # Observer l’acquisition tentée, après les lectures SQL et l’inscription au gate.
+    # Le vrai verrou reste détenu par l’envoi : le worker doit réellement l’attendre.
+    lock = j.gate._entries[(j.payload.source_name, j.payload.external_id)].lock
+    acquire = lock.acquire
+    attempted = asyncio.Event()
+
+    async def observed_acquire():
+        attempted.set()
+        return await acquire()
+
+    monkeypatch.setattr(lock, "acquire", observed_acquire)
     worker = asyncio.create_task(recovery.recover_notifications())
-    # Admission observée dans le gate, pas une supposition fondée sur sleep(duration).
-    for _ in range(1000):
-        if j.gate._participants == 2:
-            break
-        await asyncio.sleep(0)
     try:
+        # Échéance diagnostique, sans attente minimale ni budget de tours CPU.
+        await asyncio.wait_for(attempted.wait(), 3)
         assert j.gate._participants == 2
+        assert lock.locked()
+        assert not worker.done()
         assert (await j.row()).notification_state == "sending"
     finally:
         release.set()
@@ -131,6 +141,7 @@ async def test_live_sending_owner_is_not_orphaned(journey):
     assert (await j.row()).notification_state == "notified"
     assert j.bot.send_message.await_count == 1
     assert not j.gate._entries
+    assert j.gate._participants == 0
 
 
 @pytest.mark.parametrize(("state", "case", "expected"), [
