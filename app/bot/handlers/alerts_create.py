@@ -1,4 +1,4 @@
-"""Flux de création et d'ajout d'alertes (/add, /addisbn, /addurl)."""
+"""Flux de création et d'ajout d'alertes (/add)."""
 
 import contextlib
 import html
@@ -264,9 +264,7 @@ def _get_book_repo(session: Any) -> Any:
     return getattr(alerts_mod, "BookRepository", BookRepository)(session)
 
 
-@router.message(Command("add", "ajouter"))
-@router.message(Command("addisbn"))
-@router.message(Command("addurl"))
+@router.message(Command("add"))
 @router.callback_query(F.data == "btn_add_alert")
 async def start_add_alert(
     event: Message | CallbackQuery,

@@ -60,7 +60,7 @@ logger = logging.getLogger("radar.alerts_create_confirm")
 cancel_router = Router(name="alerts_cancel")
 
 
-@cancel_router.message(Command("cancel", "annuler"), StateFilter("*"))
+@cancel_router.message(Command("cancel"), StateFilter("*"))
 @cancel_router.message(
     F.text.casefold().in_({"/cancel", "/annuler", "cancel", "annuler"}),
     StateFilter("*"),

@@ -180,7 +180,7 @@ async def show_autotune_hub(
         await target.answer(hub_text, reply_markup=keyboard)
 
 
-@router.message(Command("autotune", "tune"))
+@router.message(Command("autotune"))
 async def handle_autotune_command(
     message: Message,
     db_user: User,

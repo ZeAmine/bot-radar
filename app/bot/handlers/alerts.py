@@ -2,7 +2,7 @@
 
 Ce module regroupe les sous-modules spécialisés :
 - alerts_helpers : utilitaires de formatage et parsing semi-automatique
-- alerts_create : flux de création d'alertes (/add, /addisbn, /addurl)
+- alerts_create : flux de création d'alertes (/add)
 - alerts_view : consultation et pagination (/show, /list)
 - alerts_manage : modification, pause, reprise et suppression (/edit, /pause, /resume, /delete)
 """

@@ -140,9 +140,7 @@ les actions initiales. Ces boutons restent sans émoji dans tous ces états.
 
 | Commande | Rôle |
 |---|---|
-| `/add [titre]` | Assistant conversationnel (FSM) ou création guidée en langage naturel (alias : `/ajouter`) |
-| `/addisbn [isbn]` | Création rapide d'une alerte BD directement ciblée par son code ISBN-13 |
-| `/addurl [url]` | Création instantanée depuis une URL de recherche Vinted (analyse syntaxique pure côté serveur) |
+| `/add [titre]` | Assistant conversationnel (FSM) ou création guidée en langage naturel |
 | `/show [recherche]` | Affichage interactif et paginé des alertes configurées |
 | `/list [catégorie]` | Synthèse compacte des alertes par catégorie ou globale |
 | `/edit` | Modification granulaire d'une alerte (titre, mots-clés, exclusions, prix, états) |
@@ -150,7 +148,7 @@ les actions initiales. Ces boutons restent sans émoji dans tous ces états.
 | `/delete` | Suppression d'une alerte avec demande de confirmation |
 | `/categories` | Liste des univers surveillés (`bd_comics`, `tech`, `gaming`, `clothes`) |
 | `/stats` | Statistiques complètes d'activité sur 7 ou 30 jours |
-| `/autotune` | Hub d'auto-tuning : analyse des faux positifs et suggestions d'exclusions IA (alias : `/tune`) |
+| `/autotune` | Hub d'auto-tuning : analyse des faux positifs et suggestions d'exclusions IA |
 | `/status` | Diagnostic de santé du service, du poller Vinted et du moteur IA (sonde HTTP) |
 | `/cancel` | Annulation immédiate de l'opération ou du dialogue FSM en cours (alias : `/annuler`) |
 | `/help` | Affichage du guide d'utilisation interactif |

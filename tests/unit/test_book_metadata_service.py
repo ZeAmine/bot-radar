@@ -700,7 +700,7 @@ async def test_openlibrary_failure_degrades_to_title_search():
 
 @pytest.mark.asyncio
 async def test_openlibrary_lookup_by_isbn_fallback():
-    """`/addisbn` et la détection de conflit de `/edit` profitent aussi du repli."""
+    """`/add` avec ISBN et la détection de conflit de `/edit` profitent aussi du repli."""
     service = BookMetadataService(http_client=FakeCatalogueClient(bnf_empty=True))
 
     meta = await service.lookup_by_isbn("9782369903086")
