@@ -77,7 +77,10 @@ def test_first_decisive_reason_and_unvisited_steps(changes, title, price, code, 
     ("changes", "title", "path"),
     [
         ({}, "blacksad", "includes"),
-        ({"variants": ["chat detective"]}, "chat detective", "variant"),
+        # La variante doit être une écriture de ce que l'alerte cherche : « chat
+        # detective », sans rapport avec « Blacksad », est refusée par la garde
+        # d'identité. « blaksad » est la faute de frappe qui montre la même route.
+        ({"variants": ["blaksad"]}, "blaksad", "variant"),
         ({"isbn": "9782205049657"}, "bd blacksad", "isbn_hybrid/includes"),
         ({"isbn": "9782205049657"}, "9782205049657", "isbn_text"),
         ({"include_keywords": []}, "autre ouvrage", "unconstrained"),

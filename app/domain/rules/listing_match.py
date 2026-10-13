@@ -13,6 +13,7 @@ from app.domain.rules.keyword_hygiene import (
     is_degenerate_exclusion,
     is_degenerate_variant,
     names_only_a_volume,
+    variant_identity_verdict,
 )
 from app.utils.text import contains_keyword, contains_normalized_keyword, normalize_text
 
@@ -269,20 +270,75 @@ def carries_foreign_isbn(variant: str, alert_isbn: str | None) -> bool:
     return isbn_digits(variant) != alert_isbn
 
 
-def usable_variants(alert_variants: list[str] | None, alert_isbn: str | None) -> list[str]:
-    """Variantes de l'alerte qui peuvent la valider, ISBN étranger retiré.
+@lru_cache(maxsize=512)
+def _usable_variants_cached(
+    alert_variants: tuple[str, ...],
+    alert_isbn: str | None,
+    alert_title: str | None,
+    alert_includes: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Le filtre de variantes, mémoïsé sur l'alerte et non sur l'annonce.
 
-    Le filtrage vaut aussi pour les alertes **déjà enregistrées** : une variante
-    dégénérée (« … 2a ») héritée d'une ancienne énumération du moteur ne peut plus
-    valider d'annonce, sans migration ni réécriture en base.
+    Les variantes d'une alerte sont identiques pour toutes les annonces d'une passe : le
+    verdict d'identité — qui mesure une proximité d'écriture — était sinon recalculé à
+    chaque couple (alerte, annonce). Même schéma que `_expand_exclusions_cached`.
+
+    Le verdict d'identité reçoit le titre **et** les mots-clés inclus : une variante peut
+    être l'écriture d'une inclusion qualifiée (« blacksad integral » pour l'inclusion
+    « blacksad intégrale ») et pas seulement du titre.
     """
-    return [
-        variant
-        for variant in (alert_variants or [])
-        if variant
-        and not carries_foreign_isbn(variant, alert_isbn)
-        and not is_degenerate_variant(variant)
-    ]
+    references = (alert_title, *alert_includes) if alert_title else alert_includes
+    kept: list[str] = []
+    for variant in alert_variants:
+        if not variant:
+            continue
+        if carries_foreign_isbn(variant, alert_isbn):
+            continue
+        if is_degenerate_variant(variant):
+            continue
+        if variant_identity_verdict(variant, references) is not None:
+            continue
+        kept.append(variant)
+    return tuple(kept)
+
+
+def usable_variants(
+    alert_variants: list[str] | None,
+    alert_isbn: str | None,
+    alert_title: str | None = None,
+    alert_includes: list[str] | None = None,
+) -> list[str]:
+    """Variantes de l'alerte qui peuvent la valider, celles devenues étrangères retirées.
+
+    Trois familles de retrait, et elles valent aussi pour les alertes **déjà
+    enregistrées** — sans migration ni réécriture en base :
+
+    - une variante qui cite un ISBN qui n'est pas celui de l'alerte ne peut que faire
+      sonner l'alerte sur l'ouvrage qu'il désigne ;
+    - une variante dégénérée (« … 2a ») héritée d'une ancienne énumération du moteur ;
+    - une variante qui n'est plus une écriture de ce que l'alerte cherche
+      (`variant_identity_verdict`) : un numéro d'un autre modèle, ou un sigle qui n'a
+      plus rien du titre. C'est ce filtre qui rend inerte, au matching, la variante
+      d'une œuvre précédente après un changement d'ISBN — le nom de l'œuvre est réécrit,
+      et l'ancienne écriture ne lui ressemble plus.
+
+    Le titre et les inclusions sont facultatifs pour ne pas alourdir les appels qui
+    n'ont que la liste : sans référence, le verdict d'identité ne décide rien.
+    """
+    # Court-circuit : la grande majorité des alertes n'ont aucune variante, et leur
+    # couple (alerte, annonce) ne doit rien construire — ni tuple pour la mémoïsation,
+    # ni référence à hacher. Le coût du guarde-fou ne doit peser que sur celles qui en
+    # ont.
+    if not alert_variants:
+        return []
+    return list(
+        _usable_variants_cached(
+            tuple(alert_variants or ()),
+            alert_isbn,
+            alert_title,
+            tuple(alert_includes or ()),
+        )
+    )
 
 
 def usable_exclusions(
@@ -524,7 +580,12 @@ def evaluate_listing_against_alert(
 
                 variant_matched = any(
                     contains_normalized_keyword(searchable_text, var)
-                    for var in usable_variants(alert.variants, clean_alert_isbn)
+                    for var in usable_variants(
+                        alert.variants,
+                        clean_alert_isbn,
+                        alert.name,
+                        alert.include_keywords,
+                    )
                 )
 
                 if not user_kws_match and not variant_matched:
@@ -701,10 +762,23 @@ def evaluate_listing_against_alert(
         all_includes_match = True
 
     if not all_includes_match:
-        # Vérification des variantes alternatives (OU logique entre variantes)
+        # Vérification des variantes alternatives (OU logique entre variantes).
+        #
+        # Vérification des variantes alternatives (OU logique entre variantes).
+        # Aucune garde de catégorie : le mécanisme n'est pas propre aux livres. C'est le
+        # parcours d'ingestion de bout en bout (tests/unit/test_ingest_to_telegram.py) qui
+        # le tient pour acquis sur une alerte tech — la variante « geforce rtx 4070 »
+        # valide une annonce que le mot-clé « nvidia rtx 4070 dual » ne décrit pas. Ce qui
+        # est filtré n'est donc pas la catégorie, mais l'identité : `usable_variants`
+        # écarte une variante devenue étrangère au produit.
         variant_matched = False
         for variant_index, raw_variant in enumerate(
-            usable_variants(alert.variants, clean_alert_isbn)
+            usable_variants(
+                alert.variants,
+                clean_alert_isbn,
+                alert.name,
+                alert.include_keywords,
+            )
         ):
             if contains_normalized_keyword(searchable_text, raw_variant):
                 variant_matched = True

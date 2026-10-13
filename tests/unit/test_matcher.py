@@ -793,3 +793,108 @@ def test_real_exclusion_still_rejects():
     )
     assert res.is_match is False
     assert "exclu" in res.reason.lower()
+
+
+def test_a_stored_variant_that_lost_the_titles_number_is_not_consulted():
+    """Une variante qui perd le nombre du titre ne valide plus rien, sans migration.
+
+    `usable_variants` juge les nombres au regard du titre **et** des mots-clés inclus : la
+    garde s'applique en lecture aux alertes déjà enregistrées, sans colonne de provenance.
+    Limite mesurée — deux œuvres sans nombre ne sont pas départagées par cette règle.
+    """
+    from app.domain.rules.listing_match import usable_variants
+
+    assert usable_variants(["bladerunner"], None, "Blade Runner 2049", []) == []
+    assert (
+        usable_variants(["bladerunner 2049"], None, "Blade Runner 2049", [])
+        == ["bladerunner 2049"]
+    )
+
+    alert = create_test_alert(
+        name="Blade Runner 2049",
+        include_keywords=["blade runner 2049"],
+        variants=["bladerunner"],
+    )
+
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="bladerunner",
+        listing_normalized_description=None,
+        listing_condition="Très bon état",
+        listing_item_price_cents=1000,
+    )
+    assert res.is_match is False
+
+
+def test_a_variant_is_consulted_outside_bd():
+    """Une variante tech valide son annonce : le mécanisme n'est pas qu'un concept de livre.
+
+    C'est le parcours d'ingestion de bout en bout qui le tient pour acquis — une alerte
+    « NVIDIA RTX 4070 » dont la variante « geforce rtx 4070 » rattrape une annonce que le
+    mot-clé « nvidia rtx 4070 dual » ne décrit pas. La garde qu'on avait voulue ici ne
+    portait que sur cette vérité-là : elle faisait manquer une annonce, en silence.
+    """
+    alert = create_test_alert(
+        category_slug="tech",
+        name="NVIDIA RTX 4070",
+        include_keywords=["nvidia rtx 4070 dual"],
+        variants=["geforce rtx 4070"],
+    )
+
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="tech",
+        listing_normalized_title="geforce rtx 4070",
+        listing_normalized_description=None,
+        listing_condition="Très bon état",
+        listing_item_price_cents=1000,
+    )
+    assert res.is_match is True
+    assert res.acceptance_path == "variant"
+
+
+def test_a_stored_variant_naming_another_number_is_neutralised():
+    """Une variante qui change le nombre du titre ne valide plus d'annonce.
+
+    « blade runner 2047 » n'est pas une écriture de « Blade Runner 2049 » : l'écart d'un
+    seul chiffre désigne une autre œuvre, et l'alerte surveillerait celle-là.
+    """
+    alert = create_test_alert(
+        name="Blade Runner 2049",
+        include_keywords=["blade runner 2049"],
+        variants=["blade runner 2047"],
+    )
+
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="blade runner 2047",
+        listing_normalized_description=None,
+        listing_condition="Très bon état",
+        listing_item_price_cents=1000,
+    )
+    assert res.is_match is False
+
+
+def test_a_variant_is_consulted_in_the_isbn_hybrid_fallback():
+    """Le repli hybride BD consulte les variantes — c'était le second chemin, non testé."""
+    alert = create_test_alert(
+        name="Blacksad",
+        include_keywords=["blacksad integrale"],
+        variants=["blacksad integral"],
+    )
+    alert.isbn = "9782205049657"
+
+    res = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="blacksad integral",
+        listing_normalized_description="",
+        listing_condition="Très bon état",
+        listing_item_price_cents=1000,
+    )
+    assert res.is_match is True
+    assert res.acceptance_path == "isbn_hybrid/variant"
+
+
