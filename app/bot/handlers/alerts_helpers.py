@@ -13,6 +13,7 @@ from app.bot.formatter import alert_status_text, format_cents_to_euros
 from app.bot.handlers._alerts_router import bind_creation_keyboard
 from app.bot.keyboards.alerts import edition_ordinal, get_alert_confirmation_keyboard
 from app.bot.labels import (
+    BTN_AI_VARIANTS_CREATE,
     FIELD_AUTHOR,
     FIELD_CONDITIONS,
     FIELD_EDITION,
@@ -193,7 +194,11 @@ def _join_escaped(values: list[str]) -> str:
     return ", ".join(html.escape(str(value)) for value in values)
 
 
-def keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
+def keyword_note(
+    outcome: KeywordVariantsOutcome,
+    *,
+    retry_label: str | None = BTN_AI_VARIANTS_CREATE,
+) -> str | None:
     """Ligne discrète expliquant ce que la recherche de mots-clés n'a pas trouvé.
 
     Cinq fins possibles, cinq libellés distincts : la carte ne doit jamais laisser
@@ -207,14 +212,22 @@ def keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
     Deux écrans l'affichent — le récap de `/add` et la reprise d'une alerte dont l'ISBN
     vient de changer — et aucun n'en a sa propre copie : le verdict d'une même fin ne
     doit pas dépendre du geste qui l'a déclenchée.
+
+    `retry_label` nomme le bouton de relance de **l'écran où la note s'affiche**. La
+    fiche d'une alerte existante n'en a aucun — son menu d'édition ne porte pas d'action
+    IA — donc elle passe `None` : une note qui renvoie à un bouton absent est une
+    consigne qui ne mène nulle part.
     """
     if not outcome.answered:
-        # La relance a déjà eu lieu : ce n'est plus de la lenteur mais un échec. Le
-        # bouton reste sous la carte, c'est donc lui qu'on nomme, pas « Modifier ».
-        return (
+        # La relance a déjà eu lieu : ce n'est plus de la lenteur mais un échec. Quand un
+        # bouton de relance est sous la carte, c'est lui qu'on nomme, pas « Modifier ».
+        head = (
             "⚠️ L'IA n'a pas répondu après une relance : aucune variante ni exclusion "
-            "n'a été ajoutée. Appuie sur « ✨ Variantes & Exclusions IA » pour réessayer."
+            "n'a été ajoutée."
         )
+        if retry_label:
+            return f"{head} Appuie sur « {retry_label} » pour réessayer."
+        return f"{head} Réessaie plus tard."
     # ⚠️ et non 🔎 : ce n'est pas une observation en passant mais un manque, et la carte
     # le place en tête avec les autres avertissements. Le repérage d'un ouvrage
     # (« … identifié ») garde sa loupe : lui ne signale rien.
