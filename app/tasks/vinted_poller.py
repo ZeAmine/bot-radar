@@ -234,8 +234,11 @@ def is_peak_hours(now: datetime | None = None) -> bool:
 def get_adaptive_poll_interval() -> float:
     """Calcule l'intervalle cible de scrutation selon le contexte réseau et horaire.
 
-    - Avec proxy résidentiel (Raspberry Pi à domicile) : haute cadence (8s en pointe, 10s standard).
-    - Sur IP VPS datacenter : cadence équilibrée (12s en pointe, 15s standard).
+    `VINTED_POLL_INTERVAL_SECONDS` est la cadence standard visée **et** un plafond des
+    modes accélérés : la pointe (8 s / 12 s) et le proxy résidentiel (8 s / 10 s) ne
+    peuvent que la raccourcir. La branche standard la sert telle quelle — un plancher
+    la rendrait insensible à une valeur plus basse, ce qui était le cas avec l'ancien
+    `max(base, 15.0)`.
     """
     base = float(settings.VINTED_POLL_INTERVAL_SECONDS)
     has_residential_proxy = bool(settings.get_vinted_proxy())
@@ -245,7 +248,7 @@ def get_adaptive_poll_interval() -> float:
 
     if is_peak_hours():
         return min(base, 12.0)
-    return max(base, 15.0)
+    return base
 
 
 def remaining_cycle_sleep(sleep_time: float, work_seconds: float) -> float:

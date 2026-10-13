@@ -70,7 +70,7 @@ class Settings(BaseSettings):
         """URL de l'API (supporte BOTRADAR_API_URL avec repli sur RADAR_API_URL)."""
         return self.BOTRADAR_API_URL or self.RADAR_API_URL
 
-    VINTED_POLL_INTERVAL_SECONDS: int = 15
+    VINTED_POLL_INTERVAL_SECONDS: int = 12
     VINTED_POLLER_ENABLED: bool = True
     VINTED_PROXY_URL: str | None = None
 
