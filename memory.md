@@ -144,6 +144,8 @@ Les descriptions opérationnelles actuelles relèvent d’AGENTS.md et de Subjec
   - **Ordonnancement Entrelacé (Staggered Interleaving)** : Les catégories hors-livres s'intercalent fluidement avec un espacement de 1,2s à 2,0s, évitant les pics concurrentiels sur une même IP.
 - **Raison** : Maximiser la vitesse de détection ("ultra-rapide") pour battre la concurrence tout en préservant l'IP et en garantissant zéro régression.
 - **Mise à jour (2026-09-30)** : `svc-catalogue/items` ne renvoie plus qu'une image de couverture dans `photos[]` (souvent length 1). Le scan n'expose donc plus l'information d'images multiples : seule la couverture est conservée (ADR-015).
+- **Mise à jour (2026-10-13)** : la cadence standard passe de 15 s à **12 s**. `VINTED_POLL_INTERVAL_SECONDS` devient l'intervalle standard réel **et** un plafond des modes accélérés : l'ancien `max(base, 15.0)` hors pointe en faisait un plancher, si bien que baisser la variable n'avait aucun effet en heures standard.
+- **Mise à jour (2026-10-13)** : sonde unique sur `/svc-catalogue/items` (`scripts/probe_vinted_published_at.py`) — **aucun horodatage de publication exposé**. Les clés d'un item réel sont `id, title, price, item_box, photo, photos, url, user, view_count, total_item_price, service_fee, search_tracking_params, promoted, show_1st_time_seller_discount, …`. La propagation de `published_at` et la mesure publication → détection sont closes en **bloqué**, faute de source. La colonne reste pour un appelant d'API externe.
 
 ### ADR-013 : Passerelle centralisée multi-bots (caddy_gateway) et harmonisation VPS ~/bot-radar/
 - **Contexte** :
