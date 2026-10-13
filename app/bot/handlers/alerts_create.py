@@ -102,23 +102,22 @@ def _merge_keywords(*groups: list[str] | None) -> list[str]:
 
 
 def _variants_for_category(
-    category_slug: str,
     values: list[str] | None,
     name: str,
     includes: list[str] | None,
 ) -> list[str]:
-    """Variantes retenues pour cette catégorie — aucune hors BD.
+    """Variantes retenues par le nettoyeur, jugées sur l'intention de recherche entière.
 
-    Une variante est l'autre écriture d'un **titre**, un concept bibliographique : le
-    matching ne la consulte qu'en BD (`listing_match`) et l'écran d'édition ne l'offre
-    qu'en BD. En conserver hors BD donnerait une liste qui influence la veille sans aucun
-    moyen de la voir ni de la retirer — exactement le défaut que cette règle supprime.
+    Les références sont le nom **et** les mots-clés inclus : une variante peut être
+    l'écriture d'une inclusion qualifiée (« blacksad integral » pour « blacksad
+    intégrale »), ou un alias de marque (« geforce rtx 4070 » pour « NVIDIA RTX 4070 »),
+    sans avoir le titre seul comme orthographe exacte.
 
-    Les exclusions, elles, restent utiles aux quatre catégories : elles ne passent pas
-    par ici.
+    La catégorie ne filtre rien ici. Le mécanisme de variante n'est pas propre aux
+    livres : le parcours d'ingestion le tient pour acquis sur une alerte tech, et c'est
+    ce parcours qui le prouve de bout en bout. Le garde d'identité, lui, s'applique
+    partout — c'est lui qui écarte le produit voisin.
     """
-    if category_slug != CategorySlug.BD_COMICS.value:
-        return []
     return sanitize_variants(values, name, references=includes or ())
 
 
@@ -261,10 +260,7 @@ async def _search_keywords_in_background(
     updated = {
         **snapshot,
         "variants": _variants_for_category(
-            category_slug,
-            outcome.variants,
-            name,
-            snapshot.get("include_keywords"),
+            outcome.variants, name, snapshot.get("include_keywords")
         ),
         "exclude_keywords": sanitize_exclusions(
             _merge_keywords(snapshot.get("exclude_keywords"), outcome.exclusions), name
@@ -706,7 +702,6 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     updated_draft = {
         **data,
         "variants": _variants_for_category(
-            category_slug,
             _merge_keywords(data.get("variants"), outcome.variants),
             name,
             data.get("include_keywords"),
@@ -782,7 +777,7 @@ async def _save_alert(
     # Dernier point de passage avant la base : une liste brute du moteur ne peut pas
     # être stockée, même si un chemin amont a laissé passer une énumération.
     excludes = sanitize_exclusions(data.get("exclude_keywords", []), name)
-    variants = _variants_for_category(category_slug, data.get("variants", []), name, includes)
+    variants = _variants_for_category(data.get("variants", []), name, includes)
     max_price = data.get("max_item_price_cents")
     conditions = data.get("selected_conditions") or (
         list(DEFAULT_BD_CONDITIONS)

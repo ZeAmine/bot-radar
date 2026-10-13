@@ -10,7 +10,6 @@ from __future__ import annotations
 from app.domain.rules.keyword_hygiene import (
     MAX_EXCLUSIONS,
     MAX_VARIANTS,
-    VARIANT_SIMILARITY_MIN,
     Reason,
     assess_exclusions,
     assess_variants,
@@ -335,72 +334,106 @@ def test_a_typo_and_a_glued_word_survive_the_identity_guard():
     ]
 
 
-def test_the_identity_rules_are_motivated_and_title_bound():
-    """Chaque nouveau refus porte son motif, et ce motif dépend du titre.
+def test_the_numbers_rule_neutralises_a_variant_that_lost_the_titles_number():
+    """Une variante qui ne porte plus les nombres du titre ne valide rien, sans migration.
 
-    C'est ce qui interdit à `--only-degenerate` de les franchir : un rejeu aveugle ne
-    peut pas emporter une variante sur une décision qui demandait le titre.
+    C'est la raison d'être de la règle **en lecture** : elle s'applique aux alertes déjà
+    enregistrées, sans colonne de provenance.
+
+    Limite connue et mesurée : si ni l'ancienne ni la nouvelle œuvre ne portent de
+    nombre, une variante obsolète n'est pas repérée. C'est le prix assumé de ne jamais
+    refuser une variante qui porte les bons nombres — une occasion manquée coûte plus cher
+    qu'une variante obsolète laissée en place.
     """
-    numbers = assess_variants(["galaxy s24"], "Galaxy S23")
-    assert [removal.reason for removal in numbers.removals] == [Reason.FOREIGN_NUMBER]
-
-    drift = assess_variants(["op"], "One Piece")
-    assert [removal.reason for removal in drift.removals] == [Reason.DRIFTED_WRITING]
-
-    assert Reason.FOREIGN_NUMBER.is_degenerate is False
-    assert Reason.DRIFTED_WRITING.is_degenerate is False
+    assert sanitize_variants(["bladerunner"], "Blade Runner 2049") == []
+    assert variant_identity_verdict("bladerunner", ("Blade Runner 2049",)) is (
+        Reason.FOREIGN_NUMBER
+    )
+    # Personne ne porte de nombre : la règle ne tranche pas, et la variante reste.
+    assert variant_identity_verdict("onepiece", ("Berserk", "berserk")) is None
 
 
-def test_the_identity_guard_decides_nothing_without_a_title():
-    """Un titre vide ne doit pas faire tomber une variante : la garde reste inerte.
+def test_the_numbers_rule_is_the_one_the_matching_applies():
+    """Le verdict d'identité ne juge que les nombres : c'est ce que le matching applique.
 
-    Même garde que `_swallows_the_title` : sans elle, un brouillon sans nom — que la
-    recherche en arrière-plan atteint avec `draft.get("name") or ""` — perdrait toutes
-    ses variantes au premier passage du nettoyeur.
+    Une faute de frappe, un mot collé, un alias de marque, une redondance : aucun de ces
+    cas ne porte sur un nombre, donc aucun n'est refusé **au matching**. La règle est
+    étroite par construction — refuser une variante déjà stockée coûte une annonce
+    manquée, et c'est le plus cher des deux défauts.
     """
-    for title in ("", "   ", None):
-        assert sanitize_variants(["galaxy s24", "op"], title) == ["galaxy s24", "op"]
-
-
-def test_the_identity_guard_neutralises_a_variant_of_the_previous_work():
-    """Une variante de l'œuvre précédente ne valide plus rien, sans migration.
-
-    C'est la raison d'être de la règle **en lecture** : le chemin d'édition d'ISBN
-    réécrit le nom de l'œuvre, et les variantes raisonnées sur l'ancienne fiche ne
-    doivent plus matcher d'annonce — sans qu'aucune colonne de provenance n'existe.
-    """
-    assert sanitize_variants(["onepiece"], "Berserk") == []
-    assert sanitize_variants(["couleurdeschoses"], "Blade Runner 2049") == []
-
-
-def test_the_similarity_floor_is_the_boundary_it_claims():
-    """Le seuil sépare la faute de frappe de l'autre mot, dans les deux sens."""
     assert variant_identity_verdict("blacksat", ("Blacksad",)) is None
     assert variant_identity_verdict("onepiece", ("One Piece",)) is None
-    assert variant_identity_verdict("op", ("One Piece",)) is Reason.DRIFTED_WRITING
+    assert variant_identity_verdict("geforce rtx 4070", ("NVIDIA RTX 4070",)) is None
+    assert variant_identity_verdict("op", ("One Piece",)) is None
+    # Répéter le titre n'élargit rien : ce n'est pas non plus un refus du matching.
+    assert variant_identity_verdict("blacksad", ("Blacksad",)) is None
+    # Un nommage inédit se juge sur les mots, à l'écriture seulement.
+    assert sanitize_variants(["blacksad"], "Blacksad") == []
 
     assert variant_identity_verdict("galaxy s24", ("Galaxy S23",)) is Reason.FOREIGN_NUMBER
     assert variant_identity_verdict("iphone13", ("iPhone 13",)) is None
-    assert 0.0 < VARIANT_SIMILARITY_MIN < 1.0
 
-    # La redondance n'appartient pas au verdict d'identité : elle est jugée à l'écriture.
-    assert variant_identity_verdict("blacksad", ("Blacksad",)) is None
-    assert sanitize_variants(["blacksad"], "Blacksad") == []
+
+def test_an_alias_of_the_same_product_keeps_the_numbers_and_the_shared_word():
+    """« geforce rtx 4070 » est le même produit qu'un « NVIDIA RTX 4070 ».
+
+    Le parcours d'ingestion de bout en bout tient ce cas pour acquis sur une alerte tech :
+    la variante valide une annonce que le mot-clé « nvidia rtx 4070 dual » ne décrit pas.
+    Une similarité globale — 0.5 contre 0.72 exigé — l'aurait rejeté, et l'alerte aurait
+    cessé de matcher une annonce qu'elle attrape aujourd'hui. La reconnaissance par mot
+    partagé est ce qui la laisse passer.
+    """
+    assert (
+        variant_identity_verdict("geforce rtx 4070", ("NVIDIA RTX 4070",))
+        is None
+    )
+    assert (
+        sanitize_variants(
+            ["geforce rtx 4070"],
+            "NVIDIA RTX 4070",
+            references=["nvidia rtx 4070 dual"],
+        )
+        == ["geforce rtx 4070"]
+    )
+
+
+def test_a_wordless_sigle_is_refused_at_write_time_only():
+    """« op » et « amm » ne portent aucun mot du produit : le moteur ne les propose pas.
+
+    Volontairement absents du verdict d'identité : le filtrage en lecture ne juge que les
+    nombres, pour ne jamais refuser une variante déjà stockée.
+    """
+    assert sanitize_variants(["op"], "One Piece") == []
+    assert sanitize_variants(["amm"], "Absolute Martian Manhunter") == []
+    # Mais au matching, rien ne les arrête : c'est le prix assumé de la lecture prudente.
+    assert variant_identity_verdict("op", ("One Piece",)) is None
+
+
+def test_the_write_verdict_is_motivated_and_title_bound():
+    """Chaque nouveau refus porte son motif, et ce motif dépend du titre ou des mots-clés.
+
+    C'est ce qui interdit à `--only-degenerate` de les franchir : un rejeu aveugle ne peut
+    pas emporter une variante sur une décision qui demandait le contexte.
+    """
+    sigle = assess_variants(["op"], "One Piece")
+    assert [removal.reason for removal in sigle.removals] == [Reason.DRIFTED_WRITING]
+
+    numbers = assess_variants(["galaxy s24"], "Galaxy S23")
+    assert [removal.reason for removal in numbers.removals] == [Reason.FOREIGN_NUMBER]
+
+    assert Reason.FOREIGN_NUMBER.is_degenerate is False
+    assert Reason.DRIFTED_WRITING.is_degenerate is False
 
 
 def test_a_variant_of_a_qualified_include_is_not_a_drift():
     """L'identité se juge sur l'intention entière ; la redondance, elle, reste au titre.
 
     « blacksad integral » reprend le titre « Blacksad » : le nettoyeur d'écriture l'écarte
-    comme redondant, et c'est le comportement d'origine, inchangé. Mais le verdict
-    d'identité — celui que le matching applique en lecture — le tient pour une écriture
-    légitime de l'inclusion qualifiée « blacksad intégrale ». Juger l'identité sur le seul
-    titre le refuserait, et l'alerte manquerait les annonces de l'intégrale.
+    comme redondant, et c'est le comportement d'origine, inchangé. Le verdict d'identité,
+    lui, ne le refuse pas : ni le titre seul ni l'inclusion qualifiée ne portent de nombre
+    qu'il changerait.
     """
-    assert (
-        variant_identity_verdict("blacksad integral", ("Blacksad",))
-        is Reason.DRIFTED_WRITING
-    )
+    assert variant_identity_verdict("blacksad integral", ("Blacksad",)) is None
     assert (
         variant_identity_verdict("blacksad integral", ("Blacksad", "blacksad intégrale"))
         is None
@@ -417,3 +450,14 @@ def test_a_variant_repeating_an_include_adds_nothing():
     assert sanitize_variants(
         ["blacksad"], "Blacksad", references=["blacksad intégrale"]
     ) == []
+
+
+def test_the_new_word_rule_is_the_one_the_write_path_applies():
+    """Le garde-fou `_shares_no_distinctive_word` vit à l'écriture, pas au matching.
+
+    C'est la seule des nouvelles règles qui s'arme sans le contexte du titre : elle doit
+    donc se taire quand le titre est vide, exactement comme `_swallows_the_title`.
+    """
+    for title in ("", "   ", None):
+        assert sanitize_variants(["galaxy s24", "op"], title) == ["galaxy s24", "op"]
+        assert variant_identity_verdict("galaxy s24", (title,)) is None

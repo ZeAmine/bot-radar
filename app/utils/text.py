@@ -1,6 +1,5 @@
 """Utilitaires purs de normalisation et de manipulation textuelle."""
 
-import difflib
 import html as html_lib
 import re
 import unicodedata
@@ -88,34 +87,6 @@ def contains_normalized_keyword(normalized_text: str | None, keyword: str | None
     if pattern is None:
         return False
     return bool(pattern.search(normalized_text))
-
-
-def compact_text(text: str | None) -> str:
-    """Forme collée d'un texte : normalisée, sans aucun espace.
-
-    « one piece », « one-piece » et « onepiece » sont trois écritures du même titre.
-    La normalisation seule ne les réunit pas : le tiret devient un espace, mais le mot
-    collé reste un token distinct, donc le matching par mots entiers le manque. Retirer
-    les espaces est ce qui les ramène à une seule forme.
-    """
-    return normalize_text(text).replace(" ", "")
-
-
-def similarity(first: str | None, second: str | None) -> float:
-    """Proximité de deux écritures, de 0.0 à 1.0, mesurée sur leurs formes collées.
-
-    Deux écritures du même titre qui ne diffèrent que par un espace, un tiret ou un
-    accent valent 1.0. En dessous, le ratio mesure la distance d'orthographe : c'est lui
-    qui sépare une faute de frappe (« blacksat » pour « Blacksad », 0.88) d'un autre
-    produit (« op » pour « One Piece », 0.40).
-    """
-    left = compact_text(first)
-    right = compact_text(second)
-    if not left or not right:
-        return 0.0
-    if left == right:
-        return 1.0
-    return difflib.SequenceMatcher(None, left, right).ratio()
 
 
 def strip_html_tags(text: str) -> str:

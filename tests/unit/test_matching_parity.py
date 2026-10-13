@@ -3,10 +3,12 @@
 Les cinq sorties historiques sont capturées depuis le matcher inchangé de 0cb54b7.
 Le produit cartésien est fixe : aucune sortie F10 ne définit l'attendu.
 
-L'empreinte a été re-gelée une fois, pour la garde d'identité des variantes et la
-consultation du OU réservée à la BD. La valeur de 0cb54b7 a été reproduite à l'identique
-en neutralisant ces deux règles : l'écart de comportement est donc exactement celui-là,
-et rien d'autre n'a bougé.
+L'empreinte n'a pas bougé quand la garde d'identité des variantes est arrivée, et
+c'est un résultat voulu. La nouvelle règle lue par le matching ne juge que les
+nombres, et aucune variante du corpus n'en porte : « chat detective » et « blacksad »
+restent donc utilisables exactement comme avant. C'est ce qui rend la garde sûre —
+elle ne refuse au matching que ce qui change un numéro du titre, c'est-à-dire une
+autre œuvre.
 """
 
 import hashlib
@@ -74,14 +76,7 @@ def functional_digest():
 
 
 def test_functional_outputs_are_identical_to_f05_base():
-    """L'empreinte a changé une seule fois, et la raison est vérifiable.
-
-    En neutralisant le verdict d'identité des variantes et la garde BD sur la consultation
-    du OU, la fonction `functional_digest` redonne la valeur de 0cb54b7
-    (`3d14b12ea22fc1b4afca417ab460fb25695d9d382b2156da0bc32452fda81dbc`) : les seules
-    sorties qui bougent sont celles que ces deux règles décident.
-    """
     assert functional_digest() == (
         18144,
-        "baa9b959e59cc9748a5342b688bf3a4215ca03eccf9a1d9dffbe89d92c27c3a7",
+        "3d14b12ea22fc1b4afca417ab460fb25695d9d382b2156da0bc32452fda81dbc",
     )

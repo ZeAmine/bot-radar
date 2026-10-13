@@ -7,7 +7,6 @@ from app.core.constants import (
     DEFAULT_GAMING_EXCLUSIONS,
     DEFAULT_TECH_EXCLUSIONS,
     AlertStatus,
-    CategorySlug,
 )
 from app.db.models.alert import Alert
 from app.domain.rules.keyword_hygiene import (
@@ -326,6 +325,12 @@ def usable_variants(
     Le titre et les inclusions sont facultatifs pour ne pas alourdir les appels qui
     n'ont que la liste : sans référence, le verdict d'identité ne décide rien.
     """
+    # Court-circuit : la grande majorité des alertes n'ont aucune variante, et leur
+    # couple (alerte, annonce) ne doit rien construire — ni tuple pour la mémoïsation,
+    # ni référence à hacher. Le coût du guarde-fou ne doit peser que sur celles qui en
+    # ont.
+    if not alert_variants:
+        return []
     return list(
         _usable_variants_cached(
             tuple(alert_variants or ()),
@@ -759,25 +764,27 @@ def evaluate_listing_against_alert(
     if not all_includes_match:
         # Vérification des variantes alternatives (OU logique entre variantes).
         #
-        # Les variantes sont un concept **bibliographique** : l'autre écriture d'un titre.
-        # Hors BD, l'alerte repose sur ses mots-clés, et une variante héritée d'une version
-        # antérieure n'élargit donc plus la veille — sans migration ni réécriture en base.
-        # La garde reproduit celle du repli hybride, qui ne s'arme déjà qu'en BD.
+        # Vérification des variantes alternatives (OU logique entre variantes).
+        # Aucune garde de catégorie : le mécanisme n'est pas propre aux livres. C'est le
+        # parcours d'ingestion de bout en bout (tests/unit/test_ingest_to_telegram.py) qui
+        # le tient pour acquis sur une alerte tech — la variante « geforce rtx 4070 »
+        # valide une annonce que le mot-clé « nvidia rtx 4070 dual » ne décrit pas. Ce qui
+        # est filtré n'est donc pas la catégorie, mais l'identité : `usable_variants`
+        # écarte une variante devenue étrangère au produit.
         variant_matched = False
-        if alert_cat_slug == CategorySlug.BD_COMICS.value:
-            for variant_index, raw_variant in enumerate(
-                usable_variants(
-                    alert.variants,
-                    clean_alert_isbn,
-                    alert.name,
-                    alert.include_keywords,
-                )
-            ):
-                if contains_normalized_keyword(searchable_text, raw_variant):
-                    variant_matched = True
-                    inclusion_route = "variant"
-                    details = (("usable_variant_index", variant_index),)
-                    break
+        for variant_index, raw_variant in enumerate(
+            usable_variants(
+                alert.variants,
+                clean_alert_isbn,
+                alert.name,
+                alert.include_keywords,
+            )
+        ):
+            if contains_normalized_keyword(searchable_text, raw_variant):
+                variant_matched = True
+                inclusion_route = "variant"
+                details = (("usable_variant_index", variant_index),)
+                break
 
         if not variant_matched:
             return MatchResult(

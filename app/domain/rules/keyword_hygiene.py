@@ -16,12 +16,18 @@ services. Il est appelé par les chemins d'écriture (module IA, création, édi
 auto-tuning) et, sous forme de prédicats légers, par le filtrage en lecture — une
 alerte déjà stockée n'a pas besoin d'une migration pour cesser de mal matcher.
 
-Une variante doit en plus **rester une écriture du même produit**. Les deux premières
-familles de règles ne rejettent que ce qui est dégénéré ; elles laissaient donc passer
+Une variante doit en plus **rester une écriture du même produit**. Les règles qui
+existaient ne rejettent que ce qui est dégénéré ; elles laissaient donc passer
 « galaxy s24 » pour « Galaxy S23 » (un modèle voisin), « bladerunner » pour
 « Blade Runner 2049 » (le millésime perdu, donc l'œuvre de 1982) ou « op » pour
 « One Piece » (un sigle, pas une orthographe). Comme une variante suffit à valider une
 annonce, chacune de ces écritures élargissait la veille à un autre produit.
+
+Deux règles d'identité, volontairement asymétriques : **les nombres** partout (écriture
+et lecture), le **mot reconnaissable** à l'écriture seulement. Rattraper une variante
+déjà stockée coûte une annonce manquée ; guider le moteur avant qu'il stocke ne coûte
+rien. C'est la frontière qu'ADR-024 avait posée, et que ces deux règles ne franchissent
+pas.
 
 Deux plafonds, une seule idée : une liste courte est une décision, une liste longue
 est l'aveu que le moteur n'a pas tranché.
@@ -29,12 +35,13 @@ est l'aveu que le moteur n'a pas tranché.
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.utils.text import normalize_text, similarity
+from app.utils.text import normalize_text
 
 # Nombre maximal de variantes conservées sur une alerte. Au-delà, le moteur énumère.
 MAX_VARIANTS = 8
@@ -45,13 +52,14 @@ MAX_EXCLUSIONS = 6
 # Un mot-clé plus long qu'un titre vraisemblable n'est pas un mot-clé.
 _MAX_TERM_LENGTH = 40
 
-# Proximité minimale entre une variante et le titre, sur leurs formes collées. En
-# dessous, la variante n'est plus une façon d'écrire le titre mais un autre mot. Valeur
-# déjà employée pour la cohérence de titre chez un fournisseur (`TITLE_COHERENCE_MIN`,
-# ADR-035). Marge observée sur les cas réels : le plus bas conservé (« one peice »,
-# 0.857) est nettement au-dessus, le plus haut rejeté (« onepiece coffret », 0.696)
-# nettement en dessous.
-VARIANT_SIMILARITY_MIN = 0.72
+# Un mot assez long pour qu'un début commun veuille dire quelque chose. En dessous, un
+# « op » et un « one » se ressemblent par accident : le préfixe n'est plus une preuve.
+_WORD_PREFIX_MIN = 3
+
+# Proximité d'un **mot** admise comme faute de frappe. Le seuil vit sur le mot, jamais sur
+# la phrase : comparer « geforce rtx 4070 » à « NVIDIA RTX 4070 » ne rend que 0.5, alors
+# que c'est le même produit — une similarité globale rejetterait l'alias de marque.
+_WORD_SIMILARITY_MIN = 0.8
 
 # Un ISBN est un code, pas une orthographe : « les enfants perdus 9782214080627 »
 # n'est pas une variante du titre.
@@ -151,6 +159,65 @@ def _digit_runs(value: str) -> tuple[str, ...]:
     return tuple(re.findall(r"\d+", normalize_text(value)))
 
 
+def _is_the_same_word_variably_spelled(candidate: str, reference_word: str) -> bool:
+    """Un mot reconnu dans un autre, faute de frappe comprise.
+
+    Trois formes comptent : l'égalité, le préfixe d'au moins trois caractères
+    (« onepiece » devant « one »), et la proximité d'écriture au-delà de
+    `_WORD_SIMILARITY_MIN` (« peice » devant « piece », « blacksat » devant
+    « blacksad »). Les trois sont ce qu'un vendeur écrit à la place du titre.
+
+    Le seuil est court et par **mot**, jamais sur la phrase entière : « op » devant
+    « one » vaut 0.4 et reste dehors, ce qu'une similarité globale aurait admis pour une
+    phrase presque semblable.
+    """
+    if candidate == reference_word:
+        return True
+    shorter, longer = sorted((candidate, reference_word), key=len)
+    if len(shorter) < _WORD_PREFIX_MIN:
+        return False
+    if longer.startswith(shorter):
+        return True
+    return difflib.SequenceMatcher(None, shorter, longer).ratio() >= _WORD_SIMILARITY_MIN
+
+
+def _shares_no_distinctive_word(value: str, references: Sequence[str]) -> bool:
+    """Le terme n'a-t-il aucun mot reconnaissable en commun avec les références ?
+
+    Règle de la **variante**, et elle ne juge qu'à l'**écriture**. Une variante est censée
+    être le même produit écrit autrement : elle doit donc en porter au moins un morceau.
+    Un sigle ou un mot sans rapport (« op » pour « One Piece », « amm » pour
+    « Absolute Martian Manhunter ») n'ajoute rien — et comme une seule variante suffit à
+    valider une annonce, celui-là ouvrirait la veille à tout ce qui contient ces lettres.
+
+    Un alias de marque passe, et il le faut : « geforce rtx 4070 » n'a de commun avec
+    « NVIDIA RTX 4070 » que « rtx » et « 4070 », mais c'est le même produit. Une
+    similarité globale à la place de cette règle l'aurait rejeté — elle compare 0.5 contre
+    0.72 exigé, et l'alerte tech aurait cessé de matcher une annonce qu'elle attrape
+    aujourd'hui. C'est la leçon du parcours d'ingestion de bout en bout.
+
+    Volontairement absente du filtrage en lecture : refuser une variante déjà stockée
+    ferait manquer une annonce, qui est le plus cher des deux défauts. La règle guide le
+    moteur quand il propose, elle ne rattrape pas l'historique.
+    """
+    value_words = normalize_text(value).split()
+    if not value_words:
+        return True
+    # Aucune référence exploitable — brouillon sans nom, alerte au nom vide — ne décide
+    # rien, comme partout dans cette famille : `'' in terme` est toujours vrai.
+    if not any(normalize_text(reference).split() for reference in references):
+        return False
+    for reference in references:
+        reference_words = normalize_text(reference).split()
+        if any(
+            _is_the_same_word_variably_spelled(word, reference_word)
+            for word in value_words
+            for reference_word in reference_words
+        ):
+            return False
+    return True
+
+
 def variant_identity_verdict(value: str, references: Sequence[str]) -> Reason | None:
     """Motif pour lequel une variante n'est plus une écriture de ce que l'alerte cherche.
 
@@ -158,47 +225,40 @@ def variant_identity_verdict(value: str, references: Sequence[str]) -> Reason | 
     annonce quand les mots-clés requis manquent. Elle doit donc rester une écriture de
     l'intention de recherche, pas d'un produit voisin.
 
+    **Une seule règle, et elle est ici** : les nombres. Un nombre est une identité, pas
+    une orthographe. « galaxy s24 » n'est pas une écriture de « Galaxy S23 », « blade
+    runner 2047 » n'est pas « Blade Runner 2049 », et « bladerunner » en perd le
+    millésime — l'alerte surveillerait alors l'œuvre de 1982. Le numéro d'un autre tome
+    tombe par la même règle, et un ISBN recopié aussi.
+
+    La comparaison porte sur les **suites de chiffres**, jamais sur les tokens :
+    « iphone13 » garde les chiffres de « iPhone 13 », « geforce rtx 4070 » garde ceux de
+    « NVIDIA RTX 4070 » — ce sont exactement les écritures qu'une variante existe pour
+    rattraper. La variante doit porter les nombres d'**au moins une** référence, et non
+    de chacune : une inclusion qualifiée ne doit pas perdre un alias qui aurait, lui,
+    conservé les bons nombres.
+
     Les références sont le titre **et** les mots-clés inclus. Une variante existe pour
     remplacer un mot-clé qui ne matche pas : « blacksad integral » est une écriture
     légitime d'une alerte dont l'inclusion est « blacksad intégrale », même quand le titre
     seul est « Blacksad ». Comparer au seul titre refuserait cette variante utile — une
     annonce manquée, c'est-à-dire le pire des deux défauts.
 
-    Deux refus, dans cet ordre :
-
-    - elle s'écarte de **toutes** les références au point de ne plus en être une écriture
-      (« op » pour « One Piece », « amm » pour « Absolute Martian Manhunter ») : un sigle
-      ouvrirait la veille à toute annonce contenant ces lettres ;
-    - elle change les nombres de la référence la plus proche. Un nombre est une identité,
-      pas une orthographe : « galaxy s24 » n'est pas une écriture de « Galaxy S23 », et
-      « bladerunner » perd le millésime de « Blade Runner 2049 » — l'alerte surveillerait
-      alors l'œuvre de 1982. La comparaison porte sur les **suites de chiffres**, jamais
-      sur les tokens : « iphone13 » garde les chiffres de « iPhone 13 », et c'est
-      exactement l'écriture collée qu'une variante doit rattraper.
-
-    La redondance — une variante qui reprend une référence — n'est **pas** de ce verdict :
-    elle n'élargit rien et ne fait donc pas manquer d'annonce, c'est `_variant_title_verdict`
-    qui la juge à l'écriture. Le filtrage en lecture applique ce verdict-ci seul.
-
-    Le seuil de proximité est un compromis assumé, comme celui de la cohérence de titre
-    (ADR-035) : il écarte aussi quelques abréviations qui perdent un mot (« ip13 ») et les
-    nombres écrits en lettres (« nineteen eighty four » pour « 1984 »). Ces écritures sont
-    peu probables chez un vendeur, et les accepter rouvrirait la porte que la règle ferme.
+    Ce verdict est le seul que le **filtrage en lecture** applique. Il est étroit par
+    construction : `_shares_no_distinctive_word` et `_repeats_the_title` restent à
+    l'écriture, parce que rattraper une variante déjà stockée coûte une annonce.
 
     Aucune référence exploitable — un brouillon sans nom, une alerte au nom vide — ne
-    décide rien. La comparaison est une inclusion de chaîne, or `'' in terme` est toujours
-    vrai : sans cette garde, le premier passage du nettoyeur effacerait toutes les
-    variantes, y compris dans `scripts/clean_alert_keywords.py`.
+    décide rien : `'' in terme` est toujours vrai, et sans cette garde le premier passage
+    du nettoyeur effacerait toutes les variantes, `clean_alert_keywords.py` compris.
     """
     usable = tuple(reference for reference in references if normalize_text(reference))
     if not usable:
         return None
-    closest = max(usable, key=lambda reference: similarity(value, reference))
-    if similarity(value, closest) < VARIANT_SIMILARITY_MIN:
-        return Reason.DRIFTED_WRITING
-    if _digit_runs(value) != _digit_runs(closest):
-        return Reason.FOREIGN_NUMBER
-    return None
+    variant_numbers = _digit_runs(value)
+    if any(_digit_runs(reference) == variant_numbers for reference in usable):
+        return None
+    return Reason.FOREIGN_NUMBER
 
 
 def names_only_a_volume(value: str, title: str) -> bool:
@@ -274,8 +334,8 @@ class Reason(StrEnum):
     ENUMERATION = "né d'une énumération de suffixe"
     BARE_TOKEN = "chiffre nu ou caractère seul : ne tranche rien"
     TITLE_VARIANT = "reprend le titre sans rien y ajouter"
-    FOREIGN_NUMBER = "nomme un numéro que le titre ne porte pas, ou perd le sien"
-    DRIFTED_WRITING = "s'écarte trop du titre pour être une écriture du même produit"
+    FOREIGN_NUMBER = "nomme un numéro que ni le titre ni les mots-clés ne portent"
+    DRIFTED_WRITING = "aucun mot du titre ni des mots-clés : ce n'est pas une écriture du produit"
     TITLE_EXCLUSION = "tient dans le titre : il tairait l'annonce cible"
     VOLUME_ONLY = "n'ajoute au titre qu'un numéro de tome : il tairait le tome voisin"
     DUPLICATE = "doublon d'un terme déjà présent"
@@ -342,21 +402,27 @@ class _Family:
 
 
 def _variant_title_verdict(value: str, references: tuple[str, ...]) -> Reason | None:
-    """Le verdict d'écriture d'une variante : redondante, ou étrangère au produit.
+    """Le verdict d'écriture d'une variante : redondante, étrangère, ou hors sujet.
 
-    Deux questions distinctes, et c'est le seul endroit qui les pose ensemble : la
-    variante ajoute-t-elle quelque chose (`_repeats_the_title`), et reste-t-elle une
-    écriture du même produit (`variant_identity_verdict`) ?
+    Trois questions, et c'est le seul endroit qui les pose ensemble :
 
-    Le filtrage en lecture ne reprend que la seconde. Une variante déjà stockée qui
-    reprend une référence n'élargit rien — elle ne fait pas manquer d'annonce — alors que
-    la refuser au matching retirerait une écriture que l'utilisateur a pu vouloir :
-    « blacksad integral » reprend le titre « Blacksad » mais reste l'écriture de
-    l'inclusion « blacksad intégrale », et c'est cette inclusion que l'alerte surveille.
-    Une annonce manquée coûte plus cher qu'une variante redondante.
+    1. la variante ajoute-t-elle quelque chose (`_repeats_the_title`) ? Rien qui soit déjà
+       couvert par une référence ;
+    2. porte-t-elle au moins un mot reconnaissable de la référence
+       (`_shares_no_distinctive_word`) ? Un sigle n'est pas une écriture ;
+    3. conserve-t-elle les nombres du produit (`variant_identity_verdict`) ?
+
+    Les trois dépendent du titre, donc `--only-degenerate` ne franchit aucune.
+
+    Le filtrage en lecture ne reprend que la question 3. Un terme étranger n'élargit rien
+    à lui seul — c'est la 2e qui manque au matching, et elle se juge sans briser de
+    variante stockée —, et rattraper les deux premières rouvrirait la porte qu'ADR-024
+    avait fermée : on ne rattrape pas une liste silencieusement au prix d'une occasion.
     """
     if any(_repeats_the_title(value, reference) for reference in references):
         return Reason.TITLE_VARIANT
+    if _shares_no_distinctive_word(value, references):
+        return Reason.DRIFTED_WRITING
     return variant_identity_verdict(value, references)
 
 
