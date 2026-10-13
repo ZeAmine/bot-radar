@@ -18,6 +18,14 @@ from app.schemas.listing import ListingIngestPayload
 from app.use_cases.listing_ingestion_gate import IngestionBusyError, listing_ingestion_gate
 from app.use_cases.notification_admission import MAX_AGE, complete_stored_receipt, utc
 
+logger = logging.getLogger(__name__)
+
+# Période de balayage de la reprise. Les backoffs d'admission valent au moins une minute
+# (`notification_admission.py`, `recover_notifications.py`) : balayer deux fois par minute
+# divise par deux l'attente entre l'échéance d'une reprise et sa tentative, sans jamais
+# devancer un `retry_after` de Telegram — la date d'échéance reste la borne.
+RECOVERY_SCAN_SECONDS = 30
+
 
 def get_bot() -> Bot:
     from app.bot.bot_instance import bot
@@ -29,7 +37,7 @@ async def recover_notifications() -> None:
     try:
         await _recover_notifications()
     except Exception as exc:
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "Reprise de notifications interrompue (%s).", type(exc).__name__,
             extra={"event": "notification_recovery_failed", "error_type": type(exc).__name__},
         )
@@ -123,6 +131,26 @@ async def _recover_notifications() -> None:
                             row.notification_reason = "invalid_persisted_listing"
                             await session.commit()
                             continue
+                        age_seconds = (datetime.now(UTC) - utc(row.created_at)).total_seconds()
+                        logger.info(
+                            "Reprise de notification : annonce %s, alerte %s, état %s, "
+                            "essai %s, %.0f s après la détection.",
+                            listing.id,
+                            row.alert_id,
+                            getattr(row.notification_state, "value", row.notification_state),
+                            row.attempt_count,
+                            age_seconds,
+                            extra={
+                                "event": "notification_recovered",
+                                "listing_id": str(listing.id),
+                                "alert_id": str(row.alert_id),
+                                "notification_state": getattr(
+                                    row.notification_state, "value", row.notification_state
+                                ),
+                                "attempt_count": row.attempt_count,
+                                "age_seconds": round(age_seconds, 1),
+                            },
+                        )
                         await use._execute_serialized(
                             payload, {}, resume_ids={row.alert_id}, admission_deadline=deadline,
                         )

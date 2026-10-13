@@ -211,7 +211,7 @@ ou aux données réellement manquantes.
 ## Invariant n°2 — un seul scheduler
 
 - `app/main.py` démarre **toujours** APScheduler. Le poller Vinted est optionnel (`VINTED_POLLER_ENABLED`).
-- Jobs : `max_instances=1`, `coalesce=True`. Prix à 07:00/19:00 (configurables), lot incrémental à :15/:45, cleanup à 03:30 et auto-tuning à 10:00/14:00/18:00/22:00 Europe/Paris. Reprise des préparations au démarrage puis toutes les cinq minutes ; reprise des notifications chaque minute.
+- Jobs : `max_instances=1`, `coalesce=True`. Prix à 07:00/19:00 (configurables), lot incrémental à :15/:45, cleanup à 03:30 et auto-tuning à 10:00/14:00/18:00/22:00 Europe/Paris. Reprise des préparations au démarrage puis toutes les cinq minutes ; reprise des notifications toutes les trente secondes.
 - Compose n’a pas de service worker et il n’existe pas de module `app.worker`. Tout tourne dans `radar_app`.
 - Pas de verrou Redis tant qu’il n’y a qu’un processus. Ne pas en ajouter « au cas où ».
 
