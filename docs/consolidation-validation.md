@@ -6,6 +6,266 @@ Référence applicative testée : `bfabcca7dbf4f8f6af2de058b167a93dd80816b8`, su
 
 **Verdict : validation incomplète.** La suite entière a été sélectionnée par backend, sans désélection, skip ou xfail ajouté. Elle est rouge. Aucun commit de vérification créé : les seuls nouveaux fichiers restent locaux.
 
+## Finalisation de la PR #98 — 14 octobre 2026
+
+Les bilans précédents, notamment le verdict partiel à `5df1641`, sont historiques.
+La présente reprise traite uniquement l'intégration de main et la recette SQLite.
+Aucun verdict d'environnement autonome sécurisé n'est ajouté : la qualification
+« autonomie encadrée à usage supervisé » reste inchangée.
+
+### Intégration et référence de tests
+
+- Tête locale/distante vérifiée : `5df1641c106f986b7fbc86e25ed949def97e99cd`,
+  worktree et index propres. Main distant : `d957de724d114db3a3c06cf71955f89bcef09fe9`.
+  Les références ont été relues avant livraison, sans mouvement concurrent.
+- Merge de ce main vers la seule branche `chore/remove-agent-autonomy` :
+  `10392f6d5d62a4f51272b13b2674aae3a13e6eb4`, parents `5df1641` et `d957de7`.
+  Le seul conflit concerne une phrase d'AGENTS.md : les compléments de #98
+  incluent la règle de main et sont conservés ; toutes les évolutions récentes
+  de main sont intégrées. Aucun rebase, force-push, merge vers main ou déploiement.
+- Le manifeste de main avait deux identifiants paramétrés périmés après ses
+  propres évolutions : `chat detective` devient `blaksad` dans la route de
+  matching par variante ; `None-Inconnue` devient `None-Non renseign\xe9` pour
+  la langue. Les deux références de travail sont remplacées à leur place par
+  les cas réellement collectés ; aucun test métier ni attente n'est modifié.
+  Les 1704 autres entrées et leur ordre restent identiques, soit 1706 entrées.
+  Les seules suppressions restent les 59 cas du dispositif retiré. Le manifeste
+  historique à `a303223cf1eff6c1308c7e492b69e6f0572f9d63` reste la référence des
+  anciennes preuves ; leurs compteurs ne sont pas recalculés.
+
+### Cause démontrée et correctif minimal
+
+La recette `python scripts/verify_consolidation.py unit --target tests/integration`
+a reproduit le rejet : 314 réussites et 12 skips, puis sortie 1 du lanceur.
+Sur toute la suite SQLite avant correction (`unit --target tests`), une mesure
+explicite de `pytest.main` donne sortie 0 (1769 réussites, 12 skips), alors que
+l'assertion « Scénario incomplet » rend la recette non verte. Le code extrait de
+main reproduit aussi pytest 0 / lanceur 1 sur un skip PostgreSQL ; le problème
+est préexistant au retrait, pas introduit par celui-ci.
+
+Le protocole du pytest installé appelle `call` seulement si `setup` a réussi,
+puis `teardown`. Les 12 skips ont donc légitimement `setup=skipped`,
+`teardown=passed`, sans `call`. Le lanceur exigeait toujours les trois phases.
+La correction valide maintenant cette séquence, vérifie les phases et statuts
+connus, refuse doublons/rapports inconnus/incomplets et tout faux succès contenant
+un échec, et conserve les codes pytest non nuls. Les contrôles de sélection,
+manifestes manquants et isolation ne sont pas retirés ni assouplis. Le rapport
+`FINAL_SUITE_REPORT` expose désormais le code pytest brut (`pytest_exit_code`).
+
+Les 41 régressions ciblées exercent des rapports explicites et de vrais
+sous-processus pytest : réussite, skip en setup/call, erreurs de setup/call/
+teardown/collecte, absence de tests, codes d'erreur/interruption, rapports
+malformés ou dupliqués. La régression du skip a été observée rouge avant le
+correctif, puis verte. Aucune exception inattendue n'est convertie en succès.
+
+### Preuves locales de la combinaison à `0110570`
+
+Même runtime temporaire sans installation ni editable partagé, environnement
+synthétique et barrières avant imports, enfants Python compris. Les commandes
+ci-dessous ont été rejouées sur l'arbre du correctif après `10392f6` ; les preuves
+antérieures ne sont pas utilisées comme validation de cet arbre.
+
+| Contrôle | Résultat et sortie |
+| --- | --- |
+| Ruff complet, verrou | 0 ; 18 dépendances couvertes |
+| Recette `typecheck` | 0 ; mypy 167 fichiers du contrat et 4 outils auxiliaires |
+| Régressions du lanceur | 0 ; 41 réussites |
+| SQLite entière : `unit --target tests` | pytest 0, lanceur 0 ; 1810 réussites, exactement les mêmes 12 skips qu'avant correction |
+| Sélection par défaut : `unit` | pytest 0, lanceur 0 ; 1496 réussites, aucun baseline manquant, performance sans contrôle concurrent |
+| Recette `postgres` | pytest 0, lanceur 0 ; 326 réussites, aucun baseline manquant ; installation vierge et chaîne peuplée 0010→0013 |
+| Références, suppressions, manifeste et diff/index | Aucun lien opérationnel cassé ; 59 suppressions dédiées et deux substitutions documentées, aucune perte de scénario |
+| Revue indépendante en lecture seule | Aucun défaut actionnable sur le correctif et ses régressions |
+
+Le seul conteneur de cette reprise (`ec476d5429645c0961f3db624d33a54cc374731a923fbe1a5a61221e04579779`)
+a été supprimé par ID, suppression confirmée. Chaque recette rapporte ses sondes
+volontairement refusées (une dotenv, deux réseau), sans tentative accidentelle ;
+les enfants Python gardés ne déclarent aucun accès interdit. Les avertissements
+préexistants de dépendances restent visibles. L'application, les migrations,
+la CI, le verrou et les dépendances sont identiques au main intégré.
+
+La CI et l'état de fusion du SHA livré sont consultés après push et rapportés
+dans la PR. Les vérifications de production et de permissions globales restent
+hors mandat. Aucun `check-history` supplémentaire (création d'autres worktrees)
+ni contrôle préalable à un merge de la PR n'est exécuté : aucun merge de cette
+PR n'est autorisé. Aucune configuration hors dépôt n'est modifiée.
+
+### Complément de portabilité après la CI de `0110570`
+
+La première CI de la combinaison ci-dessus a passé PostgreSQL, mais ses deux jobs
+`check` ont échoué dans les huit nouvelles régressions CLI du lanceur. Les logs
+montrent `FileNotFoundError` avant pytest : le workspace de garde imposait
+`/private/tmp`, présent sur macOS mais absent sur les runners Linux. Cette limite
+préexistante du lanceur a été exposée par les nouveaux tests ; les preuves locales
+macOS seules ne validaient donc pas leur exécution Linux. Les exécutions rouges
+[push](https://github.com/ZeAmine/bot-radar/actions/runs/38537714196) et
+[PR](https://github.com/ZeAmine/bot-radar/actions/runs/38537723752) restent historiques.
+
+Le correctif est limité au répertoire de `TemporaryDirectory` de la garde de
+suite : `/tmp` au lieu de `/private/tmp`. `/tmp` est déjà admis par les mêmes
+contrôles, disponible sur macOS/Linux et conserve les permissions privées,
+le nettoyage et la propagation de garde aux enfants. Aucun filtrage, règle de
+sélection, délai, dépendance ou configuration CI n'est modifié. Une 42e régression
+réelle simule l'absence du chemin macOS : rouge avant le changement, verte après.
+Les 41 cas précédents et leurs attentes restent intacts.
+
+L'arbre de ce complément a été revérifié avec le même environnement synthétique :
+
+| Contrôle rejoué après la portabilité | Résultat et sortie |
+| --- | --- |
+| Ruff et verrou | 0 ; 18 dépendances couvertes |
+| Mypy par la recette `typecheck` | 0 ; 167 + 4 fichiers |
+| Régressions ciblées du lanceur | pytest 0 / lanceur 0 ; 42 réussites |
+| SQLite entière `unit --target tests` | pytest 0 / lanceur 0 ; 1811 réussites, mêmes 12 skips |
+| Sélection par défaut `unit` | pytest 0 / lanceur 0 ; 1497 réussites, aucun baseline manquant ; performance sans contrôle concurrent |
+| PostgreSQL jetable `postgres` | pytest 0 / lanceur 0 ; 326 réussites, aucun baseline manquant ; migrations vierge et chaîne peuplée revérifiées |
+| Revue indépendante du complément | Aucun défaut actionnable ; périmètre et garde conservés |
+
+Le seul conteneur de cette seconde vérification
+(`550d599ba2fe3a679205c660a3d283155ac627bd7cb54265849914e99651accc`) est supprimé,
+suppression confirmée par ID. Les sondes de refus et les compteurs des enfants
+restent conformes, sans accès accidentel déclaré. La CI du nouveau SHA sera
+consultée après push : la CI rouge de `0110570` n'est pas masquée par une relance
+et n'est pas utilisée comme preuve du nouveau code.
+
+## Retrait ciblé du garde d’autonomie (13 octobre 2026)
+
+Les résultats historiques de ce document sont conservés ; ils ne sont pas une
+nouvelle exécution. Leur manifeste d’origine est consultable à la révision
+`a303223cf1eff6c1308c7e492b69e6f0572f9d63` dans l’historique Git.
+Le manifeste de travail `docs/consolidation-nodeids.json` retire maintenant
+uniquement les 59 nodeids des deux modules dédiés au garde supprimé,
+par exception explicitement validée. Ses 1706 entrées restantes sont
+inchangées et dans le même ordre ; les compteurs historiques ci-dessous ne sont
+pas recalculés. Aucun autre scénario n’est supprimé ou désélectionné.
+
+## Consolidation du cadre — 14 octobre 2026
+
+Cette section décrit le retrait et son diagnostic ; les résultats historiques
+ci-dessous gardent leur date, leur révision et leur portée. La politique active
+reste uniquement dans [AGENTS.md](../AGENTS.md#pilotage-autonome-borné).
+
+### Retrait et contrôles conservés
+
+- [F] La PR #98 retire `scripts/task_verdict.py`, `scripts/task_guard.py`, leur
+  gabarit TOML et leurs seuls tests dédiés. La notice transitoire
+  `docs/autonomy.md` est également retirée ; ses précautions sont conservées ici.
+- [F] Le code retiré portait l'empreinte de la fiche approuvée et des scripts de
+  confiance, les périmètres de fichiers et de commandes, les compteurs persistés
+  de durée/cycles/appels, les contrôles de tests et de diff, le digest avant/après
+  preuve, les décisions des hooks et l'état de reprise. Ces contrôles spécifiques
+  ne seront plus fournis par ces scripts. Leur présence ne prouvait pas leur
+  activation dans un IDE ; leur retrait n'améliore pas automatiquement la sécurité.
+- [F] `scripts/verify_consolidation.py`, son manifeste général et ses protections
+  de recette restent conservés. La CI définit Ruff, mypy, pytest, le contrôle du
+  verrou et l'intégration PostgreSQL ; aucun de ces contrôles n'est retiré.
+- [F] La consultation GitHub du 14 octobre donne `main` à
+  `d957de724d114db3a3c06cf71955f89bcef09fe9`, la PR #98 à
+  `301516ac4e0e9ece48caadff05910539e9ebf0c5` et son état `BEHIND`.
+  La protection consultée exige `check`, `strict=true`, s'applique aux
+  administrateurs et refuse le force-push. Cette lecture n'est pas un essai de push.
+- [F] La PR #112 recouvre ce retrait ; elle n'est ni modifiée ni fermée dans ce lot.
+
+### Frontières de l'exécution
+
+- [F] Le worktree sépare les fichiers de la tâche ; il n'isole pas les processus,
+  dépendances, ports, bases, Redis, conteneurs ou volumes. La recette conservée
+  neutralise les sources dotenv/secrets-directory avant les imports, refuse les
+  transports non autorisés et propage une garde aux enfants Python. Ce mécanisme
+  de test n'est pas une sandbox générale d'agent ou de code natif.
+- [F] La session déclare des racines d'écriture limitées et un réseau restreint,
+  avec escalade soumise à revue. Les premières consultations Git/GitHub ont échoué
+  sur la résolution/connexion ; leur reprise autorisée a réussi. Cela ne prouve
+  ni un filtrage réseau exhaustif ni une interdiction technique de la production.
+- [F] Le profil fourni à cette session autorise largement la lecture du filesystem ;
+  il ne déclare pas de cloisonnement des secrets. Des outils/MCP capables d'effets
+  externes sont exposés. Leur présence n'autorise pas leur usage dans ce mandat et
+  ne prouve pas qu'un garde externe intercepte chacun de leurs appels.
+- [F] L'accès au socket Docker a d'abord été refusé ; sa consultation autorisée
+  avec escalade a réussi. Les écritures documentaires du worktree et le cache
+  mypy ont également nécessité l'accès hors des racines d'écriture par défaut.
+  Ce sont des observations locales, pas une frontière infranchissable attestée.
+- [I] L'accès effectif aux secrets, clés SSH et ressources de production n'a pas
+  été éprouvé : aucun secret ni fichier d'authentification n'est lu, aucune
+  connexion de production n'est tentée. Le mandat interdit ces accès ; il ne les
+  rend pas techniquement impossibles.
+- [I] L'activation actuelle des hooks personnels Cursor et la médiation de chaque
+  outil/MCP ne sont pas établies. Les fiches, approbations, journaux et rapports
+  historiques hors dépôt restent à leur place, comme les anciens worktrees.
+- [F] Les règles et validateurs versionnés sont modifiables par une tâche qui en
+  reçoit la permission. Leur intégrité dépend aussi de la revue et des protections
+  externes ; le texte d'AGENTS.md ne les rend pas immuables.
+- [F] Le lanceur de recette contient des délais et la terminaison du groupe de
+  processus qu'il lance. [I] L'arrêt réel de tous les outils, processus détachés
+  et appels MCP d'une session complète n'est pas établi. Aucun plafond global de
+  durée, tentatives ou consommation n'est attesté par le dépôt.
+- [R] Qualifier l'usage d'**autonomie encadrée à usage supervisé** tant que ces
+  frontières et la reprise après interruption ne sont pas validées. Aucun défaut
+  du bot métier n'est déduit de ces informations manquantes.
+
+### Actions hors dépôt proposées, non appliquées
+
+- [R] Faire contrôler par l'opérateur les hooks qui viseraient les scripts retirés,
+  terminer ou suspendre leurs sessions puis désactiver uniquement ces raccordements.
+  Test : une tâche synthétique ne doit plus appeler un chemin supprimé. Ne déplacer
+  ni supprimer les états historiques pendant cette transition.
+- [R] Prévoir un profil d'exécution sans montage de secrets ni clé de production,
+  avec périmètres filesystem et réseau imposés hors de l'arbre modifiable.
+  Test : lire un fichier témoin autorisé puis tenter un témoin synthétique hors
+  périmètre ; utiliser une destination locale factice pour éprouver le refus réseau.
+  Aucun secret ni hôte de production n'est nécessaire à ces essais.
+- [R] Restreindre ou désactiver les outils/MCP à effets externes et protéger les
+  validateurs de confiance hors de l'arbre accessible. Test : tenter une opération
+  sur une ressource factice et une modification d'un validateur témoin ; vérifier
+  le refus avant tout effet. Ne pas utiliser de ressource réelle pour ce test.
+- [R] Configurer dans le superviseur existant des plafonds imposés et l'arrêt du
+  groupe de processus, puis tester avec un sous-processus local temporaire que
+  l'interruption arrête aussi l'enfant. Vérifier séparément les métriques de
+  consommation : un compteur déclaré n'est pas une mesure observée.
+- [R] Éprouver une interruption/reprise sur une tâche synthétique en conservant
+  mandat, SHA, diff/index, preuves, ressources et prochaine étape, selon AGENTS.md.
+  La reprise doit détecter un arbre modifié et ne pas réutiliser une preuve périmée.
+
+### Vérifications de ce complément (14 octobre 2026)
+
+**Verdict du complément à `5df1641` : partiel.** Le retrait et sa revue sont réalisés ; la
+recette SQLite n'est pas verte et la branche est derrière `main`. La validation
+complète n'est donc pas acquise, même si les checks GitHub du nouveau SHA passent.
+
+Arbre de `chore/remove-agent-autonomy`, parent `301516a`, avec uniquement les
+compléments documentaires de ce lot. Python 3.12.0 ; runtime temporaire sans pip
+ni fichiers `.pth`/editable, dépendances déjà présentes exposées par liens, source
+`app` résolue dans le worktree. Aucun paquet, outil ou sous-module installé ou mis
+à jour. Chaque commande de recette reçoit un environnement parent vide ; les
+barrières sont installées avant les imports applicatifs, enfants Python compris.
+
+| Commande / contrôle | Résultat observé | Portée |
+| --- | --- | --- |
+| `ruff check --no-cache .` | vert | Arbre complet de cette branche |
+| `python scripts/check_lock.py` | vert, 18 dépendances couvertes | Cohérence déclarations/verrou, pas une installation |
+| `python scripts/verify_consolidation.py typecheck` | vert, 167 + 4 fichiers | Contrat mypy et outils auxiliaires |
+| `python scripts/verify_consolidation.py unit` | vert, 1396 tests | Unitaires/performance, aucun baseline manquant |
+| Même commande avec `--target tests/performance`, seule | vert, 6 tests | Rejouée sans vérification concurrente |
+| `python scripts/verify_consolidation.py postgres` | vert, 326 tests | PostgreSQL jetable, installation vierge et chaîne peuplée 0010→0013 ; conteneur supprimé par son ID |
+| Même recette `unit --target tests/integration` | pytest : 314 réussis, 12 skips PostgreSQL ; lanceur : sortie 1 | Assertion finale « Scénario incomplet » : ces skips n'ont pas de phase `call`. Limite du lanceur inchangé, aucun test adapté |
+| Manifeste comparé à `a303223` et `git diff --check` | verts | Exactement 59 nodeids dédiés retirés, 1706 conservés dans l'ordre ; références restantes historiques uniquement |
+| Revue indépendante en lecture seule | aucun défaut actionnable relevé | Retrait et compléments, sans attestation de l'environnement global |
+
+Chaque recette achevée compte une sonde dotenv refusée et deux sondes réseau
+refusées, sans tentative accidentelle ; les enfants Python ne déclarent aucun
+accès interdit. Deux avertissements de dépendances (Starlette/httpx et Alembic)
+sont conservés. Le premier mypy a échoué à créer son cache hors des racines
+d'écriture ; la relance avec accès autorisé a passé. La première performance
+chevauchait d'autres contrôles et n'est pas retenue comme mesure ; seule sa
+réexécution isolée l'est.
+
+Aucun contrôle de production, essai réel des permissions/hook/MCP, plafond global,
+arrêt complet de session ou reprise synthétique n'a été exécuté. Aucun
+`check-history` supplémentaire n'est lancé : il crée d'autres worktrees et ne
+fait pas partie des contrôles autorisés ici. La branche reste derrière `main` ;
+les preuves locales concernent cet arbre, pas une future intégration. Les checks
+GitHub du SHA livré et le verdict actualisé sont rapportés dans la PR ; les
+anciens résultats CI ne valent pas validation du nouveau commit.
+
 ## Exécutions finales
 
 | Exécution | Collectés | Réussis | Échoués | Skips existants | Désélectionnés |
@@ -318,7 +578,7 @@ Les budgets de performance n’ont pas changé. Deux doubles d’envoi étaient 
 | Unitaires et performance, SQLite local selon fixture | 1442 | 1442 | 0 | 0 | 0 |
 | Intégration PostgreSQL 16, sous-processus webhook SQLite selon contrat | 326 | 326 | 0 | 0 | 0 |
 
-1768 nodeids distincts, dont les 1765 initiaux et trois nouveaux. `docs/consolidation-nodeids.json` conserve la référence exacte reconstruite à partir des rapports initiaux. Le lanceur refuse une collecte manquante ou dupliquée et une exécution incomplète, sans désélection ajoutée. Les identifiants de la matrice parametrée restent stables malgré le changement de libellé approuvé. Les rapports finaux n’ont aucun baseline manquant.
+1768 nodeids distincts, dont les 1765 initiaux et trois nouveaux. `docs/consolidation-nodeids.json` conservait alors la référence exacte reconstruite à partir des rapports initiaux ; le retrait ciblé ultérieur est décrit en tête de ce document. Le lanceur refuse une collecte manquante ou dupliquée et une exécution incomplète, sans désélection ajoutée. Les identifiants de la matrice parametrée restent stables malgré le changement de libellé approuvé. Les rapports finaux n’ont aucun baseline manquant.
 
 Commandes finales réellement exécutées :
 

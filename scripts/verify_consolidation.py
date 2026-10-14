@@ -416,6 +416,43 @@ async def verify_migrations(before: dict[str, Any]) -> None:
         await engine.dispose()
 
 
+def _record_test_report(
+    reports: dict[str, dict[str, str]], nodeid: str, phase: str, outcome: str
+) -> None:
+    """Conserve chaque rapport une fois, sans écraser un échec par un doublon."""
+    assert phase in {"setup", "call", "teardown"}, "Phase de rapport pytest invalide"
+    assert outcome in {"passed", "failed", "skipped"}, "Statut de rapport pytest invalide"
+    phases = reports.setdefault(nodeid, {})
+    assert phase not in phases, "Rapport pytest dupliqué"
+    phases[phase] = outcome
+
+
+def _validate_test_reports(
+    collected: list[str], reports: dict[str, dict[str, str]], pytest_exit_code: int
+) -> int:
+    """Vérifie le protocole pytest sans convertir un verdict non nul en succès."""
+    assert type(pytest_exit_code) is int, "Code de sortie pytest invalide"
+    assert 0 <= pytest_exit_code <= 5, "Code de sortie pytest invalide"
+    assert len(collected) == len(set(collected)), "Collecte dupliquée"
+    assert set(collected) == set(reports), "Scénario collecté sans exécution ou rapport inattendu"
+    assert collected or pytest_exit_code != 0, "Aucun scénario exécuté malgré un succès pytest"
+    for phases in reports.values():
+        assert all(value in {"passed", "failed", "skipped"} for value in phases.values()), (
+            "Statut de rapport pytest invalide"
+        )
+        # Pytest appelle le test seulement si setup a passé, puis toujours teardown.
+        expected = (
+            ("setup", "call", "teardown")
+            if phases.get("setup") == "passed"
+            else ("setup", "teardown")
+        )
+        assert tuple(phases) == expected, "Scénario pytest incomplet ou phases incohérentes"
+        assert pytest_exit_code != 0 or "failed" not in phases.values(), (
+            "Échec pytest annoncé comme succès"
+        )
+    return pytest_exit_code
+
+
 def suite(mode: str, identity: str | None = None, targets: list[str] | None = None) -> int:
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))
@@ -490,11 +527,11 @@ def suite(mode: str, identity: str | None = None, targets: list[str] | None = No
             self.collected = [node.nodeid for node in session.items]
 
         def pytest_runtest_logreport(self, report: Any) -> None:
-            self.reports.setdefault(report.nodeid, {})[report.when] = report.outcome
+            _record_test_report(self.reports, report.nodeid, report.when, report.outcome)
 
     complete_selection = not targets
     reports = Reports()
-    with tempfile.TemporaryDirectory(prefix="radar-final-guard-", dir="/private/tmp") as directory:
+    with tempfile.TemporaryDirectory(prefix="radar-final-guard-", dir="/tmp") as directory:
         workspace = Path(directory)
         child_log = workspace / "children.jsonl"
         os.environ["RADAR_FINAL_CHILD_LOG"] = str(child_log)
@@ -522,6 +559,7 @@ def suite(mode: str, identity: str | None = None, targets: list[str] | None = No
         )
     summary = {
         "backend": mode,
+        "pytest_exit_code": result,
         "collected": len(reports.collected),
         "passed": sum(
             p.get("call") == "passed" and p.get("teardown") == "passed"
@@ -548,10 +586,7 @@ def suite(mode: str, identity: str | None = None, targets: list[str] | None = No
     summary["scheduler_started"] = len(getattr(guard, "scheduler_instances", []))
     print("FINAL_SUITE_REPORT", json.dumps(summary, sort_keys=True), flush=True)
     assert not summary.get("missing_baseline"), "Nodeids de référence manquants"
-    assert set(reports.collected) == set(reports.reports), "Scénario collecté sans exécution"
-    assert all({"setup", "call", "teardown"} <= row.keys() for row in reports.reports.values()), (
-        "Scénario incomplet"
-    )
+    result = _validate_test_reports(reports.collected, reports.reports, result)
     assert counts["dotenv"] == 1
     assert counts["network_denied"] == 2
     assert counts["process_denied"] == 0

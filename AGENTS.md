@@ -46,7 +46,18 @@ objectif de consommation de tokens. Le rapport indique les commandes, la révisi
 les résultats et leur portée. Cette boucle concerne les agents de développement,
 jamais l’autonomie métier du bot, et n’accorde aucune permission supplémentaire.
 
-Ce fichier ne remplace ni les permissions techniques des outils ni une revue indépendante.
+Ce fichier décrit des consignes : il ne constitue ni une sandbox ni un superviseur
+et ne remplace ni les permissions techniques des outils ni une revue indépendante.
+Un plafond écrit dans un mandat (durée, tentatives, consommation) n'impose pas un
+arrêt à l'agent ou à ses sous-processus. Sans preuve des frontières et des arrêts
+réels de l'environnement, le mode reste une **autonomie encadrée à usage supervisé**,
+pas une exécution nocturne sans surveillance.
+
+Pour reprendre après interruption, conserver le mandat et le plan validés, le
+chemin du worktree, la branche, les SHA de base et courant, l'état du diff et de
+l'index, les travaux restants, les commandes et preuves datées avec leur portée,
+les ressources temporaires encore actives et les blocages. Relire cet état avant
+la reprise ; une preuve antérieure ne valide pas un arbre qui a changé.
 
 ## Définition de terminé
 
@@ -242,6 +253,7 @@ ou aux données réellement manquantes.
 ## Tests
 
 - Ne supprimer aucun test existant. Adapter si le symbole testé disparaît volontairement.
+- Exception ciblée validée le 13 octobre 2026 : seuls `tests/unit/test_task_verdict.py` et `tests/unit/test_task_guard.py` disparaissent avec leurs scripts retirés. Le manifeste de consolidation retire uniquement leurs nodeids ; les preuves historiques conservent leur révision et leur portée. Cette exception n’autorise aucune autre suppression de test.
 - Le matching, l’idempotence d’ingestion, le calcul de total, le cache marché et le webhook secret sont des filets critiques.
 - Les tests d’ingest patchent l’envoi via un réexport / `sys.modules` : préserver `_get_send_listing_alert()` tant que ce contrat tient.
 - Pas de base globale partagée non isolée à introduire dans `conftest.py`.
