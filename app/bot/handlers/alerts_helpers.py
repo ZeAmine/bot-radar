@@ -3,6 +3,7 @@
 import html
 import logging
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -133,6 +134,21 @@ def series_indication_block() -> list[str]:
     affiché deux fois, pas deux phrases qui se ressemblent.
     """
     return [f"<i>{SERIES_INDICATION}</i>", ""]
+
+
+async def parse_listing_id(callback: CallbackQuery) -> uuid.UUID | None:
+    """UUID d'annonce porté par le callback, ou ``None`` — l'erreur est annoncée.
+
+    Plusieurs boutons d'annonce lisent ce même identifiant ; la réponse « Annonce
+    invalide » est la même partout, elle vit donc ici plutôt que recopiée de
+    handler en handler.
+    """
+    raw_id = callback.data.split(":", 1)[1] if callback.data else ""
+    try:
+        return uuid.UUID(raw_id)
+    except (IndexError, ValueError):
+        await callback.answer("Annonce invalide.", show_alert=True)
+        return None
 
 
 def _get_alert_repo(session: Any) -> Any:

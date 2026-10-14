@@ -217,6 +217,7 @@ async def send_listing_alert(
                     listing_id=listing.id,
                     listing_url=listing.url,
                     category_slug=listing.category_slug,
+                    checkout_enabled=settings.VINTED_CHECKOUT_PREPARATION_ENABLED,
                 )
                 photo_url = _photo_url_for_alert(listing, caption)
             except Exception as exc:

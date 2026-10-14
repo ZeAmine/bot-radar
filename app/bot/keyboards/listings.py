@@ -4,7 +4,13 @@ import uuid
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.labels import BTN_CANCEL, BTN_CONFIRM, BTN_REPORTED, BTN_VIEW_LISTING
+from app.bot.labels import (
+    BTN_BUY,
+    BTN_CANCEL,
+    BTN_CONFIRM,
+    BTN_REPORTED,
+    BTN_VIEW_LISTING,
+)
 from app.core.constants import CategorySlug
 
 
@@ -13,15 +19,27 @@ def get_listing_alert_keyboard(
     listing_url: str,
     category_slug: str,
     is_disliked: bool = False,
+    *,
+    checkout_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     """Génère les boutons d'action d'une alerte d'annonce.
 
     Règles :
-    - Ligne 1 : [Voir l’annonce]
+    - Ligne 1 : [Acheter] et [Voir l'annonce] quand la préparation du checkout
+      est activée ; [Voir l'annonce] seule sinon.
     - Ligne 2 : [Prix du marché] (si BD/Comics)
     - Ligne 3 (Ligne 2 si hors-BD) : [Faux positif] (ou [Signalé]) et [Négocier]
+
+    « Acheter » ne prépare rien à l'envoi : l'action est un callback, et le
+    checkout n'est construit qu'au clic (invariant n°1 intact). « Voir
+    l'annonce » reste le repli si la préparation échoue.
     """
     row1 = [InlineKeyboardButton(text=BTN_VIEW_LISTING, url=listing_url)]
+    if checkout_enabled:
+        row1.insert(
+            0,
+            InlineKeyboardButton(text=BTN_BUY, callback_data=f"buy:{listing_id}"),
+        )
 
     dislike_btn = (
         InlineKeyboardButton(text=BTN_REPORTED, callback_data=f"disliked:{listing_id}")

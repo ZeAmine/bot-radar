@@ -169,10 +169,64 @@ def test_telegram_buttons_no_payer_button():
         CategorySlug.GAMING.value,
         CategorySlug.CLOTHES.value,
     ]:
-        kb = get_listing_alert_keyboard(listing_id, url, category_slug=slug)
-        all_buttons = [btn for row in kb.inline_keyboard for btn in row]
-        assert not any("payer" in b.text.lower() for b in all_buttons)
-        assert not any(b.url and "transaction/buy" in b.url for b in all_buttons)
+        for checkout_enabled in (False, True):
+            kb = get_listing_alert_keyboard(
+                listing_id, url, category_slug=slug, checkout_enabled=checkout_enabled
+            )
+            all_buttons = [btn for row in kb.inline_keyboard for btn in row]
+            assert not any("payer" in b.text.lower() for b in all_buttons)
+            assert not any(b.url and "transaction/buy" in b.url for b in all_buttons)
+
+
+def test_telegram_buttons_buy_enabled_bd():
+    """« Acheter » ouvre le clic de préparation, « Voir l'annonce » reste le repli."""
+    listing_id = uuid.uuid4()
+    url = "https://www.vinted.fr/items/123456-listing-bd"
+    keyboard = get_listing_alert_keyboard(
+        listing_id,
+        url,
+        category_slug=CategorySlug.BD_COMICS.value,
+        checkout_enabled=True,
+    )
+
+    rows = keyboard.inline_keyboard
+    assert len(rows) == 3
+    assert [button.text for button in rows[0]] == ["Acheter", "Voir l'annonce"]
+    assert rows[0][0].callback_data == f"buy:{listing_id}"
+    assert rows[0][0].url is None
+    assert rows[0][1].url == url
+    # Le reste du clavier n'est pas touché.
+    assert rows[1][0].callback_data == f"market:{listing_id}"
+    assert rows[2][0].callback_data == f"dislike:{listing_id}"
+    assert rows[2][1].callback_data == f"negotiate:{listing_id}"
+
+
+def test_telegram_buttons_buy_enabled_other_categories():
+    """Hors BD, la rangée « Acheter » ne fait pas apparaître de « Prix du marché »."""
+    listing_id = uuid.uuid4()
+    url = "https://www.vinted.fr/items/54321987-nintendo-switch"
+
+    for cat in [CategorySlug.CLOTHES.value, CategorySlug.TECH.value]:
+        keyboard = get_listing_alert_keyboard(
+            listing_id, url, category_slug=cat, checkout_enabled=True
+        )
+        rows = keyboard.inline_keyboard
+        assert len(rows) == 2
+        assert [button.text for button in rows[0]] == ["Acheter", "Voir l'annonce"]
+        assert rows[0][0].callback_data == f"buy:{listing_id}"
+
+
+def test_telegram_buttons_buy_absent_when_disabled():
+    """L'interrupteur éteint rend le clavier d'avant, sans action inopérante."""
+    listing_id = uuid.uuid4()
+    url = "https://www.vinted.fr/items/99999-item"
+
+    keyboard = get_listing_alert_keyboard(
+        listing_id, url, category_slug=CategorySlug.TECH.value,
+        checkout_enabled=False,
+    )
+    texts = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert "Acheter" not in texts
 
 
 def test_dislike_confirmation_keyboard():

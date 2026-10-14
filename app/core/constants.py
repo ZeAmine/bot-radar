@@ -8,6 +8,7 @@ from app.domain.enums import (
     ItemCondition,
     MatchConfidence,
     ProviderQueryStatus,
+    VintedCheckoutStatus,
 )
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "ItemCondition",
     "MatchConfidence",
     "ProviderQueryStatus",
+    "VintedCheckoutStatus",
     "CATEGORY_LABELS",
     "CATEGORY_EMOJIS",
     "STANDARD_CONDITIONS",

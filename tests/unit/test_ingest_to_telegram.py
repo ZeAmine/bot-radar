@@ -283,6 +283,48 @@ async def test_a_matching_listing_reaches_the_telegram_message(
 
 
 @pytest.mark.asyncio
+async def test_buy_button_is_a_callback_the_alert_does_not_execute(
+    ingestion_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """« Acheter » n'agit qu'au clic : rien n'est préparé pendant l'envoi.
+
+    Le fournisseur de checkout est remplacé par un refus : si l'ingestion
+    l'appelait, le test échouerait. L'alerte part quand même, sa légende est
+    inchangée, et son clavier porte le callback qui déclenchera la préparation.
+    """
+    from app.providers.vinted_checkout import VintedCheckoutProvider
+
+    monkeypatch.setattr(settings, "AI_ENABLED", False)
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
+    forbidden = AsyncMock(side_effect=AssertionError("aucune préparation à l'alerte"))
+    monkeypatch.setattr(VintedCheckoutProvider, "create_buyer_inquiry", forbidden)
+    monkeypatch.setattr(VintedCheckoutProvider, "build_single_checkout", forbidden)
+    monkeypatch.setattr(VintedCheckoutProvider, "fetch_item_seller_id", forbidden)
+
+    await _seed_alert(
+        ingestion_db,
+        category=Category(slug="tech", label="Tech", emoji="💻", is_active=True),
+        alert_name="NVIDIA RTX 4070",
+        include_keywords=INCLUDE_KEYWORDS,
+        variants=[VARIANT_THAT_MATCHES],
+        max_item_price_cents=45000,
+    )
+    bot = FakeTelegramBot()
+
+    payload = await _scraped_payload(GPU_ITEM_ID, category_slug="tech")
+    response = await _post_listing(ingestion_db, bot, payload)
+
+    assert response.status_code == 200
+    assert published_caption(bot) == EXPECTED_CAPTION
+    keyboard = bot.sent_to_telegram[0]["reply_markup"]
+    assert keyboard.inline_keyboard[0][0].text == "Acheter"
+    assert keyboard.inline_keyboard[0][0].callback_data.startswith("buy:")
+    assert keyboard.inline_keyboard[0][1].text == "Voir l'annonce"
+    forbidden.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_listing_that_matches_no_alert_sends_nothing(
     ingestion_db: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,

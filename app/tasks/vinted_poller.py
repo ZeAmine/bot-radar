@@ -366,6 +366,12 @@ async def _ingest_scraped_item(item: Any, category_slug: str) -> ScrapedIngestRe
         ingestion_id=uuid.uuid4(), collection_id=collection_id, discovered_at=discovered_at
     )
     payload_dict = to_ingest_payload(item, category_slug=category_slug)
+    # L'identifiant vendeur sert au clic sur « Acheter ». `to_ingest_payload`
+    # vit dans un fichier sensible que l'on n'étend pas : le champ est joint
+    # ici, une fois, depuis la donnée déjà parsée, sans aucun appel réseau.
+    seller_external_id = getattr(item, "seller_external_id", None)
+    if seller_external_id:
+        payload_dict["seller_external_id"] = str(seller_external_id)
     payload = ListingIngestPayload.model_validate(payload_dict)
     waiting_at = latency.clock()
     acquired = False

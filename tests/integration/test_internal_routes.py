@@ -164,6 +164,116 @@ async def test_chasse_session_requires_the_internal_token(async_client: AsyncCli
     assert res.status_code in (401, 403)
 
 
+@pytest.fixture
+def fake_checkout_redis(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Redis en mémoire pour la session de compte du bouton « Acheter »."""
+    store: dict[str, str] = {}
+    client = AsyncMock()
+    client.set = AsyncMock(side_effect=lambda key, value, **_: store.update({key: value}) or True)
+    client.get = AsyncMock(side_effect=lambda key: store.get(key))
+    client.delete = AsyncMock(
+        side_effect=lambda key: 1 if store.pop(key, None) is not None else 0
+    )
+    monkeypatch.setattr("app.providers.vinted_checkout.get_redis_client", lambda: client)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_vinted_checkout_session_never_echoes_cookies(
+    internal_client: AsyncClient,
+    fake_checkout_redis: dict[str, str],
+):
+    """Les cookies vont et viennent : aucune valeur ne sort de la route."""
+    res = await internal_client.post(
+        "/api/v1/internal/vinted/checkout-session",
+        json={
+            "access_token_web": "jeton-ultra-secret-0123456789",
+            "_vinted_fr_session": "session-ultra-secrete",
+            "datadome": "cookie-anti-robot",
+        },
+    )
+    assert res.status_code == 200
+    assert "ultra-secret" not in res.text
+    assert "cookie-anti-robot" not in res.text
+    assert res.json()["cookies_stored"] == 3
+
+    status = await internal_client.get("/api/v1/internal/vinted/checkout-session")
+    assert status.status_code == 200
+    assert "ultra-secret" not in status.text
+    payload = status.json()
+    assert payload["configured"] is True
+    assert payload["authenticated"] is True
+    assert payload["cookie_names"] == [
+        "_vinted_fr_session",
+        "access_token_web",
+        "datadome",
+    ]
+    # Le round-trip est réel : c'est ce que relira le provider au clic suivant.
+    assert fake_checkout_redis
+
+
+@pytest.mark.asyncio
+async def test_vinted_checkout_session_can_be_purged(
+    internal_client: AsyncClient,
+    fake_checkout_redis: dict[str, str],
+):
+    """La purge est un geste explicite, et l'état retombe à zéro."""
+    await internal_client.post(
+        "/api/v1/internal/vinted/checkout-session",
+        json={"access_token_web": "jeton"},
+    )
+
+    res = await internal_client.delete("/api/v1/internal/vinted/checkout-session")
+
+    assert res.status_code == 200
+    status = await internal_client.get("/api/v1/internal/vinted/checkout-session")
+    assert status.json()["configured"] is False
+    assert fake_checkout_redis == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_checkout_redis")
+async def test_vinted_checkout_session_absent_reads_as_not_configured(
+    internal_client: AsyncClient,
+):
+    status = await internal_client.get("/api/v1/internal/vinted/checkout-session")
+
+    assert status.status_code == 200
+    assert status.json() == {
+        "configured": False,
+        "authenticated": False,
+        "cookie_names": [],
+        "has_access_token": False,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_checkout_redis")
+async def test_vinted_checkout_session_rejects_empty_payload(
+    internal_client: AsyncClient,
+):
+    """Une session vide se lirait comme installée : elle est refusée."""
+    res = await internal_client.post(
+        "/api/v1/internal/vinted/checkout-session",
+        json={"access_token_web": "   "},
+    )
+
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_checkout_redis")
+async def test_vinted_checkout_session_requires_the_internal_token(
+    async_client: AsyncClient,
+):
+    res = await async_client.post(
+        "/api/v1/internal/vinted/checkout-session",
+        json={"access_token_web": "quelconque"},
+    )
+
+    assert res.status_code in (401, 403)
+
+
 @pytest.mark.asyncio
 async def test_get_internal_alerts(internal_client: AsyncClient):
     """Vérifie que la route interne retourne la liste des alertes."""
