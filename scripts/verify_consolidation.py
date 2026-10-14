@@ -531,7 +531,7 @@ def suite(mode: str, identity: str | None = None, targets: list[str] | None = No
 
     complete_selection = not targets
     reports = Reports()
-    with tempfile.TemporaryDirectory(prefix="radar-final-guard-", dir="/private/tmp") as directory:
+    with tempfile.TemporaryDirectory(prefix="radar-final-guard-", dir="/tmp") as directory:
         workspace = Path(directory)
         child_log = workspace / "children.jsonl"
         os.environ["RADAR_FINAL_CHILD_LOG"] = str(child_log)

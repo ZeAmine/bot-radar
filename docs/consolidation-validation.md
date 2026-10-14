@@ -58,7 +58,7 @@ teardown/collecte, absence de tests, codes d'erreur/interruption, rapports
 malformés ou dupliqués. La régression du skip a été observée rouge avant le
 correctif, puis verte. Aucune exception inattendue n'est convertie en succès.
 
-### Preuves locales de la combinaison corrigée
+### Preuves locales de la combinaison à `0110570`
 
 Même runtime temporaire sans installation ni editable partagé, environnement
 synthétique et barrières avant imports, enfants Python compris. Les commandes
@@ -88,6 +88,44 @@ dans la PR. Les vérifications de production et de permissions globales restent
 hors mandat. Aucun `check-history` supplémentaire (création d'autres worktrees)
 ni contrôle préalable à un merge de la PR n'est exécuté : aucun merge de cette
 PR n'est autorisé. Aucune configuration hors dépôt n'est modifiée.
+
+### Complément de portabilité après la CI de `0110570`
+
+La première CI de la combinaison ci-dessus a passé PostgreSQL, mais ses deux jobs
+`check` ont échoué dans les huit nouvelles régressions CLI du lanceur. Les logs
+montrent `FileNotFoundError` avant pytest : le workspace de garde imposait
+`/private/tmp`, présent sur macOS mais absent sur les runners Linux. Cette limite
+préexistante du lanceur a été exposée par les nouveaux tests ; les preuves locales
+macOS seules ne validaient donc pas leur exécution Linux. Les exécutions rouges
+[push](https://github.com/ZeAmine/bot-radar/actions/runs/38537714196) et
+[PR](https://github.com/ZeAmine/bot-radar/actions/runs/38537723752) restent historiques.
+
+Le correctif est limité au répertoire de `TemporaryDirectory` de la garde de
+suite : `/tmp` au lieu de `/private/tmp`. `/tmp` est déjà admis par les mêmes
+contrôles, disponible sur macOS/Linux et conserve les permissions privées,
+le nettoyage et la propagation de garde aux enfants. Aucun filtrage, règle de
+sélection, délai, dépendance ou configuration CI n'est modifié. Une 42e régression
+réelle simule l'absence du chemin macOS : rouge avant le changement, verte après.
+Les 41 cas précédents et leurs attentes restent intacts.
+
+L'arbre de ce complément a été revérifié avec le même environnement synthétique :
+
+| Contrôle rejoué après la portabilité | Résultat et sortie |
+| --- | --- |
+| Ruff et verrou | 0 ; 18 dépendances couvertes |
+| Mypy par la recette `typecheck` | 0 ; 167 + 4 fichiers |
+| Régressions ciblées du lanceur | pytest 0 / lanceur 0 ; 42 réussites |
+| SQLite entière `unit --target tests` | pytest 0 / lanceur 0 ; 1811 réussites, mêmes 12 skips |
+| Sélection par défaut `unit` | pytest 0 / lanceur 0 ; 1497 réussites, aucun baseline manquant ; performance sans contrôle concurrent |
+| PostgreSQL jetable `postgres` | pytest 0 / lanceur 0 ; 326 réussites, aucun baseline manquant ; migrations vierge et chaîne peuplée revérifiées |
+| Revue indépendante du complément | Aucun défaut actionnable ; périmètre et garde conservés |
+
+Le seul conteneur de cette seconde vérification
+(`550d599ba2fe3a679205c660a3d283155ac627bd7cb54265849914e99651accc`) est supprimé,
+suppression confirmée par ID. Les sondes de refus et les compteurs des enfants
+restent conformes, sans accès accidentel déclaré. La CI du nouveau SHA sera
+consultée après push : la CI rouge de `0110570` n'est pas masquée par une relance
+et n'est pas utilisée comme preuve du nouveau code.
 
 ## Retrait ciblé du garde d’autonomie (13 octobre 2026)
 

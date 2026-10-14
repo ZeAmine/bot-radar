@@ -144,3 +144,40 @@ def test_recipe_preserves_pytest_exit_codes(tmp_path, source, code):
     assert summary["pytest_exit_code"] == code
     if "must not run" in source:
         assert list(summary["reports"].values()) == [{"setup": "skipped", "teardown": "passed"}]
+
+
+def test_recipe_works_without_the_macos_private_tmp_directory(tmp_path):
+    target = tmp_path / "test_portable_recipe.py"
+    target.write_text("def test_sample():\n    assert True\n")
+    bootstrap = (
+        "import runpy,sys,tempfile\n"
+        "original=tempfile.TemporaryDirectory\n"
+        "def portable(*args,**kwargs):\n"
+        "    if kwargs.get('dir') == '/private/tmp':\n"
+        "        raise FileNotFoundError('synthetic: macOS directory absent')\n"
+        "    return original(*args,**kwargs)\n"
+        "tempfile.TemporaryDirectory=portable\n"
+        f"sys.argv=[{runner.__file__!r},'unit','--child','--target',{str(target)!r}]\n"
+        f"runpy.run_path({runner.__file__!r},run_name='__main__')\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", bootstrap],
+        cwd=runner.ROOT,
+        env={},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    summary = json.loads(
+        next(
+            line.removeprefix("FINAL_SUITE_REPORT ")
+            for line in completed.stdout.splitlines()
+            if line.startswith("FINAL_SUITE_REPORT ")
+        )
+    )
+    assert summary["pytest_exit_code"] == 0
+    assert summary["passed"] == 1
+    assert summary["isolation"]["dotenv"] == 1
+    assert summary["isolation"]["network_denied"] == 2
