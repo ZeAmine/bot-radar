@@ -74,10 +74,10 @@ class Settings(BaseSettings):
     VINTED_POLLER_ENABLED: bool = True
     VINTED_PROXY_URL: str | None = None
 
-    # Bouton « Acheter » : préparation serveur (ADR-047), désactivée par défaut.
-    # Levée, elle remplace le lien assisté (ADR-048) par un callback qui tente la
-    # transaction et le panier avec une session de compte injectée. Coupée,
-    # « Acheter » reste le lien marqué traité par le userscript local.
+    # Bouton « Acheter » : préparation du checkout Vinted à la demande (ADR-047),
+    # désactivée par défaut. Levée, elle affiche un callback qui tente la
+    # transaction puis le panier avec une session de compte injectée ; coupée,
+    # l'action n'apparaît pas sur les alertes. Le paiement reste manuel.
     VINTED_CHECKOUT_PREPARATION_ENABLED: bool = False
     VINTED_CHECKOUT_TIMEOUT_SECONDS: float = 12.0
     # Durée pendant laquelle un lien de checkout préparé est réutilisé tel quel :

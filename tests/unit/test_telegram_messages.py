@@ -13,6 +13,7 @@ from app.bot.keyboards.listings import (
     get_dislike_confirmation_keyboard,
     get_listing_alert_keyboard,
 )
+from app.core.config import settings
 from app.core.constants import CategorySlug
 from app.db.models.listing import Listing
 from app.services.telegram_service import build_listing_caption
@@ -227,6 +228,25 @@ def test_telegram_buttons_buy_absent_when_disabled():
     )
     texts = [button.text for row in keyboard.inline_keyboard for button in row]
     assert "Acheter" not in texts
+
+
+def test_listing_keyboard_adapter_applies_the_server_flag(monkeypatch):
+    """Un seul endroit lit l'interrupteur : l'adaptateur du clavier d'annonce."""
+    from app.bot.keyboards.listings import listing_alert_keyboard
+
+    listing = create_sample_listing(category_slug=CategorySlug.TECH.value)
+
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
+    server = listing_alert_keyboard(listing)
+    assert server.inline_keyboard[0][0].text == "Acheter"
+    assert server.inline_keyboard[0][0].callback_data == f"buy:{listing.id}"
+    assert server.inline_keyboard[0][0].url is None
+
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", False)
+    disabled = listing_alert_keyboard(listing)
+    texts = [button.text for row in disabled.inline_keyboard for button in row]
+    assert "Acheter" not in texts
+    assert "Voir l'annonce" in texts
 
 
 def test_dislike_confirmation_keyboard():
