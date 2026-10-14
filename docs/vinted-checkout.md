@@ -154,7 +154,10 @@ réinjection remplace l'ancienne session.
 - **La session expire** et doit être recapturée périodiquement.
 - **Un délai dépassé laisse un doute** : le message le dit et invite à vérifier
   Vinted avant de réessayer ; aucune relance automatique.
-- **La validation réelle de bout en bout n'est pas incluse dans cette livraison** :
-  elle demande une session de compte injectée et ne doit comporter aucun paiement.
-  Les tests automatisés remplacent la frontière Vinted (transport simulé) et ne
-  déclenchent aucune opération réelle.
+- **La validation authentifiée de bout en bout n'a pas été exécutée** : elle
+  demande une session de compte injectée et ne doit comporter aucun paiement. Ce
+  qui a été vérifié en réel, avec une session **anonyme** : le code de production
+  atteint les vraies routes et classe correctement les refus (`auth_required`
+  pour la transaction, `blocked` pour le défi DataDome du panier). Les tests
+  automatisés remplacent la frontière Vinted (transport simulé) et ne déclenchent
+  aucune opération réelle.
