@@ -6,6 +6,89 @@ Référence applicative testée : `bfabcca7dbf4f8f6af2de058b167a93dd80816b8`, su
 
 **Verdict : validation incomplète.** La suite entière a été sélectionnée par backend, sans désélection, skip ou xfail ajouté. Elle est rouge. Aucun commit de vérification créé : les seuls nouveaux fichiers restent locaux.
 
+## Finalisation de la PR #98 — 14 octobre 2026
+
+Les bilans précédents, notamment le verdict partiel à `5df1641`, sont historiques.
+La présente reprise traite uniquement l'intégration de main et la recette SQLite.
+Aucun verdict d'environnement autonome sécurisé n'est ajouté : la qualification
+« autonomie encadrée à usage supervisé » reste inchangée.
+
+### Intégration et référence de tests
+
+- Tête locale/distante vérifiée : `5df1641c106f986b7fbc86e25ed949def97e99cd`,
+  worktree et index propres. Main distant : `d957de724d114db3a3c06cf71955f89bcef09fe9`.
+  Les références ont été relues avant livraison, sans mouvement concurrent.
+- Merge de ce main vers la seule branche `chore/remove-agent-autonomy` :
+  `10392f6d5d62a4f51272b13b2674aae3a13e6eb4`, parents `5df1641` et `d957de7`.
+  Le seul conflit concerne une phrase d'AGENTS.md : les compléments de #98
+  incluent la règle de main et sont conservés ; toutes les évolutions récentes
+  de main sont intégrées. Aucun rebase, force-push, merge vers main ou déploiement.
+- Le manifeste de main avait deux identifiants paramétrés périmés après ses
+  propres évolutions : `chat detective` devient `blaksad` dans la route de
+  matching par variante ; `None-Inconnue` devient `None-Non renseign\xe9` pour
+  la langue. Les deux références de travail sont remplacées à leur place par
+  les cas réellement collectés ; aucun test métier ni attente n'est modifié.
+  Les 1704 autres entrées et leur ordre restent identiques, soit 1706 entrées.
+  Les seules suppressions restent les 59 cas du dispositif retiré. Le manifeste
+  historique à `a303223cf1eff6c1308c7e492b69e6f0572f9d63` reste la référence des
+  anciennes preuves ; leurs compteurs ne sont pas recalculés.
+
+### Cause démontrée et correctif minimal
+
+La recette `python scripts/verify_consolidation.py unit --target tests/integration`
+a reproduit le rejet : 314 réussites et 12 skips, puis sortie 1 du lanceur.
+Sur toute la suite SQLite avant correction (`unit --target tests`), une mesure
+explicite de `pytest.main` donne sortie 0 (1769 réussites, 12 skips), alors que
+l'assertion « Scénario incomplet » rend la recette non verte. Le code extrait de
+main reproduit aussi pytest 0 / lanceur 1 sur un skip PostgreSQL ; le problème
+est préexistant au retrait, pas introduit par celui-ci.
+
+Le protocole du pytest installé appelle `call` seulement si `setup` a réussi,
+puis `teardown`. Les 12 skips ont donc légitimement `setup=skipped`,
+`teardown=passed`, sans `call`. Le lanceur exigeait toujours les trois phases.
+La correction valide maintenant cette séquence, vérifie les phases et statuts
+connus, refuse doublons/rapports inconnus/incomplets et tout faux succès contenant
+un échec, et conserve les codes pytest non nuls. Les contrôles de sélection,
+manifestes manquants et isolation ne sont pas retirés ni assouplis. Le rapport
+`FINAL_SUITE_REPORT` expose désormais le code pytest brut (`pytest_exit_code`).
+
+Les 41 régressions ciblées exercent des rapports explicites et de vrais
+sous-processus pytest : réussite, skip en setup/call, erreurs de setup/call/
+teardown/collecte, absence de tests, codes d'erreur/interruption, rapports
+malformés ou dupliqués. La régression du skip a été observée rouge avant le
+correctif, puis verte. Aucune exception inattendue n'est convertie en succès.
+
+### Preuves locales de la combinaison corrigée
+
+Même runtime temporaire sans installation ni editable partagé, environnement
+synthétique et barrières avant imports, enfants Python compris. Les commandes
+ci-dessous ont été rejouées sur l'arbre du correctif après `10392f6` ; les preuves
+antérieures ne sont pas utilisées comme validation de cet arbre.
+
+| Contrôle | Résultat et sortie |
+| --- | --- |
+| Ruff complet, verrou | 0 ; 18 dépendances couvertes |
+| Recette `typecheck` | 0 ; mypy 167 fichiers du contrat et 4 outils auxiliaires |
+| Régressions du lanceur | 0 ; 41 réussites |
+| SQLite entière : `unit --target tests` | pytest 0, lanceur 0 ; 1810 réussites, exactement les mêmes 12 skips qu'avant correction |
+| Sélection par défaut : `unit` | pytest 0, lanceur 0 ; 1496 réussites, aucun baseline manquant, performance sans contrôle concurrent |
+| Recette `postgres` | pytest 0, lanceur 0 ; 326 réussites, aucun baseline manquant ; installation vierge et chaîne peuplée 0010→0013 |
+| Références, suppressions, manifeste et diff/index | Aucun lien opérationnel cassé ; 59 suppressions dédiées et deux substitutions documentées, aucune perte de scénario |
+| Revue indépendante en lecture seule | Aucun défaut actionnable sur le correctif et ses régressions |
+
+Le seul conteneur de cette reprise (`ec476d5429645c0961f3db624d33a54cc374731a923fbe1a5a61221e04579779`)
+a été supprimé par ID, suppression confirmée. Chaque recette rapporte ses sondes
+volontairement refusées (une dotenv, deux réseau), sans tentative accidentelle ;
+les enfants Python gardés ne déclarent aucun accès interdit. Les avertissements
+préexistants de dépendances restent visibles. L'application, les migrations,
+la CI, le verrou et les dépendances sont identiques au main intégré.
+
+La CI et l'état de fusion du SHA livré sont consultés après push et rapportés
+dans la PR. Les vérifications de production et de permissions globales restent
+hors mandat. Aucun `check-history` supplémentaire (création d'autres worktrees)
+ni contrôle préalable à un merge de la PR n'est exécuté : aucun merge de cette
+PR n'est autorisé. Aucune configuration hors dépôt n'est modifiée.
+
 ## Retrait ciblé du garde d’autonomie (13 octobre 2026)
 
 Les résultats historiques de ce document sont conservés ; ils ne sont pas une
@@ -106,7 +189,7 @@ reste uniquement dans [AGENTS.md](../AGENTS.md#pilotage-autonome-borné).
 
 ### Vérifications de ce complément (14 octobre 2026)
 
-**Verdict du complément : partiel.** Le retrait et sa revue sont réalisés ; la
+**Verdict du complément à `5df1641` : partiel.** Le retrait et sa revue sont réalisés ; la
 recette SQLite n'est pas verte et la branche est derrière `main`. La validation
 complète n'est donc pas acquise, même si les checks GitHub du nouveau SHA passent.
 
