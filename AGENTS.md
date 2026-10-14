@@ -33,12 +33,31 @@ Ce mode s’applique aux audits, corrections et nouvelles fonctionnalités, quel
 - Le plan et l’objectif validés restent la référence. Chaque tâche possède un mandat qui précise son périmètre, ses permissions, ses interdictions et ses critères de réussite.
 - Dans ce mandat, l’agent analyse, poursuit les opérations déjà autorisées, vérifie les résultats et corrige son travail sans demander confirmation à chaque résultat intermédiaire. Sans permission de modification, la tâche reste en lecture seule.
 - Il distingue ce que montre la lecture du code, ce qui reste une hypothèse, ce qu’un test vérifie et ce qui a été réellement observé en exécution. Une preuve locale ne vaut pas preuve pour tout le projet.
-- Il vérifie son implémentation et effectue une auto-revue du diff et des critères de réussite. Il ne modifie pas les attentes de tests uniquement pour les faire passer ; toute adaptation doit correspondre à un changement de comportement voulu et justifié.
+- Il définit des critères d’acceptation observables et les moyens de preuve autorisés avant de modifier. La boucle est : modifier → contrôler → analyser → corriger → revérifier. Elle couvre le comportement demandé et les non-régressions. Chaque nouvelle tentative apporte une information ou teste une hypothèse.
+- Il vérifie son implémentation et effectue une auto-revue du diff, des fichiers indexés et des critères de réussite. Il ne modifie pas les attentes de tests uniquement pour les faire passer ; toute adaptation doit correspondre à un changement de comportement voulu et justifié.
 - Il ne clôture pas une priorité lorsque seul un sous-problème est traité. Le rapport final présente les changements, les preuves et leur portée, les limites et l’état du lot : terminé, partiel ou bloqué, avec le travail restant.
 - Il demande un arbitrage en cas de permission manquante, de changement de périmètre, de décision importante non couverte par le plan ou de blocage empêchant la suite. Il peut poursuivre les actions indépendantes déjà autorisées.
 - Les opérations sensibles restent soumises aux autorisations explicites et aux garde-fous du dépôt. Le mandat borne l’application des workflows Git, de vérification et de déploiement : leur description n’autorise pas une opération interdite par la tâche. Un contrôle non autorisé reste non exécuté et signalé ; les critères de qualité ne sont pas abaissés.
 
-Ce fichier ne remplace ni les permissions techniques des outils ni une revue indépendante.
+La boucle s’arrête sur réussite vérifiée, permission ou arbitrage manquant, moyen de
+vérification indisponible, absence de progrès observable ou limite du mandat atteinte.
+Les arrêts d’investigation des skills restent applicables. Aucun minimum de durée ni
+objectif de consommation de tokens. Le rapport indique les commandes, la révision,
+les résultats et leur portée. Cette boucle concerne les agents de développement,
+jamais l’autonomie métier du bot, et n’accorde aucune permission supplémentaire.
+
+Ce fichier décrit des consignes : il ne constitue ni une sandbox ni un superviseur
+et ne remplace ni les permissions techniques des outils ni une revue indépendante.
+Un plafond écrit dans un mandat (durée, tentatives, consommation) n'impose pas un
+arrêt à l'agent ou à ses sous-processus. Sans preuve des frontières et des arrêts
+réels de l'environnement, le mode reste une **autonomie encadrée à usage supervisé**,
+pas une exécution nocturne sans surveillance.
+
+Pour reprendre après interruption, conserver le mandat et le plan validés, le
+chemin du worktree, la branche, les SHA de base et courant, l'état du diff et de
+l'index, les travaux restants, les commandes et preuves datées avec leur portée,
+les ressources temporaires encore actives et les blocages. Relire cet état avant
+la reprise ; une preuve antérieure ne valide pas un arbre qui a changé.
 
 ## Définition de terminé
 
@@ -68,6 +87,49 @@ make verify                                                            # second 
 ```
 
 Lorsque le mandat autorise les opérations Git correspondantes, un agent qui implémente une feature travaille donc ainsi : branche depuis `main`, commits, `make pr`, `make verify`, puis merge squash. S’il n’est pas explicitement demandé de merger, il s’arrête à la PR verte et le dit. Sinon, il s’arrête à la limite autorisée et indique les étapes restantes.
+
+### Tâches concurrentes et worktrees
+
+- Le dossier `/Users/aminezegmou/Projets/bot-radar` reste la référence, généralement
+  sur `main`. Une lecture seule n’exige pas de worktree. Les modifications
+  concurrentes indépendantes utilisent `../bot-radar-worktrees/<sujet>/`, une
+  branche `feat/`, `fix/`, `chore/` ou `docs/` et une PR vers `main` par tâche.
+- Avant création : lire status, branche, SHA, worktrees existants et sous-module.
+  Vérifier que chemin et branche sont libres ; aucune réutilisation automatique.
+  Avec permission réseau, rafraîchir `origin/main`, comparer les références et
+  fixer un SHA de base vérifié. Ne pas basculer ni actualiser automatiquement le
+  dossier principal. Sans réseau, qualifier la base comme locale seulement.
+- Lancer chaque agent dans le chemin absolu de son worktree. Son mandat précise
+  objectif, fichiers autorisés, interdictions, preuves et limites. Aucun agent
+  ne modifie ni ne change la branche de l’espace d’une autre tâche. Les opérations
+  administratives Git et sous-module partagées sont coordonnées.
+- Vérifier Superpowers au commit épinglé et les liens de découverte de l’outil.
+  Initialiser ce sous-module seulement si autorisé, sans upgrade. Un échec de
+  création de worktree arrête la tâche concurrente : le fallback de la skill vers
+  le dossier courant n’autorise pas à travailler dans `main` ou chez un autre agent.
+- Les worktrees n’isolent ni environnements, ports, bases, Redis, conteneurs ni
+  volumes. Si une installation est nécessaire, venv propre et verrou existant ;
+  aucun editable partagé pointant vers une autre tâche. SQLite mémoire suffit aux
+  tests prévus ainsi. Chaque exécution PostgreSQL concurrente a sa base jetable :
+  les fixtures effacent/recréent le schéma. Les conteneurs et ports de Compose sont
+  fixes ; `-p` seul ne les isole pas. Aucun lancement de services non mandaté.
+- Les vérifications utilisent une configuration factice, neutralisent les `.env`
+  réels et les secrets-directory avant imports, et doublent/refusent les transports
+  externes, sous-processus compris. Les tokens factices seuls ne suffisent pas.
+  Benchmarks sans concurrence de vérification. `check-history` crée ses propres
+  worktrees temporaires et hérite de l’environnement : l’autoriser et l’isoler
+  explicitement avant exécution, avec une base nommée.
+- La PR ne contient que la tâche ; utiliser la branche déjà créée avec un index
+  relu et un périmètre explicite. Pas de push direct sur `main`, force-push, merge
+  ou déploiement sans mandat. Un verdict local n’atteste pas la production.
+- Conserver les travaux antérieurs à leur place ; pas de déplacement, stash,
+  récupération ou suppression automatique. Le nettoyage nécessite contrôle du
+  contenu (fichiers ignorés utiles compris), commits non livrés, utilité et agents
+  actifs, puis permission explicite ; aucun retrait forcé ni prune automatique.
+- Support amovible : chemin de montage stable, système de fichiers adapté,
+  dépôt principal accessible et aucune déconnexion pendant une opération Git.
+  `git worktree lock` protège les métadonnées contre l’élagage administratif ;
+  il ne coordonne pas les agents et ne bloque pas leurs écritures.
 
 ## Produit
 

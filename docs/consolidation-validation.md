@@ -17,6 +17,134 @@ par exception explicitement validée. Ses 1706 entrées restantes sont
 inchangées et dans le même ordre ; les compteurs historiques ci-dessous ne sont
 pas recalculés. Aucun autre scénario n’est supprimé ou désélectionné.
 
+## Consolidation du cadre — 14 octobre 2026
+
+Cette section décrit le retrait et son diagnostic ; les résultats historiques
+ci-dessous gardent leur date, leur révision et leur portée. La politique active
+reste uniquement dans [AGENTS.md](../AGENTS.md#pilotage-autonome-borné).
+
+### Retrait et contrôles conservés
+
+- [F] La PR #98 retire `scripts/task_verdict.py`, `scripts/task_guard.py`, leur
+  gabarit TOML et leurs seuls tests dédiés. La notice transitoire
+  `docs/autonomy.md` est également retirée ; ses précautions sont conservées ici.
+- [F] Le code retiré portait l'empreinte de la fiche approuvée et des scripts de
+  confiance, les périmètres de fichiers et de commandes, les compteurs persistés
+  de durée/cycles/appels, les contrôles de tests et de diff, le digest avant/après
+  preuve, les décisions des hooks et l'état de reprise. Ces contrôles spécifiques
+  ne seront plus fournis par ces scripts. Leur présence ne prouvait pas leur
+  activation dans un IDE ; leur retrait n'améliore pas automatiquement la sécurité.
+- [F] `scripts/verify_consolidation.py`, son manifeste général et ses protections
+  de recette restent conservés. La CI définit Ruff, mypy, pytest, le contrôle du
+  verrou et l'intégration PostgreSQL ; aucun de ces contrôles n'est retiré.
+- [F] La consultation GitHub du 14 octobre donne `main` à
+  `d957de724d114db3a3c06cf71955f89bcef09fe9`, la PR #98 à
+  `301516ac4e0e9ece48caadff05910539e9ebf0c5` et son état `BEHIND`.
+  La protection consultée exige `check`, `strict=true`, s'applique aux
+  administrateurs et refuse le force-push. Cette lecture n'est pas un essai de push.
+- [F] La PR #112 recouvre ce retrait ; elle n'est ni modifiée ni fermée dans ce lot.
+
+### Frontières de l'exécution
+
+- [F] Le worktree sépare les fichiers de la tâche ; il n'isole pas les processus,
+  dépendances, ports, bases, Redis, conteneurs ou volumes. La recette conservée
+  neutralise les sources dotenv/secrets-directory avant les imports, refuse les
+  transports non autorisés et propage une garde aux enfants Python. Ce mécanisme
+  de test n'est pas une sandbox générale d'agent ou de code natif.
+- [F] La session déclare des racines d'écriture limitées et un réseau restreint,
+  avec escalade soumise à revue. Les premières consultations Git/GitHub ont échoué
+  sur la résolution/connexion ; leur reprise autorisée a réussi. Cela ne prouve
+  ni un filtrage réseau exhaustif ni une interdiction technique de la production.
+- [F] Le profil fourni à cette session autorise largement la lecture du filesystem ;
+  il ne déclare pas de cloisonnement des secrets. Des outils/MCP capables d'effets
+  externes sont exposés. Leur présence n'autorise pas leur usage dans ce mandat et
+  ne prouve pas qu'un garde externe intercepte chacun de leurs appels.
+- [F] L'accès au socket Docker a d'abord été refusé ; sa consultation autorisée
+  avec escalade a réussi. Les écritures documentaires du worktree et le cache
+  mypy ont également nécessité l'accès hors des racines d'écriture par défaut.
+  Ce sont des observations locales, pas une frontière infranchissable attestée.
+- [I] L'accès effectif aux secrets, clés SSH et ressources de production n'a pas
+  été éprouvé : aucun secret ni fichier d'authentification n'est lu, aucune
+  connexion de production n'est tentée. Le mandat interdit ces accès ; il ne les
+  rend pas techniquement impossibles.
+- [I] L'activation actuelle des hooks personnels Cursor et la médiation de chaque
+  outil/MCP ne sont pas établies. Les fiches, approbations, journaux et rapports
+  historiques hors dépôt restent à leur place, comme les anciens worktrees.
+- [F] Les règles et validateurs versionnés sont modifiables par une tâche qui en
+  reçoit la permission. Leur intégrité dépend aussi de la revue et des protections
+  externes ; le texte d'AGENTS.md ne les rend pas immuables.
+- [F] Le lanceur de recette contient des délais et la terminaison du groupe de
+  processus qu'il lance. [I] L'arrêt réel de tous les outils, processus détachés
+  et appels MCP d'une session complète n'est pas établi. Aucun plafond global de
+  durée, tentatives ou consommation n'est attesté par le dépôt.
+- [R] Qualifier l'usage d'**autonomie encadrée à usage supervisé** tant que ces
+  frontières et la reprise après interruption ne sont pas validées. Aucun défaut
+  du bot métier n'est déduit de ces informations manquantes.
+
+### Actions hors dépôt proposées, non appliquées
+
+- [R] Faire contrôler par l'opérateur les hooks qui viseraient les scripts retirés,
+  terminer ou suspendre leurs sessions puis désactiver uniquement ces raccordements.
+  Test : une tâche synthétique ne doit plus appeler un chemin supprimé. Ne déplacer
+  ni supprimer les états historiques pendant cette transition.
+- [R] Prévoir un profil d'exécution sans montage de secrets ni clé de production,
+  avec périmètres filesystem et réseau imposés hors de l'arbre modifiable.
+  Test : lire un fichier témoin autorisé puis tenter un témoin synthétique hors
+  périmètre ; utiliser une destination locale factice pour éprouver le refus réseau.
+  Aucun secret ni hôte de production n'est nécessaire à ces essais.
+- [R] Restreindre ou désactiver les outils/MCP à effets externes et protéger les
+  validateurs de confiance hors de l'arbre accessible. Test : tenter une opération
+  sur une ressource factice et une modification d'un validateur témoin ; vérifier
+  le refus avant tout effet. Ne pas utiliser de ressource réelle pour ce test.
+- [R] Configurer dans le superviseur existant des plafonds imposés et l'arrêt du
+  groupe de processus, puis tester avec un sous-processus local temporaire que
+  l'interruption arrête aussi l'enfant. Vérifier séparément les métriques de
+  consommation : un compteur déclaré n'est pas une mesure observée.
+- [R] Éprouver une interruption/reprise sur une tâche synthétique en conservant
+  mandat, SHA, diff/index, preuves, ressources et prochaine étape, selon AGENTS.md.
+  La reprise doit détecter un arbre modifié et ne pas réutiliser une preuve périmée.
+
+### Vérifications de ce complément (14 octobre 2026)
+
+**Verdict du complément : partiel.** Le retrait et sa revue sont réalisés ; la
+recette SQLite n'est pas verte et la branche est derrière `main`. La validation
+complète n'est donc pas acquise, même si les checks GitHub du nouveau SHA passent.
+
+Arbre de `chore/remove-agent-autonomy`, parent `301516a`, avec uniquement les
+compléments documentaires de ce lot. Python 3.12.0 ; runtime temporaire sans pip
+ni fichiers `.pth`/editable, dépendances déjà présentes exposées par liens, source
+`app` résolue dans le worktree. Aucun paquet, outil ou sous-module installé ou mis
+à jour. Chaque commande de recette reçoit un environnement parent vide ; les
+barrières sont installées avant les imports applicatifs, enfants Python compris.
+
+| Commande / contrôle | Résultat observé | Portée |
+| --- | --- | --- |
+| `ruff check --no-cache .` | vert | Arbre complet de cette branche |
+| `python scripts/check_lock.py` | vert, 18 dépendances couvertes | Cohérence déclarations/verrou, pas une installation |
+| `python scripts/verify_consolidation.py typecheck` | vert, 167 + 4 fichiers | Contrat mypy et outils auxiliaires |
+| `python scripts/verify_consolidation.py unit` | vert, 1396 tests | Unitaires/performance, aucun baseline manquant |
+| Même commande avec `--target tests/performance`, seule | vert, 6 tests | Rejouée sans vérification concurrente |
+| `python scripts/verify_consolidation.py postgres` | vert, 326 tests | PostgreSQL jetable, installation vierge et chaîne peuplée 0010→0013 ; conteneur supprimé par son ID |
+| Même recette `unit --target tests/integration` | pytest : 314 réussis, 12 skips PostgreSQL ; lanceur : sortie 1 | Assertion finale « Scénario incomplet » : ces skips n'ont pas de phase `call`. Limite du lanceur inchangé, aucun test adapté |
+| Manifeste comparé à `a303223` et `git diff --check` | verts | Exactement 59 nodeids dédiés retirés, 1706 conservés dans l'ordre ; références restantes historiques uniquement |
+| Revue indépendante en lecture seule | aucun défaut actionnable relevé | Retrait et compléments, sans attestation de l'environnement global |
+
+Chaque recette achevée compte une sonde dotenv refusée et deux sondes réseau
+refusées, sans tentative accidentelle ; les enfants Python ne déclarent aucun
+accès interdit. Deux avertissements de dépendances (Starlette/httpx et Alembic)
+sont conservés. Le premier mypy a échoué à créer son cache hors des racines
+d'écriture ; la relance avec accès autorisé a passé. La première performance
+chevauchait d'autres contrôles et n'est pas retenue comme mesure ; seule sa
+réexécution isolée l'est.
+
+Aucun contrôle de production, essai réel des permissions/hook/MCP, plafond global,
+arrêt complet de session ou reprise synthétique n'a été exécuté. Aucun
+`check-history` supplémentaire n'est lancé : il crée d'autres worktrees et ne
+fait pas partie des contrôles autorisés ici. La branche reste derrière `main` ;
+les preuves locales concernent cet arbre, pas une future intégration. Les checks
+GitHub du SHA livré et le verdict actualisé sont rapportés dans la PR ; les
+anciens résultats CI ne valent pas validation du nouveau commit.
+
 ## Exécutions finales
 
 | Exécution | Collectés | Réussis | Échoués | Skips existants | Désélectionnés |
