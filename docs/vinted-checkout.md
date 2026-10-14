@@ -1,10 +1,12 @@
 # Bouton « Acheter » — préparation du checkout Vinted, intégrée au bot
 
-> **Statut (mesuré le 14/10/2026)** : le chemin serveur atteint les vraies routes
-> et classe correctement les refus, mais la préparation du panier reçoit un
-> **défi DataDome** et n'a **pas** été validée avec une session authentifiée. Le
-> parcours **n'est pas opérationnel** tant que le checkout du bon article n'a pas
-> été effectivement ouvert dans ta session, sur ton appareil (§6).
+> **Statut (mesuré le 14/10/2026)** : le parcours est une **expérimentation
+> clôturée en échec** dans les conditions testées — **ce constat n'est pas une
+> validation**. La préparation du panier reçoit un **défi DataDome** y compris
+> avec une session authentifiée ; la préparation serveur est **non
+> opérationnelle**. `VINTED_CHECKOUT_PREPARATION_ENABLED` reste `false` (par
+> défaut) : le chemin décrit ci-dessous est inactif hors activation explicite.
+> Voir la clôture au §9.
 >
 > **Aucun userscript, aucune extension navigateur, aucun script injecté dans la
 > page** : cette méthode est abandonnée (ADR-049) et ne fait pas partie du
@@ -135,37 +137,23 @@ Rien n'est purgé automatiquement : la clé Redis expire d'elle-même en 18 h.
 
 ## 6. Statut réel et validation sur un article
 
-**Vérifié en réel (session anonyme, sans écriture possible)** :
+**Vérifié en réel** :
 
-- les routes du parcours sont atteintes : transaction refusée à un visiteur
-  anonyme (`auth_required`), panier refusé par un **défi DataDome** `blocked` ;
+- **session anonyme** (sans écriture possible) : les routes du parcours sont
+  atteintes — transaction refusée (`auth_required`), panier refusé par un **défi
+  DataDome** `blocked` ;
+- **session authentifiée** (expérience du 14/10/2026, deux clics réels, sans
+  point relais ni paiement) : le vendeur n'a pu être résolu sur deux annonces
+  anciennes (page rendue sans `seller_id`), et la création du panier a été
+  refusée par **DataDome** (`403`, en-tête `x-dd-b`, corps captcha) mesuré avec
+  la session ;
 - le coupe-circuit suspend effectivement les préparations après un blocage
-  (durée observée : 1800 s) ;
-- la session d'injection est validée sur le corps de la réponse, pas sur le seul
-  statut HTTP.
+  (durée observée : 1800 s).
 
-**Non vérifié** : la réussite authentifiée de bout en bout — donc **le parcours
-n'est pas opérationnel** en l'état.
-
-**Procédure minimale de validation (à faire une fois, sur un seul article)** :
-
-1. capturer et injecter la session (§2.2–2.3), lever l'interrupteur ;
-2. cliquer `[ Acheter ]` sur **une** alerte ciblée ;
-3. si le bot répond `[ Poursuivre sur Vinted ]`, **ouvrir le lien dans ta
-   session** et vérifier que le checkout affiche **le bon article** ;
-4. **s'arrêter avant le choix du point relais et avant tout paiement**, puis
-   refermer l'onglet ;
-5. si le bot répond « Vérification anti-robot » ou « Préparations suspendues »,
-   c'est que DataDome a refusé côté serveur : le parcours ne passe pas sans
-   contourner la protection, et aucun contournement ne sera ajouté. Le repli est
-   `[ Voir l'annonce ]`, à la main.
-
-**Ce qui manque pour terminer cette vérification** : une session locale injectée
-(les empreintes sont attendues dans `~/.vinted-checkout-cookies`, jamais dans le
-dépôt) et une instance du bot joignable. Sans elles, seuls les refus anonymes
-sont mesurables.
-
----
+**Conclusion** : la réussie authentifiée de bout en bout **n'a pas été atteinte**
+— le parcours est **non opérationnel**. Voir la clôture au §9 : ce n'est ni une
+validation ni une promesse, et la procédure de validation n'est pas à rejouer
+dans les conditions actuelles.
 
 ## 7. Mécanisme établi (pourquoi ce n'est pas un simple lien)
 
@@ -203,3 +191,43 @@ Vinted. La responsabilité d'usage reste celle du titulaire du compte.
 Ce document ne recommande **aucune** infrastructure de contournement (proxy
 dédié, rotation de comptes, résolution automatique de CAPTCHA, userscript ou
 extension) : ce serait aggraver le risque, pas le réduire.
+
+---
+
+## 9. État des hypothèses et accusations (audit du 14/10/2026, sans nouvelle requête)
+
+### Hypothèses restantes, non vérifiées
+
+1. **`seller_id` sur la page article.** Deux mesures contredisent l'hypothèse
+   d'un repli fiable : page Mac (anonyme, article A) contenant `seller_id` ;
+   page VPS (session, article B) rendant `200` **sans** `seller_id`. Les deux
+   mesures varient par l'appareil, la session **et** l'article : la cause exacte
+   est **non établie**. Le repli ne garantit donc rien — d'où la correction : le
+   « vendeur introuvable » n'est **pas résolu**, il est **diagnostiqué**.
+2. **`400 INVALID_INPUT` = rien créé.** C'est une **hypothèse fondée sur la
+   convention HTTP** (un 400 rejette avant création), pas une propriété vérifiée
+   de Vinted. Deux bornes sont posées : aucun repli si le corps porte une
+   transaction ; repli **unique**, jamais de boucle. Ce n'est pas une garantie.
+3. **« Concurrence limitée », avec fenêtre résiduelle documentée.** Ni le verrou
+   ni le repli ne garantissent l'absence de doublon. La coupure est posée avant
+   la libération du verrou et revérifiée dans le verrou ; néanmoins si le verrou
+   expire alors qu'une opération est en vol, un clic peut entrer. Le TTL couvre
+   `2 × timeout` (verrouillé par un test) ; la fenêtre résiduelle est documentée.
+
+### Accusations couvertes par les tests isolés
+
+- tout échec coupe la création (durée par cause, pas de tentative suivante) ;
+- **concurrence limitée** : deux annonces concurrentes ne produisent, dans une
+  fenêtre de verrou vivant, qu'une opération — ce n'est pas l'absence de doublon ;
+- coupure posée avant la libération du verrou (ordre vérifié pas-à-pas) ;
+- coupure revérifiée à l'intérieur du verrou ;
+- repli `INVALID_INPUT`, refusé si le corps porte une transaction, sans boucle ;
+- journaux de refus sans URL ni valeur sensible.
+
+### Statut de clôture
+
+**Le parcours serveur est un échec dans les conditions testées** (DataDome observé
+session authentifiée). Ce constat n'est **pas** une validation de la
+fonctionnalité. `VINTED_CHECKOUT_PREPARATION_ENABLED` reste `false` ; aucune
+nouvelle requête de checkout, capture de session ou tentative de renouvellement
+n'a lieu ; aucun push, merge, déploiement ou redémarrage n'a été fait.
