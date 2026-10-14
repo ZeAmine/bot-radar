@@ -1,5 +1,7 @@
 # F10 — expliquer une décision et évaluer des exemples
 
+Statut : contrat actuel du diagnostic et du corpus, avec mesures historiques. Périmètre : explication locale ; aucune validation indépendante des attentes métier.
+
 Le diagnostic explique le comportement du code. L'attendu métier indique ce que
 l'utilisateur souhaite. Un test protège un comportement convenu ; une étiquette
 humaine valide un exemple indépendamment du code. Ces quatre objets restent séparés.

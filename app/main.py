@@ -23,14 +23,11 @@ from app.core.logging import setup_logging
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Gestion du cycle de vie de l'application (démarrage et extinction)."""
-    # Initialisation du logging structuré
     setup_logging(settings.LOG_LEVEL)
 
-    # Configuration des commandes du menu Telegram
     from app.bot.bot_instance import bot, setup_bot_commands
     await setup_bot_commands(bot)
 
-    # Démarrage du planificateur APScheduler et du poller Vinted unifiés
     from app.core.tasks import safe_create_task
     from app.tasks.scheduler import scheduler
     from app.tasks.vinted_poller import run_vinted_poller
@@ -141,7 +138,6 @@ def create_app() -> FastAPI:
     application.add_middleware(PayloadSizeLimitMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)
 
-    # Inclusion des routes
     application.include_router(health.router)
     application.include_router(ingest.router)
     application.include_router(internal.router)
