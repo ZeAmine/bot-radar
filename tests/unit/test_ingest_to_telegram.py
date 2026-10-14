@@ -325,6 +325,53 @@ async def test_buy_button_is_a_callback_the_alert_does_not_execute(
 
 
 @pytest.mark.asyncio
+async def test_buy_button_uses_the_assisted_link_when_server_prep_is_off(
+    ingestion_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Par défaut, « Acheter » ouvre l'annonce marquée : c'est le navigateur qui agit.
+
+    La préparation serveur est coupée : le bouton ne doit être qu'un lien, sans
+    callback, portant le marqueur d'intention et l'identifiant du bon article.
+    Rien n'est appelé côté bot, et la légende de l'alerte est inchangée.
+    """
+    from app.bot.keyboards.listings import CHECKOUT_ASSIST_MARKER
+    from app.providers.vinted_checkout import VintedCheckoutProvider
+
+    monkeypatch.setattr(settings, "AI_ENABLED", False)
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", False)
+    forbidden = AsyncMock(side_effect=AssertionError("aucune préparation à l'alerte"))
+    monkeypatch.setattr(VintedCheckoutProvider, "create_buyer_inquiry", forbidden)
+    monkeypatch.setattr(VintedCheckoutProvider, "build_single_checkout", forbidden)
+    monkeypatch.setattr(VintedCheckoutProvider, "fetch_item_seller_id", forbidden)
+
+    await _seed_alert(
+        ingestion_db,
+        category=Category(slug="tech", label="Tech", emoji="💻", is_active=True),
+        alert_name="NVIDIA RTX 4070",
+        include_keywords=INCLUDE_KEYWORDS,
+        variants=[VARIANT_THAT_MATCHES],
+        max_item_price_cents=45000,
+    )
+    bot = FakeTelegramBot()
+
+    payload = await _scraped_payload(GPU_ITEM_ID, category_slug="tech")
+    response = await _post_listing(ingestion_db, bot, payload)
+
+    assert response.status_code == 200
+    assert published_caption(bot) == EXPECTED_CAPTION
+    keyboard = bot.sent_to_telegram[0]["reply_markup"]
+    buy, view = keyboard.inline_keyboard[0]
+    assert buy.text == "Acheter"
+    assert buy.callback_data is None
+    assert buy.url == f"{payload['url']}#{CHECKOUT_ASSIST_MARKER}={GPU_ITEM_ID}"
+    # « Voir l'annonce » reste l'accès sans automatisation, sans marqueur.
+    assert view.text == "Voir l'annonce"
+    assert view.url == payload["url"]
+    forbidden.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_listing_that_matches_no_alert_sends_nothing(
     ingestion_db: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,

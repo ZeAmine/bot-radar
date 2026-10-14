@@ -15,7 +15,7 @@ from aiogram.exceptions import (
 )
 from aiogram.types import Message
 
-from app.bot.keyboards.listings import get_listing_alert_keyboard
+from app.bot.keyboards.listings import listing_alert_keyboard
 from app.bot.labels import abbreviate_condition, escape_html, join_list
 from app.core import alert_latency as latency
 from app.core.config import settings
@@ -213,12 +213,7 @@ async def send_listing_alert(
             # Ces opérations sont locales : leur échec précède tout appel client.
             try:
                 caption = build_listing_caption(listing, market_comparison_line, alert_keywords)
-                keyboard = get_listing_alert_keyboard(
-                    listing_id=listing.id,
-                    listing_url=listing.url,
-                    category_slug=listing.category_slug,
-                    checkout_enabled=settings.VINTED_CHECKOUT_PREPARATION_ENABLED,
-                )
+                keyboard = listing_alert_keyboard(listing)
                 photo_url = _photo_url_for_alert(listing, caption)
             except Exception as exc:
                 result = DeliveryResult(

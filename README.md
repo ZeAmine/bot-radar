@@ -54,8 +54,8 @@ Sur les plateformes de seconde main (notamment Vinted), les affaires exceptionne
 - 🔒 **Système strictement privé** : Mono-utilisateur avec filtrage par allowlist (`TELEGRAM_ALLOWED_USER_IDS`).
 
 ### Ce que BotRadar N'EST PAS (et ne sera jamais)
-- ❌ **Pas d'achat automatique** : Aucun paiement, aucune confirmation d'achat, aucun ajout au panier sans un clic de l'utilisateur. Le bouton « Acheter » peut préparer, **à la demande**, le panier Vinted d'une annonce (voir §3) — le choix du point relais et le paiement restent entièrement manuels.
-- ❌ **Pas de bot d'interaction marketplace intrusive** : Aucun message automatique envoyé aux vendeurs via l'API marketplace.
+- ❌ **Pas d'achat automatique** : aucun paiement, aucune confirmation d'achat, aucun choix de point relais automatisés. Le bouton « Acheter » accélère un achat **manuel** : par défaut, il ouvre l'annonce avec un marqueur que le userscript du navigateur transforme en un unique clic sur le bouton natif « Acheter » (voir §3) ; le point relais et le paiement restent faits par l'utilisateur. Le userscript qui sélectionnait le point relais a été supprimé (ADR-048).
+- ❌ **Pas de bot d'interaction marketplace intrusive** : aucun message automatique envoyé aux vendeurs via l'API marketplace.
 - ❌ **Pas de bot public multi-tenant** : Réservé à un usage privé et sécurisé.
 
 ---
@@ -121,7 +121,7 @@ BotRadar est articulé autour d'un **monolithe asynchrone à processus unique** 
 Chaque notification d'opportunité reçue sur Telegram intègre un clavier inline compact, ergonomique et sans distractions :
 
 ```text
-[ Acheter ] [ Voir l’annonce ]        # « Acheter » seulement si la préparation est activée
+[ Acheter ] [ Voir l’annonce ]
 [ Prix du marché ]                    # BD uniquement
 [ Faux positif ] [ Négocier ]
 ```
@@ -129,13 +129,13 @@ Chaque notification d'opportunité reçue sur Telegram intègre un clavier inlin
 Le faux positif demande confirmation, puis affiche « Signalé » ; annuler restitue
 les actions initiales. Ces boutons restent sans émoji dans tous ces états.
 
-- **`[ Acheter ]`** : Prépare, **au clic uniquement**, le panier Vinted de cette annonce avec la session de compte injectée, puis propose `[ Poursuivre sur Vinted ]` — où l'utilisateur choisit son point relais et confirme lui-même le paiement. Toute issue défavorable conserve `[ Voir l’annonce ]` comme repli. Activation, capture de session et limites : [`docs/vinted-checkout.md`](docs/vinted-checkout.md).
-- **`[ Voir l’annonce ]`** : Ouvre directement la page de l'article dans l'application Vinted avec les moyens de paiement et sessions de l'utilisateur. Reste le repli de « Acheter ».
+- **`[ Acheter ]`** : Accélérateur **manuel**, sous deux formes exclusives : par défaut, un **lien assisté** vers l'annonce, porteur du marqueur `#botradar-acheter=<id>` que le userscript local reconnaît pour déclencher **une seule fois** le bouton natif « Acheter » ; si `VINTED_CHECKOUT_PREPARATION_ENABLED` est levé, un **callback** de préparation serveur (aujourd'hui bloqué par DataDome, non validé). Dans les deux cas : point relais, paiement et confirmation restent entièrement manuels. Voir [`docs/vinted-checkout.md`](docs/vinted-checkout.md).
+- **`[ Voir l’annonce ]`** : Ouvre directement la page de l'article dans l'application Vinted avec les moyens de paiement et sessions de l'utilisateur. Accès **sans automatisation**, et repli de « Acheter ».
 - **`[ Prix du marché ]`** *(BD uniquement)* : Consulte le détail des offres d'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres) et l'écart de prix.
 - **`[ Faux positif ]`** : Enregistre le rejet de l'annonce pour alimenter le moteur d'apprentissage `/autotune`. Se transforme en `[ Signalé ]`.
 - **`[ Négocier ]`** : Déclenche le coach IA pour obtenir une estimation d'offre pertinente et un message de négociation pré-rédigé courtois prêt à copier.
 
-> **Note d'arbitrage (ADR-007, ADR-011, ADR-047)** : les anciens boutons factices `[ 💳 Payer ]` (lien de checkout qui expirait ou renvoyait 403) et `[ 🛍️ Dressing / Lot ]` restent supprimés. Le bouton `[ Acheter ]`, réintroduit par ADR-047, n'est pas un lien de paiement : c'est un **callback** qui ne fait rien tant qu'il n'est pas cliqué, n'agit qu'avec une session de compte explicitement injectée, et ne réalise jamais le paiement.
+> **Note d'arbitrage (ADR-007, ADR-011, ADR-047, ADR-048)** : les anciens boutons factices `[ 💳 Payer ]` (lien de checkout qui expirait ou renvoyait 403) et `[ 🛍️ Dressing / Lot ]` restent supprimés. Le userscript historique qui **sélectionnait le point relais** a été supprimé avec eux. `[ Acheter ]` n'est jamais un lien de paiement : c'est un lien marqué traité par le navigateur de l'utilisateur, ou un callback serveur — et le paiement reste manuel dans les deux cas.
 
 ### Commandes Telegram disponibles
 
@@ -352,7 +352,7 @@ Les paramètres applicatifs sont déclarés et typés dans [`app/core/config.py`
 | `VINTED_POLLER_ENABLED` | `true` / `false` | Non | Active la boucle de détection Vinted dans le conteneur applicatif. |
 | `VINTED_POLL_INTERVAL_SECONDS` | Entier (défaut `12`) | Non | Cadence de scrutation standard ; sert aussi de plafond aux cadences accélérées (pointe, proxy). |
 | `VINTED_PROXY_URL` | URL HTTP/SOCKS5 | Non | Proxy résidentiel optionnel pour accélérer la scrutation à 8s. |
-| `VINTED_CHECKOUT_PREPARATION_ENABLED` | `true` / `false` (défaut `false`) | Non | Affiche et autorise le bouton `[ Acheter ]` : préparation du panier Vinted à la demande, avec la session de compte injectée. Le paiement reste manuel, et le chemin serveur peut être bloqué par DataDome. Voir [`docs/vinted-checkout.md`](docs/vinted-checkout.md). |
+| `VINTED_CHECKOUT_PREPARATION_ENABLED` | `true` / `false` (défaut `false`) | Non | Bascule « Acheter » du **lien assisté** (défaut : le userscript local déclenche le bouton natif, dans le navigateur de l'utilisateur) vers le **callback de préparation serveur** avec session de compte injectée — aujourd'hui bloqué par DataDome et non validé. Le paiement reste manuel. Voir [`docs/vinted-checkout.md`](docs/vinted-checkout.md). |
 | `VINTED_CHECKOUT_TIMEOUT_SECONDS` | Durée en secondes (défaut `12.0`) | Non | Délai d'attente borné des appels de préparation de checkout. |
 | `VINTED_CHECKOUT_LINK_TTL_SECONDS` | Entier (défaut `600`) | Non | Durée pendant laquelle un panier préparé est réutilisé tel quel sans nouvel appel. |
 | `NIGHT_MODE_ENABLED` | `true` / `false` | Non | Suspension nocturne pour préserver la réputation IP (défaut : `true`). |

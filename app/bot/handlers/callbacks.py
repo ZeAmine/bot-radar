@@ -15,10 +15,9 @@ from aiogram.types import (
 from app.bot.handlers.alerts_helpers import parse_listing_id
 from app.bot.keyboards.listings import (
     get_dislike_confirmation_keyboard,
-    get_listing_alert_keyboard,
+    listing_alert_keyboard,
 )
 from app.bot.labels import BTN_CLOSE
-from app.core.config import settings
 from app.db.models.book import Book
 from app.db.models.listing import Listing
 from app.db.repositories.autotune_repo import record_listing_dislike
@@ -416,9 +415,8 @@ async def handle_confirm_dislike(
     await db_session.commit()
 
     if isinstance(callback.message, Message):
-        await callback.message.edit_reply_markup(reply_markup=get_listing_alert_keyboard(
-            listing.id, listing.url, listing.category_slug, is_disliked=True,
-            checkout_enabled=settings.VINTED_CHECKOUT_PREPARATION_ENABLED,
+        await callback.message.edit_reply_markup(reply_markup=listing_alert_keyboard(
+            listing, is_disliked=True,
         ))
     await callback.answer("Faux positif enregistré.")
 
@@ -442,10 +440,7 @@ async def handle_cancel_dislike(callback: CallbackQuery, db_session: Any) -> Non
     if listing is None:
         return
     if isinstance(callback.message, Message):
-        await callback.message.edit_reply_markup(reply_markup=get_listing_alert_keyboard(
-            listing.id, listing.url, listing.category_slug,
-            checkout_enabled=settings.VINTED_CHECKOUT_PREPARATION_ENABLED,
-        ))
+        await callback.message.edit_reply_markup(reply_markup=listing_alert_keyboard(listing))
     await callback.answer("Annulé.")
 
 

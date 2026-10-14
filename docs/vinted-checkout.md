@@ -1,97 +1,113 @@
-# Bouton « Acheter » — préparation du checkout Vinted
+# Bouton « Acheter » — deux parcours, un seul paiement manuel
 
-> **Statut (mesuré le 14/10/2026)** : le chemin serveur atteint les vraies routes et
-> classe correctement les refus, mais la préparation du panier reçoit
-> **aujourd'hui un défi DataDome** et n'a **pas** été validée de bout en bout avec
-> une session de compte. Le paiement, la confirmation et le point relais restent
-> manuels, et aucune garantie de non-bannissement n'est offerte. Lire §1 et §5
-> avant d'activer.
-
-Depuis une alerte Telegram, le bouton `[ Acheter ]` prépare **à la demande** le
-panier Vinted de l'annonce, puis propose `[ Poursuivre sur Vinted ]`. L'utilisateur
-ouvre ce lien dans son propre navigateur ou l'application Vinted, choisit son point
-relais et confirme lui-même le paiement.
-
-> **Ce que la fonctionnalité ne fait pas** : elle ne paie pas, ne choisit pas le
-> point relais, ne confirme pas l'achat et ne contourne aucune protection de Vinted.
-> Elle ne prépare rien tant que le bouton n'est pas cliqué, et rien à l'envoi de
-> l'alerte (invariant n°1 : aucune requête réseau ajoutée avant Telegram).
+> **Statut (mesuré le 14/10/2026)**
+>
+> - **Parcours local assisté (défaut)** : c'est lui qui porte le bouton
+>   `[ Acheter ]`. Son contrat est verrouillé par des tests, mais son exécution
+>   réelle dans ton navigateur reste **à vérifier par toi** (§1.4).
+> - **Parcours serveur** : livré mais **coupé par défaut**, **bloqué par DataDome
+>   aujourd'hui** et **non validé de bout en bout** (§2).
+>
+> Dans les deux cas : le choix du point relais, le paiement et sa confirmation
+> sont **entièrement manuels**, et **aucune garantie de non-bannissement n'est
+> offerte** (§4).
 
 ---
 
-## 1. Mécanisme réellement établi
+## 1. Parcours local assisté (défaut)
 
-Le mécanisme a été établi en lisant le client web de Vinted (les scripts servis par
-`www.vinted.fr`), puis vérifié par des requêtes de lecture seule :
+### 1.1 Principe
 
-- **Aucun lien simple n'ouvre le checkout.** La page `/checkout` exige un
-  `purchase_id` créé côté serveur. Le bouton « Acheter » du site enchaîne :
-  1. `POST www.vinted.fr/api/v2/conversations` (ou, selon le backend de messagerie
-     du compte, `POST api.vinted.fr/messaging/main/inquiries`) — crée une
-     transaction acheteur↔vendeur ;
-  2. `POST www.vinted.fr/api/v2/purchases/checkout/build` — transforme cette
-     transaction en panier et rend `checkout.id` ;
-  3. navigation vers
-     `/checkout?purchase_id=<panier>&order_id=<transaction>&order_type=transaction`.
-- **La session doit être authentifiée.** Un visiteur anonyme reçoit
-  `user_login_required` / `Access denied`. Le bot ne peut donc rien préparer sans
-  une session de compte injectée.
-- **Le résultat appartient au compte, pas à la session.** Le bot crée le panier
-  avec la session injectée ; l'utilisateur ouvre ensuite le lien avec **sa propre**
-  session. Aucune session n'est transférée entre appareils.
-- **DataDome protège le `checkout/build`.** Une sonde serveur anonyme a reçu le défi
-  `geo.captcha-delivery.com`. Aucun contournement n'est tenté : un défi se traduit
-  par un message explicite et le repli `[ Voir l’annonce ]`. Une session contenant
-  un cookie `datadome` valide peut passer ; rien ne le garantit.
+1. Depuis une alerte, tu cliques `[ Acheter ]`. Telegram ouvre l'annonce avec un
+   **marqueur d'intention** dans l'URL : `https://www.vinted.fr/items/<id>-…`
+   suivi de `#botradar-acheter=<id>`.
+2. Dans **ton navigateur**, le userscript
+   [`scripts/vinted_checkout_assist.user.js`](../scripts/vinted_checkout_assist.user.js)
+   reconnaît le marqueur, **vérifie que la page est bien l'article demandé**
+   (comparaison des identifiants), retire le marqueur de l'historique, attend le
+   bouton natif sous 10 secondes, et le déclenche **une seule fois**.
+3. Vinted ouvre son parcours d'achat. **Tu choisis ton point relais et tu paies
+   toi-même.** Le script ne fait plus rien ensuite.
 
-### Effets de bord assumés (côté Vinted)
+Le marqueur vit dans le **fragment** de l'URL : il n'est jamais transmis à Vinted,
+et il ne contient aucun secret. `[ Voir l'annonce ]` reste l'accès **sans
+automatisation** : lien ordinaire, sans marqueur.
 
-- La préparation **ouvre un fil de discussion avec le vendeur** (c'est le flux
-  « Acheter » de Vinted lui-même) avant tout paiement.
-- Elle crée une transaction et un panier côté compte. Rien n'est payé, l'article
-  n'est pas acheté par le bot.
-- La préparation n'est tentée qu'une fois par clic : pas de relance automatique en
-  cas de délai dépassé (le résultat peut exister côté Vinted). Un cache court et un
-  verrou anti-double-clic l'évitent aussi.
+### 1.2 Ce que le script ne fait jamais
 
-### Conditions d'utilisation de Vinted — ce qu'il faut savoir
+Périmètre verrouillé par `tests/unit/test_vinted_checkout_assist.py` et
+`tests/js/checkout_assist_harness.mjs` :
 
-Les conditions de Vinted **interdisent explicitement** l'usage d'outils logiciels
-externes — « bots, programmes de scraping, programmes de crawling, spiders » — lors
-de l'utilisation du site, sauf usage autorisé par Vinted, ainsi que le *reverse
-engineering* et le *screen scraping* de tout ou partie du site. La préparation
-automatisée du checkout tombe dans cette catégorie : elle est faite avec ta session
-de compte et des appels réseau qui ne viennent pas de l'interface.
+- pas de point relais, pas de livraison, pas de « Payer », pas de confirmation ;
+- pas de cookie, pas d'appel réseau, pas d'événement synthétique, pas de boucle ;
+- **aucun clic sans marqueur**, ni sur une visite d'annonce ordinaire ;
+- aucun clic si l'article n'est pas le bon, si le bouton est absent, ambigu,
+  désactivé ou invisible, si la page a été redirigée (connexion) ou si un CAPTCHA
+  / un blocage anti-robot apparaît ;
+- aucun redéclenchement après retour arrière ou rechargement (marqueur consommé).
 
-Conséquence honnête : **aucune fréquence faible ni aucun parcours « proche de
-l'interface » ne garantit l'absence de risque.** Le coupe-circuit et les délais
-bornés réduisent l'exposition, ils ne l'annulent pas. Contractuellement, Vinted
-peut suspendre ou restreindre un compte pour ces pratiques, et la responsabilité
-d'usage reste celle du titulaire du compte. Le fait que ce soit ton compte, avec ton
-accord, ne change pas ce constat.
+### 1.3 Installer le userscript
 
-### La préparation serveur n'est pas viable aujourd'hui
+1. Installer Tampermonkey ou Violentmonkey dans ton navigateur habituel (tu l'as
+   déjà pour d'autres scripts).
+2. Créer un nouveau script et y coller le contenu de
+   [`scripts/vinted_checkout_assist.user.js`](../scripts/vinted_checkout_assist.user.js).
+3. Vérifier que les deux lignes `@match` sont bien limitées à
+   `https://www.vinted.fr/items/*` et `https://vinted.fr/items/*`.
 
-Constat mesuré (14/10/2026), même avec un cookie de session structuré en en-tête
-comme le fait le client web :
+Aucune configuration côté bot : le lien marqué est inerte sans le script.
 
-- la **transaction** (`POST /api/v2/conversations`) est refusée à une session
-  anonyme (`user_login_required`) ;
-- le **panier** (`POST /api/v2/purchases/checkout/build`) reçoit un **défi DataDome**
-  (`geo.captcha-delivery.com`) servi dès l'appel serveur, sans authentification.
+### 1.4 Où le lien s'ouvre — et la limite de ce parcours
 
-Aucun contournement n'est implémenté, et l'on n'en cherche pas : le défi est un
-**signal, pas un obstacle à franchir**. Le chemin serveur reste livré pour l'article
-ciblé, mais il n'a **pas** été validé de bout en bout dans ce lot (aucune session de
-compte n'a été fournie). Voir §5 pour l'alternative locale.
+| Contexte d'ouverture | Le userscript s'exécute ? | Résultat |
+|---|---|---|
+| **Navigateur habituel** (Safari/Chrome avec l'extension) | Oui | Déclenchement unique du bouton « Acheter », puis checkout manuel |
+| **Navigateur intégré de Telegram** | **Non** | Le marqueur est ignoré ; la page reste une annonce ordinaire |
+| **Application Vinted** | **Non** | Idem ; l'application ouvre l'article sans marqueur |
+
+Pour ouvrir dans le navigateur habituel : **appui long** sur le bouton
+« Acheter » (iOS) ou **menu ⋮ → Ouvrir dans le navigateur** (Android). Sans ce
+geste, rien n'est automatisé — et c'est le repli normal.
+
+**Procédure de vérification sur un article (à faire une fois)** :
+
+1. Depuis une alerte réelle, appui long sur `[ Acheter ]` → « Ouvrir dans
+   Safari/Chrome ».
+2. La page doit être celle de l'article ; le marqueur disparaît de la barre
+   d'adresse dès qu'il est traité, et l'interface Vinted passe d'elle-même à
+   l'écran de choix de livraison (checkout).
+3. **Arrête-toi là** : ne choisis pas le point relais, ne paie pas, ferme l'onglet.
+4. Si rien ne se passe : vérifier que Tampermonkey est activé et que la page
+   ouverte est bien `/items/<id>`. Le script ne clique **pas** si l'article est
+   vendu, si une connexion est demandée ou si un CAPTCHA apparaît.
+
+Tant que cette vérification n'a pas été faite, considère le parcours comme
+**non validé en réel** : les tests automatisés prouvent la logique du script, pas
+le rendu Vinted du jour.
+
+**Vérifié en lecture seule le 14/10/2026 sur une annonce vivante** : le marqueur
+survit à l'ouverture de la page, l'identifiant de la page correspond à celui du
+marqueur, le sélecteur natif `[data-testid="item-buy-button"]` rend **exactement
+un** bouton « Acheter » activé, et aucune protection anti-robot n'est présente.
+**Non vérifié** : l'arrivée effective au checkout — elle demande ta session
+connectée et un déclenchement réel, et s'arrête avant le choix du point relais.
+
+### 1.5 Désactiver le parcours local
+
+Désactiver ou supprimer le script dans Tampermonkey : `[ Acheter ]` redevient un
+lien d'annonce ordinaire. Rien à couper côté bot.
 
 ---
 
-## 2. Activer
+## 2. Parcours serveur (coupé par défaut, non validé)
 
-### 2.1 Lever l'interrupteur
+Quand `VINTED_CHECKOUT_PREPARATION_ENABLED=true`, `[ Acheter ]` devient un
+**callback** : le bot tente de créer la transaction puis le panier avec ta
+session de compte injectée, et répond `[ Poursuivre sur Vinted ]` avec le lien de
+checkout. **Le flag est prioritaire** : pour revenir au parcours local, le
+remettre à `false`.
 
-Dans le `.env` du bot (local et/ou production) :
+### 2.1 Activer (si tu acceptes le risque et l'échec probable)
 
 ```dotenv
 VINTED_CHECKOUT_PREPARATION_ENABLED=true
@@ -99,20 +115,15 @@ VINTED_CHECKOUT_TIMEOUT_SECONDS=12.0
 VINTED_CHECKOUT_LINK_TTL_SECONDS=600
 ```
 
-Tant que l'interrupteur est `false`, le bouton `[ Acheter ]` n'apparaît pas et
-aucune donnée de session de compte n'est nécessaire.
+### 2.2 Capturer et injecter la session de compte
 
-### 2.2 Capturer la session de compte
-
-1. Se connecter à `https://www.vinted.fr` dans son navigateur.
+1. Se connecter à `https://www.vinted.fr` dans ton navigateur.
 2. Outils de développement → onglet **Réseau** → n'importe quelle requête vers
    `www.vinted.fr` ou `api.vinted.fr`.
 3. Copier la valeur de l'en-tête de requête **`cookie`** (elle inclut les cookies
    HttpOnly, contrairement à `document.cookie`).
-4. La coller dans un fichier **hors dépôt**, par exemple `~/.vinted-checkout-cookies`,
-   puis `chmod 600 ~/.vinted-checkout-cookies`.
-
-### 2.3 Valider et injecter
+4. La coller dans un fichier **hors dépôt**, par exemple
+   `~/.vinted-checkout-cookies`, puis `chmod 600 ~/.vinted-checkout-cookies`.
 
 ```bash
 python scripts/sync_vinted_checkout_session.py \
@@ -121,17 +132,10 @@ python scripts/sync_vinted_checkout_session.py \
   --token "$INTERNAL_API_TOKEN"
 ```
 
-Le script :
-
-- lit l'en-tête (ou un JSON équivalent) ;
-- **valide la session auprès de Vinted** (`GET /api/v2/users/current`) avant toute
-  injection — une session refusée n'est jamais installée ;
-- l'injecte via `POST /api/v1/internal/vinted/checkout-session`, qui stocke les
-  cookies dans Redis (clé `radar:vinted_checkout_session`, TTL 18 h) ;
-- n'affiche **jamais** la valeur d'un cookie ni d'un jeton (seulement des noms et
-  des compteurs).
-
-Contrôle d'état (sans valeur exposée) :
+Le script lit l'en-tête (ou un JSON équivalent), **valide la session sur le corps
+de la réponse** (`code == 0` ; la passerelle rend `200` avec un corps de refus),
+puis l'injecte. Ni mot de passe ni valeur de cookie n'est jamais affiché. Contrôle
+d'état, sans valeur exposée :
 
 ```bash
 curl -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
@@ -139,21 +143,9 @@ curl -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
 # {"configured": true, "authenticated": true, "cookie_names": [...], "has_access_token": true}
 ```
 
-La session expire avec les jetons Vinted (ordre de grandeur : quelques heures à
-~une journée). Le bot ne stocke ni mot de passe ni identifiant : seulement les
-cookies capturés, dans Redis, séparés de la session anonyme du scraper.
+La session expire avec les jetons Vinted (quelques heures à ~une journée).
 
----
-
-## 3. Utiliser
-
-1. Recevoir une alerte Telegram et cliquer `[ Acheter ]`.
-2. Le bot prépare le panier et répond avec `[ Poursuivre sur Vinted ]`.
-3. Choisir son point relais et confirmer le paiement **dans Vinted**.
-4. `[ Voir l’annonce ]` reste disponible à chaque étape, et sert de repli en cas
-   d'échec.
-
-Messages possibles en cas d'échec (le lien de l'annonce reste joint) :
+### 2.3 Comportement en échec
 
 | Message | Cause |
 |---|---|
@@ -163,14 +155,22 @@ Messages possibles en cas d'échec (le lien de l'annonce reste joint) :
 | Vinted limite temporairement les demandes | réponse 429 |
 | Vinted n'a pas répondu à temps | délai dépassé ; vérifier les messages Vinted avant de recliquer |
 | Une préparation est déjà en cours | double clic : la première opération continue |
-| Préparations suspendues | coupe-circuit actif après un blocage ou des échecs (§4 bis) |
+| Préparations suspendues | coupe-circuit actif après un blocage ou des échecs (§2.4) |
 
-## 4. Désactiver
+### 2.4 Coupe-circuit et reprise
 
-Revenir à `VINTED_CHECKOUT_PREPARATION_ENABLED=false` puis redémarrer le
-processus : le bouton disparaît des nouvelles alertes et les clics sur d'anciens
-messages répondent « préparation désactivée ». Pour retirer aussi la session
-stockée, sur geste explicite :
+Après un **défi anti-robot** (DataDome) ou une **limitation** (HTTP 429), les
+préparations sont suspendues **30 minutes** ; après **trois échecs** doux (session
+invalide, délai, panne réseau, réponse inattendue) en 15 minutes, elles le sont
+15 minutes. Pendant la suspension, chaque clic répond « préparations suspendues »
+et propose l'annonce : **aucune relance automatique**, aucune boucle de
+reconnexion. La reprise est **explicite** : laisser expirer la pause et recliquer.
+Aucun contournement de CAPTCHA, de rotation d'IP ou de compte n'existe.
+
+### 2.5 Désactiver
+
+`VINTED_CHECKOUT_PREPARATION_ENABLED=false` + redémarrage : `[ Acheter ]`
+redevient le lien assisté du §1. Pour retirer la session stockée :
 
 ```bash
 curl -X DELETE -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
@@ -178,55 +178,49 @@ curl -X DELETE -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
 # {"status": "success"}
 ```
 
-Rien n'est purgé automatiquement : la clé Redis expire d'elle-même en 18 h, et une
-réinjection remplace l'ancienne session.
-
-## 4 bis. Coupe-circuit et reprise
-
-Après un **défi anti-robot** (DataDome) ou une **limitation** (HTTP 429), les
-préparations sont suspendues **30 minutes** ; après **trois échecs** doux (session
-invalide, délai, panne réseau, réponse inattendue) dans une fenêtre de 15 minutes,
-elles le sont 15 minutes. Pendant la suspension, chaque clic répond « préparations
-suspendues » et propose l'annonce : **aucune relance automatique n'a lieu**, aucune
-boucle de reconnexion ne tourne.
-
-La reprise est **explicite** : il suffit de laisser expirer la pause et de recliquer
-sur « Acheter ». Il n'existe aucune route ni commande pour forcer la reprise, et
-aucune pour purger la pause — le geste reste la fin naturelle du délai.
-
-Résoudre un blocage est un travail **manuel dans le navigateur** (ouvrir l'annonce,
-terminer l'achat soit-même, éventuellement repasser par une vérification humaine).
-Le bot n'automatise ni CAPTCHA, ni rotation d'IP, ni rotation de compte.
+Rien n'est purgé automatiquement : la clé Redis expire d'elle-même en 18 h.
 
 ---
 
-## 5. Limites assumées et alternative locale
+## 3. Mécanisme établi (pourquoi le parcours serveur n'est pas un simple lien)
 
-- **Aucune garantie contre une restriction de compte.** Les appels sont bornés,
-  uniques, déclenchés par l'utilisateur et suspendus après un signal défavorable,
-  mais l'usage d'un client automatisé reste contraire aux conditions de Vinted et
-  sous la responsabilité de l'utilisateur.
-- **Le chemin serveur est aujourd'hui bloqué par DataDome** (voir §1) : il n'a pas
-  été validé de bout en bout, et rien ne garantit qu'une session de compte
-  injectée suffira.
-- **La session expire** et doit être recapturée périodiquement.
-- **Un délai dépassé laisse un doute** : le message le dit et invite à vérifier
-  Vinted avant de réessayer ; aucune relance automatique.
+Établi en lisant le client web de Vinted (scripts servis par `www.vinted.fr`),
+puis vérifié par des requêtes bornées :
 
-### Alternative locale, proportionnée
+- **Aucun lien simple n'ouvre le checkout.** La page `/checkout` exige un
+  `purchase_id` créé côté serveur. Le bouton « Acheter » du site enchaîne
+  `POST /api/v2/conversations` (ou `api.vinted.fr/messaging/main/inquiries`),
+  puis `POST /api/v2/purchases/checkout/build`, puis navigue vers
+  `/checkout?purchase_id=…&order_id=…&order_type=transaction`.
+- **La session doit être authentifiée** (un visiteur anonyme reçoit
+  `user_login_required` / `Access denied`) ; le résultat appartient au **compte**,
+  pas à la session — aucune session n'est transférée entre appareils.
+- **DataDome protège le `checkout/build`** : une sonde serveur a reçu le défi
+  `geo.captcha-delivery.com`. Le défi est traité comme un **signal**, pas comme un
+  obstacle à franchir.
+- **Effet de bord** : la préparation ouvre le fil de transaction
+  acheteur↔vendeur que le bouton « Acheter » de Vinted ouvre lui-même, avant tout
+  paiement. Le parcours local, lui, ouvre ce fil par le clic natif sur la page —
+  comportement normal de l'interface.
 
-Le dépôt contient déjà un **userscript navigateur**
-([`scripts/vinted_autobuy.user.js`](vinted_autobuy.user.js)) qui agit **dans ton
-navigateur et ta session habituelle** : il clique le bouton « Acheter » de la page
-article et sélectionne un point relais. Il ne se substitue pas à toi pour le
-paiement — le bouton « Payer » est mis en évidence, c'est toi qui cliques.
+---
 
-Pourquoi c'est proportionné, et pas contourné : l'action naît de **ta** session et
-de **ton** navigateur, sans transfert de cookie ni appel issu d'un serveur. C'est le
-chemin le plus proche de l'interface possible. Cela **ne supprime pas** le risque :
-rester sur le plan contractuel, l'automatisation de l'interface reste de
-l'automatisation. Le userscript est un outil manuel, à utiliser consciemment.
+## 4. Protections, limites et risques
 
-Ce document ne recommande **aucune** infrastructure de contournement (proxy dédié,
-rotation de comptes, résolution automatique de CAPTCHA) : ce serait aggraver le
-risque, pas le réduire.
+**Protections logicielles** (contre les erreurs du code) : déclenchement après un
+clic explicite uniquement ; marqueur d'intention vérifié article par article ;
+un seul clic, jamais de rafale ; aucune action sans marqueur ; point relais et
+paiement hors du périmètre ; côté serveur, verrou anti-double-clic, cache de lien,
+coupe-circuit, délais bornés, aucune relance aveugle.
+
+**Risques liés aux règles de Vinted** (hors de portée de ces protections) : les
+conditions de Vinted **interdisent explicitement** l'usage d'outils logiciels
+externes — « bots, programmes de scraping, programmes de crawling, spiders » — et
+le *reverse engineering* du site. Un clic automatisé sur l'interface reste de
+l'automatisation : **aucune fréquence ni proximité de l'interface ne prouve
+l'absence de risque**, et Vinted peut restreindre ou suspendre un compte. La
+responsabilité d'usage reste celle du titulaire.
+
+Ce document ne recommande **aucune** infrastructure de contournement (proxy
+dédié, rotation de comptes, résolution automatique de CAPTCHA) : ce serait
+aggraver le risque, pas le réduire.

@@ -144,13 +144,14 @@ Utilisateur unique / allowlist (`TELEGRAM_ALLOWED_USER_IDS`). Domaine public : `
 
 ### Clavier d'alerte Telegram
 Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomique :
-- Ligne 1 : `[ Acheter ]` (callback de préparation du checkout, si `VINTED_CHECKOUT_PREPARATION_ENABLED`) et `[ Voir l’annonce ]` (Lien direct Vinted, accès secondaire et repli).
+- Ligne 1 : `[ Acheter ]` et `[ Voir l’annonce ]` (Lien direct Vinted, accès sans automatisation et repli).
+  `[ Acheter ]` prend **une seule des deux formes**, jamais les deux : un **callback** de préparation serveur si `VINTED_CHECKOUT_PREPARATION_ENABLED`, sinon un **lien** vers l'annonce portant le marqueur d'intention `#botradar-acheter=<id>` lu par le userscript local (ADR-048).
 - Ligne 2 (BD uniquement) : `[ Prix du marché ]` (Détails et cotes complètes de la série).
 - Ligne 3 (Ligne 2 si hors-BD) : `[ Faux positif ]` (Enregistrement du dislike pour l'auto-tuning) et `[ Négocier ]` (Coach IA).
 Les boutons « Acheter », « Prix du marché », « Faux positif » et « Négocier » restent sans émoji,
 y compris après confirmation ou annulation d’un faux positif. Le lien « Voir l’annonce » et la confirmation « Signalé » sont aussi sans émoji. Les autres émojis sont conservés.
 
-*(Note : Les anciens boutons factices « Payer » (lien de checkout) et « Dressing / Lot » restent supprimés — voir ADR-007 et ADR-011. Le bouton « Acheter » réintroduit par ADR-047 est un callback de préparation, jamais un lien de paiement).*
+*(Note : Les anciens boutons factices « Payer » (lien de checkout) et « Dressing / Lot » restent supprimés — voir ADR-007 et ADR-011. Le bouton « Acheter » d'ADR-047/ADR-048 n'est jamais un lien de paiement : c'est un callback de préparation ou un lien marqué, et le paiement reste manuel).*
 
 ## Stack
 
@@ -268,7 +269,7 @@ ou aux données réellement manquantes.
 Sans demande **explicite** de l’utilisateur :
 
 - [`app/services/vinted_scraper.py`](app/services/vinted_scraper.py) — cookies Redis, Cloudflare, night mode. Le parsing HTML/JSON vit dans [`app/services/vinted_parsing.py`](app/services/vinted_parsing.py) ; ne pas y remettre de réseau.
-- [`scripts/vinted_autobuy.user.js`](scripts/vinted_autobuy.user.js)
+- [`scripts/vinted_checkout_assist.user.js`](scripts/vinted_checkout_assist.user.js) — périmètre strict : marqueur d'intention → un seul clic sur le bouton natif « Acheter ». Ne jamais y ajouter point relais, paiement, cookie, réseau ou boucle de clic ; le contrat est verrouillé par `tests/unit/test_vinted_checkout_assist.py` et `tests/js/checkout_assist_harness.mjs`.
 - [`scripts/sync_vinted_session.py`](scripts/sync_vinted_session.py)
 - Formules de `price_calculator.py` / comparaison marché (une offre sans port ≠ total « article seul »).
 - [`app/providers/chasse_aux_livres.py`](app/providers/chasse_aux_livres.py) — cookies et anti-bot. Son filtrage d'occasion et sa validation de titre s'appuient désormais sur [`app/domain/rules/market_offer.py`](app/domain/rules/market_offer.py) et `title_similarity` (ADR-016) : ne pas y réintroduire de dictionnaire d'œuvres figé. L'ISBN affiché exactement égal à celui de l'alerte prime sur ce veto (`expected_isbn` → `isbn_proven`, ADR-035) : ne pas le replacer sous le titre, ni affaiblir `TITLE_COHERENCE_MIN` pour compenser.

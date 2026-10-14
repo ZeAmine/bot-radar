@@ -96,7 +96,7 @@ async def test_local_failure_is_proven_before_call(monkeypatch):
     def refuse(*_args, **_kwargs):
         raise ValueError("synthetic local validation")
 
-    monkeypatch.setattr("app.services.telegram_service.get_listing_alert_keyboard", refuse)
+    monkeypatch.setattr("app.services.telegram_service.listing_alert_keyboard", refuse)
     bot = AsyncMock()
     result = await send_listing_alert(bot, 601, listing())
     assert result.outcome == "not_sent"
