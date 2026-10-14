@@ -13,6 +13,7 @@ from app.bot.formatter import alert_status_text, format_cents_to_euros
 from app.bot.handlers._alerts_router import bind_creation_keyboard
 from app.bot.keyboards.alerts import edition_ordinal, get_alert_confirmation_keyboard
 from app.bot.labels import (
+    BTN_AI_VARIANTS_CREATE,
     FIELD_AUTHOR,
     FIELD_CONDITIONS,
     FIELD_EDITION,
@@ -56,6 +57,7 @@ from app.services.book_metadata_service import (
     AUTORITE_GOOGLE_BOOKS,
     AUTORITE_OPENLIBRARY,
     TITLE_SIMILARITY_MIN,
+    CatalogueVerdict,
     format_edition_fragments,
     generate_recommended_keywords,
     parse_query_title_and_author,
@@ -66,7 +68,9 @@ from app.use_cases.book_search import (
     BookSearchUseCase,
     BookWorkChoice,
     InvalidIsbnError,
+    creation_bibliographic_identity,
     metadata_from_result,
+    series_bibliographic_identity,
 )
 from app.utils.isbn import extract_clean_isbn
 
@@ -193,7 +197,11 @@ def _join_escaped(values: list[str]) -> str:
     return ", ".join(html.escape(str(value)) for value in values)
 
 
-def keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
+def keyword_note(
+    outcome: KeywordVariantsOutcome,
+    *,
+    retry_label: str | None = BTN_AI_VARIANTS_CREATE,
+) -> str | None:
     """Ligne discrète expliquant ce que la recherche de mots-clés n'a pas trouvé.
 
     Cinq fins possibles, cinq libellés distincts : la carte ne doit jamais laisser
@@ -207,14 +215,22 @@ def keyword_note(outcome: KeywordVariantsOutcome) -> str | None:
     Deux écrans l'affichent — le récap de `/add` et la reprise d'une alerte dont l'ISBN
     vient de changer — et aucun n'en a sa propre copie : le verdict d'une même fin ne
     doit pas dépendre du geste qui l'a déclenchée.
+
+    `retry_label` nomme le bouton de relance de **l'écran où la note s'affiche**. La
+    fiche d'une alerte existante n'en a aucun — son menu d'édition ne porte pas d'action
+    IA — donc elle passe `None` : une note qui renvoie à un bouton absent est une
+    consigne qui ne mène nulle part.
     """
     if not outcome.answered:
-        # La relance a déjà eu lieu : ce n'est plus de la lenteur mais un échec. Le
-        # bouton reste sous la carte, c'est donc lui qu'on nomme, pas « Modifier ».
-        return (
+        # La relance a déjà eu lieu : ce n'est plus de la lenteur mais un échec. Quand un
+        # bouton de relance est sous la carte, c'est lui qu'on nomme, pas « Modifier ».
+        head = (
             "⚠️ L'IA n'a pas répondu après une relance : aucune variante ni exclusion "
-            "n'a été ajoutée. Appuie sur « ✨ Variantes & Exclusions IA » pour réessayer."
+            "n'a été ajoutée."
         )
+        if retry_label:
+            return f"{head} Appuie sur « {retry_label} » pour réessayer."
+        return f"{head} Réessaie plus tard."
     # ⚠️ et non 🔎 : ce n'est pas une observation en passant mais un manque, et la carte
     # le place en tête avec les autres avertissements. Le repérage d'un ouvrage
     # (« … identifié ») garde sa loupe : lui ne signale rien.
@@ -342,21 +358,25 @@ def creation_card(
     # Un auteur ou un éditeur manquant s'affiche « Non renseigné » quand aucune source
     # n'a identifié l'ouvrage : la ligne disparaissait, et son absence se lisait comme
     # un oubli de la carte plutôt que comme une information sur l'ouvrage.
-    if author:
-        lines.append(f"<b>{FIELD_AUTHOR} :</b> {html.escape(author)}")
-    elif book_unidentified or data.get("identity_unconfirmed"):
-        lines.append(f"<b>{FIELD_AUTHOR} :</b> {NOT_PROVIDED}")
-    if publisher:
-        lines.append(f"<b>{FIELD_PUBLISHER} :</b> {html.escape(publisher)}")
-    elif book_unidentified or data.get("identity_unconfirmed"):
-        lines.append(f"<b>{FIELD_PUBLISHER} :</b> {NOT_PROVIDED}")
-    if expects_isbn and not is_series:
+    if expects_isbn:
         language = str(data.get("language") or "")
-        label = {
-            "en": "Anglais", "fr": "Français", "de": "Allemand", "es": "Espagnol",
-            "it": "Italien", "pt": "Portugais", "ja": "Japonais",
-        }.get(language)
-        lines.append(f"<b>Langue :</b> {html.escape(label or language or 'Inconnue')}")
+        language_label = {"en": "Anglais", "fr": "Français", "de": "Allemand",
+                          "es": "Espagnol", "it": "Italien", "pt": "Portugais",
+                          "ja": "Japonais"}.get(language, language if language != "und" else "")
+        sources = {"bnf": "BNF", "openlibrary": "OpenLibrary", "google_books": "Google Books"}
+        provenance = ", ".join(sources.get(source, source)
+                               for source in data.get("identification_sources") or [])
+        for label, value in (
+            ("Langue", language_label), (FIELD_AUTHOR, author), (FIELD_PUBLISHER, publisher),
+            ("Année", data.get("publication_year")), ("Format", data.get("format_detail")),
+            ("Source", provenance or sources.get(data.get("source") or "")),
+        ):
+            lines.append(f"<b>{label} :</b> {html.escape(str(value or NOT_PROVIDED))}")
+    else:
+        if author:
+            lines.append(f"<b>{FIELD_AUTHOR} :</b> {html.escape(author)}")
+        if publisher:
+            lines.append(f"<b>{FIELD_PUBLISHER} :</b> {html.escape(publisher)}")
     # L'édition surveillée complète l'identité du livre : elle se lit juste après
     # l'éditeur, avec lequel l'utilisateur la recoupe, et avant que la carte ne passe
     # aux critères de veille. Elle n'apparaît que quand il y a un choix à faire.
@@ -373,6 +393,8 @@ def creation_card(
     # Ce qui n'appartient qu'à un écran arrive par `extra_lines` — le bloc de cote de
     # la confirmation — juste avant le pied : c'est ce que la carte vient de produire,
     # pas un critère de veille, donc cela ferme la liste des informations.
+    if is_series:
+        lines.extend(["", *render_series_volumes(data)])
     if extra_lines:
         lines.extend(["", *extra_lines])
 
@@ -383,6 +405,99 @@ def creation_card(
     lines.extend(["", footer])
     return "\n".join(lines)
 
+
+
+
+def _get_creation_book_repo(session: Any) -> Any:
+    """Dépôt du cache, sans interrogation des fournisseurs."""
+    from app.db.repositories.book_repo import BookRepository
+    return BookRepository(session)
+
+
+async def populate_creation_prices(data: dict[str, Any], repo: Any) -> None:
+    """Lit les caches des ISBN confirmés ; un tome sans ISBN reste dans la liste."""
+    from app.services.market_price_service import MarketPriceService
+
+    rows: list[dict[str, Any]] = data.get("series_volumes") or []
+    for row in rows:
+        book = await repo.get_by_isbn13(row["isbn13"]) if row.get("confirmed") else None
+        summary = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
+        row["price_lines"] = summary.split("\n") if summary else []
+
+
+
+def refresh_creation_series(
+    data: dict[str, Any], books: list[Any], catalogue: CatalogueVerdict | None = None,
+) -> None:
+    """Fusionne les deux découvertes confirmées, puis relit leurs propres caches."""
+    from app.services.book_metadata_service import BookMetadata, SeriesVolume, select_series_volumes
+
+    rows = data.get("series_volumes") or []
+    rejected = catalogue.rejected_isbns if catalogue is not None else ()
+    candidates = [SeriesVolume.from_stored(row) for row in rows
+                  if row.get("isbn13") not in rejected]
+    if catalogue is not None:
+        candidates.extend(catalogue.volumes)
+        data.update(series_total=catalogue.declared_volume_count,
+                    series_inconsistent=catalogue.inconsistent_counts,
+                    series_truncated=catalogue.truncated)
+    known_numbers = {v.number for v in candidates}
+    for book in books:
+        meta = BookMetadata(title=book.title, language=None, source="")
+        if meta.volume_number and meta.volume_number not in known_numbers:
+            # Un lien du catalogue n'atteste pas sa vérification BNF actuelle.
+            candidates.append(SeriesVolume(meta.volume_number, meta))
+    selected = select_series_volumes(candidates, publisher=data.get("series_reference_publisher"))
+    data["series_volumes"] = [v.stored() for v in selected]
+    data.update(series_bibliographic_identity(selected))
+
+
+def series_volume_label(rows: list[dict[str, Any]]) -> str:
+    """Un vocabulaire unique, depuis l'édition française retenue, puis l'autorité."""
+    for row in sorted(rows, key=lambda r: (
+        r.get("language") != "fr", r.get("source") != "bnf", r.get("number", 0)
+    )):
+        marker = re.search(
+            r"\b(livres?|tomes?|volumes?|vol\.?)\s*\d", str(row.get("title", "")), re.I,
+        )
+        if marker:
+            word = marker.group(1).casefold()
+            if word.startswith("livre"):
+                return "Livre"
+            return "Volume" if word.startswith("vol") else "Tome"
+    return "Tome"
+
+
+def render_series_volumes(data: dict[str, Any]) -> list[str]:
+    """Rendu unique des tomes préparés ; aucun prix ni ISBN n'est inventé."""
+    rows = data.get("series_volumes") or []
+    label = series_volume_label(rows)
+    lines: list[str] = []
+    for row in rows:
+        lines.append(f"📚 <b>{label} {row['number']}</b>")
+        code = row.get("isbn13") if row.get("confirmed") else None
+        isbn_line = f"<code>{html.escape(code)}</code>" if code else NOT_PROVIDED
+        lines.append(f"<b>ISBN-13 :</b> {isbn_line}")
+        source = {"bnf": "BNF", "openlibrary": "OpenLibrary (repli BNF)",
+                  "google_books": "Google Books (repli BNF)"}.get(row.get("source"))
+        lines.append(f"<b>Source :</b> {source or NOT_PROVIDED}")
+        language = row.get("language")
+        if language and language != "fr":
+            lines.append(f"<b>Langue :</b> {html.escape(language)}")
+        lines.extend(row.get("price_lines") or [
+            "<i>⚠️ Cote indisponible</i>",
+            "<b>Prix du marché :</b> Non renseigné",
+            "<b>Prix bas constaté :</b> Non renseigné",
+        ])
+    if data.get("series_inconsistent"):
+        lines.append("<i>Complétude non confirmée : les notices se contredisent sur le total.</i>")
+    elif data.get("series_total") is None:
+        lines.append("<i>Complétude non confirmée : le nombre total de tomes est inconnu.</i>")
+    else:
+        lines.append(f"<i>{data['series_total']} tomes annoncés par les notices.</i>")
+    if data.get("series_truncated"):
+        lines.append("<i>Limite de recherche atteinte : des notices peuvent manquer.</i>")
+    return lines
 
 def build_edition_choices(resolution: Any) -> list[dict[str, Any]]:
     """Éditions d'une résolution BNF, converties en brouillon stockable dans le FSM."""
@@ -731,6 +846,7 @@ def _edition_choice_to_dict(edition: Any) -> dict[str, Any]:
     }
 
 
+
 def draft_updates_from_search(
     result: BookSearchResult,
     *,
@@ -765,18 +881,17 @@ def draft_updates_from_search(
         includes, _excludes, _variants = generate_recommended_keywords(query_title, None)
         return {
             "category_id": category_id,
+            **creation_bibliographic_identity(result),
             "requested_volume": number,
-            "language": result.reference.language if result.reference else None,
             "category_slug": category_slug,
             "name": query_title,
             "isbn": None,
-            "author": None,
-            "publisher": None,
+            "author": confirmed.author if confirmed else None,
             "include_keywords": includes,
             "exclude_keywords": [],
             "variants": [],
             "selected_conditions": list(DEFAULT_BD_CONDITIONS),
-            "isbn_note": None,
+            "isbn_note": result.note,
             "is_series": True,
             "work_choices": [],
             "edition_alternatives": [],
@@ -795,6 +910,7 @@ def draft_updates_from_search(
         )
         return {
             "category_id": category_id,
+            **creation_bibliographic_identity(result),
             "requested_volume": number,
             "language": result.reference.language if result.reference else None,
             "category_slug": category_slug,
@@ -802,6 +918,9 @@ def draft_updates_from_search(
             "isbn": result.reference.isbn13 if result.reference else None,
             "author": confirmed.author,
             "publisher": confirmed.publisher,
+            "publication_year": confirmed.publication_year,
+            "format_detail": result.reference.format_detail if result.reference else None,
+            "source": result.provenance,
             "include_keywords": includes,
             "exclude_keywords": excludes,
             "variants": variants,
@@ -822,6 +941,7 @@ def draft_updates_from_search(
         includes, _excludes, _variants = generate_recommended_keywords(name, None)
         return {
             "category_id": category_id,
+            **creation_bibliographic_identity(result),
             "requested_volume": number,
             "language": result.reference.language if result.reference else None,
             "category_slug": category_slug,
@@ -857,6 +977,7 @@ def draft_updates_from_search(
         note = None
     return {
         "category_id": category_id,
+            **creation_bibliographic_identity(result),
         "requested_volume": number,
         "language": result.reference.language if result.reference else None,
         "category_slug": category_slug,
@@ -1026,6 +1147,13 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
                 "author": meta.author,
                 "publisher": meta.publisher,
                 "language": meta.language,
+                "publication_year": meta.publication_year,
+                "format_detail": meta.format_detail,
+                "source": meta.source,
+                "series_volumes": [],
+                "series_total": None,
+                "series_truncated": False,
+                "series_inconsistent": False,
                 "name": volume_title(title, number) if number else title,
                 "requested_volume": number,
                 "edition_alternatives": await _resolve_edition_choices(title, meta.author),
@@ -1241,7 +1369,9 @@ async def process_bd_query_lookup(
             result = await BookSearchUseCase().search_by_isbn(clean_query)
         else:
             query_title, author_hint = parse_query_title_and_author(clean_query)
-            result = await BookSearchUseCase().search_by_title(query_title, author_hint)
+            result = await BookSearchUseCase().search_by_title(
+                query_title, author_hint, include_series_catalogue=True,
+            )
     except InvalidIsbnError:
         # ISBN mal formé : la carte « non identifiée » actuelle, sans appel réseau
         result = None
@@ -1316,6 +1446,7 @@ async def process_bd_query_lookup(
         query_title=query_title,
         category_id=str(category.id) if category else "",
     )
+    await populate_creation_prices(updates, _get_creation_book_repo(db_session))
     # Le BookContext n'est alimenté que par une identité confirmée
     if result.status == BookSearchStatus.FOUND and result.confirmed:
         meta = metadata_from_result(result)

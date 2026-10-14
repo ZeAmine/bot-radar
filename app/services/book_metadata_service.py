@@ -97,10 +97,74 @@ class BookMetadata:
     volume_title: str | None = None
     volume_number: int | None = None
     language: str | None = None
+    declared_volume_count: int | None = None
 
     def __post_init__(self) -> None:
         if self.volume_number is None:
             self.volume_number = notice_volume(self.volume_title or self.title)
+
+
+@dataclass(frozen=True)
+class SeriesVolume:
+    """Un tome et l'édition qui le décrit ; un candidat n'est jamais un ISBN confirmé."""
+
+    number: int
+    notice: BookMetadata
+    isbn13: str | None = None
+
+    @classmethod
+    def from_stored(cls, row: dict[str, Any]) -> "SeriesVolume":
+        """Relit une preuve du brouillon, sans donner valeur de preuve à un candidat."""
+        meta = BookMetadata(
+            title=row.get("title") or "", author=row.get("author"),
+            publisher=row.get("publisher"), language=row.get("language"),
+            source=row.get("source") or "", publication_year=row.get("publication_year"),
+            format_detail=row.get("format_detail"), volume_number=row["number"],
+        )
+        code = isbn_from_identifier(row.get("isbn13")) if row.get("confirmed") else None
+        return cls(row["number"], meta, code)
+
+    def stored(self) -> dict[str, Any]:
+        """Projection JSON pour le brouillon, distincte des éditions concurrentes."""
+        return {
+            "number": self.number, "title": self.notice.volume_title or self.notice.title,
+            "isbn13": self.isbn13, "confirmed": self.isbn13 is not None,
+            "author": self.notice.author, "publisher": self.notice.publisher,
+            "language": self.notice.language, "source": self.notice.source,
+            "publication_year": self.notice.publication_year,
+            "format_detail": self.notice.format_detail,
+        }
+
+
+def _declared_series_count(title: str) -> int | None:
+    """Un total explicitement annoncé par une notice, jamais déduit des numéros vus."""
+    found = re.search(r"\b(\d{1,3})\s+(?:tomes|volumes|livres)\b", title, re.I)
+    return int(found.group(1)) if found else None
+
+
+def select_series_volumes(
+    candidates: list[SeriesVolume], *, publisher: str | None = None,
+) -> tuple[SeriesVolume, ...]:
+    """Une édition par numéro, français confirmé d'abord, sans mélanger ses prix."""
+    def priority(volume: SeriesVolume) -> tuple[bool, bool, bool, bool, bool, str, str]:
+        meta = volume.notice
+        return (
+            volume.isbn13 is None, meta.language != "fr", meta.source != AUTORITE_BNF,
+            not (publisher and meta.publisher == publisher), meta.publication_year is None,
+            volume.isbn13 or "", meta.volume_title or meta.title,
+        )
+
+    per_number: dict[int, SeriesVolume] = {}
+    seen: set[str] = set()
+    normalized = [replace(v, isbn13=isbn_from_identifier(v.isbn13)) for v in candidates]
+    for candidate in sorted(normalized, key=priority):
+        code = isbn_from_identifier(candidate.isbn13)
+        if code and code in seen:
+            continue
+        if code:
+            seen.add(code)
+        per_number.setdefault(candidate.number, replace(candidate, isbn13=code))
+    return tuple(per_number[number] for number in sorted(per_number))
 
 
 class EditionAlternative(BaseModel):
@@ -339,6 +403,11 @@ class CatalogueVerdict:
     consulted: tuple[str, ...] = ()
     unavailable: tuple[str, ...] = ()
     notices: tuple[BookMetadata, ...] = ()
+    volumes: tuple[SeriesVolume, ...] = ()
+    truncated: bool = False
+    declared_volume_count: int | None = None
+    inconsistent_counts: bool = False
+    rejected_isbns: tuple[str, ...] = ()
 
     @property
     def notice(self) -> BookMetadata | None:
@@ -929,7 +998,10 @@ class BookMetadataService:
             attempts=tuple(attempts),
         )
 
-    async def verify_isbn(self, isbn13: str, expected_title: str) -> BookMetadata | None:
+    async def verify_isbn(
+        self, isbn13: str, expected_title: str, *,
+        outcomes: list[IsbnVerdict] | None = None,
+    ) -> BookMetadata | None:
         """Confirme qu'un ISBN désigne bien l'œuvre attendue.
 
         Filet anti-hallucination : un ISBN bien formé mais attribué à une autre œuvre
@@ -937,6 +1009,8 @@ class BookMetadataService:
         Une notice obtenue pendant une panne ne confirme rien.
         """
         verdict = await self.confirm_isbn_for_title(isbn13, expected_title)
+        if outcomes is not None:
+            outcomes.append(verdict)
         return verdict.notice if verdict.confirme else None
 
     async def confirm_isbn_for_title(
@@ -1235,6 +1309,8 @@ class BookMetadataService:
         author_hint: str | None = None,
         *,
         limit: int = MAX_SERIES_BOOKS,
+        for_creation: bool = False,
+        reference_publisher: str | None = None,
     ) -> CatalogueVerdict:
         """Notices distinctes d'une série — ses tomes — quand une autorité les nomme.
 
@@ -1267,6 +1343,7 @@ class BookMetadataService:
             f'bib.title all "{clean_title}"',
             author_hint=author_hint,
             title_hint=clean_title,
+            **({"series_pages": True} if for_creation else {}),
         )
         attempts.append(_attempt(AUTORITE_BNF, "title", result))
         records = list(result.items)
@@ -1275,14 +1352,20 @@ class BookMetadataService:
                 f'bib.anywhere all "{clean_title}"',
                 author_hint=author_hint,
                 title_hint=clean_title,
+                **({"series_pages": True} if for_creation else {}),
             )
             attempts.append(_attempt(AUTORITE_BNF, "title_anywhere", broad))
             records = list(broad.items)
+            result = broad
 
         selected: list[BookMetadata] = []
+        candidates: list[SeriesVolume] = []
+        rejected: list[str] = []
         seen: set[str] = set()
         for record in records:
-            if not record.isbn13 or record.isbn13 in seen:
+            if (not record.isbn13 and not for_creation) or (
+                record.isbn13 and record.isbn13 in seen
+            ):
                 continue
             notice_title = normalize_text(record.title)
             is_series_member = notice_title.startswith(wanted) or (
@@ -1292,24 +1375,89 @@ class BookMetadataService:
                 continue
             if author_hint and record.author and not same_author(record.author, author_hint):
                 continue
-            seen.add(record.isbn13)
+            if record.isbn13:
+                seen.add(record.isbn13)
             selected.append(replace(record, title=record.volume_title or record.title))
-            if len(selected) >= limit:
+            if len(selected) >= limit and not for_creation:
                 break
-        if len(selected) < limit:
+        ol_limited = False
+        if len(selected) < limit or for_creation:
             completed, ol_result = await self._complete_series_from_openlibrary(
                 series_title=series_title,
                 wanted=wanted,
                 author_hint=author_hint,
                 seen=seen,
-                limit=limit - len(selected),
+                limit=MAX_SERIES_BOOKS if for_creation else limit - len(selected),
+                include_unidentified=for_creation,
             )
             # Le repli nourrit le verdict comme la voie BNF : sans sa tentative, une
             # série vide se lirait « personne ne la connaît » alors qu'OpenLibrary
             # s'est peut-être tue — et un silence ne prouve rien.
             if ol_result is not None:
+                ol_limited = ol_result.error_code == "series_limit"
                 attempts.append(_attempt(AUTORITE_OPENLIBRARY, "title", ol_result))
             selected.extend(completed)
+        if for_creation:
+            google = self._google_books_client()
+            if google.is_configured:
+                google_result = await google.search_by_title_result(series_title, author_hint)
+                attempts.append(_attempt(AUTORITE_GOOGLE_BOOKS, "title", google_result))
+                for item in google_result.items:
+                    meta = self._google_volume_notice(item)
+                    if (
+                        title_similarity(meta.title, series_title) >= TITLE_SIMILARITY_MIN
+                        and (not author_hint or not meta.author
+                             or same_author(meta.author, author_hint))
+                    ):
+                        selected.append(meta)
+            for meta in selected:
+                number = meta.volume_number or notice_volume(meta.volume_title or meta.title)
+                if number is None:
+                    continue
+                code = isbn_from_identifier(meta.isbn13)
+                outcomes: list[IsbnVerdict] = []
+                verified = (
+                    await self.verify_isbn(code, meta.volume_title or meta.title, outcomes=outcomes)
+                    if code else None
+                )
+                if code and any(
+                    verdict.outcome == "contradiction" and verdict.notice is not None
+                    and verdict.notice.source == AUTORITE_BNF for verdict in outcomes
+                ):
+                    rejected.append(code)
+                confirmed = (
+                    code if verified is not None and verified.source == AUTORITE_BNF
+                    and isbn_from_identifier(verified.isbn13) == code
+                    and verified.volume_number == number
+                    and (not author_hint or not verified.author
+                         or same_author(verified.author, author_hint)) else None
+                )
+                if verified is not None and confirmed:
+                    meta = replace(
+                        meta, isbn13=confirmed, language=verified.language or meta.language,
+                        author=verified.author or meta.author,
+                        publisher=verified.publisher, publication_year=verified.publication_year,
+                        format_detail=verified.format_detail,
+                    )
+                candidates.append(SeriesVolume(number, meta, confirmed))
+            volumes = select_series_volumes(candidates, publisher=reference_publisher)
+            counts = {meta.declared_volume_count for meta in selected
+                      if meta.declared_volume_count is not None}
+            total = next(iter(counts)) if len(counts) == 1 else None
+            if total is not None and 0 < total <= MAX_SERIES_BOOKS:
+                known = {v.number for v in volumes}
+                volumes = select_series_volumes([
+                    *volumes, *(SeriesVolume(n, BookMetadata(title=series_title, source=""))
+                                for n in range(1, total + 1) if n not in known),
+                ])
+            verdict = _verdict(attempts, *(v.notice for v in volumes if v.isbn13))
+            return replace(verdict, volumes=volumes, truncated=(
+                result.error_code == "series_limit" or ol_limited or len(volumes) > limit
+                or (total is not None and total > limit)
+            ), rejected_isbns=tuple(dict.fromkeys(rejected)),
+                declared_volume_count=total, inconsistent_counts=(
+                len(counts) > 1 or (total is not None and any(v.number > total for v in volumes))
+            ))
         return _verdict(attempts, *selected)
 
     async def _complete_series_from_openlibrary(
@@ -1320,6 +1468,7 @@ class BookMetadataService:
         author_hint: str | None,
         seen: set[str],
         limit: int,
+        include_unidentified: bool = False,
     ) -> tuple[list[BookMetadata], ProviderQueryResult[dict[str, Any]] | None]:
         """Complète une série par OpenLibrary — seulement les tomes que la BNF a tus.
 
@@ -1338,12 +1487,25 @@ class BookMetadataService:
         params: dict[str, str] = {"title": clean_title_query(series_title)}
         if author_hint:
             params["author"] = author_hint
-        works, result = await self._openlibrary_works(params)
+        works, result = await self._openlibrary_works(
+            params, **({"include_unidentified": True} if include_unidentified else {})
+        )
 
         found: list[BookMetadata] = []
+        metas: list[BookMetadata] = []
         for work in works:
-            meta = work.meta
-            if not meta.isbn13 or meta.isbn13 in seen:
+            codes = work.edition_isbns if include_unidentified else []
+            metas.extend(replace(work.meta, isbn13=isbn_from_identifier(code))
+                         for code in codes)
+            if not codes:
+                metas.append(work.meta)
+        if include_unidentified and len(metas) > 100:
+            result = replace(result, error_code="series_limit")
+            metas = metas[:100]
+        for meta in metas:
+            if (not meta.isbn13 and not include_unidentified) or (
+                meta.isbn13 and meta.isbn13 in seen
+            ):
                 continue
             notice_title = normalize_text(meta.title)
             is_series_member = notice_title.startswith(wanted) or (
@@ -1353,9 +1515,10 @@ class BookMetadataService:
                 continue
             if author_hint and meta.author and not same_author(meta.author, author_hint):
                 continue
-            seen.add(meta.isbn13)
+            if meta.isbn13:
+                seen.add(meta.isbn13)
             found.append(await self._openlibrary_series_volume(meta))
-            if len(found) >= limit:
+            if len(found) >= limit and not include_unidentified:
                 break
         return found, result
 
@@ -1425,6 +1588,7 @@ class BookMetadataService:
         cql_query: str,
         author_hint: str | None = None,
         title_hint: str | None = None,
+        *, series_pages: bool = False, start_record: int = 1,
     ) -> tuple[ProviderQueryResult[BookMetadata], str | None]:
         """Notices SRU typées, et le motif de panne si l'autorité n'a pas répondu.
 
@@ -1445,6 +1609,8 @@ class BookMetadataService:
             "recordSchema": "dublincore",
             "maximumRecords": "10",
         }
+        if start_record > 1:
+            params["startRecord"] = str(start_record)
         url = f"{self.BNF_SRU_URL}?{urllib.parse.urlencode(params)}"
 
         try:
@@ -1546,7 +1712,7 @@ class BookMetadataService:
                     (found for found in map(isbn_from_identifier, identifiers) if found),
                     None,
                 )
-                if not isbn13:
+                if not isbn13 and not series_pages:
                     continue
 
                 raw_identity = re.split(r"\s*/\s*", titles[0], maxsplit=1)[0]
@@ -1587,7 +1753,7 @@ class BookMetadataService:
                         score -= 0.5
 
                 # Bonus pour les éditions francophones (BD et éditeurs de référence)
-                if isbn13.startswith("9782") or isbn13.startswith("2"):
+                if isbn13 and (isbn13.startswith("9782") or isbn13.startswith("2")):
                     score += 0.5
                 if pub_name:
                     norm_pub = normalize_text(pub_name)
@@ -1614,6 +1780,7 @@ class BookMetadataService:
                     format_detail=format_detail,
                     volume_title=volume_title,
                     volume_number=number,
+                    declared_volume_count=_declared_series_count(raw_identity),
                     language=(
                         normalize_edition_language(languages[0]) if len(languages) == 1 else None
                     ),
@@ -1640,6 +1807,24 @@ class BookMetadataService:
             )
 
         results.sort(key=lambda x: x[0], reverse=True)
+        if series_pages:
+            count_text = root.findtext("{http://www.loc.gov/zing/srw/}numberOfRecords")
+            count = int(count_text) if count_text and count_text.isdigit() else len(raw_records)
+            next_start = start_record + len(raw_records)
+            if raw_records and next_start <= count and next_start <= 100:
+                following, panne = await self._bnf_records_result(
+                    cql_query, author_hint, title_hint,
+                    series_pages=True, start_record=next_start,
+                )
+                return replace(
+                    following, items=tuple(meta for _, meta in results) + following.items,
+                    has_results=has_results or following.has_results,
+                ), panne
+            if next_start <= count:
+                return ProviderQueryResult(
+                    items=tuple(meta for _, meta in results), has_results=has_results,
+                    error_code="series_limit",
+                ), None
         notices = [item[1] for item in results]
         return (
             ProviderQueryResult(
@@ -1779,7 +1964,7 @@ class BookMetadataService:
             other_works=other_works,
             author_hint_match=self._author_hint_match(best, author_hint),
             notice_titles=tuple(
-                dict.fromkeys(meta.title for meta in candidates)
+                dict.fromkeys(meta.volume_title or meta.title for meta in candidates)
             ),
         ), tuple(attempts)
 
@@ -1815,6 +2000,10 @@ class BookMetadataService:
         """Une notice Google Books, et sa provenance déclarée."""
         return BookMetadata(
             title=volume.title,
+            volume_title=f"{volume.title} {volume.subtitle}" if volume.subtitle else None,
+            declared_volume_count=_declared_series_count(
+                f"{volume.title} {volume.subtitle or ''}"
+            ),
             author=volume.author,
             publisher=volume.publisher,
             isbn13=volume.isbn13,
@@ -1826,7 +2015,7 @@ class BookMetadataService:
         )
 
     async def _openlibrary_works(
-        self, params: dict[str, str]
+        self, params: dict[str, str], *, include_unidentified: bool = False,
     ) -> tuple[list[_OpenLibraryWork], ProviderQueryResult[dict[str, Any]]]:
         """Notices OpenLibrary triées par pertinence, et le résultat typé brut."""
         result = await self._query_openlibrary_result(params)
@@ -1837,7 +2026,9 @@ class BookMetadataService:
 
         scored: list[tuple[float, _OpenLibraryWork]] = []
         for doc in docs:
-            work = self._build_openlibrary_work(doc, expected_isbn)
+            work = self._build_openlibrary_work(
+                doc, expected_isbn, include_unidentified=include_unidentified,
+            )
             if not work:
                 continue
             score = 1.0
@@ -1933,7 +2124,8 @@ class BookMetadataService:
         )
 
     def _build_openlibrary_work(
-        self, doc: dict[str, Any], expected_isbn: str | None
+        self, doc: dict[str, Any], expected_isbn: str | None,
+        *, include_unidentified: bool = False,
     ) -> _OpenLibraryWork | None:
         """Convertit un document OpenLibrary en notice avec l'ISBN pertinent retenu."""
         title = str(doc.get("title") or "").strip()
@@ -1942,7 +2134,7 @@ class BookMetadataService:
 
         edition_isbns = self._valid_openlibrary_isbns(doc.get("isbn"))
         isbn13 = self._select_openlibrary_isbn(edition_isbns, expected_isbn)
-        if not isbn13:
+        if not isbn13 and not include_unidentified:
             return None
 
         authors = doc.get("author_name") or []
@@ -1958,6 +2150,7 @@ class BookMetadataService:
             confidence=MatchConfidence.MEDIUM,
             publication_year=year if isinstance(year, int) else None,
             format_detail=f"{pages} p." if isinstance(pages, int) else None,
+            declared_volume_count=_declared_series_count(title),
         )
         return _OpenLibraryWork(meta=meta, edition_isbns=edition_isbns)
 

@@ -6,6 +6,7 @@ from typing import Any
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.labels import (
+    BTN_AI_VARIANTS_CREATE,
     BTN_ALERTS_LIST,
     BTN_BACK,
     BTN_BACK_TO_FIELDS,
@@ -124,7 +125,7 @@ def get_alert_confirmation_keyboard(
         rest.append(
             [
                 InlineKeyboardButton(
-                    text="Variantes & Exclusions IA",
+                    text=BTN_AI_VARIANTS_CREATE,
                     callback_data="alert_create_ai_variants",
                 )
             ]

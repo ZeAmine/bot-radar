@@ -756,14 +756,19 @@ async def _refresh_alert_keywords(
             )
             return
         alert.variants = list(dict.fromkeys([
-            *(alert.variants or []), *sanitize_variants(outcome.variants, name),
+            *(alert.variants or []),
+            *sanitize_variants(
+                outcome.variants, name, references=alert.include_keywords or ()
+            ),
         ]))
         alert.exclude_keywords = list(dict.fromkeys([
             *(alert.exclude_keywords or []), *sanitize_exclusions(outcome.exclusions, name),
         ]))
         await session.commit()
 
-    note = keyword_note(outcome)
+    # Aucun bouton de relance sur cette fiche : le menu d'édition ne porte pas d'action
+    # IA. La note le dit donc sans renvoyer à un geste qui n'existe pas à l'écran.
+    note = keyword_note(outcome, retry_label=None)
     if note:
         await target.answer(f"<i>{note}</i>", parse_mode="HTML")
 
@@ -868,7 +873,12 @@ async def _save_edited_field_value(
             # moteur : le nettoyeur est le dernier filtre avant la base. Les mots-clés
             # *inclus*, eux, sont l'intention de l'utilisateur et restent tels quels.
             if field == "variants":
-                parsed = sanitize_variants(parsed, alert.name)
+                # Une variante saisie peut être l'écriture d'une **inclusion** qualifiée
+                # (« blacksad integral » pour « blacksad intégrale ») et pas du seul titre :
+                # le nettoyeur reçoit donc aussi les mots-clés inclus.
+                parsed = sanitize_variants(
+                    parsed, alert.name, references=alert.include_keywords or ()
+                )
             elif field == "exclude_keywords":
                 parsed = sanitize_exclusions(parsed, alert.name)
 

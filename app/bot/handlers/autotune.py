@@ -706,7 +706,9 @@ async def handle_var_apply(
         return
 
     current_variants = list(alert.variants or [])
-    for v in sanitize_variants(pending.values, alert.name):
+    for v in sanitize_variants(
+        pending.values, alert.name, references=alert.include_keywords or ()
+    ):
         if v.lower() not in [k.lower() for k in current_variants]:
             current_variants.append(v)
 

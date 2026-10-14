@@ -136,6 +136,10 @@ BTN_EDIT_EXCLUSIONS_AGAIN = "Modifier à nouveau"
 BTN_DISCARD_CHANGES = "Revenir sans modifier"
 BTN_EDIT_ALERT_SETTINGS = "⚙️ Modifier l'alerte"
 BTN_ANALYSIS_RUNNING = "⏳ Analyse en cours"
+# Le récap de création nomme son bouton de suggestion IA dans sa note d'échec : le
+# libellé vit ici, à côté du bouton qui le porte, pour que la note et le clavier ne
+# puissent pas diverger (ils l'avaient fait : la note disait encore « ✨ … »).
+BTN_AI_VARIANTS_CREATE = "Variantes & Exclusions IA"
 # Un bouton ne répète pas l'action qu'il propose déjà à l'écran : « Confirmer »
 # suffit, le message juste au-dessus dit ce qui est confirmé.
 BTN_CONFIRM = "Confirmer"

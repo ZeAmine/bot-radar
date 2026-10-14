@@ -366,9 +366,9 @@ def test_mixed_lot_labels_are_shared_by_summary_and_panel():
     tome = TomeMatchResult(is_lot=True, lot_tomes=[1, 2], confidence="high")
     summary = market.MarketPriceService.get_comparison_summary(listing, None, books, tome)
     panel = market.MarketPriceService.format_market_details_card(listing, None, books, tome)
-    assert "références mixtes" in summary.lower()
-    assert "références mixtes" in panel.lower()
-    assert "Couverture partielle" in panel
+    # Libellé compact restauré : le lot annonce son total, sans suffixe de dates.
+    assert "<b>Prix du marché (Lot) :</b> ~3,00 €" in summary
+    assert "<b>Total du lot :</b> ~3,00 €" in panel
     assert "3,00" in summary
     assert "3,00" in panel
 

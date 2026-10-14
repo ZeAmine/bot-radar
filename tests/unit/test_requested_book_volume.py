@@ -123,7 +123,7 @@ async def test_raw_volume_survives_ai_omission_and_series_flag(marker, ai_series
 
 
 @pytest.mark.parametrize(
-    ("language", "label"), [("eng", "Anglais"), ("fre", "Français"), (None, "Inconnue")]
+    ("language", "label"), [("eng", "Anglais"), ("fre", "Français"), (None, "Non renseigné")]
 )
 async def test_recap_displays_edition_language(language, label):
     from app.bot.handlers.alerts_helpers import draft_updates_from_search
@@ -197,7 +197,7 @@ async def test_edition_switch_uses_new_language_even_when_cached_choice_is_wrong
         await select_alert_creation_edition(callback, state)
     assert state.data["isbn"] == VOLUME_4_ISBN
     assert state.data["book_context"]["volume_number"] == 4
-    label = {"eng": "Anglais", "fre": "Français", None: "Inconnue"}[language]
+    label = {"eng": "Anglais", "fre": "Français", None: "Non renseigné"}[language]
     assert f"<b>Langue :</b> {label}" in message.edit_text.call_args.args[0]
 
 

@@ -12,13 +12,13 @@
 [![IA](https://img.shields.io/badge/IA-moteur--interchangeable-blueviolet?style=flat)](app/providers/llm/)
 [![Architecture](https://img.shields.io/badge/Architecture-Single--Process%20Monolith-blue?style=flat)](AGENTS.md)
 
-**BotRadar** est un bot Telegram **privé**, temps réel et hautement disponible, conçu comme un assistant d'aide à la décision pour l'achat de produits de seconde main.
+**BotRadar** est un bot Telegram **privé** qui détecte des annonces et aide à décider d’un achat de seconde main.
 
 Il surveille quatre univers à forte valeur ajoutée :
 - 📚 **BD & Comics / Mangas** (`bd_comics`) — Cotes du marché d'occasion livrée, gestion des tomes et éditions originales.
 - 💻 **Tech & Informatique** (`tech`) — Détection de matériel avec exclusion automatique de composants HS ou pièces détachées.
 - 🎮 **Jeux vidéo & Consoles** (`gaming`) — Filtrage strict des éditions PAL-FR (rejet des jaquettes étrangères ES/DE/IT sans VF).
-- 👕 **Vêtements & Mode** (`clothes`) — Filtrage granulaire des marques, tailles, états et détection des contrefaçons.
+- 👕 **Vêtements & Mode** (`clothes`) — Critères déclarés de marques, tailles, états et mots-clés ; aucune authentification de contrefaçon n’est garantie.
 
 ---
 
@@ -49,7 +49,7 @@ Sur les plateformes de seconde main (notamment Vinted), les affaires exceptionne
 
 ### Ce que BotRadar EST
 - ⚡ **Détection prioritaire** : l'alerte précède les enrichissements externes. Le seuil local de 500 ms des benchmarks simulés ne mesure pas le délai depuis la publication ni une livraison Telegram réelle.
-- 📊 **Comparateur de marché réel** : Calcul synchrone de la cote d'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres).
+- 📊 **Comparateur de marché réel** : Lecture synchrone de la cote d’occasion livrée en cache local (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres).
 - 🧠 **Copilote décisionnel et d'auto-apprentissage** : Estimation de revente, coach de négociation et affinage automatique des alertes via IA.
 - 🔒 **Système strictement privé** : Mono-utilisateur avec filtrage par allowlist (`TELEGRAM_ALLOWED_USER_IDS`).
 
@@ -120,20 +120,19 @@ BotRadar est articulé autour d'un **monolithe asynchrone à processus unique** 
 
 Chaque notification d'opportunité reçue sur Telegram intègre un clavier inline compact, ergonomique et sans distractions :
 
-```
-┌───────────────────────────────────────────────────┐
-│                   🔗 Annonce                       │
-├───────────────────────────────────────────────────┤
-│           📊 Prix du marché (BD uniquement)          │
-├──────────────────────────┬──────────────────────────┤
-│      👎 Faux positif     │        💬 Négocier       │
-└──────────────────────────┴──────────────────────────┘
+```text
+[ Voir l’annonce ]
+[ Prix du marché ]                    # BD uniquement
+[ Faux positif ] [ Négocier ]
 ```
 
-- **`[ 🔗 Annonce ]`** : Ouvre directement la page de l'article dans l'application Vinted avec les moyens de paiement et sessions de l'utilisateur.
-- **`[ 📊 Prix du marché ]`** *(BD uniquement)* : Consulte le détail des offres d'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres) et l'écart de prix.
-- **`[ 👎 Faux positif ]`** : Enregistre le rejet de l'annonce pour alimenter le moteur d'apprentissage `/autotune`. Se transforme en `[ ✅ Signalé ]`.
-- **`[ 💬 Négocier ]`** : Déclenche le coach IA pour obtenir une estimation d'offre pertinente et un message de négociation pré-rédigé courtois prêt à copier.
+Le faux positif demande confirmation, puis affiche « Signalé » ; annuler restitue
+les actions initiales. Ces boutons restent sans émoji dans tous ces états.
+
+- **`[ Voir l’annonce ]`** : Ouvre directement la page de l'article dans l'application Vinted avec les moyens de paiement et sessions de l'utilisateur.
+- **`[ Prix du marché ]`** *(BD uniquement)* : Consulte le détail des offres d'occasion livrée (eBay, Momox, Gibert, Recyclivre, Chasse-aux-livres) et l'écart de prix.
+- **`[ Faux positif ]`** : Enregistre le rejet de l'annonce pour alimenter le moteur d'apprentissage `/autotune`. Se transforme en `[ Signalé ]`.
+- **`[ Négocier ]`** : Déclenche le coach IA pour obtenir une estimation d'offre pertinente et un message de négociation pré-rédigé courtois prêt à copier.
 
 > **Note d'arbitrage (ADR-007 & ADR-011)** : Les anciens boutons factices `[ 💳 Payer ]` et `[ 🛍️ Dressing / Lot ]` ont été définitivement supprimés pour éliminer les erreurs de session et alléger l'interface.
 
@@ -152,7 +151,7 @@ Chaque notification d'opportunité reçue sur Telegram intègre un clavier inlin
 | `/categories` | Liste des univers surveillés (`bd_comics`, `tech`, `gaming`, `clothes`) |
 | `/stats` | Statistiques complètes d'activité sur 7 ou 30 jours |
 | `/autotune` | Hub d'auto-tuning : analyse des faux positifs et suggestions d'exclusions IA (alias : `/tune`) |
-| `/status` | Diagnostic de santé du service, du poller Vinted et du moteur IA (fournisseur et modèle) |
+| `/status` | Diagnostic de santé du service, du poller Vinted et du moteur IA (sonde HTTP) |
 | `/cancel` | Annulation immédiate de l'opération ou du dialogue FSM en cours (alias : `/annuler`) |
 | `/help` | Affichage du guide d'utilisation interactif |
 
@@ -160,7 +159,7 @@ Chaque notification d'opportunité reçue sur Telegram intègre un clavier inlin
 
 ## 4. Moteur de Matching Déterministe CPU
 
-Le moteur de matching ([`app/domain/rules/listing_match.py`](app/domain/rules/listing_match.py)) évalue chaque annonce en mémoire CPU en **moins de 2 millisecondes** :
+Le moteur de matching ([`app/domain/rules/listing_match.py`](app/domain/rules/listing_match.py)) évalue chaque annonce en mémoire CPU sans I/O. Les budgets locaux sont ceux des scénarios simulés décrits dans [`docs/alert-latency.md`](docs/alert-latency.md) :
 
 1. **Normalisation Unicode NFKD** : Suppression des accents, uniformisation des minuscules, des apostrophes typographiques et des tirets.
 2. **Dictionnaire d'exclusions multilingue** (`MULTILINGUAL_EXCLUSION_MAPPING`) : Traduction et expansion automatique des exclusions en espagnol, allemand, italien et anglais (`boite vide` ➔ `caja vacia`, `nur ovp`, `solo scatola`, etc.).
@@ -168,14 +167,14 @@ Le moteur de matching ([`app/domain/rules/listing_match.py`](app/domain/rules/li
 4. **Exclusions matérielles par défaut** : Protection native contre les goodies, boîtes vides, accessoires orphelins (câbles seuls, chargeurs seuls) et articles défectueux ("pour pièces", "HS").
 5. **Protection hybride BD / ISBN** :
    - Si un ISBN-13 est présent sur l'annonce, vérification exacte.
-   - En l'absence d'ISBN textuel, fallback déterministe sur le titre de la série, le numéro de tome et l'auteur pour garantir zéro faux positif sur les titres courts (*"Blast"*, *"RIP"*, *"1629"*).
+   - En l'absence d'ISBN textuel, fallback déterministe sur le titre de la série, le numéro de tome et l'auteur pour réduire les confusions sur les titres courts, sans garantie d’absence de faux positif (*"Blast"*, *"RIP"*, *"1629"*).
 6. **Requête groupée** : Une seule requête SQL pour récupérer l'état de notification des alertes candidates (`match_notification_state`), aucun parcours itératif en base de données.
 
 ---
 
 ## 5. Sous-système IA — moteur interchangeable
 
-L'IA intervient de manière **purement asynchrone post-alerte** et ne bloque jamais la vitesse d'envoi.
+L’enrichissement IA des annonces intervient après leur envoi. La création assistée et le coach de négociation utilisent aussi le moteur sur leurs propres parcours, sans ajouter d’appel avant l’envoi d’une annonce.
 
 ### Changer de modèle ne demande que quatre variables d'environnement
 
@@ -199,13 +198,11 @@ AI_API_KEY=sk-…
 
 Cinq modules vivants et spécialisés sont actifs ([`app/services/ai/modules/`](app/services/ai/modules/)) :
 
-Cinq modules vivants et spécialisés sont actifs ([`app/services/ai/modules/`](app/services/ai/modules/)) :
-
 1. 🪄 **`natural_add`** (`AI_FEATURE_NATURAL_ADD=true`) : Parse une phrase libre en langage naturel pour pré-remplir les filtres d'une alerte lors de `/add`. L'ISBN qu'il propose est un simple candidat : il n'est retenu que si une notice bibliographique le confirme pour l'œuvre demandée (BNF en source primaire, OpenLibrary en repli), sinon l'alerte part sur le titre (ADR-014).
 2. 💎 **`profit_scoring`** (`AI_FEATURE_PROFIT_SCORING=true`) : Calcule un score pépite, estime le prix de revente potentiel et la marge nette pour la tech, le gaming et les vêtements.
 3. 💬 **`negotiation`** (`AI_FEATURE_NEGOTIATION=true`) : Analyse l'écart de prix et rédige un message de négociation poli et personnalisé à destination du vendeur.
 4. ✨ **`keyword_variants`** (`AI_FEATURE_KEYWORD_VARIANTS=true`) : Suggère des variantes orthographiques, abréviations et fautes courantes, ainsi que des mots-clés d'exclusion **spécifiques à l'ouvrage** (auteur, éditeur, année et format issus de la fiche vérifiée), et non une liste de faux positifs générique (`[ ✨ Variantes & Exclusions IA ]`, ADR-014).
-5. 🎯 **`auto_tuning`** (`AI_FEATURE_AUTO_TUNING=true`) : Analyse les faux positifs signalés par l'utilisateur (`[ 👎 Faux positif ]`) et génère des listes d'exclusions prêtes à copier ou modifier dans `/autotune` (ADR-008).
+5. 🎯 **`auto_tuning`** (`AI_FEATURE_AUTO_TUNING=true`) : Analyse les faux positifs signalés par l'utilisateur (`[ Faux positif ]`) et génère des listes d'exclusions prêtes à copier ou modifier dans `/autotune` (ADR-008).
 
 > **Épuration des modules obsolètes (ADR-006 & ADR-011)** : Les fonctionnalités expérimentales instables ou non pertinentes (`hidden_condition`, `vision_guard`, `bundle_decomposition`, `price_glitch`) ont été définitivement purgées du codebase.
 
@@ -234,9 +231,9 @@ Pour les bandes dessinées, comics et mangas, BotRadar compare en temps réel le
 
 Le poller Vinted intégré ([`app/tasks/vinted_poller.py`](app/tasks/vinted_poller.py)) applique une architecture optimisée (ADR-012) :
 
-- 🚀 **API Interne JSON First (`/svc-catalogue/items`)** : Payload réduit de 7,25 Mo (HTML) à **~38 Ko** par requête (divisé par 190), avec latence d'interrogation chutant à **~200 ms**.
-- 🛡️ **Repli Transparent (Fallback HTML)** : En cas d'anomalie sur le format JSON, le poller bascule automatiquement sur le catalogue HTML classique sans interruption.
-- ⚡ **Cadence Adaptative** : Intervalle de scrutation de **12s** en heures de pointe (11h30-14h00 et 18h00-22h30 Paris), **15s** en heures standard, et passage automatique à **8s** dès configuration d'un proxy résidentiel (`VINTED_PROXY_URL`).
+- 🚀 **API Interne JSON First (`/svc-catalogue/items`)** : Le catalogue JSON évite le coût du catalogue HTML complet ; volumes et latences dépendent de la réponse et ne constituent pas une garantie.
+- 🛡️ **Repli Transparent (Fallback HTML)** : En cas d'anomalie sur le format JSON, le poller bascule automatiquement sur le catalogue HTML classique lorsque ce repli répond ; il ne garantit pas la disponibilité de la marketplace.
+- ⚡ **Cadence Adaptative** : `VINTED_POLL_INTERVAL_SECONDS` (défaut **12 s**) fixe la cadence standard et plafonne les modes accélérés — proxy résidentiel à **8 s** en pointe (11h30-14h00 et 18h00-22h30 Paris) et **10 s** hors pointe (`VINTED_PROXY_URL`).
 - 🌙 **Mode Nuit Automatique** : Suspension ou ralentissement de la scrutation entre 00:00 et 07:00 (Paris) pour préserver la réputation de l'IP.
 - 🔀 **Ordonnancement Entrelacé (Staggered Interleaving)** : Espacement calculé (1,2s à 2,0s) entre les requêtes de différentes catégories pour lisser la charge réseau.
 - 📷 **Photo de couverture** : L'annonce est affichée avec l'image de couverture renvoyée par `svc-catalogue/items` (voir ADR-012). Aucune requête Vinted supplémentaire n'est faite pour une annonce.
@@ -249,8 +246,8 @@ Le projet est outillé avec un pipeline d'Intégration Continue via GitHub Actio
 
 - **Ruff** : Linting strict conforme aux règles modernes Python 3.12 (longueur de ligne max 100 caractères, imports ordonnés, conventions PEP).
 - **Pytest & Pytest-Asyncio** : tests versionnés d'ingestion, de matching, du FSM Telegram, du cache, du poller et de l'IA. Les six benchmarks locaux (`make bench`) utilisent des doubles et ne valident pas une latence depuis la publication ou une livraison réelle ; leurs frontières sont détaillées dans [`docs/alert-latency.md`](docs/alert-latency.md). Le nombre de tests et leur résultat dépendent de la révision et du périmètre exécutés.
-- **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml` ; `mypy app` bloque la pull request en cas d'erreur. Le résultat vaut pour la révision exécutée.
-- **Dépendances verrouillées** : [`requirements.lock`](requirements.lock) contraint les versions résolues par le Dockerfile et par la CI. Deux reconstructions de la mêmerevision produisent donc le même environnement. `make check-lock` échoue si une dépendance a été ajoutée à `pyproject.toml` sans être épinglée.
+- **Typage Statique (Mypy)** : `strict = true` dans `pyproject.toml` ; `mypy app scripts/matching_diagnostics.py` bloque la pull request en cas d'erreur. Le résultat vaut pour la révision exécutée.
+- **Dépendances verrouillées** : [`requirements.lock`](requirements.lock) contraint les versions résolues par le Dockerfile et par la CI. Le verrou fixe les versions Python résolues ; il ne garantit pas une image identique entre plateformes ou versions des outils de construction. `make check-lock` échoue si une dépendance a été ajoutée à `pyproject.toml` sans être épinglée.
 
 Pour exécuter les vérifications localement :
 
@@ -265,7 +262,7 @@ Pour exécuter les vérifications localement :
 make bench
 
 # Typage statique
-.venv/bin/mypy app
+.venv/bin/mypy app scripts/matching_diagnostics.py
 ```
 
 ---
@@ -281,46 +278,52 @@ make bench
 
 ### Installation pas-à-pas
 
-1. **Cloner le dépôt** :
+1. **Cloner avec le sous-module épinglé** (réseau nécessaire) :
    ```bash
-   git clone https://github.com/ZeAmine/bot-radar.git
-   cd "bot-radar"
+   git clone --recurse-submodules https://github.com/ZeAmine/bot-radar.git
+   cd bot-radar
+   # Dans un clone existant : git submodule update --init
+   # Ne pas utiliser --remote : aucun upgrade automatique de Superpowers.
    ```
 
-2. **Créer et activer le virtualenv Python 3.12** :
+2. **Créer un venv Python 3.12 et installer avec le verrou** :
    ```bash
    python3.12 -m venv .venv
    source .venv/bin/activate
-   pip install --upgrade pip
-   pip install -e ".[dev]"
+   pip install -c requirements.lock -e ".[dev]"
+   make check-lock
    ```
 
-3. **Démarrer les services de données locaux (Postgres & Redis)** :
+3. **Configurer avant de démarrer les services** : copier `.env.example` vers un
+   nouveau `.env` local uniquement s’il n’existe pas, puis renseigner les paramètres.
+   L’exemple vise l’application dans Docker (`postgres`, `redis`). Pour Uvicorn
+   sur l’hôte, utiliser `localhost:5432` dans `DATABASE_URL` et
+   `redis://localhost:6379/0` dans `REDIS_URL`. Les identifiants PostgreSQL doivent
+   correspondre aux substitutions Compose. Aucun fichier réel n’est versionné.
+
+4. **Services locaux** : ce Compose référence un réseau externe `web_gateway`.
+   Il doit exister avant son utilisation ; sa création éventuelle est explicite
+   (`docker network create web_gateway`) et n’est pas un déploiement de Caddy.
    ```bash
    docker compose up -d postgres redis
    ```
+   Les noms et ports de ce Compose sont fixes : ne pas le dupliquer dans plusieurs
+   worktrees. Pour les tests, préférer leurs bases isolées et leurs doubles.
 
-4. **Configurer l'environnement** :
-   ```bash
-   cp .env.example .env
-   # Éditez .env avec vos identifiants
-   ```
-
-5. **Appliquer les migrations de base de données** :
+5. **Application sur l’hôte**, après configuration et disponibilité des services :
    ```bash
    alembic upgrade head
+   uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
    ```
-
-6. **Lancer le serveur de développement** :
-   ```bash
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-   ```
+   Le scheduler démarre ; désactiver le poller n’empêche pas les jobs de marché.
+   Cette commande peut appeler des services externes : elle ne sert pas de recette
+   de vérification isolée. Pour les agents, appliquer le mandat décrit dans AGENTS.md.
 
 ---
 
 ## 10. Configuration des Variables d'Environnement (.env)
 
-Toutes les variables sont déclarées et typées dans [`app/core/config.py`](app/core/config.py) avec modèle Pydantic Settings :
+Les paramètres applicatifs sont déclarés et typés dans [`app/core/config.py`](app/core/config.py) avec le modèle Pydantic Settings. Ce tableau résume les paramètres usuels ; le schéma et `.env.example` restent les références :
 
 | Variable | Type / Format | Requis en Prod | Description |
 |---|---|:---:|---|
@@ -346,17 +349,26 @@ Toutes les variables sont déclarées et typées dans [`app/core/config.py`](app
 | `EBAY_ENV` | `PRODUCTION` / `SANDBOX` | Non | Environnement de l'API eBay Browse (défaut : `PRODUCTION`). |
 | `CHASSE_AUX_LIVRES_DUIH` | Chaîne de session | Non | Session utilisateur pour l'historique de cotes BD 1 an. |
 | `VINTED_POLLER_ENABLED` | `true` / `false` | Non | Active la boucle de détection Vinted dans le conteneur applicatif. |
-| `VINTED_POLL_INTERVAL_SECONDS` | Entier (défaut `15`) | Non | Fréquence de scrutation standard hors heures de pointe. |
+| `VINTED_POLL_INTERVAL_SECONDS` | Entier (défaut `12`) | Non | Cadence de scrutation standard ; sert aussi de plafond aux cadences accélérées (pointe, proxy). |
 | `VINTED_PROXY_URL` | URL HTTP/SOCKS5 | Non | Proxy résidentiel optionnel pour accélérer la scrutation à 8s. |
 | `NIGHT_MODE_ENABLED` | `true` / `false` | Non | Suspension nocturne pour préserver la réputation IP (défaut : `true`). |
 | `NIGHT_MODE_START_HOUR` | Entier (défaut `0`) | Non | Heure de début de la plage de nuit (00:00). |
 | `NIGHT_MODE_END_HOUR` | Entier (défaut `7`) | Non | Heure de fin de la plage de nuit (07:00). |
 | `NIGHT_MODE_TIMEZONE` | Fuseau horaire (défaut `Europe/Paris`) | Non | Fuseau horaire de référence pour le mode nuit. |
+| `GOOGLE_BOOKS_API_KEY` | Clé API optionnelle | Non | Troisième autorité bibliographique après BNF et OpenLibrary ; absente, aucun appel à cette source. |
 | `PRICE_REFRESH_TIMES` | Heures HH:MM (ex: `07:00,19:00`) | Non | Horaires de rafraîchissement complet des cotes du catalogue BD. |
 
 > **Garde-fous stricts** :
-> - En mode `APP_ENV=production`, `validate_production_secrets()` bloque immédiatement le démarrage si l'un des 4 secrets d'accès (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `INGEST_API_TOKEN`, `INTERNAL_API_TOKEN`) est vide.
+> - En mode `APP_ENV=production`, `validate_production_secrets()` refuse le démarrage avant les producteurs si l'un des 4 secrets d'accès (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `INGEST_API_TOKEN`, `INTERNAL_API_TOKEN`) est vide.
+> - Écart ouvert C11 : la configuration des commandes Telegram précède encore cette validation dans le lifespan. L’alignement documentaire ne corrige pas cet ordre.
 > - `TELEGRAM_WEBHOOK_URL` et `EBAY_ENVIRONMENT` ne sont **pas** lus par l'application (l'environnement eBay est lu via `EBAY_ENV`).
+
+Les substitutions `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` relèvent de
+Compose, pas de Settings. `DOMAIN_NAME` n’est lu par aucun consommateur du dépôt.
+Les scripts ont leurs options propres : par exemple `DEPLOY_HOST`, `DEPLOY_KEY`,
+`DEPLOY_REMOTE_DIR` pour le déploiement, `DEPLOY_DIR` pour le pré-vol, et les
+variables de compte décrites dans Subjects pour le renouvellement Chasse.
+L’environnement d’un script ne constitue pas automatiquement un paramètre runtime.
 
 ---
 
@@ -388,7 +400,7 @@ make clean                # Supprime les répertoires de cache temporaires
 
 ## 12. Gestion des Migrations Alembic
 
-Le schéma PostgreSQL est géré par Alembic. La révision courante attendue est `0006_composite_indexes`.
+Le schéma PostgreSQL est géré par Alembic. La tête du graphe inspecté est `0013_pause_actions`. Elle ne prouve pas la révision d’une base réelle. Les recettes spécialisées 0010/0011 restent limitées à leurs transitions historiques.
 
 ```bash
 # Appliquer les migrations
@@ -432,66 +444,34 @@ La passerelle Caddy est partagée avec **BotStream** : son `Caddyfile` n'est pas
 
 ### Procédure de déploiement
 
-La procédure complète tient en une commande :
+La référence opérationnelle est [AGENTS.md](AGENTS.md#déploiement-production),
+avec l’ordre exécuté par `scripts/deploy.py` : pré-vol → arrêt confirmé →
+synchronisation → construction de l’image cible → migration ponctuelle et lecture
+de révision → démarrage → santé et contrôles stricts.
 
 ```bash
-make deploy   # pré-vol → synchronisation → rebuild → migration → vérification
+make deploy
+make deploy DEPLOY_ARGS=--dry-run  # Relire uniquement l’ordre
 ```
 
-Elle s'arrête au premier échec et n'essaie pas l'étape suivante. La migration n'est jouée qu'une fois le conteneur sain : migrer pendant un redémarrage viserait l'image précédente et laisserait le schéma en retard d'une version sur le code, sans que rien ne le signale. Pour relire l'ordre sans rien exécuter : `make deploy DEPLOY_ARGS=--dry-run`.
+Un push ne déploie rien. Ne pas démarrer la cible avant sa migration ; une
+interruption exige de constater code, conteneur et schéma avant reprise, sans
+restauration automatique. Les recettes historiques des documents spécialisés
+conservent leur schéma et leurs restrictions, elles ne remplacent pas cette procédure.
 
-Les étapes ci-dessous restent accessibles séparément, pour reprendre un déploiement interrompu.
+`/health` n'est pas un contrôle de disponibilité métier : un HTTP 200 ne prouve
+ni la collecte Vinted, ni une écriture SQL, ni une réception Telegram. `/status`
+distingue un scanner arrêté, inconnu ou en retard ; un état absent n'est pas actif.
+La sonde IA atteste une réponse HTTP (avec cache court), pas une génération
+réussie ni la validité d'une réponse JSON métier.
 
-1. **Contrôle de l'état du VPS** : un push ne déploie rien, le serveur étant une cible `rsync` et non un clone git. Cette commande échoue si `APP_ENV` n'est pas en production, si un secret est vide, si un second scheduler est apparu, si la base n'est pas en tête de migration, ou si le code servi diffère du dépôt.
-   ```bash
-   make preflight
-   ```
-
-2. **Synchronisation des fichiers** (en préservant scrupuleusement le `.env` de production) :
-   ```bash
-   rsync -avz --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
-     --exclude '.mypy_cache' --exclude '.ruff_cache' \
-     --exclude '.git' --exclude '.env' --exclude 'vendor' \
-     -e "ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no" \
-     ./ ubuntu@88.96.56.44:~/bot-radar/
-   ```
-
-3. **Rebuild et redémarrage du conteneur applicatif** :
-   ```bash
-   ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-     "cd ~/bot-radar && docker compose up -d --build app"
-   ```
-
-4. **Application des migrations de schéma** (une fois le conteneur healthy) :
-   ```bash
-   ssh -i ~/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=no ubuntu@88.96.56.44 \
-     "cd ~/bot-radar && docker compose exec -T app alembic upgrade head && docker compose exec -T app alembic current"
-   ```
-
-5. **Contrôle d'intégrité opérationnel** :
-   ```bash
-   curl -s https://radar.aminezegmou.fr/health
-   # HTTP 200 : vivacité HTTP ; la sonde IA existante est exposée séparément.
-   # scope=http_liveness ; SQL, Redis, scheduler et poller sont unchecked.
-
-   make verify-deploy
-   # Rejoue les contrôles du pré-vol, cette fois en fail-fast : un écart de code
-   # entre le dépôt et le VPS fait échouer la commande.
-   ```
-
-   `/health` n'est pas un contrôle de disponibilité métier : un HTTP 200 ne prouve
-   ni la collecte Vinted, ni une écriture SQL, ni une réception Telegram. `/status`
-   distingue un scanner arrêté, inconnu ou en retard ; un état absent n'est pas actif.
-   La sonde IA atteste une réponse HTTP (avec cache court), pas une génération
-   réussie ni la validité d'une réponse JSON métier.
-
-   La confirmation d'un brouillon de création est sérialisée dans le processus
-   courant : identité et état sont relus sous protection jusqu'au commit et à la
-   fermeture du brouillon. Les autres contextes FSM progressent indépendamment ;
-   préparation BD et présentation se déroulent ensuite sans ce verrou. Un retour
-   de commit échoué laisse le résultat inconnu et interdit de réutiliser ce
-   brouillon. Cette protection locale ne constitue pas une garantie « exactement
-   une fois » après crash, perte du stockage FSM ou avec plusieurs processus.
+La confirmation d'un brouillon de création est sérialisée dans le processus
+courant : identité et état sont relus sous protection jusqu'au commit et à la
+fermeture du brouillon. Les autres contextes FSM progressent indépendamment ;
+préparation BD et présentation se déroulent ensuite sans ce verrou. Un retour
+de commit échoué laisse le résultat inconnu et interdit de réutiliser ce
+brouillon. Cette protection locale ne constitue pas une garantie « exactement
+une fois » après crash, perte du stockage FSM ou avec plusieurs processus.
 
 
 ### Reprise bornée des notifications (schéma `0011_notification_state`)
@@ -662,7 +642,7 @@ curl -X GET "https://radar.aminezegmou.fr/api/v1/internal/vinted/session" \
 ### 4. L'annonce BD arrive sans comparateur de prix de marché
 - **Causes normales (Invariant n°1)** :
   - L'annonce ne contient aucun ISBN et aucun lien direct n'a pu être établi avec certitude avec le catalogue local.
-  - Le livre vient d'être découvert : il a été programmé pour enrichissement BNF en arrière-plan, et sa cote sera disponible au prochain cycle.
+  - Le livre vient d'être découvert : une résolution/cotation de fond peut être tentée pour les prochaines annonces, sans garantie de notice ni d’offre. Le message déjà envoyé décrit l’état à son envoi.
   - Aucun stock d'occasion livrée n'a été trouvé chez les fournisseurs.
 - **Vérification du cache** : Vous pouvez consulter directement l'état de la cote en cache avec :
   `curl -X GET "https://radar.aminezegmou.fr/api/v1/internal/books/<ISBN13>/market-price" -H "Authorization: Bearer <INTERNAL_API_TOKEN>"`.
@@ -672,9 +652,9 @@ curl -X GET "https://radar.aminezegmou.fr/api/v1/internal/vinted/session" \
 ## 16. Sécurité & Confidentialité des Données
 
 - **Principe du moindre privilège** : L'image Docker s'exécute avec un utilisateur système non root dédié (`appuser:1001`).
-- **Isolation réseau stricte** : PostgreSQL et Redis ne sont pas exposés sur l'Internet public et communiquent uniquement au sein du réseau privé interne Docker.
+- **Isolation réseau stricte** : Compose publie PostgreSQL et Redis sur le loopback de l’hôte ; les conteneurs les joignent par le réseau Docker interne. Cette configuration déclarative n’atteste pas celle d’une installation réelle.
 - **Masquage proactif des secrets** : Les jetons et clés d'API sont automatiquement masqués des logs grâce à `JSONFormatter` et encapsulés dans le type `SecretStr` de Pydantic v2.
-- **Zéro automatisation d'achat intrusif** : Respect scrupuleux des conditions d'utilisation des plateformes de seconde main, éliminant tout risque de bannissement ou d'action marketplace non sollicitée.
+- **Zéro automatisation d'achat intrusif** : Le bot ne déclenche ni achat, ni panier, ni message vendeur. Cela ne garantit pas l’absence de blocage de la collecte ou de bannissement.
 
 ---
 
@@ -691,9 +671,9 @@ inchangées : perdre une cote ne rejette pas une annonce conforme à ce seuil.
 Le cache possède une projection annuelle distincte, recalculée en SQL local groupé
 à échéance, sans appel fournisseur. Une projection expirée n'est jamais admissible.
 Les minima ex æquo privilégient le relevé le plus récent, puis l'identifiant le plus
-petit. La couverture est toujours annoncée partielle, avec nombre et bornes des
-relevés ; une durée d'un an n'atteste aucune observation continue. Les sommes de
-références individuelles ne prétendent pas avoir été observées simultanément.
+petit. La fenêtre annuelle reste partielle — une durée d'un an n'atteste aucune
+observation continue — et les sommes de références individuelles ne prétendent pas
+avoir été observées simultanément.
 
 Les anciens minima et les agrégats sans date du minimum sont conservés comme
 informations non vérifiables, hors calcul annuel. Les snapshots anciens admissibles

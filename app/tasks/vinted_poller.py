@@ -57,6 +57,11 @@ CYCLE_GAP_SAMPLES = 40
 # L'inclure ferait lire 30 min de p50 là où la cadence réelle est de 15 s.
 MAX_MEANINGFUL_CYCLE_GAP_S = 90.0
 
+# Plancher de la pause entre deux cycles. Il borne aussi le sommeil restant après
+# déduction du travail du cycle : une ingestion ou un envoi Telegram lent ne peut pas
+# coller deux scrutations l'une à l'autre.
+MIN_CYCLE_GAP_SECONDS = 6.0
+
 class CycleCadence:
     """Historique des écarts entre deux cycles de scrutation.
 
@@ -229,8 +234,11 @@ def is_peak_hours(now: datetime | None = None) -> bool:
 def get_adaptive_poll_interval() -> float:
     """Calcule l'intervalle cible de scrutation selon le contexte réseau et horaire.
 
-    - Avec proxy résidentiel (Raspberry Pi à domicile) : haute cadence (8s en pointe, 10s standard).
-    - Sur IP VPS datacenter : cadence équilibrée (12s en pointe, 15s standard).
+    `VINTED_POLL_INTERVAL_SECONDS` est la cadence standard visée **et** un plafond des
+    modes accélérés : la pointe (8 s / 12 s) et le proxy résidentiel (8 s / 10 s) ne
+    peuvent que la raccourcir. La branche standard la sert telle quelle — un plancher
+    la rendrait insensible à une valeur plus basse, ce qui était le cas avec l'ancien
+    `max(base, 15.0)`.
     """
     base = float(settings.VINTED_POLL_INTERVAL_SECONDS)
     has_residential_proxy = bool(settings.get_vinted_proxy())
@@ -240,7 +248,18 @@ def get_adaptive_poll_interval() -> float:
 
     if is_peak_hours():
         return min(base, 12.0)
-    return max(base, 15.0)
+    return base
+
+
+def remaining_cycle_sleep(sleep_time: float, work_seconds: float) -> float:
+    """Sommeil restant une fois le travail du cycle déduit, sans l'y ajouter.
+
+    La pause est une respiration entre deux scrutations, pas un délai qui s'ajoute à
+    l'ingestion et à l'envoi Telegram. Le cycle vaut donc au moins la pause cible, et
+    le travail ne la rallonge que s'il la dépasse — sans jamais descendre sous le
+    plancher, qui garde une respiration minimale pendant une rafale d'annonces.
+    """
+    return max(MIN_CYCLE_GAP_SECONDS, sleep_time - max(0.0, work_seconds))
 
 
 async def load_initial_seen_ids() -> FifoSet:
@@ -252,6 +271,17 @@ async def load_initial_seen_ids() -> FifoSet:
     except Exception as exc:
         logger.warning("Impossible de charger les anciens IDs d'annonces : %s", exc)
         return FifoSet()
+
+
+def dedupe_custom_searches(searches: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Retire les couples (URL, catégorie) strictement identiques.
+
+    Deux alertes de même catégorie partageant la même URL occuperaient sinon deux tours
+    du round-robin : le même flux interrogé deux fois, au détriment des autres recherches.
+    La catégorie fait partie de la clé — fusionner deux catégories sur une même URL
+    changerait le matching, qui se fait par catégorie.
+    """
+    return list(dict.fromkeys(searches))
 
 
 async def load_active_custom_searches() -> list[tuple[str, str]]:
@@ -272,7 +302,9 @@ async def load_active_custom_searches() -> list[tuple[str, str]]:
                 )
             )
             result = await session.execute(stmt)
-            return [(url, cat_slug) for url, cat_slug in result.all() if url]
+            return dedupe_custom_searches(
+                [(url, cat_slug) for url, cat_slug in result.all() if url]
+            )
     except Exception as exc:
         logger.warning("Impossible de charger les recherches personnalisées : %s", exc)
         return []
@@ -541,6 +573,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 continue
 
             poll_cycle += 1
+            cycle_started = time.monotonic()
             try:
                 # 1. Surveiller le flux global Livres (capture 100% des nouveautés en continu)
                 count_bd = await poll_vinted_once(
@@ -672,7 +705,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
             # Cadence adaptative (heures de pointe vs standard, VPS vs proxy résidentiel)
             target_interval = get_adaptive_poll_interval()
             jitter = random.uniform(-2.5, 3.5)
-            sleep_time = max(6.0, target_interval + jitter)
+            sleep_time = max(MIN_CYCLE_GAP_SECONDS, target_interval + jitter)
 
             # Micro-pause naturelle humaine (30-45s) tous les ~50 cycles pour briser la régularité
             # d'un robot
@@ -680,6 +713,12 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 micro_pause = random.uniform(30.0, 45.0)
                 logger.debug("🛡️ Micro-pause naturelle de %.1fs...", micro_pause)
                 sleep_time += micro_pause
+
+            # Le travail du cycle (collecte, ingestion, envoi Telegram) est déduit de la pause
+            # au lieu de s'y ajouter : une rafale d'annonces n'allonge plus la cadence et ne
+            # retarde plus la détection des annonces suivantes.
+            work_seconds = time.monotonic() - cycle_started
+            sleep_time = remaining_cycle_sleep(sleep_time, work_seconds)
 
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=sleep_time)

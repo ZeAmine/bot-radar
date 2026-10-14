@@ -95,6 +95,7 @@ class GoogleVolume:
     print_type: str | None = None
     has_ebook: bool | None = None
     cover_url: str | None = None
+    subtitle: str | None = None
 
     @property
     def isbn13(self) -> str | None:
@@ -267,6 +268,7 @@ class GoogleBooksClient:
         authors = _clean_names(info.get("authors"))
         return GoogleVolume(
             title=title,
+            subtitle=_clean_text(info.get("subtitle")),
             author=authors[0] if authors else None,
             publisher=_clean_text(info.get("publisher")),
             isbns=_identifiers_to_isbns(info.get("industryIdentifiers")),

@@ -7,7 +7,7 @@ Il est destiné à être lu par les modèles de langage (LLMs) et ingénieurs po
 ## Documentation de référence (Univers LLM)
 - [`AGENTS.md`](AGENTS.md) : **Constitution & Règles opérationnelles** (Invariants, architecture, déploiement, qualité).
 - [`subjects.md`](subjects.md) : **Cartographie des 12 sujets** (Fichiers clés, rôle, flux de données par composant).
-- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, ADR-001 à ADR-030, dette différée).
+- [`memory.md`](memory.md) : **Mémoire du projet & ADRs** (Historique des arbitrages, décisions consignées, dette différée).
 
 ---
 
@@ -21,12 +21,12 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 
 ```
 [ Ingestion Vinted ]
-        ↓ (~100ms)
+        ↓ (réception locale)
 [ Matching Déterministe CPU ]
-        ↓ (~2ms)
+        ↓ (CPU local)
 [ Cote BD (Cache Postgres Local) ]
-        ↓ (~1ms)
-[ ⚡ ALERTE TELEGRAM INSTANTANÉE ]  <-- Objectif prioritaire : < 500ms
+        ↓ (lecture cache)
+[ ⚡ ENVOI TELEGRAM PRIORITAIRE ]  <-- ordre avant enrichissement
         ↓ (Arrière-plan / non bloquant)
 [ MOTEUR IA / Liaison BNF ]
 ```
@@ -42,6 +42,11 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 - **Pas d'application multi-tenant ouverte au public** : mono-utilisateur avec allowlist stricte (`TELEGRAM_ALLOWED_USER_IDS`).
 
 ---
+
+Les chiffres et descriptions des ADR ci-dessous relatent leurs constats historiques,
+pas des garanties actuelles de performance, de disponibilité ou d’absence de faux
+positifs. Les limites des mesures locales sont précisées dans `docs/alert-latency.md`.
+Les descriptions opérationnelles actuelles relèvent d’AGENTS.md et de Subjects.
 
 ## 2. Architecture Decision Records (ADRs)
 
@@ -130,15 +135,17 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 - **Contexte** :
   - Le scraper Vinted téléchargeait les pages de catalogue HTML (`/catalog`) pesant ~7,25 Mo par requête, entraînant une latence réseau de ~2 000 ms et une consommation de bande passante excessive.
   - Chaque visite de page d'annonce coûtait une requête HTTP supplémentaire, y compris pour des informations déjà présentes dans le catalogue.
-  - L'intervalle de scrutation fixe (20s) méritait d'être optimisé sans risque de bannissement IP Cloudflare.
+  - L'intervalle de scrutation fixe (20s) méritait d'être optimisé pour réduire la charge, sans garantir l’absence de blocage IP.
 - **Décision** :
   - **API Interne First** : Interrogation directe de l'endpoint microservice Vinted Web `https://api.vinted.fr/svc-catalogue/items` avec les en-têtes web actuels (`Platform: web`, `X-Next-App: marketplace-web`, `X-Anon-Id`).
   - **Payload divisé par 190** : Passage de 7,25 Mo à ~38 Ko par appel, réduisant la latence à ~200 ms.
-  - **Résilience absolue (Fallback HTML)** : Si l'API interne retourne une réponse non standard, le scraper bascule automatiquement et de manière transparente sur le catalogue HTML historique.
+  - **Repli HTML conditionnel** : Si l'API interne retourne une réponse non standard, le scraper bascule automatiquement et de manière transparente sur le catalogue HTML historique.
   - **Cadence Adaptative** : Intervalle de 12s en heures de pointe (11h30-14h00 et 18h00-22h30 Paris) et 15s en heures standard, avec passage automatique à 8s dès configuration d'un proxy résidentiel (Raspberry Pi Zero 2 W via `VINTED_PROXY_URL`).
   - **Ordonnancement Entrelacé (Staggered Interleaving)** : Les catégories hors-livres s'intercalent fluidement avec un espacement de 1,2s à 2,0s, évitant les pics concurrentiels sur une même IP.
 - **Raison** : Maximiser la vitesse de détection ("ultra-rapide") pour battre la concurrence tout en préservant l'IP et en garantissant zéro régression.
 - **Mise à jour (2026-09-30)** : `svc-catalogue/items` ne renvoie plus qu'une image de couverture dans `photos[]` (souvent length 1). Le scan n'expose donc plus l'information d'images multiples : seule la couverture est conservée (ADR-015).
+- **Mise à jour (2026-10-13)** : la cadence standard passe de 15 s à **12 s**. `VINTED_POLL_INTERVAL_SECONDS` devient l'intervalle standard réel **et** un plafond des modes accélérés : l'ancien `max(base, 15.0)` hors pointe en faisait un plancher, si bien que baisser la variable n'avait aucun effet en heures standard.
+- **Mise à jour (2026-10-13)** : sonde unique sur `/svc-catalogue/items` (`scripts/probe_vinted_published_at.py`) — **aucun horodatage de publication exposé**. Les clés d'un item réel sont `id, title, price, item_box, photo, photos, url, user, view_count, total_item_price, service_fee, search_tracking_params, promoted, show_1st_time_seller_discount, …`. La propagation de `published_at` et la mesure publication → détection sont closes en **bloqué**, faute de source. La colonne reste pour un appelant d'API externe.
 
 ### ADR-013 : Passerelle centralisée multi-bots (caddy_gateway) et harmonisation VPS ~/bot-radar/
 - **Contexte** :
@@ -468,7 +475,7 @@ ils sont définis une seule fois, avec leurs critères de vérification, dans l'
 correspondant d'`AGENTS.md`. Ce qui suit n'est pas une copie de la constitution.
 
 1. **Un seul endroit par règle** : une règle dure vit dans `AGENTS.md` ; un ADR la justifie, un sujet la cartographie. Ne pas la redéclarer ailleurs sous une forme plus lâche.
-2. **Zéro régression sur la suite de tests** : `./.venv/bin/pytest` doit réussir à 100 % (compteur courant : voir le badge du README), et chaque commit doit passer seul — `make check-history`.
+2. **Zéro régression sur la suite de tests** : `./.venv/bin/pytest` doit réussir à 100 % (preuve attribuée à la révision et à la sélection exécutées), et chaque commit doit passer seul — `make check-history`.
 3. **Pas de code orphelin ni de flags morts** : chaque setting de `app/core/config.py` doit correspondre à une feature vivante et documentée.
 4. **Déploiement autonome, une fois validé** : après une intervention validée par l'utilisateur, exécuter soi-même les commandes SSH/rsync et les vérifications d'intégrité, sans lui demander de copier-coller. Jamais spontanément, et jamais pour une opération destructive non demandée.
 

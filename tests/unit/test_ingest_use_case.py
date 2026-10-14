@@ -1084,12 +1084,13 @@ async def test_bnf_link_for_a_series_links_and_prices_every_tome(wait_for_prices
             )
         )
 
+        repo_cls.return_value.get_all_books_for_alert = AsyncMock(return_value=[])
         await mod.link_books_from_bnf(
             "Blacksad", uuid.uuid4(), author="A", series=True, wait_for_prices=wait_for_prices
         )
 
     service_cls.return_value.lookup_series_notices.assert_awaited_once_with(
-        "Blacksad", author_hint="A"
+        "Blacksad", author_hint="A", **({"for_creation": True} if wait_for_prices else {})
     )
     # Un seul tome est coté : celui qui n'avait pas de cote utilisable.
     if wait_for_prices:

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from app.core.tasks import safe_create_task
 from app.db.repositories.alert_repo import AlertRepository
@@ -17,22 +17,32 @@ from app.domain.entities.alert_preparation import (
 )
 from app.domain.enums import AlertStatus
 from app.services.book_market_pricing import price_book_now
+from app.services.book_metadata_service import CatalogueVerdict
 from app.utils.text import normalize_text
 
 logger = logging.getLogger(__name__)
 Outcome = Literal["completed", "superseded", "stopped", "blocked"]
 
 
+class PreparationResult(NamedTuple):
+    """Issue du travail et catalogue effectivement préparé, partagé avec ses appelants."""
+
+    status: Outcome
+    catalogue: CatalogueVerdict | None = None
+
+
 class PreparationRunner:
     """Un travail par alerte, deux travaux réseau au plus, un seul passage de reprise."""
 
     def __init__(self) -> None:
-        self.tasks: dict[uuid.UUID, asyncio.Task[Outcome]] = {}
+        self.tasks: dict[uuid.UUID, asyncio.Task[PreparationResult]] = {}
         self.slots = asyncio.Semaphore(2)
         self.pass_lock = asyncio.Lock()
         self.deferred_blocks: dict[uuid.UUID, tuple[str, PreparationErrorCode]] = {}
 
-    async def prepare(self, alert_id: uuid.UUID) -> bool:
+    async def prepare(
+        self, alert_id: uuid.UUID, *, catalogue_sink: list[CatalogueVerdict] | None = None,
+    ) -> bool:
         """Rejoint le travail courant ; une version dépassée provoque une lecture nouvelle."""
         while True:
             task = self.tasks.get(alert_id)
@@ -40,7 +50,7 @@ class PreparationRunner:
                 task = safe_create_task(self._run(alert_id), name=f"prepare_bd_{alert_id}")
                 self.tasks[alert_id] = task
 
-                def release(done: asyncio.Task[Outcome]) -> None:
+                def release(done: asyncio.Task[PreparationResult]) -> None:
                     if self.tasks.get(alert_id) is done:
                         del self.tasks[alert_id]
 
@@ -65,7 +75,10 @@ class PreparationRunner:
                         and current.status == AlertStatus.PAUSED
                     ):
                         continue
-                return outcome == "completed" and current.status == AlertStatus.ACTIVE
+                completed = outcome.status == "completed" and current.status == AlertStatus.ACTIVE
+                if completed and catalogue_sink is not None and outcome.catalogue is not None:
+                    catalogue_sink.append(outcome.catalogue)
+                return completed
 
     async def recover(self) -> None:
         """Passe bornée et équitable ; les travaux en vol et blocked ne sont pas sélectionnés."""
@@ -109,8 +122,9 @@ class PreparationRunner:
             await session.commit()
         return "blocked"
 
-    async def _run(self, alert_id: uuid.UUID) -> Outcome:
+    async def _run(self, alert_id: uuid.UUID) -> PreparationResult:
         async with self.slots:
+            catalogues: list[CatalogueVerdict] = []
             token: str | None = None
             stage: PreparationErrorCode = "unexpected"
             try:
@@ -118,24 +132,28 @@ class PreparationRunner:
                     repo = AlertRepository(session)
                     alert = await repo.get_by_id(alert_id, refresh=True)
                     if alert is None or alert.deleted_at is not None:
-                        return "stopped"
+                        return PreparationResult("stopped")
                     request = preparation_request(alert)
                     if request is None:
-                        return "completed" if alert.status == AlertStatus.ACTIVE else "stopped"
+                        return PreparationResult(
+                            "completed" if alert.status == AlertStatus.ACTIVE else "stopped"
+                        )
                     if request.state != "pending" or not request.activation_requested:
-                        return "stopped"
+                        return PreparationResult("stopped")
                     token = request.token
                     deferred = self.deferred_blocks.get(alert_id)
                     if deferred is not None:
                         if deferred[0] == token:
-                            return "blocked"
+                            return PreparationResult("blocked")
                         del self.deferred_blocks[alert_id]
                     alert = await repo.lock_preparation(alert_id, token)
                     if alert is None:
-                        return "superseded"
+                        return PreparationResult("superseded")
                     request.last_attempt_at = datetime.now(UTC)
                     alert.preparation = request.stored()
                     name, isbn, author = alert.name, alert.isbn, request.author_hint
+                    initial_volumes = request.series_volumes
+                    reference_publisher = request.series_reference_publisher
                     await session.commit()
 
                 stage = "catalog_write"
@@ -144,7 +162,7 @@ class PreparationRunner:
                         repo = AlertRepository(session)
                         current = await repo.lock_preparation(alert_id, token)
                         if current is None:
-                            return "superseded"
+                            return PreparationResult("superseded")
                         book_repo = BookRepository(session)
                         book = await book_repo.get_by_isbn13(isbn)
                         if book is None:
@@ -171,23 +189,26 @@ class PreparationRunner:
                         series=True,
                         wait_for_prices=True,
                         expected_preparation_token=token,
+                        catalogue_sink=catalogues,
+                        initial_volumes=initial_volumes or None,
+                        reference_publisher=reference_publisher,
                     )
                     if not applied:
-                        return "superseded"
+                        return PreparationResult("superseded")
 
                 stage = "activation_write"
                 async with AsyncSessionLocal() as session:
                     repo = AlertRepository(session)
                     current = await repo.lock_preparation(alert_id, token)
                     if current is None:
-                        return "superseded"
+                        return PreparationResult("superseded")
                     # Relecture des caches dans cette session, pas des objets du collecteur.
                     await BookRepository(session).get_all_books_for_alert(alert_id)
                     current.decision_version += 1
                     current.status = AlertStatus.ACTIVE
                     current.preparation = None
                     await session.commit()
-                return "completed"
+                return PreparationResult("completed", catalogues[-1] if catalogues else None)
             except asyncio.CancelledError:
                 # L'interruption reste pending, reprenable au prochain passage/démarrage.
                 raise
@@ -197,7 +218,7 @@ class PreparationRunner:
                     try:
                         outcome = await self._block(alert_id, token, code)
                         if outcome == "superseded":
-                            return outcome
+                            return PreparationResult(outcome)
                     except Exception:
                         self.deferred_blocks[alert_id] = (token, code)
                         logger.error(
@@ -211,15 +232,17 @@ class PreparationRunner:
                     extra={"alert_id": str(alert_id), "error_code": code},
                     exc_info=True,
                 )
-                return "blocked"
+                return PreparationResult("blocked")
 
 
 preparation_runner = PreparationRunner()
 
 
-async def prepare_bd_alert(alert_id: uuid.UUID) -> bool:
+async def prepare_bd_alert(
+    alert_id: uuid.UUID, *, catalogue_sink: list[CatalogueVerdict] | None = None,
+) -> bool:
     """Entrée commune à la création, à la relance explicite et au scheduler."""
-    return await preparation_runner.prepare(alert_id)
+    return await preparation_runner.prepare(alert_id, catalogue_sink=catalogue_sink)
 
 
 async def recover_bd_preparations() -> None:

@@ -47,7 +47,11 @@ from app.services.alert_service import (
     parse_comma_separated_list,
     parse_price_to_cents,
 )
-from app.use_cases.book_search import BookSearchUseCase, metadata_from_result
+from app.use_cases.book_search import (
+    BookSearchUseCase,
+    creation_bibliographic_identity,
+    metadata_from_result,
+)
 from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger("radar.alerts_create_confirm")
@@ -167,6 +171,7 @@ async def select_alert_creation_edition(
         await callback.answer("Édition non confirmée.", show_alert=True)
         return
     updates: dict[str, object] = {
+        **creation_bibliographic_identity(confirmed),
         "isbn": isbn13, "is_series": False, "isbn_note": None,
         "language": meta.language, "book_context": book_context_from(meta).model_dump(),
         "author": meta.author, "publisher": meta.publisher,

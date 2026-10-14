@@ -110,7 +110,7 @@ def patched(
     if isbn_bnf is None:
         isbn_bnf = bnf
 
-    async def prepare(_alert_id):
+    async def prepare(_alert_id, **_options):
         """Frontière durable doublée pour l'écran ; les tests DB jouent le vrai cas d'usage."""
         from app.core.constants import AlertStatus
         from app.use_cases.ingest_listing import link_books_from_bnf

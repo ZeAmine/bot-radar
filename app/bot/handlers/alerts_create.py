@@ -29,8 +29,10 @@ from app.bot.handlers.alerts_helpers import (
     creation_volume_issue,
     extract_inline_price_and_clean_query,
     keyword_note,
+    populate_creation_prices,
     process_bd_query_lookup,
     process_tech_or_clothes_query,
+    refresh_creation_series,
     render_existing_alert_response,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
@@ -59,10 +61,7 @@ from app.services.alert_service import (
     AlertServiceError,
     parse_price_to_cents,
 )
-from app.services.market_price_service import (
-    cote_absence_line,
-    format_cote_lines,
-)
+from app.services.market_price_service import MarketPriceService
 from app.use_cases.prepare_bd_alert import prepare_bd_alert
 from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text, strip_html_tags
@@ -99,6 +98,26 @@ def _merge_keywords(*groups: list[str] | None) -> list[str]:
                 continue
             merged.append(value)
     return merged
+
+
+def _variants_for_category(
+    values: list[str] | None,
+    name: str,
+    includes: list[str] | None,
+) -> list[str]:
+    """Variantes retenues par le nettoyeur, jugées sur l'intention de recherche entière.
+
+    Les références sont le nom **et** les mots-clés inclus : une variante peut être
+    l'écriture d'une inclusion qualifiée (« blacksad integral » pour « blacksad
+    intégrale »), ou un alias de marque (« geforce rtx 4070 » pour « NVIDIA RTX 4070 »),
+    sans avoir le titre seul comme orthographe exacte.
+
+    La catégorie ne filtre rien ici. Le mécanisme de variante n'est pas propre aux
+    livres : le parcours d'ingestion le tient pour acquis sur une alerte tech, et c'est
+    ce parcours qui le prouve de bout en bout. Le garde d'identité, lui, s'applique
+    partout — c'est lui qui écarte le produit voisin.
+    """
+    return sanitize_variants(values, name, references=includes or ())
 
 
 async def _finalize_loading_message(
@@ -178,8 +197,8 @@ def relaunch_keyword_search(
 ) -> None:
     """Relance la recherche de mots-clés après un changement d'identité.
 
-    Le même chemin que le départ de `/add` : la tâche part en arrière-plan, le récap est
-    publié tout de suite sans les mots-clés, puis complété sur place. Les variantes et
+    Le même chemin que le départ de `/add` : la tâche part en arrière-plan et c'est elle
+    qui publie le récap, avec le verdict du moteur ou l'échec nommé. Les variantes et
     exclusions de l'ouvrage précédent ne survivent pas à son remplacement.
     """
     book_context = (
@@ -211,9 +230,11 @@ async def _search_keywords_in_background(
 ) -> None:
     """Cherche les variantes et exclusions hors du chemin de l'utilisateur.
 
-    Le jalon « ouvrage trouvé » est déjà parti : l'utilisateur n'attend rien. Quand la
-    réponse arrive — ou quand elle ne vient pas — le récap est publié, avec ou sans
-    les mots-clés trouvés, et en disant lequel des deux cas s'est produit.
+    Le jalon « ouvrage trouvé » est déjà parti, mais le récap n'existe pas encore : c'est
+    cette tâche qui le publie, quand la réponse arrive — ou quand elle ne vient pas, avec
+    l'échec nommé. L'utilisateur attend donc le moteur, et c'est **assumé** : l'alerte
+    naît avec ses mots-clés plutôt qu'amputée, et un échec laisse le bouton de relance
+    sous la carte au lieu de faire passer un silence pour un avis rendu.
     """
     outcome = await keyword_variants_module.generate_variants_and_exclusions(
         name,
@@ -226,13 +247,20 @@ async def _search_keywords_in_background(
         return
 
     # La recherche n'est « définitive » que si le moteur a répondu. Sinon le bouton
-    # « ✨ Variantes & Exclusions IA » reste sous la carte, et un seul appui
+    # « Variantes & Exclusions IA » reste sous la carte, et un seul appui
     # relance : un échec ne doit pas se payer d'un détour par « Modifier ».
     finalized = outcome.answered
 
+    # Les variantes du brouillon sont **remplacées** ici, alors que les exclusions sont
+    # fusionnées — asymétrie assumée : le récap n'est publié que par cette tâche, donc
+    # l'utilisateur n'a pas pu saisir de variante entre-temps, et le brouillon est vide ou
+    # vient d'être remis à zéro par un changement d'ouvrage. Les deux gestes convergeraient
+    # dès que l'écran deviendrait éditable avant le retour du moteur.
     updated = {
         **snapshot,
-        "variants": sanitize_variants(outcome.variants, name),
+        "variants": _variants_for_category(
+            outcome.variants, name, snapshot.get("include_keywords")
+        ),
         "exclude_keywords": sanitize_exclusions(
             _merge_keywords(snapshot.get("exclude_keywords"), outcome.exclusions), name
         ),
@@ -376,6 +404,9 @@ async def start_add_alert(
                     work.model_dump() for work in parsed.work_choices
                 ],
             }
+            if parsed.bibliographic_identity:
+                state_data.update(parsed.bibliographic_identity)
+            await populate_creation_prices(state_data, _get_book_repo(db_session))
             await state.update_data(data=state_data)
             await state.set_state(AlertCreationState.confirm_creation)
 
@@ -672,8 +703,10 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     finalized = outcome.answered
     updated_draft = {
         **data,
-        "variants": sanitize_variants(
-            _merge_keywords(data.get("variants"), outcome.variants), name
+        "variants": _variants_for_category(
+            _merge_keywords(data.get("variants"), outcome.variants),
+            name,
+            data.get("include_keywords"),
         ),
         "exclude_keywords": sanitize_exclusions(
             _merge_keywords(data.get("exclude_keywords"), outcome.exclusions), name
@@ -746,7 +779,7 @@ async def _save_alert(
     # Dernier point de passage avant la base : une liste brute du moteur ne peut pas
     # être stockée, même si un chemin amont a laissé passer une énumération.
     excludes = sanitize_exclusions(data.get("exclude_keywords", []), name)
-    variants = sanitize_variants(data.get("variants", []), name)
+    variants = _variants_for_category(data.get("variants", []), name, includes)
     max_price = data.get("max_item_price_cents")
     conditions = data.get("selected_conditions") or (
         list(DEFAULT_BD_CONDITIONS)
@@ -848,10 +881,32 @@ async def _save_alert(
                 vinted_search_url=vinted_url,
             )
 
+        if data.get("is_series"):
+            for volume in data.get("series_volumes") or []:
+                if not volume.get("confirmed") or not volume.get("isbn13"):
+                    continue
+                identified = await book_repo.get_by_isbn13(volume["isbn13"])
+                if identified is None:
+                    identified = await book_repo.create(
+                        title=volume["title"], normalized_title=normalize_text(volume["title"]),
+                        isbn13=volume["isbn13"], author=volume.get("author"),
+                        publisher=volume.get("publisher"), language=volume.get("language") or "und",
+                        publication_year=volume.get("publication_year"),
+                        format_book=volume.get("format_detail"),
+                    )
+                identified.title = volume["title"]
+                identified.normalized_title = normalize_text(volume["title"])
+                await book_repo.link_alert_to_book(alert.id, identified.id, MatchConfidence.HIGH)
+
         # La surveillance ne devient active qu'après la préparation du catalogue
         # et des cotes. L'ingestion reste ensuite une simple lecture du cache.
         alert.status = AlertStatus.PAUSED
-        alert.preparation = PreparationRequest(author_hint=author).stored()
+        alert.preparation = PreparationRequest(
+            author_hint=author,
+            series_reference_publisher=data.get("series_reference_publisher"),
+            series_volumes=[{k: v for k, v in row.items() if k != "price_lines"}
+                            for row in data.get("series_volumes") or []],
+        ).stored()
         from app.services.book_market_pricing import recalculate_invalidated_series
         await recalculate_invalidated_series(db_session)
         await creation_attempt.commit_and_close(db_session)
@@ -861,7 +916,12 @@ async def _save_alert(
             except Exception:
                 logger.warning("Message de préparation indisponible", exc_info=True)
 
-        prepared = await prepare_bd_alert(alert.id)
+        from app.services.book_metadata_service import CatalogueVerdict
+
+        prepared_catalogues: list[CatalogueVerdict] = []
+        prepared = await prepare_bd_alert(
+            alert.id, **({"catalogue_sink": prepared_catalogues} if data.get("is_series") else {}),
+        )
         current = await alert_repo.get_by_id(alert.id, refresh=True)
         if current is None:
             return  # Suppression pendant la préparation : aucun rattachement/écran ancien.
@@ -892,18 +952,19 @@ async def _save_alert(
             selected_conditions=alert.accepted_conditions,
         )
         extra_lines: list[str] = []
-        for priced_book in books:
-            if len(books) > 1:
-                extra_lines.append(f"📚 <b>{html.escape(priced_book.title)}</b>")
-            lines = format_cote_lines(priced_book)
-            if not lines:
-                absence = cote_absence_line(priced_book)
-                lines = [
-                    absence
-                    if absence and "en cours" not in absence
-                    else "<i>⚠️ Cote indisponible</i>"
-                ]
-            extra_lines.extend(lines)
+        if stored_draft.get("is_series"):
+            refresh_creation_series(
+                stored_draft, books,
+                prepared_catalogues[-1] if prepared_catalogues else None,
+            )
+            await populate_creation_prices(stored_draft, book_repo)
+        else:
+            for priced_book in books:
+                summary = MarketPriceService.get_comparison_summary(
+                    None, priced_book, for_creation=True,
+                )
+                if summary:
+                    extra_lines.extend(summary.split("\n"))
         resp_text = creation_card(
             stored_draft,
             header=ALERT_CREATED_TITLE,

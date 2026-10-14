@@ -382,7 +382,7 @@ def _bnf_stub(resolution: BookResolution | None) -> MagicMock:
 
     service = MagicMock()
 
-    async def _search_by_title(title: str, _author_hint: str | None = None):
+    async def _search_by_title(title: str, _author_hint: str | None = None, **_options):
         return result_from_report(
             BibliographicReport(kind="title", resolution=resolution), query_title=title
         )

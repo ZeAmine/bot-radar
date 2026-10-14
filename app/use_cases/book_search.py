@@ -47,6 +47,7 @@ du matching et du chemin synchrone avant Telegram.
 """
 
 from dataclasses import dataclass, replace
+from typing import Any
 
 from app.domain.enums import BookSearchStatus, ProviderQueryStatus
 from app.services.book_metadata_service import (
@@ -58,6 +59,7 @@ from app.services.book_metadata_service import (
     BookResolution,
     IsbnVerdict,
     ProviderAttempt,
+    SeriesVolume,
     ambiguity_note,
     consulted_authorities,
     failed_authorities,
@@ -146,6 +148,10 @@ class BookSearchResult:
     attempts: tuple[ProviderAttempt, ...] = ()
     confirmed: BookWorkChoice | None = None
     is_series: bool = False
+    series_volumes: tuple[SeriesVolume, ...] = ()
+    series_truncated: bool = False
+    series_total: int | None = None
+    series_inconsistent: bool = False
 
     def __post_init__(self) -> None:
         if (self.reference is None) == (self.status == BookSearchStatus.FOUND):
@@ -218,6 +224,7 @@ def result_from_resolution(
             note=ambiguity_note(resolution),
         )
     best = resolution.best
+    series = resolution.series_signal(query_title) if query_title else None
     if not best.isbn13:
         return BookSearchResult(
             status=BookSearchStatus.PARTIAL,
@@ -225,17 +232,13 @@ def result_from_resolution(
             consulted=None,
             provenance=best.source,
             note="Ouvrage nommé sans édition confirmée : la notice ne porte aucun ISBN.",
+            is_series=bool(series and series.is_series),
         )
     sources = _sources_by_isbn(resolution)
     by_isbn = _metas_by_isbn(resolution)
     editions = tuple(
         _edition_choice(by_isbn[edition.isbn13], sources.get(edition.isbn13))
         for edition in resolution.editions()
-    )
-    series = (
-        resolution.series_signal(query_title)
-        if query_title
-        else None
     )
     return BookSearchResult(
         status=BookSearchStatus.FOUND,
@@ -462,6 +465,50 @@ def metadata_from_result(result: BookSearchResult) -> BookMetadata | None:
     )
 
 
+
+
+def series_bibliographic_identity(volumes: tuple[SeriesVolume, ...]) -> dict[str, Any]:
+    """Champs communs des éditions confirmées sélectionnées, sans supposer ceux qui manquent."""
+    def common(field: str) -> Any:
+        values = {getattr(v.notice, field) for v in volumes if v.isbn13}
+        return next(iter(values)) if len(values) == 1 else None
+    sources = list(dict.fromkeys(v.notice.source for v in volumes if v.isbn13 and v.notice.source))
+    return {
+        "author": common("author"), "publisher": common("publisher"),
+        "language": common("language"), "format_detail": common("format_detail"),
+        "publication_year": None,
+        "source": sources[0] if len(sources) == 1 else None,
+        "identification_sources": sources,
+    }
+
+
+def creation_bibliographic_identity(result: BookSearchResult) -> dict[str, Any]:
+    """Identité confirmée du brouillon, commune aux voies manuelle et naturelle."""
+    def common(field: str) -> Any:
+        values = {getattr(v.notice, field) for v in result.series_volumes if v.isbn13}
+        return next(iter(values)) if len(values) == 1 else None
+    confirmed = result.confirmed
+    reference = result.reference
+    return {
+        "author": confirmed.author if confirmed else None,
+        "publisher": common("publisher") if result.is_series else (
+            confirmed.publisher if confirmed else None),
+        "language": common("language") if result.is_series else (
+            reference.language if reference else None),
+        "publication_year": None if result.is_series else (
+            confirmed.publication_year if confirmed else None),
+        "format_detail": common("format_detail") if result.is_series else (
+            reference.format_detail if reference else None),
+        "source": result.provenance,
+        **(series_bibliographic_identity(result.series_volumes) if result.series_volumes else {}),
+        "series_volumes": [v.stored() for v in result.series_volumes],
+        "series_reference_publisher": result.confirmed.publisher if result.confirmed else None,
+        "series_truncated": result.series_truncated,
+        "series_total": result.series_total,
+        "series_inconsistent": result.series_inconsistent,
+    }
+
+
 class BookSearchUseCase:
     """Orchestration de recherche partagée (futurs endpoints et Telegram).
 
@@ -474,11 +521,25 @@ class BookSearchUseCase:
         self._service = service or BookMetadataService()
 
     async def search_by_title(
-        self, title: str, author_hint: str | None = None
+        self, title: str, author_hint: str | None = None, *,
+        include_series_catalogue: bool = False,
     ) -> BookSearchResult:
         """Recherche par titre (+ indice d'auteur), adaptée au contrat."""
         report = await self._service.resolve_for_alert_report(title, author_hint)
-        return result_from_report(report, query_title=title)
+        result = result_from_report(report, query_title=title)
+        if result.is_series and include_series_catalogue:
+            catalogue = await self._service.lookup_series_notices(
+                title,
+                author_hint=author_hint or (result.confirmed.author if result.confirmed else None),
+                for_creation=True,
+                reference_publisher=result.confirmed.publisher if result.confirmed else None,
+            )
+            result = replace(
+                result, series_volumes=catalogue.volumes, series_truncated=catalogue.truncated,
+                series_total=catalogue.declared_volume_count,
+                series_inconsistent=catalogue.inconsistent_counts,
+            )
+        return result
 
     async def search_by_isbn(
         self, isbn: str, expected_title: str | None = None
