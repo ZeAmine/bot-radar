@@ -323,6 +323,11 @@ class ListingRepository:
         association absente ou d'un autre utilisateur : l'annonce n'est rendue
         que si un match la relie à une alerte dont l'utilisateur Telegram est
         celui qui agit.
+
+        Les alertes **actives et en pause** comptent : une pause suspend les
+        notifications, pas la propriété de l'annonce — l'utilisateur qui clique
+        sur un ancien message doit pouvoir finaliser l'achat qu'il visait. Seules
+        les alertes supprimées sont écartées.
         """
         stmt = (
             select(Listing)
@@ -332,6 +337,7 @@ class ListingRepository:
             .where(
                 Listing.id == listing_id,
                 User.telegram_user_id == telegram_user_id,
+                Alert.status != AlertStatus.DELETED,
             )
             .limit(1)
             .execution_options(populate_existing=True)

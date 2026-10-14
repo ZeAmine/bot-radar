@@ -352,7 +352,7 @@ Les paramètres applicatifs sont déclarés et typés dans [`app/core/config.py`
 | `VINTED_POLLER_ENABLED` | `true` / `false` | Non | Active la boucle de détection Vinted dans le conteneur applicatif. |
 | `VINTED_POLL_INTERVAL_SECONDS` | Entier (défaut `12`) | Non | Cadence de scrutation standard ; sert aussi de plafond aux cadences accélérées (pointe, proxy). |
 | `VINTED_PROXY_URL` | URL HTTP/SOCKS5 | Non | Proxy résidentiel optionnel pour accélérer la scrutation à 8s. |
-| `VINTED_CHECKOUT_PREPARATION_ENABLED` | `true` / `false` (défaut `false`) | Non | Affiche et autorise le bouton `[ Acheter ]` : préparation du panier Vinted à la demande, avec la session de compte injectée. Le paiement reste manuel. Voir [`docs/vinted-checkout.md`](docs/vinted-checkout.md). |
+| `VINTED_CHECKOUT_PREPARATION_ENABLED` | `true` / `false` (défaut `false`) | Non | Affiche et autorise le bouton `[ Acheter ]` : préparation du panier Vinted à la demande, avec la session de compte injectée. Le paiement reste manuel, et le chemin serveur peut être bloqué par DataDome. Voir [`docs/vinted-checkout.md`](docs/vinted-checkout.md). |
 | `VINTED_CHECKOUT_TIMEOUT_SECONDS` | Durée en secondes (défaut `12.0`) | Non | Délai d'attente borné des appels de préparation de checkout. |
 | `VINTED_CHECKOUT_LINK_TTL_SECONDS` | Entier (défaut `600`) | Non | Durée pendant laquelle un panier préparé est réutilisé tel quel sans nouvel appel. |
 | `NIGHT_MODE_ENABLED` | `true` / `false` | Non | Suspension nocturne pour préserver la réputation IP (défaut : `true`). |

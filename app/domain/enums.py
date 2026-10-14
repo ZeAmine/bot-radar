@@ -100,6 +100,7 @@ class VintedCheckoutStatus(StrEnum):
     READY = "ready"
     ALREADY_READY = "already_ready"
     BUSY = "busy"
+    PAUSED = "paused"
     DISABLED = "disabled"
     NOT_CONFIGURED = "not_configured"
     NOT_ASSOCIATED = "not_associated"

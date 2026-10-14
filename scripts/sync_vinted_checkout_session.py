@@ -77,22 +77,42 @@ def parse_cookie_input(raw: str) -> dict[str, str]:
 
 
 def validate_session(cookies: dict[str, str]) -> tuple[bool, str]:
-    """Confirme que la session est bien celle d'un compte connecté."""
+    """Confirme que la session est bien celle d'un compte connecté.
+
+    Un `200` **ne suffit pas** : la passerelle Vinted rend un corps JSON porteur
+    d'un `code` (`0` = succès, autre = refus, ex. `106` « Accès refusé » /
+    `user_login_required`). Le verdict se lit donc sur le corps, comme le fait
+    le client web ; le statut HTTP ne sert qu'à distinguer une panne réseau.
+    """
     try:
         with httpx.Client(timeout=15.0, follow_redirects=True) as client:
             response = client.get(VALIDATION_URL, headers=web_request_headers(cookies))
     except httpx.HTTPError as exc:
         return False, f"Vinted injoignable ({type(exc).__name__})."
-    if response.status_code == 200:
-        return True, "session reconnue par Vinted."
-    code = ""
+
+    body_code: int | None = None
+    message_code = ""
     try:
         data = response.json()
-        if isinstance(data, dict) and isinstance(data.get("message_code"), str):
-            code = f" (message_code={data['message_code']})"
+        if isinstance(data, dict):
+            if isinstance(data.get("code"), int):
+                body_code = data["code"]
+            if isinstance(data.get("message_code"), str):
+                message_code = data["message_code"]
     except ValueError:
-        pass
-    return False, f"Vinted refuse la session (HTTP {response.status_code}){code}."
+        message_code = "corps_illisible"
+
+    if response.status_code != 200:
+        code = f" code={body_code}" if body_code is not None else ""
+        msg = f" message_code={message_code}" if message_code else ""
+        return False, f"Vinted refuse la session (HTTP {response.status_code}{code}{msg})."
+
+    if body_code is None or body_code != 0:
+        code = f" code={body_code}" if body_code is not None else " code=absent"
+        msg = f" message_code={message_code}" if message_code else ""
+        return False, f"Vinted rend un succès sans identité confirmée ({code}{msg})."
+
+    return True, "session reconnue par Vinted (code=0)."
 
 
 def push_session_to_radar(api_url: str, internal_token: str, cookies: dict[str, str]) -> bool:
@@ -161,6 +181,14 @@ def main() -> None:
                 "Fichier de cookies introuvable : %s (voir docs/vinted-checkout.md).", path
             )
             sys.exit(2)
+        mode = path.stat().st_mode & 0o777
+        if mode & 0o077:
+            logger.warning(
+                "Le fichier de cookies %s est lisible au-delà de son propriétaire "
+                "(mode %o) : resserre-le avec `chmod 600`.",
+                path,
+                mode,
+            )
         raw = path.read_text(encoding="utf-8")
 
     cookies = parse_cookie_input(raw)

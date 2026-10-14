@@ -33,6 +33,7 @@ from app.db.repositories.listing_repo import ListingRepository
 from app.domain.enums import VintedCheckoutStatus
 from app.providers.vinted_checkout import (
     SITE_URL,
+    CheckoutBackoff,
     VintedCheckoutError,
     VintedCheckoutProvider,
     build_checkout_url_for,
@@ -143,9 +144,11 @@ class PrepareVintedCheckoutUseCase:
         self,
         db: AsyncSession,
         provider: VintedCheckoutProvider | None = None,
+        backoff: CheckoutBackoff | None = None,
     ) -> None:
         self.db = db
         self.provider = provider or VintedCheckoutProvider()
+        self.backoff = backoff or CheckoutBackoff()
 
     async def execute(
         self,
@@ -153,8 +156,18 @@ class PrepareVintedCheckoutUseCase:
         telegram_user_id: int,
         listing_id: uuid.UUID,
     ) -> CheckoutPreparation:
+        # Les prérequis les moins chers d'abord : rien ne touche la base tant que
+        # la fonctionnalité est coupée, la session absente ou la préparation
+        # suspendue. Chaque refus évite une requête SQL inutile sur le clic.
         if not settings.VINTED_CHECKOUT_PREPARATION_ENABLED:
             return CheckoutPreparation(VintedCheckoutStatus.DISABLED)
+
+        cookies = await resolve_checkout_cookies()
+        if not cookies or not session_is_authenticated(cookies):
+            return CheckoutPreparation(VintedCheckoutStatus.NOT_CONFIGURED)
+
+        if await self.backoff.remaining_seconds() > 0:
+            return CheckoutPreparation(VintedCheckoutStatus.PAUSED)
 
         listing = await ListingRepository(self.db).get_listing_matched_to_user(
             listing_id, telegram_user_id
@@ -175,15 +188,17 @@ class PrepareVintedCheckoutUseCase:
         if cached is not None:
             return outcome(VintedCheckoutStatus.ALREADY_READY, cached)
 
-        cookies = await resolve_checkout_cookies()
-        if not cookies or not session_is_authenticated(cookies):
-            return outcome(VintedCheckoutStatus.NOT_CONFIGURED)
-
         seller_id = _seller_id_from_listing(listing)
         if not seller_id:
             try:
-                seller_id = await self.provider.fetch_item_seller_id(listing.external_id) or ""
+                seller_id = (
+                    await self.provider.fetch_item_seller_id(
+                        listing.external_id, cookies=cookies
+                    )
+                    or ""
+                )
             except VintedCheckoutError as exc:
+                await self.backoff.request_failure(exc.status)
                 return outcome(exc.status)
         if not seller_id:
             return outcome(VintedCheckoutStatus.SELLER_UNKNOWN)
@@ -208,6 +223,7 @@ class PrepareVintedCheckoutUseCase:
         except VintedCheckoutError as exc:
             if exc.status not in _UNCERTAIN_STATUSES:
                 await _release_lock(lock_key)
+            await self.backoff.request_failure(exc.status)
             logger.info(
                 "Préparation de checkout Vinted non aboutie (statut=%s).",
                 exc.status.value,
@@ -218,5 +234,6 @@ class PrepareVintedCheckoutUseCase:
             logger.exception("Préparation de checkout Vinted en échec inattendue.")
             return outcome(VintedCheckoutStatus.UNEXPECTED)
 
+        await self.backoff.clear_failures()
         await _write_cached_link(_link_key(telegram_user_id, listing_id), checkout_url)
         return outcome(VintedCheckoutStatus.READY, checkout_url)

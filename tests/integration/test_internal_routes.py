@@ -275,6 +275,47 @@ async def test_vinted_checkout_session_requires_the_internal_token(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_checkout_redis")
+async def test_no_http_route_triggers_a_checkout_preparation(
+    internal_client: AsyncClient,
+):
+    """La préparation n'est adressable par aucune route : elle n'existe qu'au clic.
+
+    Un GET (aperçu de lien, robot, scan) ne doit jamais créer de transaction : la
+    seule route HTTP liée au checkout ne fait que **stocker** une session déjà
+    validée. On le vérifie en fermant la frontière Vinted : si une route appelait
+    la préparation, elle échouerait ici.
+    """
+    import app.providers.vinted_checkout as provider_module
+
+    async def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("aucune route HTTP ne doit préparer un checkout")
+
+    original = provider_module.VintedCheckoutProvider.create_buyer_inquiry
+    provider_module.VintedCheckoutProvider.create_buyer_inquiry = forbidden  # type: ignore[method-assign]
+    try:
+        # Les routes existantes répondent, sans jamais atteindre la préparation.
+        current = "/api/v1/internal/vinted/checkout-session"
+        assert (await internal_client.get(current)).status_code == 200
+        assert (
+            await internal_client.post(
+                current,
+                json={"access_token_web": "jeton"},
+            )
+        ).status_code == 200
+        # Aucune route de préparation n'existe, sous aucun verbe.
+        for path in (
+            "/api/v1/internal/vinted/checkout",
+            "/api/v1/internal/vinted/checkout/prepare",
+            "/api/v1/internal/vinted/checkout/buy",
+        ):
+            assert (await internal_client.get(path)).status_code == 404
+            assert (await internal_client.post(path, json={})).status_code == 404
+    finally:
+        provider_module.VintedCheckoutProvider.create_buyer_inquiry = original  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
 async def test_get_internal_alerts(internal_client: AsyncClient):
     """Vérifie que la route interne retourne la liste des alertes."""
     res = await internal_client.get("/api/v1/internal/alerts")

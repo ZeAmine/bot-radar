@@ -8,8 +8,10 @@ web Vinted, pas des formes supposées.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 import pytest
@@ -285,3 +287,117 @@ async def test_redis_failure_never_raises_on_read(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("app.providers.vinted_checkout.get_redis_client", lambda: BrokenRedis())
     assert await resolve_checkout_cookies() == {}
+
+
+class _BackoffRedis:
+    """Redis minimal pour éprouver le coupe-circuit, avec TTL réel."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.expiry: dict[str, float] = {}
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> bool:
+        self.store[key] = value
+        if ex is not None:
+            self.expiry[key] = time.monotonic() + ex
+        return True
+
+    async def delete(self, key: str) -> int:
+        self.store.pop(key, None)
+        self.expiry.pop(key, None)
+        return 1
+
+    async def incr(self, key: str) -> int:
+        value = int(self.store.get(key, "0")) + 1
+        self.store[key] = str(value)
+        return value
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        if key not in self.store:
+            return False
+        self.expiry[key] = time.monotonic() + seconds
+        return True
+
+    async def ttl(self, key: str) -> int:
+        if key not in self.store:
+            return -2
+        deadline = self.expiry.get(key)
+        return -1 if deadline is None else max(0, int(deadline - time.monotonic()))
+
+
+async def test_backoff_pauses_on_block_and_expires_without_reconnect_loop() -> None:
+    """Un blocage suspend ; l'expiration rend la main au prochain clic explicite."""
+    from app.providers.vinted_checkout import (
+        BLOCK_PAUSE_SECONDS,
+        CheckoutBackoff,
+    )
+
+    redis = _BackoffRedis()
+    backoff = CheckoutBackoff(redis_getter=lambda: redis)
+
+    assert await backoff.remaining_seconds() == 0
+    await backoff.request_failure(VintedCheckoutStatus.BLOCKED)
+    remaining = await backoff.remaining_seconds()
+    assert 0 < remaining <= BLOCK_PAUSE_SECONDS
+
+    # La suspension expire d'elle-même ; aucun mécanisme ne relance rien.
+    redis.expiry["radar:vinted_checkout:pause"] = time.monotonic() - 1
+    assert await backoff.remaining_seconds() == 0
+
+
+async def test_backoff_soft_failures_need_a_threshold() -> None:
+    from app.providers.vinted_checkout import (
+        FAILURE_THRESHOLD,
+        CheckoutBackoff,
+    )
+
+    redis = _BackoffRedis()
+    backoff = CheckoutBackoff(redis_getter=lambda: redis)
+
+    for _ in range(FAILURE_THRESHOLD - 1):
+        await backoff.request_failure(VintedCheckoutStatus.TIMEOUT)
+    assert await backoff.remaining_seconds() == 0
+
+    await backoff.request_failure(VintedCheckoutStatus.TIMEOUT)
+    assert await backoff.remaining_seconds() > 0
+    # Le compteur est remis à zéro en posant la pause : la série ne s'accumule pas.
+    assert redis.store.get("radar:vinted_checkout:failures") is None
+
+
+async def test_a_timeout_does_not_suspend_by_itself() -> None:
+    """Un échec incertain isolé ne suspend pas : la pause n'est pas un réflexe."""
+    from app.providers.vinted_checkout import CheckoutBackoff
+
+    redis = _BackoffRedis()
+    backoff = CheckoutBackoff(redis_getter=lambda: redis)
+    await backoff.request_failure(VintedCheckoutStatus.TIMEOUT)
+    assert await backoff.remaining_seconds() == 0
+    assert await backoff.clear_failures() is None
+    assert redis.store.get("radar:vinted_checkout:failures") is None
+
+
+async def test_backoff_survives_a_dead_redis() -> None:
+    """Redis muet ne bloque jamais l'utilisateur : le coupe-circuit est un garde-fou."""
+    from app.providers.vinted_checkout import CheckoutBackoff
+
+    class BrokenRedis:
+        async def set(self, *_args: Any, **_kwargs: Any) -> bool:
+            raise ConnectionError("down")
+
+        async def incr(self, _key: str) -> int:
+            raise ConnectionError("down")
+
+        async def expire(self, *_args: Any) -> bool:
+            raise ConnectionError("down")
+
+        async def delete(self, _key: str) -> int:
+            raise ConnectionError("down")
+
+        async def ttl(self, _key: str) -> int:
+            raise ConnectionError("down")
+
+    backoff = CheckoutBackoff(redis_getter=lambda: BrokenRedis())
+    await backoff.request_failure(VintedCheckoutStatus.BLOCKED)
+    await backoff.request_failure(VintedCheckoutStatus.TIMEOUT)
+    await backoff.clear_failures()
+    assert await backoff.remaining_seconds() == 0

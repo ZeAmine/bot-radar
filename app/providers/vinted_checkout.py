@@ -65,6 +65,27 @@ CHECKOUT_SESSION_TTL_SECONDS = 18 * 3600
 # session injectée n'est qu'un visiteur anonyme.
 AUTH_COOKIE_NAMES = ("access_token_web", "_vinted_fr_session")
 
+# Coupe-circuit : clés Redis, durées et seuils. Les pauses « dures » couvrent le
+# temps qu'un défi ou une limitation se relâche d'eux-mêmes ; aucune relance
+# automatique n'a lieu, seule une expiration suivie d'un clic explicite.
+PAUSE_KEY = "radar:vinted_checkout:pause"
+FAILURE_COUNTER_KEY = "radar:vinted_checkout:failures"
+BLOCKING_STATUSES = frozenset(
+    {VintedCheckoutStatus.BLOCKED, VintedCheckoutStatus.RATE_LIMITED}
+)
+SOFT_FAILURE_STATUSES = frozenset(
+    {
+        VintedCheckoutStatus.AUTH_REQUIRED,
+        VintedCheckoutStatus.TIMEOUT,
+        VintedCheckoutStatus.NETWORK,
+        VintedCheckoutStatus.UNEXPECTED,
+    }
+)
+BLOCK_PAUSE_SECONDS = 30 * 60
+FAILURE_PAUSE_SECONDS = 15 * 60
+FAILURE_WINDOW_SECONDS = 15 * 60
+FAILURE_THRESHOLD = 3
+
 # Jeton CSRF statique du client web (constante du bundle Vinted).
 CSRF_TOKEN = "75f6c9fa-dc8e-4e52-a000-e09dd4084b3e"
 
@@ -159,6 +180,93 @@ async def clear_checkout_cookies() -> None:
 def session_is_authenticated(cookies: Mapping[str, str]) -> bool:
     """Vrai si la session porte un cookie d'identité de compte."""
     return any(bool(cookies.get(name)) for name in AUTH_COOKIE_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# Coupe-circuit : ne pas insister après un blocage, une limitation ou une panne
+# ---------------------------------------------------------------------------
+
+
+class CheckoutBackoff:
+    """Suspend temporairement les préparations après un signal défavorable.
+
+    Le but est de **ne pas insister** : un défi anti-robot, une limitation ou une
+    rafale d'échecs ne se contournent pas en recliquant, et réessayer à chaque
+    clic abîme la réputation de l'IP et du compte. La suspension est portée par
+    Redis, donc partagée si plusieurs clics arrivent en parallèle.
+
+    Elle est **temporaire et sans boucle** : rien ne se relance tout seul. Après
+    expiration, c'est un clic **explicite** de l'utilisateur qui retente. Redis
+    muet ne bloque jamais l'utilisateur : la protection est un garde-fou, pas une
+    dépendance dure.
+
+    Le client Redis est résolu **à chaque appel** (`redis_getter` facultatif),
+    jamais capturé à la construction : un client figé à l'import rendrait la
+    classe insensible à toute injection (tests compris) et garderait une
+    connexion ouverte au-delà de son pool.
+    """
+
+    def __init__(self, redis_getter: Any = None) -> None:
+        self._redis_getter = redis_getter or get_redis_client
+
+    def _client(self) -> Any:
+        return self._redis_getter()
+
+    async def request_failure(self, status: VintedCheckoutStatus) -> None:
+        """Compte un échec : pose une suspension si le signal est défavorable.
+
+        Un défi anti-robot ou une limitation (429) suspendent **immédiatement**,
+        pour la durée la plus longue. Une rafale d'échecs « doux » (session,
+        réseau, délai, réponse inattendue) suspend après `FAILURE_THRESHOLD`.
+        """
+        if status in BLOCKING_STATUSES:
+            await self._pause(BLOCK_PAUSE_SECONDS)
+            logger.warning(
+                "Préparations de checkout suspendues %d s après %s.",
+                BLOCK_PAUSE_SECONDS,
+                status.value,
+            )
+            return
+        if status not in SOFT_FAILURE_STATUSES:
+            return
+        try:
+            client = self._client()
+            count = await client.incr(FAILURE_COUNTER_KEY)
+            if count == 1:
+                await client.expire(FAILURE_COUNTER_KEY, FAILURE_WINDOW_SECONDS)
+            if count >= FAILURE_THRESHOLD:
+                await self._pause(FAILURE_PAUSE_SECONDS)
+                await client.delete(FAILURE_COUNTER_KEY)
+                logger.warning(
+                    "Préparations de checkout suspendues %d s après %d échecs.",
+                    FAILURE_PAUSE_SECONDS,
+                    count,
+                )
+        except Exception as exc:  # pragma: no cover - Redis indisponible
+            logger.debug("Compteur d'échecs de checkout indisponible : %s", exc)
+
+    async def clear_failures(self) -> None:
+        """Une réussite efface la série d'échecs doux (jamais la suspension posée)."""
+        try:
+            await self._client().delete(FAILURE_COUNTER_KEY)
+        except Exception as exc:  # pragma: no cover - Redis indisponible
+            logger.debug("Compteur d'échecs de checkout non effacé : %s", exc)
+
+    async def remaining_seconds(self) -> int:
+        """Secondes restantes de suspension, 0 si aucune ou si Redis est muet."""
+        try:
+            ttl = await self._client().ttl(PAUSE_KEY)
+        except Exception as exc:
+            logger.debug("Suspension de checkout illisible : %s", exc)
+            return 0
+        return ttl if isinstance(ttl, int) and ttl > 0 else 0
+
+    async def _pause(self, seconds: int) -> None:
+        try:
+            await self._client().set(PAUSE_KEY, "1", ex=seconds)
+        except Exception as exc:  # pragma: no cover - Redis indisponible
+            logger.debug("Suspension de checkout non posée : %s", exc)
+
 
 
 # ---------------------------------------------------------------------------
@@ -437,17 +545,29 @@ class VintedCheckoutProvider:
         purchase_id = checkout.get("id") if isinstance(checkout, dict) else None
         return _non_empty_id(purchase_id, what="de checkout")
 
-    async def fetch_item_seller_id(self, item_id: str) -> str | None:
+    async def fetch_item_seller_id(
+        self,
+        item_id: str,
+        cookies: Mapping[str, str] | None = None,
+    ) -> str | None:
         """Lit l'identifiant vendeur sur la page publique de l'annonce.
 
         Repli pour les annonces ingérées avant que la charge d'ingestion ne
         transporte l'identifiant. Une page servie sans `seller_id` rend `None` :
         l'appelant décide, ce module n'invente rien.
+
+        La page est demandée **avec la session de compte** quand elle est
+        fournie : une page personnalisée porte l'identifiant vendeur de façon
+        plus fiable qu'une page anonyme, et son `seller_id` est celui du vendeur
+        de l'article, pas d'une recommandation.
         """
         url = f"{SITE_URL}/items/{item_id}"
+        headers = (
+            web_request_headers(cookies) if cookies else dict(VINTED_WEB_HEADERS)
+        )
         try:
             response = await self._client().get(
-                url, headers=dict(VINTED_WEB_HEADERS), timeout=self.timeout_seconds
+                url, headers=headers, timeout=self.timeout_seconds
             )
         except httpx.TimeoutException as exc:
             raise VintedCheckoutError(

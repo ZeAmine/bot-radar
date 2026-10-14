@@ -137,7 +137,7 @@ BotRadar est un bot Telegram **privé** d’aide à la décision pour l’occasi
 
 - Il **détecte** des annonces Vinted et envoie une alerte Telegram instantanée.
 - Il **compare** les BD au marché d’occasion livrée (cache Postgres, refresh planifié).
-- Il **n’achète pas** : aucun paiement, aucune confirmation d’achat, aucun choix de point relais n’est automatisé. Sur clic explicite (bouton « Acheter »), et seulement si la fonctionnalité est configurée, il peut **préparer le panier Vinted** d’une annonce avec une session de compte injectée (ADR-047) ; le parcours de paiement reste entièrement manuel, dans la session de l’utilisateur.
+- Il **n’achète pas** : aucun paiement, aucune confirmation d’achat, aucun choix de point relais n’est automatisé. Sur clic explicite (bouton « Acheter »), et seulement si la fonctionnalité est configurée, il peut **préparer le panier Vinted** d’une annonce avec une session de compte injectée (ADR-047) ; le parcours de paiement reste entièrement manuel, dans la session de l’utilisateur. Cette préparation utilise un client automatisé, ce que les conditions de Vinted interdisent : **aucun risque nul n’est promis**, et l’exposition est bornée par un coupe-circuit (suspension après blocage, limitation ou échecs répétés, reprise sur clic explicite).
 - Il **n’automatise aucune autre action marketplace** : pas de message libre au vendeur, pas de mise en panier en dehors du clic ci-dessus, pas d’enchaînement automatique d’enchères ou d’offres. La préparation du checkout ouvre le fil de transaction que le bouton « Acheter » de Vinted ouvre lui-même.
 
 Utilisateur unique / allowlist (`TELEGRAM_ALLOWED_USER_IDS`). Domaine public : `https://radar.aminezegmou.fr`.

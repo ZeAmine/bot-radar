@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 router = Router(name="vinted_checkout_router")
 
 BUY_CALLBACK_PREFIX = "buy:"
-
 PENDING_ANSWER = "Préparation du checkout Vinted…"
 
 READY_TITLE = "🛒 <b>Checkout Vinted prêt</b>"
@@ -50,6 +49,10 @@ REFUSAL_TEXTS: dict[VintedCheckoutStatus, str] = {
     VintedCheckoutStatus.BUSY: (
         "⏳ Une préparation est déjà en cours pour cette annonce. "
         "Laisse-la se terminer, puis réessaie."
+    ),
+    VintedCheckoutStatus.PAUSED: (
+        "⏸ Les préparations de checkout sont suspendues après un blocage ou des "
+        "échecs répétés. Termine manuellement depuis l'annonce, puis réessaie plus tard."
     ),
     VintedCheckoutStatus.DISABLED: (
         "La préparation du checkout est désactivée dans la configuration du bot."
@@ -142,7 +145,14 @@ def format_preparation_result(
 
 @router.callback_query(F.data.startswith(BUY_CALLBACK_PREFIX))
 async def handle_buy_listing(callback: CallbackQuery, db_session: Any) -> None:
-    """Prépare le checkout de l'annonce cliquée, uniquement à la demande."""
+    """Prépare le checkout de l'annonce cliquée, uniquement à la demande.
+
+    Deux taps rapprochés peuvent arriver dans deux updates distincts traités en
+    parallèle : la déduplication est portée par le verrou Redis du cas d'usage
+    (acquisition atomique `SET NX`), seule garantie partagée — aiogram n'offre
+    pas de verrou de session générique, et un verrou en mémoire ne couvrirait
+    pas le second clic traité sur une autre coroutine.
+    """
     listing_id: uuid.UUID | None = await parse_listing_id(callback)
     if listing_id is None:
         return
