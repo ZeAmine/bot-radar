@@ -293,3 +293,100 @@ async def test_cycle_sleep_subtracts_the_cycle_work(monkeypatch: pytest.MonkeyPa
     sleep_time, work_seconds = calls[0]
     assert sleep_time == 15.0
     assert work_seconds >= 0.05
+
+
+@pytest.mark.asyncio
+async def test_scraped_item_carries_the_seller_id_to_the_ingest_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L'identifiant vendeur rejoint la charge d'ingestion, pour le clic « Acheter ».
+
+    `to_ingest_payload` vit dans un fichier sensible qui n'est pas étendu : le
+    champ est joint par le poller depuis la donnée déjà parsée, sans réseau.
+    """
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.tasks import vinted_poller
+
+    captured: dict[str, object] = {}
+
+    class FakeUseCase:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+        async def execute(self, payload: object, raw_payload: dict[str, object]) -> object:
+            captured["payload"] = payload
+            captured["raw_payload"] = raw_payload
+            return SimpleNamespace(matches=[], needs_retry=False)
+
+    @asynccontextmanager
+    async def fake_semaphore():
+        yield
+
+    monkeypatch.setattr("app.use_cases.ingest_listing.ProcessListingUseCase", FakeUseCase)
+    monkeypatch.setattr(vinted_poller, "_get_ingest_semaphore", lambda: fake_semaphore())
+    monkeypatch.setattr(vinted_poller, "AsyncSessionLocal", lambda: AsyncMock())
+
+    item = ScrapedVintedItem(
+        external_id="v_seller",
+        title="Tintin",
+        condition="Très bon état",
+        item_price_cents=1000,
+        url="https://vinted.fr/items/v_seller",
+        photo_url=None,
+        seller_external_id="72804845",
+    )
+
+    result = await vinted_poller._ingest_scraped_item(item, "tech")
+
+    assert result.notified_count == 0
+    payload = captured["payload"]
+    raw_payload = captured["raw_payload"]
+    assert payload.seller_external_id == "72804845"
+    assert isinstance(raw_payload, dict)
+    assert raw_payload["seller_external_id"] == "72804845"
+
+
+@pytest.mark.asyncio
+async def test_scraped_item_without_seller_id_leaves_the_payload_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un vendeur absent n'ajoute pas de clé : la charge reste celle d'avant."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.tasks import vinted_poller
+
+    captured: dict[str, object] = {}
+
+    class FakeUseCase:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+        async def execute(self, _payload: object, raw_payload: dict[str, object]) -> object:
+            captured["raw_payload"] = raw_payload
+            return SimpleNamespace(matches=[], needs_retry=False)
+
+    @asynccontextmanager
+    async def fake_semaphore():
+        yield
+
+    monkeypatch.setattr("app.use_cases.ingest_listing.ProcessListingUseCase", FakeUseCase)
+    monkeypatch.setattr(vinted_poller, "_get_ingest_semaphore", lambda: fake_semaphore())
+    monkeypatch.setattr(vinted_poller, "AsyncSessionLocal", lambda: AsyncMock())
+
+    item = ScrapedVintedItem(
+        external_id="v_no_seller",
+        title="Tintin",
+        condition="Très bon état",
+        item_price_cents=1000,
+        url="https://vinted.fr/items/v_no_seller",
+        photo_url=None,
+    )
+
+    await vinted_poller._ingest_scraped_item(item, "tech")
+
+    raw_payload = captured["raw_payload"]
+    assert isinstance(raw_payload, dict)
+    assert "seller_external_id" not in raw_payload

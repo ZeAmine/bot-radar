@@ -311,3 +311,36 @@ class ListingRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalars().first()
+
+    async def get_listing_matched_to_user(
+        self,
+        listing_id: uuid.UUID,
+        telegram_user_id: int,
+    ) -> Listing | None:
+        """Annonce réellement associée à une alerte de cet utilisateur.
+
+        Une action d'alerte ne doit jamais pouvoir agir sur l'annonce d'une
+        association absente ou d'un autre utilisateur : l'annonce n'est rendue
+        que si un match la relie à une alerte dont l'utilisateur Telegram est
+        celui qui agit.
+
+        Les alertes **actives et en pause** comptent : une pause suspend les
+        notifications, pas la propriété de l'annonce — l'utilisateur qui clique
+        sur un ancien message doit pouvoir finaliser l'achat qu'il visait. Seules
+        les alertes supprimées sont écartées.
+        """
+        stmt = (
+            select(Listing)
+            .join(ListingMatch, Listing.id == ListingMatch.listing_id)
+            .join(Alert, Alert.id == ListingMatch.alert_id)
+            .join(User, User.id == Alert.user_id)
+            .where(
+                Listing.id == listing_id,
+                User.telegram_user_id == telegram_user_id,
+                Alert.status != AlertStatus.DELETED,
+            )
+            .limit(1)
+            .execution_options(populate_existing=True)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()

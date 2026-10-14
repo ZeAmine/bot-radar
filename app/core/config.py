@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     VINTED_POLLER_ENABLED: bool = True
     VINTED_PROXY_URL: str | None = None
 
+    # Bouton « Acheter » : préparation du checkout Vinted à la demande (ADR-047),
+    # désactivée par défaut. Levée, elle affiche un callback qui tente la
+    # transaction puis le panier avec une session de compte injectée ; coupée,
+    # l'action n'apparaît pas sur les alertes. Le paiement reste manuel.
+    VINTED_CHECKOUT_PREPARATION_ENABLED: bool = False
+    VINTED_CHECKOUT_TIMEOUT_SECONDS: float = 12.0
+    # Durée pendant laquelle un lien de checkout préparé est réutilisé tel quel :
+    # recliquer sur « Acheter » pour la même annonce ne recrée pas d'opération.
+    VINTED_CHECKOUT_LINK_TTL_SECONDS: int = 600
+
     # Mode Nuit (Heures Creuses pour préserver l'IP et éviter les bans Cloudflare)
     NIGHT_MODE_ENABLED: bool = True
     NIGHT_MODE_START_HOUR: int = 0  # 00:00 (minuit) heure de Paris

@@ -12,9 +12,10 @@ from aiogram.types import (
     Message,
 )
 
+from app.bot.handlers.alerts_helpers import parse_listing_id
 from app.bot.keyboards.listings import (
     get_dislike_confirmation_keyboard,
-    get_listing_alert_keyboard,
+    listing_alert_keyboard,
 )
 from app.bot.labels import BTN_CLOSE
 from app.db.models.book import Book
@@ -54,20 +55,6 @@ async def _market_error_response(
     logger.error("%s: %s", context, exc, exc_info=True)
     with contextlib.suppress(Exception):
         await callback.answer(message, show_alert=True)
-
-
-async def _parse_listing_id(callback: CallbackQuery) -> uuid.UUID | None:
-    """UUID d'annonce porté par le callback, ou ``None`` — l'erreur est annoncée.
-
-    Quatre boutons lisent ce même identifiant ; la réponse « Annonce
-    invalide » est la même partout, elle vit donc ici.
-    """
-    raw_id = callback.data.split(":", 1)[1] if callback.data else ""
-    try:
-        return uuid.UUID(raw_id)
-    except (IndexError, ValueError):
-        await callback.answer("Annonce invalide.", show_alert=True)
-        return None
 
 
 async def _listing_or_answer(
@@ -191,7 +178,7 @@ async def _show_market_details(
 
         if await select_panel_tome(callback, None):
             return
-    listing_id = await _parse_listing_id(callback)
+    listing_id = await parse_listing_id(callback)
     if listing_id is None:
         return
 
@@ -340,7 +327,7 @@ async def handle_negotiate(
     db_session: Any,
 ) -> None:
     """Génère une offre de négociation courtoise prête à copier en 1 tap."""
-    listing_id = await _parse_listing_id(callback)
+    listing_id = await parse_listing_id(callback)
     if listing_id is None:
         return
 
@@ -381,7 +368,7 @@ async def handle_dislike(
     db_session: Any,
 ) -> None:
     """Affiche le clavier de confirmation avant d'enregistrer le faux positif."""
-    listing_id = await _parse_listing_id(callback)
+    listing_id = await parse_listing_id(callback)
     if listing_id is None:
         return
 
@@ -407,7 +394,7 @@ async def handle_confirm_dislike(
     db_session: Any,
 ) -> None:
     """Enregistre définitivement le faux positif après confirmation."""
-    listing_id = await _parse_listing_id(callback)
+    listing_id = await parse_listing_id(callback)
     if listing_id is None:
         return
 
@@ -428,8 +415,8 @@ async def handle_confirm_dislike(
     await db_session.commit()
 
     if isinstance(callback.message, Message):
-        await callback.message.edit_reply_markup(reply_markup=get_listing_alert_keyboard(
-            listing.id, listing.url, listing.category_slug, is_disliked=True,
+        await callback.message.edit_reply_markup(reply_markup=listing_alert_keyboard(
+            listing, is_disliked=True,
         ))
     await callback.answer("Faux positif enregistré.")
 
@@ -446,16 +433,14 @@ async def handle_confirm_dislike(
 @router.callback_query(F.data.startswith("cancel_dislike:"))
 async def handle_cancel_dislike(callback: CallbackQuery, db_session: Any) -> None:
     """Restaure le clavier de l'annonce sans toucher à son contenu."""
-    listing_id = await _parse_listing_id(callback)
+    listing_id = await parse_listing_id(callback)
     if listing_id is None:
         return
     listing = await _listing_or_answer(callback, db_session, listing_id)
     if listing is None:
         return
     if isinstance(callback.message, Message):
-        await callback.message.edit_reply_markup(reply_markup=get_listing_alert_keyboard(
-            listing.id, listing.url, listing.category_slug,
-        ))
+        await callback.message.edit_reply_markup(reply_markup=listing_alert_keyboard(listing))
     await callback.answer("Annulé.")
 
 

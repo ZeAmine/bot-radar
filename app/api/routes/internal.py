@@ -11,6 +11,12 @@ from app.core.redis import get_redis_client
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.providers.chasse_aux_livres import REDIS_SESSION_KEY, resolve_session_token
+from app.providers.vinted_checkout import (
+    clear_checkout_cookies,
+    resolve_checkout_cookies,
+    session_is_authenticated,
+    store_checkout_cookies,
+)
 from app.services.vinted_scraper import vinted_session_manager
 
 router = APIRouter(
@@ -148,4 +154,55 @@ async def get_vinted_session_status() -> dict[str, Any]:
         "has_access_token": bool(cookies.get("access_token_web")),
         "last_refreshed": vinted_session_manager.last_refreshed,
     }
+
+
+@router.get("/vinted/checkout-session")
+async def get_vinted_checkout_session_status() -> dict[str, Any]:
+    """État de la session de compte utilisée par le bouton « Acheter ».
+
+    Une session séparée de celle du scraper : ses cookies de compte ne sont
+    jamais mélangés avec les cookies anonymes du poller. Aucune valeur n'est
+    exposée — des noms et des faits suffisent à dire « installée » ou « à
+    réinjecter ».
+    """
+    cookies = await resolve_checkout_cookies()
+    return {
+        "configured": bool(cookies),
+        "authenticated": session_is_authenticated(cookies),
+        "cookie_names": sorted(cookies),
+        "has_access_token": bool(cookies.get("access_token_web")),
+    }
+
+
+@router.post("/vinted/checkout-session")
+async def update_vinted_checkout_session(payload: dict[str, str]) -> dict[str, Any]:
+    """Injecte la session de compte capturée dans le navigateur.
+
+    Le script local `scripts/sync_vinted_checkout_session.py` valide la session
+    contre Vinted avant d'appeler cette route ; celle-ci ne fait que la
+    persister, et ne renvoie jamais une valeur de cookie.
+    """
+    cookies = {
+        str(key): str(value).strip()
+        for key, value in payload.items()
+        if str(value).strip()
+    }
+    if not cookies:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Le dictionnaire de cookies ne peut pas être vide.",
+        )
+    stored = await store_checkout_cookies(cookies)
+    return {
+        "status": "success",
+        "cookies_stored": stored,
+        "cookie_names": sorted(cookies),
+    }
+
+
+@router.delete("/vinted/checkout-session")
+async def clear_vinted_checkout_session() -> dict[str, Any]:
+    """Purge la session de compte, sur geste explicite uniquement."""
+    await clear_checkout_cookies()
+    return {"status": "success"}
 
