@@ -137,19 +137,20 @@ BotRadar est un bot Telegram **privé** d’aide à la décision pour l’occasi
 
 - Il **détecte** des annonces Vinted et envoie une alerte Telegram instantanée.
 - Il **compare** les BD au marché d’occasion livrée (cache Postgres, refresh planifié).
-- Il **n’achète pas**, n’ajoute pas au panier, n’envoie pas de message vendeur, n’automatise aucune action marketplace.
+- Il **n’achète pas** : aucun paiement, aucune confirmation d’achat, aucun choix de point relais n’est automatisé. Sur clic explicite (bouton « Acheter »), et seulement si la fonctionnalité est configurée, il peut **préparer le panier Vinted** d’une annonce avec une session de compte injectée (ADR-047) ; le parcours de paiement reste entièrement manuel, dans la session de l’utilisateur.
+- Il **n’automatise aucune autre action marketplace** : pas de message libre au vendeur, pas de mise en panier en dehors du clic ci-dessus, pas d’enchaînement automatique d’enchères ou d’offres. La préparation du checkout ouvre le fil de transaction que le bouton « Acheter » de Vinted ouvre lui-même.
 
 Utilisateur unique / allowlist (`TELEGRAM_ALLOWED_USER_IDS`). Domaine public : `https://radar.aminezegmou.fr`.
 
 ### Clavier d'alerte Telegram
 Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomique :
-- Ligne 1 : `[ Voir l’annonce ]` (Lien direct Vinted).
+- Ligne 1 : `[ Acheter ]` (callback de préparation du checkout, si `VINTED_CHECKOUT_PREPARATION_ENABLED`) et `[ Voir l’annonce ]` (Lien direct Vinted, accès secondaire et repli).
 - Ligne 2 (BD uniquement) : `[ Prix du marché ]` (Détails et cotes complètes de la série).
 - Ligne 3 (Ligne 2 si hors-BD) : `[ Faux positif ]` (Enregistrement du dislike pour l'auto-tuning) et `[ Négocier ]` (Coach IA).
-Les boutons « Prix du marché », « Faux positif » et « Négocier » restent sans émoji,
+Les boutons « Acheter », « Prix du marché », « Faux positif » et « Négocier » restent sans émoji,
 y compris après confirmation ou annulation d’un faux positif. Le lien « Voir l’annonce » et la confirmation « Signalé » sont aussi sans émoji. Les autres émojis sont conservés.
 
-*(Note : Les anciens boutons factices « Payer » et « Dressing / Lot » ont été définitivement supprimés — voir ADR-007 et ADR-011).*
+*(Note : Les anciens boutons factices « Payer » (lien de checkout) et « Dressing / Lot » restent supprimés — voir ADR-007 et ADR-011. Le bouton « Acheter » réintroduit par ADR-047 est un callback de préparation, jamais un lien de paiement).*
 
 ## Stack
 
@@ -208,6 +209,8 @@ Interdit sur ce chemin :
 
 Conséquence assumée : une BD sans cote utilisable part avec une ligne décrivant l’état à l’envoi, jamais sans bloc de remplacement. La liaison bibliographique et la cotation de fond servent aux annonces suivantes ; elles ne promettent pas de réécrire le message envoyé.
 
+Le bouton « Acheter » (ADR-047) ne prépare rien à l’envoi : la préparation du panier Vinted n’existe qu’au clic, avec une session de compte injectée, et n’ajoute **aucun** appel réseau avant `send_listing_alert`. En cas d’échec, `[ Voir l’annonce ]` reste le repli.
+
 ### Préparation d'une alerte BD (ADR-043)
 
 La création prépare le catalogue et attend les cotes de l'ouvrage ou des tomes
@@ -231,6 +234,7 @@ ou aux données réellement manquantes.
 - Tokens d’accès : `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `INGEST_API_TOKEN`, `INTERNAL_API_TOKEN`.
 - En `APP_ENV=production`, `validate_production_secrets()` refuse de démarrer si l’un est vide. Ne pas contourner. Écart ouvert C11 : le lifespan configure actuellement les commandes Telegram avant cette validation ; les producteurs démarrent après. La validation avant toute configuration Telegram reste un correctif distinct, non réalisé par l’alignement documentaire.
 - Ne jamais logger un secret. `JSONFormatter` masque Bearer, `token=` / `secret=` / `password=` / `key=`, préfixe `sk-`, et les extras dont la clé est sensible. Garder ce comportement.
+- Les cookies de la session de compte du bouton « Acheter » sont un secret d’exploitation : stockés dans une clé Redis dédiée, jamais journalisés, jamais renvoyés par une route (noms et faits seulement), et jamais mélangés avec la session anonyme du scraper. La capture se fait hors dépôt (`docs/vinted-checkout.md`) ; aucun mot de passe n’est demandé ni stocké.
 - `compare_digest` : un secret attendu **vide** et un secret reçu vide matchent. D’où le garde-fou de démarrage.
 - `.env` local et distant : ne pas les committer, ne pas les coller dans le chat, ne pas les rsyncer depuis un exemple qui écraserait la prod.
 - Settings applicatifs : [`.env.example`](.env.example) / [`app/core/config.py`](app/core/config.py). `TELEGRAM_WEBHOOK_URL` et `EBAY_ENVIRONMENT` ne sont **pas** lus. eBay : `EBAY_ENV`. Compose consomme séparément `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` ; les scripts ont leurs propres options et variables. `DOMAIN_NAME` n’a pas de consommateur dans ce dépôt.

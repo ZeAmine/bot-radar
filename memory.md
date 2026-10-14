@@ -37,8 +37,8 @@ BotRadar est un assistant privé d'aide à la décision conçu pour maximiser la
 - Un copilote de négociation et d'évaluation de rentabilité (via IA post-alerte).
 
 ### Ce que BotRadar N'EST PAS (et ne sera jamais)
-- **Pas de bot d'achat automatique** : aucune automatisation de checkout sur Vinted.
-- **Pas de bot d'interaction marketplace** : pas de message automatique envoyé au vendeur, pas d'ajout au panier via API ou scripts non autorisés sur les serveurs Vinted.
+- **Pas de bot d'achat automatique** : aucun paiement, aucune confirmation d'achat, aucun choix de point relais automatisés. La préparation du panier Vinted existe depuis ADR-047, uniquement au clic et avec une session de compte injectée — c'est un accélérateur manuel, pas un achat autonome.
+- **Pas de bot d'interaction marketplace intrusive** : pas de message libre envoyé au vendeur, pas d'ajout au panier via API ou scripts non autorisés sur les serveurs Vinted, aucun enchaînement automatique d'enchères ou d'offres.
 - **Pas d'application multi-tenant ouverte au public** : mono-utilisateur avec allowlist stricte (`TELEGRAM_ALLOWED_USER_IDS`).
 
 ---
@@ -99,6 +99,7 @@ Les descriptions opérationnelles actuelles relèvent d’AGENTS.md et de Subjec
   - Vinted requiert une authentification dans l'application native ou le navigateur pour finaliser le panier ; un lien de checkout direct expirait fréquemment ou provoquait des erreurs 403.
   - L'utilisateur utilise systématiquement le bouton principal `[ 🔗 Annonce ]`, qui ouvre l'application Vinted avec ses sessions et moyens de paiement pré-enregistrés.
   - Allègement visuel du clavier Telegram (passage à 3 lignes pour les BD, 2 pour le reste).
+- **Amendement (2026-10-14, ADR-047)** : la restriction produit est révisée **ciblée** — le bouton `[ Acheter ]` peut désormais préparer, à la demande et uniquement au clic, le panier Vinted d'une annonce avec une session de compte injectée. Le constat technique d'ADR-007 reste vrai : un lien de checkout construit à l'avance **ne fonctionne pas** (le `purchase_id` doit être créé côté serveur, et DataDome protège cette création). Ce qui change, c'est que le bot peut tenter cette création au clic et rendre le lien correspondant ; le paiement, la confirmation et le point relais restent manuels. L'ancien bouton « Payer » (fragment `#radar_autobuy=1` vers le userscript supprimé) reste, lui, définitivement supprimé.
 
 ### ADR-008 : Auto-Tuning conversationnel & Purge des faux positifs
 - **Contexte** : Lorsqu'un utilisateur cliquait sur `[ 👎 Faux positif ]`, l'annonce était enregistrée comme `BotEvent` `listing_disliked`. Cependant, après avoir accepté les exclusions recommandées par l'IA via `/auto-tune`, les faux positifs continuaient d'apparaître dans la liste d'auto-tuning. De plus, l'utilisateur ne pouvait pas ajuster les mots-clés suggérés.
@@ -532,3 +533,22 @@ correspondant d'`AGENTS.md`. Ce qui suit n'est pas une copie de la constitution.
   12 œuvres retrouvées par titre contre 11 avant, gain sur *Le Voyage* de Baudoin ;
   11 ISBN exacts confirmés. Les trois nouveautés absentes restent non confirmées.
   Aucun fournisseur, cache, endpoint ni appel avant Telegram ajouté ; F04 séparé.
+
+### ADR-047 : Le bouton « Acheter » prépare un checkout à la demande, jamais un paiement
+
+- **Date** : 2026-10-14
+- **Contexte** : l'utilisateur révise explicitement la restriction produit d'ADR-007 : il autorise la **préparation** du parcours d'achat, uniquement à sa demande, en gardant la main sur le point relais et le paiement. La question posée était de savoir si un simple lien suffit, ou s'il faut une préparation authentifiée côté bot — sans inventer route ni deep link.
+- **Mécanisme établi** (lecture du bundle JS servi par `www.vinted.fr`, puis sondes GET/POST bornées, dont des refus anonymes sans effet possible) :
+  1. **Aucun lien simple n'ouvre le checkout** : la page `/checkout` exige un `purchase_id` créé côté serveur. Le bouton « Acheter » du site enchaîne `POST {site}/api/v2/conversations` (ou `api.vinted.fr/messaging/main/inquiries` selon le backend de messagerie du compte), puis `POST {site}/api/v2/purchases/checkout/build`, puis navigue vers `/checkout?purchase_id=…&order_id=…&order_type=transaction`.
+  2. **La session doit être authentifiée** : un visiteur anonyme reçoit `user_login_required` / `access denied`. Le résultat appartient au **compte**, pas à la session : l'utilisateur ouvre le lien depuis son propre appareil ; aucune session n'est transférée.
+  3. **DataDome protège le build** : la sonde serveur a reçu le défi `geo.captcha-delivery.com`. Aucun contournement ; un défi devient un message explicite et le repli.
+  4. **Effet de bord réel** : la préparation ouvre le fil de transaction acheteur↔vendeur que le bouton « Acheter » de Vinted ouvre lui-même — avant tout paiement.
+- **Décision** :
+  - Bouton `[ Acheter ]` sur les alertes, **callback** `buy:{listing_id}`, affiché seulement si `VINTED_CHECKOUT_PREPARATION_ENABLED` ; l'allowlist Telegram existante protège le déclenchement, et le cas d'usage vérifie que l'annonce est associée à une alerte de l'utilisateur qui agit (`ListingRepository.get_listing_matched_to_user`).
+  - Préparation **au clic uniquement** (`app/use_cases/prepare_vinted_checkout.py` → `app/providers/vinted_checkout.py`) : aucun appel réseau sur le chemin d'alerte (invariant n°1 intact).
+  - La session de compte vit dans une **clé Redis dédiée** (`radar:vinted_checkout_session`), séparée de la session anonyme du scraper que `VintedSessionManager` régénère ; capture navigateur hors dépôt, validation `GET /api/v2/users/current` **avant** injection (`scripts/sync_vinted_checkout_session.py` → `POST /api/v1/internal/vinted/checkout-session`, purge `DELETE`). Ni mot de passe ni valeur de cookie exposés.
+  - Verrou court anti-double-clic et cache du lien préparé (Redis) : un second clic ne recrée pas d'opération ; un échec incertain (délai, réseau) **ne relâche pas** le verrou — le résultat peut exister côté Vinted ; un échec définitif le relâche.
+  - Erreurs typées et messages compréhensibles (indisponible, session expirée, blocage anti-robot, limitation, délai, inattendu) ; en cas d'échec, `[ Voir l'annonce ]` reste fonctionnel ; aucune relance automatique.
+  - L'identifiant vendeur est transporté dès l'ingestion : `parse_vinted_catalog_json` lit `user.id`, le poller joint `seller_external_id` à la charge (sans étendre `vinted_scraper.py`), et le repli pour les annonces plus anciennes lit `seller_id` sur la page publique — au clic seulement.
+- **Raison** : la valeur d'une alerte est perdue si l'acheteur doit refaire à la main le parcours qu'un clic peut préparer ; mais laisser le bot payer serait un changement de nature du produit. La frontière est donc le paiement : le bot prépare, l'utilisateur choisit et paie.
+- **Conséquence assumée** : la préparation ouvre une conversation avec le vendeur (flux Vinted) ; DataDome peut bloquer et le repli est manuel ; la session expire (quelques heures à ~une journée) et se recapture ; « ne promets aucune garantie contre une restriction de compte » reste vrai. La validation réelle de bout en bout demande une session injectée et n'a pas été exécutée dans ce lot : les tests remplacent la frontière Vinted (transport simulé) et ne déclenchent aucun paiement. `docs/vinted-checkout.md` porte la procédure d'activation, d'usage et de désactivation.

@@ -43,6 +43,7 @@ Détecter les nouvelles annonces Vinted en temps réel et les injecter dans le p
 ### Invariants et contraintes
 - **API First avec repli HTML** : Le poller interroge le microservice interne `/svc-catalogue/items` avec les en-têtes web actuels (`Platform: web`, `X-Next-App: marketplace-web`), et bascule sur le scraping HTML si l'API interne fait défaut.
 - **Image de couverture** : La photo de couverture est extraite dès le catalogue et affichée directement dans l'alerte Telegram, sans requête Vinted supplémentaire.
+- **Identifiant vendeur transporté** : `parse_vinted_catalog_json` lit `user.id`, et le poller joint `seller_external_id` à la charge d'ingestion (sans étendre `vinted_scraper.py`) : la préparation du checkout au clic sur « Acheter » dispose de l'identifiant vendeur sans requête réseau ajoutée à l'ingestion (ADR-047). Pour une annonce plus ancienne qui ne le porte pas, il est relu sur la page publique **au clic seulement**.
 - **Frais acheteur** : Calcul automatique des frais de protection (`calculate_buyer_protection_cents` : 0.70 € + 5%) et frais de port forfaitaires (2.88 €).
 - `to_ingest_payload` génère une description synthétique pour le matching car la description vendeur détaillée n'est pas présente sur le flux catalogue.
 
@@ -123,11 +124,14 @@ Interface utilisateur conversationnelle pour piloter les alertes, recevoir les n
   - `market:{listing_id}` : Vue détaillée des offres du marché d'occasion.
   - `dislike:{listing_id}` : Signalement de faux positif avec confirmation.
   - `negotiate:{listing_id}` : Génération d'une proposition de message de négociation.
+- [`app/bot/handlers/vinted_checkout.py`](app/bot/handlers/vinted_checkout.py) : Bouton « Acheter » (`buy:{listing_id}`) — appelé uniquement au clic, il demande la préparation du checkout et répond soit `[ Poursuivre sur Vinted ]` + `[ Voir l’annonce ]`, soit un message d'échec qui conserve le repli d'annonce (ADR-047).
+- [`app/use_cases/prepare_vinted_checkout.py`](app/use_cases/prepare_vinted_checkout.py) : orchestration du clic : vérifie l'association annonce ↔ alerte de l'utilisateur, réutilise un lien préparé récent (Redis), verrou court anti-double-clic, appelle le provider, et libère le verrou seulement sur échec définitif (un délai dépassé reste incertain).
+- [`app/providers/vinted_checkout.py`](app/providers/vinted_checkout.py) : frontière HTTP du checkout (transaction puis `purchases/checkout/build`, session de compte en clé Redis dédiée), erreurs typées (indisponible, session, DataDome, limitation, délai, inattendu) et construction de l'URL `/checkout`. Aucun cookie ni lien n'est journalisé.
 - [`app/bot/keyboards/listings.py`](app/bot/keyboards/listings.py) : Clavier Telegram des annonces :
-  - Ligne 1 : `[ Voir l’annonce ]`
+  - Ligne 1 : `[ Acheter ]` (si `VINTED_CHECKOUT_PREPARATION_ENABLED`) `[ Voir l’annonce ]`
   - Ligne 2 : `[ Prix du marché ]` (uniquement si BD/Comics)
   - Ligne 3 (Ligne 2 si hors-BD) : `[ Faux positif ]` `[ Négocier ]`
-  *(Note : Les boutons factices « Payer » et « Dressing / Lot » ont été définitivement supprimés).*
+  *(Note : Les anciens boutons factices « Payer » et « Dressing / Lot » restent supprimés ; le bouton « Acheter » d'ADR-047 est un callback de préparation, jamais un lien de paiement.)*
 
 ---
 
@@ -252,6 +256,7 @@ Protéger la confidentialité du bot privé, l'intégrité des webhooks et le ma
 ### Invariants et contraintes
 - **Refus de démarrage en production** : Si `APP_ENV=production` et qu'un secret obligatoire (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `INGEST_API_TOKEN`, `INTERNAL_API_TOKEN`) est vide, `validate_production_secrets()` bloque le démarrage.
 - **Zéro fuite dans les logs** : Ne jamais afficher de token en clair.
+- **Session de checkout** : les cookies du bouton « Acheter » vivent dans une clé Redis dédiée (`radar:vinted_checkout_session`), injectée par un script local hors dépôt (`scripts/sync_vinted_checkout_session.py`) après validation auprès de Vinted. Les routes internes n'exposent que des noms et des faits, jamais une valeur ; la session anonyme du scraper reste séparée (ADR-047).
 
 ---
 
@@ -284,6 +289,7 @@ Fournir des utilitaires pour synchroniser la session Vinted et faciliter le test
 
 ### Fichiers clés
 - [`scripts/sync_vinted_session.py`](scripts/sync_vinted_session.py) : Script pour pousser manuellement des cookies de session Vinted valides dans Redis (`radar:vinted_session_cookies`).
+- [`scripts/sync_vinted_checkout_session.py`](scripts/sync_vinted_checkout_session.py) : capture (hors dépôt) et injection de la **session de compte** du bouton « Acheter ». La session est validée auprès de Vinted (`GET /api/v2/users/current`) **avant** l'injection via `POST /api/v1/internal/vinted/checkout-session` ; ni mot de passe ni valeur de cookie n'est jamais affiché. Procédure : [`docs/vinted-checkout.md`](docs/vinted-checkout.md) (ADR-047).
 - [`scripts/sync_chasse_session.py`](scripts/sync_chasse_session.py) : capture et injecte le jeton anti-bot Chasse-aux-livres. Le jeton n'est poussé qu'après validation par le provider lui-même ; injecté par `POST /api/v1/internal/chasse/session` (ADR-020). Ses sondes de validation sont multiples (`PROBE_CANDIDATES`) : une sonde retirée du site refuse un jeton pourtant valide, c'est-à-dire le silence que le script existe pour empêcher.
 - [`scripts/refresh_chasse_token.py`](scripts/refresh_chasse_token.py) : renouvelle le jeton seul, par **connexion au compte** (ADR-036) — `GET /login?protect=true` lit les champs anti-rejeu `_sourcePage`/`__fp`, `POST /login` soumet email / mot de passe / protect (aucun captcha), puis un membre connecté lit `data-duih` sur l'accueil ; délègue à `sync_chasse_session` pour la validation et l'injection (un seul chemin de validation). Identifiants depuis l'environnement ou `account.env` (`chmod 600`, hors dépôt), jamais journalisés ; `httpx` forcé en WARNING (son URL `/rest/jcd` porte le `duih`). Codes : 0 injecté, 1 jeton refusé ou injection échouée, 2 capture impossible.
 - [`scripts/refresh_chasse_cron.sh`](scripts/refresh_chasse_cron.sh) : le renouvellement autonome, en cron sur l'hôte (`0 2 * * *`). Il ne se connecte **que** si la dernière observation certifiée en base a plus de 24 h — l'âge est calculé par PostgreSQL, et toute réponse illisible vaut « vieux » : un doute déclenche la connexion, jamais le silence. Verrou `flock`, délai `timeout -k 30`, journal tournant à 1 Mo, clés lues dans `account.env` sans exécuter le fichier ; codes alignés sur le script de capture. C'est le voyant d'échec de l'alerte « Cotes de marché figées », pas un moyen de la taire (ADR-034, ADR-036).
