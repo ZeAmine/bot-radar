@@ -12,8 +12,9 @@ Ne pas réintroduire un Caddy local ni modifier les autres applications du gatew
 
 ## Préconditions et commande canonique
 
-Les contrôles complets et la revue requise dans [AGENTS](../../AGENTS.md) doivent
-être satisfaits. Relire [deploy.py](../../scripts/deploy.py),
+Les contrôles complets de code prévus dans [AGENTS](../../AGENTS.md) doivent
+être satisfaits. La confirmation de merge ne vaut pas autorisation de déploiement :
+cette dernière doit être explicite. Relire [deploy.py](../../scripts/deploy.py),
 [preflight_deploy.py](../../scripts/preflight_deploy.py) et la
 [procédure BD](../bd-preparation.md), notamment pour une reprise ou un retour.
 Exécuter soi-même les opérations autorisées, sans demander à l'utilisateur de

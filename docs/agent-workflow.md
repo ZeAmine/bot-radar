@@ -120,7 +120,8 @@ Les contrôles de Python et de ses enfants ne sont pas une sandbox système gén
 `make verify` contacte GitHub ; `make check-history` crée des worktrees et hérite
 de l'environnement. Aucun de ces noms ne vaut autorisation.
 
-Ruff ciblé puis tests concernés ; contrôles complets avant livraison selon AGENTS.
+Pour le code : Ruff ciblé puis tests concernés ; validation complète finale selon
+AGENTS. Pour la documentation, distinguer prose, instructions et procédures sensibles.
 Benchmarks sans autre vérification concurrente. Ne jamais changer une attente pour
 masquer un échec. Attribuer toute coroutine non attendue à un double après reproduction,
 pas après simple lecture ; voir [les limites C13](open-issues.md).
@@ -142,14 +143,20 @@ superviseur ou élargissement de CI ajouté pendant une réorganisation document
 
 ## Livraison Git lorsqu'elle est autorisée
 
-Branche depuis main, index explicite et relu. Chaque commit passe Ruff et pytest ;
-mypy est un contrôle de bout de branche. `make pr MESSAGE=… TITLE=… BRANCH=… STAGE=…`
+Branche depuis main, index explicite et relu. Les contrôles ciblés des commits
+intermédiaires et la validation finale suivent la
+[politique de vérification](../AGENTS.md#vérification-et-définition-de-terminé).
+`make pr MESSAGE=… TITLE=… BRANCH=… STAGE=…`
 crée commit, push et PR via `gh pr create` : ne pas l'exécuter sans ces permissions.
 Pour un texte multiligne, utiliser `MESSAGE_FILE`. La PR ne contient que cette tâche.
 
-Avant merge autorisé : CI `check` et `test-postgres` vertes, branche à jour et second
-`make lint && make test` local après push, juste avant merge. `make verify` exécute
-les vérifications locales puis attend la CI. Merge squash seulement si demandé.
+Avant merge : contrôles locaux requis satisfaits, CI `check` et `test-postgres`
+vertes sur la PR et branche à jour. Réutiliser les preuves locales inchangées selon
+AGENTS ; `make verify` attend seulement la CI, sans relancer lint ni tests.
+L'auto-revue, la confirmation unique liée au commit présenté et l'arrêt en cas
+d'approbation formelle GitHub manquante suivent la
+[convention de travail](../AGENTS.md#convention-de-travail). L'accord de merge
+n'atteste aucune revue humaine et n'autorise aucune opération sensible supplémentaire.
 La protection documentée exige `check`, `strict=true`, `enforce_admins` : ne jamais
 la lever pour livrer. Renommer ce job exige de mettre à jour ses contexts dans un
 mandat administratif distinct. Une lecture locale ne vérifie pas l'état GitHub actuel.
