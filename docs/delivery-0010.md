@@ -1,5 +1,7 @@
 # Livraison préparée : sauvegarde 0010 et maintenance Radar
 
+Statut : dossier historique de préparation et attestations datées, pas procédure courante. Périmètre : livraison 0010 ; les prérequis non exécutés restent tels que qualifiés ci-dessous. Utiliser [le déploiement actuel](operations/deployment.md) pour toute nouvelle opération autorisée.
+
 Cette procédure reste arrêtée avant le GO de phase B. Le complément ne modifie ni
 application, migration, lanceur sécurisé ni fixture partagée. Il n’active pas une
 sauvegarde indépendante planifiée. Les commandes de données réelles ci-dessous

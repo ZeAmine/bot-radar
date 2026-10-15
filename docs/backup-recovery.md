@@ -1,5 +1,7 @@
 # Sauvegarde et restauration : outillage synthétique
 
+Périmètre : contrat et procédure de l'outillage de sauvegarde/restauration ; les exercices datés restent historiques. Lire [pause-actions](pause-actions.md) pour le schéma courant et la quarantaine.
+
 Statut : vérifié sur données synthétiques uniquement. Aucune sauvegarde indépendante,
 planification, rétention distante ou restauration de production n'est activée.
 
@@ -65,8 +67,9 @@ La cible de l'exercice est un PostgreSQL 16 neuf, sans volume existant, publié 
 port 127.0.0.1 exact. Le label, le conteneur, les ports, le stockage, l'identifiant
 système SQL, la version, la base et l'utilisateur sont attestés. Une cible non vide,
 une identité discordante ou une version incompatible sont refusées avant pg_restore.
-L'outil prend exclusivement en charge `0012_annual_observations`. Il ne contourne
-pas `freeze_bd_preparations.py`, réservé à 0010. L'archive originale reste intacte.
+L'outil courant prend exclusivement en charge `0013_pause_actions` (`SCHEMA` dans
+`scripts/backup_recovery.py`). Les preuves historiques 0012 nécessitent leur ancien
+kit compatible. Il ne contourne pas `freeze_bd_preparations.py`, réservé à 0010. L'archive originale reste intacte.
 
 Après restauration et contrôle de toutes les empreintes :
 

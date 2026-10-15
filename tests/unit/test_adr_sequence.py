@@ -16,7 +16,17 @@ def validate_sequence(document: str) -> None:
 
 
 def test_project_adrs_are_unique_and_continuous():
-    validate_sequence(Path(__file__).resolve().parents[2].joinpath("memory.md").read_text())
+    directory = Path(__file__).resolve().parents[2] / "docs" / "decisions"
+    documents = [
+        path.read_text()
+        for path in sorted(directory.glob("*.md"))
+        if path.name != "README.md"
+    ]
+    assert documents, "Aucun recueil ADR"
+    assert all(re.search(r"^#{1,6}\s+ADR-\d+\s*:", doc, re.M) for doc in documents), (
+        "Recueil sans déclaration ADR"
+    )
+    validate_sequence("\n".join(documents))
 
 
 @pytest.mark.parametrize(

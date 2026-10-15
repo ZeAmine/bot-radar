@@ -1,5 +1,7 @@
 # Pause protégée et réconciliation
 
+Statut : contrat actuel et procédure de contrôle. Périmètre : autorisations de pause, réconciliation et compatibilité de récupération. Les commandes à ressources exigent un mandat distinct.
+
 Un bouton de pause porte une autorisation opaque persistée avant présentation :
 propriétaire, alerte, version attendue et intention immuable (`pause` ou
 `suspend_preparation`). L'émission ne prouve pas une demande utilisateur.

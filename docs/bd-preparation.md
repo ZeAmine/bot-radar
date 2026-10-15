@@ -1,5 +1,7 @@
 # Préparation durable des nouvelles alertes BD
 
+Statut : contrat actuel de préparation, procédure sensible de retour et preuves historiques datées ci-dessous. Périmètre : intentions durables BD ; lire aussi la [procédure de déploiement](operations/deployment.md) avant toute opération autorisée.
+
 ADR-043 reste la règle : une nouvelle BD est préparée avant surveillance. Une
 préparation terminée signifie que les tentatives catalogue/cote nécessaires sont
 revenues et que leurs écritures requises ont réussi. Elle ne signifie ni ISBN

@@ -1,5 +1,7 @@
 # Identification des livres récents — évaluation du 8 octobre 2026
 
+Statut : évaluation historique. Périmètre : couples et appels publics décrits sur la révision citée ; aucune collecte n'est rejouée par cette documentation.
+
 ## Périmètre et méthode
 
 Référence : `4eed61f7f124de764173050ce106ef52dbf08ace`. Branche de travail :

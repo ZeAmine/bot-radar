@@ -2,10 +2,12 @@
 
 ## Mandat et état
 
-Implémentation du plan approuvé, sans commit, push, merge ni déploiement. Branche
+Bilan de l’implémentation du 14 octobre, avant la livraison autorisée le 15 octobre.
+Les résultats ci-dessous sont attribués à cet arbre initial ; les preuves de livraison
+sont rapportées séparément. Branche
 `fix/alert-freshness-market`, worktree
 `/Users/aminezegmou/Projets/bot-radar-worktrees/alert-freshness-market`.
-Base et HEAD non modifié : `6292e2efcf754b2f88544c620fc6943fb7f3fc56` (référence locale).
+Base initiale : `6292e2efcf754b2f88544c620fc6943fb7f3fc56` (référence locale).
 Les modifications checkout du dossier principal ont été conservées à leur place.
 Migration additive `0014_alert_market_freshness`, à appliquer avec l'image cible.
 Les changements du chemin de notification, du scraper et de comparaison marché
@@ -121,6 +123,6 @@ persistante peut empêcher une réussite en 48 h : le code signale le dépasseme
 sans transformer la tentative en succès. Les preuves Grimr manquent encore ;
 aucune valeur 5,45 € n'est affichée comme certifiée sans elles.
 
-Restent externes : revue humaine, livraison autorisée du code, migration puis
+À la fin de cette vérification initiale restaient : revue humaine, livraison du code, migration puis
 vérification réelle du scheduler, des collectes et des notifications. Aucun de
 ces résultats locaux n'atteste un déploiement ni une réussite future des sources.

@@ -4,6 +4,8 @@
 
 # Validation transversale locale — 2026-10-12
 
+Statut : archive de preuves historiques, par révision et sélection. Périmètre : consolidation locale ; aucun résultat ne valide automatiquement un autre arbre. Le manifeste consommé par `scripts/verify_consolidation.py` conserve son chemin.
+
 Le bilan initial est conservé comme historique. Le résultat actualisé et la qualification des 79 échecs figurent dans « Réalignement autorisé des tests » ci-dessous : validation locale réussie, dans la portée synthétique précisée.
 
 Référence applicative testée : `bfabcca7dbf4f8f6af2de058b167a93dd80816b8`, sur main. Aucun fichier applicatif, migration, fixture partagée ou assertion métier modifié dans cette passe.
@@ -146,7 +148,8 @@ pas recalculés. Aucun autre scénario n’est supprimé ou désélectionné.
 
 Cette section décrit le retrait et son diagnostic ; les résultats historiques
 ci-dessous gardent leur date, leur révision et leur portée. La politique active
-reste uniquement dans [AGENTS.md](../AGENTS.md#pilotage-autonome-borné).
+est définie par [AGENTS.md](../AGENTS.md#autorité-et-permissions) et précisée dans
+[le workflow agents](agent-workflow.md).
 
 ### Retrait et contrôles conservés
 
