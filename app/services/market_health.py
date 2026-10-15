@@ -223,6 +223,14 @@ SILENT_PROVIDER_MIN_OBSERVATIONS = 3
 SILENT_NOTIFY_KEY = "radar:market:silent_provider:notified"
 SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
 
+# Le bilan d'une passe planifiée se dédoublonne par **occurrence**, pas par durée :
+# la clé porte l'identifiant du job et l'instant qu'il visait. Le TTL n'a donc qu'un
+# rôle d'hygiène — il borne la vie de clés dont plus personne n'a besoin —, et il est
+# volontairement court : quelques minutes couvrent une reprise ou un doublon
+# d'exécution, sans jamais approcher l'écart entre deux passes (douze heures).
+INCOMPLETE_NOTIFY_KEY_PREFIX = "radar:market:pass_report:"
+INCOMPLETE_NOTIFY_TTL_SECONDS = 15 * 60
+
 
 async def _claim_no_prices_notification_slot() -> bool:
     return await _claim_slot(NO_PRICES_NOTIFY_KEY, NO_PRICES_NOTIFY_TTL_SECONDS)
@@ -334,6 +342,7 @@ async def notify_incomplete_refresh(
     interrupted: bool,
     incremental: bool,
     batch_size: int = 0,
+    occurrence: str | None = None,
 ) -> None:
     """Le bilan d'une passe, quand elle a quelque chose à dire.
 
@@ -345,12 +354,30 @@ async def notify_incomplete_refresh(
       le bilan** sans devenir un avertissement ;
     - elle s'est arrêtée avant la fin pour une autre raison, et le fait est signalé.
 
-    Le bilan ne se répète pas pour la même passe : la clé porte l'identité de la
-    passe, pas une fenêtre de temps. Une fenêtre de vingt heures supprimait le bilan
-    de l'une des deux passes quotidiennes, séparées de douze heures seulement.
+    **Un bilan au plus par occurrence planifiée.** `occurrence` est l'identité de
+    l'exécution prévue — l'identifiant du job et l'instant qu'il visait —, fournie
+    par le planificateur. Deux tentatives pour la même occurrence partagent la clé
+    et une seule passe ; deux occurrences distinctes ont deux clés, donc deux
+    bilans, même à douze heures d'écart.
+
+    Une fenêtre de temps ne pouvait pas tenir cette garantie : à vingt heures de
+    durée elle supprimait le bilan de la seconde passe quotidienne, et plus courte
+    elle laissait repasser un doublon sur une reprise. La clé d'occurrence n'a pas
+    ce défaut — elle vaut pour une exécution, pas pour une durée.
+
+    Sans `occurrence` — un appel hors planificateur —, le bilan part sans
+    dédoublonnage : mieux vaut un doublon qu'un incident passé sous silence.
     """
     if processed >= total and not interrupted:
         return
+
+    if occurrence is not None:
+        claimed = await _claim_slot(
+            f"{INCOMPLETE_NOTIFY_KEY_PREFIX}{occurrence}", INCOMPLETE_NOTIFY_TTL_SECONDS
+        )
+        if not claimed:
+            logger.debug("Bilan déjà envoyé pour l'occurrence %s.", occurrence)
+            return
 
     # « Rafraîchissement » est masculin : l'accord se fait sur le nom, pas sur le mot
     # qui suit. « Rafraîchissement complète » se lisait comme une faute.

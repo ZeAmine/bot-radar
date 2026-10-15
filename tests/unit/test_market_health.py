@@ -667,17 +667,112 @@ def test_the_reported_delay_matches_the_threshold_that_selected_the_rows():
     assert "48 heures" not in text
 
 
-# --- Le bilan ne se répète pas, et ne disparaît pas non plus ---
+# --- Un bilan au plus par occurrence planifiée ---
+
+
+def _fenetres_ouvertes(mp):
+    """Redis qui accorde chaque clé une seule fois, comme le vrai `SET NX`."""
+    vues: set[str] = set()
+
+    class Redis:
+        async def set(self, key, _value, **options):
+            if options.get("nx") and key in vues:
+                return None
+            vues.add(key)
+            return True
+
+    mp.setattr(market_health, "get_redis_client", lambda: Redis())
+    return vues
 
 
 @pytest.mark.asyncio
-async def test_two_scheduled_passes_each_get_their_report():
-    """Deux passes planifiées produisent deux bilans, pas un.
+async def test_two_attempts_for_the_same_occurrence_produce_one_report():
+    """Deux tentatives pour la **même** occurrence planifiée : un seul bilan.
 
-    Les deux passes complètes sont à 07:00 et 19:00 — douze heures d'écart. Une
-    fenêtre de dédoublonnage de vingt heures, comme celle des autres alertes,
-    supprimait donc le bilan de la seconde : le défaut était invisible tant qu'on
-    ne comparait pas la fenêtre à l'écart réel entre deux passes.
+    C'est la garantie demandée. Une reprise après erreur, ou un doublon
+    d'ordonnancement, retente la même exécution prévue : elle ne doit pas
+    redoubler le message.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        _fenetres_ouvertes(mp)
+
+        for _ in range(2):
+            await market_health.notify_incomplete_refresh(
+                5, 12, refreshed=4, interrupted=True, incremental=False,
+                occurrence="refresh_prices_07_00@2026-10-16T07:00:00+00:00",
+            )
+
+    assert len(sent) == 1, "la même occurrence ne produit qu'un bilan"
+
+
+@pytest.mark.asyncio
+async def test_two_distinct_occurrences_twelve_hours_apart_produce_two_reports():
+    """Deux occurrences distinctes séparées de douze heures : un bilan chacune.
+
+    C'est l'autre moitié de la garantie, et celle qu'une fenêtre de vingt heures
+    cassait : les passes de 07:00 et 19:00 sont à douze heures d'écart, donc la
+    seconde tombait dans la fenêtre de la première et disparaissait.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        _fenetres_ouvertes(mp)
+
+        await market_health.notify_incomplete_refresh(
+            5, 12, refreshed=4, interrupted=True, incremental=False,
+            occurrence="refresh_prices_07_00@2026-10-16T07:00:00+00:00",
+        )
+        await market_health.notify_incomplete_refresh(
+            5, 12, refreshed=4, interrupted=True, incremental=False,
+            occurrence="refresh_prices_19_00@2026-10-16T19:00:00+00:00",
+        )
+
+    assert len(sent) == 2, "chaque occurrence rend son propre bilan"
+
+
+@pytest.mark.asyncio
+async def test_the_deduplication_of_one_occurrence_does_not_silence_the_next():
+    """La clé d'une occurrence n'étouffe jamais celle de la suivante.
+
+    Le point précis : le dédoublonnage borne une **exécution**, pas une durée. Une
+    clé d'occurrence ne peut donc pas avaler l'occurrence d'après, quel que soit
+    l'écart entre les deux.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        cles = _fenetres_ouvertes(mp)
+
+        # Même job, deux jours différents : deux occurrences, donc deux clés.
+        for jour in ("16", "17"):
+            await market_health.notify_incomplete_refresh(
+                5, 12, refreshed=4, interrupted=True, incremental=False,
+                occurrence=f"refresh_prices_07_00@2026-10-{jour}T07:00:00+00:00",
+            )
+
+    assert len(cles) == 2, "le dédoublonnage borne une exécution, jamais la suivante"
+
+
+@pytest.mark.asyncio
+async def test_a_report_without_an_occurrence_is_never_silenced():
+    """Hors planificateur, le bilan part sans dédoublonnage.
+
+    Mieux vaut un doublon qu'un incident passé sous silence : sans identité
+    d'occurrence, il n'y a rien à dédoublonner honnêtement.
     """
     with pytest.MonkeyPatch.context() as mp:
         sent: list[str] = []
@@ -692,35 +787,52 @@ async def test_two_scheduled_passes_each_get_their_report():
                 5, 12, refreshed=4, interrupted=True, incremental=False
             )
 
-    assert len(sent) == 2, "les deux passes doivent chacune rendre son bilan"
+    assert len(sent) == 2
 
 
-@pytest.mark.asyncio
-async def test_the_report_never_waits_on_a_shared_deduplication_window():
-    """Le bilan ne dépend d'aucune clé Redis : il ne peut donc pas être avalé.
+def test_the_occurrence_token_separates_two_scheduled_runs():
+    """Le jeton d'occurrence distingue deux exécutions prévues, et rien d'autre.
 
-    C'est la garantie de fond. Tant que le bilan passait par une fenêtre partagée
-    avec les alertes critiques, un incident de cotation pouvait le faire taire —
-    ou l'inverse. Il est maintenant inconditionnel.
+    Il est bâti sur la tranche de trente minutes : la plus petite période planifiée
+    du rafraîchissement est la demi-heure (le lot glissant passe à :15 et :45), donc
+    deux exécutions prévues tombent toujours dans deux tranches différentes.
     """
-    with pytest.MonkeyPatch.context() as mp:
-        sent: list[str] = []
+    from datetime import UTC, datetime
 
-        async def fake_notify(text: str) -> None:
-            sent.append(text)
+    from app.tasks.refresh_book_prices import _occurrence_token
 
-        class RedisMort:
-            def set(self, *_args, **_kwargs):
-                raise AssertionError("le bilan ne doit pas consulter Redis")
+    sept = _occurrence_token("refresh_prices_07_00", now=datetime(2026, 10, 16, 7, 0, tzinfo=UTC))
+    dixneuf = _occurrence_token(
+        "refresh_prices_19_00", now=datetime(2026, 10, 16, 19, 0, tzinfo=UTC)
+    )
+    assert sept != dixneuf
 
-            def incr(self, *_args, **_kwargs):
-                raise AssertionError("le bilan ne doit pas consulter Redis")
 
-        mp.setattr(market_health, "notify_admins", fake_notify)
-        mp.setattr(market_health, "get_redis_client", lambda: RedisMort())
+def test_a_retry_in_the_same_half_hour_is_the_same_occurrence():
+    """Une reprise dans la même demi-heure vise la même occurrence : un seul bilan."""
+    from datetime import UTC, datetime
 
-        await market_health.notify_incomplete_refresh(
-            5, 12, refreshed=4, interrupted=True, incremental=False
-        )
+    from app.tasks.refresh_book_prices import _occurrence_token
 
-    assert len(sent) == 1
+    premier = _occurrence_token(
+        "refresh_prices_07_00", now=datetime(2026, 10, 16, 7, 0, 5, tzinfo=UTC)
+    )
+    reprise = _occurrence_token(
+        "refresh_prices_07_00", now=datetime(2026, 10, 16, 7, 12, 40, tzinfo=UTC)
+    )
+    assert premier == reprise
+
+
+def test_the_next_scheduled_run_is_a_different_occurrence():
+    """La tranche suivante est une occurrence distincte : son bilan n'est pas avalé."""
+    from datetime import UTC, datetime
+
+    from app.tasks.refresh_book_prices import _occurrence_token
+
+    dixhuit = _occurrence_token(
+        "refresh_prices_incremental", now=datetime(2026, 10, 16, 7, 15, tzinfo=UTC)
+    )
+    dixhuit_trente = _occurrence_token(
+        "refresh_prices_incremental", now=datetime(2026, 10, 16, 7, 45, tzinfo=UTC)
+    )
+    assert dixhuit != dixhuit_trente

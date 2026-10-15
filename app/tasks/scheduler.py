@@ -44,6 +44,9 @@ def create_scheduler() -> AsyncIOScheduler:
                 trigger=CronTrigger(hour=hour, minute=minute, timezone="Europe/Paris"),
                 id=f"refresh_prices_{hour:02d}_{minute:02d}",
                 name=f"Rafraîchissement des prix BD à {hour:02d}:{minute:02d}",
+                # Le job se nomme lui-même à la tâche : c'est ce qui permet au bilan
+                # de se dédoublonner par occurrence plutôt que par fenêtre de temps.
+                kwargs={"job_id": f"refresh_prices_{hour:02d}_{minute:02d}"},
                 replace_existing=True,
                 max_instances=1,
                 coalesce=True,
@@ -63,7 +66,7 @@ def create_scheduler() -> AsyncIOScheduler:
         trigger=CronTrigger(minute="15,45", timezone="Europe/Paris"),
         id="refresh_prices_incremental",
         name="Rafraîchissement glissant des prix BD",
-        kwargs={"incremental": True, "batch_size": 8},
+        kwargs={"incremental": True, "batch_size": 8, "job_id": "refresh_prices_incremental"},
         next_run_time=datetime.now(UTC),
         replace_existing=True,
         max_instances=1,

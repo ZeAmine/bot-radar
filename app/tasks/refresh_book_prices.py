@@ -176,6 +176,28 @@ async def _run_wave(
                 stats["refreshed"] += 1
 
 
+def _occurrence_token(job_id: str, *, now: datetime | None = None) -> str:
+    """Identifie l'exécution **prévue** d'un job planifié, pour dédoublonner son bilan.
+
+    Deux exécutions de la même occurrence — une reprise après erreur, un doublon
+    d'ordonnancement — doivent produire un seul bilan ; deux occurrences distinctes
+    doivent produire chacune le leur, même à douze heures d'écart.
+
+    APScheduler 3 n'injecte aucun horodatage dans la fonction appelée : la tranche
+    horaire est donc calculée ici, en arrondissant l'instant courant vers le bas.
+    Trente minutes est la plus petite période planifiée du rafraîchissement (le lot
+    glissant passe à :15 et :45), donc deux exécutions prévues tombent toujours dans
+    des tranches différentes — c'est ce qui empêche la seconde de passer pour un
+    doublon de la première.
+
+    L'arrondi rend aussi le jeton stable pour une reprise immédiate : relancer la
+    passe dans la même demi-heure vise la même occurrence, et ne redouble pas le bilan.
+    """
+    moment = now or datetime.now(UTC)
+    slot = moment.replace(minute=moment.minute - moment.minute % 30, second=0, microsecond=0)
+    return f"{job_id}@{slot.isoformat()}"
+
+
 async def _report_stale_certs(session: AsyncSession | None) -> None:
     """Signale les cotes que plus aucun relevé ne nourrit et les sources muettes.
 
@@ -229,6 +251,7 @@ async def refresh_book_prices_task(
     batch_size: int = DEFAULT_BATCH_SIZE,
     concurrency: int = BOOK_FETCH_CONCURRENCY,
     max_duration_seconds: float = MAX_PASS_DURATION_SECONDS,
+    job_id: str | None = None,
 ) -> dict[str, int]:
     """Rafraîchit les prix de marché pour les livres associés à des alertes BD actives.
 
@@ -241,9 +264,15 @@ async def refresh_book_prices_task(
         concurrency: Livres interrogés simultanément (défaut: 4).
         max_duration_seconds: Plafond de durée de la passe ; les livres non atteints
                               sont reportés au prochain passage du scheduler.
+        job_id: Identifiant du job planifié qui a déclenché la passe. Il sert à
+                identifier l'**occurrence** pour le bilan : deux tentatives de la
+                même exécution prévue partagent ce nom et la même tranche horaire,
+                deux exécutions distinctes non.
     """
     if registry is None:
         registry = ProviderRegistry()
+
+    occurrence = _occurrence_token(job_id) if job_id else None
 
     stats = {
         "processed": 0,
@@ -323,6 +352,7 @@ async def refresh_book_prices_task(
         interrupted=interrupted,
         incremental=incremental,
         batch_size=batch_size,
+        occurrence=occurrence,
     )
     await notify_no_prices_found(
         stats["processed"],

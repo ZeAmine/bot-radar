@@ -476,3 +476,133 @@ async def test_a_failed_collection_is_never_counted_as_updated():
     assert _cote_was_written(None) is False
     assert _cote_was_written(_CacheSansCote()) is False
     assert _cote_was_written(_CacheEcrit()) is True
+
+
+# --- Reprise effective des livres laissés de côté ---
+
+
+class _HorlogePilotee:
+    """Horloge monotone virtuelle : chaque lecture avance d'un cran choisi.
+
+    Elle rend la coupure déterministe. La passe compare `deadline - loop.time()`
+    avant chaque vague ; en avançant le temps à chaque lecture, le test décide
+    après combien de vagues la passe s'arrête — sans attendre un quart d'heure.
+    """
+
+    def __init__(self, pas: float) -> None:
+        self.valeur = 0.0
+        self.pas = pas
+
+    def time(self) -> float:
+        self.valeur += self.pas
+        return self.valeur
+
+
+async def _passe_sur(
+    mp: pytest.MonkeyPatch,
+    *,
+    selection: list[Book],
+    ecrits: list[uuid.UUID],
+    horloge: _HorlogePilotee,
+    max_duration_seconds: float,
+    concurrency: int = 2,
+) -> dict[str, int]:
+    """Joue une passe sur une sélection imposée, avec l'horloge du test.
+
+    La session injectée oriente vers `persist_market_result` : c'est cette écriture
+    qui est doublée, et elle est comptée — un livre « traité » l'est donc pour de
+    bon, sans réseau ni base.
+    """
+    import asyncio as _asyncio
+
+    async def selection_imposee(_session, _incremental, _batch_size):
+        return list(selection)
+
+    async def offres_vides(_book, **_kwargs):
+        return []
+
+    async def ecrit(_session, book_id, _result):
+        ecrits.append(book_id)
+        return _CacheEcrit()
+
+    mp.setattr("app.tasks.refresh_book_prices._select_books", selection_imposee)
+    mp.setattr("app.tasks.refresh_book_prices.fetch_offers_for_book", offres_vides)
+    mp.setattr("app.tasks.refresh_book_prices.persist_market_result", ecrit)
+    mp.setattr("app.tasks.refresh_book_prices.asyncio.sleep", AsyncMock())
+    mp.setattr("app.services.market_health.notify_admins", AsyncMock())
+    mp.setattr("app.tasks.refresh_book_prices.notify_stale_certified_lows", AsyncMock())
+    mp.setattr("app.tasks.refresh_book_prices.notify_silent_providers", AsyncMock())
+    mp.setattr(_asyncio.get_running_loop(), "time", horloge.time)
+
+    registre = MagicMock(failed_provider_names=set(), select_best_offer=lambda _o: None)
+    return await refresh_book_prices_task(
+        registry=registre,
+        session=AsyncMock(),
+        incremental=False,
+        concurrency=concurrency,
+        max_duration_seconds=max_duration_seconds,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_book_left_behind_by_a_cut_pass_is_treated_by_the_next_one():
+    """Un livre réellement laissé de côté est sélectionné **puis traité** ensuite.
+
+    La première passe est coupée par le plafond de durée — sans attente réelle,
+    l'horloge étant pilotée. La seconde repart de la sélection ordonnée par
+    ancienneté de tentative, où un livre jamais tenté passe en tête, et le test
+    vérifie qu'il est **traité**, pas seulement sélectionné.
+    """
+    livres = _livres(6)
+    ecrits: list[uuid.UUID] = []
+
+    with pytest.MonkeyPatch.context() as mp:
+        # Un cran de 0,2 s pour un budget d'une seconde : la passe s'arrête après
+        # la première vague de deux livres, les quatre autres restent à traiter.
+        premiere = await _passe_sur(
+            mp,
+            selection=livres,
+            ecrits=ecrits,
+            horloge=_HorlogePilotee(pas=0.2),
+            max_duration_seconds=1.0,
+        )
+
+    assert premiere["processed"] < len(livres), "la première passe doit être coupée"
+    laisses = [livre for livre in livres if livre.id not in ecrits]
+    assert ecrits, "la première passe doit avoir traité quelque chose"
+    assert laisses, "et laisser le reste de côté"
+
+    # La passe suivante : le livre non atteint revient dans la sélection, et il est
+    # traité pour de bon.
+    ecrits_seconde: list[uuid.UUID] = []
+    with pytest.MonkeyPatch.context() as mp:
+        seconde = await _passe_sur(
+            mp,
+            selection=laisses,
+            ecrits=ecrits_seconde,
+            horloge=_HorlogePilotee(pas=0.001),
+            max_duration_seconds=600.0,
+        )
+
+    assert seconde["processed"] == len(laisses)
+    for livre in laisses:
+        assert livre.id in ecrits_seconde, f"{livre.title} aurait dû être traité"
+
+
+@pytest.mark.asyncio
+async def test_the_cut_pass_says_how_many_books_remain():
+    """La passe coupée annonce les restants : la reprise est ainsi observable."""
+    livres = _livres(6)
+    ecrits: list[uuid.UUID] = []
+
+    with pytest.MonkeyPatch.context() as mp:
+        stats = await _passe_sur(
+            mp,
+            selection=livres,
+            ecrits=ecrits,
+            horloge=_HorlogePilotee(pas=0.2),
+            max_duration_seconds=1.0,
+        )
+
+    assert stats["processed"] < len(livres)
+    assert len(ecrits) == stats["processed"]
