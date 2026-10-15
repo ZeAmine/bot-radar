@@ -135,7 +135,7 @@ def step_sync(ctx: Context) -> int:
 
 
 def step_stop(ctx: Context) -> int:
-    """Arrête et confirme l'arrêt de l'app avant toute écriture dans ses bind mounts."""
+    """Arrête et confirme l'arrêt de l'app avant la synchronisation de la cible."""
     script = f"""set -eu
 cd {ctx.remote_dir}
 cid=$(docker compose ps -a -q app)

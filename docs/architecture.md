@@ -28,7 +28,7 @@ Les enums métier sont définis dans `app/domain/enums.py`, réexportés par
 - [Ingestion](../app/use_cases/ingest_listing.py) : annonce → matching → notification.
 - [Scheduler](../app/tasks/scheduler.py) et [poller](../app/tasks/vinted_poller.py) : producteurs.
 - [Règles de matching](../app/domain/rules/listing_match.py) : calcul CPU ;
-  `matcher_service` réexporte et `DeterministicListingMatcher` appelle ce domaine.
+  `matcher_service` réexporte ce domaine.
 - [Configuration](../app/core/config.py), [.env.example](../.env.example) et
   [Compose](../compose.yml) : sources des paramètres, services et ports.
 

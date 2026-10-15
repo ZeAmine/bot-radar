@@ -2,32 +2,27 @@
 
 import asyncio
 import logging
-import sys
 import uuid
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 from aiogram import Bot
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-if TYPE_CHECKING:
-    from app.services.book_metadata_service import CatalogueVerdict
-
 from app.bot.bot_instance import bot as default_bot
 from app.core import alert_latency as latency
-from app.core.constants import AlertStatus, CategorySlug
+from app.core.constants import CategorySlug
 from app.core.tasks import safe_create_task
+from app.db.models.alert import Alert
 from app.db.models.book import Book
 from app.db.models.bot_event import BotEvent
 from app.db.models.listing import Listing
 from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapshot
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.repositories.listing_repo import ListingRepository
-from app.domain.entities.alert_preparation import PreparationError, preparation_request
 from app.domain.enums import NotificationState
-from app.domain.rules.catalogue_search import is_catalogue_exhausted, is_uncatalogued
+from app.domain.rules.catalogue_search import is_uncatalogued
 from app.domain.rules.listing_freshness import listing_is_new_for_alert
 from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import (
@@ -36,9 +31,7 @@ from app.schemas.listing import (
     ListingIngestWarning,
     ListingMatchItem,
 )
-from app.services.book_catalog_service import BookCatalogService
 from app.services.book_market_pricing import (
-    price_book_now,
     recalculate_invalidated_series,
     schedule_book_pricing,
 )
@@ -50,193 +43,15 @@ from app.services.market_price_service import (
     SEARCHING_BOOK_LINE,
     MarketPriceService,
     cote_absence_line,
-    extract_tome_number_from_title,
     has_usable_price,
 )
 from app.services.telegram_service import DeliveryResult, send_listing_alert, usable_receipt
+from app.use_cases.link_bd_catalog import resolve_bd_catalog_book
 from app.use_cases.listing_ingestion_gate import listing_ingestion_gate
 from app.use_cases.notification_admission import record_result, reserve
 from app.utils.isbn import normalize_listing_isbn
-from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.use_cases.ingest_listing")
-
-
-@latency.observe_background("bibliography_series")
-async def link_books_from_bnf(
-    title: str,
-    alert_id: uuid.UUID,
-    author: str | None = None,
-    *,
-    series: bool = False,
-    wait_for_prices: bool = False,
-    schedule_prices: bool = True,
-    expected_preparation_token: str | None = None,
-    expected_snapshot: BibliographicSnapshot | None = None,
-    catalogue_sink: "list[CatalogueVerdict] | None" = None,
-    initial_volumes: list[dict[str, Any]] | None = None,
-    reference_publisher: str | None = None,
-) -> bool:
-    """Lie les notices BNF d'une œuvre et les cote, sans retarder l'envoi Telegram.
-
-    L'entrée est le **nom de l'alerte** (l'œuvre surveillée), pas le titre brut de
-    l'annonce : « The Grocery : l'intégrale » n'est pas une notice, « The Grocery »
-    en est une. Le repli BNF échouait précisément là et laissait le livre sans ISBN.
-    L'auteur, quand il est connu, accompagne le titre ; `lookup_by_title_and_author`
-    attend la forme « Titre par Auteur ».
-
-    `series=True` demande à la BNF la série entière : une alerte suivie par son nom
-    n'a aucune fiche, et sa première annonce partait sans cote tant qu'aucun tome
-    n'avait été lié. Chaque notice liée est cotée si elle n'a pas déjà une cote
-    utilisable, une seule fois par livre (le garde de `schedule_book_pricing`).
-    `wait_for_prices=True` réserve l'attente à la création d'une alerte : elle
-    prépare ses propres cotes avant d'activer la surveillance, sans attendre
-    les tâches d'autres alertes. L'ingestion conserve le mode arrière-plan.
-
-    La recherche rend un **verdict** (`CatalogueVerdict`), et c'est ici qu'il devient
-    une donnée de l'alerte : quand toutes les autorités interrogées ont répondu sans
-    rien rendre, l'alerte le retient et ses prochaines annonces le disent, au lieu
-    d'annoncer une recherche en cours indéfiniment (ADR-041).
-    """
-    from app.db.session import AsyncSessionLocal
-    from app.services.book_metadata_service import (
-        BookMetadataService,
-        SeriesVolume,
-        select_series_volumes,
-    )
-
-    query = f"{title} par {author}" if author else title
-    try:
-        async with AsyncSessionLocal() as session:
-            current = await AlertRepository(session).get_by_id(alert_id)
-            if current is None or current.name != title or current.status == AlertStatus.DELETED:
-                return False
-            snapshot = expected_snapshot or BibliographicSnapshot.capture(current)
-            if not snapshot.matches(current) or (
-                expected_preparation_token is not None
-                and snapshot.preparation_token != expected_preparation_token
-            ):
-                return False
-        service = BookMetadataService()
-        if series:
-            options: dict[str, Any] = {"for_creation": True} if wait_for_prices else {}
-            if wait_for_prices and reference_publisher:
-                options["reference_publisher"] = reference_publisher
-            verdict = await service.lookup_series_notices(
-                title, author_hint=author,
-                **options,
-            )
-        else:
-            verdict = await service.lookup_by_title_and_author(query)
-        if initial_volumes:
-            selected = select_series_volumes([
-                *(SeriesVolume.from_stored(row) for row in initial_volumes
-                  if row.get("isbn13") not in verdict.rejected_isbns), *verdict.volumes,
-            ], publisher=reference_publisher)
-            verdict = replace(
-                verdict, volumes=selected,
-                notices=tuple(replace(v.notice, isbn13=v.isbn13,
-                                      title=v.notice.volume_title or v.notice.title)
-                              for v in selected if v.isbn13),
-            )
-        if catalogue_sink is not None:
-            catalogue_sink.append(verdict)
-        notices = [notice for notice in verdict.notices if notice and notice.isbn13]
-
-        to_price: list[uuid.UUID] = []
-        async with AsyncSessionLocal() as session:
-            # Le verdict s'écrit là où il est connu, et seulement quand il est
-            # concluant : une notice arrivée efface l'exhaustion, une autorité muette
-            # ne la réécrit pas (elle ne prouve rien, ni dans un sens ni dans l'autre).
-            alert_repo = AlertRepository(session)
-            current = await alert_repo.lock_bibliographic_result(
-                alert_id, snapshot, require_preparation=expected_preparation_token is not None,
-            )
-            if current is None:
-                return False
-            if notices:
-                await alert_repo.set_book_search_exhausted(alert_id, None)
-            elif is_catalogue_exhausted(verdict) and not verdict.volumes:
-                await alert_repo.set_book_search_exhausted(alert_id, datetime.now(UTC))
-
-            if wait_for_prices:
-                request = preparation_request(current)
-                if request is not None:
-                    request.series_volumes = [volume.stored() for volume in verdict.volumes]
-                    current.preparation = request.stored()
-            book_repo = BookRepository(session)
-            catalog = BookCatalogService(session)
-            if initial_volumes:
-                # Remplace les seuls liens de cette préparation par la sélection
-                # confirmée, dans la même transaction et sous sa garde de version.
-                await book_repo.clear_alert_books(alert_id)
-            for notice in notices:
-                isbn13 = notice.isbn13
-                if not isbn13:
-                    continue
-                book = await book_repo.get_by_isbn13(isbn13)
-                if not book:
-                    book = await catalog.add_book(
-                        title=notice.title,
-                        isbn13=isbn13,
-                        author=notice.author,
-                        publisher=notice.publisher,
-                        language=notice.language or "und",
-                        publication_year=notice.publication_year,
-                        format_book=notice.format_detail,
-                    )
-                if not book:
-                    continue
-                if (
-                    series
-                    and extract_tome_number_from_title(notice.title) is not None
-                    and extract_tome_number_from_title(book.title) is None
-                ):
-                    # Même ISBN certifié, titre de tome enfin explicite : les anciennes
-                    # fiches issues d'un titre d'œuvre sont réalignées sans changer d'ouvrage.
-                    book.title = notice.title
-                    book.normalized_title = normalize_text(notice.title)
-                await book_repo.link_alert_to_book(alert_id=alert_id, book_id=book.id)
-                # `add_book` rend un livre dont `market_cache` n'est pas chargé : on
-                # relit par le dépôt (qui précharge la relation) avant de décider.
-                loaded = await book_repo.get_by_id(book.id)
-                if loaded is not None and not has_usable_price(loaded.market_cache):
-                    to_price.append(book.id)
-            if wait_for_prices:
-                # Les ISBN déjà confirmés à la création restent liés même si la
-                # seconde découverte est muette. Leurs cotes sont préparées aussi.
-                for linked in await book_repo.get_all_books_for_alert(alert_id):
-                    if linked.id not in to_price and not has_usable_price(linked.market_cache):
-                        to_price.append(linked.id)
-            await recalculate_invalidated_series(session)
-            await session.commit()
-    except Exception as exc:
-        if expected_preparation_token is not None:
-            raise PreparationError("catalog_write") from exc
-        logger.warning("Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc)
-        return False
-
-    # La cote part en arrière-plan : c'est elle qui fera apparaître la ligne de prix
-    # sur les alertes suivantes de cet ouvrage.
-    if not schedule_prices:
-        return True
-    if wait_for_prices:
-        import asyncio
-
-        # Deux livres par vague : la création attend ses propres cotes seulement.
-        for start in range(0, len(to_price), 2):
-            results = await asyncio.gather(
-                *(
-                    price_book_now(book_id, reason="bnf_link")
-                    for book_id in to_price[start : start + 2]
-                )
-            )
-            if expected_preparation_token is not None and any(result is None for result in results):
-                raise PreparationError("pricing_write")
-    else:
-        for book_id in to_price:
-            schedule_book_pricing(book_id, reason="bnf_link")
-    return True
 
 
 def comparison_line_from_loaded_books(
@@ -304,19 +119,6 @@ async def _link_bd_catalog_background(
                            extra={"event": "listing_isbn_confirmation_failed"}, exc_info=True)
         return
 
-    listing = type(
-        "ListingRef",
-        (),
-        {
-            "title": listing_title,
-            "description": listing_description,
-            "isbn13": None,
-            "category_slug": CategorySlug.BD_COMICS.value,
-            "item_price_cents": 0,
-            "estimated_total_cents": None,
-        },
-    )()
-    alert = type("AlertRef", (), {"id": alert_id, "name": alert_name, "isbn": alert_isbn})()
     book_id: uuid.UUID | None = None
     needs_price = False
     try:
@@ -332,9 +134,14 @@ async def _link_bd_catalog_background(
                 current = await repo.lock_bibliographic_result(alert_id, snapshot)
                 if current is None:
                     return
-            alert.bibliographic_snapshot = snapshot
-            book = await ProcessListingUseCase(session)._resolve_bd_market_comparison(
-                listing, alert
+            book = await resolve_bd_catalog_book(
+                session,
+                alert_id=alert_id,
+                alert_name=alert_name,
+                alert_isbn=alert_isbn,
+                listing_title=listing_title,
+                listing_description=listing_description,
+                alert_snapshot=snapshot,
             )
             if book is not None:
                 book_id = book.id
@@ -364,12 +171,20 @@ def _alert_has_telegram_chat(alert: Any) -> bool:
     return bool(getattr(user, "telegram_user_id", None))
 
 
-def _get_send_listing_alert() -> Any:
-    """Résout dynamiquement la fonction d'envoi d'alerte pour préserver les mocks de tests."""
-    ingest_module = sys.modules.get("app.api.routes.ingest")
-    if ingest_module and hasattr(ingest_module, "send_listing_alert"):
-        return ingest_module.send_listing_alert
-    return send_listing_alert
+class ListingAlertSender(Protocol):
+    """Émetteur d'une notification avec son résultat de livraison explicite."""
+
+    async def __call__(
+        self,
+        *,
+        bot: Bot,
+        chat_id: int,
+        listing: Listing,
+        market_comparison_line: str | None,
+        alert_keywords: list[str] | None,
+        alert: Alert,
+        attempt_id: uuid.UUID,
+    ) -> DeliveryResult: ...
 
 
 # Alerte à notifier, ligne de cote, état du catalogue et livre résolu.
@@ -395,9 +210,12 @@ class ProcessListingUseCase:
         self,
         db: AsyncSession,
         bot: Bot | None = None,
+        *,
+        sender: ListingAlertSender | None = None,
     ) -> None:
         self.db = db
         self.bot = bot or default_bot
+        self._sender = send_listing_alert if sender is None else sender
         self.listing_repo = ListingRepository(db)
 
     async def execute(
@@ -636,7 +454,6 @@ class ProcessListingUseCase:
         needs_retry = False
         books_to_price: set[uuid.UUID] = set()
         catalog_tasks: list[dict[str, Any]] = []
-        send_alert_fn = _get_send_listing_alert()
         for index, pending in enumerate(pending_sends):
             if admission_deadline is not None:
                 import time
@@ -663,7 +480,7 @@ class ProcessListingUseCase:
                     timing.attempts += 1
                     latency.emit(timing, "recipient_wait", timing.recipients_ready_at,
                                  latency.clock(), result="ready")
-                delivery = await send_alert_fn(
+                delivery = await self._sender(
                     bot=self.bot,
                     chat_id=alert.user.telegram_user_id,
                     listing=listing,
@@ -966,56 +783,3 @@ class ProcessListingUseCase:
             tome_result=tome_result,
         )
         return line or cote_absence_line(book), True, book
-
-    async def _resolve_bd_market_comparison(self, listing: Listing, alert: Any) -> Book | None:
-        """Résout le livre en local. La recherche BNF part en tâche de fond.
-
-        Rend le livre lié (ou ``None``) et non une ligne : c'est l'appelant qui, une
-        fois la transaction commitée, déclenche sa cotation. Le faire ici ouvrirait
-        une session avant le commit, qui ne verrait pas encore le livre.
-        """
-        book_repo = BookRepository(self.db)
-        catalog_service = BookCatalogService(self.db)
-
-        book = None
-        tome_result = None
-
-        if not alert.isbn:
-            book, _books_in_series, tome_result = await book_repo.resolve_book_for_listing(
-                alert_id=alert.id,
-                alert_name=alert.name,
-                listing_title=listing.title,
-                listing_description=listing.description,
-            )
-
-            if not book:
-                has_lot = bool(tome_result and tome_result.is_lot and tome_result.lot_tomes)
-                if not has_lot:
-                    # Une alerte sans ISBN est une série : l'annonce non résolue
-                    # relance la découverte de **tous** ses tomes, pas seulement
-                    # d'un titre. Une alerte à ISBN garde sa recherche unitaire.
-                    # L'appel reste après l'envoi (`safe_create_task`), invariant n°1.
-                    safe_create_task(
-                        link_books_from_bnf(
-                            alert.name,
-                            alert.id,
-                            author=getattr(alert, "author", None),
-                            series=not alert.isbn,
-                            expected_snapshot=getattr(alert, "bibliographic_snapshot", None),
-                        ),
-                        name=f"bnf_link_{alert.id}",
-                    )
-
-        else:
-            book = await book_repo.get_book_for_alert(alert.id)
-            if not book and alert.isbn:
-                book = await book_repo.get_by_isbn13(alert.isbn)
-                if not book:
-                    book = await catalog_service.add_book(
-                        title=alert.name,
-                        isbn13=alert.isbn,
-                    )
-                if book:
-                    await book_repo.link_alert_to_book(alert_id=alert.id, book_id=book.id)
-
-        return book

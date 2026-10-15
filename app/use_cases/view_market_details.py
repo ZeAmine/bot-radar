@@ -215,7 +215,7 @@ class ViewMarketDetailsUseCase:
                 await recalculate_invalidated_series(self.db)
                 await self.db.commit()
         else:
-            from app.use_cases.ingest_listing import link_books_from_bnf
+            from app.use_cases.link_bd_catalog import link_books_from_bnf
             await link_books_from_bnf(alert.name, alert.id, series=True,
                                       expected_snapshot=snapshot,
                                       schedule_prices=not force_catalogue)

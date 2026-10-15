@@ -180,7 +180,7 @@ class PreparationRunner:
                     if await price_book_now(book_id, reason="alert_created") is None:
                         raise PreparationError("pricing_write")
                 else:
-                    from app.use_cases.ingest_listing import link_books_from_bnf
+                    from app.use_cases.link_bd_catalog import link_books_from_bnf
 
                     applied = await link_books_from_bnf(
                         name,

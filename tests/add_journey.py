@@ -113,7 +113,7 @@ def patched(
     async def prepare(_alert_id, **_options):
         """Frontière durable doublée pour l'écran ; les tests DB jouent le vrai cas d'usage."""
         from app.core.constants import AlertStatus
-        from app.use_cases.ingest_listing import link_books_from_bnf
+        from app.use_cases.link_bd_catalog import link_books_from_bnf
 
         alert = repos["alert_repo"].create.return_value
         if alert.isbn:

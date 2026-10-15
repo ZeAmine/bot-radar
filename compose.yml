@@ -10,9 +10,6 @@ services:
     environment:
       - PYTHONPATH=/app
       - RADAR_API_URL=http://127.0.0.1:8000
-    volumes:
-      - ./app:/app/app
-      - ./scripts:/app/scripts
     env_file:
       - .env
     depends_on:
@@ -35,15 +32,15 @@ services:
     container_name: radar_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-radar_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-radar_password}
-      POSTGRES_DB: ${POSTGRES_DB:-radar_db}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER requis et non vide}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requis et non vide}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB requis et non vide}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-radar_user} -d ${POSTGRES_DB:-radar_db}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
       retries: 5

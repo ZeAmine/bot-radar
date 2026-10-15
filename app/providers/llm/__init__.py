@@ -5,7 +5,6 @@ l'application parle au client construit par `registry.py` et n'a pas à changer 
 le modèle change.
 """
 
-from app.domain.entities.analysis import ListingAnalysisResult, RealConditionAssessment
 from app.providers.llm.base import (
     STATUS_ACTIVE,
     STATUS_DISABLED,
@@ -16,7 +15,6 @@ from app.providers.llm.base import (
     LLMHealth,
     clean_and_parse_json,
 )
-from app.providers.llm.listing_analysis import ListingAnalysisProvider
 from app.providers.llm.registry import LLM_ADAPTERS, build_llm_client, llm_client
 
 __all__ = [
@@ -28,9 +26,6 @@ __all__ = [
     "BaseLLMClient",
     "LLMClient",
     "LLMHealth",
-    "ListingAnalysisProvider",
-    "ListingAnalysisResult",
-    "RealConditionAssessment",
     "build_llm_client",
     "clean_and_parse_json",
     "llm_client",

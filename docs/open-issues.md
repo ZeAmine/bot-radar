@@ -5,7 +5,7 @@ fonctionnel n'est autorisé par cette page. Ne pas transformer un constat en per
 
 | Sujet | État et preuve | Travail distinct / condition de clôture |
 | --- | --- | --- |
-| C11 — secrets au démarrage | Ouvert : `app/main.py` appelle `setup_bot_commands` avant `validate_production_secrets`; les producteurs démarrent après | Correctif dédié et test d'ordre avec aucune configuration Telegram si validation refusée |
+| C11 — secrets au démarrage | Corrigé localement : `validate_production_secrets` précède la configuration Telegram et les producteurs ; `test_unified_lifespan.py` couvre le refus | Ne prouve ni configuration ni transport de production |
 | C13 — coroutine non attendue | La [consolidation](consolidation-validation.md#qualification-et-preuve) décrit deux doubles SQL corrigés et une sélection finale sans avertissement sur sa révision ; pas une preuve pour tout arbre ultérieur | Pour toute nouvelle occurrence : reproduire, identifier le double, corriger et réexécuter ; ne pas masquer l'avertissement |
 | Checkout authentifié | Les refus/DataDome du 14 octobre sont historiques ; aucune réussite authentifiée de bout en bout documentée dans la base de cette tâche | Validation ciblée avec session et mandat distincts, arrêt avant relais/paiement ; aucun contournement |
 | Publication → détection | La sonde historique du catalogue n'exposait pas `published_at` ; les mesures locales commencent à la réception/détection | Une source réelle attestée est nécessaire avant de promettre cette durée ; voir [latence](alert-latency.md) |

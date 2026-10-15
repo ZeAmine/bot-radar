@@ -44,26 +44,6 @@ class ProviderError(BotRadarError):
     """Erreur lors de l'interaction avec un service tiers (API, Scraping, LLM)."""
 
 
-class LLMError(ProviderError):
-    """Erreur générique liée au moteur IA, quel qu'en soit le fournisseur."""
-
-
-class LLMTimeoutError(LLMError):
-    """Le délai d'attente alloué au moteur IA a été dépassé."""
-
-
-class LLMAPIError(LLMError):
-    """Le moteur IA a renvoyé un code de statut HTTP d'erreur."""
-
-    def __init__(self, message: str, status_code: int | None = None) -> None:
-        super().__init__(message, details={"status_code": status_code})
-        self.status_code = status_code
-
-
-class LLMValidationError(LLMError):
-    """La réponse du moteur IA ne respecte pas le schéma Pydantic attendu."""
-
-
 class MarketPriceProviderError(ProviderError):
     """Erreur lors de l'interrogation d'un comparateur de prix externe."""
 

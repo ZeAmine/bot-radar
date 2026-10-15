@@ -30,6 +30,7 @@ from app.services.book_metadata_service import (
     IsbnVerdict,
 )
 from app.use_cases import ingest_listing as ingestion
+from app.use_cases import link_bd_catalog as catalog_linking
 from app.use_cases import listing_book_confirmation as confirmation
 from tests.database import postgres_replayed_database
 from tests.telegram_fakes import acknowledged_delivery
@@ -95,22 +96,16 @@ async def journey(monkeypatch):
         consult = AsyncMock(side_effect=authorities)
         monkeypatch.setattr(BookMetadataService, "consult_authorities_report", consult)
         fallback = AsyncMock(return_value=False)
-        monkeypatch.setattr(ingestion, "link_books_from_bnf", fallback)
-        monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: send)
+        monkeypatch.setattr(catalog_linking, "link_books_from_bnf", fallback)
 
         def price(book_id, **_kwargs):
             priced.append(book_id)
 
         monkeypatch.setattr(ingestion, "schedule_book_pricing", price)
+        monkeypatch.setattr(catalog_linking, "schedule_book_pricing", price)
         monkeypatch.setattr(confirmation, "schedule_book_pricing", price)
 
-        async def ingest(raw):
-            async with db.maker() as session:
-                return await ingestion.ProcessListingUseCase(
-                    session, SimpleNamespace(id=123456789)
-                ).execute(ListingIngestPayload(**raw), raw)
-
-        yield SimpleNamespace(
+        context = SimpleNamespace(
             db=db,
             alert=alert,
             report=report,
@@ -119,8 +114,17 @@ async def journey(monkeypatch):
             order=order,
             priced=priced,
             captions=captions,
-            ingest=ingest,
+            sender=send,
         )
+
+        async def ingest(raw):
+            async with db.maker() as session:
+                return await ingestion.ProcessListingUseCase(
+                    session, SimpleNamespace(id=123456789), sender=context.sender
+                ).execute(ListingIngestPayload(**raw), raw)
+
+        context.ingest = ingest
+        yield context
         await tasks.wait_all_background_tasks(timeout=0)
 
 
@@ -133,7 +137,8 @@ async def books_and_links(journey):
 
 
 @pytest.mark.parametrize("code", ["invalide", "9782369903063", "X306406152", "4006381333931"])
-async def test_invalid_isbn_api_keeps_listing_and_warns(journey, caplog, code):
+async def test_invalid_isbn_api_keeps_listing_and_warns(journey, caplog, code, monkeypatch):
+    monkeypatch.setattr("app.api.routes.ingest.send_listing_alert", journey.sender)
     app = FastAPI()
     app.include_router(router)
 
@@ -394,16 +399,16 @@ async def test_existing_coherent_book_metadata_is_preserved(journey):
 
 
 async def test_legacy_invalid_isbn_is_ignored_without_rewriting_listing(journey, monkeypatch):
-    original = ingestion._get_send_listing_alert
+    original = journey.sender
     from datetime import UTC, datetime, timedelta
 
     from app.db.models.listing_match import ListingMatch
     from app.services.telegram_service import DeliveryResult
 
     monkeypatch.setattr(
-        ingestion,
-        "_get_send_listing_alert",
-        lambda: AsyncMock(
+        journey,
+        "sender",
+        AsyncMock(
             return_value=DeliveryResult("rejected", "text", reason="api_rejected", retry_after=1)
         ),
     )
@@ -417,7 +422,7 @@ async def test_legacy_invalid_isbn_is_ignored_without_rewriting_listing(journey,
         assert row.notified_at is None
         row.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
         await session.commit()
-    monkeypatch.setattr(ingestion, "_get_send_listing_alert", original)
+    monkeypatch.setattr(journey, "sender", original)
     result = await journey.ingest(payload(None))
     await tasks.wait_all_background_tasks()
     assert result.warnings == ["listing_isbn_invalid_ignored"]

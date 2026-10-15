@@ -128,9 +128,10 @@ docker compose up -d --no-build --pull never app
 Le one-shot ne lance ni scheduler ni poller et ne vise pas l'ancien conteneur.
 L'échec de construction empêche la migration ; l'échec de migration ou de lecture
 de révision arrête la chaîne avant démarrage cible. Aucun contrôle de santé ou de
-révision n'est retiré. AGENTS.md décrit ce même ordre. L'échec d'arrêt ou de sa
+révision n'est retiré. La [procédure de déploiement](operations/deployment.md) décrit ce même ordre. L'échec d'arrêt ou de sa
 confirmation empêche toute synchronisation ; l'échec de synchronisation empêche
-le build. L'ancienne application est arrêtée avant toute écriture dans ses bind mounts.
+le build. L’ancienne application est arrêtée avant synchronisation. Le code est
+embarqué dans l’image cible, sans bind mount `app/` ou `scripts/`.
 L'interruption couvre synchronisation, construction, migration et redémarrage
 jusqu'à la santé réelle, sans durée garantie. Un échec après arrêt peut laisser
 l'app arrêtée et les fichiers runtime partiellement synchronisés. Un échec de santé ou de vérification
@@ -142,7 +143,9 @@ pas un déploiement éprouvé sur le Compose de production.
 Après un échec, le bilan opérateur doit relever l'état réel du conteneur, les
 empreintes du code et la révision effective (one-shot d'une image compatible si
 l'app est arrêtée), sans supposer qu'une étape échouée n'a rien changé. Ne pas
-relancer l'ancienne image sur les bind mounts partiellement synchronisés.
+relancer automatiquement l’ancienne image sur un schéma potentiellement migré.
+Les anciens scénarios avec bind mounts restent historiques ; les contrôles actuels
+doivent porter sur les fichiers du conteneur cible, pas seulement ceux du serveur.
 Si le schéma est resté intégralement à 0009, restaurer d'abord le code et l'image
 vérifiés d8da825, sans restauration de données, puis contrôler avant réouverture.
 Si le schéma est à 0010, appliquer le retour compatible ci-dessous : graphe 0010

@@ -603,39 +603,24 @@ def test_pure_predicates_price_condition_exclusion_isbn():
 
 
 def test_deterministic_listing_matcher_with_alert_entity():
-    """Vérifie que DeterministicListingMatcher fonctionne avec une AlertEntity
-    sans AttributeError.
-    """
-    from app.domain.entities.alert import AlertEntity
-    from app.domain.entities.listing import ListingEntity
-    from app.domain.enums import AlertStatus, CategorySlug, ItemCondition
-    from app.domain.rules.matcher import DeterministicListingMatcher
+    """Une alerte ORM accepte l'annonce quand catégorie, prix et état correspondent."""
+    from app.domain.enums import ItemCondition
 
-    alert = AlertEntity(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        category_slug=CategorySlug.BD_COMICS,
+    alert = create_test_alert(
         name="Tintin",
         include_keywords=["tintin"],
-        exclude_keywords=[],
-        variants=[],
-        max_item_price_cents=2000,
+        max_price_cents=2000,
         accepted_conditions=[ItemCondition.VERY_GOOD],
-        status=AlertStatus.ACTIVE,
     )
-    listing = ListingEntity(
-        id=uuid.uuid4(),
-        source_name="vinted",
-        external_id="12345",
-        url="https://vinted.fr/items/12345",
-        title="Tintin au Tibet",
-        category_slug=CategorySlug.BD_COMICS,
-        item_price_cents=1000,
-        condition=ItemCondition.VERY_GOOD,
-        normalized_title="tintin au tibet",
+    result = evaluate_listing_against_alert(
+        alert=alert,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="tintin au tibet",
+        listing_normalized_description=None,
+        listing_condition=ItemCondition.VERY_GOOD,
+        listing_item_price_cents=1000,
+        listing_raw_url="https://vinted.fr/items/12345",
     )
-    matcher = DeterministicListingMatcher()
-    result = matcher.evaluate(listing, alert)
     assert result.is_match is True
 
 

@@ -1,4 +1,4 @@
-"""Tests unitaires pour ProcessListingUseCase et AsyncEnrichListingUseCase."""
+"""Tests unitaires pour ProcessListingUseCase et le matching réel."""
 
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -7,13 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.core.constants import ComparisonStatus
-from app.domain.entities.analysis import ListingAnalysisResult, RealConditionAssessment
-from app.domain.entities.listing import ListingEntity
-from app.domain.enums import CategorySlug
-from app.domain.protocols.llm import LLMAnalysisProviderProtocol
-from app.domain.rules.matcher import DeterministicListingMatcher
 from app.schemas.listing import ListingIngestPayload
-from app.use_cases.enrich_listing_ai import AsyncEnrichListingUseCase
 from app.use_cases.ingest_listing import ProcessListingUseCase
 from tests.telegram_fakes import acknowledged_delivery
 
@@ -31,11 +25,11 @@ async def admitted_notification_boundary(monkeypatch):
     await engine.dispose()  # DATABASE_URL imposée en SQLite mémoire par le lanceur.
 
 
-
 @pytest.fixture(autouse=True)
 def central_totals(monkeypatch):
     """La persistance centrale est éprouvée avec des sessions réelles en intégration."""
     monkeypatch.setattr("app.use_cases.ingest_listing.recalculate_invalidated_series", AsyncMock())
+    monkeypatch.setattr("app.use_cases.link_bd_catalog.recalculate_invalidated_series", AsyncMock())
 
 
 @pytest.fixture
@@ -45,81 +39,6 @@ def mock_db() -> AsyncMock:
     db.add = MagicMock()
     db.commit = AsyncMock()
     return db
-
-
-@pytest.fixture
-def mock_bot() -> AsyncMock:
-    """Bot Telegram mocké."""
-    bot = AsyncMock()
-    bot.send_message = AsyncMock()
-    return bot
-
-
-@pytest.mark.asyncio
-async def test_async_enrich_listing_with_risk_warning(mock_bot: AsyncMock) -> None:
-    """Vérifie qu'un avertissement Telegram est envoyé si le risque est élevé."""
-    mock_llm = AsyncMock(spec=LLMAnalysisProviderProtocol)
-    mock_llm.analyze_listing.return_value = ListingAnalysisResult(
-        real_condition=RealConditionAssessment.POOR_OR_DEFECTIVE,
-        is_lot_incomplete=False,
-        is_scam_or_trap=True,
-        risk_score=85,
-        analysis_summary="Boîte vide vendue sans console.",
-    )
-
-    use_case = AsyncEnrichListingUseCase(llm_provider=mock_llm, bot=mock_bot)
-    listing = ListingEntity(
-        id=uuid.uuid4(),
-        source_name="vinted",
-        external_id="12345",
-        title="PS5 Boîte Seule",
-        normalized_title="ps5 boite seule",
-        category_slug=CategorySlug.GAMING,
-        item_price_cents=5000,
-        condition="Bon état",
-        description="Juste le carton d'origine",
-    )
-
-    result = await use_case.execute(chat_id=123456, message_id=1, listing=listing)
-
-    assert result is not None
-    assert result.is_scam_or_trap is True
-    mock_bot.send_message.assert_awaited_once()
-    _, kwargs = mock_bot.send_message.call_args
-    assert "Alerte suspicion" in kwargs["text"]
-    assert "Boîte vide" in kwargs["text"]
-
-
-@pytest.mark.asyncio
-async def test_async_enrich_listing_no_warning_when_safe(mock_bot: AsyncMock) -> None:
-    """Vérifie qu'aucun message n'est envoyé si l'article est sain."""
-    mock_llm = AsyncMock(spec=LLMAnalysisProviderProtocol)
-    mock_llm.analyze_listing.return_value = ListingAnalysisResult(
-        real_condition=RealConditionAssessment.VERY_GOOD,
-        is_lot_incomplete=False,
-        is_scam_or_trap=False,
-        risk_score=10,
-        analysis_summary="Article en parfait état.",
-    )
-
-    use_case = AsyncEnrichListingUseCase(llm_provider=mock_llm, bot=mock_bot)
-    listing = ListingEntity(
-        id=uuid.uuid4(),
-        source_name="vinted",
-        external_id="12345",
-        title="One Piece Tome 1",
-        normalized_title="one piece tome 1",
-        category_slug=CategorySlug.BD_COMICS,
-        item_price_cents=400,
-        condition="Très bon état",
-        description="Lu une fois",
-    )
-
-    result = await use_case.execute(chat_id=123456, message_id=1, listing=listing)
-
-    assert result is not None
-    assert result.risk_score == 10
-    mock_bot.send_message.assert_not_called()
 
 
 def test_comparison_status_has_no_out_of_stock() -> None:
@@ -168,19 +87,9 @@ async def test_process_listing_duplicate(mock_db: AsyncMock) -> None:
 
 
 def test_deterministic_matcher_adapter() -> None:
-    """Vérifie que l'adaptateur DeterministicListingMatcher s'exécute correctement."""
+    """Le matching réel accepte Tintin sous le prix maximum de l'alerte."""
     from app.core.constants import AlertStatus
-
-    matcher = DeterministicListingMatcher()
-    listing = ListingEntity(
-        id=uuid.uuid4(),
-        source_name="vinted",
-        external_id="item-test",
-        title="Livre Tintin au Tibet",
-        normalized_title="livre tintin au tibet",
-        category_slug=CategorySlug.BD_COMICS,
-        item_price_cents=800,
-    )
+    from app.domain.rules.listing_match import evaluate_listing_against_alert
 
     # Mock alerte
     alert_mock = MagicMock()
@@ -195,7 +104,14 @@ def test_deterministic_matcher_adapter() -> None:
     alert_mock.accepted_conditions = None
     alert_mock.isbn = None
 
-    match_res = matcher.evaluate(listing, alert_mock)
+    match_res = evaluate_listing_against_alert(
+        alert=alert_mock,
+        listing_category_slug="bd_comics",
+        listing_normalized_title="livre tintin au tibet",
+        listing_normalized_description=None,
+        listing_condition=None,
+        listing_item_price_cents=800,
+    )
     assert match_res.is_match is True
     assert match_res.price_matches is True
 
@@ -207,7 +123,6 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
 
     market_line = "<b>Prix bas constaté (T6) :</b> 5,12 €\n<b>Écart :</b> +13,16 € ⛔️"
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.use_cases.ingest_listing.comparison_line_from_loaded_books",
             return_value=(market_line, True, None),
@@ -220,7 +135,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
     ):
         session_local.return_value.__aenter__.return_value = AsyncMock()
         session_local.return_value.__aexit__.return_value = None
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
 
         # Simuler le repo listing
         mock_listing = MagicMock()
@@ -357,7 +272,6 @@ async def test_bd_alert_without_price_is_priced_in_background(mock_db: AsyncMock
 
     mock_send_alert = AsyncMock(side_effect=_send)
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
             new_callable=AsyncMock,
@@ -368,7 +282,7 @@ async def test_bd_alert_without_price_is_priced_in_background(mock_db: AsyncMock
             side_effect=_schedule,
         ) as schedule,
     ):
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, _alert, book = _bd_scenario(None)
         use_case.listing_repo = mock_repo
         payload = ListingIngestPayload(
@@ -415,7 +329,6 @@ async def test_bd_alert_whose_pass_found_nothing_is_dated_instead_of_pending(
     mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
 
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
             new_callable=AsyncMock,
@@ -423,7 +336,7 @@ async def test_bd_alert_whose_pass_found_nothing_is_dated_instead_of_pending(
         patch("app.db.session.AsyncSessionLocal"),
         patch("app.use_cases.ingest_listing.schedule_book_pricing") as schedule,
     ):
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, _alert, book = _bd_scenario(cache)
         use_case.listing_repo = mock_repo
         payload = ListingIngestPayload(
@@ -462,7 +375,6 @@ async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> No
     mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
 
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
             new_callable=AsyncMock,
@@ -470,7 +382,7 @@ async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> No
         patch("app.db.session.AsyncSessionLocal"),
         patch("app.use_cases.ingest_listing.schedule_book_pricing") as schedule,
     ):
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, _alert, book = _bd_scenario(cache)
         use_case.listing_repo = mock_repo
         payload = ListingIngestPayload(
@@ -510,7 +422,6 @@ async def test_series_alert_prices_every_linked_volume_after_the_send(mock_db: A
 
     mock_send_alert = AsyncMock(side_effect=_send)
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
             new_callable=AsyncMock,
@@ -521,7 +432,7 @@ async def test_series_alert_prices_every_linked_volume_after_the_send(mock_db: A
             side_effect=_schedule,
         ) as schedule,
     ):
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, alert, book = _bd_scenario(None)
         # Un second volume lié à la même alerte série, sans cote.
         sibling = MagicMock()
@@ -563,7 +474,6 @@ async def test_series_alert_does_not_reprice_a_priced_sibling(mock_db: AsyncMock
 
     mock_send_alert = AsyncMock(side_effect=_send)
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
             new_callable=AsyncMock,
@@ -574,7 +484,7 @@ async def test_series_alert_does_not_reprice_a_priced_sibling(mock_db: AsyncMock
             side_effect=_schedule,
         ) as schedule,
     ):
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, alert, book = _bd_scenario(None)
         # Un second volume lié, déjà coté.
         sibling = MagicMock()
@@ -621,7 +531,6 @@ async def test_isbn_alert_does_not_price_siblings(mock_db: AsyncMock) -> None:
 
     mock_send_alert = AsyncMock(side_effect=_send)
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
             new_callable=AsyncMock,
@@ -632,7 +541,7 @@ async def test_isbn_alert_does_not_price_siblings(mock_db: AsyncMock) -> None:
             side_effect=_schedule,
         ) as schedule,
     ):
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, alert, book = _bd_scenario(None)
         # Alerte ISBN : pas de couverture de série.
         alert.isbn = "9782205078054"
@@ -700,7 +609,7 @@ async def test_mark_notified_commits_before_the_next_send(mock_db: AsyncMock) ->
             raise RuntimeError("telegram down")
         return acknowledged_delivery(**_kwargs)
 
-    use_case = ProcessListingUseCase(db=mock_db)
+    use_case = ProcessListingUseCase(db=mock_db, sender=_send)
     use_case.listing_repo = mock_repo
     payload = ListingIngestPayload(
         source_name="vinted",
@@ -711,7 +620,6 @@ async def test_mark_notified_commits_before_the_next_send(mock_db: AsyncMock) ->
         item_price_cents=1000,
     )
     with (
-        patch("app.api.routes.ingest.send_listing_alert", side_effect=_send),
         patch(
             "app.use_cases.ingest_listing.evaluate_listing_against_alert",
             return_value=MagicMock(
@@ -731,7 +639,7 @@ async def test_mark_notified_commits_before_the_next_send(mock_db: AsyncMock) ->
 @pytest.mark.asyncio
 async def test_bd_resolution_schedules_bnf_without_awaiting_it(mock_db: AsyncMock) -> None:
     """La recherche BNF ne bloque pas la comparaison locale."""
-    use_case = ProcessListingUseCase(db=mock_db)
+    from app.use_cases.link_bd_catalog import resolve_bd_catalog_book
     listing = MagicMock(title="Blacksad", isbn13=None)
     alert = MagicMock(id=uuid.uuid4(), isbn=None)
 
@@ -740,19 +648,18 @@ async def test_bd_resolution_schedules_bnf_without_awaiting_it(mock_db: AsyncMoc
         return MagicMock()
 
     with (
-        patch("app.use_cases.ingest_listing.BookRepository") as repo_cls,
-        patch("app.use_cases.ingest_listing.BookCatalogService"),
+        patch("app.use_cases.link_bd_catalog.BookRepository") as repo_cls,
+        patch("app.use_cases.link_bd_catalog.BookCatalogService"),
         patch(
-            "app.use_cases.ingest_listing.MarketPriceService.get_comparison_summary",
-            return_value=None,
-        ),
-        patch(
-            "app.use_cases.ingest_listing.safe_create_task",
+            "app.use_cases.link_bd_catalog.safe_create_task",
             side_effect=_close_task,
         ) as scheduled,
     ):
         repo_cls.return_value.resolve_book_for_listing = AsyncMock(return_value=(None, None, None))
-        result = await use_case._resolve_bd_market_comparison(listing, alert)
+        result = await resolve_bd_catalog_book(
+            mock_db, alert_id=alert.id, alert_name=alert.name, alert_isbn=alert.isbn,
+            listing_title=listing.title, listing_description=listing.description,
+        )
 
     assert result is None
     scheduled.assert_called_once()
@@ -769,18 +676,21 @@ async def test_bd_series_alert_relaunches_the_whole_series_discovery(
     n'étaient donc jamais complétés après la création. `series=not alert.isbn`
     vaut True ici, et la tâche reste différée — l'envoi n'attend rien.
     """
-    use_case = ProcessListingUseCase(db=mock_db)
+    from app.use_cases.link_bd_catalog import resolve_bd_catalog_book
     listing = MagicMock(title="Blacksad - Tome 9", isbn13=None)
     alert = MagicMock(id=uuid.uuid4(), isbn=None, name="Blacksad")
 
     with (
-        patch("app.use_cases.ingest_listing.BookRepository") as repo_cls,
-        patch("app.use_cases.ingest_listing.BookCatalogService"),
-        patch("app.use_cases.ingest_listing.link_books_from_bnf") as link,
-        patch("app.use_cases.ingest_listing.safe_create_task") as scheduled,
+        patch("app.use_cases.link_bd_catalog.BookRepository") as repo_cls,
+        patch("app.use_cases.link_bd_catalog.BookCatalogService"),
+        patch("app.use_cases.link_bd_catalog.link_books_from_bnf") as link,
+        patch("app.use_cases.link_bd_catalog.safe_create_task") as scheduled,
     ):
         repo_cls.return_value.resolve_book_for_listing = AsyncMock(return_value=(None, None, None))
-        await use_case._resolve_bd_market_comparison(listing, alert)
+        await resolve_bd_catalog_book(
+            mock_db, alert_id=alert.id, alert_name=alert.name, alert_isbn=alert.isbn,
+            listing_title=listing.title, listing_description=listing.description,
+        )
 
     link.assert_called_once()
     assert link.call_args.kwargs["series"] is True
@@ -795,20 +705,23 @@ async def test_bd_alert_with_an_isbn_keeps_its_unitary_path(mock_db: AsyncMock) 
     ne doit donc jamais être posé à False sur une découverte de série — il n'y a
     simplement pas de telle découverte pour ces alertes.
     """
-    use_case = ProcessListingUseCase(db=mock_db)
+    from app.use_cases.link_bd_catalog import resolve_bd_catalog_book
     listing = MagicMock(title="Les Indes fourbes", isbn13=None)
     alert = MagicMock(id=uuid.uuid4(), isbn="9782889010851", name="Les Indes fourbes")
 
     with (
-        patch("app.use_cases.ingest_listing.BookRepository") as repo_cls,
-        patch("app.use_cases.ingest_listing.BookCatalogService") as catalog_cls,
-        patch("app.use_cases.ingest_listing.link_books_from_bnf") as link,
-        patch("app.use_cases.ingest_listing.safe_create_task") as scheduled,
+        patch("app.use_cases.link_bd_catalog.BookRepository") as repo_cls,
+        patch("app.use_cases.link_bd_catalog.BookCatalogService") as catalog_cls,
+        patch("app.use_cases.link_bd_catalog.link_books_from_bnf") as link,
+        patch("app.use_cases.link_bd_catalog.safe_create_task") as scheduled,
     ):
         repo_cls.return_value.get_book_for_alert = AsyncMock(return_value=None)
         repo_cls.return_value.get_by_isbn13 = AsyncMock(return_value=None)
         catalog_cls.return_value.add_book = AsyncMock(return_value=None)
-        await use_case._resolve_bd_market_comparison(listing, alert)
+        await resolve_bd_catalog_book(
+            mock_db, alert_id=alert.id, alert_name=alert.name, alert_isbn=alert.isbn,
+            listing_title=listing.title, listing_description=listing.description,
+        )
 
     link.assert_not_called()
     scheduled.assert_not_called()
@@ -830,7 +743,6 @@ async def test_bd_alert_without_a_resolvable_book_announces_the_search(
         return MagicMock()
 
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
             new_callable=AsyncMock,
@@ -839,7 +751,7 @@ async def test_bd_alert_without_a_resolvable_book_announces_the_search(
         patch("app.use_cases.ingest_listing.safe_create_task", side_effect=_close_task),
         patch("app.use_cases.ingest_listing.schedule_book_pricing"),
     ):
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _listing, mock_repo, alert, _book = _bd_scenario(None)
         alert.alert_books = []
         use_case.listing_repo = mock_repo
@@ -882,7 +794,6 @@ async def test_bd_alert_records_the_cote_state_it_shipped(mock_db: AsyncMock) ->
         return MagicMock()
 
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
             new_callable=AsyncMock,
@@ -892,7 +803,7 @@ async def test_bd_alert_records_the_cote_state_it_shipped(mock_db: AsyncMock) ->
         patch.object(mod, "safe_create_task", side_effect=_capture),
         patch.object(mod, "schedule_book_pricing"),
     ):
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _listing, mock_repo, _alert, _book = _bd_scenario(None)
         use_case.listing_repo = mock_repo
         payload = ListingIngestPayload(
@@ -938,20 +849,25 @@ async def test_catalog_resolution_prices_the_book_it_links() -> None:
     """La résolution de fond cote, après commit, le livre qu'elle vient de lier."""
     from app.use_cases import ingest_listing as mod
 
+    order = []
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value.commit.side_effect = lambda: order.append("commit")
     book = MagicMock()
     book.id = uuid.uuid4()
 
     with (
         patch.object(mod, "AlertRepository", return_value=_catalog_alert_repo("Blacksad")),
-        patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
+        patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=session_context)),
         patch.object(
-            mod.ProcessListingUseCase,
-            "_resolve_bd_market_comparison",
+            mod,
+            "resolve_bd_catalog_book",
             new=AsyncMock(return_value=book),
         ),
         patch.object(mod, "BookRepository") as repo_cls,
         patch.object(mod, "has_usable_price", return_value=False),
-        patch.object(mod, "schedule_book_pricing") as schedule,
+        patch.object(
+            mod, "schedule_book_pricing", side_effect=lambda *_a, **_k: order.append("price")
+        ) as schedule,
     ):
         repo_cls.return_value.get_by_id = AsyncMock(return_value=MagicMock(market_cache=None))
         await mod._link_bd_catalog_background(
@@ -964,6 +880,8 @@ async def test_catalog_resolution_prices_the_book_it_links() -> None:
         )
 
     schedule.assert_called_once_with(book.id, reason="bd_resolved")
+
+    assert order == ["commit", "price"]
 
 
 @pytest.mark.asyncio
@@ -978,8 +896,8 @@ async def test_catalog_resolution_leaves_an_already_priced_book_alone() -> None:
         patch.object(mod, "AlertRepository", return_value=_catalog_alert_repo("Blacksad")),
         patch("app.db.session.AsyncSessionLocal", MagicMock(return_value=_FakeSession())),
         patch.object(
-            mod.ProcessListingUseCase,
-            "_resolve_bd_market_comparison",
+            mod,
+            "resolve_bd_catalog_book",
             new=AsyncMock(return_value=book),
         ),
         patch.object(mod, "BookRepository") as repo_cls,
@@ -1005,7 +923,7 @@ async def test_catalog_resolution_leaves_an_already_priced_book_alone() -> None:
 async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> None:
     """La BNF est interrogée par nom d'alerte (+ auteur), jamais par titre d'annonce."""
     from app.services.book_metadata_service import CatalogueVerdict
-    from app.use_cases import ingest_listing as mod
+    from app.use_cases import link_bd_catalog as mod
 
     meta = MagicMock(isbn13="9782369904151", author="Un Auteur", publisher="Un Éditeur")
     book = MagicMock()
@@ -1036,11 +954,14 @@ async def test_bnf_link_queries_the_alert_name_and_prices_the_linked_book() -> N
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("wait_for_prices", [False, True])
-async def test_bnf_link_for_a_series_links_and_prices_every_tome(wait_for_prices: bool) -> None:
+@pytest.mark.parametrize("schedule_prices", [False, True])
+async def test_bnf_link_for_a_series_links_and_prices_every_tome(
+    wait_for_prices: bool, schedule_prices: bool,
+) -> None:
     """`series=True` lie chaque tome de la série et ne cote que ceux sans cote."""
     from app.db.models.book_market_cache import BookMarketCache
     from app.services.book_metadata_service import CatalogueVerdict
-    from app.use_cases import ingest_listing as mod
+    from app.use_cases import link_bd_catalog as mod
 
     priced = MagicMock(isbn13="9782369900011", title="Blacksad Tome 1", author="A", publisher="P")
     already_priced = MagicMock(
@@ -1086,14 +1007,19 @@ async def test_bnf_link_for_a_series_links_and_prices_every_tome(wait_for_prices
 
         repo_cls.return_value.get_all_books_for_alert = AsyncMock(return_value=[])
         await mod.link_books_from_bnf(
-            "Blacksad", uuid.uuid4(), author="A", series=True, wait_for_prices=wait_for_prices
+            "Blacksad", uuid.uuid4(), author="A", series=True, wait_for_prices=wait_for_prices,
+            schedule_prices=schedule_prices,
         )
 
     service_cls.return_value.lookup_series_notices.assert_awaited_once_with(
         "Blacksad", author_hint="A", **({"for_creation": True} if wait_for_prices else {})
     )
     # Un seul tome est coté : celui qui n'avait pas de cote utilisable.
-    if wait_for_prices:
+    assert repo_cls.return_value.link_alert_to_book.await_count == 2
+    if not schedule_prices:
+        schedule.assert_not_called()
+        price_now.assert_not_awaited()
+    elif wait_for_prices:
         schedule.assert_not_called()
         price_now.assert_awaited_once_with(books[priced.isbn13].id, reason="bnf_link")
     else:
@@ -1111,7 +1037,7 @@ async def test_a_conclusive_search_writes_its_verdict_on_the_alert() -> None:
     silence ne prouve rien, dans aucun sens (ADR-041).
     """
     from app.services.book_metadata_service import CatalogueVerdict
-    from app.use_cases import ingest_listing as mod
+    from app.use_cases import link_bd_catalog as mod
 
     notice = MagicMock(isbn13="9782369904151", author="A", publisher="P", title="T")
     cases = {
@@ -1184,7 +1110,6 @@ async def test_the_alert_of_an_uncatalogued_series_says_it(mock_db: AsyncMock) -
 
     mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
     with (
-        patch("app.api.routes.ingest.send_listing_alert", mock_send_alert),
         patch(
             "app.db.repositories.listing_repo.ListingRepository.mark_notified",
             new_callable=AsyncMock,
@@ -1192,7 +1117,7 @@ async def test_the_alert_of_an_uncatalogued_series_says_it(mock_db: AsyncMock) -
         patch("app.db.session.AsyncSessionLocal"),
         patch("app.use_cases.ingest_listing.schedule_book_pricing"),
     ):
-        use_case = ProcessListingUseCase(db=mock_db)
+        use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, alert, _book = _bd_scenario(None)
         alert.alert_books = []
         alert.book_search_exhausted_at = datetime(2026, 10, 6, 9, 30, tzinfo=UTC)

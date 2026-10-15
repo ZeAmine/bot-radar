@@ -5,10 +5,13 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram import Bot
 from apscheduler.events import EVENT_SCHEDULER_SHUTDOWN, SchedulerEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
+from pydantic import SecretStr
 
+from app.core.config import settings
 from app.main import lifespan
 
 
@@ -22,6 +25,39 @@ def scheduler_double():
     ]
     scheduler._executors = {}
     return scheduler
+
+
+@pytest.mark.parametrize(
+    "missing_secret",
+    ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "INGEST_API_TOKEN", "INTERNAL_API_TOKEN"],
+)
+async def test_invalid_production_secrets_prevent_telegram_and_producers(
+    monkeypatch, missing_secret,
+):
+    """Un secret absent refuse le lifespan avant Telegram, scheduler et poller."""
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
+    for name in (
+        "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "INGEST_API_TOKEN", "INTERNAL_API_TOKEN",
+    ):
+        monkeypatch.setattr(settings, name, SecretStr("synthetic"))
+    monkeypatch.setattr(settings, missing_secret, SecretStr(""))
+
+    with (
+        patch("app.main.setup_logging"),
+        patch.object(Bot, "set_my_commands", new_callable=AsyncMock) as telegram,
+        patch("app.tasks.scheduler.scheduler.start") as start_scheduler,
+        patch("app.tasks.vinted_poller.run_vinted_poller", new_callable=AsyncMock) as poller,
+        patch("app.core.tasks.safe_create_task") as create_task,
+    ):
+        with pytest.raises(RuntimeError, match=missing_secret):
+            async with lifespan(FastAPI()):
+                pytest.fail("Le lifespan invalide ne doit pas accepter de requêtes")
+
+        telegram.assert_not_awaited()
+        start_scheduler.assert_not_called()
+        poller.assert_not_called()
+        create_task.assert_not_called()
 
 
 @pytest.mark.asyncio

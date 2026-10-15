@@ -31,6 +31,7 @@ from app.schemas.listing import ListingIngestPayload
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, CatalogueVerdict
 from app.use_cases import ingest_listing as ingestion
+from app.use_cases import link_bd_catalog as catalog_linking
 from tests.add_fakes import DraftState
 from tests.database import postgres_replayed_database
 from tests.telegram_fakes import acknowledged_delivery
@@ -105,6 +106,9 @@ async def journey(monkeypatch):
             AsyncMock(return_value=BookMetadata(title="Cible BD", isbn13=NEW)),
         )
         monkeypatch.setattr(ingestion, "schedule_book_pricing", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            catalog_linking, "schedule_book_pricing", lambda *_args, **_kwargs: None
+        )
 
         async def change(value="-", fail_commit=False):
             state = DraftState()
@@ -257,7 +261,7 @@ async def test_late_title_result_is_abandoned_after_isbn_change(journey, monkeyp
         )
 
     monkeypatch.setattr(BookMetadataService, "lookup_by_title_and_author", lookup)
-    task = asyncio.create_task(ingestion.link_books_from_bnf("Cible BD", journey.alert.id))
+    task = asyncio.create_task(catalog_linking.link_books_from_bnf("Cible BD", journey.alert.id))
     await asyncio.wait_for(entered.wait(), 2)
     try:
         await journey.change()
@@ -294,7 +298,7 @@ async def test_new_title_discovery_after_removal_is_allowed(journey, monkeypatch
             )
         ),
     )
-    assert await ingestion.link_books_from_bnf("Cible BD", journey.alert.id, series=True)
+    assert await catalog_linking.link_books_from_bnf("Cible BD", journey.alert.id, series=True)
     assert len((await journey.read()).alert_books) == 1
 
 
@@ -304,7 +308,6 @@ async def test_new_ingestion_does_not_use_removed_reference(journey, monkeypatch
     monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [journey.user.telegram_user_id])
     await journey.change()
     sender = AsyncMock(side_effect=acknowledged_delivery)
-    monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: sender)
     # La confirmation n'est pas le sujet : aucun travail réseau détaché dans ce scénario.
     monkeypatch.setattr(ingestion, "safe_create_task", lambda coro, **_kwargs: coro.close())
     payload = ListingIngestPayload(
@@ -317,7 +320,7 @@ async def test_new_ingestion_does_not_use_removed_reference(journey, monkeypatch
     )
     async with journey.db.maker() as session:
         result = await ingestion.ProcessListingUseCase(
-            session, SimpleNamespace(id=123456789)
+            session, SimpleNamespace(id=123456789), sender=sender
         ).execute(payload, {})
     assert result.matches[0].notification_sent
     assert "16,00" not in sender.call_args.kwargs["market_comparison_line"]
@@ -537,7 +540,7 @@ async def test_result_waiting_for_edit_lock_cannot_restore_removed_link(journey,
         )
 
     monkeypatch.setattr(BookMetadataService, "lookup_by_title_and_author", lookup)
-    task = asyncio.create_task(ingestion.link_books_from_bnf("Cible BD", journey.alert.id))
+    task = asyncio.create_task(catalog_linking.link_books_from_bnf("Cible BD", journey.alert.id))
     await asyncio.wait_for(entered.wait(), 2)
     async with journey.db.maker() as session:
         repo = AlertRepository(session)

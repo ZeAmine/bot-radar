@@ -12,7 +12,7 @@ ADR-029 et exception d'édition ADR-038 conservés).
 
 `evaluate_listing_against_alert` conserve décision, raison française, score,
 indicateurs et ordre des règles. Il ajoute les informations pendant la même passe,
-sans rejouer de prédicat. `DeterministicListingMatcher` les transmet également.
+sans rejouer de prédicat. L’ingestion utilise directement ce résultat.
 Il n'y a ni journal par paire dans l'ingestion, ni stockage supplémentaire.
 
 | Code stable | Première étape décisive |
