@@ -696,3 +696,122 @@ async def test_poller_admission_failure_discards_seen_id_and_reports_failure(
     assert not gate._entries
     assert journey.deliveries == []
     assert await journey.matches() == []
+
+
+async def test_new_watch_suppresses_baseline_even_for_globally_seen_items(journey):
+    from datetime import UTC, datetime
+
+    from app.db.repositories.alert_repo import AlertRepository
+
+    legacy = await journey.add_alert()
+    await journey.ingest("known")
+    async with journey.database.maker() as session:
+        new = await AlertRepository(session).create(
+            user_id=legacy.user_id, category_id=journey.category.id,
+            name="Console nouvelle", include_keywords=["console"],
+            vinted_search_url="https://example.invalid/search",
+        )
+        await session.commit()
+        started = datetime.now(UTC)
+        await AlertRepository(session).initialize_listing_baselines(
+            "tech", "https://example.invalid/search", ["known", "old"], started,
+        )
+        await session.commit()
+        new_id = new.id
+    await journey.ingest("known")
+    await journey.ingest("old")
+    assert len(journey.deliveries) == 2  # L'ancienne alerte garde son comportement.
+    await journey.ingest("new")
+    matches = await journey.matches()
+    assert sum(row.alert_id == new_id for row in matches) == 1
+    assert len(journey.deliveries) == 4
+    async with journey.database.maker() as session:
+        reread = await session.get(Alert, new_id)
+        assert reread.listing_baseline["state"] == "ready"
+        await AlertRepository(session).initialize_listing_baselines(
+            "tech", "https://example.invalid/search", ["new"], datetime.now(UTC),
+        )
+        await session.commit()
+        assert reread.listing_baseline["external_ids"] == ["known", "old"]
+
+
+async def test_pending_watch_blocks_ingestion_and_failed_scan_keeps_it_pending(
+    journey, monkeypatch,
+):
+    from app.db.repositories.alert_repo import AlertRepository
+    from app.tasks import vinted_poller as poller
+
+    legacy = await journey.add_alert()
+    async with journey.database.maker() as session:
+        new = await AlertRepository(session).create(
+            user_id=legacy.user_id, category_id=journey.category.id,
+            name="Console nouvelle", include_keywords=["console"],
+        )
+        await session.commit()
+        new_id = new.id
+    await journey.ingest("pending")
+    assert all(row.alert_id != new_id for row in await journey.matches())
+    monkeypatch.setattr(poller, "AsyncSessionLocal", journey.database.maker)
+    monkeypatch.setattr(poller, "fetch_vinted_page", AsyncMock(side_effect=TimeoutError()))
+    with pytest.raises(TimeoutError):
+        await poller.poll_vinted_once(set(), AsyncMock(), "https://example.invalid/search", "tech")
+    async with journey.database.maker() as session:
+        assert (await session.get(Alert, new_id)).listing_baseline["state"] == "pending"
+
+
+async def test_known_publication_before_creation_cannot_notify(journey):
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.repositories.alert_repo import AlertRepository
+
+    legacy = await journey.add_alert()
+    async with journey.database.maker() as session:
+        await AlertRepository(session).create(
+            user_id=legacy.user_id, category_id=journey.category.id,
+            name="Console nouvelle", include_keywords=["console"],
+            vinted_search_url="https://example.invalid/search",
+        )
+        await session.commit()
+        await AlertRepository(session).initialize_listing_baselines(
+            "tech", "https://example.invalid/search", [], datetime.now(UTC),
+        )
+        await session.commit()
+        payload = journey.payload("old-publication")
+        payload.published_at = datetime.now(UTC)-timedelta(days=1)
+        await ProcessListingUseCase(session, journey.bot).execute(payload, {})
+    assert len(journey.deliveries) == 1
+
+
+async def test_initial_catalogue_is_abandoned_by_notification_recovery(journey, monkeypatch):
+    from datetime import UTC, datetime
+
+    from app.db.repositories.alert_repo import AlertRepository
+    from app.domain.enums import NotificationState
+
+    legacy = await journey.add_alert()
+    await journey.ingest("baseline")
+    async with journey.database.maker() as session:
+        alert = await AlertRepository(session).create(
+            user_id=legacy.user_id, category_id=journey.category.id,
+            name="Console nouvelle", include_keywords=["console"],
+            vinted_search_url="https://example.invalid/search",
+        )
+        listing = await ListingRepository(session).get_by_source_and_external_id(
+            "vinted", "baseline",
+        )
+        await ListingRepository(session).create_match(alert.id, listing.id, known_unsent=True)
+        await session.commit()
+        await AlertRepository(session).initialize_listing_baselines(
+            "tech", "https://example.invalid/search", ["baseline"], datetime.now(UTC),
+        )
+        await session.commit()
+        from app.tasks import recover_notifications as recovery
+        monkeypatch.setattr(recovery, "AsyncSessionLocal", journey.database.maker)
+        monkeypatch.setattr(recovery, "get_bot", lambda: journey.bot)
+        await recovery._recover_notifications()
+        row = await session.scalar(select(ListingMatch).where(
+            ListingMatch.alert_id == alert.id,
+        ).execution_options(populate_existing=True))
+        assert row.notification_state == NotificationState.ABANDONED
+        assert row.notification_reason == "initial_catalogue"
+    assert len(journey.deliveries) == 1

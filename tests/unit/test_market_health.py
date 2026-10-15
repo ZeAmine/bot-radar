@@ -28,14 +28,14 @@ def test_message_says_what_is_frozen_and_for_how_long():
     message = format_stale_certified_lows([_item(23), _item(None, title="Carcajou", cents=390)])
 
     assert "Dead Train" in message
-    assert "13,57 €" in message
+    assert "13,57 €" not in message
     assert "rien depuis 23 j" in message
     # Jamais observé est plus grave qu'anciennement observé : les deux se disent.
     assert "jamais observée" in message
-    assert "3,90 €" in message
+    assert "3,90 €" not in message
     # Le message explique pourquoi le chiffre reste là.
-    assert "hors référence glissante vérifiable" in message
-    assert "ne mesure pas la fraîcheur des observations locales" in message
+    assert "Historique fournisseur non actualisé" in message
+    assert "Agrégats historiques" not in message
 
 
 def test_no_stale_book_means_no_message():

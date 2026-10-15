@@ -48,6 +48,10 @@ class VintedBlockError(Exception):
         super().__init__(message)
 
 
+class VintedCollectionError(RuntimeError):
+    """Le catalogue n'a pas été lu : un résultat vide ne prouve pas sa réussite."""
+
+
 class VintedRateLimitError(Exception):
     """Exception levée en cas de limitation de débit Vinted (429)."""
 
@@ -362,8 +366,10 @@ async def fetch_vinted_page(
             if "application/json" in content_type:
                 try:
                     data = response.json()
+                    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                        raise ValueError("Catalogue JSON invalide")
                     items = parse_vinted_catalog_json(data)
-                    if items or not is_session_refresh_page(response.text):
+                    if items or not data["items"]:
                         return items
                 except Exception as parse_err:
                     logger.debug("Erreur parsing JSON Vinted (%s), repli HTML: %s", url, parse_err)
@@ -414,6 +420,8 @@ async def fetch_vinted_page(
                     "Vinted catalogue non authentifié reçu, purge de session pour le prochain tour."
                 )
                 await vinted_session_manager.clear_session(client)
+            if not items:
+                raise VintedCollectionError("Catalogue HTML vide non confirmé")
             return items
         if html_response.status_code == 429:
             logger.warning("Vinted rate limit (429) sur le catalogue HTML: %s", url)
@@ -427,13 +435,13 @@ async def fetch_vinted_page(
                 html_response.status_code,
                 url,
             )
-        return []
+        raise VintedCollectionError(f"Catalogue HTTP {html_response.status_code}")
 
-    except (VintedBlockError, VintedRateLimitError):
+    except (VintedBlockError, VintedRateLimitError, VintedCollectionError):
         raise
     except Exception as exc:
-        logger.debug("Erreur lors de la requête Vinted (%s): %s", url, exc)
-        return []
+        logger.warning("Collecte Vinted impossible (%s)", type(exc).__name__)
+        raise VintedCollectionError(type(exc).__name__) from None
 
 
 def to_ingest_payload(
@@ -462,4 +470,6 @@ def to_ingest_payload(
         "photos": [item.photo_url] if item.photo_url else [],
         "isbn13": isbn13,
     }
+    if item.published_at is not None:
+        payload["published_at"] = item.published_at.isoformat()
     return payload

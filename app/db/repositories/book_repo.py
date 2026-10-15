@@ -4,9 +4,10 @@ import re
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from typing import cast
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -188,18 +189,15 @@ class BookRepository:
         return alert_book
 
     async def get_books_for_active_bd_alerts(self) -> list[Book]:
-        """Charge tous les livres uniques associés à des alertes BD actives."""
+        """Charge les livres uniques des alertes BD conservées, actives ou en pause."""
+        watched = select(AlertBook.book_id).join(Alert).join(Category).where(
+            Category.slug == "bd_comics", Alert.deleted_at.is_(None),
+            Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+        )
         stmt = (
-            select(Book)
-            .join(AlertBook, Book.id == AlertBook.book_id)
-            .join(Alert, AlertBook.alert_id == Alert.id)
-            .join(Category, Alert.category_id == Category.id)
-            .options(selectinload(Book.market_cache))
-            .where(
-                Category.slug == "bd_comics",
-                Alert.status == AlertStatus.ACTIVE,
-            )
-            .distinct()
+            select(Book).outerjoin(BookMarketCache, BookMarketCache.book_id == Book.id)
+            .where(Book.id.in_(watched)).options(selectinload(Book.market_cache))
+            .order_by(BookMarketCache.last_attempt_at.asc().nulls_first(), Book.id)
         )
         result = await self.session.execute(stmt)
         books = list(result.scalars().all())
@@ -216,10 +214,20 @@ class BookRepository:
         # vaut NULL, et la clause WHERE écarterait alors les livres sans cache.
         not_in_rest = or_(
             BookMarketCache.collection_status.is_(None),
-            BookMarketCache.collection_status != "failed",
+            BookMarketCache.collection_status.not_in(["failed", "partial"]),
             BookMarketCache.last_attempt_at.is_(None),
             BookMarketCache.last_attempt_at <= rest_cutoff,
         )
+        watched = select(AlertBook.book_id).join(Alert).join(Category).where(
+            Category.slug == "bd_comics", Alert.deleted_at.is_(None),
+            Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+        )
+        population = await self.session.scalar(
+            select(func.count()).select_from(Book).where(Book.id.in_(watched))
+        )
+        # 12 lots couvrent six heures : même les reprises en échec ont assez de places.
+        limit = max(limit, ceil((population or 0) / 12))
+        successful = BookMarketCache.last_successful_collection_at
         subq = (
             select(Book.id)
             .join(AlertBook, Book.id == AlertBook.book_id)
@@ -228,14 +236,15 @@ class BookRepository:
             .outerjoin(BookMarketCache, Book.id == BookMarketCache.book_id)
             .where(
                 Category.slug == "bd_comics",
-                Alert.status == AlertStatus.ACTIVE,
-                BookMarketCache.expires_at.is_(None)
-                | (BookMarketCache.expires_at <= now + timedelta(hours=2))
-                | BookMarketCache.checked_at.is_(None),
+                Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+                Alert.deleted_at.is_(None),
+                or_(successful.is_(None), successful <= now - timedelta(hours=24),
+                    BookMarketCache.collection_status.in_(["failed", "partial"])),
                 not_in_rest,
             )
-            .group_by(Book.id, BookMarketCache.checked_at)
-            .order_by(BookMarketCache.checked_at.asc().nulls_first())
+            .group_by(Book.id, BookMarketCache.last_attempt_at, BookMarketCache.checked_at)
+            .order_by(BookMarketCache.last_attempt_at.asc().nulls_first(),
+                      BookMarketCache.checked_at.asc().nulls_first(), Book.id)
             .limit(limit)
         )
         book_ids = list((await self.session.execute(subq)).scalars().all())
@@ -244,6 +253,8 @@ class BookRepository:
         stmt = select(Book).options(selectinload(Book.market_cache)).where(Book.id.in_(book_ids))
         result = await self.session.execute(stmt)
         books = list(result.scalars().all())
+        priority = {book_id: index for index, book_id in enumerate(book_ids)}
+        books.sort(key=lambda book: priority[book.id])
         await self._refresh_annual(books)
         return books
 

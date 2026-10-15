@@ -265,3 +265,39 @@ Date : 2026-10-08 · Statut : **accepté**. Première déclaration : `3c742f3311
 - Décision et raison : Persister une demande nullable avec jeton et intention, transactions courtes sous garde de version, reprise bornée par le scheduler unique.
 - Conséquences : Les anciennes pauses NULL ne sont pas reclassées. Une erreur blocked attend un geste ; l’annulation d’un appelant ne tue pas le travail partagé. Retour vers ancien /resume : maintenance obligatoire, sans downgrade destructeur.
 - Procédure sensible et limites : [préparation BD](../bd-preparation.md).
+
+
+<a id="adr-050"></a>
+
+## ADR-050 : Nouveautés au premier scan et minimum annuel unique vérifiable
+
+- **Demande** : supprimer la rafale après création, simplifier `/list`, supprimer
+  le deuxième minimum et couvrir les cotations sous 48 h, pauses comprises.
+- **Nouveautés** : jalon JSON par nouvelle alerte, premier catalogue réussi exclu
+  en silence. Aucun jalon rétroactif pour les anciennes alertes. Les reprises
+  abandonnent les notifications du catalogue initial. Les réponses Vinted en
+  erreur ou le HTML vide non confirmé ne deviennent plus des catalogues réussis.
+  Le catalogue JSON explicitement vide peut initialiser l'alerte sans repli HTML.
+- **Limite acceptée** : sans publication Vinted, la frontière est le premier scan,
+  pas exactement la confirmation. La date de réception n'est jamais présentée
+  comme date de publication ; les IDs ne servent pas à inventer un horodatage.
+- **Prix** : suppression de « Ancien minimum (informatif) ». Le minimum annuel reste
+  une projection des observations admissibles datées et livrées. Les points
+  fournisseurs ont leur propre type dans les snapshots, une identité stable et
+  leur date réelle ; ils ne sont pas des offres disponibles aujourd'hui. Un
+  agrégat non daté reste conservé, sans devenir une preuve annuelle.
+- **Collecte** : actifs et pauses, déduplication des livres, résolution quotidienne
+  des séries et liens manquants. La résolution planifiée ne lance aucune cotation
+  hors des vagues. Sélection par dernières tentatives, lots adaptés à la population,
+  repos de six heures pour les échecs/partiels et cible 24 h avant signal à 48 h.
+  Réussite d'offres et collecte historique sont distinctes de la tentative.
+- **Constats de production du 14 octobre 2026** : à 20:45 Europe/Paris, les six
+  tomes de L'Arabe du futur ont été traités : quatre avec prix, deux en échec.
+  Grimr conserve un agrégat de 545 cents sans date du point ; 1103 cents proviennent
+  d'une offre observée le 20 septembre. La sonde historique Grimr répond 200 vide,
+  même avec le jeton Redis effectivement choisi. Les 545 cents ne sont donc pas
+  confirmés dans la période annuelle ; aucune date ni aucun prix n'est fabriqué.
+- **Opérations** : migration additive 0014_alert_market_freshness. Les relevés et
+  preuves de livraisons sont conservés. Aucun déploiement n'est autorisé par cet ADR.
+  Les preuves de consolidation antérieures gardent leur révision et leur portée,
+  mais ne prescrivent plus de double présentation dans les messages.

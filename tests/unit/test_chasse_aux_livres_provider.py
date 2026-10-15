@@ -505,12 +505,15 @@ def test_is_title_coherent_rejects_unrelated_work_and_other_tome():
     assert is_coherent("Le prophète", None) is True
 
 
-async def test_historical_endpoint_failure_is_visible_even_with_a_current_offer(monkeypatch):
+@pytest.mark.parametrize("status", [403, 200])
+async def test_historical_endpoint_failure_is_visible_even_with_a_current_offer(
+    monkeypatch, status,
+):
     client = AsyncMock()
 
     async def respond(url, **_kwargs):
         if "/rest/jcd" in url:
-            return httpx.Response(403)
+            return httpx.Response(status)
         if "/rest/lookup" in url:
             return httpx.Response(200, json=MOCK_LOOKUP_JSON)
         return httpx.Response(200, text=MOCK_PROD_HTML + '<div data-didh="aabbcc"></div>')
@@ -528,3 +531,30 @@ async def test_historical_endpoint_failure_is_visible_even_with_a_current_offer(
     )
     assert offers
     assert offers.failed_providers == ("chasse_aux_livres",)
+
+
+def test_dated_history_preserves_point_date_price_and_condition():
+    from datetime import UTC, datetime
+
+    from app.providers.chasse_aux_livres import parse_historical_observations
+
+    data = {"price_includes_shipping": True,
+            "stats": [{"label": "Très bon état +", "statValues": [
+        {"x": 1782864000000, "y": 5.45},
+        {"y": 1.00},
+    ]}, {"label": "Bon état +", "statValues": [{"x": 1782864000000, "y": 1}]}]}
+    points = parse_historical_observations(data, "https://example.invalid/book")
+    assert len(points) == 1
+    assert points[0].observed_at == datetime(2026, 7, 1, tzinfo=UTC)
+    assert points[0].delivered_price_cents == 545
+    assert points[0].is_historical
+    assert not points[0].is_available
+
+
+def test_history_without_delivery_proof_cannot_become_a_delivered_minimum():
+    from app.providers.chasse_aux_livres import parse_historical_observations
+
+    data = {"stats": [{"label": "Très bon état +", "statValues": [
+        {"x": 1782864000000, "y": 5.45},
+    ]}]}
+    assert parse_historical_observations(data, "https://example.invalid/book") == []

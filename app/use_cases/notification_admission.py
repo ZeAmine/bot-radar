@@ -14,6 +14,7 @@ from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.domain.enums import AlertStatus
 from app.domain.enums import NotificationState as State
+from app.domain.rules.listing_freshness import listing_is_new_for_alert
 from app.services.telegram_service import DeliveryResult
 
 MAX_CYCLES = 3
@@ -54,6 +55,10 @@ async def reserve(db: AsyncSession, listing: Listing, alert: Alert,
     if await complete_stored_receipt(db, row):
         return False
     now = datetime.now(UTC)
+    if not listing_is_new_for_alert(alert, listing):
+        row.notification_state, row.notification_reason = State.ABANDONED, "initial_catalogue"
+        await db.commit()
+        return False
     if row.notification_state == State.SENDING:
         # Sous le gate, aucun autre propriétaire de CETTE annonce ne peut encore envoyer.
         row.notification_state, row.notification_reason = State.UNKNOWN, "orphaned_sending"

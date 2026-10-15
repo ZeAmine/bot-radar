@@ -1,13 +1,7 @@
-"""Prévient qu'une cote de marché n'est plus nourrie par aucune observation.
+"""Signale les collectes d'offres ou d'historique réellement absentes sous 48 h.
 
-Une cote affichée ne se périme pas d'elle-même : le cache la conserve, et son
-`historical_low_at` est réécrit à chaque passe, si bien qu'un chiffre mort depuis
-des semaines se lit comme vérifié hier. C'est exactement le défaut qui a laissé
-« 22,90 € » dans une alerte trois semaines après que la source eut cessé de
-répondre — rien ne l'avait signalé.
-
-Ce module ne corrige rien : il regarde ce qui a réellement été constaté et prévient
-une fois par jour. La correction, elle, est ailleurs (ADR-019).
+La date du prix minimum ne mesure pas la fraîcheur de la collecte. Les preuves
+persistées distinguent les deux, sans renouveler un relevé lors d'un échec.
 """
 
 import logging
@@ -28,12 +22,11 @@ from app.services.market_price_service import (
     is_no_offer_line,
 )
 from app.services.telegram_service import notify_admins
-from app.utils.price import format_cents
 
 logger = logging.getLogger(__name__)
 
-# Au-delà de ce délai sans observation certifiée, la cote affichée est une vestige.
-STALE_AFTER_DAYS = 7
+# Au-delà de ce délai sans collecte réussie, le retard doit être visible.
+STALE_AFTER_DAYS = 2
 
 # Un message par jour suffit : le job passe deux fois par jour.
 NOTIFY_KEY = "radar:market:stale_low:notified"
@@ -45,7 +38,7 @@ MAX_LISTED = 8
 
 @dataclass(frozen=True)
 class StaleCertifiedLow:
-    """Une cote toujours affichée, que plus aucun relevé ne vient confirmer."""
+    """Un ouvrage dont la collecte n’a pas réussi récemment."""
 
     title: str
     isbn13: str | None
@@ -71,6 +64,7 @@ def _age_line(item: StaleCertifiedLow) -> str:
 def format_stale_certified_lows(
     items: list[StaleCertifiedLow],
     total: int | None = None,
+    *, historical: bool = True,
 ) -> str:
     """Message d'état : ce qui est figé, et pourquoi cela ne s'auto-corrige pas.
 
@@ -84,20 +78,17 @@ def format_stale_certified_lows(
     listed = items[:MAX_LISTED]
     affected = max(total or 0, len(items))
     lines = "\n".join(
-        f"• <i>{item.title}</i> — {format_cents(item.low_cents)} ({_age_line(item)})"
+        f"• <i>{item.title}</i> ({_age_line(item)})"
         for item in listed
     )
     remainder = affected - len(listed)
     tail = f"\n• … et {remainder} autre(s)" if remainder > 0 else ""
 
+    title = "Historique fournisseur non actualisé" if historical else "Offres non actualisées"
     return (
-        "⚠️ <b>Agrégats historiques non actualisés</b>\n\n"
-        f"{affected} livre(s) conservent un ancien minimum déclaré que plus aucun "
-        "relevé ne nourrit :\n\n"
-        f"{lines}{tail}\n\n"
-        "Ces valeurs sont informatives, hors référence glissante vérifiable. "
-        "Ce signal ne mesure pas la fraîcheur des observations locales.\n"
-        "<code>scripts/sync_chasse_session.py</code> relance la série 1 an."
+        f"⚠️ <b>{title}</b>\n\n"
+        f"{affected} livre(s) sans collecte réussie depuis plus de 48 heures :\n\n"
+        f"{lines}{tail}"
     )
 
 
@@ -124,9 +115,23 @@ async def _claim_notification_slot() -> bool:
 
 
 async def notify_stale_certified_lows(
+    session: Any, *, stale_after_days: int = STALE_AFTER_DAYS,
+) -> int:
+    """Signale une collecte historique absente, jamais un minimum simplement ancien."""
+    return await _notify_stale_collections(session, stale_after_days=stale_after_days,
+                                           historical=True)
+
+
+async def notify_stale_current_collections(session: Any) -> int:
+    """Signale les offres sans collecte réussie depuis 48 heures."""
+    return await _notify_stale_collections(session, stale_after_days=2, historical=False)
+
+
+async def _notify_stale_collections(
     session: Any,
     *,
     stale_after_days: int = STALE_AFTER_DAYS,
+    historical: bool,
 ) -> int:
     """Prévient l'utilisateur des cotes figées. Renvoie le nombre signalé.
 
@@ -135,9 +140,9 @@ async def notify_stale_certified_lows(
     """
     try:
         stale_after = datetime.now(UTC) - timedelta(days=stale_after_days)
-        rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
-            stale_after=stale_after, limit=MAX_LISTED
-        )
+        repo = MarketPriceRepository(session)
+        read = repo.find_stale_certified_lows if historical else repo.find_stale_current_collections
+        rows, total = await read(stale_after=stale_after, limit=MAX_LISTED)
         if not rows:
             return 0
 
@@ -150,13 +155,15 @@ async def notify_stale_certified_lows(
             )
             for title, isbn, low, last_seen in rows
         ]
-        if not await _claim_notification_slot():
+        claimed = (await _claim_notification_slot() if historical else
+                   await _claim_slot("radar:market:stale_current:notified", NOTIFY_TTL_SECONDS))
+        if not claimed:
             logger.debug(
                 "Cotes figées détectées (%s), déjà signalées aujourd'hui.", total
             )
             return 0
 
-        await notify_admins(format_stale_certified_lows(items, total))
+        await notify_admins(format_stale_certified_lows(items, total, historical=historical))
         logger.warning(
             "Cotes de marché figées signalées : %s livre(s) sans observation récente.",
             total,

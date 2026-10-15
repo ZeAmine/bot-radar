@@ -1,3 +1,7 @@
+> Portée historique : ce rapport conserve les résultats attribués à leur révision.
+> Ses mentions d'un ancien agrégat informatif ne prescrivent plus son affichage.
+> ADR-050 impose désormais un seul minimum annuel vérifiable dans le panneau.
+
 # Validation transversale locale — 2026-10-12
 
 Statut : archive de preuves historiques, par révision et sélection. Périmètre : consolidation locale ; aucun résultat ne valide automatiquement un autre arbre. Le manifeste consommé par `scripts/verify_consolidation.py` conserve son chemin.

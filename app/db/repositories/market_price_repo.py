@@ -18,14 +18,6 @@ from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.domain.rules.market_offer import is_comparable_secondhand_offer, is_merchant_excluded
 from app.providers.base import MarketOffer
 
-# Présence de la cote certifiée dans le `raw_payload` d'un relevé : c'est cette clé
-# qui distingue une observation d'un simple prix du jour. `as_string()` passe par
-# le comparateur JSON de SQLAlchemy — `->>` sur PostgreSQL, `JSON_EXTRACT` sur
-# SQLite — donc la requête s'exécute réellement dans les tests. L'opérateur brut
-# `op("->>")` aurait produit du SQL que seule la prod sait lire : c'est ainsi qu'une
-# faute de logique est restée invisible jusqu'à la première exécution réelle.
-_CERTIFIED_LOW_PRESENT = MarketPriceSnapshot.raw_payload["historical_low_1y_cents"].as_string()
-
 
 class MarketPriceRepository:
     """Gestion des opérations de stockage des snapshots et du cache de marché."""
@@ -45,7 +37,7 @@ class MarketPriceRepository:
         if previous is not None:
             fields = ("provider_name", "item_price_cents", "shipping_price_cents",
                       "delivered_price_cents", "currency", "item_condition", "source_url",
-                      "is_comparable")
+                      "is_comparable", "is_historical")
             old_date = _utc(previous.observed_at) if previous.observed_at is not None else None
             new_date = _utc(offer.observed_at) if offer.observed_at is not None else None
             merchant = (offer.raw_payload or {}).get("best_merchant")
@@ -73,8 +65,10 @@ class MarketPriceRepository:
             currency=offer.currency,
             item_condition=offer.item_condition,
             source_url=offer.source_url,
-            checked_at=observed if observed is not None and observed <= now else now,
+            checked_at=(observed if not offer.is_historical and observed is not None
+                        and observed <= now else now),
             is_comparable=offer.is_comparable,
+            is_historical=offer.is_historical,
             confidence=offer.confidence,
             raw_payload=offer.raw_payload,
         )
@@ -215,7 +209,8 @@ class MarketPriceRepository:
         """Récupère le snapshot le plus récent enregistré pour un livre."""
         stmt = (
             select(MarketPriceSnapshot)
-            .where(MarketPriceSnapshot.book_id == book_id)
+            .where(MarketPriceSnapshot.book_id == book_id,
+                   MarketPriceSnapshot.is_historical.is_(False))
             .order_by(MarketPriceSnapshot.checked_at.desc())
             .limit(1)
         )
@@ -256,27 +251,15 @@ class MarketPriceRepository:
         stale_after: datetime,
         limit: int = 8,
     ) -> tuple[list[tuple[str, str | None, int, datetime | None]], int]:
-        """Livres dont la cote 1 an affichée n'est plus nourrie par aucun relevé.
+        """Collecte historique absente depuis le seuil, indépendamment du minimum.
 
-        Une cote affichée sans nouvelle observation reste un chiffre, et le
-        `historical_low_at` ne prouve pas la date du minimum fournisseur.
-        Cette requête regarde ce qui a réellement été constaté, et non ce qui est
-        affiché. Ne remontent que les livres d'une alerte BD active — une cote que
-        personne ne regarde n'a pas besoin d'alerte.
-
-        Returns:
-            (livres, total). `livres` est borné par `limit` — c'est une liste à lire,
-            pas un inventaire. `total` compte tous les livres figés, bordés ou non :
-            sans lui, un message annonçant « 8 livres » ferait passer 111 pour 8.
-            Chaque livre est (titre, ISBN, cote en centimes, dernière observation
-            certifiée) ; `None` comme dernière observation signifie « jamais observé
-            dans les relevés conservés », ce qui est plus grave, pas plus rassurant.
+        Retourne les ouvrages surveillés (actifs ou en pause), un montant brut
+        conservé pour compatibilité des rapports, la dernière collecte et le total.
+        Le montant brut ne détermine jamais l'admission ni la fraîcheur.
         """
         # Dernière observation certifiée, par livre. Réutilisée telle quelle dans le
         # HAVING : c'est le même agrégat, pas une approximation recalculée.
-        last_certified = func.max(MarketPriceSnapshot.checked_at).filter(
-            _CERTIFIED_LOW_PRESENT.is_not(None)
-        )
+        last_certified = BookMarketCache.historical_checked_at
         # Comptage sur le jeu déjà filtré : une fonction de fenêtre s'applique après
         # le HAVING et avant le LIMIT, donc elle voit les livres que la liste tronque.
         total_matching = func.count().over().label("total_matching")
@@ -285,26 +268,27 @@ class MarketPriceRepository:
             select(
                 Book.title,
                 Book.isbn13,
-                BookMarketCache.historical_low_1y_cents,
+                func.coalesce(BookMarketCache.historical_low_1y_cents, 0),
                 last_certified,
                 total_matching,
             )
-            .join(BookMarketCache, BookMarketCache.book_id == Book.id)
+            .outerjoin(BookMarketCache, BookMarketCache.book_id == Book.id)
             .join(AlertBook, AlertBook.book_id == Book.id)
             .join(Alert, Alert.id == AlertBook.alert_id)
             .join(Category, Category.id == Alert.category_id)
-            .outerjoin(MarketPriceSnapshot, MarketPriceSnapshot.book_id == Book.id)
             .where(
                 Category.slug == CategorySlug.BD_COMICS.value,
-                Alert.status == AlertStatus.ACTIVE,
-                BookMarketCache.historical_low_1y_cents.is_not(None),
+                Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+                Alert.deleted_at.is_(None),
             )
-            .group_by(Book.id, Book.title, Book.isbn13, BookMarketCache.historical_low_1y_cents)
+            .group_by(Book.id, Book.title, Book.isbn13, BookMarketCache.historical_low_1y_cents,
+                      BookMarketCache.historical_checked_at, Book.created_at)
             # « Ancien » et « jamais observé » sont deux façons d'être figé, pas deux
             # conditions cumulables : un `AND` les rendait mutuellement exclusives et
             # la requête ne pouvait plus rien renvoyer. Un livre jamais observé est
             # plus inquiétant qu'un livre ancien, pas moins.
-            .having(or_(last_certified < stale_after, last_certified.is_(None)))
+            .having(or_(last_certified <= stale_after,
+                        last_certified.is_(None) & (Book.created_at <= stale_after)))
             .order_by(Book.title)
             .limit(limit)
         )
@@ -314,11 +298,30 @@ class MarketPriceRepository:
         found: list[tuple[str, str | None, int, datetime | None]] = []
         total = 0
         for title, isbn, low, last_seen, matching in result.all():
-            # `historical_low_1y_cents` est filtré non nul par le WHERE ci-dessus.
-            found.append((title, isbn, cast(int, low), cast("datetime | None", last_seen)))
+            found.append((title, isbn, low, last_seen))
             # La fenêtre porte le même total sur chaque ligne : une seule suffit.
             total = matching
         return found, total
+
+    async def find_stale_current_collections(
+        self, *, stale_after: datetime, limit: int = 8,
+    ) -> tuple[list[tuple[str, str | None, int, datetime | None]], int]:
+        """Offres dont aucune collecte réussie n'a renouvelé la connaissance sous 48 h."""
+        last = BookMarketCache.last_successful_collection_at
+        watched = select(AlertBook.book_id).join(Alert).join(Category).where(
+            Category.slug == "bd_comics",
+            Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+            Alert.deleted_at.is_(None),
+        )
+        stmt = select(Book.title, Book.isbn13,
+                      func.coalesce(BookMarketCache.lowest_delivered_price_cents, 0),
+                      last, func.count().over()).outerjoin(
+            BookMarketCache, BookMarketCache.book_id == Book.id,
+        ).where(Book.id.in_(watched), or_(last <= stale_after,
+                last.is_(None) & (Book.created_at <= stale_after)))
+        rows = (await self.session.execute(stmt.order_by(Book.title).limit(limit))).all()
+        return ([(title, isbn, low, date) for title, isbn, low, date, _ in rows],
+                rows[0][4] if rows else 0)
 
     async def find_silent_providers(
         self,
@@ -384,8 +387,12 @@ class MarketPriceRepository:
 
         cache = await self.get_cache_by_book_id(book_id)
 
-        # L'ancien minimum reste informatif : aucune nouvelle preuve n'est inventée.
-        computed_hist_low = cache.historical_low_1y_cents if cache else historical_low_1y_cents
+        # Conserve l'agrégat brut ; seules les observations datées servent à la référence.
+        computed_hist_low = (
+            cache.historical_low_1y_cents
+            if cache is not None and cache.historical_low_1y_cents is not None
+            else historical_low_1y_cents
+        )
 
         if cache:
             cache.lowest_delivered_price_cents = lowest_delivered_price_cents
@@ -425,7 +432,7 @@ def _offer_eligible(offer: MarketOffer) -> bool:
     return (
         offer.currency == "EUR"
         and offer.delivered_price_cents > 0
-        and offer.is_available
+        and (offer.is_available or offer.is_historical)
         and (offer.shipping_price_cents is not None or offer.price_includes_shipping)
         and is_comparable_secondhand_offer(offer)
         and not is_merchant_excluded(merchant if isinstance(merchant, str) else None)

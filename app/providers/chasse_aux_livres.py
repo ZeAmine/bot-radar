@@ -5,7 +5,9 @@ import html
 import logging
 import re
 import urllib.parse
+import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -104,6 +106,69 @@ def select_historical_low_cents(series_by_label: dict[str, float]) -> int | None
         if label in series_by_label
     ]
     return min(cents) if cents else None
+
+
+def parse_historical_observations(
+    data: dict[str, Any], source_url: str,
+) -> list[MarketOffer]:
+    """Conserve les points datés des paliers d'occasion livrée admissibles.
+
+    Une valeur sans date reste un agrégat, jamais une observation annuelle.
+    Le champ x peut porter un instant Unix en millisecondes ou une date ISO
+    avec fuseau. Le total livré doit être explicite : delivered_price_cents ou
+    price_includes_shipping. Aucun port manquant n'est assimilé à zéro.
+    """
+    points: list[MarketOffer] = []
+    now = datetime.now(UTC)
+    for series in data.get("stats", []):
+        if not isinstance(series, dict) or series.get("label") not in _HISTORICAL_LOW_LABELS:
+            continue
+        label = series["label"]
+        for value in series.get("statValues", []):
+            if not isinstance(value, dict):
+                continue
+            delivered = value.get("delivered_price_cents")
+            includes_delivery = any(
+                owner.get("price_includes_shipping") is True for owner in (data, series, value)
+            )
+            if delivered is None and not includes_delivery:
+                continue
+            raw_date = value.get("x")
+            try:
+                if isinstance(raw_date, (int, float)) and not isinstance(raw_date, bool):
+                    at = datetime.fromtimestamp(raw_date / 1000, UTC)
+                elif isinstance(raw_date, str):
+                    at = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+                    if at.tzinfo is None:
+                        continue
+                    at = at.astimezone(UTC)
+                else:
+                    continue
+                tooltip = re.search(r"#\[([0-9]+)[,.]([0-9]{2})\s*€", str(value.get("t", "")))
+                if delivered is not None:
+                    if not isinstance(delivered, int) or isinstance(delivered, bool):
+                        continue
+                    cents = delivered
+                else:
+                    if isinstance(value.get("y"), bool) and not tooltip:
+                        continue
+                    amount = (float(f"{tooltip[1]}.{tooltip[2]}") if tooltip
+                              else float(value["y"]))
+                    cents = round(amount * 100)
+            except (KeyError, ValueError, TypeError, OverflowError, OSError):
+                continue
+            if cents <= 0 or not now - timedelta(days=365) < at <= now:
+                continue
+            identity = f"{source_url}|{label}|{at.isoformat()}|{cents}"
+            points.append(MarketOffer(
+                provider_name="chasse_aux_livres", item_price_cents=cents,
+                shipping_price_cents=None, delivered_price_cents=cents,
+                source_url=source_url, item_condition=label, price_includes_shipping=True,
+                is_available=False, is_historical=True, observed_at=at,
+                observation_id=uuid.uuid5(uuid.NAMESPACE_URL, identity),
+                raw_payload={"best_merchant": value.get("merchant")},
+            ))
+    return points
 
 
 CHASSE_BROWSER_HEADERS = {
@@ -211,11 +276,13 @@ class ChasseAuxLivresProvider:
         # sinon la recherche renverrait l'ouvrage d'un autre livre.
         clean_isbn = normalize_search_isbn(isbn13)
         failures: set[str] = set()
+        historical_checked = False
         if clean_isbn:
             offers = await self._search_query(
                 clean_isbn, expected_title=title, expected_isbn=clean_isbn
             )
             failures.update(getattr(offers, "failed_providers", ()))
+            historical_checked |= getattr(offers, "historical_checked", False)
             if offers:
                 return offers
 
@@ -232,7 +299,9 @@ class ChasseAuxLivresProvider:
             if offers:
                 return offers
             failures.update(getattr(offers, "failed_providers", ()))
-            return MarketOffers(offers, failed_providers=tuple(sorted(failures)))
+            historical_checked |= getattr(offers, "historical_checked", False)
+            return MarketOffers(offers, failed_providers=tuple(sorted(failures)),
+                                historical_checked=historical_checked)
 
         return MarketOffers(failed_providers=tuple(sorted(failures)))
 
@@ -508,7 +577,9 @@ class ChasseAuxLivresProvider:
 
             # Extraction du minimum historique sur 1 an via l'API /rest/jcd de Chasse-aux-livres
             hist_low_1y_cents: int | None = None
-            historical_failed = False
+            historical_failed = True
+            historical_points: list[MarketOffer] = []
+            historical_checked = False
             didh_m = re.search(r'data-didh=["\']([a-f0-9]+)["\']', p_html)
             if didh_m:
                 didh = didh_m.group(1)
@@ -524,6 +595,12 @@ class ChasseAuxLivresProvider:
                         historical_failed = True
                     if resp_jcd.status_code == 200 and len(resp_jcd.text) > 0:
                         jcd_data = resp_jcd.json()
+                        if (not isinstance(jcd_data, dict)
+                                or not isinstance(jcd_data.get("stats"), list)):
+                            raise ValueError("Série historique invalide")
+                        historical_failed = False
+                        historical_checked = True
+                        historical_points = parse_historical_observations(jcd_data, product_url)
                         series_by_label: dict[str, float] = {}
                         for s in jcd_data.get("stats", []):
                             label = s.get("label")
@@ -545,15 +622,22 @@ class ChasseAuxLivresProvider:
                                     series_by_label[label] = min(pts)
 
                         hist_low_1y_cents = select_historical_low_cents(series_by_label)
+                        if hist_low_1y_cents is not None and not historical_points:
+                            historical_failed = True
+                            historical_checked = False
                 except Exception as jcd_exc:
                     historical_failed = True
-                    logger.debug("Historique des prix Chasse-aux-livres indisponible: %s", jcd_exc)
+                    logger.warning("Historique Chasse-aux-livres indisponible (%s)",
+                                   type(jcd_exc).__name__)
 
+            if historical_failed:
+                logger.warning("Historique Chasse-aux-livres non reçu : réponse vide, "
+                               "invalide ou refusée")
             # Zéro Neuf déguisé : Si aucune occasion n'est en stock,
             # renvoyer l'historique seul ou None
             if not best_used:
                 if hist_low_1y_cents:
-                    return [
+                    return MarketOffers([*historical_points,
                         MarketOffer(
                             provider_name=self.name,
                             item_price_cents=0,
@@ -574,14 +658,17 @@ class ChasseAuxLivresProvider:
                                 "historical_low_1y_cents": hist_low_1y_cents,
                             },
                         )
-                    ]
-                return MarketOffers(failed_providers=(self.name,)) if historical_failed else None
+                    ], historical_checked=historical_checked,
+                       failed_providers=(self.name,) if historical_failed else ())
+                return MarketOffers(historical_points,
+                                    failed_providers=(self.name,) if historical_failed else (),
+                                    historical_checked=historical_checked)
 
             primary = best_used
             cond_str = f"{primary['condition']} ({primary['merchant']})"
 
             return MarketOffers(
-                [
+                [*historical_points,
                     MarketOffer(
                         provider_name=self.name,
                         item_price_cents=primary["total_cents"],
@@ -605,6 +692,7 @@ class ChasseAuxLivresProvider:
                     )
                 ],
                 failed_providers=(self.name,) if historical_failed else (),
+                historical_checked=historical_checked,
             )
         except Exception as exc:
             logger.debug("Échec de l'extraction détaillée Chasse-aux-livres: %s", exc)

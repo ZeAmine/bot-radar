@@ -20,6 +20,10 @@ def synthetic_health_transports(monkeypatch):
     monkeypatch.setattr("app.services.market_health.get_redis_client", lambda: client)
     monkeypatch.setattr("app.tasks.refresh_book_prices.notify_stale_certified_lows", AsyncMock())
     monkeypatch.setattr("app.tasks.refresh_book_prices.notify_silent_providers", AsyncMock())
+    monkeypatch.setattr(
+        "app.tasks.refresh_book_prices.notify_stale_current_collections", AsyncMock(),
+    )
+    monkeypatch.setattr("app.tasks.refresh_book_prices.resolve_scheduled_catalogues", AsyncMock())
 
 
 @pytest.mark.asyncio

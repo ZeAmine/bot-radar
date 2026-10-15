@@ -47,9 +47,17 @@ Les tests [scheduler](../tests/unit/test_scheduler_jobs.py) et
 [lifespan](../tests/unit/test_unified_lifespan.py) couvrent des aspects locaux,
 pas l'unicité effective d'un processus en production.
 
-La tête du code est `0013_pause_actions` ; ce n'est pas la révision d'une base réelle.
+La tête du code est `0014_alert_market_freshness` ; ce n'est pas la révision d'une base réelle.
 Une révision Alembic tient dans 32 caractères, contrôlée par
 [test_alembic_revisions](../tests/unit/test_alembic_revisions.py).
 Pas d'index `CONCURRENTLY` dans une transaction Alembic standard ; pour une grosse
 table, arbitrage préalable. Rebuild puis `upgrade head` seulement dans un mandat
 autorisant la migration. Aucun scheduler séparé ou verrou Redis préventif à ajouter.
+
+La cotation planifiée couvre livres et tomes des alertes actives et en pause,
+hors suppressions, avec déduplication. Passes complètes 07:00/19:00 et lots à :15/:45,
+repris aussi au démarrage : cible de réussite 24 h, avertissement après 48 h.
+Les lots s'adaptent à la population et les reprises suivent les tentatives persistées,
+avec repos de six heures après résultat partiel/échoué. La résolution quotidienne
+rattache les séries et alertes sans lien sans déclencher de prix hors des vagues bornées.
+Une panne externe persistante ne devient jamais une réussite pour satisfaire le délai.

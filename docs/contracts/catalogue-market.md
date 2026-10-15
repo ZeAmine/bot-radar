@@ -92,3 +92,20 @@ Contrôles existants : [offres](../../tests/unit/test_market_offer_rules.py),
 [cycle du panneau](../../tests/unit/test_market_panel_lifecycle.py).
 SQLite ne prouve pas les verrous PostgreSQL. Aucune lecture documentaire ne prouve
 une collecte réelle ; les procédures de session et leurs permissions restent distinctes.
+
+## Minimum unique et fraîcheur — ADR-050
+
+Le panneau affiche un seul « Minimum sur 1 an ». Les données des anciens agrégats
+restent conservées, sans ligne « Ancien minimum (informatif) ». Un point historique
+fournisseur exige montant livré, date et provenance ; il est persisté séparément
+des offres disponibles et intégré aux observations admissibles des 365 derniers jours.
+Une collecte récente ne devient jamais la date d'un prix historique. Les totaux de
+série utilisent la même projection centrale et les règles d'occasion/état/marchand.
+
+La tentative, la réussite des offres et la récupération des preuves historiques
+ont des dates distinctes. Un minimum ancien dans sa fenêtre reste valide même si
+aucun nouveau relevé ne l'égale. Une collecte vide réussie vaut résultat, une panne
+sans résultat exploitable conserve les dernières offres avec avertissement ; elle
+ne renouvelle pas leur fraîcheur. Les avertissements de retard couvrent les livres
+surveillés, indépendamment de la présence d'un ancien agrégat. Le renouvellement
+Chasse valide/injecte un jeton et ne collecte pas toutes les alertes.

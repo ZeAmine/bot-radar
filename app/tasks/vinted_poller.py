@@ -10,7 +10,7 @@ import uuid
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ from app.core.redis import get_redis_client
 from app.core.tasks import safe_create_task
 from app.db.models.alert import Alert
 from app.db.models.category import Category
+from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.session import AsyncSessionLocal
 from app.services.telegram_service import notify_admins
@@ -443,6 +444,7 @@ async def poll_vinted_once(
     Retourne le nombre de nouvelles annonces ingérées avec succès.
     """
     collection_timing = latency.AlertTiming(collection_id=uuid.uuid4())
+    scan_started_at = datetime.now(UTC)
     collection_started = latency.clock()
     try:
         items = await fetch_vinted_page(target_url, vinted_client)
@@ -454,6 +456,11 @@ async def poll_vinted_once(
     discovered_at = latency.clock()
     latency.emit(collection_timing, "collection", collection_started, discovered_at,
                  result="returned", item_count=len(items))
+    async with AsyncSessionLocal() as baseline_session:
+        await AlertRepository(baseline_session).initialize_listing_baselines(
+            category_slug, target_url, [item.external_id for item in items], scan_started_at,
+        )
+        await baseline_session.commit()
     _log_window_coverage(len(items), category_slug, cycle_index)
     if not items:
         return 0

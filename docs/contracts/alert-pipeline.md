@@ -59,3 +59,14 @@ Ces contrôles sont des preuves seulement lorsqu'exécutés sur un arbre et une
 sélection identifiés. Les benchmarks ont des transports simulés. La source catalogue
 observée historiquement n'expose pas de date de publication ; la durée publication
 → détection n'est donc pas mesurée. Aucun budget local ne garantit une réception réelle.
+
+## Admission des nouveautés — ADR-050
+
+Une nouvelle alerte Vinted initialise son premier catalogue réussi en silence,
+avec un jalon et des identifiants exclus persistants propres à l'alerte, même si
+les identifiants étaient connus globalement. Les reprises appliquent la même règle.
+Une collecte échouée n'initialise rien. Les anciennes alertes restent inchangées ;
+pause et reprise ne réinitialisent pas le jalon. Une publication explicite avant
+création est rejetée. Sans publication, le premier scan est la frontière : des
+nouveautés avant ce scan peuvent manquer, et l'âge réel d'une ancienne annonce
+découverte ultérieurement reste inconnu. Aucune date n'est déduite des identifiants.

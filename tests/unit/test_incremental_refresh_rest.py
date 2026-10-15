@@ -82,7 +82,7 @@ async def test_a_recent_failed_collection_waits_before_the_next_incremental_pass
 
 @pytest.mark.asyncio
 async def test_failed_collection_keeps_the_attempt_date():
-    """Effacer checked_at faisait croire que le livre n'avait jamais été tenté."""
+    """La tentative échouée reste datée sans devenir un relevé réussi."""
     async with sqlite_only_database() as database:
         session = database.session
         book = Book(title="Livre", normalized_title="livre")
@@ -96,5 +96,124 @@ async def test_failed_collection_keeps_the_attempt_date():
         await session.commit()
 
     assert cache.collection_status == "failed"
-    assert cache.checked_at is not None
+    assert cache.checked_at is None
     assert cache.last_attempt_at is not None
+    assert cache.last_successful_collection_at is None
+
+
+async def test_paused_books_are_refreshed_but_deleted_books_are_not():
+    from app.domain.enums import AlertStatus
+
+    async with sqlite_only_database() as database:
+        session = database.session
+        user, category = await _catalogue(session)
+        paused = await _linked_book(session, user, category, title="Pause")
+        deleted = await _linked_book(session, user, category, title="Suppression")
+        from sqlalchemy import select
+        for alert in (await session.scalars(select(Alert))).all():
+            alert.status = (AlertStatus.PAUSED if alert.name == "Pause"
+                            else AlertStatus.DELETED)
+        await session.commit()
+        repo = BookRepository(session)
+        assert {b.id for b in await repo.get_books_for_active_bd_alerts()} == {paused.id}
+        assert {b.id for b in await repo.get_books_needing_price_refresh()} == {paused.id}
+        assert deleted.id != paused.id
+
+
+async def test_failed_retry_does_not_starve_an_older_unattempted_book():
+    now = datetime.now(UTC)
+    async with sqlite_only_database() as database:
+        session = database.session
+        user, category = await _catalogue(session)
+        failure = await _linked_book(session, user, category, title="Échec")
+        waiting = await _linked_book(session, user, category, title="Attente")
+        session.add_all([
+            BookMarketCache(book_id=failure.id, collection_status="failed",
+                            last_attempt_at=now-timedelta(hours=7)),
+            BookMarketCache(book_id=waiting.id, checked_at=now-timedelta(days=3),
+                            expires_at=now-timedelta(days=2)),
+        ])
+        await session.commit()
+        selected = await BookRepository(session).get_books_needing_price_refresh(limit=1)
+        assert [book.id for book in selected] == [waiting.id]
+
+
+async def test_successful_empty_collection_is_fresh_for_selection():
+    now = datetime.now(UTC)
+    async with sqlite_only_database() as database:
+        session = database.session
+        user, category = await _catalogue(session)
+        book = await _linked_book(session, user, category, title="Vide récemment")
+        session.add(BookMarketCache(
+            book_id=book.id, collection_status="empty", checked_at=now-timedelta(days=4),
+            last_attempt_at=now, last_successful_collection_at=now,
+        ))
+        await session.commit()
+        assert await BookRepository(session).get_books_needing_price_refresh() == []
+
+
+async def test_larger_population_has_capacity_and_no_retry_starvation():
+    async with sqlite_only_database() as database:
+        session = database.session
+        user, category = await _catalogue(session)
+        ids = set()
+        for n in range(120):
+            ids.add((await _linked_book(session, user, category, title=f"Livre {n}")).id)
+        await session.commit()
+        seen = set()
+        for _ in range(12):
+            books = await BookRepository(session).get_books_needing_price_refresh(limit=8)
+            assert len(books) == 10
+            for book in books:
+                assert book.id not in seen
+                seen.add(book.id)
+                session.add(BookMarketCache(book_id=book.id, collection_status="failed",
+                                            last_attempt_at=datetime.now(UTC)))
+            await session.commit()
+        assert seen == ids
+
+
+async def test_attempt_date_without_success_is_not_current_collection_freshness():
+    from app.db.repositories.market_price_repo import MarketPriceRepository
+
+    now = datetime.now(UTC)
+    async with sqlite_only_database() as db:
+        user, category = await _catalogue(db.session)
+        book = await _linked_book(db.session, user, category, title="Historique seul")
+        book.created_at = now-timedelta(days=3)
+        db.session.add(BookMarketCache(
+            book_id=book.id, collection_status="partial", checked_at=now,
+            last_attempt_at=now, historical_low_1y_cents=545,
+        ))
+        await db.session.commit()
+        rows, total = await MarketPriceRepository(db.session).find_stale_current_collections(
+            stale_after=now-timedelta(hours=48),
+        )
+        assert total == 1
+        assert rows[0][0] == "Historique seul"
+
+
+async def test_internal_collection_error_keeps_attempt_and_allows_other_books(monkeypatch):
+    from app.services import book_market_pricing as pricing
+
+    async with sqlite_only_database() as database:
+        session = database.session
+        user, category = await _catalogue(session)
+        await _linked_book(session, user, category, title="Premier")
+        await _linked_book(session, user, category, title="Second")
+        await session.commit()
+        first = (await BookRepository(session).get_books_needing_price_refresh(limit=1))[0]
+        monkeypatch.setattr(pricing, "AsyncSessionLocal", database.maker)
+        registry = MagicMock()
+        registry.fetch_all_offers = AsyncMock(side_effect=RuntimeError("collecte interrompue"))
+        assert await pricing._price_book_once(first.id, reason="test", registry=registry) is None
+        async with database.maker() as verification:
+            cache = await pricing.MarketPriceRepository(verification).get_cache_by_book_id(first.id)
+            assert cache is not None
+            assert cache.last_attempt_at is not None
+            assert cache.collection_status == "failed"
+            assert cache.last_successful_collection_at is None
+            assert cache.checked_at is None
+            following = await BookRepository(verification).get_books_needing_price_refresh(limit=1)
+            assert len(following) == 1
+            assert following[0].id != first.id
