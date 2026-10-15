@@ -165,11 +165,14 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
         from app.db.models.alert import Alert
         from app.db.models.category import Category
         from app.db.models.listing_match import ListingMatch
+        from app.db.models.pause_action import PauseAction
         from app.db.models.user import User
         from app.db.repositories.listing_repo import ListingRepository
         from app.domain.entities.alert_preparation import PreparationRequest
         from app.schemas.listing import ListingIngestPayload
 
+        now = datetime.now(UTC)
+        baseline = {"state": "ready", "external_ids": ["synthetic-prior-listing"]}
         maker = async_sessionmaker(engine, expire_on_commit=False)
         async with maker() as session:
             user = User(telegram_user_id=424242, is_allowed=True)
@@ -187,6 +190,7 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
                 name="Console",
                 include_keywords=["console"],
                 status="ACTIVE",
+                decision_version=7,
             )
             prep_category = (
                 await session.scalars(select(Category).where(Category.slug == "bd_comics"))
@@ -200,10 +204,25 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
                 include_keywords=["preparation"],
                 status="PAUSED",
                 preparation=original_request,
+                decision_version=11,
+                listing_baseline=baseline,
+                catalogue_refresh_attempted_at=now - timedelta(hours=3),
             )
             session.add_all([alert, prep])
             await session.flush()
-            for index, state in enumerate(("ready", "deferred", "sending", "unknown", "notified")):
+            for applied in (False, True):
+                session.add(PauseAction(
+                    user_id=user.id, alert_id=alert.id, expected_version=6 if applied else 7,
+                    intent="pause", issued_at=now - timedelta(hours=2),
+                    expires_at=now + timedelta(hours=22), invalidated=False,
+                    applied_at=now - timedelta(hours=1) if applied else None,
+                    applied_version=7 if applied else None,
+                    update_id=101 if applied else None,
+                    callback_id="synthetic-applied-pause" if applied else None,
+                ))
+            for index, state in enumerate(
+                ("ready", "deferred", "sending", "unknown", "notified", "abandoned")
+            ):
                 payload = ListingIngestPayload(
                     source_name="synthetic",
                     external_id=str(index),
@@ -219,8 +238,11 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
                         listing_id=listing.id,
                         notification_state=state,
                         attempt_count=0,
+                        telegram_message_id=76 if state == "notified" else None,
+                        telegram_chat_id=424242 if state == "notified" else None,
+                        telegram_bot_id=123456789 if state == "notified" else None,
                         notified_at=(
-                            datetime.now(UTC) - timedelta(hours=1) if state == "notified" else None
+                            now - timedelta(hours=1) if state == "notified" else None
                         ),
                     )
                 )
@@ -237,6 +259,8 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
             session.add(
                 BookMarketCache(
                     book_id=book.id,
+                    last_successful_collection_at=now - timedelta(days=2),
+                    historical_checked_at=now - timedelta(days=3),
                     historical_low_1y_cents=1,
                     historical_low_at=datetime.now(UTC) - timedelta(days=500),
                     lowest_delivered_price_cents=900,
@@ -249,6 +273,7 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
                 book.id,
                 MarketOffer(
                     provider_name="synthetic",
+                    is_historical=True,
                     item_price_cents=200,
                     shipping_price_cents=0,
                     delivered_price_cents=200,
@@ -258,7 +283,63 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
                     raw_payload={"synthetic": "only"},
                 ),
             )
+            other_book = Book(title="Synthetic nulls", normalized_title="synthetic nulls")
+            session.add(other_book)
+            await session.flush()
+            session.add(BookMarketCache(book_id=other_book.id))
+            await MarketPriceRepository(session).save_snapshot(
+                other_book.id,
+                MarketOffer(
+                    provider_name="synthetic", item_price_cents=300,
+                    shipping_price_cents=0, delivered_price_cents=300,
+                    source_url="https://example.invalid", item_condition="Très bon",
+                    observed_at=now - timedelta(days=1), is_historical=False,
+                ),
+            )
             await session.commit()
+        expected_data = {}
+        connection = await source.connect()
+        try:
+            for table in (
+                "alerts", "listing_matches", "pause_actions", "book_market_cache",
+                "market_price_snapshots", "alert_books",
+            ):
+                order = "alert_id, book_id" if table == "alert_books" else "id"
+                expected_data[table] = [
+                    dict(row)
+                    for row in await connection.fetch(f"SELECT * FROM {table} ORDER BY {order}")
+                ]
+            seeded_alerts = {row["id"]: row for row in expected_data["alerts"]}
+            assert json.loads(seeded_alerts[prep.id]["listing_baseline"]) == baseline
+            assert seeded_alerts[prep.id]["catalogue_refresh_attempted_at"] == (
+                now - timedelta(hours=3)
+            )
+            assert seeded_alerts[alert.id]["listing_baseline"] is None
+            assert seeded_alerts[alert.id]["catalogue_refresh_attempted_at"] is None
+            caches = {row["book_id"]: row for row in expected_data["book_market_cache"]}
+            assert caches[book.id]["last_successful_collection_at"] == now - timedelta(days=2)
+            assert caches[book.id]["historical_checked_at"] == now - timedelta(days=3)
+            assert caches[other_book.id]["last_successful_collection_at"] is None
+            assert caches[other_book.id]["historical_checked_at"] is None
+            assert {row["is_historical"] for row in expected_data["market_price_snapshots"]} == {
+                False, True,
+            }
+            assert len(expected_data["pause_actions"]) == 2
+            assert sum(row["applied_at"] is not None for row in expected_data["pause_actions"]) == 1
+            seeded_matches = expected_data["listing_matches"]
+            assert {row["notification_state"] for row in seeded_matches} == {
+                "ready", "deferred", "sending", "unknown", "notified", "abandoned",
+            }
+            confirmed = next(
+                row for row in seeded_matches if row["notification_state"] == "notified"
+            )
+            assert confirmed["notified_at"] == now - timedelta(hours=1)
+            assert (
+                confirmed["telegram_message_id"], confirmed["telegram_chat_id"],
+                confirmed["telegram_bot_id"],
+            ) == (76, 424242, 123456789)
+        finally:
+            await connection.close(timeout=5)
         simulated_fsm = {"draft_id": "synthetic-original-draft", "creation_outcome": "unknown"}
         out, published = workspace / "archives", workspace / "publication-simulated"
         out.mkdir(mode=0o700)
@@ -370,7 +451,7 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
                 await connection.fetchval(
                     "SELECT count(*) FROM listing_matches WHERE telegram_message_id IS NOT NULL"
                 )
-                == 2
+                == 3
             )
             assert (
                 await connection.fetchval(
@@ -394,12 +475,53 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
         )
         connection = await target.connect()
         try:
+            for table, previous_rows in expected_data.items():
+                order = "alert_id, book_id" if table == "alert_books" else "id"
+                restored_rows = [
+                    dict(row)
+                    for row in await connection.fetch(f"SELECT * FROM {table} ORDER BY {order}")
+                ]
+                expected_rows = []
+                for previous in previous_rows:
+                    expected = previous.copy()
+                    if table == "alerts":
+                        expected["decision_version"] += 1
+                        if expected["status"] == "ACTIVE":
+                            expected["status"] = "PAUSED"
+                        if expected["preparation"] is not None:
+                            request = json.loads(expected["preparation"])
+                            restored_request = json.loads(next(
+                                row["preparation"] for row in restored_rows
+                                if row["id"] == expected["id"]
+                            ))
+                            assert restored_request["token"] != request["token"]
+                            uuid.UUID(restored_request["token"])
+                            request.update(
+                                activation_requested=False, token=restored_request["token"]
+                            )
+                            expected["preparation"] = json.dumps(request, sort_keys=True)
+                    elif table == "listing_matches" and expected["notified_at"] is None:
+                        if expected["notification_state"] in {"ready", "deferred", "sending"}:
+                            expected.update(
+                                notification_state="unknown",
+                                notification_reason="restore_boundary_unknown",
+                            )
+                    elif table == "pause_actions" and expected["applied_at"] is None:
+                        expected["invalidated"] = True
+                    expected_rows.append(expected)
+                if table == "alerts":
+                    for row in restored_rows:
+                        if row["preparation"] is not None:
+                            row["preparation"] = json.dumps(
+                                json.loads(row["preparation"]), sort_keys=True
+                            )
+                assert restored_rows == expected_rows, table
             matches = await connection.fetch("SELECT * FROM listing_matches")
             assert sum(row["notified_at"] is not None for row in matches) == 1
             assert all(
                 row["notification_state"] == "unknown"
                 for row in matches
-                if row["notified_at"] is None
+                if row["notified_at"] is None and row["notification_state"] != "abandoned"
             )
             alerts = await connection.fetch("SELECT * FROM alerts")
             assert all(row["status"] == "PAUSED" for row in alerts)
@@ -461,6 +583,9 @@ async def exercise(data: dict[str, Any]) -> dict[str, Any]:
         assert not {"redis.rdb", "fsm.json"}.intersection(manifest["files"])
         assert restored["business_released"] is False
         return {
+            "schema": "0014_alert_market_freshness",
+            "new_schema_fields_seeded": True,
+            "quarantine_rows_verified": {name: len(rows) for name, rows in expected_data.items()},
             "backup_seconds": backup_seconds,
             "simulated_transfer_seconds": transfer_seconds,
             "stages": manifest["durations"],
@@ -530,7 +655,7 @@ def main() -> int:
                         ], plugins=[Completion()]
                     )
                 )
-                assert len(reports) == 16, "Collecte incomplète"
+                assert len(reports) == 20, "Collecte incomplète"
                 assert all(
                     phases == {"setup": "passed", "call": "passed", "teardown": "passed"}
                     for phases in reports.values()
