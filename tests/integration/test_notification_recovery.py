@@ -40,7 +40,6 @@ async def journey(monkeypatch):
         gate = ListingIngestionGate()
         monkeypatch.setattr(settings, "AI_ENABLED", False)
         monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_USER_IDS", [601])
-        monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: send_listing_alert)
         monkeypatch.setattr(ingestion, "listing_ingestion_gate", gate)
         monkeypatch.setattr(recovery, "listing_ingestion_gate", gate)
         monkeypatch.setattr(recovery, "AsyncSessionLocal", db.maker)
@@ -49,15 +48,22 @@ async def journey(monkeypatch):
                                        url="https://example.invalid/item", category_slug="tech",
                                        item_price_cents=100)
 
+        context = SimpleNamespace(
+            db=db, bot=bot, gate=gate, payload=payload, sender=send_listing_alert,
+        )
+
         async def ingest():
             async with db.maker() as session:
-                return await ingestion.ProcessListingUseCase(session, bot).execute(payload, {})
+                return await ingestion.ProcessListingUseCase(
+                    session, bot, sender=context.sender
+                ).execute(payload, {})
 
         async def row():
             async with db.maker() as reader:
                 return (await reader.scalars(select(ListingMatch))).one()
 
-        yield SimpleNamespace(db=db, bot=bot, ingest=ingest, row=row, gate=gate, payload=payload)
+        context.ingest, context.row = ingest, row
+        yield context
 
 
 async def test_ready_resumes_without_recollection(journey):
@@ -432,7 +438,7 @@ async def test_invalid_sender_evidence_stays_unknown(journey, monkeypatch, kind)
         "invalid_not_sent": DeliveryResult("not_sent", "text"),
     }
     fake = AsyncMock(return_value=values[kind])
-    monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: fake)
+    monkeypatch.setattr(journey, "sender", fake)
     await journey.ingest()
     row = await journey.row()
     assert row.notification_state == "unknown"
@@ -497,3 +503,35 @@ async def test_stored_receipt_only_completes_marking_without_sending(journey):
     assert final.telegram_message_id == receipt
     assert final.attempt_count == old_count
     assert j.bot.send_message.await_count == 1
+
+
+async def test_ingestion_instances_keep_their_own_senders(journey):
+    """Deux instances réservent et persistent leurs envois sans partager l'émetteur."""
+    from tests.telegram_fakes import acknowledged_delivery
+
+    first_sender = AsyncMock(side_effect=acknowledged_delivery)
+    second_sender = AsyncMock(side_effect=acknowledged_delivery)
+    async with journey.db.maker() as first_session, journey.db.maker() as second_session:
+        first = ingestion.ProcessListingUseCase(first_session, journey.bot, sender=first_sender)
+        second = ingestion.ProcessListingUseCase(second_session, journey.bot, sender=second_sender)
+        first_result = await first.execute(
+            journey.payload.model_copy(update={"external_id": "first-sender"}), {}
+        )
+        second_result = await second.execute(
+            journey.payload.model_copy(update={"external_id": "second-sender"}), {}
+        )
+
+    assert first_result.matches[0].notification_sent
+    assert second_result.matches[0].notification_sent
+    first_sender.assert_awaited_once()
+    second_sender.assert_awaited_once()
+    assert first_sender.call_args.kwargs["listing"].id == first_result.listing_id
+    assert second_sender.call_args.kwargs["listing"].id == second_result.listing_id
+    assert first_sender.call_args.kwargs["chat_id"] == 601
+    assert second_sender.call_args.kwargs["chat_id"] == 601
+    async with journey.db.maker() as reader:
+        rows = list((await reader.scalars(select(ListingMatch))).all())
+        assert len(rows) == 2
+        assert all(row.notified_at is not None for row in rows)
+        assert all(row.notification_state == "notified" for row in rows)
+    journey.bot.send_message.assert_not_awaited()

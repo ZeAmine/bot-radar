@@ -112,7 +112,9 @@ l'application pour vérifier du texte : son lifespan configure Telegram et les j
 [verify_consolidation.py](../scripts/verify_consolidation.py) propose les modes
 `unit` et `typecheck` avec environnement nettoyé et gardes de transports. `unit`
 sans cible sélectionne unitaires et performance ; `--target` peut sélectionner
-explicitement des tests d'intégration compatibles SQLite. Les modes `postgres`
+explicitement des tests d'intégration compatibles SQLite. `make test-isolated`
+sélectionne `unit --target tests` via cette même recette, sans second dispositif.
+Les modes `postgres`
 et `backup` créent des ressources et nécessitent un mandat distinct.
 Les contrôles de Python et de ses enfants ne sont pas une sandbox système générale.
 `make verify` contacte GitHub ; `make check-history` crée des worktrees et hérite
@@ -127,8 +129,8 @@ pas après simple lecture ; voir [les limites C13](open-issues.md).
 
 Les quatre tokens d’accès obligatoires sont `TELEGRAM_BOT_TOKEN`,
 `TELEGRAM_WEBHOOK_SECRET`, `INGEST_API_TOKEN`, `INTERNAL_API_TOKEN`.
-La validation production refuse une valeur vide ; la configuration Telegram la
-précède encore (C11). Préserver les masquages Bearer, paires token/secret/password/key,
+La validation production refuse une valeur vide avant la configuration Telegram
+et le démarrage des producteurs. Préserver les masquages Bearer, paires token/secret/password/key,
 préfixe `sk-` et extras sensibles, y compris les exceptions et structures imbriquées.
 Les contrôles [de rédaction](../tests/unit/test_logging_redaction.py) et
 [de secrets](../tests/unit/test_utils_and_core.py) couvrent leurs cas synthétiques.

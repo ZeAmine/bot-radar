@@ -31,6 +31,12 @@ stricts. Aucun scheduler ou poller dans le conteneur de migration. Arrêt au pre
 `make preflight` et `make verify-deploy` restent disponibles pour les étapes distinctes.
 Ne pas recopier une autre séquence de commandes à côté de celle du script.
 
+Compose utilise le code embarqué dans l’image, sans montage `app/` ou `scripts/`.
+Les trois paramètres PostgreSQL sont obligatoires. Le pré-vol vérifie le modèle
+Compose cible avec la configuration distante avant arrêt ; après démarrage, les
+empreintes du code sont aussi vérifiées dans le conteneur actif. Cela ne prouve
+ni construction reproductible, ni réception Telegram, ni récupération opérationnelle.
+
 Le rsync exclut `.git` et `.env` : il préserve la configuration distante et ne
 transfère pas le secret local. Contrôler `APP_ENV=production`, code synchronisé,
 conteneur, schéma et scheduler. `.env.example` ne doit jamais écraser un `.env` réel.

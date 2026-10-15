@@ -96,7 +96,7 @@ Intégration et découverte selon le harness : [référence ciblée](docs/agent-
 - Ne jamais afficher, copier, committer ou journaliser de secret. Préserver la
   rédaction du `JSONFormatter`. Ne pas lire les `.env` réels pour vérifier le code.
 - En production, préserver `validate_production_secrets()` : les quatre tokens
-  d'accès sont obligatoires. Le défaut d'ordre au démarrage C11 reste ouvert.
+  d'accès sont obligatoires. Valider avant la configuration Telegram et les producteurs.
 - Conserver l'allowlist Telegram et les secrets webhook/Bearer. Deux secrets vides
   peuvent être égaux avec `compare_digest` : la validation de démarrage est indispensable.
 - Les cookies de compte checkout restent en clé Redis dédiée, séparée du scraper,
@@ -113,7 +113,6 @@ Intégration et découverte selon le harness : [référence ciblée](docs/agent-
 - Un seul POST par complétion dans `BaseLLMClient.complete`, HTTP partagé ; pas de
   client parallèle dans un module IA. Préserver le contrat testé sur chaque adaptateur.
 - Le repli `None` ne doit pas transformer une absence de réponse en avis du moteur.
-  Le cache d'analyse inclut fournisseur, modèle et version de prompt.
 
 ## Limites sensibles et qualité
 

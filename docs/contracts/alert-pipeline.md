@@ -44,7 +44,8 @@ L'accusé de transport, sa persistance et l'état final sont différents. Les r�
 durables et la reprise bornée sont définies dans
 [notification-delivery](../notification-delivery.md) ; ne pas présenter une émission
 incertaine comme non envoyée ou promettre une livraison exactement une fois.
-Préserver `_get_send_listing_alert()` : les tests d'ingestion patchent ce réexport.
+`ProcessListingUseCase` utilise par défaut `send_listing_alert` ; les doubles
+s'injectent par son paramètre typé `sender`, qui retourne `DeliveryResult`.
 
 ## Preuves existantes et limites
 

@@ -82,7 +82,8 @@ Les tests synthétiques ne nécessitent pas de démarrer l'application.
 
 [.env.example](.env.example) inventorie les paramètres applicatifs de
 [Settings](app/core/config.py). Ne jamais committer un fichier réel ou un export de
-session. Compose lit séparément `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.
+session. Compose exige séparément `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
+non vides et cohérents avec `DATABASE_URL` et la base existante.
 `TELEGRAM_WEBHOOK_URL`, `EBAY_ENVIRONMENT` et `DOMAIN_NAME` ne sont pas lus par
 l'application ; eBay utilise `EBAY_ENV`.
 
@@ -100,6 +101,7 @@ contrôle Ruff, mypy et pytest, plus les tests d'intégration PostgreSQL.
 | --- | --- |
 | `make lint` | Ruff et mypy |
 | `make test` | Pytest ; isoler configuration et transports avant imports |
+| `make test-isolated` | Recette existante, configuration factice et transports refusés ; aucun service démarré |
 | `make bench` | Benchmarks synthétiques, sans autre vérification concurrente |
 | `make check-lock` | Cohérence locale du verrou |
 | `make check-history` | Worktrees temporaires et environnement hérité : mandat explicite |

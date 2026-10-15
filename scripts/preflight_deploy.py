@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 DEFAULT_HOST = "ubuntu@88.96.56.44"
 DEFAULT_KEY = os.path.expanduser("~/.ssh/ssh-key-2026-09-10.key")
@@ -278,6 +279,26 @@ def check_remote_config(report: Report, remote: Remote, remote_dir: str) -> None
         report.fail("conteneur radar_app", f"état {status or 'inconnu'}")
 
 
+def check_target_compose(report: Report, remote: Remote, remote_dir: str) -> None:
+    """Valide la configuration cible avant arrêt, sans afficher ses valeurs."""
+    target = (Path(__file__).resolve().parents[1] / "compose.yml").read_text()
+    script = (
+        f"cd {remote_dir} || exit 1\n"
+        "docker compose --env-file .env -f - config --no-env-resolution --quiet "
+        "<<'RADAR_TARGET_COMPOSE'\n"
+        f"{target}\nRADAR_TARGET_COMPOSE\n"
+    )
+    code, _, _ = remote.run(script)
+    if code:
+        report.fail(
+            "configuration Compose cible",
+            "validation refusée ; vérifier la syntaxe, la version Compose et les "
+            "paramètres PostgreSQL non vides avant tout arrêt",
+        )
+    else:
+        report.ok("configuration Compose cible", "valide sans démarrage de service")
+
+
 def check_remote_code(
     report: Report, remote: Remote, remote_dir: str, post_sync: bool
 ) -> None:
@@ -311,6 +332,31 @@ def check_remote_code(
         report.warn(label, f"{len(detail_lines)} fichier(s) à synchroniser")
     if err.strip() and code == 0:
         print(f"        {DIM}{err.strip()[:100]}{RESET}")
+
+    if post_sync:
+        # Compose ne masque plus le code de l'image par des bind mounts.
+        image_files = [
+            name for name in files
+            if name.startswith(("app/", "alembic/", "scripts/")) or name == "alembic.ini"
+        ]
+        image_check = manifest(image_files)
+        if not image_check:
+            report.fail("code servi par radar_app", "manifeste de l'image vide")
+            return
+        script = (
+            f"cd {remote_dir} || exit 1\n"
+            "docker exec -i -w /app radar_app sha256sum -c --quiet - "
+            "<<'IMAGE_MANIFEST' 2>&1\n"
+            f"{image_check}IMAGE_MANIFEST\n"
+        )
+        code, _, _ = remote.run(script)
+        if code:
+            report.fail(
+                "code servi par radar_app",
+                "conteneur illisible ou fichiers différents de la cible ; reprise à vérifier",
+            )
+        else:
+            report.ok("code servi par radar_app", "empreintes des fichiers cibles identiques")
 
 
 # Alembic écrit « révision (head) » ; ses lignes de log partagent l'entrée standard
@@ -459,6 +505,7 @@ def main() -> int:
     if not remote.reachable():
         report.fail("accès au VPS", f"{args.host} injoignable")
     else:
+        check_target_compose(report, remote, args.remote_dir)
         check_remote_config(report, remote, args.remote_dir)
         check_remote_code(report, remote, args.remote_dir, args.post_sync)
         check_remote_migration(

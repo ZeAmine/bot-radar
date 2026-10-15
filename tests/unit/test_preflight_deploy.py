@@ -234,3 +234,112 @@ def test_unreadable_migration_state_is_never_a_pass():
     pf.check_remote_migration(report, remote, "~/bot-radar", "0005_correct_historical_low", False)
 
     assert len(report.failures) == 1
+
+
+@pytest.mark.parametrize("runtime", ["target", "stale", "unavailable"])
+def test_post_sync_checks_running_code_even_when_server_files_match(
+    monkeypatch, tmp_path, runtime
+):
+    """Un rsync correct ne suffit pas si l'ancien conteneur sert encore son code."""
+    import os
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app/main.py").write_text("target")
+    (tmp_path / "compose.yml").write_text("synthetic compose")
+    image = tmp_path / "runtime"
+    (image / "app").mkdir(parents=True)
+    if runtime != "unavailable":
+        (image / "app/main.py").write_text("target" if runtime == "target" else "stale")
+    docker = tmp_path / "docker"
+    docker.write_text(
+        f"#!{sys.executable}\n"
+        "import hashlib, pathlib, sys\n"
+        "assert sys.argv[1:] == ['exec', '-i', '-w', '/app', 'radar_app', "
+        "'sha256sum', '-c', '--quiet', '-']\n"
+        f"root = pathlib.Path({str(image)!r})\n"
+        "failed = False\n"
+        "for line in sys.stdin:\n"
+        "    expected, name = line.rstrip('\\n').split('  ', 1)\n"
+        "    assert name == 'app/main.py', 'un fichier hors image est vérifié'\n"
+        "    path = root / name\n"
+        "    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:\n"
+        "        failed = True\n"
+        "        print(name + ': FAILED')\n"
+        "sys.exit(1 if failed else 0)\n"
+    )
+    docker.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pf, "synced_files", lambda: ["app/main.py", "compose.yml"])
+
+    class RemoteWithMatchingDisk:
+        def __init__(self):
+            self.scripts = []
+
+        def run(self, script):
+            self.scripts.append(script)
+            if "docker exec" not in script:
+                return 0, "", ""  # Les fichiers rsync correspondent déjà au manifeste.
+            result = subprocess.run(
+                ["/bin/bash"],
+                input=script,
+                text=True,
+                capture_output=True,
+                env={"PATH": str(tmp_path) + os.pathsep + os.defpath},
+            )
+            return result.returncode, result.stdout, result.stderr
+
+    remote = RemoteWithMatchingDisk()
+    report = pf.Report()
+    pf.check_remote_code(report, remote, str(tmp_path), post_sync=True)
+
+    assert len(remote.scripts) == 2
+    assert bool(report.failures) is (runtime != "target")
+    assert report.warnings == []
+
+
+def test_before_sync_keeps_running_image_differences_expected(monkeypatch, tmp_path):
+    """Avant construction, la vérification de l'image cible n'est pas encore exigée."""
+    (tmp_path / "main.py").write_text("target")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pf, "synced_files", lambda: ["main.py"])
+
+    class RemoteWithOldDisk:
+        def run(self, script):
+            assert "docker exec" not in script
+            return 1, "main.py: FAILED\n", ""
+
+    report = pf.Report()
+    pf.check_remote_code(report, RemoteWithOldDisk(), str(tmp_path), post_sync=False)
+    assert report.failures == []
+    assert len(report.warnings) == 1
+
+
+def test_preflight_rejects_invalid_target_compose_without_echoing_its_output(
+    monkeypatch, capsys
+):
+    """La cible non configurable bloque le pré-vol avant toute étape destructive."""
+    scripts = []
+
+    class InvalidTarget:
+        def __init__(self, *_):
+            pass
+
+        def reachable(self):
+            return True
+
+        def run(self, script):
+            scripts.append(script)
+            return 1, "synthetic-sensitive-output", "synthetic-sensitive-error"
+
+    monkeypatch.setattr(sys, "argv", ["preflight_deploy.py"])
+    monkeypatch.setattr(pf, "Remote", InvalidTarget)
+    monkeypatch.setattr(pf, "check_local", lambda _: "synthetic-head")
+    monkeypatch.setattr(pf, "check_remote_config", lambda *_: None)
+    monkeypatch.setattr(pf, "check_remote_code", lambda *_: None)
+    monkeypatch.setattr(pf, "check_remote_migration", lambda *_: None)
+
+    assert pf.main() == 1
+    assert len(scripts) == 1
+    assert "config --no-env-resolution --quiet" in scripts[0]
+    assert "POSTGRES_PASSWORD" in scripts[0]  # Modèle cible envoyé, pas celui du serveur.
+    assert "synthetic-sensitive" not in capsys.readouterr().out

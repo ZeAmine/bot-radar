@@ -392,7 +392,7 @@ async def test_series_alert_starts_book_resolution_at_creation():
     confirm_callback, confirm_message = confirm_press()
 
     with patch(
-        "app.use_cases.ingest_listing.link_books_from_bnf", new_callable=AsyncMock
+        "app.use_cases.link_bd_catalog.link_books_from_bnf", new_callable=AsyncMock
     ) as bnf:
         patches = patched(repos, MagicMock(), MagicMock())
         for entered in patches:
@@ -456,7 +456,7 @@ async def test_a_missing_identifier_is_told_in_the_confirmation_too():
 
     confirm_callback, confirm_message = confirm_press()
 
-    with patch("app.use_cases.ingest_listing.link_books_from_bnf", new_callable=AsyncMock):
+    with patch("app.use_cases.link_bd_catalog.link_books_from_bnf", new_callable=AsyncMock):
         patches = patched(repos, MagicMock(), MagicMock())
         for entered in patches:
             entered.start()

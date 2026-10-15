@@ -25,7 +25,6 @@ from app.db.models.category import Category
 from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
 from app.schemas.listing import ListingIngestPayload
-from app.services.telegram_service import send_listing_alert
 from app.services.vinted_scraper import ScrapedVintedItem
 from app.tasks import vinted_poller as poller
 from app.use_cases import ingest_listing as ingestion
@@ -54,7 +53,6 @@ async def journey(monkeypatch):
         monkeypatch.setattr(settings, "AI_ENABLED", False)
         monkeypatch.setattr(tasks, "_background_tasks", set())
         monkeypatch.setattr(tasks, "_cleanup_tasks", set())
-        monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: send_listing_alert)
         monkeypatch.setattr(ingestion, "listing_ingestion_gate", ListingIngestionGate())
         monkeypatch.setattr(poller, "AsyncSessionLocal", db.maker)
         alert_ids = []

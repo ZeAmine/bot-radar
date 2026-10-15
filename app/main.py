@@ -15,7 +15,7 @@ from app.api.middlewares.security import (
     RateLimitMiddleware,
     SecurityHeadersMiddleware,
 )
-from app.api.routes import health, ingest, internal, telegram
+from app.api.routes import books, health, ingest, internal, telegram
 from app.core.config import settings, validate_production_secrets
 from app.core.logging import setup_logging
 
@@ -24,6 +24,7 @@ from app.core.logging import setup_logging
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Gestion du cycle de vie de l'application (démarrage et extinction)."""
     setup_logging(settings.LOG_LEVEL)
+    validate_production_secrets()
 
     from app.bot.bot_instance import bot, setup_bot_commands
     await setup_bot_commands(bot)
@@ -31,8 +32,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from app.core.tasks import safe_create_task
     from app.tasks.scheduler import scheduler
     from app.tasks.vinted_poller import run_vinted_poller
-
-    validate_production_secrets()
 
     stop_event = asyncio.Event()
     poller_task = None
@@ -141,13 +140,7 @@ def create_app() -> FastAPI:
     application.include_router(health.router)
     application.include_router(ingest.router)
     application.include_router(internal.router)
-    # Les routes livres en dernier et en import local : `app.providers` (dont
-    # `chasse_aux_livres` importe le service de métadonnées) doit être
-    # initialisé avant que le cas d'usage ne le traverse, sinon l'import
-    # circulaire latent échoue au démarrage.
-    from app.api.routes.books import router as books_router
-
-    application.include_router(books_router)
+    application.include_router(books.router)
     application.include_router(telegram.router)
 
     return application

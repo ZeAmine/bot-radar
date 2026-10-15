@@ -59,7 +59,7 @@ from app.db.models.category import Category
 from app.db.repositories.book_repo import BookRepository
 from app.db.session import AsyncSessionLocal
 from app.services.book_metadata_service import BookMetadata, BookMetadataService
-from app.use_cases.ingest_listing import link_books_from_bnf
+from app.use_cases.link_bd_catalog import link_books_from_bnf
 
 logger = logging.getLogger("radar.backfill_series")
 

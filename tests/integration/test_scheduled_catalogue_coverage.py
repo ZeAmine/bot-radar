@@ -44,7 +44,7 @@ async def test_scheduled_series_resolution_leaves_pricing_to_bounded_waves(monke
         BookMetadataService,
         CatalogueVerdict,
     )
-    from app.use_cases import ingest_listing as ingestion
+    from app.use_cases import link_bd_catalog as catalog
 
     async with postgres_replayed_database() as db:
         category = Category(slug="bd_comics", label="Livres", emoji="📚")
@@ -68,7 +68,7 @@ async def test_scheduled_series_resolution_leaves_pricing_to_bounded_waves(monke
             scheduled_requests.append(book_id)
 
         monkeypatch.setattr(BookMetadataService, "lookup_series_notices", discover)
-        monkeypatch.setattr(ingestion, "schedule_book_pricing", no_unbounded_pricing)
+        monkeypatch.setattr(catalog, "schedule_book_pricing", no_unbounded_pricing)
         await refresh.resolve_scheduled_catalogues(incremental=False, deadline=monotonic()+60)
         async with db.maker() as session:
             assert await session.scalar(select(AlertBook).where(AlertBook.alert_id == alert.id))

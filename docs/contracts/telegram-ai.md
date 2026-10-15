@@ -57,14 +57,12 @@ démarrage. Variables : `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`,
 `AI_TIMEOUT_SECONDS`. Aucun shim historique `DEEPSEEK_*`.
 
 Le chemin vivant est `AIPostAlertPipeline.enrich_alert` dans `app/services/ai/`.
-Le chemin `ListingAnalysisProvider` + `AsyncEnrichListingUseCase.execute` sert aux
-tests/provider structuré avec cache ; ne pas le recâbler sur l’ingestion.
 Avant appel, conserver `data = None` si le client n’est pas configuré.
 
 Injecter le client via `BaseAIModule(client=...)`, pas le singleton dans un handler.
 Un flag `AI_FEATURE_*` correspond à un module. Chaque JSON est validé avec champs
-optionnels et défauts ; pas d'HTTP direct dans les modules. La clé d'analyse inclut
-fournisseur, modèle et version de prompt. La sonde HTTP n'atteste pas une génération.
+optionnels et défauts ; pas d'HTTP direct dans les modules.
+La sonde HTTP n'atteste pas une génération.
 
 Pour les variantes/exclusions, un chargement précède l'attente ; verrou anti-double
 clic. `answered` distingue un avis vide d'une panne. Une réponse ne produisant aucun

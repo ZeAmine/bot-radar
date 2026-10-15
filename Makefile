@@ -1,4 +1,4 @@
-.PHONY: help dev test lint bench check-history format migrate revision up down clean \
+.PHONY: help dev test test-isolated lint bench check-history format migrate revision up down clean \
         lock check-lock preflight verify-deploy deploy pr verify
 
 # Les outils viennent du venv du dépôt quand il existe, sinon du PATH. `make` doit
@@ -22,6 +22,7 @@ help:
 	@echo "Commandes disponibles pour BotRadar :"
 	@echo "  make dev                 Lancer le serveur de développement FastAPI"
 	@echo "  make test                Lancer les tests unitaires et d'intégration"
+	@echo "  make test-isolated       Suite complète, configuration factice et transports isolés"
 	@echo "  make bench               Benchmark du chemin d'alerte (invariant 500 ms)"
 	@echo "  make lint                Vérifier le code avec Ruff et Mypy"
 	@echo "  make lock                Régénérer requirements.lock depuis l'environnement courant"
@@ -44,6 +45,10 @@ dev:
 
 test:
 	$(PYTEST) -v
+
+# Réutilise la recette existante ; aucune sélection PostgreSQL ou sauvegarde implicite.
+test-isolated:
+	$(PYTHON) -B scripts/verify_consolidation.py unit --target tests
 
 bench:
 	$(PYTEST) tests/performance -v -s

@@ -77,7 +77,6 @@ TITLE_STATS = "📊 Statistiques"
 TITLE_AUTOTUNE = "🧹 Auto-tuning des alertes"
 TITLE_EDIT_EXCLUDES = "✏️ Mots-clés exclus"
 TITLE_OFFER = "💬 Offre suggérée"
-TITLE_AI_ALERT = "⚠️ Analyse IA de vigilance"
 
 # ---------------------------------------------------------------------------
 # Libellés de champs — les mêmes mots d'un écran à l'autre
