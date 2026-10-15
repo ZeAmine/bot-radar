@@ -33,9 +33,6 @@ CI_TOKENS = {
     "INTERNAL_API_TOKEN": "ci_internal_token_test",
 }
 DEFAULT_STEPS = ("ruff", "pytest")
-# `mypy` est proposé mais pas par défaut : c'est un objectif de bout de branche. Un
-# refactor de typage ne peut pas produire des commits intermédiaires verts, sinon il
-# faudrait tout écraser. Ruff et Pytest, eux, sont le contrat de chaque commit.
 OPTIONAL_STEPS = ("mypy",)
 ALL_STEPS = DEFAULT_STEPS + OPTIONAL_STEPS
 # Arguments passés à chaque outil : `ruff` seul n'afficherait que son aide.

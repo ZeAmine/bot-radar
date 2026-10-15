@@ -10,8 +10,9 @@ sont rapportées séparément. Branche
 Base initiale : `6292e2efcf754b2f88544c620fc6943fb7f3fc56` (référence locale).
 Les modifications checkout du dossier principal ont été conservées à leur place.
 Migration additive `0014_alert_market_freshness`, à appliquer avec l'image cible.
-Les changements du chemin de notification, du scraper et de comparaison marché
-nécessitent une revue humaine avant livraison en production.
+À la date de cette implémentation, les règles exigeaient une revue humaine des
+changements du chemin de notification, du scraper et de comparaison marché. Les
+obligations actuelles sont définies dans [AGENTS](../AGENTS.md#convention-de-travail).
 
 ## Modifications
 
@@ -114,7 +115,8 @@ informations historiques sans les convertir en preuves annuelles.
 Les tests conditionnels PostgreSQL et certaines caractérisations ne sont pas
 une preuve locale PostgreSQL ; aucune CI n'a été lancée sans push.
 La revue indépendante statique a relevé puis fait corriger les défauts de
-couverture, de fraîcheur et de cotations hors vagues ; elle ne remplace pas la revue humaine.
+couverture, de fraîcheur et de cotations hors vagues ; elle ne constituait pas la
+revue humaine alors requise.
 
 Sans publication explicite, la frontière est le premier catalogue réussi : les
 nouveautés entre confirmation et premier passage peuvent manquer, et une ancienne

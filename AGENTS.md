@@ -12,8 +12,9 @@ et alerte un utilisateur Telegram autorisé. L'IA conseille ; elle ne décide pa
   interdictions et critères observables. Une procédure ne donne aucune permission.
 - Sans permission d'écriture, rester en lecture seule. Dans le périmètre autorisé,
   analyser, modifier, contrôler, corriger et revérifier sans confirmations répétées.
-- S'arrêter si une permission ou un arbitrage manque, si la vérification est
-  indisponible, si l'investigation ne progresse plus ou si le mandat est atteint.
+- S'arrêter si une permission ou un arbitrage important manque, si un risque nouveau
+  apparaît, si la vérification est indisponible, si l'investigation ne progresse plus
+  ou si le mandat est atteint.
   Respecter aussi les arrêts d'investigation applicables des skills.
 - Sous réserve des instructions applicables, le mandat et ces règles produit
   bornent les méthodes Superpowers, puis les défauts IDE. Une skill n'accorde
@@ -52,18 +53,30 @@ Intégration et découverte selon le harness : [référence ciblée](docs/agent-
 - Avant écriture : vérifier chemin, branche, SHA, diff, index, worktrees et sous-module.
   Ne pas modifier `main` ni l'espace d'une autre tâche ; conserver les travaux présents.
 - Une tâche = une branche depuis `main` : `feat/`, `fix/`, `docs/` ou `chore/`.
-  Pour les tâches concurrentes : `../bot-radar-worktrees/<sujet>/`.
+  Créer un worktree si l'isolation est nécessaire ou demandée ; une lecture seule
+  n'en exige pas. Pour les tâches concurrentes : `../bot-radar-worktrees/<sujet>/`.
   Ne pas réutiliser automatiquement un chemin ou une branche ; en cas d'échec
   d'isolation, ne pas se rabattre sur le dossier principal.
 - Sans réseau autorisé, qualifier la base de locale. Ne pas basculer ou actualiser
   automatiquement le dossier principal. Aucun worktree n'isole les services ou ports.
 - Commit, push, PR et nettoyage nécessitent un mandat les autorisant ; merge et
   déploiement exigent une demande explicite. Aucun force-push ni contournement de
-  protection de branche. Sans demande de merge, s'arrêter à la PR verte si autorisée.
+  protection de branche.
 - La livraison autorisée passe par branche et PR vers `main`, merge squash.
-  Les deux passes pré-merge sont obligatoires : CI `check` et `test-postgres` vertes,
-  puis second passage local après push, avant merge. `make verify` lance les
-  contrôles locaux puis attend la CI ; il nécessite le réseau.
+  Conserver les contrôles locaux adaptés et la CI `check` et `test-postgres` vertes
+  sur une branche à jour. Un push seul n'invalide pas les résultats locaux ;
+  leur réutilisation suit la politique de vérification ci-dessous. `make verify`
+  attend uniquement la CI et nécessite le réseau.
+- Avant tout merge, présenter le commit de la PR, un résumé court des changements,
+  résultats et risques ou limites, puis demander : « Autorises-tu le merge de la PR #X ? »
+  L'accord explicite autorise uniquement le merge de cette PR au commit présenté,
+  sans revue humaine formelle ni commentaire d'approbation supplémentaire. Si le
+  contenu change, demander une nouvelle confirmation. L'auto-revue reste identifiée
+  comme telle ; l'accord n'atteste pas une revue du code par l'utilisateur.
+  Cette règle vaut aussi pour les chemins sensibles. Elle n'autorise ni déploiement
+  ni opération sensible supplémentaire. Si GitHub exige une approbation formelle,
+  signaler le blocage : toute modification des protections exige une autorisation
+  administrative distincte, sans contournement.
 - Pour toute opération Git, isolation, passation ou découverte de skills, lire
   [le workflow](docs/agent-workflow.md). Ne pas stash, déplacer ou supprimer le
   travail existant. Aucun prune ou retrait forcé.
@@ -126,7 +139,7 @@ Intégration et découverte selon le harness : [référence ciblée](docs/agent-
   Les exceptions de preuve ISBN et filtres communs sont dans le contrat marché.
 - Les scripts de session, collecte et maintenance listés dans
   [le workflow](docs/agent-workflow.md#scripts-sensibles) nécessitent aussi une demande
-  explicite avant modification ; cette migration ne réduit pas leur protection.
+  explicite avant modification.
 - Respecter les couches existantes : domaine pur, providers sans SQL, repositories
   sans matching ni HTML. Ne pas inventer une couche ni déplacer `tome_extractor.py`.
 - Améliorer le chemin existant : pas de doublon, code mort, flag orphelin, refactor
@@ -135,8 +148,8 @@ Intégration et découverte selon le harness : [référence ciblée](docs/agent-
   `time.sleep` dans `app/`. Utiliser `safe_create_task`, le client HTTP partagé et
   le pool Redis de `app.core.redis`. Les enums métier ont une seule définition.
 - Ne pas introduire de base globale partagée non isolée dans `conftest.py`.
-- Ne supprimer ni affaiblir les tests. L'exception historique ciblée de retrait des
-  deux tests d'outillage d'autonomie reste clôturée, sans autoriser d'autre suppression.
+- Ne supprimer ni affaiblir les tests sans accord explicite. Une exception passée
+  ne donne aucune permission nouvelle ; conserver sa trace dans les preuves historiques.
 
 ### Pas de commentaires explicatifs ajoutés par défaut
 
@@ -158,26 +171,52 @@ Intégration et découverte selon le harness : [référence ciblée](docs/agent-
 
 ## Vérification et définition de terminé
 
-Depuis la racine de l'arbre concerné, avec environnement autorisé et isolé :
+Choisir les contrôles selon le changement, dans un environnement autorisé et isolé :
+
+| Changement | Contrôles locaux attendus |
+| --- | --- |
+| Prose descriptive seule | Diff, liens actifs modifiés et tests documentaires concernés ; ni suite applicative ni mypy systématiques |
+| Instructions actives | Cohérence des règles, permissions, recettes et tests des garanties concernées ; suite complète si l'impact reste incertain |
+| Procédure sensible | Contrats, permissions, ordre des opérations et scénarios d'échec avec doubles ; toute exécution réelle exige son mandat |
+| Code, y compris outillage exécutable | Ruff ciblé et tests des consommateurs pendant le travail ; validation complète finale de la branche |
+
+Pour les commits intermédiaires autorisés, les contrôles ciblés suffisent si leur
+sélection est justifiée ; élargir si les consommateurs ou les effets sont incertains.
+Un commit intermédiaire n'est alors pas attesté par toute la suite. La validation
+complète finale d'une branche de code reste obligatoire :
 
 ```sh
 ruff check .
 mypy app scripts/matching_diagnostics.py
-pytest -v
+make test-isolated
 ```
 
-`make lint` et `make test` sont les équivalents utilisant le venv s'il existe.
-Après modification : Ruff ciblé, tests concernés, puis contrôles complets requis.
-Chaque commit autorisé doit passer Ruff et pytest dans son propre arbre ; mypy
-est exigé en bout de branche. `make check-history` nécessite une autorisation
-explicite pour ses worktrees temporaires et son environnement hérité.
+`make lint` combine Ruff et mypy ; `make test-isolated` réutilise le lanceur existant
+avec configuration factice et transports isolés. La CI complète est conservée.
+Pour ingestion → matching → Telegram : vérifier ordre, idempotence, reprise,
+versions et sessions. SQL/concurrence exigent les contrôles PostgreSQL concernés ;
+migrations, dépendances et exploitation gardent leurs contrôles adaptés. Sans
+ressources autorisées, signaler la preuve manquante, sans la remplacer par SQLite
+ou un double ni revendiquer une validation réelle.
 
-Terminé = Ruff, mypy et pytest verts, critères vérifiés, aucun secret exposé,
-aucun réseau ajouté avant Telegram, diff et index relus. Revue humaine si le diff
-touche le scraper, les formules de prix/comparaison ou ingestion → matching → Telegram.
-Un contrôle hors mandat reste non exécuté et signalé ; ne pas abaisser ce seuil.
-Rapporter commandes, SHA et diff, résultats, portée, limites, reste à faire et état
-`terminé`, `partiel` ou `bloqué`. Un résultat local n'atteste pas la production.
+Réutiliser un résultat seulement si son périmètre est démontrable et si le code,
+les tests, la base, le verrou, la configuration de validation et l'environnement
+pertinents sont inchangés. Rapporter la commande, le résultat, la révision et le
+diff concernés ; aucun registre supplémentaire n'est requis. Un push seul ne
+justifie aucun rejeu. Si un élément pertinent change, rejouer les contrôles affectés ;
+en cas de doute sur l'impact ou sur la preuve disponible, élargir ou rejouer.
+
+`make check-history` reste optionnel pour une branche, si l'on veut attester chaque
+commit par les contrôles complets. Il exige une base nommée et l'autorisation de ses
+worktrees temporaires et de son environnement hérité. Le job complet des tags est
+conservé ; la validation finale ne garantit pas un historique entièrement vert.
+
+Terminé = contrôles requis verts, critères vérifiés, aucun secret exposé, aucun
+réseau ajouté avant Telegram, auto-revue du diff et de l'index effectuée. Un contrôle
+hors mandat reste non exécuté et signalé. Rapporter commandes, SHA et diff,
+résultats, portée, limites, reste à faire et état `terminé`, `partiel` ou `bloqué`.
+Un résultat local n'atteste pas la production. La confirmation de merge suit la
+convention de travail ; elle ne remplace aucun contrôle technique requis.
 
 ## Navigation selon la tâche
 
