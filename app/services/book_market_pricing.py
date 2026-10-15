@@ -23,6 +23,7 @@ import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import alert_latency
@@ -72,6 +73,7 @@ class BookPricingResult:
     historical_low_1y_cents: int | None
     failed_providers: tuple[str, ...] = ()
     current_observed_at: datetime | None = None
+    historical_checked: bool = False
     collected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
@@ -108,6 +110,7 @@ class BookPricingResult:
                 cache_duration_hours=CACHE_HOURS_WITH_PRICE,
                 historical_low_1y_cents=historical_low_cents,
                 failed_providers=getattr(offers, "failed_providers", ()),
+                historical_checked=getattr(offers, "historical_checked", False),
                 current_observed_at=best_offer.observed_at,
             )
 
@@ -122,6 +125,7 @@ class BookPricingResult:
                 cache_duration_hours=CACHE_HOURS_WITH_PRICE,
                 historical_low_1y_cents=historical_low_cents,
                 failed_providers=getattr(offers, "failed_providers", ()),
+                historical_checked=getattr(offers, "historical_checked", False),
             )
 
         return BookPricingResult(
@@ -134,6 +138,7 @@ class BookPricingResult:
             cache_duration_hours=CACHE_HOURS_WITHOUT_PRICE,
             historical_low_1y_cents=None,
             failed_providers=getattr(offers, "failed_providers", ()),
+            historical_checked=getattr(offers, "historical_checked", False),
         )
 
 
@@ -172,7 +177,7 @@ async def fetch_offers_for_book(
         )
         observed_at = datetime.now(UTC)
         for offer in offers:
-            if offer.observed_at is None:
+            if offer.observed_at is None and not offer.is_historical:
                 offer.observed_at = observed_at
             if offer.observation_id is None:
                 offer.observation_id = uuid.uuid4()
@@ -237,7 +242,7 @@ async def persist_market_result(
     for offer in result.offers:
         await repo.save_snapshot(book_id, offer)
 
-    if not result.has_data:
+    if result.lowest_delivered_price_cents is None:
         # Règle de résilience : un silence réseau ne doit pas priver l'utilisateur
         # d'un prix déjà connu et encore frais.
         existing = await repo.get_cache_by_book_id(book_id)
@@ -269,7 +274,7 @@ async def persist_market_result(
         cache_duration_hours=result.cache_duration_hours,
         historical_low_1y_cents=result.historical_low_1y_cents,
         observed_at=(result.current_observed_at if result.lowest_delivered_price_cents is not None
-                     else result.collected_at),
+                     else result.collected_at if not result.failed_providers else None),
     )
     await repo.refresh_annual_references([book_id], force=True)
     _stamp_collection(cache, result)
@@ -280,6 +285,10 @@ async def persist_market_result(
 def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None:
     """Conserve le résultat de tentative séparément de la date du dernier prix."""
     cache.last_attempt_at = result.collected_at
+    if result.lowest_delivered_price_cents is not None or not result.failed_providers:
+        cache.last_successful_collection_at = result.collected_at
+    if result.historical_checked:
+        cache.historical_checked_at = result.collected_at
     cache.failed_provider_names = list(result.failed_providers)
     retained_offers = cache.current_offers
     cache.current_offers = [
@@ -291,9 +300,10 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
         for offer in result.offers
         if is_comparable_secondhand_offer(offer)
         and offer.is_available
+        and not offer.is_historical
         and (offer.shipping_price_cents is not None or offer.price_includes_shipping)
     ]
-    if result.failed_providers and not result.has_data:
+    if result.failed_providers and result.lowest_delivered_price_cents is None:
         cache.current_offers = retained_offers
     cache.collection_status = (
         "partial"
@@ -301,7 +311,7 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
         else "failed"
         if result.failed_providers
         else "complete"
-        if result.has_data
+        if result.lowest_delivered_price_cents is not None
         else "empty"
     )
 
@@ -364,17 +374,46 @@ async def _price_book_once(
     Un marchand muet n'a pas le droit de faire échouer l'écran qui a demandé la
     cote : l'appelant reçoit ``None`` et affiche ce qu'il sait déjà.
     """
+    attempted_at: datetime | None = None
     try:
         async with AsyncSessionLocal() as session:
             book = await BookRepository(session).get_by_id(book_id)
             if book is None:
                 logger.warning("Cotation ignorée : livre ID %s introuvable (%s).", book_id, reason)
                 return None
+            cache = await MarketPriceRepository(session).get_cache_by_book_id(book_id)
+            if cache is None:
+                cache = BookMarketCache(book_id=book_id)
+                session.add(cache)
+            attempted_at = datetime.now(UTC)
+            cache.last_attempt_at = attempted_at
+            # Le tour reste acquis même si la collecte ou sa persistance échoue.
+            await session.commit()
             cache = await price_book(session, book, registry=registry)
             await session.commit()
             return cache
     except Exception as exc:
-        logger.warning("Cotation du livre ID %s impossible (%s) : %s", book_id, reason, exc)
+        logger.warning(
+            "Cotation du livre ID %s impossible (%s), erreur=%s",
+            book_id, reason, type(exc).__name__,
+        )
+        if attempted_at is not None:
+            try:
+                async with AsyncSessionLocal() as recovery:
+                    await recovery.execute(
+                        update(BookMarketCache)
+                        .where(
+                            BookMarketCache.book_id == book_id,
+                            BookMarketCache.last_attempt_at == attempted_at,
+                        )
+                        .values(collection_status="failed")
+                    )
+                    await recovery.commit()
+            except Exception as persistence_error:
+                logger.warning(
+                    "Échec non persisté pour le livre %s, erreur=%s",
+                    book_id, type(persistence_error).__name__,
+                )
         return None
 
 

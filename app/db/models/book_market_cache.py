@@ -59,6 +59,8 @@ class BookMarketCache(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     annual_computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     annual_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
+    last_successful_collection_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    historical_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     collection_status: Mapped[str | None] = mapped_column(String(20))
     failed_provider_names: Mapped[list[str] | None] = mapped_column(JSON)

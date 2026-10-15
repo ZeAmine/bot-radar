@@ -267,3 +267,12 @@ async def test_schedule_prices_a_book_once_at_a_time() -> None:
 
     assert price_now.await_count == 2
     assert book_id not in pricing._pricing_in_flight
+
+
+async def test_fetch_never_dates_an_undated_historical_point():
+    historical = _offer("chasse_aux_livres", 545, is_available=False)
+    historical.is_historical = True
+    current = _offer("ebay", 1103)
+    offers = await fetch_offers_for_book(_book(), registry=_registry([historical, current]))
+    assert offers[0].observed_at is None
+    assert offers[1].observed_at is not None

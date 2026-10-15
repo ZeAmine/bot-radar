@@ -188,6 +188,7 @@ class ViewMarketDetailsUseCase:
         self,
         alert_id: uuid.UUID,
         user_id: uuid.UUID | None = None,
+        *, force_catalogue: bool = False,
     ) -> None:
         """Identifie et lie les ouvrages d'une alerte pour une consultation explicite."""
         alert = await AlertRepository(self.db).get_by_id(alert_id, user_id=user_id)
@@ -195,7 +196,9 @@ class ViewMarketDetailsUseCase:
             return
         snapshot = BibliographicSnapshot.capture(alert)
         books = await self.book_repo.get_all_books_for_alert(alert.id)
-        if books and (alert.isbn or all(extract_tome_number_from_title(b.title) for b in books)):
+        if books and (alert.isbn or (not force_catalogue and all(
+            extract_tome_number_from_title(b.title) for b in books
+        ))):
             return
         if alert.isbn:
             book, _ = await BookCatalogService(self.db).identify_book(
@@ -214,7 +217,8 @@ class ViewMarketDetailsUseCase:
         else:
             from app.use_cases.ingest_listing import link_books_from_bnf
             await link_books_from_bnf(alert.name, alert.id, series=True,
-                                      expected_snapshot=snapshot)
+                                      expected_snapshot=snapshot,
+                                      schedule_prices=not force_catalogue)
 
     async def _resolve_book(
         self,

@@ -16,13 +16,17 @@ import asyncio
 import logging
 import random
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.alert import Alert
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
+from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.session import AsyncSessionLocal
+from app.domain.enums import AlertStatus
 from app.providers.base import MarketOffer, extract_best_historical_low
 from app.providers.registry import ProviderRegistry
 from app.services.book_market_pricing import (
@@ -38,6 +42,7 @@ from app.services.market_health import (
     notify_no_prices_found,
     notify_silent_providers,
     notify_stale_certified_lows,
+    notify_stale_current_collections,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,11 +161,41 @@ async def _report_stale_certs(session: AsyncSession | None) -> None:
     """
     if session is not None:
         await notify_stale_certified_lows(session)
+        await notify_stale_current_collections(session)
         await notify_silent_providers(session)
         return
     async with AsyncSessionLocal() as health_session:
         await notify_stale_certified_lows(health_session)
+        await notify_stale_current_collections(health_session)
         await notify_silent_providers(health_session)
+
+
+async def resolve_scheduled_catalogues(*, incremental: bool, deadline: float) -> None:
+    """Réutilise la résolution existante sans activer une alerte en pause."""
+    from app.use_cases.view_market_details import ViewMarketDetailsUseCase
+
+    async with AsyncSessionLocal() as reader:
+        ids = await AlertRepository(reader).scheduled_catalogue_ids(incremental=incremental)
+    for alert_id in ids:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            break
+        try:
+            async with AsyncSessionLocal() as session:
+                alert = await session.get(Alert, alert_id)
+                if alert is None or alert.status == AlertStatus.DELETED or alert.preparation:
+                    continue
+                alert.catalogue_refresh_attempted_at = datetime.now(UTC)
+                await session.commit()
+                async with asyncio.timeout(min(45.0, remaining)):
+                    await ViewMarketDetailsUseCase(session).resolve_alert_books(
+                        alert_id, force_catalogue=True,
+                    )
+                if not await BookRepository(session).get_all_books_for_alert(alert_id):
+                    logger.warning("Cotation sans ouvrage identifié : alerte %s", alert_id)
+        except Exception as exc:
+            logger.warning("Résolution planifiée impossible : alerte %s (%s)",
+                           alert_id, type(exc).__name__)
 
 
 async def refresh_book_prices_task(
@@ -193,6 +228,10 @@ async def refresh_book_prices_task(
         "degraded": 0,
         "errors": 0,
     }
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max_duration_seconds
+    if session is None:
+        await resolve_scheduled_catalogues(incremental=incremental, deadline=deadline)
     books = await _select_books(session, incremental, batch_size)
 
     if not books:
@@ -206,9 +245,6 @@ async def refresh_book_prices_task(
 
     semaphore = asyncio.Semaphore(max(1, concurrency))
     wave_size = max(1, concurrency)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + max_duration_seconds
-
     for wave in _iter_chunks(books, wave_size):
         remaining = deadline - loop.time()
         if remaining <= 0:

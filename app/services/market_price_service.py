@@ -953,11 +953,6 @@ class MarketPriceService:
             if reason:
                 lines.append(f"⚠️ {reason.capitalize()} : comparaison indisponible.")
 
-        if cache.historical_low_1y_cents is not None:
-            lines.append(
-                f"<b>Ancien minimum (informatif) :</b> "
-                f"{format_cents(cache.historical_low_1y_cents)}"
-            )
         if is_historical and reference_cents is not None:
             lines.append(
                 f"<b>Minimum sur 1 an :</b> {format_cents(reference_cents)} "

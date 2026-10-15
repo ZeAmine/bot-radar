@@ -216,10 +216,10 @@ Persister les entités métier, les alertes, les annonces, le catalogue de livre
   - `alert.py` : Modèle `Alert` (nom, mots-clés, exclusions, variantes, prix max, conditions, statut).
   - `listing.py` : Modèle `Listing` (données de l'annonce, source, prix, URL).
   - `book.py` : Modèle `Book` (catalogue BD : titre, série, tome, ISBN-13 BNF).
-  - `book_market_cache.py` : cache de cote (`book_market_cache`). `market_price_snapshot.py` : snapshots (`market_price_snapshots`).
+  - `book_market_cache.py` : cache de cote (`book_market_cache`), succès de collecte et collecte historique datés séparément. `market_price_snapshot.py` : snapshots (`market_price_snapshots`).
   - `bot_event.py` : Modèle `BotEvent` (suivi des interactions : faux positifs `listing_disliked`, clics).
   - `user.py` : Modèle `User` (identifiant Telegram, configuration).
-- [`alembic/versions/`](alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0013_pause_actions` (tête de code, pas constat d’une base réelle).
+- [`alembic/versions/`](alembic/versions/) : Fichiers de migration de schéma. Révision courante attendue : `0014_alert_market_freshness` (tête de code, pas constat d’une base réelle).
 
 ### Invariants et contraintes
 - **Sessions isolées en tâche de fond** : Ne jamais réutiliser la session HTTP/API dans une coroutine d'arrière-plan (`safe_create_task`). Toujours ouvrir un nouveau contexte : `async with AsyncSessionLocal() as session:`.
@@ -301,3 +301,23 @@ Fournir des utilitaires pour synchroniser la session Vinted et faciliter le test
 
 ### Invariants et contraintes
 - **Fichiers sensibles** : Ne pas modifier ni altérer ces scripts sans demande explicite de l'utilisateur.
+
+### Actualisation et admission des nouveautés — ADR-050
+
+Le premier catalogue réussi d'une nouvelle alerte est exclu en base pour cette
+alerte, même si ses annonces étaient déjà vues globalement. Les notifications de
+reprise appliquent la même admission temporelle. Le fallback sans publication
+ne garantit pas une frontière exacte au clic de création.
+
+Les tâches de cotation portent sur les livres liés aux alertes actives ou en pause.
+Les passes complètes restent à 07:00/19:00 ; les lots à :15/:45 démarrent aussi à la
+reprise de l'application. Leur taille s'adapte à la population, avec priorité aux
+plus anciennes tentatives et un repos de six heures après résultat partiel/échoué.
+La résolution catalogue quotidienne traite les séries et les alertes sans lien ;
+elle ne déclenche pas de cotations hors des vagues du scheduler.
+
+Les minima annuels sont recalculés localement après écriture des observations et
+à expiration de leur projection lors d'une lecture ou du nettoyage. Le clic marché
+lance une nouvelle collecte ; la surveillance reste indépendante de ces clics.
+Le cron Chasse renouvelle un jeton, pas les cotes des alertes. Les preuves datées et
+livrées restent nécessaires pour intégrer ses points historiques au minimum unique.

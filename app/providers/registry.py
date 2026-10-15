@@ -72,17 +72,20 @@ class ProviderRegistry:
                 )
                 observed_at = datetime.now(UTC)
                 for offer in offers or []:
-                    if offer.observed_at is None:
+                    if offer.observed_at is None and not offer.is_historical:
                         offer.observed_at = observed_at
                     if offer.observation_id is None:
                         offer.observation_id = uuid.uuid4()
                 return offers
             except Exception as exc:
-                logger.debug(
-                    "Erreur lors de l'appel au provider '%s': %s",
-                    provider.name,
-                    exc,
+                reason = (
+                    "timeout" if isinstance(exc, (TimeoutError, httpx.TimeoutException))
+                    else "http_status" if isinstance(exc, httpx.HTTPStatusError)
+                    else "invalid_response" if isinstance(exc, (ValueError, TypeError))
+                    else "internal_error"
                 )
+                logger.warning("Collecte fournisseur échouée : %s (%s, %s)",
+                               provider.name, reason, type(exc).__name__)
                 return MarketOffers(failed_providers=(provider.name,))
 
     async def fetch_all_offers(
@@ -122,7 +125,10 @@ class ProviderRegistry:
                 failures.update(getattr(res, "failed_providers", ()))
 
         self.failed_provider_names.update(failures)
-        return MarketOffers(all_offers, failed_providers=tuple(sorted(failures)))
+        return MarketOffers(
+            all_offers, failed_providers=tuple(sorted(failures)),
+            historical_checked=any(getattr(res, "historical_checked", False) for res in results),
+        )
 
     @staticmethod
     def _merchant_key(offer: MarketOffer) -> str:
@@ -145,6 +151,7 @@ class ProviderRegistry:
             for o in offers
             if is_comparable_secondhand_offer(o)
             and o.is_available
+            and not o.is_historical
             and o.delivered_price_cents > 0
             and (o.shipping_price_cents is not None or o.price_includes_shipping)
         ]

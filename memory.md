@@ -582,3 +582,37 @@ correspondant d'`AGENTS.md`. Ce qui suit n'est pas une copie de la constitution.
   4. **Ce qui manque pour terminer la vérification** : une session locale fournie (capture navigateur → `scripts/sync_vinted_checkout_session.py`), l'interrupteur levé, un **article ciblé**, un clic. Si DataDome bloque encore avec la session, la conclusion est que le parcours serveur ne passe pas sans contourner la protection — et aucun contournement ne sera ajouté.
 - **Raison** : l'utilisateur veut un parcours unique, intégré et sous son contrôle ; le userscript dupliquait le chemin d'achat hors du bot et imposait son propre contexte d'exécution (navigateur habituel, gestionnaire de scripts). Le retirer élimine une surface entière au lieu de l'entretenir.
 - **Conséquence assumée** : si le serveur reste bloqué, il n'existe **aucun** parcours accéléré — il faut le dire clairement plutôt que promettre un repli non vérifié ou réintroduire une méthode abandonnée. `[ Voir l'annonce ]` reste l'accès manuel, sans automatisation, à chaque alerte.
+
+
+### ADR-050 : Nouveautés au premier scan et minimum annuel unique vérifiable
+
+- **Demande** : supprimer la rafale après création, simplifier `/list`, supprimer
+  le deuxième minimum et couvrir les cotations sous 48 h, pauses comprises.
+- **Nouveautés** : jalon JSON par nouvelle alerte, premier catalogue réussi exclu
+  en silence. Aucun jalon rétroactif pour les anciennes alertes. Les reprises
+  abandonnent les notifications du catalogue initial. Les réponses Vinted en
+  erreur ou le HTML vide non confirmé ne deviennent plus des catalogues réussis.
+  Le catalogue JSON explicitement vide peut initialiser l'alerte sans repli HTML.
+- **Limite acceptée** : sans publication Vinted, la frontière est le premier scan,
+  pas exactement la confirmation. La date de réception n'est jamais présentée
+  comme date de publication ; les IDs ne servent pas à inventer un horodatage.
+- **Prix** : suppression de « Ancien minimum (informatif) ». Le minimum annuel reste
+  une projection des observations admissibles datées et livrées. Les points
+  fournisseurs ont leur propre type dans les snapshots, une identité stable et
+  leur date réelle ; ils ne sont pas des offres disponibles aujourd'hui. Un
+  agrégat non daté reste conservé, sans devenir une preuve annuelle.
+- **Collecte** : actifs et pauses, déduplication des livres, résolution quotidienne
+  des séries et liens manquants. La résolution planifiée ne lance aucune cotation
+  hors des vagues. Sélection par dernières tentatives, lots adaptés à la population,
+  repos de six heures pour les échecs/partiels et cible 24 h avant signal à 48 h.
+  Réussite d'offres et collecte historique sont distinctes de la tentative.
+- **Constats de production du 14 octobre 2026** : à 20:45 Europe/Paris, les six
+  tomes de L'Arabe du futur ont été traités : quatre avec prix, deux en échec.
+  Grimr conserve un agrégat de 545 cents sans date du point ; 1103 cents proviennent
+  d'une offre observée le 20 septembre. La sonde historique Grimr répond 200 vide,
+  même avec le jeton Redis effectivement choisi. Les 545 cents ne sont donc pas
+  confirmés dans la période annuelle ; aucune date ni aucun prix n'est fabriqué.
+- **Opérations** : migration additive 0014_alert_market_freshness. Les relevés et
+  preuves de livraisons sont conservés. Aucun déploiement n'est autorisé par cet ADR.
+  Les preuves de consolidation antérieures gardent leur révision et leur portée,
+  mais ne prescrivent plus de double présentation dans les messages.

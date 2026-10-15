@@ -1,3 +1,7 @@
+> Portée historique : ce rapport conserve les résultats attribués à leur révision.
+> Ses mentions d'un ancien agrégat informatif ne prescrivent plus son affichage.
+> ADR-050 impose désormais un seul minimum annuel vérifiable dans le panneau.
+
 # Validation transversale locale — 2026-10-12
 
 Le bilan initial est conservé comme historique. Le résultat actualisé et la qualification des 79 échecs figurent dans « Réalignement autorisé des tests » ci-dessous : validation locale réussie, dans la portée synthétique précisée.

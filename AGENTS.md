@@ -142,6 +142,31 @@ BotRadar est un bot Telegram **privé** d’aide à la décision pour l’occasi
 
 Utilisateur unique / allowlist (`TELEGRAM_ALLOWED_USER_IDS`). Domaine public : `https://radar.aminezegmou.fr`.
 
+### Nouveautés et cotation (ADR-050)
+
+- Une nouvelle alerte Vinted initialise son premier catalogue réussi en silence,
+  avec un jalon persistant propre à l'alerte. Une collecte échouée n'initialise rien.
+  Les annonces du catalogue initial et celles reçues avant ce jalon restent exclues,
+  y compris lors d'une reprise de notification. Les alertes antérieures au déploiement
+  gardent leur comportement ; pause et reprise ne réinitialisent pas le jalon.
+- Le catalogue Vinted observé ne donne pas la publication : le repli peut manquer
+  les annonces entre confirmation et premier scan et ne garantit pas l'âge réel
+  d'une annonce découverte plus tard. Une publication explicite antérieure à la
+  création est rejetée pour les nouvelles alertes.
+- Le panneau marché affiche un seul « Minimum sur 1 an », calculé sur les
+  observations admissibles datées des 365 derniers jours. Les points fournisseurs
+  exigent également une preuve de total livré. Aucun agrégat brut non daté n'est
+  affiché comme second minimum ; ses données historiques restent conservées.
+- La cotation planifiée couvre les livres et tomes des alertes actives **et en pause**,
+  hors suppressions. Cible de collecte réussie : 24 h ; avertissement au-delà de 48 h.
+  Une tentative, une collecte d'offres réussie et une collecte historique sont
+  datées séparément. Un ancien prix minimum n'est pas un échec de collecte.
+- La résolution planifiée lie les ouvrages sans lancer de cotations individuelles :
+  celles-ci passent ensuite par les vagues bornées du scheduler. Les reprises
+  partielles/échouées attendent six heures et ne monopolisent pas la file.
+  Les dépendances externes peuvent empêcher la réussite sous 48 h : ne jamais
+  transformer une tentative échouée en réussite pour satisfaire ce délai.
+
 ### Clavier d'alerte Telegram
 Chaque alerte Telegram envoyée comporte un clavier inline compact et ergonomique :
 - Ligne 1 : `[ Acheter ]` (callback de préparation du checkout, si `VINTED_CHECKOUT_PREPARATION_ENABLED`) et `[ Voir l’annonce ]` (Lien direct Vinted, accès sans automatisation et repli).
@@ -314,7 +339,7 @@ livrer une tâche ; aucune recette de contournement n’est maintenue ici.
 
 Si le job du workflow `check` est renommé, mettre à jour `contexts` dans la même foulée : sinon `main` se verrouille.
 
-Tête du graphe Alembic au présent état du dépôt : `0013_pause_actions`. Les recettes historiques 0010/0011 conservent leur périmètre ; cette tête de code ne prouve pas la révision d’une base réelle. Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — sur toute base où cette migration est appliquée. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
+Tête du graphe Alembic au présent état du dépôt : `0014_alert_market_freshness`. Les recettes historiques 0010/0011 conservent leur périmètre ; cette tête de code ne prouve pas la révision d’une base réelle. Toute nouvelle migration : fichier dans `alembic/versions/`, rebuild, puis `upgrade head`. **Un identifiant de révision tient dans 32 caractères** : Alembic crée `alembic_version.version_num` en `VARCHAR(32)`, et un identifiant plus long n'échoue qu'à l'écriture de la version, après le DDL de la migration — sur toute base où cette migration est appliquée. `tests/unit/test_alembic_revisions.py` le vérifie. Pas d’`op.create_index` `CONCURRENTLY` dans une transaction Alembic standard ; table petite uniquement, sinon le demander.
 
 ## IA
 

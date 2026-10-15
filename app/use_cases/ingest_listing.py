@@ -28,6 +28,7 @@ from app.db.repositories.listing_repo import ListingRepository
 from app.domain.entities.alert_preparation import PreparationError, preparation_request
 from app.domain.enums import NotificationState
 from app.domain.rules.catalogue_search import is_catalogue_exhausted, is_uncatalogued
+from app.domain.rules.listing_freshness import listing_is_new_for_alert
 from app.domain.rules.listing_match import evaluate_listing_against_alert
 from app.schemas.listing import (
     ListingIngestPayload,
@@ -69,6 +70,7 @@ async def link_books_from_bnf(
     *,
     series: bool = False,
     wait_for_prices: bool = False,
+    schedule_prices: bool = True,
     expected_preparation_token: str | None = None,
     expected_snapshot: BibliographicSnapshot | None = None,
     catalogue_sink: "list[CatalogueVerdict] | None" = None,
@@ -216,6 +218,8 @@ async def link_books_from_bnf(
 
     # La cote part en arrière-plan : c'est elle qui fera apparaître la ligne de prix
     # sur les alertes suivantes de cet ouvrage.
+    if not schedule_prices:
+        return True
     if wait_for_prices:
         import asyncio
 
@@ -513,6 +517,16 @@ class ProcessListingUseCase:
         active_alerts = await self.listing_repo.get_active_alerts_by_category(payload.category_slug)
         pending_sends: list[PendingSend] = []
         for alert in active_alerts:
+            if not listing_is_new_for_alert(alert, listing):
+                if resume_ids is not None and alert.id in resume_ids:
+                    from app.use_cases.notification_admission import notification_row
+                    row = await notification_row(self.db, alert.id, listing.id)
+                    if row is not None and row.notification_state in {
+                        NotificationState.READY, NotificationState.DEFERRED,
+                    }:
+                        row.notification_state = NotificationState.ABANDONED
+                        row.notification_reason = "initial_catalogue"
+                continue
             if resume_ids is not None and alert.id not in resume_ids:
                 continue
             match_result = evaluate_listing_against_alert(

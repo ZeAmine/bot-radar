@@ -3,6 +3,7 @@
 import html
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -36,6 +37,7 @@ class ScrapedVintedItem:
     # évite une requête supplémentaire au moment du clic. Absent du parsing HTML,
     # qui ne l'expose pas.
     seller_external_id: str | None = None
+    published_at: datetime | None = None
 
 
 def parse_vinted_overlay_title(raw_title: str) -> tuple[str, str, int]:
@@ -203,6 +205,19 @@ def catalog_url_to_api_params(catalog_url: str) -> dict[str, str]:
     return params
 
 
+def parse_publication_date(value: Any) -> datetime | None:
+    """Lit seulement une date explicite avec fuseau, sans inférer depuis l'identifiant."""
+    if not isinstance(value, str):
+        return None
+    try:
+        date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if date.tzinfo is None or date > datetime.now(UTC):
+        return None
+    return date.astimezone(UTC)
+
+
 def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
     """Parse la réponse JSON structurée de l'API interne Vinted (/svc-catalogue/items)."""
     items: list[ScrapedVintedItem] = []
@@ -281,6 +296,7 @@ def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
                 url=item_url,
                 photo_url=photo_url,
                 seller_external_id=seller_external_id or None,
+                published_at=parse_publication_date(raw.get("published_at")),
             )
         )
 

@@ -778,7 +778,8 @@ def format_alerts_list_text(
     """Génère le texte de la vue compacte /list, dans l'ordre de la charte.
 
     Titre « Mes alertes », pagination et total sur une ligne distincte, une entrée
-    par alerte : numéro, titre, statut, Prix maximum. L'ISBN et les filtres restent
+    par alerte : numéro, titre, prix maximum, puis statut entre parenthèses.
+    L'ISBN et les filtres restent
     dans la fiche détaillée, chaque valeur dynamique est échappée.
     """
     total_pages = max(1, (total_count + 9) // 10)
@@ -797,9 +798,13 @@ def format_alerts_list_text(
             if getattr(a, "category", None) and getattr(a.category, "emoji", None)
             else ""
         )
-        price_str = format_cents_to_euros(a.max_item_price_cents)
+        price_str = (
+            (str(a.max_item_price_cents // 100) if a.max_item_price_cents % 100 == 0
+             else f"{a.max_item_price_cents / 100:.2f}".replace(".", ",")) + "€"
+            if a.max_item_price_cents is not None else format_cents_to_euros(None)
+        )
         lines.append(
-            f"{i}. {cat_icon}<b>{html.escape(a.name)}</b> — {status_text} — {price_str}"
+            f"{i}. {cat_icon}<b>{html.escape(a.name)}</b> : {price_str} ({status_text})"
         )
     return "\n".join(lines)
 
