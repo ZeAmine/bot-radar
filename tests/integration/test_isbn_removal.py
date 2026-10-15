@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 
+from app.bot import formatter
 from app.bot.handlers import alerts_manage as edit
 from app.bot.handlers import autotune
 from app.bot.handlers.autotune import (
@@ -390,14 +391,20 @@ async def test_keywords_in_flight_cannot_erase_manual_criteria_after_removal(jou
 
 
 async def test_recap_uses_refreshed_relationship(journey, monkeypatch):
+    """Le récap est rendu depuis la relation **relue**, pas depuis l'instance d'avant.
+
+    Le rendu passe désormais par `send_alert_card`, qui appelle `format_alert_card`
+    dans `app.bot.formatter` : c'est ce gabarit-là qu'il faut observer, et il est
+    observé par le même chemin d'écriture qu'en production.
+    """
     observed = []
-    original = edit.format_alert_card
+    original = formatter.format_alert_card
 
     def render(alert, **kwargs):
         observed.append(list(alert.alert_books))
         return original(alert, **kwargs)
 
-    monkeypatch.setattr(edit, "format_alert_card", render)
+    monkeypatch.setattr(formatter, "format_alert_card", render)
     await journey.change()
     assert observed == [[]]
 

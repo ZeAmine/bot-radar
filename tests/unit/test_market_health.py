@@ -236,7 +236,11 @@ async def test_a_broken_silent_check_never_breaks_the_refresh():
 
 @pytest.mark.asyncio
 async def test_an_incomplete_pass_is_reported():
-    """Une passe tronquée par le plafond de durée doit se voir, pas se taire."""
+    """Une passe tronquée par le plafond de durée doit se voir, pas se taire.
+
+    Elle est décrite comme une **information** : le plafond de durée est le
+    fonctionnement normal d'un lot qui ne tient pas dans sa fenêtre, pas une panne.
+    """
     with pytest.MonkeyPatch.context() as mp:
         sent: list[str] = []
 
@@ -245,13 +249,107 @@ async def test_an_incomplete_pass_is_reported():
 
         mp.setattr(market_health, "notify_admins", fake_notify)
 
-        client = MagicMock()
-        client.set = AsyncMock(return_value=True)
-        mp.setattr(market_health, "get_redis_client", lambda: client)
-        await market_health.notify_incomplete_refresh(5, 12, mode_label="complet (12 livres)")
+        await market_health.notify_incomplete_refresh(
+            5, 12, refreshed=4, interrupted=True, incremental=False
+        )
 
     assert len(sent) == 1
-    assert "5/12" in sent[0]
+    text = sent[0]
+    assert "5/12" in text
+    # Les quatre nombres sont distincts et nommés : traités, mis à jour, restants.
+    assert "Traités : 5/12 livres" in text
+    assert "Mis à jour : 4 livres" in text
+    assert "Restants à traiter : 7 livres" in text
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_pass_carries_no_warning_marker():
+    """Une passe coupée par le plafond n'est pas un avertissement.
+
+    Elle l'était : le message portait un ⚠️ et le journal un `warning`, pour un
+    fonctionnement prévu. Le bruit rendait invisible ce qui, lui, est anormal.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(
+            5, 12, refreshed=4, interrupted=True, incremental=True, batch_size=8
+        )
+
+    assert "⚠️" not in sent[0]
+    assert "incrémental" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_a_full_pass_reports_when_the_next_full_pass_is_known():
+    """La date annoncée est celle d'une passe **complète** confirmée par le planificateur."""
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        mp.setattr(
+            market_health, "next_full_pass_note",
+            lambda: "\nProchaine passe complète prévue : 01/01 à 19:00.",
+        )
+
+        await market_health.notify_incomplete_refresh(
+            5, 12, refreshed=4, interrupted=True, incremental=False
+        )
+
+    assert "Prochaine passe complète prévue" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_an_incremental_pass_never_promises_a_date():
+    """Un lot incrémental ne peut pas absorber l'arriéré : il ne promet aucune reprise.
+
+    Un passage glissant traite huit livres ; annoncer une date laisserait croire que
+    les restants sont pris en charge, alors que rien ne le garantit.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        mp.setattr(
+            market_health, "next_full_pass_note",
+            lambda: "\nProchaine passe complète prévue : 01/01 à 19:00.",
+        )
+
+        await market_health.notify_incomplete_refresh(
+            2, 8, refreshed=1, interrupted=True, incremental=True, batch_size=8
+        )
+
+    assert "Prochaine passe complète prévue" not in sent[0]
+    assert "ordre de la file" in sent[0]
+
+
+def test_the_next_full_pass_note_is_empty_without_a_scheduler():
+    """Sans planificateur pour la confirmer, la date n'est pas inventée.
+
+    C'est la règle qui rend la phrase honnête : une date qui ne vient pas du
+    planificateur serait une promesse que rien ne tient, et le message se tairait
+    plutôt que de la produire.
+    """
+    import app.tasks.scheduler as scheduler_module
+
+    class Exploding:
+        def get_jobs(self):
+            raise RuntimeError("pas de planificateur")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(scheduler_module, "scheduler", Exploding(), raising=False)
+        assert market_health.next_full_pass_note() == ""
 
 
 @pytest.mark.asyncio
@@ -265,7 +363,9 @@ async def test_a_complete_pass_says_nothing():
 
         mp.setattr(market_health, "notify_admins", fake_notify)
 
-        await market_health.notify_incomplete_refresh(12, 12, mode_label="complet (12 livres)")
+        await market_health.notify_incomplete_refresh(
+            12, 12, refreshed=12, interrupted=False, incremental=False
+        )
         await market_health.notify_no_prices_found(
             0, 0, 0, incremental=False, mode_label="complet (0 livres)"
         )
@@ -510,3 +610,117 @@ async def test_a_silent_redis_loses_the_measure_not_the_alert():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(market_health, "get_redis_client", lambda: client)
         await market_health.record_sent_cote_state("searching")
+
+
+# --- Le seuil réellement livré ---
+
+
+def test_the_shipped_threshold_is_seven_days():
+    """Le seuil de production, verrouillé par sa valeur.
+
+    Aucun test ne le faisait : les tests d'intégration passaient `days=7` **en
+    argument**, si bien que la constante livrée pouvait valoir n'importe quoi sans
+    qu'un seul test rougisse. Le défaut a été constaté en la portant à 99 jours —
+    toute la suite restait verte.
+
+    C'est ce test-là qui rend la décision vérifiable : il porte sur la constante
+    que la production utilise, sans lui substituer de valeur.
+    """
+    from app.services.market_health import STALE_AFTER_DAYS
+
+    assert STALE_AFTER_DAYS == 7
+
+
+def test_both_expiry_checks_share_the_same_reference():
+    """Les deux contrôles lisent le même seuil, et non deux valeurs qui divergent.
+
+    `notify_stale_current_collections` portait un `2` écrit en dur à côté d'une
+    constante qui valait autre chose : le même livre pouvait être périmé pour un
+    contrôle et pas pour l'autre. Le défaut n'était visible qu'en lisant les deux
+    signatures côte à côte, ce que ce test fait à la place du lecteur.
+    """
+    import inspect
+
+    from app.services import market_health
+
+    for func in (
+        market_health.notify_stale_certified_lows,
+        market_health.notify_stale_current_collections,
+    ):
+        default = inspect.signature(func).parameters["stale_after_days"].default
+        assert default == market_health.STALE_AFTER_DAYS, func.__name__
+
+
+def test_the_reported_delay_matches_the_threshold_that_selected_the_rows():
+    """Le délai annoncé dans le message est celui qui a servi à sélectionner.
+
+    Le texte portait « 48 heures » en dur sous un seuil de sept jours : le message
+    annonçait un chiffre que le contrôle n'avait pas appliqué.
+    """
+    from app.services.market_health import StaleCertifiedLow, format_stale_certified_lows
+
+    item = StaleCertifiedLow(
+        title="Grimr", isbn13=None, low_cents=545, last_seen=datetime.now(UTC) - timedelta(days=10)
+    )
+    text = format_stale_certified_lows([item], 1, stale_after_days=7)
+    assert "plus de 7 jours" in text
+    assert "48 heures" not in text
+
+
+# --- Le bilan ne se répète pas, et ne disparaît pas non plus ---
+
+
+@pytest.mark.asyncio
+async def test_two_scheduled_passes_each_get_their_report():
+    """Deux passes planifiées produisent deux bilans, pas un.
+
+    Les deux passes complètes sont à 07:00 et 19:00 — douze heures d'écart. Une
+    fenêtre de dédoublonnage de vingt heures, comme celle des autres alertes,
+    supprimait donc le bilan de la seconde : le défaut était invisible tant qu'on
+    ne comparait pas la fenêtre à l'écart réel entre deux passes.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        for _ in range(2):
+            await market_health.notify_incomplete_refresh(
+                5, 12, refreshed=4, interrupted=True, incremental=False
+            )
+
+    assert len(sent) == 2, "les deux passes doivent chacune rendre son bilan"
+
+
+@pytest.mark.asyncio
+async def test_the_report_never_waits_on_a_shared_deduplication_window():
+    """Le bilan ne dépend d'aucune clé Redis : il ne peut donc pas être avalé.
+
+    C'est la garantie de fond. Tant que le bilan passait par une fenêtre partagée
+    avec les alertes critiques, un incident de cotation pouvait le faire taire —
+    ou l'inverse. Il est maintenant inconditionnel.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        class RedisMort:
+            def set(self, *_args, **_kwargs):
+                raise AssertionError("le bilan ne doit pas consulter Redis")
+
+            def incr(self, *_args, **_kwargs):
+                raise AssertionError("le bilan ne doit pas consulter Redis")
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        mp.setattr(market_health, "get_redis_client", lambda: RedisMort())
+
+        await market_health.notify_incomplete_refresh(
+            5, 12, refreshed=4, interrupted=True, incremental=False
+        )
+
+    assert len(sent) == 1

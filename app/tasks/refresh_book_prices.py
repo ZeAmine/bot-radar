@@ -98,20 +98,41 @@ def _pass_stat(cache: BookMarketCache | None) -> str:
     return stat
 
 
+def _cote_was_written(cache: BookMarketCache | None) -> bool:
+    """Vrai quand la collecte a réellement laissé une cote utilisable en base.
+
+    « Traité » et « mis à jour » ne disent pas la même chose : un livre interrogé
+    dont tous les fournisseurs sont muets est traité, mais n'a rien apporté. Le
+    compteur de mises à jour ne compte donc que les collectes qui ont écrit une
+    cote **et** fait avancer la date de succès — c'est la même condition que
+    `_stamp_collection`, lue du côté qui la constate.
+
+    Un prix inchangé compte : la question n'est pas de savoir si le chiffre a
+    bougé, mais si le relevé a abouti. Un cache absent, ou resté `failed` /
+    `empty`, ne compte pas.
+    """
+    return cache is not None and cache.collection_status == "complete"
+
+
 async def _price_one_book(
     book: Book,
     registry: ProviderRegistry,
     session: AsyncSession | None,
     semaphore: asyncio.Semaphore,
-) -> str:
-    """Interroge les fournisseurs pour un livre et consolide sa cote."""
+) -> tuple[str, bool]:
+    """Interroge les fournisseurs pour un livre et consolide sa cote.
+
+    Rend le verdict de la passe **et** le fait qu'une cote utilisable ait été écrite.
+    Les deux sont calculés ici, au seul endroit qui voit le résultat de la collecte :
+    les déduire plus tard, depuis les statistiques agrégées, reviendrait à deviner.
+    """
     if session is None:
         async with semaphore:
             cache = await price_book_now(book.id, reason="scheduled", registry=registry)
         if cache is None:
-            return "errors"
+            return "errors", False
         registry.failed_provider_names.update(cache.failed_provider_names or [])
-        return _pass_stat(cache)
+        return _pass_stat(cache), _cote_was_written(cache)
     async with semaphore:
         offers: list[MarketOffer] = await fetch_offers_for_book(book, registry=registry)
 
@@ -123,7 +144,7 @@ async def _price_one_book(
 
     cache = await persist_market_result(session, book.id, result)
     registry.failed_provider_names.update(cache.failed_provider_names or [])
-    return _pass_stat(cache)
+    return _pass_stat(cache), _cote_was_written(cache)
 
 
 async def _run_wave(
@@ -149,7 +170,10 @@ async def _run_wave(
             )
             stats["errors"] += 1
         else:
-            stats[outcome] += 1
+            verdict, wrote_cote = outcome
+            stats[verdict] += 1
+            if wrote_cote:
+                stats["refreshed"] += 1
 
 
 async def _report_stale_certs(session: AsyncSession | None) -> None:
@@ -223,6 +247,10 @@ async def refresh_book_prices_task(
 
     stats = {
         "processed": 0,
+        # Distinct de « processed » : un livre interrogé dont les fournisseurs sont
+        # muets a bien été traité, mais n'a rien écrit. C'est ce compteur-là qui
+        # répond à « le rafraîchissement a-t-il servi à quelque chose ? ».
+        "refreshed": 0,
         "available": 0,
         "unavailable": 0,
         "degraded": 0,
@@ -230,6 +258,10 @@ async def refresh_book_prices_task(
     }
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max_duration_seconds
+    # Une passe coupée par le plafond de durée n'est pas une anomalie : c'est le
+    # fonctionnement prévu d'un lot qui ne tient pas dans sa fenêtre. Elle part au
+    # bilan comme une information, jamais comme un avertissement.
+    interrupted = False
     if session is None:
         await resolve_scheduled_catalogues(incremental=incremental, deadline=deadline)
     books = await _select_books(session, incremental, batch_size)
@@ -248,8 +280,10 @@ async def refresh_book_prices_task(
     for wave in _iter_chunks(books, wave_size):
         remaining = deadline - loop.time()
         if remaining <= 0:
-            logger.warning(
-                "Plafond de durée atteint : %d/%d livres refreshés, reste reporté.",
+            interrupted = True
+            logger.info(
+                "Plafond de durée atteint : %d/%d livres traités, le reste attend "
+                "la passe suivante.",
                 stats["processed"],
                 len(books),
             )
@@ -263,11 +297,11 @@ async def refresh_book_prices_task(
             await asyncio.sleep(random.uniform(*PAUSE_RANGES[bool(incremental)]))
 
     logger.info(
-        "Rafraîchissement BD terminé (%s) : %d traités, %d avec prix, "
+        "Rafraîchissement BD terminé (%s) : %d traités, %d mis à jour, "
         "%d indisponibles, %d dégradés, %d erreurs.",
         mode_label,
         stats["processed"],
-        stats["available"],
+        stats["refreshed"],
         stats["unavailable"],
         stats["degraded"],
         stats["errors"],
@@ -282,7 +316,14 @@ async def refresh_book_prices_task(
     # ne doit pas passer sous le radar. Ces alertes ne bloquent jamais le
     # rafraîchissement.
     total_books = len(books)
-    await notify_incomplete_refresh(stats["processed"], total_books, mode_label=mode_label)
+    await notify_incomplete_refresh(
+        stats["processed"],
+        total_books,
+        refreshed=stats["refreshed"],
+        interrupted=interrupted,
+        incremental=incremental,
+        batch_size=batch_size,
+    )
     await notify_no_prices_found(
         stats["processed"],
         total_books,

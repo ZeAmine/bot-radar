@@ -140,7 +140,9 @@ async def test_check_and_trigger_proactive_autotune_success():
         bot.send_message.assert_awaited_once()
         _, kwargs = bot.send_message.call_args
         assert kwargs["chat_id"] == 123456789
-        assert "Auto-Tuning Proactif" in kwargs["text"]
+        # Le titre de la proposition : elle dit ce qu'elle propose, là où le hub
+        # d'auto-tuning dit d'où l'on vient.
+        assert "Exclusions proposées" in kwargs["text"]
         assert "dvd, jeu" in kwargs["text"]
 
         # Vérification des boutons interactifs

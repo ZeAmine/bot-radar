@@ -263,7 +263,9 @@ def test_health_command_removed():
 
     command_names = [cmd.command for cmd in BOT_COMMANDS]
     assert "health" not in command_names
-    assert "status" in command_names
+    # /status n'est plus au menu — le menu est réduit à quatre entrées — mais la
+    # commande reste vivante et c'est /help qui la rend retrouvable. La retirer de
+    # l'aide serait la supprimer pour de bon.
     assert "/health" not in HELP_TEXT
     assert "/status" in HELP_TEXT
 

@@ -6,13 +6,18 @@ Analyse les motifs de faux positifs répétés et soumet automatiquement
 
 import asyncio
 import contextlib
-import html
 import logging
 import uuid
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.bot.labels import (
+    BTN_APPLY_EXCLUSIONS,
+    BTN_EDIT_EXCLUSIONS,
+    BTN_IGNORE_EXCLUSIONS,
+    exclusion_proposal_message,
+)
 from app.core.constants import AlertStatus
 from app.core.tasks import safe_create_task
 from app.db.repositories.alert_repo import AlertRepository
@@ -82,43 +87,32 @@ async def check_and_trigger_proactive_autotune(
                 return False
 
             new_exclusions = proposal.exclusions
-            explanation = proposal.explanation
 
             # Mettre en cache pour la validation 1-clic
             await save_pending_tuning(alert.id, new_exclusions)
 
-        excl_str = ", ".join(new_exclusions)
-        titles_bullet = "\n".join(f"• <i>{html.escape(t)}</i>" for t in disliked_titles[:3])
-        exp_text = f"\n💡 <i>{html.escape(explanation)}</i>\n" if explanation else ""
-
-        text = (
-            f"🤖 <b>Auto-Tuning Proactif : « {html.escape(alert.name)} »</b>\n\n"
-            f"Vous avez marqué {len(disliked_titles)} faux positifs récemment "
-            "sur cette alerte :\n"
-            f"{titles_bullet}\n"
-            f"{exp_text}\n"
-            f"🎯 <b>Nouvelles exclusions suggérées par l'IA :</b>\n"
-            f"<code>{html.escape(excl_str)}</code>\n\n"
-            "Voulez-vous appliquer ces exclusions pour assainir vos futures alertes ?"
-        )
+        # Le message vient du gabarit partagé : le scan proactif et l'analyse demandée
+        # disent la même chose de la même façon, sans emoji décoratif ni explication
+        # qui reformule la liste des faux positifs.
+        text = exclusion_proposal_message(alert.name, disliked_titles, new_exclusions)
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="✅ Appliquer en 1 clic",
+                        text=BTN_APPLY_EXCLUSIONS,
                         callback_data=f"ai_tune_apply:{alert.id}",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        text="✏️ Modifier la liste",
+                        text=BTN_EDIT_EXCLUSIONS,
                         callback_data=f"ai_tune_edit:{alert.id}",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        text="❌ Ignorer",
+                        text=BTN_IGNORE_EXCLUSIONS,
                         callback_data=f"ai_tune_dismiss:{alert.id}",
                     )
                 ],

@@ -1,5 +1,6 @@
 """Tests unitaires pour la tâche planifiée de rafraîchissement des prix BD."""
 
+import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,7 +10,7 @@ from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.providers.base import MarketOffer, MarketOffers
-from app.tasks.refresh_book_prices import refresh_book_prices_task
+from app.tasks.refresh_book_prices import _run_wave, refresh_book_prices_task
 
 
 @pytest.fixture(autouse=True)
@@ -399,3 +400,79 @@ async def test_provider_failure_is_degraded_not_a_book_error():
     alertes = [s for s in sends if "Rafraîchissement dégradé" in s]
     assert len(alertes) == 1
     assert "chasse_aux_livres" in alertes[0]
+
+
+# --- « Traité » n'est pas « mis à jour » ---
+
+
+class _CacheEcrit:
+    """Un cache dont la collecte a réellement abouti à une cote utilisable."""
+
+    collection_status = "complete"
+    comparison_status = ComparisonStatus.AVAILABLE
+    failed_provider_names: list[str] = []
+
+
+class _CacheSansCote:
+    """Un cache écrit, mais sans cote utilisable : la collecte n'a rien apporté."""
+
+    collection_status = "empty"
+    comparison_status = ComparisonStatus.UNAVAILABLE
+    failed_provider_names: list[str] = []
+
+
+@pytest.mark.asyncio
+async def test_only_a_written_cote_counts_as_updated():
+    """Le compteur de mises à jour suit l'écriture, pas l'interrogation.
+
+    « Traités » compte les livres passés en revue ; « mis à jour » ne compte que
+    ceux dont la collecte a laissé une cote utilisable. Confondre les deux faisait
+    dire au bilan que tout allait bien alors que rien n'avait été écrit — c'est
+    exactement ce qui s'était produit pendant trois semaines.
+    """
+    stats = {
+        "processed": 0, "refreshed": 0, "available": 0,
+        "unavailable": 0, "degraded": 0, "errors": 0,
+    }
+
+    with pytest.MonkeyPatch.context() as mp:
+        compteur = {"n": 0}
+
+        async def fake_price_book_now(_book_id, **_kwargs):
+            compteur["n"] += 1
+            return _CacheEcrit() if compteur["n"] % 2 else _CacheSansCote()
+
+        mp.setattr(
+            "app.tasks.refresh_book_prices.price_book_now", fake_price_book_now
+        )
+        livres = _livres(4)
+        semaphore = asyncio.Semaphore(1)
+        registry = MagicMock()
+        registry.failed_provider_names = set()
+        await _run_wave(livres, registry, None, semaphore, stats)
+
+    # Les quatre livres ont été traités…
+    assert stats["processed"] == 4
+    # … mais deux seulement ont écrit une cote.
+    assert stats["refreshed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_collection_is_never_counted_as_updated():
+    """Un échec de collecte ne compte jamais comme une mise à jour.
+
+    Le livre a bien été traité — il compte dans `processed` —, mais sa collecte
+    n'a rien écrit : le compter comme mis à jour ferait disparaître l'incident
+    derrière un chiffre rassurant.
+    """
+    from app.tasks.refresh_book_prices import _cote_was_written
+
+    class Echec:
+        comparison_status = ComparisonStatus.UNAVAILABLE
+        collection_status = "failed"
+        failed_provider_names = ["chasse_aux_livres"]
+
+    assert _cote_was_written(Echec()) is False
+    assert _cote_was_written(None) is False
+    assert _cote_was_written(_CacheSansCote()) is False
+    assert _cote_was_written(_CacheEcrit()) is True

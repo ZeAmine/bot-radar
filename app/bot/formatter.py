@@ -1,4 +1,5 @@
 import html
+from typing import Any
 
 from app.bot.labels import (
     FIELD_AUTHOR,
@@ -111,3 +112,39 @@ def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1
         )
 
     return "\n".join(lines)
+
+
+async def send_alert_card(
+    target: Any,
+    alert: Alert,
+    *,
+    current_index: int = 0,
+    total_count: int = 1,
+    reply_markup: Any = None,
+    edit: bool = False,
+    suffix: str | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Envoie la fiche d'une alerte sans aperçu de lien, et rend le message produit.
+
+    La carte porte un lien vers la recherche Vinted. Telegram en déploie un aperçu
+    qui occupe plusieurs lignes et repousse les boutons hors de l'écran ; le lien,
+    lui, doit rester cliquable. L'option qui l'empêche vit donc ici, à côté du
+    gabarit qui produit le lien : un écran qui rend la carte par ce helper ne peut
+    pas l'oublier, et `edit_text` la reprend comme `answer` — Telegram ne retire pas
+    un aperçu déjà affiché, il faut rejouer l'appel avec l'option.
+
+    `edit=True` remplace le message existant (navigation, retour d'édition) au lieu
+    d'en envoyer un nouveau. `suffix` ajoute un bloc après la carte — la cote qui
+    vient d'être relue, par exemple — sans que l'appelant ait à recomposer le texte.
+    """
+    text = format_alert_card(alert, current_index=current_index, total_count=total_count)
+    if suffix:
+        text += suffix
+    if edit:
+        return await target.edit_text(
+            text, reply_markup=reply_markup, disable_web_page_preview=True, **kwargs
+        )
+    return await target.answer(
+        text, reply_markup=reply_markup, disable_web_page_preview=True, **kwargs
+    )

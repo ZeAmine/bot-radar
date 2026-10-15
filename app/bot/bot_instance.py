@@ -19,20 +19,16 @@ from app.core.redis import get_redis_client
 
 logger = logging.getLogger(__name__)
 
+# Le menu Telegram ne montre que les quatre gestes du quotidien. Les autres commandes
+# restent **vivantes** et documentées dans /help : c'est le menu qui est court, pas le
+# bot. Un menu de treize entrées repousse les quatre utiles hors de l'écran, et la
+# modification, la pause ou la suppression d'une alerte passent déjà par les boutons de
+# sa carte — les lister au même niveau qu'/add suggérait une seconde voie à entretenir.
 BOT_COMMANDS = [
     BotCommand(command="add", description="Créer une alerte (recherche auto)"),
     BotCommand(command="show", description="Afficher les alertes"),
-    BotCommand(command="list", description="Liste compacte par catégorie ou globale"),
-    BotCommand(command="edit", description="Modifier une alerte"),
-    BotCommand(command="pause", description="Mettre en pause une alerte"),
-    BotCommand(command="resume", description="Réactiver une alerte"),
-    BotCommand(command="delete", description="Supprimer une alerte"),
-    BotCommand(command="categories", description="Afficher les catégories"),
-    BotCommand(command="stats", description="Voir les statistiques"),
-    BotCommand(command="autotune", description="Auto-tuning et exclusions IA"),
-    BotCommand(command="status", description="État du service et du radar"),
-    BotCommand(command="cancel", description="Annuler l'opération en cours"),
     BotCommand(command="help", description="Afficher l’aide"),
+    BotCommand(command="cancel", description="Annuler l'opération en cours"),
 ]
 
 

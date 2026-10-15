@@ -9,7 +9,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.formatter import alert_status_text, format_alert_card
+from app.bot.formatter import alert_status_text, send_alert_card
 from app.bot.handlers.alerts_helpers import format_alerts_list_text
 from app.bot.keyboards.alerts import (
     get_alert_card_keyboard,
@@ -93,13 +93,12 @@ async def show_alerts(
 
         if len(matched_alerts) == 1:
             alert = matched_alerts[0]
-            card_text = format_alert_card(alert, current_index=0, total_count=1)
             keyboard = get_alert_card_keyboard(
                 alert.id, alert.status, current_page=0, total_pages=1,
                 preparation=getattr(alert, "preparation", None),
                 pause_callback=await issue_pause_button(alert, db_session),
             )
-            await message.answer(card_text, reply_markup=keyboard)
+            await send_alert_card(message, alert, total_count=1, reply_markup=keyboard)
             return
 
         # Plusieurs correspondances : afficher la liste avec boutons d'accès direct
@@ -134,13 +133,12 @@ async def show_alerts(
     alerts = await alert_repo.list_by_user(db_user.id, limit=1, offset=0)
     alert = alerts[0]
 
-    card_text = format_alert_card(alert, current_index=0, total_count=total_count)
     keyboard = get_alert_card_keyboard(
         alert.id, alert.status, current_page=0, total_pages=total_count,
         preparation=getattr(alert, "preparation", None),
         pause_callback=await issue_pause_button(alert, db_session),
     )
-    await message.answer(card_text, reply_markup=keyboard)
+    await send_alert_card(message, alert, total_count=total_count, reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("al_page:"))
@@ -185,7 +183,6 @@ async def paginate_alerts(
         return
 
     alert = alerts[0]
-    card_text = format_alert_card(alert, current_index=page, total_count=total_count)
     keyboard = get_alert_card_keyboard(
         alert.id,
         alert.status,
@@ -197,7 +194,10 @@ async def paginate_alerts(
     )
 
     if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(card_text, reply_markup=keyboard)
+        await send_alert_card(
+            callback.message, alert, current_index=page, total_count=total_count,
+            reply_markup=keyboard, edit=True,
+        )
 
 
 @router.callback_query(F.data.startswith("al_view:"))
@@ -228,7 +228,6 @@ async def view_single_alert(
 
     cat_slug = alert.category.slug if alert.category else "all"
     total_count = await alert_repo.count_by_user(db_user.id, category_slug=cat_slug)
-    card_text = format_alert_card(alert, current_index=0, total_count=total_count)
     keyboard = get_alert_card_keyboard(
         alert.id,
         alert.status,
@@ -239,7 +238,9 @@ async def view_single_alert(
         pause_callback=await issue_pause_button(alert, db_session),
     )
     if isinstance(callback.message, Message):
-        await callback.message.edit_text(card_text, reply_markup=keyboard)
+        await send_alert_card(
+            callback.message, alert, total_count=total_count, reply_markup=keyboard, edit=True
+        )
 
 
 async def show_list_categories(
