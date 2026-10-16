@@ -256,9 +256,11 @@ async def test_an_incomplete_pass_is_reported():
     assert len(sent) == 1
     text = sent[0]
     assert "5/12" in text
-    # Les quatre nombres sont distincts et nommés : traités, mis à jour, restants.
+    # Les nombres sont distincts et nommés : traités, mis à jour, sans mise à jour,
+    # restants. « Traités » et « mis à jour » ne répondent pas à la même question.
     assert "Traités : 5/12 livres" in text
     assert "Mis à jour : 4 livres" in text
+    assert "Sans mise à jour : 1 livres" in text
     assert "Restants à traiter : 7 livres" in text
 
 
@@ -334,6 +336,222 @@ async def test_an_incremental_pass_never_promises_a_date():
     assert "ordre de la file" in sent[0]
 
 
+@pytest.mark.parametrize(
+    ("processed", "total", "refreshed"),
+    [(244, 276, 181), (5, 12, 4), (276, 276, 0), (1, 300, 1), (8, 8, 8)],
+)
+@pytest.mark.asyncio
+async def test_the_report_numbers_obey_both_identities(processed, total, refreshed):
+    """Les nombres publiés sont vérifiables de tête, dans tous les cas.
+
+    `Traités = Mis à jour + Sans mise à jour` et `Total = Traités + Restants`. La
+    première tient à ce que « sans mise à jour » est **dérivée** plutôt que comptée :
+    un compteur parallèle finirait par contredire l'autre. Quand tout est traité, la
+    ligne « Restants » cède la place à la phrase qui le dit — le total n'est alors
+    atteint qu'avec zéro restant.
+    """
+    import re
+
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(
+            processed, total, refreshed=refreshed, interrupted=True, incremental=False
+        )
+
+    assert len(sent) == 1
+    sans_mise_a_jour = int(
+        re.search(r"Sans mise à jour : (\d+)", sent[0]).group(1)  # type: ignore[union-attr]
+    )
+    assert refreshed + sans_mise_a_jour == processed, sent[0]
+
+    restants_trouves = re.search(r"Restants à traiter : (\d+)", sent[0])
+    restants = int(restants_trouves.group(1)) if restants_trouves else 0
+    if restants_trouves is None:
+        assert "Tous les livres du lot ont été traités." in sent[0], sent[0]
+    assert processed + restants == total, sent[0]
+
+
+@pytest.mark.asyncio
+async def test_the_report_matches_the_requested_shape():
+    """Le rendu demandé, au caractère près : titre conservé, quatre lignes, la reprise.
+
+    Le titre dit le **type** de passe, même coupée : « Rafraîchissement complet »
+    décrit ce qui a été lancé, pas ce qui a été fini.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        mp.setattr(
+            market_health, "next_full_pass_note",
+            lambda: "Prochaine passe complète prévue : 16/10 à 19:00.",
+        )
+
+        await market_health.notify_incomplete_refresh(
+            244, 276, refreshed=181, interrupted=True, incremental=False
+        )
+
+    assert sent[0] == (
+        "🔄 <b>Rafraîchissement complet</b>\n"
+        "\n"
+        "Traités : 244/276 livres\n"
+        "Mis à jour : 181 livres\n"
+        "Sans mise à jour : 63 livres\n"
+        "Restants à traiter : 32 livres\n"
+        "\n"
+        "<i>Plafond de durée atteint : les livres restants seront repris selon "
+        "l'ordre de la file.</i>\n"
+        "Prochaine passe complète prévue : 16/10 à 19:00."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_ceiling_paragraph_only_appears_when_the_ceiling_cut_the_pass():
+    """Le paragraphe du plafond décrit une coupure réelle, jamais une supposition.
+
+    Une passe arrêtée pour une autre raison compte aussi comme incomplète : elle
+    doit se signaler, mais pas en invoquant un plafond qui n'a rien interrompu.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(
+            50, 276, refreshed=10, interrupted=False, incremental=False
+        )
+
+    assert len(sent) == 1
+    assert "Traités : 50/276 livres" in sent[0]
+    assert "Plafond" not in sent[0]
+    assert "ordre de la file" not in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_a_successful_complete_pass_still_reports_its_bilan():
+    """Une passe **complète** réussie rend son bilan : court, sans paragraphe de reprise.
+
+    Elle était entièrement silencieuse. Le silence se justifie pour un passage
+    glissant — huit livres toutes les trente minutes ne se racontent pas —, mais une
+    passe complète est le seul moment où la file entière est reprise : la taire quand
+    elle réussit laissait l'utilisateur sans nouvelle du rafraîchissement qui avait
+    effectivement tout traité.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(
+            276, 276, refreshed=200, interrupted=False, incremental=False
+        )
+
+    assert len(sent) == 1, "une passe complète réussie doit rendre un bilan"
+    text = sent[0]
+    assert "Rafraîchissement complet" in text
+    assert "Traités : 276/276 livres" in text
+    assert "Mis à jour : 200 livres" in text
+    assert "Sans mise à jour : 76 livres" in text
+    assert "Tous les livres du lot ont été traités." in text
+    # Le bilan d'une réussite est court : rien à reprendre, donc rien à annoncer.
+    assert "Restants" not in text
+    assert "Plafond" not in text
+    assert "Prochaine passe" not in text
+
+
+@pytest.mark.parametrize("processed", [8, 200])
+@pytest.mark.asyncio
+async def test_a_successful_sliding_pass_stays_silent(processed):
+    """Un passage glissant qui a traité sa sélection ne dit rien, quel que soit le volume.
+
+    C'est le bruit de routine qu'on supprime : à :15 et :45, un message toutes les
+    trente minutes rendrait invisible le bilan qui, lui, apprend quelque chose.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(
+            processed, processed, refreshed=3, interrupted=False,
+            incremental=True, batch_size=8,
+        )
+
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_sliding_pass_still_reports():
+    """Un passage glissant coupé parle : le silence ne couvre pas l'incomplet.
+
+    La règle du silence est bornée à ce qui est allé au bout ; une passe glissante
+    arrêtée avant la fin reste une information à donner.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        mp.setattr(
+            market_health, "next_full_pass_note",
+            lambda: "Prochaine passe complète prévue : 01/01 à 19:00.",
+        )
+
+        await market_health.notify_incomplete_refresh(
+            8, 200, refreshed=2, interrupted=True, incremental=True, batch_size=8
+        )
+
+    assert len(sent) == 1
+    assert "Restants à traiter : 192 livres" in sent[0]
+    # Un passage glissant ne peut pas résorber l'arriéré : il ne promet aucune date.
+    assert "Prochaine passe" not in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_a_successful_complete_pass_is_still_deduplicated_per_occurrence():
+    """La limite d'un bilan par occurrence s'applique aussi au cas réussi.
+
+    Deux tentatives de la même occurrence produisent un seul bilan — réussie ou non.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        _horloge_et_redis(mp, market_health)
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        for _ in range(2):
+            await market_health.notify_incomplete_refresh(
+                276, 276, refreshed=200, interrupted=False, incremental=False,
+                occurrence="refresh_prices_19_00@2026-10-16T17:00:00+00:00",
+            )
+
+    assert len(sent) == 1, "un seul bilan pour une même occurrence réussie"
+    assert "Tous les livres du lot ont été traités." in sent[0]
+
+
 def test_the_next_full_pass_note_is_empty_without_a_scheduler():
     """Sans planificateur pour la confirmer, la date n'est pas inventée.
 
@@ -354,7 +572,14 @@ def test_the_next_full_pass_note_is_empty_without_a_scheduler():
 
 @pytest.mark.asyncio
 async def test_a_complete_pass_says_nothing():
-    """Le succès n'est pas une notification."""
+    """Le succès n'est pas un **avertissement** : aucune alerte de panne ne part.
+
+    Les contrôles groupés ici — absence de prix, part d'erreurs — restent muets sur
+    une passe saine, et c'est ce qu'ils garantissent. Le bilan de rafraîchissement,
+    lui, parle désormais aussi en cas de succès : il n'est pas une alarme mais le
+    compte rendu du seul passage qui reprend la file entière, et il est filtré pour
+    ne retenir que les alertes, afin que ce test porte bien sur ce qu'il annonce.
+    """
     with pytest.MonkeyPatch.context() as mp:
         sent: list[str] = []
 
@@ -363,9 +588,6 @@ async def test_a_complete_pass_says_nothing():
 
         mp.setattr(market_health, "notify_admins", fake_notify)
 
-        await market_health.notify_incomplete_refresh(
-            12, 12, refreshed=12, interrupted=False, incremental=False
-        )
         await market_health.notify_no_prices_found(
             0, 0, 0, incremental=False, mode_label="complet (0 livres)"
         )
@@ -374,7 +596,7 @@ async def test_a_complete_pass_says_nothing():
         )
         await market_health.notify_high_error_ratio(12, 2, mode_label="complet (12 livres)")
 
-    assert sent == []
+    assert sent == [], "une passe saine ne déclenche aucune alerte de panne"
 
 
 @pytest.mark.asyncio

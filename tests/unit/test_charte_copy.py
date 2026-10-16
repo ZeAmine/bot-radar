@@ -1036,3 +1036,80 @@ def test_both_producers_share_the_same_proposal_message():
     for chemin in ("app/tasks/proactive_autotune.py", "app/bot/handlers/autotune.py"):
         source = pathlib.Path(chemin).read_text()
         assert "exclusion_proposal_message(" in source, chemin
+
+
+def test_the_exclusion_proposal_escapes_hostile_false_positive_titles():
+    """Un titre d'annonce hostile s'affiche littéralement, et ne casse pas la mise en forme.
+
+    Un faux positif vient d'une annonce Vinted : son titre est une donnée que
+    personne ne contrôle. `<script>` doit se lire `<script>`, et les `<i>` du
+    gabarit rester des balises — un titre qui en contient ne doit pas pouvoir
+    fermer la sienne ni en ouvrir une autre.
+    """
+    from app.bot.labels import exclusion_proposal_message
+
+    texte = exclusion_proposal_message(
+        "Blacksad",
+        ["Blacksad T5", "Blacksad tome 5", "Blacksad <script>", "Blacksad T6"],
+        ["tome 5", "T5"],
+    )
+
+    assert "<script>" not in texte
+    assert "<i>Blacksad &lt;script&gt;</i>" in texte
+    assert "&amp;lt;" not in texte, "double échappement"
+    # Les balises volontaires du gabarit survivent : trois titres listés, plus le
+    # reste compté. Le plafond est de trois, donc quatre `<i>` fermants.
+    assert texte.count("<i>") == texte.count("</i>") == 4
+
+
+def test_the_exclusion_proposal_escapes_the_alert_name_and_exclusions():
+    """Le nom de l'alerte et les mots-clés sont échappés comme le reste.
+
+    La donnée dynamique ne modifie pas le formatage, quel que soit le champ d'où
+    elle vient : nom saisi par l'utilisateur, mot-clé proposé par le moteur.
+    """
+    from app.bot.labels import exclusion_proposal_message
+
+    texte = exclusion_proposal_message("Tom & Jerry <b>", ["A & B", "x<y>z"], ["a&b", "<i>"])
+
+    assert "<b>Tom" not in texte
+    assert "Tom &amp; Jerry &lt;b&gt;" in texte
+    assert "• <i>A &amp; B</i>" in texte
+    assert "• <i>x&lt;y&gt;z</i>" in texte
+    assert "<code>a&amp;b, &lt;i&gt;</code>" in texte
+    assert "&amp;amp;" not in texte, "double échappement"
+def test_the_exclusion_proposal_escapes_only_once():
+    """La valeur est échappée exactement une fois, depuis la donnée brute.
+
+    Les deux producteurs passent le nom et les titres tels qu'ils les tiennent de
+    la base : s'ils pré-échappaient, le message afficherait `&amp;lt;` au lieu de
+    `&lt;`. Le gabarit échappe lui-même, donc l'appelant ne doit pas le faire — la
+    même donnée échappée deux fois s'afficherait avec une esperluette littérale.
+    """
+    import ast
+    import pathlib
+
+    from app.bot.labels import escape_html, exclusion_proposal_message
+
+    texte = exclusion_proposal_message("a<b", ["c&d"], ["e>f"])
+
+    assert escape_html("c&d") in texte
+    for double in ("&amp;lt;", "&amp;amp;", "&amp;gt;"):
+        assert double not in texte, double
+
+    # Aucun appelant n'échappe les arguments qu'il passe **à ce gabarit**. D'autres
+    # messages du même fichier échappent légitimement leurs propres champs : seule
+    # la valeur reçue par `exclusion_proposal_message` est examinée ici.
+    for chemin in ("app/tasks/proactive_autotune.py", "app/bot/handlers/autotune.py"):
+        arbre = ast.parse(pathlib.Path(chemin).read_text())
+        appels = [
+            noeud
+            for noeud in ast.walk(arbre)
+            if isinstance(noeud, ast.Call)
+            and getattr(noeud.func, "id", None) == "exclusion_proposal_message"
+        ]
+        assert appels, f"aucun appel trouvé dans {chemin}"
+        for appel in appels:
+            for argument in appel.args:
+                rendu = ast.unparse(argument)
+                assert not rendu.startswith("escape_html("), f"{chemin} : {rendu}"
