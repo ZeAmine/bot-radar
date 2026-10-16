@@ -24,6 +24,61 @@ ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = "bfabcca7dbf4f8f6af2de058b167a93dd80816b8"
 PORT = 55514
 
+# Opérations métier que le module du planificateur appelle, et que les tests
+# d'occurrence doivent substituer avant de construire le scheduler. La liste est
+# explicite : elle sert à vérifier une résolution de nom, pas à inspecter du code.
+OPERATIONS_METIER_SCHEDULER = (
+    "recover_bd_preparations",
+    "recover_notifications",
+    "cleanup_old_data_task",
+    "run_proactive_autotune_scan",
+    "refresh_book_prices_task",
+)
+
+
+def _noms_globaux_referenced(fonction: Any) -> tuple[str, ...]:
+    """Noms globaux qu'une fonction peut résoudre à l'exécution.
+
+    `co_names` couvre les attributs et les globales ; on ne prétend pas en déduire
+    tous les effets possibles, seulement repérer les opérations métier connues.
+    """
+    code = getattr(fonction, "__code__", None)
+    if code is None:
+        return ()
+    return tuple(code.co_names)
+
+
+def _identite_operations_applicatives() -> dict[str, int]:
+    """Identité des opérations métier telles que leurs **modules d'origine** les portent.
+
+    Les tests d'occurrence ne remplacent que l'attribut du module du planificateur :
+    l'attribut homonyme du module d'origine reste la fonction applicative. C'est cette
+    référence-là qui sert de témoin, et elle ne dépend donc pas de l'ordre entre le
+    relevé et la substitution.
+
+    Lecture seule de `sys.modules` : aucun import n'est déclenché ici, sans quoi les
+    tests dont un sous-processus importe un paquet `app` temporaire seraient perturbés.
+
+    Un nom absent du relevé n'est pas une erreur en soi : le contrôle qui l'utilise
+    échoue explicitement s'il a besoin d'un témoin manquant.
+    """
+    origine = {
+        "recover_bd_preparations": "app.use_cases.prepare_bd_alert",
+        "recover_notifications": "app.tasks.recover_notifications",
+        "cleanup_old_data_task": "app.tasks.cleanup",
+        "run_proactive_autotune_scan": "app.tasks.proactive_autotune",
+        "refresh_book_prices_task": "app.tasks.refresh_book_prices",
+    }
+    identites: dict[str, int] = {}
+    for nom, module_nom in origine.items():
+        module = sys.modules.get(module_nom)
+        if module is None:
+            continue
+        fonction = getattr(module, nom, None)
+        if fonction is not None:
+            identites[nom] = id(fonction)
+    return identites
+
 
 def guard(*, site: bool = False) -> dict[str, int]:
     endpoints = json.loads(os.environ.get("RADAR_FINAL_ENDPOINTS", "[]"))
@@ -108,6 +163,9 @@ def guard(*, site: bool = False) -> dict[str, int]:
 
         original_start = BaseScheduler.start
         permitted_schedulers = []
+        # Relevé paresseux : calculé seulement si un wrapper d'occurrence est
+        # effectivement inspecté, pour ne rien importer à l'installation de la garde.
+        identite_operations: dict[str, int] = {}
 
         def forbidden(scheduler: Any, *args: Any, **kwargs: Any) -> None:
             node = os.environ.get("RADAR_FINAL_NODE", "")
@@ -116,7 +174,76 @@ def guard(*, site: bool = False) -> dict[str, int]:
                 "test_cancelling_shutdown_does_not_recancel_the_poller_cleanup",
                 "test_shutdown_cancellation_still_drains_and_closes_clients[drain]",
                 "test_shutdown_cancellation_still_drains_and_closes_clients[http]",
+                "test_async_job_in_flight_is_cancelled_and_cleaned_before_resource_closure",
+                "test_shutdown_awaits_async_cleanup_of_a_real_scheduler_job",
+                "test_caller_cancellation_during_job_cleanup_still_closes_in_order",
+                "test_missing_default_executor_is_not_treated_as_no_producer",
+                "test_shutdown_waits_for_a_slow_producer_then_finishes_cleanly",
             )
+            # Tests d'occurrence : ils doivent exercer le cron réel et son exécuteur,
+            # donc un vrai scheduler. L'autorisation reste nominative et vérifie que
+            # chaque job pointe vers un espion du module de test ou vers la fermeture
+            # locale `job_avec_occurrence` du scheduler — jamais vers une opération
+            # métier du domaine.
+            occurrence_allowed = (
+                "test_the_real_scheduler_hands_the_intended_run_time_to_the_job",
+                "test_the_transmitted_time_is_the_triggered_run_not_the_next_one",
+                "test_a_delayed_run_is_still_identified_by_its_own_occurrence",
+            )
+            if not site and node in {
+                "tests/integration/test_scheduler_occurrence.py::" + name
+                for name in occurrence_allowed
+            }:
+                assert scheduler.__class__.__name__ == "AsyncIOScheduler"
+                jobs = scheduler.get_jobs()
+                assert jobs, "un scheduler autorisé doit porter les jobs à vérifier"
+                for job in jobs:
+                    nom = getattr(job.func, "__name__", "")
+                    module_job = getattr(job.func, "__module__", "")
+                    if nom == "job_avec_occurrence":
+                        assert module_job == "app.tasks.scheduler", (
+                            f"job {job.id} : fermeture d'occurrence inattendue ({module_job})"
+                        )
+                        # Un nom et un module autorisés ne prouvent pas que la
+                        # fermeture est sans effet : elle appelle des noms du module
+                        # `app.tasks.scheduler` au moment de l'exécution. On vérifie
+                        # donc, pour les seuls noms d'opérations métier connues, que
+                        # la résolution courante du module ne rend pas l'opération
+                        # applicative d'origine.
+                        module_scheduler = sys.modules.get("app.tasks.scheduler")
+                        if not identite_operations:
+                            identite_operations.update(_identite_operations_applicatives())
+                        for reference in _noms_globaux_referenced(job.func):
+                            if reference not in OPERATIONS_METIER_SCHEDULER:
+                                continue
+                            # Si l'opération est référencée mais absente du relevé, le
+                            # contrôle serait vacant : mieux vaut le dire que passer.
+                            assert reference in identite_operations, (
+                                f"job {job.id} : « {reference} » référencée par la "
+                                "fermeture, mais son opération applicative n'a pas pu "
+                                "être relevée — contrôle impossible"
+                            )
+                            courante = (
+                                getattr(module_scheduler, reference, None)
+                                if module_scheduler is not None
+                                else None
+                            )
+                            assert courante is not None, (
+                                f"job {job.id} : la fermeture appelle « {reference} », "
+                                "introuvable dans le module du planificateur"
+                            )
+                            assert id(courante) != identite_operations[reference], (
+                                f"job {job.id} : la fermeture appelle « {reference} », "
+                                "encore liée à l'opération applicative non substituée"
+                            )
+                        continue
+                    assert not module_job.startswith("app."), (
+                        f"job {job.id} pointe vers une opération applicative non "
+                        f"substituée ({module_job}.{nom})"
+                    )
+                permitted_schedulers.append(scheduler)
+                original_start(scheduler, *args, **kwargs)
+                return
             if not site and node in {
                 "tests/unit/test_unified_lifespan.py::" + name for name in allowed
             }:
