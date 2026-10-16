@@ -977,24 +977,27 @@ def test_the_protection_window_is_the_one_that_ships():
     mécanisme, mais passeraient quelle que soit la durée. Celui-ci fixe la valeur
     réellement expédiée, pour que la borne annoncée ne puisse pas dériver en silence.
 
-    Quinze minutes couvrent la fenêtre de réexécution prise en charge — une reprise
-    d'erreur, un doublon d'ordonnancement —, et restent très en deçà de l'écart entre
-    deux occurrences (trente minutes pour le lot glissant, douze heures entre les
-    deux passes complètes). La borne ne peut donc jamais avaler l'occurrence suivante.
+    Une heure couvre la reprise rapprochée qu'il faut absorber — redémarrage après une
+    passe écourtée, relance manuelle — bien au-delà de ce qu'APScheduler rejoue
+    lui-même, puisque `misfire_grace_time` vaut une seconde sur ces jobs.
     """
-    assert market_health.INCOMPLETE_NOTIFY_TTL_SECONDS == 15 * 60
+    assert market_health.INCOMPLETE_NOTIFY_TTL_SECONDS == 3600
 
 
-def test_the_bound_stays_below_the_gap_between_two_occurrences():
-    """La borne doit rester strictement sous l'écart minimum entre deux occurrences.
+def test_the_bound_needs_no_relation_to_the_gap_between_occurrences():
+    """La durée de conservation n'a pas à rester sous l'écart entre deux occurrences.
 
-    C'est la propriété qui protège le bilan de l'occurrence suivante — et celle que la
-    fenêtre de vingt heures violait, les deux passes complètes n'étant séparées que de
-    douze heures. Vérifiée sur la plus petite période planifiée : trente minutes.
+    C'est la correction d'une contrainte que j'avais posée à tort. La clé contient
+    l'occurrence : deux passes distinctes ne partagent donc jamais la même clé, et une
+    durée plus longue ne peut pas supprimer le bilan de la suivante. La seule borne qui
+    compte est la fenêtre de réexécution d'une **même** occurrence.
+
+    Le test fige cette indépendance : la durée dépasse le plus petit intervalle entre
+    deux exécutions planifiées (trente minutes) sans qu'aucun bilan ne soit perdu.
     """
     plus_petit_ecart = 30 * 60
-    assert plus_petit_ecart > market_health.INCOMPLETE_NOTIFY_TTL_SECONDS, (
-        "une borne au-delà de l'écart entre deux occurrences supprimerait un bilan"
+    assert plus_petit_ecart < market_health.INCOMPLETE_NOTIFY_TTL_SECONDS, (
+        "la durée n'a pas à être contrainte par l'intervalle entre occurrences"
     )
 
 
@@ -1074,3 +1077,75 @@ def test_a_retry_across_a_slot_boundary_is_a_different_occurrence():
         "refresh_prices_incremental", scheduled_for=datetime(2026, 10, 16, 7, 31, tzinfo=UTC)
     )
     assert avant != apres
+
+
+@pytest.mark.asyncio
+async def test_a_retry_is_still_deduplicated_over_the_whole_conservation_window():
+    """Une nouvelle tentative de la même occurrence reste dédoublonnée dans la période.
+
+    La conservation est passée à une heure : une reprise qui arrive bien après les
+    quinze minutes d'avant, mais dans l'heure, ne doit toujours produire qu'un bilan.
+    C'est ce que la durée plus longue achète.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        etat = _horloge_et_redis(mp, market_health)
+
+        occurrence = "refresh_prices_19_00@2026-10-16T17:00:00+00:00"
+        for _ in range(2):
+            mp.setattr(market_health, "_notification_deadlines", {})
+            await market_health.notify_incomplete_refresh(
+                5, 12, refreshed=4, interrupted=True, incremental=False, occurrence=occurrence,
+            )
+            # Bien plus tard que l'ancienne borne de quinze minutes, mais dans l'heure.
+            etat["t"] = 45 * 60
+
+    assert len(sent) == 1, "une reprise dans la période de conservation reste absorbée"
+
+
+@pytest.mark.asyncio
+async def test_two_distinct_occurrences_each_report_while_the_first_key_lives():
+    """Deux occurrences distinctes rendent chacune leur bilan, même clé encore posée.
+
+    C'est la raison pour laquelle la durée n'a pas à être contrainte par l'intervalle
+    entre passes : les clés étant distinctes, la première peut rester vivante sans
+    étouffer la seconde. Le test laisse volontairement la clé de la première occurrence
+    active — l'horloge n'avance pas — et exige les deux bilans.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        cles = set()
+
+        class Redis:
+            async def set(self, key, _value, **options):
+                if options.get("nx") and key in cles:
+                    return None
+                cles.add(key)
+                return True
+
+        mp.setattr(market_health, "get_redis_client", lambda: Redis())
+        mp.setattr(market_health, "monotonic", lambda: 0.0)
+        mp.setattr(market_health, "_notification_deadlines", {})
+
+        # Aucune avance d'horloge : la clé de la première occurrence est encore posée.
+        await market_health.notify_incomplete_refresh(
+            5, 12, refreshed=4, interrupted=True, incremental=False,
+            occurrence="refresh_prices_07_00@2026-10-16T05:00:00+00:00",
+        )
+        await market_health.notify_incomplete_refresh(
+            5, 12, refreshed=4, interrupted=True, incremental=False,
+            occurrence="refresh_prices_19_00@2026-10-16T17:00:00+00:00",
+        )
+
+    assert len(sent) == 2, "chaque occurrence rend son bilan, sans attendre l'expiration"
+    assert len(cles) == 2, "les deux occurrences ont des clés distinctes"

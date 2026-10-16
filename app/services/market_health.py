@@ -227,18 +227,22 @@ SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
 # l'identifiant du job et l'instant que le planificateur visait. Deux tentatives de
 # la même occurrence partagent cette clé et ne produisent qu'un bilan.
 #
-# Le TTL **participe** à la garantie : il en fixe la borne, et il n'est pas qu'une
-# hygiène de clés. Une reprise qui arrive après expiration retrouve une clé libre et
-# produit un second bilan. La durée est donc celle de la fenêtre de réexécution
-# réellement prise en charge — une reprise d'erreur, un doublon d'ordonnancement,
-# qui surviennent dans les minutes qui suivent —, et non une valeur choisie au hasard.
+# Comme la clé contient l'occurrence, deux passes distinctes ne peuvent pas se
+# confondre : la durée de conservation n'a donc **pas** à rester sous l'écart entre
+# deux exécutions. Seule compte la fenêtre pendant laquelle une même occurrence peut
+# être retentée.
 #
-# Elle reste très inférieure à l'écart entre deux occurrences (trente minutes pour le
-# lot glissant, douze heures entre les deux passes complètes) : la borne ne peut donc
-# jamais avaler le bilan de l'occurrence suivante. C'est précisément ce que la fenêtre
-# de vingt heures des autres alertes ne respectait pas.
+# Cette fenêtre est étroite. APScheduler n'exécute pas une échéance manquée au-delà de
+# `misfire_grace_time` (une seconde par défaut sur ces jobs) : une occurrence n'est donc
+# jamais rejouée tardivement par le planificateur lui-même. Ce qui reste, c'est une
+# reprise rapprochée — redémarrage du processus après une passe écourtée, relance
+# manuelle, double soumission pendant un arrêt. Une heure couvre largement ces cas
+# sans jamais approcher les douze heures qui séparent deux passes complètes.
+#
+# Le TTL borne donc la garantie, et cette borne est assumée : au-delà, la clé a expiré
+# et une nouvelle tentative de la même occurrence repartirait pour un second bilan.
 INCOMPLETE_NOTIFY_KEY_PREFIX = "radar:market:pass_report:"
-INCOMPLETE_NOTIFY_TTL_SECONDS = 15 * 60
+INCOMPLETE_NOTIFY_TTL_SECONDS = 3600
 
 
 async def _claim_no_prices_notification_slot() -> bool:

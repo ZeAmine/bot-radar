@@ -1,9 +1,11 @@
 """Configuration et démarrage du planificateur de tâches APScheduler."""
 
 import logging
+from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
+from apscheduler.events import EVENT_JOB_SUBMITTED, JobSubmissionEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -24,21 +26,37 @@ def create_scheduler() -> AsyncIOScheduler:
     def refresh_job(job_id: str, **kwargs: Any) -> Any:
         """Rend le rafraîchissement en lui transmettant l'instant **prévu**.
 
-        APScheduler connaît l'instant prévu de chaque exécution — il le calcule et
-        le fait circuler jusqu'à l'exécuteur —, mais il n'appelle la fonction qu'avec
-        `job.args` et `job.kwargs` : l'horodatage est perdu au dernier moment. Sans
-        lui, la tâche ne daterait son occurrence qu'avec l'heure à laquelle elle
-        s'exécute vraiment, ce qui confondrait une exécution **retardée** (la passe de
-        19:00 lancée à 19:31) avec l'exécution prévue de 19:30.
+        APScheduler connaît l'instant prévu de chaque exécution et le fait circuler
+        jusqu'à l'exécuteur, mais il n'appelle la fonction qu'avec `job.args` et
+        `job.kwargs` : l'horodatage est perdu au dernier moment. Sans lui, la tâche
+        ne daterait son occurrence qu'avec l'heure à laquelle elle s'exécute vraiment,
+        ce qui confondrait une exécution **retardée** (la passe de 19:00 lancée à
+        19:31) avec l'exécution prévue de 19:30.
 
-        `next_run_time` est lu au moment de l'appel, avant que la tâche ne rende la
-        main : APScheduler ne l'avance qu'**après** avoir soumis le job, donc la
-        valeur lue est bien celle de l'exécution en cours.
+        L'instant est pris de `EVENT_JOB_SUBMITTED`, dont le champ
+        `scheduled_run_times` porte, par contrat, « les instants auxquels le job
+        devait s'exécuter ». L'événement est émis **avant** la soumission et avant
+        que `next_run_time` ne soit avancé, ce qui le rend fiable à cet endroit.
+
+        Lire `job.next_run_time` au moment de l'exécution ne convenait pas : la
+        valeur est avancée à la planification de l'exécution suivante, et une
+        exécution retardée lirait alors une heure **future** — l'exécution de 19:00
+        lancée à 19:31 se verrait attribuer une occurrence ultérieure. Le champ de
+        l'événement, lui, reste celui de l'exécution déclenchée.
+
+        L'instant est rangé dans une file par job : si deux exécutions se chevauchaient,
+        chacune consommerait la sienne, dans l'ordre de soumission.
         """
+        en_attente: deque[datetime] = deque()
+
+        def retenir_instant(event: JobSubmissionEvent) -> None:
+            if event.job_id == job_id and event.scheduled_run_times:
+                en_attente.append(min(event.scheduled_run_times))
+
+        scheduler.add_listener(retenir_instant, EVENT_JOB_SUBMITTED)
 
         async def job_avec_occurrence() -> dict[str, int]:
-            job = scheduler.get_job(job_id)
-            planifie = getattr(job, "next_run_time", None) if job is not None else None
+            planifie = en_attente.popleft() if en_attente else None
             return await refresh_book_prices_task(
                 job_id=job_id, scheduled_for=planifie, **kwargs,
             )
