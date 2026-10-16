@@ -297,13 +297,19 @@ async def test_panne_bnf_sans_candidat_est_unavailable() -> None:
 
 @pytest.mark.asyncio
 async def test_consulted_suit_l_ordre_reel_sans_doublons() -> None:
-    """`title` + `title_anywhere` BNF : deux tentatives, un seul consulté."""
+    """Conjonction, repli titre seul, puis `title_anywhere` : l'ordre réel.
+
+    L'auteur fourni entre dans la requête ; la conjonction réussie mais vide
+    déclenche le repli titre seul. Le SRU simulé ne rend rien, donc les trois
+    requêtes partent — et `consulted` n'en garde qu'une par autorité.
+    """
     service = BookMetadataService(http_client=_HttpSimule())  # type: ignore[arg-type]
 
     rapport = await service.resolve_for_alert_report("Blacksad", "Canales")
     resultat = result_from_report(rapport)
 
     assert [(a.provider, a.search_type) for a in rapport.attempts] == [
+        (AUTORITE_BNF, "title"),
         (AUTORITE_BNF, "title"),
         (AUTORITE_BNF, "title_anywhere"),
         (AUTORITE_OPENLIBRARY, "title"),
