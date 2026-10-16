@@ -47,12 +47,11 @@ READY_FOOTER = (
 # dans le même clavier quand une annonce est connue.
 REFUSAL_TEXTS: dict[VintedCheckoutStatus, str] = {
     VintedCheckoutStatus.BUSY: (
-        "⏳ Une préparation est déjà en cours pour cette annonce. "
-        "Laisse-la se terminer, puis réessaie."
+        "⏳ Une préparation est déjà en cours. Laisse-la se terminer, puis réessaie."
     ),
     VintedCheckoutStatus.PAUSED: (
-        "⏸ Les préparations de checkout sont suspendues après un blocage ou des "
-        "échecs répétés. Termine manuellement depuis l'annonce, puis réessaie plus tard."
+        "⏸ La création de checkout est **coupée** après un échec. "
+        "Réessaie plus tard, ou continue depuis l'annonce."
     ),
     VintedCheckoutStatus.DISABLED: (
         "La préparation du checkout est désactivée dans la configuration du bot."
@@ -65,15 +64,17 @@ REFUSAL_TEXTS: dict[VintedCheckoutStatus, str] = {
         "Cette annonce n'est pas associée à tes alertes."
     ),
     VintedCheckoutStatus.SELLER_UNKNOWN: (
-        "Impossible d'identifier le vendeur de cette annonce chez Vinted. "
-        "Continue depuis l'annonce."
+        "Vendeur introuvable pour cette annonce : elle ne porte pas son "
+        "identifiant vendeur et la page ne le fournit pas. Continue depuis l'annonce."
     ),
     VintedCheckoutStatus.UNAVAILABLE: (
         "L'article n'est plus disponible (probablement vendu). "
         "Continue depuis l'annonce."
     ),
     VintedCheckoutStatus.AUTH_REQUIRED: (
-        "La session Vinted n'est plus valide : réinjecte-la localement, puis réessaie."
+        "La session Vinted n'est pas acceptée pour créer la transaction. "
+        "Recapture **tous** les cookies (y compris les cookies de session "
+        "HttpOnly), réinjecte-la, puis réessaie."
     ),
     VintedCheckoutStatus.BLOCKED: (
         "Vinted a demandé une vérification anti-robot. "
@@ -138,6 +139,9 @@ def format_preparation_result(
         preparation.status,
         "La préparation du checkout est indisponible pour le moment.",
     )
+    if preparation.status is VintedCheckoutStatus.PAUSED and preparation.retry_after_seconds:
+        minutes = max(1, round(preparation.retry_after_seconds / 60))
+        text += f"\n\n<i>Coupure encore active environ {minutes} min.</i>"
     if preparation.listing_url:
         return text, _fallback_keyboard(preparation.listing_url)
     return text, None

@@ -7,6 +7,7 @@ n'existe qu'au moment où l'utilisateur le demande.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from datetime import UTC, datetime
@@ -28,9 +29,9 @@ from app.db.models.category import Category
 from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
+from app.db.repositories.listing_repo import ListingRepository
 from app.domain.enums import AlertStatus, VintedCheckoutStatus
 from app.providers.vinted_checkout import (
-    FAILURE_THRESHOLD,
     REDIS_CHECKOUT_SESSION_KEY,
     VintedCheckoutError,
     VintedCheckoutProvider,
@@ -51,15 +52,16 @@ SELLER_ID = "72804845"
 class FakeRedis:
     """Le sous-ensemble Redis utilisé par la préparation, valeurs non exposées.
 
-    Le double modélise l'**expiration** et le `NX` : la pause et le verrou se
+    Le double modélise l'**expiration** et le `NX` : la coupure et le verrou se
     comportent comme en production, sinon un test de coupe-circuit ne prouverait
-    rien (une pause posée mais jamais active, ou un verrou écrasé par le second
+    rien (une coupure posée mais jamais active, ou un verrou écrasé par le second
     clic, donnerait un faux vert).
     """
 
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
         self.expiry: dict[str, float] = {}
+        self.log: list[str] = []
 
     def _expired(self, key: str) -> bool:
         deadline = self.expiry.get(key)
@@ -88,6 +90,7 @@ class FakeRedis:
             self.expiry[key] = time.monotonic() + ex
         else:
             self.expiry.pop(key, None)
+        self.log.append(f"set:{key}")
         return True
 
     async def get(self, key: str) -> str | None:
@@ -97,6 +100,8 @@ class FakeRedis:
         removed = key in self.store
         self.store.pop(key, None)
         self.expiry.pop(key, None)
+        if removed:
+            self.log.append(f"del:{key}")
         return 1 if removed else 0
 
     async def incr(self, key: str) -> int:
@@ -122,8 +127,8 @@ def link_key(listing_id: uuid.UUID, telegram_user_id: int = TELEGRAM_USER_ID) ->
     return f"radar:vinted_checkout:link:{telegram_user_id}:{listing_id}"
 
 
-def lock_key(listing_id: uuid.UUID, telegram_user_id: int = TELEGRAM_USER_ID) -> str:
-    return f"radar:vinted_checkout:lock:{telegram_user_id}:{listing_id}"
+def lock_key() -> str:
+    return "radar:vinted_checkout:lock"
 
 
 def patch_redis(monkeypatch: pytest.MonkeyPatch, fake: FakeRedis) -> None:
@@ -139,14 +144,22 @@ def configured_session(fake: FakeRedis) -> None:
 
 
 def activate_pause(fake: FakeRedis, seconds: int = 600) -> None:
-    """Pose une suspension active, comme le coupe-circuit le ferait (`set ex`).
+    """Pose une coupure active, comme le coupe-circuit le ferait (`set ex`).
 
-    Une pause écrite sans expiration se lirait `ttl = -1` et serait ignorée :
+    Une coupure écrite sans expiration se lirait `ttl = -1` et serait ignorée :
     le double doit porter la même sémantique que Redis, sans quoi le test ne
     prouverait rien.
     """
     fake.store["radar:vinted_checkout:pause"] = "1"
     fake.expiry["radar:vinted_checkout:pause"] = time.monotonic() + seconds
+
+
+def locked_for_seconds(fake: FakeRedis) -> int:
+    """Secondes de coupure restantes, lues dans le double Redis."""
+    deadline = fake.expiry.get("radar:vinted_checkout:pause")
+    if deadline is None or "radar:vinted_checkout:pause" not in fake.store:
+        return 0
+    return max(0, int(deadline - time.monotonic()))
 
 
 async def seed_listing(
@@ -240,10 +253,15 @@ async def run_use_case(
 
 
 async def test_flag_off_is_announced_without_preparing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drapeau coupé : le clic ne lit ni session, ni annonce, ni Vinted."""
     monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", False)
     fake = FakeRedis()
     configured_session(fake)
     patch_redis(monkeypatch, fake)
+    session_read = AsyncMock()
+    monkeypatch.setattr(
+        "app.use_cases.prepare_vinted_checkout.resolve_checkout_cookies", session_read
+    )
 
     async with sqlite_only_database() as db:
         provider = mock_provider()
@@ -251,7 +269,10 @@ async def test_flag_off_is_announced_without_preparing(monkeypatch: pytest.Monke
 
     assert result.status is VintedCheckoutStatus.DISABLED
     assert result.checkout_url is None
+    session_read.assert_not_awaited()
     provider.create_buyer_inquiry.assert_not_awaited()
+    provider.fetch_item_seller_id.assert_not_awaited()
+    assert fake.log == []
 
 
 async def test_listing_without_alert_of_this_user_is_refused(
@@ -324,7 +345,7 @@ async def test_double_click_on_a_locked_listing_is_busy(
 
     async with sqlite_only_database() as db:
         listing = await seed_listing(db)
-        fake.store[lock_key(listing.id)] = "1"
+        fake.store[lock_key()] = "1"
         provider = mock_provider()
         result = await run_use_case(db, listing.id, provider)
 
@@ -332,9 +353,10 @@ async def test_double_click_on_a_locked_listing_is_busy(
     provider.create_buyer_inquiry.assert_not_awaited()
 
 
-async def test_session_refusal_releases_the_lock_for_a_later_retry(
+async def test_session_refusal_cuts_further_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Un échec coupe : le clic suivant n'essaie plus, il annonce la coupure."""
     monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
     fake = FakeRedis()
     configured_session(fake)
@@ -349,20 +371,23 @@ async def test_session_refusal_releases_the_lock_for_a_later_retry(
 
         refused = await run_use_case(db, listing.id, provider)
         assert refused.status is VintedCheckoutStatus.AUTH_REQUIRED
-        assert lock_key(listing.id) not in fake.store
+        assert refused.retry_after_seconds is not None
+        assert refused.retry_after_seconds > 0
+        # Le verrou d'exécution est libéré, mais la coupure interdit un nouvel essai.
+        assert lock_key() not in fake.store
 
         provider.create_buyer_inquiry.side_effect = None
         provider.create_buyer_inquiry.return_value = "4242"
-        retried = await run_use_case(db, listing.id, provider)
+        after = await run_use_case(db, listing.id, provider)
 
-    assert retried.status is VintedCheckoutStatus.READY
-    assert provider.create_buyer_inquiry.await_count == 2
+    assert after.status is VintedCheckoutStatus.PAUSED
+    assert provider.create_buyer_inquiry.await_count == 1
 
 
-async def test_uncertain_timeout_keeps_the_lock_against_a_duplicate(
+async def test_uncertain_timeout_cuts_further_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Un délai dépassé peut cacher une opération aboutie : pas de relance immédiate."""
+    """Un délai dépassé peut cacher une opération aboutie : la coupure s'applique aussi."""
     monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
     fake = FakeRedis()
     configured_session(fake)
@@ -379,9 +404,10 @@ async def test_uncertain_timeout_keeps_the_lock_against_a_duplicate(
         again = await run_use_case(db, listing.id, provider)
 
     assert timed_out.status is VintedCheckoutStatus.TIMEOUT
-    assert LOCK_TTL_SECONDS > 0
-    assert lock_key(listing.id) in fake.store
-    assert again.status is VintedCheckoutStatus.BUSY
+    assert locked_for_seconds(fake) >= 15 * 60 - 5
+    assert again.status is VintedCheckoutStatus.PAUSED
+    assert again.retry_after_seconds is not None
+    assert again.retry_after_seconds > 0
     provider.create_buyer_inquiry.assert_awaited_once()
 
 
@@ -546,6 +572,37 @@ async def test_handler_keeps_listing_access_on_failure(
     assert [[button.text for button in row] for row in buttons] == [["Voir l'annonce"]]
 
 
+async def test_a_kept_buy_button_touches_nothing_when_the_flag_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un ancien message garde son bouton « Acheter » : coupé, il ne lit rien.
+
+    Le bouton disparaît des nouvelles alertes, mais un message déjà envoyé garde
+    son callback. Le clic doit répondre « désactivée » sans lire la session, sans
+    toucher la base ni Redis, et sans appeler Vinted.
+    """
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", False)
+    fake = FakeRedis()
+    configured_session(fake)
+    patch_redis(monkeypatch, fake)
+    session_read = AsyncMock()
+    monkeypatch.setattr(
+        "app.use_cases.prepare_vinted_checkout.resolve_checkout_cookies", session_read
+    )
+    listing_read = AsyncMock()
+    monkeypatch.setattr(ListingRepository, "get_listing_matched_to_user", listing_read)
+
+    callback = fake_callback(uuid.uuid4())
+    async with sqlite_only_database() as db:
+        await handle_buy_listing(callback, db.session)
+
+    text = callback.message.reply.await_args.args[0]
+    assert "désactivée" in text
+    session_read.assert_not_awaited()
+    listing_read.assert_not_awaited()
+    assert fake.log == []
+
+
 def test_refusal_without_a_known_listing_has_no_dead_button() -> None:
     text, keyboard = format_preparation_result(
         CheckoutPreparation(VintedCheckoutStatus.NOT_ASSOCIATED)
@@ -568,14 +625,16 @@ def test_ready_copy_never_promises_an_automatic_payment() -> None:
 
 
 def test_paused_copy_sends_back_to_the_listing() -> None:
-    """La suspension se dit, et n'invite pas à recliquer tout de suite."""
+    """La coupure se dit, avec son délai, et n'invite pas à recliquer tout de suite."""
     text, keyboard = format_preparation_result(
         CheckoutPreparation(
             VintedCheckoutStatus.PAUSED,
             listing_url="https://www.vinted.fr/items/1",
+            retry_after_seconds=1_500,
         )
     )
-    assert "suspendues" in text
+    assert "coupée" in text
+    assert "25 min" in text
     assert keyboard is not None
     assert [button.text for row in keyboard.inline_keyboard for button in row] == [
         "Voir l'annonce"
@@ -639,10 +698,10 @@ async def test_rate_limit_suspends_further_preparations(
     provider.create_buyer_inquiry.assert_awaited_once()
 
 
-async def test_repeated_soft_failures_eventually_suspend(
+async def test_a_single_failure_cuts_creation_for_its_class(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Trois échecs doux suspendent : insister use la session et l'IP pour rien."""
+    """Un seul échec suffit à couper, avec la durée de sa cause."""
     monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
     fake = FakeRedis()
     configured_session(fake)
@@ -652,26 +711,58 @@ async def test_repeated_soft_failures_eventually_suspend(
         listing = await seed_listing(db)
         provider = mock_provider()
         provider.create_buyer_inquiry.side_effect = VintedCheckoutError(
-            VintedCheckoutStatus.TIMEOUT, "délai"
+            VintedCheckoutStatus.UNAVAILABLE, "vendu"
         )
 
-        statuses = []
-        for _ in range(FAILURE_THRESHOLD):
-            # Un verrou posé par un échec incertain bloquerait le tour suivant :
-            # on le retire pour éprouver le **compteur** d'échecs, pas le verrou.
-            fake.store.pop(lock_key(listing.id), None)
-            statuses.append((await run_use_case(db, listing.id, provider)).status)
-        suspended = await run_use_case(db, listing.id, provider)
+        first = await run_use_case(db, listing.id, provider)
+        second = await run_use_case(db, listing.id, provider)
 
-    assert statuses == [VintedCheckoutStatus.TIMEOUT] * FAILURE_THRESHOLD
-    assert suspended.status is VintedCheckoutStatus.PAUSED
-    assert fake.store.get("radar:vinted_checkout:pause") == "1"
+    assert first.status is VintedCheckoutStatus.UNAVAILABLE
+    assert locked_for_seconds(fake) >= 5 * 60 - 5
+    assert second.status is VintedCheckoutStatus.PAUSED
+    provider.create_buyer_inquiry.assert_awaited_once()
 
 
-async def test_success_clears_the_soft_failure_streak(
+async def test_two_different_listings_never_create_two_checkouts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Une réussite remet le compteur à zéro : la série ne se cumule pas dans le temps."""
+    """Le verrou est global : cliquer sur deux annonces ne crée qu'une transaction."""
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
+    fake = FakeRedis()
+    configured_session(fake)
+    patch_redis(monkeypatch, fake)
+
+    async with sqlite_only_database() as db:
+        first_listing = await seed_listing(db)
+        second_listing = await seed_listing(db, with_category=False, external_id="22222222222")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_inquiry(**_kwargs: Any) -> str:
+            started.set()
+            await release.wait()
+            return "4242"
+
+        provider = mock_provider()
+        provider.create_buyer_inquiry.side_effect = slow_inquiry
+
+        first = asyncio.create_task(run_use_case(db, first_listing.id, provider))
+        await asyncio.wait_for(started.wait(), 3)
+        # Second clic, autre annonce : le verrou global doit le refuser.
+        second = await run_use_case(db, second_listing.id, provider)
+        release.set()
+        first_result = await first
+
+    assert first_result.status is VintedCheckoutStatus.READY
+    assert second.status is VintedCheckoutStatus.BUSY
+    provider.create_buyer_inquiry.assert_awaited_once()
+    provider.build_single_checkout.assert_awaited_once()
+
+
+async def test_pause_is_set_before_the_lock_is_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ordre garanti : la coupure est posée avant la libération du verrou."""
     monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
     fake = FakeRedis()
     configured_session(fake)
@@ -681,20 +772,96 @@ async def test_success_clears_the_soft_failure_streak(
         listing = await seed_listing(db)
         provider = mock_provider()
         provider.create_buyer_inquiry.side_effect = VintedCheckoutError(
-            VintedCheckoutStatus.TIMEOUT, "délai"
+            VintedCheckoutStatus.UNEXPECTED, "état incertain"
         )
-        for _ in range(FAILURE_THRESHOLD - 1):
-            fake.store.pop(lock_key(listing.id), None)
-            await run_use_case(db, listing.id, provider)
-        assert fake.store.get("radar:vinted_checkout:failures") == str(FAILURE_THRESHOLD - 1)
+        await run_use_case(db, listing.id, provider)
 
-        provider.create_buyer_inquiry.side_effect = None
-        provider.create_buyer_inquiry.return_value = "4242"
-        fake.store.pop(lock_key(listing.id), None)
-        recovered = await run_use_case(db, listing.id, provider)
+    pause_set = fake.log.index("set:radar:vinted_checkout:pause")
+    lock_del = fake.log.index("del:radar:vinted_checkout:lock")
+    assert pause_set < lock_del
 
-    assert recovered.status is VintedCheckoutStatus.READY
-    assert "radar:vinted_checkout:failures" not in fake.store
+
+async def test_release_never_deletes_another_holders_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verrou repris après expiration : l'ancien détenteur ne libère pas le nouveau."""
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
+    fake = FakeRedis()
+    configured_session(fake)
+    patch_redis(monkeypatch, fake)
+
+    async with sqlite_only_database() as db:
+        listing = await seed_listing(db)
+        provider = mock_provider()
+
+        async def steal_the_lock_then_fail(**_kwargs: Any) -> str:
+            # Le verrou a expiré pendant l'opération et un autre clic l'a repris :
+            # notre propre libération ne doit pas le lui retirer. Statut que même
+            # l'ancien code libérait, pour que ce test discrimine la propriété.
+            fake.store[lock_key()] = "jeton-d-un-autre-detenteur"
+            raise VintedCheckoutError(VintedCheckoutStatus.AUTH_REQUIRED, "session refusée")
+
+        provider.create_buyer_inquiry.side_effect = steal_the_lock_then_fail
+        result = await run_use_case(db, listing.id, provider)
+
+    assert result.status is VintedCheckoutStatus.AUTH_REQUIRED
+    assert fake.store[lock_key()] == "jeton-d-un-autre-detenteur"
+
+
+async def test_cut_is_checked_again_inside_the_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Une coupure posée après le contrôle amont est revue dans le verrou."""
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
+    fake = FakeRedis()
+    configured_session(fake)
+    patch_redis(monkeypatch, fake)
+
+    answers = [0, 600]
+
+    from app.providers.vinted_checkout import CheckoutBackoff
+
+    class LateBackoff:
+        """Ne rend la coupure qu'au second appel, celui de l'intérieur du verrou."""
+
+        def __init__(self, inner: CheckoutBackoff) -> None:
+            self.inner = inner
+
+        async def remaining_seconds(self) -> int:
+            return answers.pop(0) if answers else await self.inner.remaining_seconds()
+
+        async def request_failure(self, status: Any) -> int:
+            return await self.inner.request_failure(status)
+
+    async with sqlite_only_database() as db:
+        listing = await seed_listing(db)
+        use_case = PrepareVintedCheckoutUseCase(
+            db.session, provider=mock_provider(), backoff=LateBackoff(CheckoutBackoff())
+        )
+        result = await use_case.execute(
+            telegram_user_id=TELEGRAM_USER_ID, listing_id=listing.id
+        )
+
+    assert result.status is VintedCheckoutStatus.PAUSED
+    use_case.provider.create_buyer_inquiry.assert_not_awaited()
+    use_case.provider.build_single_checkout.assert_not_awaited()
+
+
+def test_lock_ttl_covers_the_worst_case_operation_window() -> None:
+    """Le verrou vit plus longtemps que les deux appels qu'il encadre."""
+    assert LOCK_TTL_SECONDS > 2 * settings.VINTED_CHECKOUT_TIMEOUT_SECONDS
+
+
+async def test_lock_expiry_is_a_residual_window_not_a_guarantee() -> None:
+    """Verrou expiré pendant une opération en vol : un clic peut entrer.
+
+    Une fois la coupure posée, il est de nouveau bloqué ; ce test fixe la limite.
+    """
+    fake = FakeRedis()
+    fake.store["radar:vinted_checkout:lock"] = "1"
+    fake.expiry["radar:vinted_checkout:lock"] = time.monotonic() - 1
+    assert (await fake.get("radar:vinted_checkout:lock")) is None
+    assert await fake.set("radar:vinted_checkout:lock", "1", ex=45, nx=True) is True
 
 
 async def test_pause_blocks_even_a_valid_cached_link(monkeypatch: pytest.MonkeyPatch) -> None:

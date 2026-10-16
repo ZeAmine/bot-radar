@@ -9,12 +9,13 @@ d'envoi de l'alerte (invariant n°1). Tout part d'ici, une seule fois par clic :
 3. sinon, une transaction d'achat puis un panier sont créés chez Vinted avec la
    session de compte injectée, et le lien de checkout est renvoyé à l'utilisateur.
 
-Concurrence : un verrou Redis court empêche deux clics rapprochés de lancer
-deux opérations. Un échec incertain (délai dépassé, réseau coupé) garde le
-verrou jusqu'à son expiration — le résultat peut exister côté Vinted, et une
-relance immédiate pourrait dupliquer une conversation. Un échec définitif
-(session invalide, article indisponible) libère le verrou : recliquer est
-légitime.
+Concurrence : un verrou Redis court, rattaché à un jeton de tentative et dont la
+libération vérifie ce jeton, empêche deux clics rapprochés de lancer deux
+opérations. Tout échec — y compris un résultat incertain (délai dépassé, réseau
+coupé) — **coupe** la création avant de libérer le verrou : rien ne relance
+automatiquement, et une opération peut avoir existé côté Vinted sans que ce module
+le sache. La reprise n'a lieu qu'après expiration **et** clic explicite ; sans
+identifiant d'idempotence, cette reprise peut alors créer une seconde conversation.
 """
 
 from __future__ import annotations
@@ -48,13 +49,7 @@ logger = logging.getLogger(__name__)
 LOCK_TTL_SECONDS = 45
 
 _LINK_KEY = "radar:vinted_checkout:link:{user_id}:{listing_id}"
-_LOCK_KEY = "radar:vinted_checkout:lock:{user_id}:{listing_id}"
-
-# Une panne de transport laisse un résultat possible côté Vinted (le POST a pu
-# aboutir sans que sa réponse nous parvienne) : on ne libère pas le verrou.
-_UNCERTAIN_STATUSES = frozenset(
-    {VintedCheckoutStatus.TIMEOUT, VintedCheckoutStatus.NETWORK}
-)
+_LOCK_KEY = "radar:vinted_checkout:lock"
 
 
 @dataclass(frozen=True)
@@ -65,14 +60,15 @@ class CheckoutPreparation:
     checkout_url: str | None = None
     listing_url: str | None = None
     listing_title: str | None = None
+    retry_after_seconds: int | None = None
 
 
 def _link_key(telegram_user_id: int, listing_id: uuid.UUID) -> str:
     return _LINK_KEY.format(user_id=telegram_user_id, listing_id=listing_id)
 
 
-def _lock_key(telegram_user_id: int, listing_id: uuid.UUID) -> str:
-    return _LOCK_KEY.format(user_id=telegram_user_id, listing_id=listing_id)
+def _lock_key() -> str:
+    return _LOCK_KEY
 
 
 def _listing_identity(listing: Listing | None) -> tuple[str | None, str | None]:
@@ -113,19 +109,29 @@ async def _write_cached_link(key: str, url: str) -> None:
         logger.warning("Cache de checkout Vinted non écrit : %s", exc)
 
 
-async def _acquire_lock(key: str) -> bool:
-    """Verrou court anti-double-clic ; Redis muet ne bloque pas l'utilisateur."""
+async def _acquire_lock(key: str, token: str) -> bool:
+    """Verrou court anti-double-clic ; Redis muet ne bloque pas l'utilisateur.
+
+    La valeur du verrou est un jeton par tentative : un détenteur ne libère que
+    le sien, jamais celui qu'un autre a repris après expiration.
+    """
     try:
-        acquired = await get_redis_client().set(key, "1", ex=LOCK_TTL_SECONDS, nx=True)
+        acquired = await get_redis_client().set(
+            key, token, ex=LOCK_TTL_SECONDS, nx=True
+        )
     except Exception as exc:
         logger.warning("Verrou de checkout Vinted indisponible : %s", exc)
         return True
     return bool(acquired)
 
 
-async def _release_lock(key: str) -> None:
+async def _release_lock(key: str, token: str) -> None:
+    """Libère le verrou seulement s'il porte encore notre jeton."""
     try:
-        await get_redis_client().delete(key)
+        raw = await get_redis_client().get(key)
+        current = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else raw
+        if current == token:
+            await get_redis_client().delete(key)
     except Exception as exc:
         logger.debug("Verrou de checkout Vinted non libéré : %s", exc)
 
@@ -157,8 +163,8 @@ class PrepareVintedCheckoutUseCase:
         listing_id: uuid.UUID,
     ) -> CheckoutPreparation:
         # Les prérequis les moins chers d'abord : rien ne touche la base tant que
-        # la fonctionnalité est coupée, la session absente ou la préparation
-        # suspendue. Chaque refus évite une requête SQL inutile sur le clic.
+        # la fonctionnalité est coupée, la session absente ou la création coupée.
+        # Chaque refus évite une requête SQL inutile sur le clic.
         if not settings.VINTED_CHECKOUT_PREPARATION_ENABLED:
             return CheckoutPreparation(VintedCheckoutStatus.DISABLED)
 
@@ -166,8 +172,11 @@ class PrepareVintedCheckoutUseCase:
         if not cookies or not session_is_authenticated(cookies):
             return CheckoutPreparation(VintedCheckoutStatus.NOT_CONFIGURED)
 
-        if await self.backoff.remaining_seconds() > 0:
-            return CheckoutPreparation(VintedCheckoutStatus.PAUSED)
+        pause = await self.backoff.remaining_seconds()
+        if pause > 0:
+            return CheckoutPreparation(
+                VintedCheckoutStatus.PAUSED, retry_after_seconds=pause
+            )
 
         listing = await ListingRepository(self.db).get_listing_matched_to_user(
             listing_id, telegram_user_id
@@ -176,12 +185,18 @@ class PrepareVintedCheckoutUseCase:
             return CheckoutPreparation(VintedCheckoutStatus.NOT_ASSOCIATED)
         listing_url, listing_title = _listing_identity(listing)
 
-        def outcome(status: VintedCheckoutStatus, url: str | None = None) -> CheckoutPreparation:
+        def outcome(
+            status: VintedCheckoutStatus,
+            url: str | None = None,
+            *,
+            retry_after: int | None = None,
+        ) -> CheckoutPreparation:
             return CheckoutPreparation(
                 status,
                 checkout_url=url,
                 listing_url=listing_url,
                 listing_title=listing_title,
+                retry_after_seconds=retry_after,
             )
 
         cached = await _read_cached_link(_link_key(telegram_user_id, listing_id))
@@ -198,14 +213,21 @@ class PrepareVintedCheckoutUseCase:
                     or ""
                 )
             except VintedCheckoutError as exc:
-                await self.backoff.request_failure(exc.status)
-                return outcome(exc.status)
+                seconds = await self.backoff.request_failure(exc.status)
+                return outcome(exc.status, retry_after=seconds)
         if not seller_id:
-            return outcome(VintedCheckoutStatus.SELLER_UNKNOWN)
+            seconds = await self.backoff.request_failure(VintedCheckoutStatus.SELLER_UNKNOWN)
+            return outcome(VintedCheckoutStatus.SELLER_UNKNOWN, retry_after=seconds)
 
-        lock_key = _lock_key(telegram_user_id, listing_id)
-        if not await _acquire_lock(lock_key):
+        lock_key = _lock_key()
+        lock_token = uuid.uuid4().hex
+        if not await _acquire_lock(lock_key, lock_token):
             return outcome(VintedCheckoutStatus.BUSY)
+
+        seconds_in_lock = await self.backoff.remaining_seconds()
+        if seconds_in_lock > 0:
+            await _release_lock(lock_key, lock_token)
+            return outcome(VintedCheckoutStatus.PAUSED, retry_after=seconds_in_lock)
 
         try:
             transaction_id = await self.provider.create_buyer_inquiry(
@@ -221,19 +243,18 @@ class PrepareVintedCheckoutUseCase:
                 transaction_id=transaction_id, purchase_id=purchase_id
             )
         except VintedCheckoutError as exc:
-            if exc.status not in _UNCERTAIN_STATUSES:
-                await _release_lock(lock_key)
-            await self.backoff.request_failure(exc.status)
+            seconds = await self.backoff.request_failure(exc.status)
+            await _release_lock(lock_key, lock_token)
             logger.info(
                 "Préparation de checkout Vinted non aboutie (statut=%s).",
                 exc.status.value,
             )
-            return outcome(exc.status)
+            return outcome(exc.status, retry_after=seconds)
         except Exception:
-            await _release_lock(lock_key)
+            seconds = await self.backoff.request_failure(VintedCheckoutStatus.UNEXPECTED)
+            await _release_lock(lock_key, lock_token)
             logger.exception("Préparation de checkout Vinted en échec inattendue.")
-            return outcome(VintedCheckoutStatus.UNEXPECTED)
+            return outcome(VintedCheckoutStatus.UNEXPECTED, retry_after=seconds)
 
-        await self.backoff.clear_failures()
         await _write_cached_link(_link_key(telegram_user_id, listing_id), checkout_url)
         return outcome(VintedCheckoutStatus.READY, checkout_url)

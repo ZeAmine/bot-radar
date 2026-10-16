@@ -94,6 +94,64 @@ async def test_create_buyer_inquiry_falls_back_on_route_not_found() -> None:
     assert seen == [INQUIRIES_URL, f"{API_BASE_URL}/conversations"]
 
 
+async def test_create_buyer_inquiry_does_not_fall_back_on_invalid_input() -> None:
+    """400 `INVALID_INPUT` : aucun effet de bord établi, donc aucune seconde création."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(400, json={"code": "INVALID_INPUT"})
+
+    async with prepared_provider(handler) as provider:
+        with pytest.raises(VintedCheckoutError) as excinfo:
+            await provider.create_buyer_inquiry(
+                item_id="10377957794", seller_id="72804845", cookies=COOKIES
+            )
+
+    assert excinfo.value.status is VintedCheckoutStatus.UNEXPECTED
+    assert seen == [INQUIRIES_URL]  # une seule tentative, aucune création réputée sûre
+
+
+async def test_route_not_found_falls_back_once_without_looping() -> None:
+    """Route absente : un seul repli ; s'il échoue aussi, on s'arrête."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if len(seen) == 1:
+            return httpx.Response(404, json={"code": "NOT_FOUND"})
+        return httpx.Response(403, json={"code": 106, "message_code": "access_denied"})
+
+    async with prepared_provider(handler) as provider:
+        with pytest.raises(VintedCheckoutError) as excinfo:
+            await provider.create_buyer_inquiry(
+                item_id="10373403907", seller_id="72804845", cookies=COOKIES
+            )
+
+    assert excinfo.value.status is VintedCheckoutStatus.AUTH_REQUIRED
+    assert seen == [INQUIRIES_URL, f"{API_BASE_URL}/conversations"]
+
+
+async def test_refusal_is_logged_with_context_and_codes_only(caplog) -> None:
+    """Un refus se journalise avec sa cause — et sans URL, corps ni cookie."""
+    import logging
+
+    response = httpx.Response(403, json={"code": 106, "message_code": "access_denied"})
+    async with prepared_provider(lambda _request: response) as provider:
+        with caplog.at_level(logging.INFO, logger="radar.providers.vinted_checkout"):
+            with pytest.raises(VintedCheckoutError):
+                await provider.create_buyer_inquiry(
+                    item_id="10373403907", seller_id="72804845", cookies=COOKIES
+                )
+
+    joined = caplog.text
+    assert "l'ouverture de la transaction" in joined
+    assert "HTTP 403" in joined
+    assert "access_denied" in joined
+    for secret in ("jeton-synthetique", "session-synthetique", "cookie", "Bearer"):
+        assert secret not in joined
+
+
 async def test_create_buyer_inquiry_does_not_fall_back_on_a_datadome_challenge() -> None:
     """Un défi anti-robot n'est pas un « backend absent » : aucune relance."""
     seen: list[str] = []
@@ -325,10 +383,10 @@ class _BackoffRedis:
         return -1 if deadline is None else max(0, int(deadline - time.monotonic()))
 
 
-async def test_backoff_pauses_on_block_and_expires_without_reconnect_loop() -> None:
-    """Un blocage suspend ; l'expiration rend la main au prochain clic explicite."""
+async def test_backoff_cuts_on_the_first_failure_with_the_duration_of_its_class() -> None:
+    """Un blocage coupe immédiatement, et la coupure est bornée par sa durée de cause."""
     from app.providers.vinted_checkout import (
-        BLOCK_PAUSE_SECONDS,
+        FAILURE_PAUSE_SECONDS,
         CheckoutBackoff,
     )
 
@@ -336,44 +394,41 @@ async def test_backoff_pauses_on_block_and_expires_without_reconnect_loop() -> N
     backoff = CheckoutBackoff(redis_getter=lambda: redis)
 
     assert await backoff.remaining_seconds() == 0
-    await backoff.request_failure(VintedCheckoutStatus.BLOCKED)
+    seconds = await backoff.request_failure(VintedCheckoutStatus.BLOCKED)
+    assert seconds == FAILURE_PAUSE_SECONDS[VintedCheckoutStatus.BLOCKED]
     remaining = await backoff.remaining_seconds()
-    assert 0 < remaining <= BLOCK_PAUSE_SECONDS
+    assert 0 < remaining <= seconds
 
-    # La suspension expire d'elle-même ; aucun mécanisme ne relance rien.
+    # La coupure expire d'elle-même ; aucun mécanisme ne relance rien.
     redis.expiry["radar:vinted_checkout:pause"] = time.monotonic() - 1
     assert await backoff.remaining_seconds() == 0
 
 
-async def test_backoff_soft_failures_need_a_threshold() -> None:
+async def test_every_failure_status_cuts_for_at_least_the_minimum() -> None:
+    """Aucun échec ne « ne coupe pas » : un statut inconnu prend la durée minimale."""
     from app.providers.vinted_checkout import (
-        FAILURE_THRESHOLD,
+        MIN_FAILURE_PAUSE_SECONDS,
         CheckoutBackoff,
     )
 
     redis = _BackoffRedis()
     backoff = CheckoutBackoff(redis_getter=lambda: redis)
 
-    for _ in range(FAILURE_THRESHOLD - 1):
-        await backoff.request_failure(VintedCheckoutStatus.TIMEOUT)
-    assert await backoff.remaining_seconds() == 0
-
-    await backoff.request_failure(VintedCheckoutStatus.TIMEOUT)
-    assert await backoff.remaining_seconds() > 0
-    # Le compteur est remis à zéro en posant la pause : la série ne s'accumule pas.
-    assert redis.store.get("radar:vinted_checkout:failures") is None
-
-
-async def test_a_timeout_does_not_suspend_by_itself() -> None:
-    """Un échec incertain isolé ne suspend pas : la pause n'est pas un réflexe."""
-    from app.providers.vinted_checkout import CheckoutBackoff
-
-    redis = _BackoffRedis()
-    backoff = CheckoutBackoff(redis_getter=lambda: redis)
-    await backoff.request_failure(VintedCheckoutStatus.TIMEOUT)
-    assert await backoff.remaining_seconds() == 0
-    assert await backoff.clear_failures() is None
-    assert redis.store.get("radar:vinted_checkout:failures") is None
+    for status in (
+        VintedCheckoutStatus.AUTH_REQUIRED,
+        VintedCheckoutStatus.TIMEOUT,
+        VintedCheckoutStatus.NETWORK,
+        VintedCheckoutStatus.UNAVAILABLE,
+        VintedCheckoutStatus.SELLER_UNKNOWN,
+        VintedCheckoutStatus.UNEXPECTED,
+        VintedCheckoutStatus.RATE_LIMITED,
+        VintedCheckoutStatus.BLOCKED,
+    ):
+        redis.store.clear()
+        redis.expiry.clear()
+        seconds = await backoff.request_failure(status)
+        assert seconds >= MIN_FAILURE_PAUSE_SECONDS, status
+        assert await backoff.remaining_seconds() > 0, status
 
 
 async def test_backoff_survives_a_dead_redis() -> None:
@@ -399,5 +454,4 @@ async def test_backoff_survives_a_dead_redis() -> None:
     backoff = CheckoutBackoff(redis_getter=lambda: BrokenRedis())
     await backoff.request_failure(VintedCheckoutStatus.BLOCKED)
     await backoff.request_failure(VintedCheckoutStatus.TIMEOUT)
-    await backoff.clear_failures()
     assert await backoff.remaining_seconds() == 0

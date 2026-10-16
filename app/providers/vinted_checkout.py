@@ -65,26 +65,21 @@ CHECKOUT_SESSION_TTL_SECONDS = 18 * 3600
 # session injectée n'est qu'un visiteur anonyme.
 AUTH_COOKIE_NAMES = ("access_token_web", "_vinted_fr_session")
 
-# Coupe-circuit : clés Redis, durées et seuils. Les pauses « dures » couvrent le
-# temps qu'un défi ou une limitation se relâche d'eux-mêmes ; aucune relance
-# automatique n'a lieu, seule une expiration suivie d'un clic explicite.
+# Coupe-circuit : clé Redis et durée de coupure par cause. Tout échec coupe ;
+# aucune relance automatique n'a lieu, seule une expiration suivie d'un clic
+# explicite.
 PAUSE_KEY = "radar:vinted_checkout:pause"
-FAILURE_COUNTER_KEY = "radar:vinted_checkout:failures"
-BLOCKING_STATUSES = frozenset(
-    {VintedCheckoutStatus.BLOCKED, VintedCheckoutStatus.RATE_LIMITED}
-)
-SOFT_FAILURE_STATUSES = frozenset(
-    {
-        VintedCheckoutStatus.AUTH_REQUIRED,
-        VintedCheckoutStatus.TIMEOUT,
-        VintedCheckoutStatus.NETWORK,
-        VintedCheckoutStatus.UNEXPECTED,
-    }
-)
-BLOCK_PAUSE_SECONDS = 30 * 60
-FAILURE_PAUSE_SECONDS = 15 * 60
-FAILURE_WINDOW_SECONDS = 15 * 60
-FAILURE_THRESHOLD = 3
+MIN_FAILURE_PAUSE_SECONDS = 60
+FAILURE_PAUSE_SECONDS: dict[VintedCheckoutStatus, int] = {
+    VintedCheckoutStatus.BLOCKED: 30 * 60,
+    VintedCheckoutStatus.RATE_LIMITED: 30 * 60,
+    VintedCheckoutStatus.TIMEOUT: 15 * 60,
+    VintedCheckoutStatus.NETWORK: 15 * 60,
+    VintedCheckoutStatus.UNAVAILABLE: 5 * 60,
+    VintedCheckoutStatus.AUTH_REQUIRED: 5 * 60,
+    VintedCheckoutStatus.UNEXPECTED: 5 * 60,
+    VintedCheckoutStatus.SELLER_UNKNOWN: 5 * 60,
+}
 
 # Jeton CSRF statique du client web (constante du bundle Vinted).
 CSRF_TOKEN = "75f6c9fa-dc8e-4e52-a000-e09dd4084b3e"
@@ -188,12 +183,14 @@ def session_is_authenticated(cookies: Mapping[str, str]) -> bool:
 
 
 class CheckoutBackoff:
-    """Suspend temporairement les préparations après un signal défavorable.
+    """Coupe la création de checkout après un échec, pour une durée bornée.
 
     Le but est de **ne pas insister** : un défi anti-robot, une limitation ou une
-    rafale d'échecs ne se contournent pas en recliquant, et réessayer à chaque
-    clic abîme la réputation de l'IP et du compte. La suspension est portée par
-    Redis, donc partagée si plusieurs clics arrivent en parallèle.
+    panne ne se contournent pas en recliquant, et réessayer abîme la réputation de
+    l'IP et du compte. La coupure est posée dès le premier échec, pour la durée de
+    la cause (`FAILURE_PAUSE_SECONDS`) ; un statut inconnu coupe la durée minimale.
+    Elle est portée par Redis, donc partagée si plusieurs clics arrivent en
+    parallèle.
 
     Elle est **temporaire et sans boucle** : rien ne se relance tout seul. Après
     expiration, c'est un clic **explicite** de l'utilisateur qui retente. Redis
@@ -212,52 +209,23 @@ class CheckoutBackoff:
     def _client(self) -> Any:
         return self._redis_getter()
 
-    async def request_failure(self, status: VintedCheckoutStatus) -> None:
-        """Compte un échec : pose une suspension si le signal est défavorable.
-
-        Un défi anti-robot ou une limitation (429) suspendent **immédiatement**,
-        pour la durée la plus longue. Une rafale d'échecs « doux » (session,
-        réseau, délai, réponse inattendue) suspend après `FAILURE_THRESHOLD`.
-        """
-        if status in BLOCKING_STATUSES:
-            await self._pause(BLOCK_PAUSE_SECONDS)
-            logger.warning(
-                "Préparations de checkout suspendues %d s après %s.",
-                BLOCK_PAUSE_SECONDS,
-                status.value,
-            )
-            return
-        if status not in SOFT_FAILURE_STATUSES:
-            return
-        try:
-            client = self._client()
-            count = await client.incr(FAILURE_COUNTER_KEY)
-            if count == 1:
-                await client.expire(FAILURE_COUNTER_KEY, FAILURE_WINDOW_SECONDS)
-            if count >= FAILURE_THRESHOLD:
-                await self._pause(FAILURE_PAUSE_SECONDS)
-                await client.delete(FAILURE_COUNTER_KEY)
-                logger.warning(
-                    "Préparations de checkout suspendues %d s après %d échecs.",
-                    FAILURE_PAUSE_SECONDS,
-                    count,
-                )
-        except Exception as exc:  # pragma: no cover - Redis indisponible
-            logger.debug("Compteur d'échecs de checkout indisponible : %s", exc)
-
-    async def clear_failures(self) -> None:
-        """Une réussite efface la série d'échecs doux (jamais la suspension posée)."""
-        try:
-            await self._client().delete(FAILURE_COUNTER_KEY)
-        except Exception as exc:  # pragma: no cover - Redis indisponible
-            logger.debug("Compteur d'échecs de checkout non effacé : %s", exc)
+    async def request_failure(self, status: VintedCheckoutStatus) -> int:
+        """Coupe la création et rend le nombre de secondes de coupure."""
+        seconds = FAILURE_PAUSE_SECONDS.get(status, MIN_FAILURE_PAUSE_SECONDS)
+        await self._pause(seconds)
+        logger.warning(
+            "Création de checkout coupée %d s après un échec (statut=%s).",
+            seconds,
+            status.value,
+        )
+        return seconds
 
     async def remaining_seconds(self) -> int:
-        """Secondes restantes de suspension, 0 si aucune ou si Redis est muet."""
+        """Secondes restantes de coupure, 0 si aucune ou si Redis est muet."""
         try:
             ttl = await self._client().ttl(PAUSE_KEY)
         except Exception as exc:
-            logger.debug("Suspension de checkout illisible : %s", exc)
+            logger.debug("Coupure de checkout illisible : %s", exc)
             return 0
         return ttl if isinstance(ttl, int) and ttl > 0 else 0
 
@@ -265,7 +233,7 @@ class CheckoutBackoff:
         try:
             await self._client().set(PAUSE_KEY, "1", ex=seconds)
         except Exception as exc:  # pragma: no cover - Redis indisponible
-            logger.debug("Suspension de checkout non posée : %s", exc)
+            logger.debug("Coupure de checkout non posée : %s", exc)
 
 
 
@@ -329,11 +297,37 @@ def _message_code(response: httpx.Response) -> str | None:
     return None
 
 
-def _raise_for_response(response: httpx.Response) -> None:
+def _body_code(response: httpx.Response) -> str | None:
+    """Le `code` du corps JSON, quand il est une chaîne (ex. `INVALID_INPUT`)."""
+    try:
+        data: Any = response.json()
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        code = data.get("code")
+        if isinstance(code, str):
+            return code
+    return None
+
+
+def _refusal_detail(response: httpx.Response) -> str:
+    """Statut et codes d'un refus, sans corps ni URL."""
+    parts = [f"HTTP {response.status_code}"]
+    code = _body_code(response)
+    message_code = _message_code(response)
+    if code:
+        parts.append(f"code={code}")
+    if message_code:
+        parts.append(f"message_code={message_code}")
+    return ", ".join(parts)
+
+
+def _raise_for_response(response: httpx.Response, *, context: str) -> None:
     """Traduit un refus Vinted en échec typé — sans inventer de code."""
     status = response.status_code
     if 200 <= status < 300:
         return
+    logger.info("Vinted refuse %s (%s).", context, _refusal_detail(response))
     if _is_datadome_challenge(response):
         raise VintedCheckoutError(
             VintedCheckoutStatus.BLOCKED,
@@ -342,7 +336,7 @@ def _raise_for_response(response: httpx.Response) -> None:
     if status in (401, 403):
         raise VintedCheckoutError(
             VintedCheckoutStatus.AUTH_REQUIRED,
-            "La session Vinted n'est plus acceptée.",
+            "La session Vinted n'est pas acceptée pour cette action.",
         )
     if status == 429:
         raise VintedCheckoutError(
@@ -352,7 +346,7 @@ def _raise_for_response(response: httpx.Response) -> None:
     if _message_code(response) in _AUTH_MESSAGE_CODES:
         raise VintedCheckoutError(
             VintedCheckoutStatus.AUTH_REQUIRED,
-            "La session Vinted n'est plus acceptée.",
+            "La session Vinted n'est pas acceptée pour cette action.",
         )
     if status in (404, 409, 410, 422):
         raise VintedCheckoutError(
@@ -486,13 +480,17 @@ class VintedCheckoutProvider:
             INQUIRIES_URL, payload=payload, cookies=cookies
         )
         if response.status_code == 404:
-            # Le backend de messagerie du compte n'est pas celui-ci : le site
-            # lui-même se rabat sur `/api/v2/conversations`. Un 404 est
-            # définitif (rien n'a été créé), le repli ne duplique pas.
+            # Route absente : rien n'a pu être créé, le site lui-même se rabat
+            # alors sur `/api/v2/conversations`.
+            logger.info(
+                "Ouverture de transaction refusée par le backend de messagerie "
+                "(%s) : repli unique sur le chemin historique.",
+                _refusal_detail(response),
+            )
             return await self._create_legacy_conversation(
                 item_id=item_id, seller_id=seller_id, cookies=cookies
             )
-        _raise_for_response(response)
+        _raise_for_response(response, context="l'ouverture de la transaction")
         data = _json_object(response)
         return _non_empty_id(data.get("transaction_id"), what="de transaction")
 
@@ -512,7 +510,7 @@ class VintedCheckoutProvider:
         response = await self._post_json(
             f"{API_BASE_URL}/conversations", payload=payload, cookies=cookies
         )
-        _raise_for_response(response)
+        _raise_for_response(response, context="l'ouverture de la transaction (chemin historique)")
         data = _json_object(response)
         conversation = data.get("conversation")
         transaction = conversation.get("transaction") if isinstance(conversation, dict) else None
@@ -539,7 +537,7 @@ class VintedCheckoutProvider:
             payload=payload,
             cookies=cookies,
         )
-        _raise_for_response(response)
+        _raise_for_response(response, context="la création du panier")
         data = _json_object(response)
         checkout = data.get("checkout")
         purchase_id = checkout.get("id") if isinstance(checkout, dict) else None
@@ -553,13 +551,12 @@ class VintedCheckoutProvider:
         """Lit l'identifiant vendeur sur la page publique de l'annonce.
 
         Repli pour les annonces ingérées avant que la charge d'ingestion ne
-        transporte l'identifiant. Une page servie sans `seller_id` rend `None` :
-        l'appelant décide, ce module n'invente rien.
+        transporte l'identifiant. La page peut ne pas le porter : elle rend alors
+        `None`, et l'appelant décide — ce module n'invente rien.
 
         La page est demandée **avec la session de compte** quand elle est
-        fournie : une page personnalisée porte l'identifiant vendeur de façon
-        plus fiable qu'une page anonyme, et son `seller_id` est celui du vendeur
-        de l'article, pas d'une recommandation.
+        fournie : son `seller_id` est celui du vendeur de l'article, pas d'une
+        recommandation.
         """
         url = f"{SITE_URL}/items/{item_id}"
         headers = (
@@ -585,6 +582,19 @@ class VintedCheckoutProvider:
                 "L'article n'est plus disponible.",
             )
         if response.status_code != 200:
+            logger.info(
+                "Page article illisible pour l'identifiant vendeur "
+                "(annonce %s, HTTP %s).",
+                item_id,
+                response.status_code,
+            )
             return None
         match = _SELLER_ID_PATTERN.search(response.text)
-        return match.group(1) if match else None
+        if match is None:
+            logger.info(
+                "Page article sans identifiant vendeur (annonce %s, HTTP 200, %d octets).",
+                item_id,
+                len(response.text),
+            )
+            return None
+        return match.group(1)
