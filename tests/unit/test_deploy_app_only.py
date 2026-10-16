@@ -217,13 +217,18 @@ def test_an_unknown_before_state_cannot_be_declared_intact(capsys):
 
     Ce cas ne doit pas se produire dans le parcours nominal — `step_stop`
     capture toujours avant — mais s'il survient, il ne doit pas se lire comme
-    une invariance prouvée.
+    une invariance prouvée : le déploiement échoue sans annoncer un succès.
     """
     remote = _RemoteIdentites([_releve_texte(INCHANGE_POSTGRES, INCHANGE_REDIS)])
     ctx = _ctx(remote=remote, dependencies_before=None)
 
     assert step_start(ctx) == 1
-    assert "NON VÉRIFIÉE" in capsys.readouterr().out
+
+    sortie = capsys.readouterr().out
+    assert "NON VÉRIFIÉE" in sortie
+    # Aucun succès n'est annoncé, et rien n'est réparé.
+    assert "dépendances inchangées" not in sortie
+    assert all("restart" not in s and "rollback" not in s for s in remote.scripts)
 
 
 def test_an_unverifiable_inspection_never_triggers_a_repair():

@@ -86,6 +86,12 @@ pas pu être vérifiée et que ni « modifiées » ni « intactes » n'est étab
 avoir pu regarder ne prouve pas que rien n'a bougé. Aucune réparation, aucun
 redémarrage et aucun retour arrière n'est déclenché sur cette seule base.
 
+Cette règle vaut pour les **trois** entrées du contrôle, y compris l'absence
+d'identité d'avant : sans relevé initial, il n'y a rien à comparer, donc
+l'invariance n'est pas établie et le déploiement échoue. Ce cas ne se produit pas
+dans le parcours nominal — l'étape d'arrêt capture toujours avant — mais il est
+refusé plutôt que supposé conforme, et un test le vérifie.
+
 Dans ce parcours borné à `app`, un changement de PostgreSQL ou de Redis est **un
 écart à signaler**, jamais un comportement autorisé. Modifier volontairement une
 dépendance — image, variable, `healthcheck` — relève d'une intervention séparée,
