@@ -1128,3 +1128,38 @@ async def test_skip_still_clears_the_variants():
 
     assert alert.variants == []
     assert any("effacées" in c for c in confirmations)
+
+
+@pytest.mark.asyncio
+async def test_the_variant_confirmation_escapes_hostile_terms():
+    """Les termes du récap s'affichent littéralement, sans casser la mise en forme.
+
+    Un terme saisi ou un motif de rejet est une donnée : `<b>` doit se lire `<b>`,
+    et jamais devenir une balise. Le récap garde ses `<i>` pour la raison.
+    """
+    alert, confirmations = await _enregistrer_variantes(
+        "blacksad <script>, 9782205089752", ["blacksad tome 1"]
+    )
+
+    annonce = next(c for c in confirmations if "Modification enregistrée" in c)
+
+    assert "<script>" not in annonce
+    assert "&lt;script&gt;" in annonce
+    assert alert.variants == ["blacksad <script>"], "la valeur stockée reste brute"
+    # La raison reste en italique : c'est une balise du bot, pas de la donnée.
+    assert "<i>" in annonce
+    assert "</i>" in annonce
+    assert "&amp;lt;" not in annonce, "double échappement"
+
+
+@pytest.mark.asyncio
+async def test_the_full_rejection_notice_escapes_hostile_terms():
+    """Le refus total échappe aussi, et ne laisse rien passer comme balise."""
+    alert, confirmations = await _enregistrer_variantes("9782205089752 <b>x</b>", [])
+
+    annonce = next(c for c in confirmations if "non retenue" in c.lower())
+
+    assert "<b>x</b>" not in annonce
+    assert "&lt;b&gt;x&lt;/b&gt;" in annonce
+    assert alert.variants == []
+    assert "&amp;lt;" not in annonce, "double échappement"

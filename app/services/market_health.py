@@ -373,6 +373,13 @@ async def notify_incomplete_refresh(
     et une seule passe ; deux occurrences distinctes ont deux clés, donc deux
     bilans, même à douze heures d'écart.
 
+    Les nombres publiés satisfont deux identités, et le lecteur peut les vérifier
+    de tête : `Traités = Mis à jour + Sans mise à jour`, et
+    `Total = Traités + Restants à traiter`. La première vient de ce que « sans mise
+    à jour » est **dérivée** de `processed - refreshed` — jamais comptée à part —,
+    donc un compteur ne peut pas contredire l'autre. La seconde tient à ce que
+    `remaining` est `total - processed`, borné à zéro.
+
     La garantie est **bornée dans le temps**, et il faut le dire ainsi : la clé
     expire avec `INCOMPLETE_NOTIFY_TTL_SECONDS`. Deux tentatives séparées par moins
     que ce délai produisent un seul bilan ; une reprise plus tardive en produit un
@@ -405,11 +412,20 @@ async def notify_incomplete_refresh(
         mode = f"incrémental ({batch_size} livres)"
 
     remaining = max(total - processed, 0)
+    # « Traités » et « mis à jour » ne répondent pas à la même question : un livre
+    # interrogé dont les fournisseurs sont muets a bien été traité, mais n'a rien
+    # écrit. Sans cette ligne, l'écart entre les deux se lisait comme un manque, alors
+    # qu'il dit exactement ce que la passe a produit. Elle est dérivée, jamais
+    # recomptée : `processed` est la somme des verdicts, dont `refreshed` est la part
+    # qui a écrit une cote — les deux identités du bilan tiennent donc par
+    # construction, et non par un compteur parallèle qui pourrait diverger.
+    unchanged = max(processed - refreshed, 0)
     lines = [
         f"🔄 <b>Rafraîchissement {mode}</b>",
         "",
         f"Traités : {processed}/{total} livres",
         f"Mis à jour : {refreshed} livres",
+        f"Sans mise à jour : {unchanged} livres",
     ]
     if remaining:
         lines.append(f"Restants à traiter : {remaining} livres")
@@ -427,8 +443,9 @@ async def notify_incomplete_refresh(
 
     await notify_admins("\n".join(lines))
     logger.info(
-        "Bilan de passe (%s) : %d/%d traités, %d mis à jour, coupée=%s.",
-        mode, processed, total, refreshed, interrupted,
+        "Bilan de passe (%s) : %d/%d traités, %d mis à jour, %d sans mise à jour, "
+        "coupée=%s.",
+        mode, processed, total, refreshed, unchanged, interrupted,
     )
 
 

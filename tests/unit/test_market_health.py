@@ -256,9 +256,11 @@ async def test_an_incomplete_pass_is_reported():
     assert len(sent) == 1
     text = sent[0]
     assert "5/12" in text
-    # Les quatre nombres sont distincts et nommés : traités, mis à jour, restants.
+    # Les nombres sont distincts et nommés : traités, mis à jour, sans mise à jour,
+    # restants. « Traités » et « mis à jour » ne répondent pas à la même question.
     assert "Traités : 5/12 livres" in text
     assert "Mis à jour : 4 livres" in text
+    assert "Sans mise à jour : 1 livres" in text
     assert "Restants à traiter : 7 livres" in text
 
 
@@ -332,6 +334,135 @@ async def test_an_incremental_pass_never_promises_a_date():
 
     assert "Prochaine passe complète prévue" not in sent[0]
     assert "ordre de la file" in sent[0]
+
+
+@pytest.mark.parametrize(
+    ("processed", "total", "refreshed"),
+    [(244, 276, 181), (5, 12, 4), (276, 276, 0), (1, 300, 1), (8, 8, 8)],
+)
+@pytest.mark.asyncio
+async def test_the_report_numbers_obey_both_identities(processed, total, refreshed):
+    """Les nombres publiés sont vérifiables de tête, dans tous les cas.
+
+    `Traités = Mis à jour + Sans mise à jour` et `Total = Traités + Restants`. La
+    première tient à ce que « sans mise à jour » est **dérivée** plutôt que comptée :
+    un compteur parallèle finirait par contredire l'autre. Quand tout est traité, la
+    ligne « Restants » cède la place à la phrase qui le dit — le total n'est alors
+    atteint qu'avec zéro restant.
+    """
+    import re
+
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(
+            processed, total, refreshed=refreshed, interrupted=True, incremental=False
+        )
+
+    assert len(sent) == 1
+    sans_mise_a_jour = int(
+        re.search(r"Sans mise à jour : (\d+)", sent[0]).group(1)  # type: ignore[union-attr]
+    )
+    assert refreshed + sans_mise_a_jour == processed, sent[0]
+
+    restants_trouves = re.search(r"Restants à traiter : (\d+)", sent[0])
+    restants = int(restants_trouves.group(1)) if restants_trouves else 0
+    if restants_trouves is None:
+        assert "Tous les livres du lot ont été traités." in sent[0], sent[0]
+    assert processed + restants == total, sent[0]
+
+
+@pytest.mark.asyncio
+async def test_the_report_matches_the_requested_shape():
+    """Le rendu demandé, au caractère près : titre conservé, quatre lignes, la reprise.
+
+    Le titre dit le **type** de passe, même coupée : « Rafraîchissement complet »
+    décrit ce qui a été lancé, pas ce qui a été fini.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        mp.setattr(
+            market_health, "next_full_pass_note",
+            lambda: "Prochaine passe complète prévue : 16/10 à 19:00.",
+        )
+
+        await market_health.notify_incomplete_refresh(
+            244, 276, refreshed=181, interrupted=True, incremental=False
+        )
+
+    assert sent[0] == (
+        "🔄 <b>Rafraîchissement complet</b>\n"
+        "\n"
+        "Traités : 244/276 livres\n"
+        "Mis à jour : 181 livres\n"
+        "Sans mise à jour : 63 livres\n"
+        "Restants à traiter : 32 livres\n"
+        "\n"
+        "<i>Plafond de durée atteint : les livres restants seront repris selon "
+        "l'ordre de la file.</i>\n"
+        "Prochaine passe complète prévue : 16/10 à 19:00."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_ceiling_paragraph_only_appears_when_the_ceiling_cut_the_pass():
+    """Le paragraphe du plafond décrit une coupure réelle, jamais une supposition.
+
+    Une passe arrêtée pour une autre raison compte aussi comme incomplète : elle
+    doit se signaler, mais pas en invoquant un plafond qui n'a rien interrompu.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(
+            50, 276, refreshed=10, interrupted=False, incremental=False
+        )
+
+    assert len(sent) == 1
+    assert "Traités : 50/276 livres" in sent[0]
+    assert "Plafond" not in sent[0]
+    assert "ordre de la file" not in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_processed_everything_stays_silent():
+    """Une passe qui a tout traité n'a rien à dire : aucune ligne, aucun bruit.
+
+    C'est ce silence qui rend lisible le bilan quand il arrive — et ce qui fait
+    qu'un passage glissant normal ne produit rien.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+
+        await market_health.notify_incomplete_refresh(
+            276, 276, refreshed=181, interrupted=False, incremental=False
+        )
+        # Un lot incrémental qui traite sa sélection se tait de la même façon.
+        await market_health.notify_incomplete_refresh(
+            8, 8, refreshed=3, interrupted=False, incremental=True, batch_size=8
+        )
+
+    assert sent == []
 
 
 def test_the_next_full_pass_note_is_empty_without_a_scheduler():
