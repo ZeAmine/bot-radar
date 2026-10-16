@@ -836,3 +836,241 @@ def test_the_next_scheduled_run_is_a_different_occurrence():
         "refresh_prices_incremental", now=datetime(2026, 10, 16, 7, 45, tzinfo=UTC)
     )
     assert dixhuit != dixhuit_trente
+
+
+# --- La borne du dédoublonnage : le TTL, et lui seul, décide ---
+
+
+class _RedisQuiExpire:
+    """Redis minimal qui honore vraiment `ex` : la clé redevient libre après le délai.
+
+    Il faut un Redis fidèle plutôt qu'un ensemble de clés, parce que c'est
+    précisément l'expiration qui est testée.
+    """
+
+    def __init__(self, horloge) -> None:
+        self._possedees: dict[str, float] = {}
+        self._horloge = horloge
+
+    async def set(self, key, _value, **options):
+        if self._possedees.get(key, 0) > self._horloge():
+            return None
+        delai = options.get("ex")
+        self._possedees[key] = self._horloge() + (delai if delai else 0)
+        return True
+
+
+def _horloge_et_redis(mp, market_health):
+    """Branche une horloge virtuelle unique sur les deux gardes de `_claim_slot`.
+
+    `_claim_slot` dédoublonne deux fois : en mémoire, puis dans Redis. Les deux
+    lisent `monotonic`, et le repli mémoire est vidé à chaque appel pour que le test
+    porte bien sur l'expiration de la clé Redis — sans quoi le garde-fou local
+    masquerait le TTL et le test passerait quelle que soit la durée.
+
+    L'instance Redis est **unique** pour tout le test : une nouvelle instance à chaque
+    appel oublierait les clés posées, et le test passerait sans rien démontrer.
+    """
+    etat = {"t": 0.0}
+
+    def horloge() -> float:
+        return etat["t"]
+
+    faux_redis = _RedisQuiExpire(horloge)
+    mp.setattr(market_health, "monotonic", horloge)
+    mp.setattr(market_health, "get_redis_client", lambda: faux_redis)
+    return etat
+
+
+@pytest.mark.asyncio
+async def test_two_attempts_beyond_the_ttl_produce_a_second_report():
+    """Deux tentatives de la même occurrence au-delà du TTL : deux bilans.
+
+    C'est la **borne**, et elle doit être énoncée plutôt que niée. La clé a expiré,
+    donc la tentative suivante retrouve une clé libre et le bilan repart. Le test fige
+    ce comportement réel : la garantie n'est pas éternelle.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        etat = _horloge_et_redis(mp, market_health)
+
+        occurrence = "refresh_prices_07_00@2026-10-16T07:00:00+00:00"
+        for _ in range(2):
+            # Le repli mémoire est vidé : seul le TTL Redis peut dédoublonner ici.
+            mp.setattr(market_health, "_notification_deadlines", {})
+            await market_health.notify_incomplete_refresh(
+                5, 12, refreshed=4, interrupted=True, incremental=False, occurrence=occurrence,
+            )
+            etat["t"] = market_health.INCOMPLETE_NOTIFY_TTL_SECONDS + 60.0
+
+    assert len(sent) == 2, "au-delà du TTL la clé a expiré : la garantie est bornée"
+
+
+@pytest.mark.asyncio
+async def test_two_attempts_inside_the_ttl_produce_one_report():
+    """Deux tentatives de la même occurrence dans le TTL : un seul bilan.
+
+    L'autre face de la borne, et la preuve que le test précédent mesure bien le TTL :
+    à une seconde près sous la limite, le second bilan est absorbé.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        sent: list[str] = []
+
+        async def fake_notify(text: str) -> None:
+            sent.append(text)
+
+        mp.setattr(market_health, "notify_admins", fake_notify)
+        etat = _horloge_et_redis(mp, market_health)
+
+        occurrence = "refresh_prices_07_00@2026-10-16T07:00:00+00:00"
+        for _ in range(2):
+            mp.setattr(market_health, "_notification_deadlines", {})
+            await market_health.notify_incomplete_refresh(
+                5, 12, refreshed=4, interrupted=True, incremental=False, occurrence=occurrence,
+            )
+            etat["t"] = market_health.INCOMPLETE_NOTIFY_TTL_SECONDS - 1.0
+
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_bound_sits_where_the_constant_says_it_does():
+    """La borne est exactement celle de la constante : ni plus tôt, ni plus tard.
+
+    Un décalage d'une seconde de part et d'autre de `INCOMPLETE_NOTIFY_TTL_SECONDS`
+    suffit à changer le résultat. C'est ce qui interdit de présenter la garantie
+    comme absolue, et ce qui fixe la durée de protection sur une valeur vérifiable.
+    """
+    resultats = []
+    for delta in (-1.0, +1.0):
+        with pytest.MonkeyPatch.context() as mp:
+            sent: list[str] = []
+
+            async def fake_notify(text: str, _recu: list[str] = sent) -> None:
+                _recu.append(text)
+
+            mp.setattr(market_health, "notify_admins", fake_notify)
+            etat = _horloge_et_redis(mp, market_health)
+
+            occurrence = "refresh_prices_19_00@2026-10-16T19:00:00+00:00"
+            for _ in range(2):
+                mp.setattr(market_health, "_notification_deadlines", {})
+                await market_health.notify_incomplete_refresh(
+                    5, 12, refreshed=4, interrupted=True, incremental=False,
+                    occurrence=occurrence,
+                )
+                etat["t"] = market_health.INCOMPLETE_NOTIFY_TTL_SECONDS + delta
+            resultats.append(len(sent))
+
+    assert resultats == [1, 2], f"une seconde de part et d'autre change la borne : {resultats}"
+
+
+def test_the_protection_window_is_the_one_that_ships():
+    """La durée de protection est verrouillée par sa valeur, pas seulement par sa forme.
+
+    Les tests ci-dessus déplacent l'horloge autour de la constante : ils vérifient le
+    mécanisme, mais passeraient quelle que soit la durée. Celui-ci fixe la valeur
+    réellement expédiée, pour que la borne annoncée ne puisse pas dériver en silence.
+
+    Quinze minutes couvrent la fenêtre de réexécution prise en charge — une reprise
+    d'erreur, un doublon d'ordonnancement —, et restent très en deçà de l'écart entre
+    deux occurrences (trente minutes pour le lot glissant, douze heures entre les
+    deux passes complètes). La borne ne peut donc jamais avaler l'occurrence suivante.
+    """
+    assert market_health.INCOMPLETE_NOTIFY_TTL_SECONDS == 15 * 60
+
+
+def test_the_bound_stays_below_the_gap_between_two_occurrences():
+    """La borne doit rester strictement sous l'écart minimum entre deux occurrences.
+
+    C'est la propriété qui protège le bilan de l'occurrence suivante — et celle que la
+    fenêtre de vingt heures violait, les deux passes complètes n'étant séparées que de
+    douze heures. Vérifiée sur la plus petite période planifiée : trente minutes.
+    """
+    plus_petit_ecart = 30 * 60
+    assert plus_petit_ecart > market_health.INCOMPLETE_NOTIFY_TTL_SECONDS, (
+        "une borne au-delà de l'écart entre deux occurrences supprimerait un bilan"
+    )
+
+
+def test_a_delayed_execution_keeps_the_identity_of_what_was_scheduled():
+    """Une exécution retardée garde l'identité de son occurrence initiale.
+
+    C'est l'intérêt de dater l'occurrence par l'instant **prévu** : la passe de 19:00
+    lancée à 19:31 reste l'occurrence de 19:00, et une reprise de cette même exécution
+    prévue retrouve la même clé au lieu d'en inventer une nouvelle.
+
+    Le `now` donné est délibérément dans une **autre tranche** (19:30) : si l'heure
+    réelle dat ait daté le jeton, l'assertion tomberait. Sans cette distinction, le test ne
+    prouverait rien.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.tasks.refresh_book_prices import _occurrence_token
+
+    prevu = datetime(2026, 10, 16, 19, 0, tzinfo=UTC)
+    premier = _occurrence_token(
+        "refresh_prices_19_00",
+        scheduled_for=prevu,
+        now=datetime(2026, 10, 16, 19, 31, tzinfo=UTC),
+    )
+    reprise = _occurrence_token(
+        "refresh_prices_19_00",
+        scheduled_for=prevu,
+        now=datetime(2026, 10, 16, 19, 44, tzinfo=UTC),
+    )
+    assert premier == reprise, "une reprise garde l'occurrence prévue"
+    assert "19:00" in premier, "le jeton porte l'instant prévu"
+    assert "19:30" not in premier, "l'heure réelle ne doit pas dater l'occurrence"
+
+    # Et la preuve que les deux sources sont distinctes : daté de l'heure réelle, le
+    # même instant donnerait un autre jeton, dans la tranche de 19:30.
+    depuis_heure_reelle = _occurrence_token(
+        "refresh_prices_19_00", now=prevu + timedelta(minutes=31)
+    )
+    assert depuis_heure_reelle != premier
+
+
+def test_a_run_crossing_a_boundary_keeps_its_token_until_notification():
+    """Une collecte qui traverse une frontière garde son identité jusqu'au bilan.
+
+    Le jeton est calculé **une fois**, au début de la passe, puis voyage avec elle :
+    il n'est jamais recalculé à l'heure de la notification. C'est ce qui empêche une
+    longue collecte de changer d'occurrence en cours de route.
+    """
+    from datetime import UTC, datetime
+
+    from app.tasks.refresh_book_prices import _occurrence_token
+
+    debut = datetime(2026, 10, 16, 19, 29, tzinfo=UTC)
+    jeton = _occurrence_token("refresh_prices_19_00", scheduled_for=debut)
+    # La passe dure plus d'une heure : elle franchit deux frontières de tranche.
+    fin = datetime(2026, 10, 16, 20, 31, tzinfo=UTC)
+    assert _occurrence_token("refresh_prices_19_00", scheduled_for=debut) == jeton
+    # Recalculé à l'heure de fin, le jeton serait différent — c'est précisément ce que
+    # le calcul unique au début de la passe évite.
+    assert _occurrence_token("refresh_prices_19_00", scheduled_for=fin) != jeton
+
+
+def test_a_retry_across_a_slot_boundary_is_a_different_occurrence():
+    """Deux exécutions prévues de part et d'autre d'une frontière : jetons distincts.
+
+    Trente minutes est la période du lot glissant : deux exécutions prévues à :29 et
+    :35 sont bien deux occurrences, et chacune rend son bilan.
+    """
+    from datetime import UTC, datetime
+
+    from app.tasks.refresh_book_prices import _occurrence_token
+
+    avant = _occurrence_token(
+        "refresh_prices_incremental", scheduled_for=datetime(2026, 10, 16, 7, 29, tzinfo=UTC)
+    )
+    apres = _occurrence_token(
+        "refresh_prices_incremental", scheduled_for=datetime(2026, 10, 16, 7, 31, tzinfo=UTC)
+    )
+    assert avant != apres

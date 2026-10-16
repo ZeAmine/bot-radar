@@ -223,11 +223,20 @@ SILENT_PROVIDER_MIN_OBSERVATIONS = 3
 SILENT_NOTIFY_KEY = "radar:market:silent_provider:notified"
 SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
 
-# Le bilan d'une passe planifiée se dédoublonne par **occurrence**, pas par durée :
-# la clé porte l'identifiant du job et l'instant qu'il visait. Le TTL n'a donc qu'un
-# rôle d'hygiène — il borne la vie de clés dont plus personne n'a besoin —, et il est
-# volontairement court : quelques minutes couvrent une reprise ou un doublon
-# d'exécution, sans jamais approcher l'écart entre deux passes (douze heures).
+# Le bilan d'une passe planifiée se dédoublonne par **occurrence** : la clé porte
+# l'identifiant du job et l'instant que le planificateur visait. Deux tentatives de
+# la même occurrence partagent cette clé et ne produisent qu'un bilan.
+#
+# Le TTL **participe** à la garantie : il en fixe la borne, et il n'est pas qu'une
+# hygiène de clés. Une reprise qui arrive après expiration retrouve une clé libre et
+# produit un second bilan. La durée est donc celle de la fenêtre de réexécution
+# réellement prise en charge — une reprise d'erreur, un doublon d'ordonnancement,
+# qui surviennent dans les minutes qui suivent —, et non une valeur choisie au hasard.
+#
+# Elle reste très inférieure à l'écart entre deux occurrences (trente minutes pour le
+# lot glissant, douze heures entre les deux passes complètes) : la borne ne peut donc
+# jamais avaler le bilan de l'occurrence suivante. C'est précisément ce que la fenêtre
+# de vingt heures des autres alertes ne respectait pas.
 INCOMPLETE_NOTIFY_KEY_PREFIX = "radar:market:pass_report:"
 INCOMPLETE_NOTIFY_TTL_SECONDS = 15 * 60
 
@@ -360,10 +369,16 @@ async def notify_incomplete_refresh(
     et une seule passe ; deux occurrences distinctes ont deux clés, donc deux
     bilans, même à douze heures d'écart.
 
-    Une fenêtre de temps ne pouvait pas tenir cette garantie : à vingt heures de
-    durée elle supprimait le bilan de la seconde passe quotidienne, et plus courte
-    elle laissait repasser un doublon sur une reprise. La clé d'occurrence n'a pas
-    ce défaut — elle vaut pour une exécution, pas pour une durée.
+    La garantie est **bornée dans le temps**, et il faut le dire ainsi : la clé
+    expire avec `INCOMPLETE_NOTIFY_TTL_SECONDS`. Deux tentatives séparées par moins
+    que ce délai produisent un seul bilan ; une reprise plus tardive en produit un
+    second, la clé étant retombée. La borne couvre la fenêtre de réexécution prise en
+    charge, elle ne prétend pas à l'éternité.
+
+    Ce qui distingue cette clé d'une fenêtre de temps des autres alertes, c'est sa
+    durée : à vingt heures elle supprimait le bilan de la seconde passe quotidienne,
+    séparée de douze heures seulement. Ici la borne reste très inférieure à l'écart
+    entre deux occurrences, donc elle ne peut jamais avaler la suivante.
 
     Sans `occurrence` — un appel hors planificateur —, le bilan part sans
     dédoublonnage : mieux vaut un doublon qu'un incident passé sous silence.

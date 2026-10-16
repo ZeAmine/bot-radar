@@ -176,24 +176,29 @@ async def _run_wave(
                 stats["refreshed"] += 1
 
 
-def _occurrence_token(job_id: str, *, now: datetime | None = None) -> str:
-    """Identifie l'exécution **prévue** d'un job planifié, pour dédoublonner son bilan.
+def _occurrence_token(
+    job_id: str, *, scheduled_for: datetime | None = None, now: datetime | None = None,
+) -> str:
+    """Identifie l'exécution **prévue** d'un job, pour dédoublonner son bilan.
 
-    Deux exécutions de la même occurrence — une reprise après erreur, un doublon
-    d'ordonnancement — doivent produire un seul bilan ; deux occurrences distinctes
-    doivent produire chacune le leur, même à douze heures d'écart.
+    L'identité est celle de l'exécution *planifiée*, pas de l'instant où le code
+    tourne : c'est ce qui permet à une reprise de retrouver l'occurrence qu'elle
+    reprend. `scheduled_for` est l'instant que le planificateur visait, transmis par
+    l'enveloppe du job (`app/tasks/scheduler.py`) ; sans lui, on retombe sur l'heure
+    courante, ce qui suffit hors planificateur mais ne distingue plus une exécution
+    retardée de l'exécution suivante.
 
-    APScheduler 3 n'injecte aucun horodatage dans la fonction appelée : la tranche
-    horaire est donc calculée ici, en arrondissant l'instant courant vers le bas.
-    Trente minutes est la plus petite période planifiée du rafraîchissement (le lot
-    glissant passe à :15 et :45), donc deux exécutions prévues tombent toujours dans
-    des tranches différentes — c'est ce qui empêche la seconde de passer pour un
-    doublon de la première.
+    Le jeton est figé au **début** de la passe et voyage avec elle : une collecte qui
+    traverse une frontière de tranche garde donc son identité jusqu'à sa notification.
 
-    L'arrondi rend aussi le jeton stable pour une reprise immédiate : relancer la
-    passe dans la même demi-heure vise la même occurrence, et ne redouble pas le bilan.
+    Deux exécutions de la même occurrence — une reprise, un doublon d'ordonnancement —
+    produisent un seul bilan ; deux occurrences distinctes produisent chacune le leur.
+    Cette garantie est **bornée par le TTL** de la clé (voir
+    `INCOMPLETE_NOTIFY_TTL_SECONDS`) : au-delà, la clé a expiré et une nouvelle
+    tentative repartirait pour un second bilan. La borne est choisie pour couvrir la
+    fenêtre de réexécution réellement prise en charge, pas pour être éternelle.
     """
-    moment = now or datetime.now(UTC)
+    moment = scheduled_for or now or datetime.now(UTC)
     slot = moment.replace(minute=moment.minute - moment.minute % 30, second=0, microsecond=0)
     return f"{job_id}@{slot.isoformat()}"
 
@@ -252,6 +257,7 @@ async def refresh_book_prices_task(
     concurrency: int = BOOK_FETCH_CONCURRENCY,
     max_duration_seconds: float = MAX_PASS_DURATION_SECONDS,
     job_id: str | None = None,
+    scheduled_for: datetime | None = None,
 ) -> dict[str, int]:
     """Rafraîchit les prix de marché pour les livres associés à des alertes BD actives.
 
@@ -268,11 +274,15 @@ async def refresh_book_prices_task(
                 identifier l'**occurrence** pour le bilan : deux tentatives de la
                 même exécution prévue partagent ce nom et la même tranche horaire,
                 deux exécutions distinctes non.
+        scheduled_for: Instant que le planificateur **visait** pour cette exécution.
+                       C'est lui qui date l'occurrence, jamais l'heure à laquelle le
+                       code tourne : une passe de 19:00 lancée à 19:31 reste
+                       l'occurrence de 19:00.
     """
     if registry is None:
         registry = ProviderRegistry()
 
-    occurrence = _occurrence_token(job_id) if job_id else None
+    occurrence = _occurrence_token(job_id, scheduled_for=scheduled_for) if job_id else None
 
     stats = {
         "processed": 0,
