@@ -1043,7 +1043,7 @@ async def test_the_catalogue_verdict_crosses_a_real_database() -> None:
     """
     from app.domain.rules.catalogue_search import is_uncatalogued
     from app.services.book_metadata_service import BookMetadataService, CatalogueVerdict
-    from app.use_cases import ingest_listing
+    from app.use_cases import link_bd_catalog as catalog_linking
 
     notice = BookMetadata(
         title="Absolute Martian Manhunter — Tome 1",
@@ -1099,9 +1099,9 @@ async def test_the_catalogue_verdict_crosses_a_real_database() -> None:
                     "lookup_by_title_and_author",
                     new=AsyncMock(return_value=verdict),
                 ),
-                patch.object(ingest_listing, "schedule_book_pricing"),
+                patch.object(catalog_linking, "schedule_book_pricing"),
             ):
-                await ingest_listing.link_books_from_bnf(alert.name, alert_id)
+                await catalog_linking.link_books_from_bnf(alert.name, alert_id)
 
         async def _reloaded() -> Alert:
             session.expire_all()

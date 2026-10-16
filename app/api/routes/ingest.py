@@ -8,9 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db, require_ingest_token
 from app.schemas.listing import ListingIngestPayload, ListingIngestResponse
-
-# Ré-export pour rétrocompatibilité des tests
-# (ex: patch("app.api.routes.ingest.send_listing_alert"))
 from app.services.telegram_service import send_listing_alert
 from app.use_cases.ingest_listing import ProcessListingUseCase
 from app.use_cases.listing_ingestion_gate import IngestionBusyError
@@ -19,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/ingest", tags=["Ingestion"])
 
-__all__ = ["ingest_listing", "router", "send_listing_alert"]
+__all__ = ["ingest_listing", "router"]
 
 
 @router.post(
@@ -34,7 +31,7 @@ async def ingest_listing(
 ) -> ListingIngestResponse:
     """Ingère une nouvelle annonce, calcule le total, matche les alertes et notifie."""
     raw_payload: dict[str, Any] = await request.json()
-    use_case = ProcessListingUseCase(db)
+    use_case = ProcessListingUseCase(db, sender=send_listing_alert)
     try:
         return await use_case.execute(payload, raw_payload=raw_payload)
     except IngestionBusyError as exc:

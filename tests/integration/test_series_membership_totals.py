@@ -25,8 +25,8 @@ from app.domain.enums import AlertStatus, ComparisonStatus
 from app.schemas.listing import ListingIngestPayload
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, CatalogueVerdict
 from app.services.market_price_service import MarketPriceService
-from app.services.telegram_service import send_listing_alert
 from app.use_cases import ingest_listing as ingestion
+from app.use_cases import link_bd_catalog as catalog_linking
 from app.use_cases.view_market_details import ViewMarketDetailsUseCase
 from tests.database import postgres_replayed_database
 from tests.telegram_fakes import telegram_message
@@ -85,8 +85,8 @@ async def test_adding_already_priced_book_recalculates_without_collecting(journe
         AsyncMock(return_value=CatalogueVerdict(consulted=("BNF",), notices=notices)),
     )
     price = AsyncMock()
-    monkeypatch.setattr(ingestion, "schedule_book_pricing", price)
-    assert await ingestion.link_books_from_bnf("Cible BD", journey.alert.id, series=True)
+    monkeypatch.setattr(catalog_linking, "schedule_book_pricing", price)
+    assert await catalog_linking.link_books_from_bnf("Cible BD", journey.alert.id, series=True)
     assert await total(journey) == 6000
     price.assert_not_called()
 
@@ -123,7 +123,6 @@ async def test_real_ingestion_and_market_panel_agree(journey, monkeypatch, case)
     monkeypatch.setattr(tasks, "_cleanup_tasks", set())
     monkeypatch.setattr(ingestion, "record_sent_cote_state", AsyncMock())
     monkeypatch.setattr(ingestion, "schedule_book_pricing", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: send_listing_alert)
     if case == "expired":
         journey.books[1].market_cache.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     elif case == "undated":

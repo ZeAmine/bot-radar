@@ -1,5 +1,7 @@
 # F03-B — accusé Telegram et reprise du marquage
 
+Statut : contrat actuel et preuves locales historiques. Périmètre : accusé Telegram, persistance et reprise ; aucune garantie exactement une fois.
+
 ## Contrat
 
 Un résultat est `acknowledged` seulement avec un `aiogram.types.Message`, un

@@ -611,3 +611,49 @@ def test_parse_vinted_catalog_json_uses_single_cover():
     assert items[0].photo_url == "https://images1.vinted.net/t/05_01b88/f800/cover.webp?s=1"
     payload = to_ingest_payload(items[0])
     assert payload["photos"] == ["https://images1.vinted.net/t/05_01b88/f800/cover.webp?s=1"]
+
+@pytest.mark.parametrize("status", [500, 401])
+async def test_failed_catalogue_cannot_become_a_successful_empty_first_scan(status):
+    fake_client = AsyncMock()
+    fake_client.cookies = httpx.Cookies()
+    fake_client.get.return_value = httpx.Response(status)
+    with (
+        patch("app.services.vinted_scraper.vinted_session_manager.ensure_valid_session",
+              AsyncMock()),
+        patch("app.services.vinted_scraper.vinted_session_manager.refresh_session",
+              AsyncMock(return_value=False)),
+        patch("app.services.vinted_scraper.vinted_session_manager.clear_session", AsyncMock()),
+        pytest.raises(RuntimeError),
+    ):
+        await fetch_vinted_page("https://www.vinted.fr/catalog", fake_client)
+
+
+async def test_explicit_empty_catalogue_is_successful_without_html_fallback():
+    fake_client = AsyncMock()
+    fake_client.get.return_value = httpx.Response(
+        200, json={"items": []}, request=httpx.Request("GET", "https://www.vinted.fr/catalog"),
+    )
+    with patch("app.services.vinted_scraper.vinted_session_manager.ensure_valid_session",
+               AsyncMock()):
+        assert await fetch_vinted_page("https://www.vinted.fr/catalog", fake_client) == []
+    assert fake_client.get.await_count == 1
+
+
+def test_explicit_publication_date_reaches_ingestion_without_inventing_missing_dates():
+    from app.services.vinted_parsing import parse_vinted_catalog_json
+    raw = {"id": 1, "title": "Livre", "price": {"amount": "5"},
+           "published_at": "2026-07-01T12:00:00Z"}
+    item = parse_vinted_catalog_json({"items": [raw]})[0]
+    assert to_ingest_payload(item)["published_at"] == "2026-07-01T12:00:00+00:00"
+    del raw["published_at"]
+    assert "published_at" not in to_ingest_payload(parse_vinted_catalog_json({"items": [raw]})[0])
+
+
+@pytest.fixture(autouse=True)
+async def isolated_baseline_storage(monkeypatch):
+    """Le poller persiste ses jalons dans une base propre à chaque scénario."""
+    from tests.database import sqlite_only_database
+
+    async with sqlite_only_database() as database:
+        monkeypatch.setattr("app.tasks.vinted_poller.AsyncSessionLocal", database.maker)
+        yield

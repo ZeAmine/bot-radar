@@ -339,8 +339,28 @@ def _methodes_par_chemin(application: Any) -> dict[str, set[str]]:
 
 def test_demarrage_a_froid_sans_erreur_import() -> None:
     """Un processus neuf importe l'application et la construit, sans réseau."""
+    _assert_cold_import_registers_books_routes("app.main")
+
+
+@pytest.mark.parametrize(
+    "first_module",
+    [
+        "app.api.routes.books",
+        "app.use_cases.book_search",
+        "app.services.book_metadata_service",
+        "app.providers.registry",
+    ],
+)
+def test_bibliographic_entry_imports_before_application(first_module: str) -> None:
+    """Une entrée bibliographique ne dépend pas d'un import préalable de l'application."""
+    _assert_cold_import_registers_books_routes(first_module)
+
+
+def _assert_cold_import_registers_books_routes(first_module: str) -> None:
+    """Import frais et construction des deux routes livres, sans démarrer le lifespan."""
     racine = Path(__file__).resolve().parents[2]
     code = (
+        f"import importlib; importlib.import_module({first_module!r}); "
         "from app.main import create_app; "
         "from tests.integration.test_books_routes import _methodes_par_chemin; "
         "chemins = _methodes_par_chemin(create_app()); "

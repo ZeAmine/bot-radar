@@ -67,7 +67,8 @@ async def _book_with_cached_low(
         include_keywords=[title],
         status=AlertStatus(alert_status),
     )
-    book = Book(title=title, normalized_title=title.lower(), isbn13=f"978{title[:8]:0<8}")
+    book = Book(title=title, normalized_title=title.lower(), isbn13=f"978{title[:8]:0<8}",
+                created_at=datetime.now(UTC)-timedelta(days=30))
     session.add_all([alert, book])
     await session.flush()
 
@@ -105,6 +106,11 @@ async def _observe(
             raw_payload=payload,
         )
     )
+    if certified:
+        cache = await session.scalar(
+            select(BookMarketCache).where(BookMarketCache.book_id == book_id)
+        )
+        cache.historical_checked_at = datetime.now(UTC)-timedelta(days=days_ago)
     await session.commit()
 
 
@@ -145,19 +151,22 @@ async def test_a_fresh_observation_is_not_reported(session: AsyncSession) -> Non
     assert (rows, total) == ([], 0)
 
 
-async def test_a_book_without_displayed_low_is_ignored(session: AsyncSession) -> None:
-    """Sans cote affichée, il n'y a rien de figé à annoncer."""
+async def test_missing_history_is_reported_even_without_a_cached_minimum(
+    session: AsyncSession,
+) -> None:
+    """La collecte historique concerne tous les livres conservés, même sans ancien minimum."""
     await _book_with_cached_low(session, title="Lucky Luke", low_cents=None)
 
     rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
         stale_after=datetime.now(UTC) - timedelta(days=7)
     )
 
-    assert (rows, total) == ([], 0)
+    assert total == 1
+    assert rows[0][0] == "Lucky Luke"
 
 
-async def test_a_paused_alert_is_not_reported(session: AsyncSession) -> None:
-    """Une alerte en pause n'a pas d'affichage à corriger."""
+async def test_a_paused_alert_is_reported(session: AsyncSession) -> None:
+    """La pause arrête les annonces, pas la cotation des livres conservés."""
     book_id = await _book_with_cached_low(
         session, title="Asterix", low_cents=1200, alert_status=AlertStatus.PAUSED
     )
@@ -167,7 +176,8 @@ async def test_a_paused_alert_is_not_reported(session: AsyncSession) -> None:
         stale_after=datetime.now(UTC) - timedelta(days=7)
     )
 
-    assert (rows, total) == ([], 0)
+    assert total == 1
+    assert rows[0][0] == "Asterix"
 
 
 async def test_a_book_outside_bd_is_not_reported(session: AsyncSession) -> None:
@@ -231,3 +241,73 @@ async def test_a_book_linked_to_no_alert_is_not_reported(session: AsyncSession) 
     )
 
     assert (rows, total) == ([], 0)
+
+async def test_recent_history_collection_does_not_require_a_new_equal_minimum(session):
+    book_id = await _book_with_cached_low(session, title="Grimr", low_cents=545)
+    await _observe(session, book_id, days_ago=30, certified=True)
+    cache = await session.scalar(
+            select(BookMarketCache).where(BookMarketCache.book_id == book_id)
+        )
+    cache.historical_checked_at = datetime.now(UTC)
+    await session.commit()
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
+        stale_after=datetime.now(UTC)-timedelta(hours=48),
+    )
+    assert total == 0
+    assert rows == []
+
+
+async def test_fresh_undated_aggregate_does_not_prove_historical_refresh(session):
+    book_id = await _book_with_cached_low(session, title="Grimr", low_cents=545)
+    session.add(MarketPriceSnapshot(
+        book_id=book_id, provider_name="chasse_aux_livres", item_price_cents=0,
+        delivered_price_cents=0, source_url="https://example.invalid/book",
+        checked_at=datetime.now(UTC), is_historical=True,
+        raw_payload={"historical_low_1y_cents": 545},
+    ))
+    await session.commit()
+    rows, total = await MarketPriceRepository(session).find_stale_certified_lows(
+        stale_after=datetime.now(UTC)-timedelta(hours=48),
+    )
+    assert total == 1
+    assert rows[0][0] == "Grimr"
+
+
+async def test_a_book_last_collected_three_days_ago_is_not_expired(session):
+    """Un livre collecté il y a trois jours n'est pas périmé sous un seuil de sept.
+
+    Ce test échoue si le seuil retombe à deux jours : c'est la régression que la
+    décision de sept jours doit rendre impossible.
+    """
+    from app.services.market_health import STALE_AFTER_DAYS
+
+    book_id = await _book_with_cached_low(session, title="Grimr", low_cents=545)
+    cache = await session.scalar(
+        select(BookMarketCache).where(BookMarketCache.book_id == book_id)
+    )
+    cache.last_successful_collection_at = datetime.now(UTC) - timedelta(days=3)
+    await session.commit()
+
+    stale_after = datetime.now(UTC) - timedelta(days=STALE_AFTER_DAYS)
+    _, total = await MarketPriceRepository(session).find_stale_current_collections(
+        stale_after=stale_after,
+    )
+    assert total == 0
+
+
+async def test_a_book_last_collected_eight_days_ago_is_expired(session):
+    """Au-delà du seuil partagé, le livre est signalé — y compris jamais coté."""
+    from app.services.market_health import STALE_AFTER_DAYS
+
+    book_id = await _book_with_cached_low(session, title="Grimr", low_cents=545)
+    cache = await session.scalar(
+        select(BookMarketCache).where(BookMarketCache.book_id == book_id)
+    )
+    cache.last_successful_collection_at = datetime.now(UTC) - timedelta(days=8)
+    await session.commit()
+
+    stale_after = datetime.now(UTC) - timedelta(days=STALE_AFTER_DAYS)
+    _, total = await MarketPriceRepository(session).find_stale_current_collections(
+        stale_after=stale_after,
+    )
+    assert total == 1

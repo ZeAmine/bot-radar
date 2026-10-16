@@ -1,5 +1,7 @@
 # F05 — frontières de latence
 
+Statut : contrat de mesure actuel et résultats historiques attribués ci-dessous. Périmètre : frontières de latence locale ; aucune garantie de réception réelle.
+
 L'invariant Telegram d'abord est un ordre, pas une garantie de livraison sous un
 seuil. Aucun budget opérationnel, timeout ou politique de tentative n'est ajouté.
 Un accusé exploitable atteste un reçu API, pas la lecture humaine. Les benchmarks

@@ -1,5 +1,7 @@
 # Retrait d'ISBN et résultats différés (F06)
 
+Statut : contrat actuel. Périmètre : retrait ISBN, résultats tardifs et limites de la garde de version ; aucun changement de matching.
+
 Un changement réel d'ISBN détache uniquement les AlertBook de l'alerte et remet
 son total de série et son verdict de catalogue à NULL, dans la transaction
 d'édition sous verrou. Les Book partagés, leurs cotes/historiques et les autres

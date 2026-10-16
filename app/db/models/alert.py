@@ -39,6 +39,12 @@ class Alert(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     isbn: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     vinted_search_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # NULL conserve le comportement des alertes antérieures au déploiement.
+    listing_baseline: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True,
+    )
+
+    catalogue_refresh_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Listes de mots-clés et variantes
     include_keywords: Mapped[list[str]] = mapped_column(

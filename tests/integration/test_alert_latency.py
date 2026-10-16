@@ -20,7 +20,6 @@ from app.db.models.category import Category
 from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
 from app.schemas.listing import ListingIngestPayload
-from app.services import telegram_service as telegram
 from app.use_cases import ingest_listing as ingestion
 from tests.database import postgres_replayed_database
 from tests.telegram_fakes import telegram_message
@@ -53,7 +52,6 @@ async def journey(monkeypatch):
 
     monkeypatch.setattr(alert_latency, "monotonic", clock)
     monkeypatch.setattr(settings, "AI_ENABLED", False)
-    monkeypatch.setattr(ingestion, "_get_send_listing_alert", lambda: telegram.send_listing_alert)
     async with postgres_replayed_database() as db:
         category = Category(slug="tech", label="Tech", emoji="T", is_active=True)
         db.session.add(category)
@@ -426,7 +424,7 @@ async def test_real_bibliography_background_can_start_before_return(journey, mon
     original = journey.db.session.commit
     calls = 0
 
-    async def resolve(_use, _listing, _alert):
+    async def resolve(_session, **_context):
         entered.set()
         await release_work.wait()
         return None
@@ -439,7 +437,7 @@ async def test_real_bibliography_background_can_start_before_return(journey, mon
             await release_final.wait()
         await original()
 
-    monkeypatch.setattr(ingestion.ProcessListingUseCase, "_resolve_bd_market_comparison", resolve)
+    monkeypatch.setattr(ingestion, "resolve_bd_catalog_book", resolve)
     monkeypatch.setattr("app.db.session.AsyncSessionLocal", journey.db.maker)
     monkeypatch.setattr(ingestion, "record_sent_cote_state", AsyncMock())
     journey.db.session.commit = commit

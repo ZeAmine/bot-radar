@@ -527,7 +527,7 @@ async def test_list_alerts_with_arg_displays_category_directly():
     args, kwargs = message.answer.call_args
     assert "Mes alertes — 💻 Électronique" in args[0]
     assert "Nintendo Switch Mario Kart" in args[0]
-    assert "Active — 30,00 €" in args[0]
+    assert ": 30€ (Active)" in args[0]
     keyboard = kwargs["reply_markup"]
     assert any(
         "al_list_cat_menu" in btn.callback_data

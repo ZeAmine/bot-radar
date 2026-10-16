@@ -13,6 +13,16 @@ Un script n'a pas d'oubli : chaque étape attend l'échec de la précédente, et
 première qui échoue arrête tout sans lancer la suite. L'ordre est donc une donnée,
 pas une mémoire, et `--dry-run` permet de le relire avant de l'exécuter.
 
+Un quatrième accident s'y est ajouté, invisible depuis le dépôt lui-même : le
+déploiement du 16 octobre 2026 a **recréé `radar_postgres`** alors qu'il ne
+visait que `app`. Compose réconcilie les dépendances d'un service avant de le
+démarrer, et l'empreinte de configuration de `postgres` avait changé — la
+commande de son `healthcheck`. Le fait est établi : `docker compose config
+--hash postgres` sur la définition déployée rend l'empreinte exacte portée par
+le conteneur en service. Le démarrage porte donc `--no-deps`, et l'invariance
+des dépendances est **contrôlée** avant et après, jamais supposée : `--dry-run`
+ne pouvait pas la montrer, et une simulation n'est pas une garantie.
+
 Usage :
     python scripts/deploy.py                    # déploiement complet
     python scripts/deploy.py --dry-run          # affiche les étapes, n'exécute rien
@@ -25,6 +35,7 @@ import argparse
 import base64
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -33,6 +44,15 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from deploy_dependencies import (  # noqa: E402
+    DEPENDENT_SERVICES,
+    DependencyError,
+    InvarianceVerdict,
+    assert_operational,
+    capture_script,
+    compare,
+    decode_capture,
+)
 from preflight_deploy import (  # noqa: E402
     DEFAULT_HOST,
     DEFAULT_KEY,
@@ -41,7 +61,12 @@ from preflight_deploy import (  # noqa: E402
 )
 
 GREEN, RED, YELLOW, BOLD, DIM, RESET = (
-    "\033[32m", "\033[31m", "\033[33m", "\033[1m", "\033[2m", "\033[0m",
+    "\033[32m",
+    "\033[31m",
+    "\033[33m",
+    "\033[1m",
+    "\033[2m",
+    "\033[0m",
 )
 
 # Le même filtre que celui documenté dans AGENTS.md. `.env` en fait partie : un
@@ -61,6 +86,20 @@ RSYNC_EXCLUDES = (
 # Attente de la santé du conteneur cible après migration, en tentatives de deux secondes.
 HEALTH_ATTEMPTS = 30
 
+# Le démarrage applicatif ne doit jamais réconcilier les dépendances. Compose
+# recrée un service dont l'empreinte de configuration a changé, **y compris une
+# dépendance qu'on ne nomme pas** : c'est ce qui a recréé `radar_postgres` lors du
+# déploiement du 16 octobre 2026, après un changement de la commande de son
+# `healthcheck`. `--no-deps` borne le démarrage au seul service nommé.
+# `--no-build` et `--pull never` garantissent par ailleurs que l'image servie est
+# celle qui vient d'être construite et vérifiée, et non une image tirée du réseau.
+APP_ONLY_UP = "docker compose up -d --no-build --pull never --no-deps app"
+
+# Préfixe du tag de retour créé à chaque déploiement. Le build réécrit `latest`
+# en place : c'est la copie faite avant lui qui rend l'image d'avant atteignable.
+# Un horodatage rend le tag unique, donc deux déploiements ne se recouvrent pas.
+ROLLBACK_TAG_PREFIX = "bot-radar-app:rollback-"
+
 
 @dataclass
 class Context:
@@ -72,6 +111,14 @@ class Context:
     repo_root: Path
     dry_run: bool = False
     remote: Remote | None = None
+    # Identité des dépendances relevée avant l'arrêt de l'app, relue après son
+    # démarrage. Transiter par le contexte plutôt que par un fichier temporaire
+    # garde la comparaison dans le même processus, donc dans le même déploiement.
+    dependencies_before: dict[str, object] | None = None
+    # Tag de retour créé avant le build, revérifié après. Conservé pour que le
+    # bilan du déploiement nomme la référence de retour réellement disponible
+    # plutôt qu'un nom supposé.
+    rollback_image: str = ""
 
     def remote_or_default(self) -> Remote:
         if self.remote is None:
@@ -135,11 +182,63 @@ def step_sync(ctx: Context) -> int:
 
 
 def step_stop(ctx: Context) -> int:
-    """Arrête et confirme l'arrêt de l'app avant toute écriture dans ses bind mounts."""
+    """Relève l'identité des dépendances, puis arrête et confirme l'arrêt de l'app.
+
+    La capture précède l'arrêt : après, les valeurs ne décriraient plus l'état
+    d'avant le déploiement, et la comparaison perdrait son sens. Les dépendances
+    sont aussi **vérifiées opérationnelles ici**, avant toute interruption :
+    arrêter l'app alors qu'une dépendance manque ne ferait que rendre le service
+    indisponible sans rien permettre de réparer.
+    """
+    capture = capture_script(ctx.remote_dir)
+
+    # 1. Capture avant toute action, et contrôle que les dépendances sont là.
+    code, out, err = ctx.remote_or_default().run(capture)
+    if code != 0:
+        print(f"{RED}Capture des dépendances impossible : {err.strip()}{RESET}")
+        return code or 1
+    try:
+        identites = decode_capture(out)
+    except DependencyError as exc:
+        print(f"{RED}{exc}{RESET}")
+        return 1
+    ctx.dependencies_before = dict(identites)
+
+    problemes = assert_operational(identites, DEPENDENT_SERVICES)
+    if problemes:
+        for probleme in problemes:
+            print(f"{RED}dépendance non opérationnelle : {probleme}{RESET}")
+        print(f"{RED}App non arrêtée : rien ne serait servi pendant l'interruption.{RESET}")
+        return 1
+    for service in DEPENDENT_SERVICES:
+        identite = identites.get(service)
+        if identite is not None:
+            print(
+                f"{DIM}{service} : {identite.container_id[:12]} "
+                f"démarré {identite.started_at}{RESET}"
+            )
+
+    # 2. Conservation de l'image de retour, avant que le build n'écrase le tag
+    #    applicatif. `docker compose build app` réécrit `bot-radar-app:latest` en
+    #    place : sans cette copie, l'image réellement en service devient
+    #    inaccessible et le retour arrière n'a plus de référence.
     script = f"""set -eu
 cd {ctx.remote_dir}
 cid=$(docker compose ps -a -q app)
 [ -n "$cid" ] || {{ echo "conteneur app introuvable : arrêt non confirmé"; exit 1; }}
+image_id=$(docker inspect --format '{{{{.Image}}}}' "$cid")
+[ -n "$image_id" ] || {{ echo "identifiant d'image introuvable"; exit 1; }}
+tag="{ROLLBACK_TAG_PREFIX}$(date +%Y%m%d-%H%M%S)"
+docker tag "$image_id" "$tag"
+# Le tag doit pointer sur l'image capturée : un tag créé ne vaut que vérifié,
+# sinon le retour arrière restaurerait autre chose que ce qui tournait.
+tagged=$(docker inspect --format '{{{{.Id}}}}' "$tag")
+[ "$tagged" = "$image_id" ] || {{ echo "tag de retour incohérent : $tag"; exit 1; }}
+echo "image de retour conservée : $tag ($image_id)"
+# Le tag seul, sur sa propre ligne : il ne contient ni espace ni parenthèse, et
+# l'appelant le relit sans avoir à découper un message d'affichage.
+echo "RADAR_ROLLBACK_TAG=$tag"
+echo "$tag" > .rollback-image
 docker compose stop app
 running=$(docker inspect --format '{{{{.State.Running}}}}' "$cid")
 [ "$running" = false ] || {{ echo "app encore active : synchronisation interdite"; exit 1; }}
@@ -149,16 +248,29 @@ echo "arrêt app confirmé avant synchronisation"
     print(f"{DIM}{out.strip()}{RESET}")
     if err.strip():
         print(f"{DIM}{err.strip()}{RESET}")
+    for ligne in out.splitlines():
+        if ligne.startswith("RADAR_ROLLBACK_TAG="):
+            ctx.rollback_image = ligne.split("=", 1)[1].strip()
     return code
 
 
 def step_rebuild(ctx: Context) -> int:
-    """Construit l'image cible sans démarrer l'app ; son graphe Alembic y est inclus."""
-    script = (
-        "set -eu\n"
-        f"cd {ctx.remote_dir}\n"
-        "docker compose build app\n"
-    )
+    """Construit l'image cible sans démarrer l'app ; son graphe Alembic y est inclus.
+
+    Le tag de retour créé à l'étape précédente est revérifié après le build :
+    c'est le moment où `latest` a été réécrit, donc celui où l'image d'avant
+    doit encore être atteignable. Un tag disparu ne se découvrirait sinon qu'au
+    moment du retour arrière, c'est-à-dire trop tard.
+    """
+    conservation = ""
+    if ctx.rollback_image:
+        conservation = f"""
+tag={shlex.quote(ctx.rollback_image)}
+docker inspect --format '{{{{.Id}}}}' "$tag" > /dev/null 2>&1 \\
+  || {{ echo "tag de retour disparu après le build : $tag"; exit 1; }}
+echo "tag de retour toujours présent après le build : $tag"
+"""
+    script = f"set -eu\ncd {ctx.remote_dir}\ndocker compose build app\n{conservation}"
     code, out, err = ctx.remote_or_default().run(script)
     print(f"{DIM}{out.strip()}{RESET}")
     if err.strip():
@@ -187,10 +299,17 @@ docker compose run --rm --no-deps --pull never -T --entrypoint alembic app curre
 
 
 def step_start(ctx: Context) -> int:
-    """Démarre seulement après migration réussie et attend la santé réelle."""
+    """Démarre seulement après migration réussie et attend la santé réelle.
+
+    Le démarrage porte `--no-deps` : Compose ne réconcilie donc pas les
+    dépendances. L'invariance est **ensuite vérifiée**, pas supposée — c'est la
+    différence entre une parade et une garantie contrôlée. Le contrôle a lieu
+    même si la santé échoue, tant que l'inspection reste possible : un
+    déploiement qui a touché PostgreSQL doit le dire, quelle que soit l'issue.
+    """
     script = f"""set -eu
 cd {ctx.remote_dir}
-docker compose up -d --no-build --pull never app
+{APP_ONLY_UP}
 cid=$(docker compose ps -q app)
 [ -n "$cid" ] || {{ echo "conteneur app introuvable"; exit 1; }}
 state=unknown
@@ -212,7 +331,57 @@ echo "conteneur cible sain après migration"
     print(f"{DIM}{out.strip()}{RESET}")
     if err.strip():
         print(f"{DIM}{err.strip()}{RESET}")
+
+    # Le contrôle d'invariance tourne même quand la santé a échoué : un
+    # déploiement qui a touché PostgreSQL doit le dire, quelle que soit l'issue.
+    verdict = _verify_dependencies_unchanged(ctx)
+    if verdict.ecarts:
+        for ecart in verdict.ecarts:
+            print(f"{RED}écart de dépendance : {ecart}{RESET}")
+        print(
+            f"{RED}Le déploiement n'est pas déclaré réussi : un service dépendant a "
+            f"changé. Aucune réparation automatique n'est tentée.{RESET}"
+        )
+        return 1
+    if not verdict.verifiee:
+        # Ne pas pouvoir inspecter n'autorise pas à conclure. Le déploiement
+        # s'arrête sans affirmer que les dépendances ont changé — on ne sait
+        # pas — ni les déclarer intactes : ce serait une garantie sans preuve.
+        print(
+            f"{RED}Invariance des dépendances NON VÉRIFIÉE : leur état n'a pas pu "
+            f"être relu après le démarrage.{RESET}"
+        )
+        print(
+            f"{RED}Ni modifiées ni intactes ne sont établis. Déploiement non "
+            f"entièrement validé ; aucune réparation ni retour arrière automatique.{RESET}"
+        )
+        return 1
+    print(f"{GREEN}dépendances inchangées ({', '.join(DEPENDENT_SERVICES)}){RESET}")
     return code
+
+
+def _verify_dependencies_unchanged(ctx: Context) -> InvarianceVerdict:
+    """Relit l'identité des dépendances et rend un verdict explicite.
+
+    Une inspection ratée rend un verdict **non vérifié**, jamais un succès : ne
+    pas avoir pu regarder ne prouve pas que rien n'a bougé. L'appelant décide
+    quoi en faire, mais il ne peut pas confondre les deux situations.
+    """
+    if ctx.dependencies_before is None:
+        return InvarianceVerdict.non_verifiee(
+            "identité des dépendances inconnue avant le déploiement"
+        )
+    capture = capture_script(ctx.remote_dir)
+    code, out, err = ctx.remote_or_default().run(capture)
+    if code != 0:
+        return InvarianceVerdict.non_verifiee(
+            f"inspection en échec (code {code}) : {err.strip() or 'sans détail'}"
+        )
+    try:
+        apres = decode_capture(out)
+    except DependencyError as exc:
+        return InvarianceVerdict.non_verifiee(f"relevé illisible : {exc}")
+    return InvarianceVerdict.concluante(compare(ctx.dependencies_before, apres, DEPENDENT_SERVICES))
 
 
 def step_verify(ctx: Context) -> int:
@@ -270,9 +439,7 @@ def get_deployed_commits(ctx: Context) -> tuple[str, list[str]]:
 
     prev_commit = ""
     remote = (
-        None
-        if ctx.dry_run
-        else (ctx.remote if ctx.remote is not None else ctx.remote_or_default())
+        None if ctx.dry_run else (ctx.remote if ctx.remote is not None else ctx.remote_or_default())
     )
     if remote is not None:
         code_prev, out_prev, _ = remote.run(

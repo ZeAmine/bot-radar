@@ -383,3 +383,69 @@ def test_an_expired_known_offer_is_not_announced_as_an_empty_collection():
     assert 'expiré' in line
     assert 'Aucune offre' not in line
     assert not market.has_usable_price(book.market_cache)
+
+
+async def test_historical_points_enter_annual_minimum_but_not_current_offers(evidence):
+    point = offer(evidence.clock.now - timedelta(days=60), 545,
+                  is_available=False, is_historical=True)
+    current = offer(evidence.clock.now, 1103)
+    result = BookPricingResult.from_offers([current, point], current, None)
+    cache = await persist_market_result(evidence.db.session, evidence.book.id, result)
+    await evidence.db.session.commit()
+    assert cache.annual_low_cents == 545
+    assert cache.lowest_delivered_price_cents == 1103
+    assert len(cache.current_offers) == 1
+    latest = await evidence.repo.get_latest_snapshot(evidence.book.id)
+    assert latest.delivered_price_cents == 1103
+    assert admissible_reference_price(cache) == (545, True)
+    from app.db.repositories.book_repo import BookRepository
+    book = await BookRepository(evidence.db.session).get_by_id(evidence.book.id)
+    text = market.MarketPriceService.format_market_details_card(listing=None, book=book)
+    assert "Ancien minimum" not in text
+    assert text.count("Minimum sur 1 an") == 1
+    assert "5,45" in text
+
+
+def test_market_card_omits_unproven_legacy_minimum():
+    now = datetime.now(UTC)
+    book = Book(title="Grimr", normalized_title="grimr")
+    book.market_cache = BookMarketCache(
+        historical_low_1y_cents=545, lowest_delivered_price_cents=1154,
+        checked_at=now, expires_at=now+timedelta(hours=24),
+        comparison_status=ComparisonStatus.AVAILABLE,
+        annual_low_cents=1103, annual_low_observed_at=now,
+        annual_computed_at=now, annual_expires_at=now+timedelta(days=30),
+        annual_count=1, annual_first_at=now, annual_last_at=now,
+        annual_low_snapshot_id=uuid.uuid4(), annual_low_provider="synthetic",
+    )
+    text = market.MarketPriceService.format_market_details_card(listing=None, book=book)
+    assert "Ancien minimum" not in text
+    assert text.count("Minimum sur 1 an") == 1
+    assert "11,03" in text
+
+
+async def test_history_only_with_failed_offers_does_not_fake_current_freshness(evidence):
+    from app.providers.base import MarketOffers
+
+    evidence.book.created_at = evidence.clock.now-timedelta(days=3)
+    await evidence.db.session.flush()
+    historical = MarketOffer(
+        provider_name="chasse_aux_livres", item_price_cents=0,
+        shipping_price_cents=None, delivered_price_cents=0,
+        source_url="https://example.invalid/book", is_available=False,
+        raw_payload={"historical_low_1y_cents": 545},
+    )
+    offers = MarketOffers([historical], failed_providers=("synthetic",), historical_checked=True)
+    result = BookPricingResult.from_offers(offers, None, 545)
+    from dataclasses import replace
+    result = replace(result, collected_at=evidence.clock.now)
+    cache = await persist_market_result(evidence.db.session, evidence.book.id, result)
+    await evidence.db.session.commit()
+    assert cache.last_successful_collection_at is None
+    assert cache.lowest_delivered_price_cents == 5000  # Dernier prix connu conservé.
+    rows, total = await evidence.repo.find_stale_current_collections(
+        stale_after=evidence.clock.now-timedelta(hours=48),
+    )
+    # Le livre de cette fixture n'est associé à aucune alerte : la requête ne le surveille pas.
+    assert rows == []
+    assert total == 0

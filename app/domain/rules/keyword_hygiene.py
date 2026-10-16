@@ -399,6 +399,10 @@ class _Family:
     is_degenerate: Callable[[str], bool]
     title_verdict: Callable[[str, tuple[str, ...]], Reason | None]
     reason_degenerate: Reason
+    # Une famille peut distinguer ce que le moteur **propose** de ce que
+    # l'utilisateur **écrit**. Le drapeau évite de faire porter au verdict de titre
+    # un argument dont la famille des exclusions n'a que faire.
+    honours_user_authorship: bool = False
 
 
 def _variant_title_verdict(value: str, references: tuple[str, ...]) -> Reason | None:
@@ -421,6 +425,23 @@ def _variant_title_verdict(value: str, references: tuple[str, ...]) -> Reason | 
     """
     if any(_repeats_the_title(value, reference) for reference in references):
         return Reason.TITLE_VARIANT
+    return _variant_identity_verdict(value, references)
+
+
+def _variant_identity_verdict(value: str, references: tuple[str, ...]) -> Reason | None:
+    """Le verdict d'identité d'une variante, sans la question de redondance.
+
+    Les deux questions qui restent sont celles qui protègent le **produit** : un terme
+    doit partager un mot reconnaissable avec la référence et conserver ses nombres.
+
+    Elles se posent à l'identique pour le moteur et pour l'utilisateur. La question de
+    redondance (`_repeats_the_title`), elle, ne vaut que pour le moteur : « une variante
+    qui ne fait que reprendre le titre n'ajoute rien » est un jugement sur une
+    **proposition**, pas sur une **écriture**. Un utilisateur qui saisit « blacksad
+    integrale » pour une inclusion « blacksad » décrit exactement ce qu'est une variante
+    — la même œuvre sous une autre écriture — et la lui refuser vidait sa saisie en
+    silence, ce qui était le défaut.
+    """
     if _shares_no_distinctive_word(value, references):
         return Reason.DRIFTED_WRITING
     return variant_identity_verdict(value, references)
@@ -449,6 +470,7 @@ VARIANT_FAMILY = _Family(
     is_degenerate=is_degenerate_variant,
     title_verdict=_variant_title_verdict,
     reason_degenerate=Reason.ENUMERATION,
+    honours_user_authorship=True,
 )
 
 EXCLUSION_FAMILY = _Family(
@@ -459,17 +481,30 @@ EXCLUSION_FAMILY = _Family(
 )
 
 
-def _removal_reason(value: str, references: tuple[str, ...], family: _Family) -> Reason | None:
+def _removal_reason(
+    value: str,
+    references: tuple[str, ...],
+    family: _Family,
+    *,
+    from_user: bool = False,
+) -> Reason | None:
     """Motif d'un écart, ou `None` si le terme passe les filtres.
 
     L'ordre est celui des filtres, et il est unique : c'est le même enchaînement qui
     décide et qui explique.
+
+    `from_user` ne change qu'une chose : pour une famille qui honore l'écriture de
+    l'utilisateur, la redondance avec le titre cesse d'être un motif de rejet. Les
+    autres filtres — vide, ISBN, identité du produit, dégénérescence — sont intacts.
     """
     if not value or len(value) > _MAX_TERM_LENGTH or not normalize_text(value):
         return Reason.EMPTY
     if carries_isbn_like(value):
         return Reason.ISBN
-    title_verdict = family.title_verdict(value, references)
+    if family.honours_user_authorship and from_user:
+        title_verdict = _variant_identity_verdict(value, references)
+    else:
+        title_verdict = family.title_verdict(value, references)
     if title_verdict is not None:
         return title_verdict
     if family.is_degenerate(value):
@@ -481,6 +516,8 @@ def _clean_values(
     values: list[str] | None,
     references: tuple[str, ...],
     family: _Family,
+    *,
+    from_user: bool = False,
 ) -> SanitizedValues:
     """Applique les règles communes, rejette les dégénérés, déduplique, plafonne.
 
@@ -502,7 +539,7 @@ def _clean_values(
 
     for index, raw in enumerate(values or []):
         value = str(raw).strip().lower()
-        reason = _removal_reason(value, references, family)
+        reason = _removal_reason(value, references, family, from_user=from_user)
         if reason is None:
             key = normalize_text(value)
             if key in seen:
@@ -528,6 +565,7 @@ def assess_variants(
     title: str,
     *,
     references: Sequence[str] = (),
+    from_user: bool = False,
 ) -> SanitizedValues:
     """Verdict motivé du côté variantes : ce qui reste, et ce qui part et pourquoi.
 
@@ -539,8 +577,13 @@ def assess_variants(
 
     `references` reçoit les mots-clés inclus de l'alerte, quand l'appelant les connaît :
     une variante peut être l'écriture d'une inclusion qualifiée et pas seulement du titre.
+
+    `from_user` dit que le terme vient d'être **écrit** par l'utilisateur, et non proposé
+    par le moteur. Seule la redondance avec le titre cesse alors d'être un motif : une
+    variante est par définition une autre écriture de la même œuvre, et la refuser pour
+    ce motif vidait la saisie en silence. Les garde-fous d'identité du produit restent.
     """
-    return _clean_values(values, (title, *references), VARIANT_FAMILY)
+    return _clean_values(values, (title, *references), VARIANT_FAMILY, from_user=from_user)
 
 
 def assess_exclusions(values: list[str] | None, title: str) -> SanitizedValues:
@@ -560,13 +603,17 @@ def sanitize_variants(
     title: str,
     *,
     references: Sequence[str] = (),
+    from_user: bool = False,
 ) -> list[str]:
     """Variantes exploitables : capables de valider une annonce, sans énumération.
 
     `references` porte les mots-clés inclus de l'alerte : la variante est jugée comme
-    une écriture de l'intention de recherche entière, pas du seul titre.
+    une écriture de l'intention de recherche entière, pas du seul titre. `from_user`
+    distingue une écriture de l'utilisateur d'une proposition du moteur.
     """
-    return assess_variants(values, title, references=references).values
+    return assess_variants(
+        values, title, references=references, from_user=from_user
+    ).values
 
 
 def sanitize_exclusions(values: list[str] | None, title: str) -> list[str]:

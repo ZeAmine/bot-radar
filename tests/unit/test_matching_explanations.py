@@ -190,30 +190,8 @@ def test_declared_isbn_does_not_erase_the_inclusion_requirement():
 
 
 def test_entity_adapter_preserves_the_explanation():
-    from uuid import UUID
-
-    from app.domain.entities.alert import AlertEntity
-    from app.domain.entities.listing import ListingEntity
-    from app.domain.enums import CategorySlug
-    from app.domain.rules.matcher import DeterministicListingMatcher
-
-    alert = AlertEntity(
-        id=UUID(int=0),
-        user_id=UUID(int=0),
-        name="Blacksad",
-        category_slug=CategorySlug.BD_COMICS,
-        include_keywords=["blacksad"],
-    )
-    listing = ListingEntity(
-        id=None,
-        source_name="synthetic",
-        external_id="synthetic",
-        title="Autre ouvrage",
-        normalized_title="autre ouvrage",
-        category_slug=CategorySlug.BD_COMICS,
-        item_price_cents=1000,
-    )
-    result = DeterministicListingMatcher().evaluate(listing, alert)
+    """Le rejet réel indique l'inclusion manquante sans évaluer l'état ensuite."""
+    result = evaluate(title="autre ouvrage", max_item_price_cents=None)
     assert result.reason_code == "required_keywords_missing"
     assert result.decisive_details == (("missing_include_index", 0),)
     assert result.not_evaluated_steps == ("condition",)

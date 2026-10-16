@@ -1,5 +1,7 @@
 # Récap BD : séries multi-tomes
 
+Statut : historique de correction et preuves sur les révisions citées. Périmètre : récap BD multi-tomes ; le [contrat catalogue](contracts/catalogue-market.md) porte les règles actuelles.
+
 Correction sur `fix/bd-series-recap`, depuis `main` / `origin/main` vérifiés au commit
 `a6a1325c0f2c178446ec28ba4afc22c6244910b8`.
 

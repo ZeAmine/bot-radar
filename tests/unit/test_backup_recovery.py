@@ -146,3 +146,43 @@ def test_retention_deadlines_have_explicit_utc_and_never_delete():
     plan = retention_plan(records, NOW)
     assert plan["expires_utc"]["one"].endswith("+00:00")
     assert plan["deletion_executed"] is False
+
+
+def test_supported_schema_matches_the_single_alembic_head():
+    import ast
+    from pathlib import Path
+
+    from scripts.backup_recovery import SCHEMA
+
+    versions = Path(__file__).resolve().parents[2] / "alembic" / "versions"
+    revisions, parents = set(), set()
+    for path in versions.glob("*.py"):
+        for node in ast.parse(path.read_text()).body:
+            if (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id in {"revision", "down_revision"}
+            ):
+                value = ast.literal_eval(node.value)
+                if node.target.id == "revision":
+                    revisions.add(value)
+                elif value is not None:
+                    parents.add(value)
+    assert revisions - parents == {SCHEMA}
+
+
+@pytest.mark.parametrize(
+    "schema", ["0012_annual_observations", "0013_pause_actions", "unsupported"]
+)
+def test_incompatible_schema_is_refused(tmp_path, schema):
+    import json
+
+    from scripts.backup_recovery import sha, verify
+
+    path = bundle(tmp_path / "copy")
+    row = json.loads((path / "manifest.json").read_bytes())
+    row["schema"] = schema
+    (path / "manifest.json").write_text(json.dumps(row))
+    (path / "COMPLETE").write_text(sha((path / "manifest.json").read_bytes()))
+    with pytest.raises(ValueError, match="Version incompatible"):
+        verify(path)

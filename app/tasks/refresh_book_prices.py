@@ -16,13 +16,17 @@ import asyncio
 import logging
 import random
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.alert import Alert
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
+from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.session import AsyncSessionLocal
+from app.domain.enums import AlertStatus
 from app.providers.base import MarketOffer, extract_best_historical_low
 from app.providers.registry import ProviderRegistry
 from app.services.book_market_pricing import (
@@ -38,6 +42,7 @@ from app.services.market_health import (
     notify_no_prices_found,
     notify_silent_providers,
     notify_stale_certified_lows,
+    notify_stale_current_collections,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,20 +98,41 @@ def _pass_stat(cache: BookMarketCache | None) -> str:
     return stat
 
 
+def _cote_was_written(cache: BookMarketCache | None) -> bool:
+    """Vrai quand la collecte a réellement laissé une cote utilisable en base.
+
+    « Traité » et « mis à jour » ne disent pas la même chose : un livre interrogé
+    dont tous les fournisseurs sont muets est traité, mais n'a rien apporté. Le
+    compteur de mises à jour ne compte donc que les collectes qui ont écrit une
+    cote **et** fait avancer la date de succès — c'est la même condition que
+    `_stamp_collection`, lue du côté qui la constate.
+
+    Un prix inchangé compte : la question n'est pas de savoir si le chiffre a
+    bougé, mais si le relevé a abouti. Un cache absent, ou resté `failed` /
+    `empty`, ne compte pas.
+    """
+    return cache is not None and cache.collection_status == "complete"
+
+
 async def _price_one_book(
     book: Book,
     registry: ProviderRegistry,
     session: AsyncSession | None,
     semaphore: asyncio.Semaphore,
-) -> str:
-    """Interroge les fournisseurs pour un livre et consolide sa cote."""
+) -> tuple[str, bool]:
+    """Interroge les fournisseurs pour un livre et consolide sa cote.
+
+    Rend le verdict de la passe **et** le fait qu'une cote utilisable ait été écrite.
+    Les deux sont calculés ici, au seul endroit qui voit le résultat de la collecte :
+    les déduire plus tard, depuis les statistiques agrégées, reviendrait à deviner.
+    """
     if session is None:
         async with semaphore:
             cache = await price_book_now(book.id, reason="scheduled", registry=registry)
         if cache is None:
-            return "errors"
+            return "errors", False
         registry.failed_provider_names.update(cache.failed_provider_names or [])
-        return _pass_stat(cache)
+        return _pass_stat(cache), _cote_was_written(cache)
     async with semaphore:
         offers: list[MarketOffer] = await fetch_offers_for_book(book, registry=registry)
 
@@ -118,7 +144,7 @@ async def _price_one_book(
 
     cache = await persist_market_result(session, book.id, result)
     registry.failed_provider_names.update(cache.failed_provider_names or [])
-    return _pass_stat(cache)
+    return _pass_stat(cache), _cote_was_written(cache)
 
 
 async def _run_wave(
@@ -144,7 +170,37 @@ async def _run_wave(
             )
             stats["errors"] += 1
         else:
-            stats[outcome] += 1
+            verdict, wrote_cote = outcome
+            stats[verdict] += 1
+            if wrote_cote:
+                stats["refreshed"] += 1
+
+
+def _occurrence_token(
+    job_id: str, *, scheduled_for: datetime | None = None, now: datetime | None = None,
+) -> str:
+    """Identifie l'exécution **prévue** d'un job, pour dédoublonner son bilan.
+
+    L'identité est celle de l'exécution *planifiée*, pas de l'instant où le code
+    tourne : c'est ce qui permet à une reprise de retrouver l'occurrence qu'elle
+    reprend. `scheduled_for` est l'instant que le planificateur visait, transmis par
+    l'enveloppe du job (`app/tasks/scheduler.py`) ; sans lui, on retombe sur l'heure
+    courante, ce qui suffit hors planificateur mais ne distingue plus une exécution
+    retardée de l'exécution suivante.
+
+    Le jeton est figé au **début** de la passe et voyage avec elle : une collecte qui
+    traverse une frontière de tranche garde donc son identité jusqu'à sa notification.
+
+    Deux exécutions de la même occurrence — une reprise, un doublon d'ordonnancement —
+    produisent un seul bilan ; deux occurrences distinctes produisent chacune le leur.
+    Cette garantie est **bornée par le TTL** de la clé (voir
+    `INCOMPLETE_NOTIFY_TTL_SECONDS`) : au-delà, la clé a expiré et une nouvelle
+    tentative repartirait pour un second bilan. La borne est choisie pour couvrir la
+    fenêtre de réexécution réellement prise en charge, pas pour être éternelle.
+    """
+    moment = scheduled_for or now or datetime.now(UTC)
+    slot = moment.replace(minute=moment.minute - moment.minute % 30, second=0, microsecond=0)
+    return f"{job_id}@{slot.isoformat()}"
 
 
 async def _report_stale_certs(session: AsyncSession | None) -> None:
@@ -156,11 +212,41 @@ async def _report_stale_certs(session: AsyncSession | None) -> None:
     """
     if session is not None:
         await notify_stale_certified_lows(session)
+        await notify_stale_current_collections(session)
         await notify_silent_providers(session)
         return
     async with AsyncSessionLocal() as health_session:
         await notify_stale_certified_lows(health_session)
+        await notify_stale_current_collections(health_session)
         await notify_silent_providers(health_session)
+
+
+async def resolve_scheduled_catalogues(*, incremental: bool, deadline: float) -> None:
+    """Réutilise la résolution existante sans activer une alerte en pause."""
+    from app.use_cases.view_market_details import ViewMarketDetailsUseCase
+
+    async with AsyncSessionLocal() as reader:
+        ids = await AlertRepository(reader).scheduled_catalogue_ids(incremental=incremental)
+    for alert_id in ids:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            break
+        try:
+            async with AsyncSessionLocal() as session:
+                alert = await session.get(Alert, alert_id)
+                if alert is None or alert.status == AlertStatus.DELETED or alert.preparation:
+                    continue
+                alert.catalogue_refresh_attempted_at = datetime.now(UTC)
+                await session.commit()
+                async with asyncio.timeout(min(45.0, remaining)):
+                    await ViewMarketDetailsUseCase(session).resolve_alert_books(
+                        alert_id, force_catalogue=True,
+                    )
+                if not await BookRepository(session).get_all_books_for_alert(alert_id):
+                    logger.warning("Cotation sans ouvrage identifié : alerte %s", alert_id)
+        except Exception as exc:
+            logger.warning("Résolution planifiée impossible : alerte %s (%s)",
+                           alert_id, type(exc).__name__)
 
 
 async def refresh_book_prices_task(
@@ -170,6 +256,8 @@ async def refresh_book_prices_task(
     batch_size: int = DEFAULT_BATCH_SIZE,
     concurrency: int = BOOK_FETCH_CONCURRENCY,
     max_duration_seconds: float = MAX_PASS_DURATION_SECONDS,
+    job_id: str | None = None,
+    scheduled_for: datetime | None = None,
 ) -> dict[str, int]:
     """Rafraîchit les prix de marché pour les livres associés à des alertes BD actives.
 
@@ -182,17 +270,39 @@ async def refresh_book_prices_task(
         concurrency: Livres interrogés simultanément (défaut: 4).
         max_duration_seconds: Plafond de durée de la passe ; les livres non atteints
                               sont reportés au prochain passage du scheduler.
+        job_id: Identifiant du job planifié qui a déclenché la passe. Il sert à
+                identifier l'**occurrence** pour le bilan : deux tentatives de la
+                même exécution prévue partagent ce nom et la même tranche horaire,
+                deux exécutions distinctes non.
+        scheduled_for: Instant que le planificateur **visait** pour cette exécution.
+                       C'est lui qui date l'occurrence, jamais l'heure à laquelle le
+                       code tourne : une passe de 19:00 lancée à 19:31 reste
+                       l'occurrence de 19:00.
     """
     if registry is None:
         registry = ProviderRegistry()
 
+    occurrence = _occurrence_token(job_id, scheduled_for=scheduled_for) if job_id else None
+
     stats = {
         "processed": 0,
+        # Distinct de « processed » : un livre interrogé dont les fournisseurs sont
+        # muets a bien été traité, mais n'a rien écrit. C'est ce compteur-là qui
+        # répond à « le rafraîchissement a-t-il servi à quelque chose ? ».
+        "refreshed": 0,
         "available": 0,
         "unavailable": 0,
         "degraded": 0,
         "errors": 0,
     }
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max_duration_seconds
+    # Une passe coupée par le plafond de durée n'est pas une anomalie : c'est le
+    # fonctionnement prévu d'un lot qui ne tient pas dans sa fenêtre. Elle part au
+    # bilan comme une information, jamais comme un avertissement.
+    interrupted = False
+    if session is None:
+        await resolve_scheduled_catalogues(incremental=incremental, deadline=deadline)
     books = await _select_books(session, incremental, batch_size)
 
     if not books:
@@ -206,14 +316,13 @@ async def refresh_book_prices_task(
 
     semaphore = asyncio.Semaphore(max(1, concurrency))
     wave_size = max(1, concurrency)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + max_duration_seconds
-
     for wave in _iter_chunks(books, wave_size):
         remaining = deadline - loop.time()
         if remaining <= 0:
-            logger.warning(
-                "Plafond de durée atteint : %d/%d livres refreshés, reste reporté.",
+            interrupted = True
+            logger.info(
+                "Plafond de durée atteint : %d/%d livres traités, le reste attend "
+                "la passe suivante.",
                 stats["processed"],
                 len(books),
             )
@@ -227,11 +336,11 @@ async def refresh_book_prices_task(
             await asyncio.sleep(random.uniform(*PAUSE_RANGES[bool(incremental)]))
 
     logger.info(
-        "Rafraîchissement BD terminé (%s) : %d traités, %d avec prix, "
+        "Rafraîchissement BD terminé (%s) : %d traités, %d mis à jour, "
         "%d indisponibles, %d dégradés, %d erreurs.",
         mode_label,
         stats["processed"],
-        stats["available"],
+        stats["refreshed"],
         stats["unavailable"],
         stats["degraded"],
         stats["errors"],
@@ -246,7 +355,15 @@ async def refresh_book_prices_task(
     # ne doit pas passer sous le radar. Ces alertes ne bloquent jamais le
     # rafraîchissement.
     total_books = len(books)
-    await notify_incomplete_refresh(stats["processed"], total_books, mode_label=mode_label)
+    await notify_incomplete_refresh(
+        stats["processed"],
+        total_books,
+        refreshed=stats["refreshed"],
+        interrupted=interrupted,
+        incremental=incremental,
+        batch_size=batch_size,
+        occurrence=occurrence,
+    )
     await notify_no_prices_found(
         stats["processed"],
         total_books,

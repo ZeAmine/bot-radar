@@ -390,3 +390,13 @@ async def test_scraped_item_without_seller_id_leaves_the_payload_unchanged(
     raw_payload = captured["raw_payload"]
     assert isinstance(raw_payload, dict)
     assert "seller_external_id" not in raw_payload
+
+
+@pytest.fixture(autouse=True)
+async def isolated_baseline_storage(monkeypatch):
+    """Les nouveaux jalons du poller sont persistés dans une base propre à chaque test."""
+    from tests.database import sqlite_only_database
+
+    async with sqlite_only_database() as database:
+        monkeypatch.setattr("app.tasks.vinted_poller.AsyncSessionLocal", database.maker)
+        yield

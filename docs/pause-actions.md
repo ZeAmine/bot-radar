@@ -1,5 +1,7 @@
 # Pause protégée et réconciliation
 
+Statut : contrat actuel et procédure de contrôle. Périmètre : autorisations de pause, réconciliation et compatibilité de récupération. Les commandes à ressources exigent un mandat distinct.
+
 Un bouton de pause porte une autorisation opaque persistée avant présentation :
 propriétaire, alerte, version attendue et intention immuable (`pause` ou
 `suspend_preparation`). L'émission ne prouve pas une demande utilisateur.
@@ -41,10 +43,10 @@ Les autres erreurs restent HTTP 200 avec résultat explicite, comme les refus et
 succès durables. Aucun contrat des autres callbacks n'est changé. Un succès métier
 ne prouve ni succès global du traitement ni réception Telegram.
 
-Le schéma `0013_pause_actions` est explicitement pris en charge par l'outillage
-courant de récupération. Les archives `0012` nécessitent leur ancien kit compatible ;
-le nouvel outil les refuse. La quarantaine avance toutes les versions et invalide
-les actions non consommées ; les preuves appliquées demeurent historiques. Aucun
+Le contrat de récupération cible `0014_alert_market_freshness` ; la preuve d’exécution
+est bornée par le [statut de récupération](backup-recovery.md). Les archives `0012`
+et `0013` sont refusées par cet outillage. La quarantaine avance toutes les versions
+et invalide les actions non consommées ; les preuves appliquées demeurent historiques. Aucun
 FSM n'est importé et aucune expiration ou réconciliation ne réactive une alerte.
 
 Il n'existe ni worker, file de commandes, tâche de reprise ou relance d'envoi.

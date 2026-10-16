@@ -22,6 +22,7 @@ from app.bot.labels import (
     BTN_EDIT_ALERT_SETTINGS,
     BTN_EDIT_EXCLUSIONS,
     BTN_EDIT_EXCLUSIONS_AGAIN,
+    BTN_IGNORE_EXCLUSIONS,
     FIELD_EXCLUDE_KEYWORDS,
     FIELD_FALSE_POSITIVES,
     FIELD_NAME,
@@ -32,6 +33,7 @@ from app.bot.labels import (
     TITLE_AUTOTUNE,
     TITLE_EDIT_EXCLUDES,
     escape_html,
+    exclusion_proposal_message,
 )
 from app.bot.states.alert_creation import AutoTuneState
 from app.db.models.alert import Alert
@@ -115,7 +117,7 @@ def _proposal_keyboard(
             [InlineKeyboardButton(text=edit_label, callback_data=f"ai_tune_edit:{alert_id}")],
             [
                 InlineKeyboardButton(
-                    text=BTN_CANCEL, callback_data=f"ai_tune_cancel:{alert_id}"
+                    text=BTN_IGNORE_EXCLUSIONS, callback_data=f"ai_tune_cancel:{alert_id}"
                 )
             ],
         ]
@@ -323,19 +325,9 @@ async def process_autotune_for_alert(
         # Mettre en cache pour la confirmation
         await save_pending_tuning(alert.id, proposal.exclusions)
 
-        excl_str = ", ".join(proposal.exclusions)
-        explanation = proposal.explanation or ""
-        exp_text = f"\n<i>{escape_html(explanation)}</i>\n" if explanation else ""
-
-        text = (
-            f"{_autotune_header(alert.name)}\n\n"
-            f"{FIELD_FALSE_POSITIVES} ({len(disliked_titles)}) :\n"
-            f"{titles_bullet}\n"
-            f"{exp_text}\n"
-            f"{FIELD_SUGGESTED_EXCLUDES} :\n"
-            f"<code>{escape_html(excl_str)}</code>\n\n"
-            "Appliquer ces exclusions à l'alerte ?"
-        )
+        # Le même gabarit que le scan proactif : une seule forme pour la même décision,
+        # quel que soit le chemin qui a mené à la proposition.
+        text = exclusion_proposal_message(alert.name, disliked_titles, proposal.exclusions)
         keyboard = _proposal_keyboard(alert.id)
 
         if isinstance(target, CallbackQuery):

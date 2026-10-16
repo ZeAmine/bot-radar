@@ -244,7 +244,7 @@ async def test_handle_autotune_with_dislikes():
         # Doit envoyer le message de chargement puis le résultat final
         assert message.answer.call_count == 2
         text = message.answer.call_args[0][0]
-        assert "🧹 Auto-tuning des alertes" in text
+        assert "🧹 Exclusions proposées" in text
         assert "Nom : « One Piece »" in text
         assert "figurine, t-shirt" in text
         assert await get_pending_tuning(alert.id) == ["figurine", "t-shirt"]
@@ -312,7 +312,7 @@ async def test_handle_autotune_with_target_query():
 
         assert message.answer.call_count == 2
         text = message.answer.call_args[0][0]
-        assert "🧹 Auto-tuning des alertes" in text
+        assert "🧹 Exclusions proposées" in text
         assert "Nom : « Watchmen »" in text
         assert "gardiens" in text
 

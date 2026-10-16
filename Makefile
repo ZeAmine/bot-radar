@@ -1,4 +1,4 @@
-.PHONY: help dev test lint bench check-history format migrate revision up down clean \
+.PHONY: help dev test test-isolated lint bench check-history format migrate revision up down clean \
         lock check-lock preflight verify-deploy deploy pr verify
 
 # Les outils viennent du venv du dépôt quand il existe, sinon du PATH. `make` doit
@@ -22,6 +22,7 @@ help:
 	@echo "Commandes disponibles pour BotRadar :"
 	@echo "  make dev                 Lancer le serveur de développement FastAPI"
 	@echo "  make test                Lancer les tests unitaires et d'intégration"
+	@echo "  make test-isolated       Suite complète, configuration factice et transports isolés"
 	@echo "  make bench               Benchmark du chemin d'alerte (invariant 500 ms)"
 	@echo "  make lint                Vérifier le code avec Ruff et Mypy"
 	@echo "  make lock                Régénérer requirements.lock depuis l'environnement courant"
@@ -31,7 +32,7 @@ help:
 	@echo "  make verify-deploy       Revérifier le VPS après une synchronisation"
 	@echo "  make deploy              Déployer (pré-vol → arrêt confirmé → synchro → build → migration → démarrage → contrôle)"
 	@echo "  make pr                  Branche, commit, push et PR (MESSAGE=… ou MESSAGE_FILE=… TITLE=… [BRANCH=…] [STAGE=…])"
-	@echo "  make verify              Second passage local (lint + test) puis attente de la CI verte"
+	@echo "  make verify              Attendre la CI verte (contrôles locaux selon AGENTS.md)"
 	@echo "  make format              Formater le code avec Ruff"
 	@echo "  make migrate             Appliquer les migrations Alembic"
 	@echo "  make revision message=\"...\" Créer une nouvelle migration"
@@ -44,6 +45,10 @@ dev:
 
 test:
 	$(PYTEST) -v
+
+# Réutilise la recette existante ; aucune sélection PostgreSQL ou sauvegarde implicite.
+test-isolated:
+	$(PYTHON) -B scripts/verify_consolidation.py unit --target tests
 
 bench:
 	$(PYTEST) tests/performance -v -s
@@ -151,15 +156,9 @@ pr:
 		gh pr create --base main --head "$$branch" --title "$(TITLE)" --body "$$(printf '%s\n\n🤖 Generated with Codebuff\nCo-Authored-By: Codebuff <noreply@codebuff.com>' '$(MESSAGE)')"; \
 	fi
 
-# La double vérification qui autorise le merge : le second passage local, puis la CI.
-# Dans cet ordre, et pour une raison : le second passage rejoue exactement l'arbre qui
-# a été poussé, donc vert ici, il ne reste plus qu'à laisser la CI confirmer. L'ordre
-# inverse ferait attendre une régression attrapée en local pendant toute la CI.
 verify:
-	$(MAKE) --no-print-directory lint
-	$(MAKE) --no-print-directory test
 	@branch="$$($(GIT) rev-parse --abbrev-ref HEAD)"; \
-	echo "Second passage local vert. Attente de la CI sur $$branch…"; \
+	echo "Attente de la CI sur $$branch…"; \
 	gh pr checks "$$branch" --watch --fail-fast
 
 format:

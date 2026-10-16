@@ -2,7 +2,8 @@
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from math import ceil
 from typing import Any
 
 from sqlalchemy import func, select
@@ -13,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.core.constants import AlertStatus
 from app.core.exceptions import EntityNotFoundError
 from app.db.models.alert import Alert
+from app.db.models.alert_book import AlertBook
 from app.db.models.category import Category
 from app.db.models.listing_match import ListingMatch
 from app.domain.entities.alert_preparation import preparation_request
@@ -92,10 +94,32 @@ class AlertRepository:
             vinted_search_url=vinted_search_url,
             isbn=isbn,
             status=AlertStatus.ACTIVE,
+            listing_baseline={"state": "pending"},
         )
         self.session.add(alert)
         await self.session.flush()
         return alert
+
+    async def initialize_listing_baselines(
+        self, category_slug: str, target_url: str, external_ids: list[str],
+        scan_started_at: datetime,
+    ) -> None:
+        """Fige le premier catalogue réussi pour les alertes présentes avant ce scan."""
+        stmt = (
+            select(Alert).join(Category, Category.id == Alert.category_id)
+            .where(Category.slug == category_slug, Alert.status == AlertStatus.ACTIVE,
+                   Alert.deleted_at.is_(None), Alert.created_at <= scan_started_at,
+                   Alert.listing_baseline["state"].as_string() == "pending")
+            .with_for_update().execution_options(populate_existing=True)
+        )
+        if category_slug != "bd_comics":
+            stmt = stmt.where(Alert.vinted_search_url == target_url)
+        for alert in (await self.session.scalars(stmt)).all():
+            alert.listing_baseline = {
+                "state": "ready", "started_at": scan_started_at.isoformat(),
+                "external_ids": list(dict.fromkeys(external_ids)),
+            }
+        await self.session.flush()
 
     async def get_by_id(
         self,
@@ -179,6 +203,26 @@ class AlertRepository:
         ):
             return None
         return current if snapshot.matches(current) else None
+
+    async def scheduled_catalogue_ids(self, *, incremental: bool) -> list[uuid.UUID]:
+        """Résout les alertes sans livre et redécouvre quotidiennement les séries."""
+        stmt = select(Alert.id).join(Category).where(
+            Category.slug == "bd_comics", Alert.deleted_at.is_(None),
+            Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+            Alert.preparation["state"].as_string().is_(None),
+            (Alert.isbn.is_(None) | ~select(AlertBook.book_id).where(
+                AlertBook.alert_id == Alert.id,
+            ).exists()),
+            (Alert.catalogue_refresh_attempted_at.is_(None)
+             | (Alert.catalogue_refresh_attempted_at <= datetime.now(UTC)-timedelta(hours=24))),
+        ).order_by(Alert.catalogue_refresh_attempted_at.asc().nulls_first(),
+                   Alert.created_at, Alert.id)
+        if incremental:
+            population = await self.session.scalar(
+                select(func.count()).select_from(stmt.subquery())
+            )
+            stmt = stmt.limit(max(4, ceil((population or 0) / 48)))
+        return list((await self.session.scalars(stmt)).all())
 
     async def pending_preparation_ids(self, excluded: set[uuid.UUID]) -> list[uuid.UUID]:
         """Quatre demandes éligibles, jamais tentées puis les moins récemment tentées."""

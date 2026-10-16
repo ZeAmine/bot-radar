@@ -92,10 +92,11 @@ def test_help_screen_leads_with_the_charte_title():
 
 
 def test_help_lists_every_registered_command():
-    """Chaque commande annoncée dans le menu Telegram figure dans `/help`.
+    """Chaque commande vivante figure dans `/help`, y compris hors du menu.
 
-    Une commande offerte dans la barre de commandes mais absente de l'aide est
-    une commande que l'utilisateur doit connaître par hasard.
+    Le menu Telegram est réduit à quatre entrées, mais le bot en compte treize.
+    C'est `/help` qui rend les autres retrouvables : une commande qui existe sans
+    être ni au menu ni dans l'aide est une commande qu'il faut connaître par hasard.
     """
     for command in (
         "/add",
@@ -113,6 +114,36 @@ def test_help_lists_every_registered_command():
         "/help",
     ):
         assert command in HELP_TEXT, command
+
+
+def test_the_menu_shows_only_the_primary_commands():
+    """Le menu Telegram se limite aux quatre gestes du quotidien.
+
+    Il en comptait treize : les quatre utiles étaient repoussées hors de l'écran,
+    et la modification, la pause ou la suppression d'une alerte passent déjà par
+    les boutons de sa carte.
+    """
+    from app.bot.bot_instance import BOT_COMMANDS
+
+    assert [cmd.command for cmd in BOT_COMMANDS] == ["add", "show", "help", "cancel"]
+
+
+def test_help_says_the_card_buttons_cover_the_alert_actions():
+    """L'aide dit que les boutons de la carte couvrent les actions d'une alerte.
+
+    Sans cette phrase, déplacer /edit ou /pause hors du menu ressemblerait à une
+    perte de fonctionnalité plutôt qu'à un raccourci.
+    """
+    assert "carte" in HELP_TEXT
+
+
+def test_the_menu_and_the_help_agree_on_the_primary_commands():
+    """Les quatre commandes du menu sont celles que `/help` présente en premier."""
+    from app.bot.bot_instance import BOT_COMMANDS
+
+    bloque_menu = HELP_TEXT.split("<b>Depuis la carte")[0]
+    for cmd in BOT_COMMANDS:
+        assert f"/{cmd.command}" in bloque_menu, cmd.command
 
 
 def test_help_never_exclaims():
@@ -866,3 +897,219 @@ async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
     assert confirmation.endswith(
         "\n\n<i>Les annonces correspondant à ces critères déclencheront une alerte Telegram.</i>"
     )
+
+
+# --- Aperçus de liens désactivés ---
+
+
+@pytest.mark.asyncio
+async def test_a_sent_card_disables_the_link_preview():
+    """Le lien reste cliquable, l'aperçu déplié ne l'est plus.
+
+    Telegram déploie un aperçu de la recherche Vinted : quelques lignes qui
+    repoussent les boutons hors de l'écran. L'option qui l'empêche doit être
+    rejouée à chaque envoi.
+    """
+    from app.bot.formatter import send_alert_card
+
+    target = AsyncMock()
+    alert = MagicMock()
+    alert.vinted_search_url = "https://www.vinted.fr/catalog?search_text=blacksad"
+
+    with patch("app.bot.formatter.format_alert_card", return_value="carte"):
+        await send_alert_card(target, alert)
+
+    assert target.answer.call_args.kwargs["disable_web_page_preview"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_edited_card_disables_the_link_preview_too():
+    """L'édition rejoue l'option : Telegram ne retire pas un aperçu déjà affiché.
+
+    C'est le cas qui manquait — la navigation entre alertes réaffichait l'aperçu
+    que l'envoi venait d'éviter.
+    """
+    from app.bot.formatter import send_alert_card
+
+    target = AsyncMock()
+    alert = MagicMock()
+    alert.vinted_search_url = "https://www.vinted.fr/catalog?search_text=blacksad"
+
+    with patch("app.bot.formatter.format_alert_card", return_value="carte"):
+        await send_alert_card(target, alert, edit=True)
+
+    assert target.edit_text.call_args.kwargs["disable_web_page_preview"] is True
+
+
+def test_no_handler_sends_a_card_without_the_option():
+    """Aucun handler n'envoie `format_alert_card` directement, hors du gabarit.
+
+    Le garde-fou est structurel : tant qu'un écran peut rendre la carte lui-même,
+    il peut oublier l'option. Le helper est le seul chemin qui l'applique.
+    """
+    import ast
+    from pathlib import Path
+
+    fautifs = []
+    for chemin in Path("app/bot/handlers").glob("*.py"):
+        arbre = ast.parse(chemin.read_text())
+        for noeud in ast.walk(arbre):
+            # Un appel `…answer(format_alert_card(...))` ou `…edit_text(format_alert_card(...))`
+            if not isinstance(noeud, ast.Call):
+                continue
+            nom = getattr(noeud.func, "attr", "")
+            if nom not in ("answer", "edit_text", "reply"):
+                continue
+            for argument in noeud.args:
+                if (
+                    isinstance(argument, ast.Call)
+                    and getattr(argument.func, "id", "") == "format_alert_card"
+                ):
+                    fautifs.append(f"{chemin.name}:{noeud.lineno}")
+
+    assert fautifs == [], f"passe par send_alert_card : {fautifs}"
+
+
+# --- Message de proposition d'exclusions ---
+
+
+def test_the_exclusion_proposal_has_no_explanation_paragraph():
+    """Le message montre les faux positifs, il ne les explique pas.
+
+    Un paragraphe du moteur reformulait ce que la liste montre déjà : il allongeait
+    le message sans rien ajouter à la décision à prendre.
+    """
+    from app.bot.labels import exclusion_proposal_message
+
+    texte = exclusion_proposal_message("Blacksad", ["Blacksad T5"], ["tome 5"])
+
+    assert "💡" not in texte
+    assert "apparaissent dans les annonces" not in texte
+
+
+def test_the_exclusion_proposal_has_no_final_question():
+    """Le bouton dit « Appliquer » : la question était redondante."""
+    from app.bot.labels import exclusion_proposal_message
+
+    texte = exclusion_proposal_message("Blacksad", ["Blacksad T5"], ["tome 5"])
+
+    assert "?" not in texte
+
+
+def test_the_exclusion_proposal_stays_short():
+    """Le message tient en peu de lignes : titre, alerte, constat, proposition."""
+    from app.bot.labels import exclusion_proposal_message
+
+    texte = exclusion_proposal_message(
+        "Blacksad", [f"Blacksad T{n}" for n in range(1, 9)], ["tome 1"]
+    )
+
+    # Les faux positifs sont plafonnés : au-delà, la liste cesserait d'être lisible.
+    assert "… et" in texte
+    assert len(texte.splitlines()) <= 12
+
+
+def test_the_exclusion_proposal_button_labels_are_short():
+    """Trois boutons courts, sans emoji : « Appliquer », « Modifier », « Ignorer »."""
+    from app.bot.labels import (
+        BTN_APPLY_EXCLUSIONS,
+        BTN_EDIT_EXCLUSIONS,
+        BTN_IGNORE_EXCLUSIONS,
+    )
+
+    assert BTN_APPLY_EXCLUSIONS == "Appliquer"
+    assert BTN_EDIT_EXCLUSIONS == "Modifier"
+    assert BTN_IGNORE_EXCLUSIONS == "Ignorer"
+    for libelle in (BTN_APPLY_EXCLUSIONS, BTN_EDIT_EXCLUSIONS, BTN_IGNORE_EXCLUSIONS):
+        assert libelle.isascii(), libelle
+
+
+def test_both_producers_share_the_same_proposal_message():
+    """Le scan proactif et `/autotune` produisent le **même** texte.
+
+    Ils en produisaient deux — l'un avec des emoji décoratifs et un paragraphe
+    d'explication, l'autre sans —, si bien que ce que l'utilisateur lisait dépendait
+    du chemin qui l'avait mené là.
+    """
+    import pathlib
+
+    for chemin in ("app/tasks/proactive_autotune.py", "app/bot/handlers/autotune.py"):
+        source = pathlib.Path(chemin).read_text()
+        assert "exclusion_proposal_message(" in source, chemin
+
+
+def test_the_exclusion_proposal_escapes_hostile_false_positive_titles():
+    """Un titre d'annonce hostile s'affiche littéralement, et ne casse pas la mise en forme.
+
+    Un faux positif vient d'une annonce Vinted : son titre est une donnée que
+    personne ne contrôle. `<script>` doit se lire `<script>`, et les `<i>` du
+    gabarit rester des balises — un titre qui en contient ne doit pas pouvoir
+    fermer la sienne ni en ouvrir une autre.
+    """
+    from app.bot.labels import exclusion_proposal_message
+
+    texte = exclusion_proposal_message(
+        "Blacksad",
+        ["Blacksad T5", "Blacksad tome 5", "Blacksad <script>", "Blacksad T6"],
+        ["tome 5", "T5"],
+    )
+
+    assert "<script>" not in texte
+    assert "<i>Blacksad &lt;script&gt;</i>" in texte
+    assert "&amp;lt;" not in texte, "double échappement"
+    # Les balises volontaires du gabarit survivent : trois titres listés, plus le
+    # reste compté. Le plafond est de trois, donc quatre `<i>` fermants.
+    assert texte.count("<i>") == texte.count("</i>") == 4
+
+
+def test_the_exclusion_proposal_escapes_the_alert_name_and_exclusions():
+    """Le nom de l'alerte et les mots-clés sont échappés comme le reste.
+
+    La donnée dynamique ne modifie pas le formatage, quel que soit le champ d'où
+    elle vient : nom saisi par l'utilisateur, mot-clé proposé par le moteur.
+    """
+    from app.bot.labels import exclusion_proposal_message
+
+    texte = exclusion_proposal_message("Tom & Jerry <b>", ["A & B", "x<y>z"], ["a&b", "<i>"])
+
+    assert "<b>Tom" not in texte
+    assert "Tom &amp; Jerry &lt;b&gt;" in texte
+    assert "• <i>A &amp; B</i>" in texte
+    assert "• <i>x&lt;y&gt;z</i>" in texte
+    assert "<code>a&amp;b, &lt;i&gt;</code>" in texte
+    assert "&amp;amp;" not in texte, "double échappement"
+def test_the_exclusion_proposal_escapes_only_once():
+    """La valeur est échappée exactement une fois, depuis la donnée brute.
+
+    Les deux producteurs passent le nom et les titres tels qu'ils les tiennent de
+    la base : s'ils pré-échappaient, le message afficherait `&amp;lt;` au lieu de
+    `&lt;`. Le gabarit échappe lui-même, donc l'appelant ne doit pas le faire — la
+    même donnée échappée deux fois s'afficherait avec une esperluette littérale.
+    """
+    import ast
+    import pathlib
+
+    from app.bot.labels import escape_html, exclusion_proposal_message
+
+    texte = exclusion_proposal_message("a<b", ["c&d"], ["e>f"])
+
+    assert escape_html("c&d") in texte
+    for double in ("&amp;lt;", "&amp;amp;", "&amp;gt;"):
+        assert double not in texte, double
+
+    # Aucun appelant n'échappe les arguments qu'il passe **à ce gabarit**. D'autres
+    # messages du même fichier échappent légitimement leurs propres champs : seule
+    # la valeur reçue par `exclusion_proposal_message` est examinée ici.
+    for chemin in ("app/tasks/proactive_autotune.py", "app/bot/handlers/autotune.py"):
+        arbre = ast.parse(pathlib.Path(chemin).read_text())
+        appels = [
+            noeud
+            for noeud in ast.walk(arbre)
+            if isinstance(noeud, ast.Call)
+            and getattr(noeud.func, "id", None) == "exclusion_proposal_message"
+        ]
+        assert appels, f"aucun appel trouvé dans {chemin}"
+        for appel in appels:
+            for argument in appel.args:
+                rendu = ast.unparse(argument)
+                assert not rendu.startswith("escape_html("), f"{chemin} : {rendu}"

@@ -1,7 +1,10 @@
 # Sauvegarde et restauration : outillage synthétique
 
-Statut : vérifié sur données synthétiques uniquement. Aucune sauvegarde indépendante,
-planification, rétention distante ou restauration de production n'est activée.
+Périmètre : contrat et procédure de l'outillage de sauvegarde/restauration ; les exercices datés restent historiques. Lire [pause-actions](pause-actions.md) pour le schéma courant et la quarantaine.
+
+Statut : vérifié sur données synthétiques au schéma 0014 uniquement ; preuve locale
+ci-dessous. Aucune sauvegarde indépendante, planification, rétention distante ou
+restauration de production n'est activée.
 
 ## Contrat
 
@@ -42,7 +45,7 @@ Ils ne prouvent pas à eux seuls l'origine d'une archive contre un attaquant pou
 fabriquer une nouvelle archive avec la clé publique. Les archives de confiance et
 les permissions du dépôt indépendant restent des prérequis opérationnels.
 
-## Objectifs non activés
+## Objectifs non activés par cet outillage
 
 - Deux passages quotidiens, 04:00 et 16:00 **UTC**.
 - Copies quotidiennes : expiration à `snapshot_bound + 14 jours`.
@@ -57,7 +60,8 @@ les permissions du dépôt indépendant restent des prérequis opérationnels.
 
 Ces durées ne sont pas mesurées en production. Les rétentions de sauvegarde sont
 indépendantes des purges applicatives : des données supprimées peuvent rester dans
-les copies jusqu'à leur échéance. Aucun cron n'a été installé.
+les copies jusqu’à leur échéance. Ces recettes n’installent aucun cron ; l’état
+d’un éventuel ordonnanceur de production n’a pas été inspecté.
 
 ## Restauration sous maintenance
 
@@ -65,35 +69,65 @@ La cible de l'exercice est un PostgreSQL 16 neuf, sans volume existant, publié 
 port 127.0.0.1 exact. Le label, le conteneur, les ports, le stockage, l'identifiant
 système SQL, la version, la base et l'utilisateur sont attestés. Une cible non vide,
 une identité discordante ou une version incompatible sont refusées avant pg_restore.
-L'outil prend exclusivement en charge `0012_annual_observations`. Il ne contourne
-pas `freeze_bd_preparations.py`, réservé à 0010. L'archive originale reste intacte.
+L’outil accepte exclusivement `0014_alert_market_freshness`, valeur de `SCHEMA`
+dans [`scripts/backup_recovery.py`](../scripts/backup_recovery.py), alignée sur
+l’unique tête Alembic. Les archives 0012 et 0013 sont refusées : ne pas changer leur
+manifeste ou la constante pour les faire accepter. Le test statique d’alignement
+ne remplace pas une restauration PostgreSQL vérifiée.
+Il n’y a pas de migration implicite pendant la restauration. La procédure 0010
+(`delivery_prerequisites.py` et `freeze_bd_preparations.py`) n’est pas un repli
+compatible. L’archive originale reste intacte.
 
 Après restauration et contrôle de toutes les empreintes :
 
 - Les marqueurs notifiés et leurs reçus/dates restent inchangés.
 - ready/deferred/sending sans notified_at deviennent unknown ; aucune preuve d'envoi
   n'est reconstruite. Les unknown antérieurs et abandoned sont préservés.
-- Les alertes ACTIVE passent en PAUSED.
+- Toutes les alertes voient leur `decision_version` incrémentée ; les alertes
+  ACTIVE passent en PAUSED.
+- Les actions de pause non appliquées (`pause_actions.applied_at IS NULL`) sont
+  invalidées. Les preuves des actions déjà appliquées sont conservées ; une ancienne
+  action en attente ne peut pas servir à réactiver la cible restaurée.
 - Les préparations gardent contexte, état et dates ; leur intention d'activation est
-  retirée et leur jeton renouvelé. Une passe réelle de reprise des préparations est
-  testée, sans réactivation.
+  retirée et leur jeton renouvelé. L’exercice appelle le vrai use case de reprise
+  sur les données synthétiques, sans réactivation ; il ne valide pas une reprise
+  de production.
 - Aucun FSM ni contenu Redis n'est importé ; les dialogues antérieurs sont abandonnés.
 
-Aucun mode de libération métier n'existe. L'application normale ne doit pas démarrer
-pendant ces opérations : son lifespan contacte Telegram et lance le scheduler.
+Aucun mode de libération métier n’existe. Les fonctions `restore` et
+`quarantine_connection` n’arrêtent pas l’application et ne ferment pas ses entrées :
+la maintenance est une **précondition opérateur**, pas une garantie fournie par ces
+fonctions. Le libellé d’erreur « cible maintenue arrêtée » ne réalise aucun arrêt.
+L’application normale ne doit pas démarrer pendant ces opérations : son lifespan
+contacte Telegram et lance le scheduler.
 Maintenir fermées les entrées Telegram/ingestion. Revoir explicitement suppressions,
 modifications, utilisateurs/allowlist et intentions de préparation avant reprise.
 Une annonce entièrement absente de la copie peut revenir comme nouvelle : mettre
 seulement les pending en unknown ne suffit pas. Les alertes restaurées restent en
-pause ; l'exercice prouve zéro envoi dans cet état, pas après leur réactivation.
+pause ; le scénario synthétique vérifie zéro envoi simulé dans cet état, pas après
+leur réactivation. Un échec peut laisser des données restaurées ou une quarantaine
+incomplète : garder la cible sous maintenance, constater schéma/données/état des
+producteurs et décider de la suite. Aucun rollback de données, retour à l’ancien
+code ou redémarrage automatique n’est fourni par cet outillage.
 
-## Commandes locales de l'exercice
+## Commandes locales de l’exercice
+
+Ces commandes sont des points d’entrée, **pas une autorisation d’exécution**. Les
+deux premières ne lancent pas de base. La troisième crée les ressources décrites
+ci-dessous et demande une permission distincte ; ne pas la lancer pour vérifier une
+simple modification documentaire.
 
 ```bash
 .venv/bin/python -B scripts/exercise_backup_recovery.py --unit
 .venv/bin/python -B scripts/exercise_backup_recovery.py --typecheck
 bash scripts/backup_db.sh --synthetic-exercise
 ```
+
+`backup_recovery.py` n’expose en CLI que `verify`, `freshness` et `retention-plan`.
+Ces lectures ne restaurent rien. `backup` et `restore` sont appelés par l’exercice
+avec ses identités explicites ; aucune commande de restauration de production n’est
+fournie. Sans `--synthetic-exercise`, `backup_db.sh` sort avec le code 2 : son appelant
+doit rendre ce refus visible. Le code de sortie d’un cron réel n’a pas été inspecté.
 
 Les imports et la collecte sont précédés de barrières dotenv/réseau. Les connexions
 Python sont limitées à 127.0.0.1:55520 et :55521 ; les sondes négatives utilisent :55522
@@ -107,6 +141,40 @@ Les événements post-sauvegarde utilisent le vrai use case avec Telegram simul�
 accusés exploitables, un résultat inconnu, puis modification/suppression. Une annonce
 absente de la sauvegarde est réintroduite sur la cible en quarantaine. Ces effets
 postérieurs ne sont pas récupérés par la copie et ne sont pas prétendus absents.
+
+## Vérification locale du 16 octobre 2026
+
+Base : `54ad9f8212ea0b76a161a481146c304df7c98396`, avec le diff local du lot de
+récupération 0014, sans commit. Interpréteur existant :
+`/Users/aminezegmou/Projets/bot-radar/.venv/bin/python`, depuis le worktree
+`/Users/aminezegmou/Projets/bot-radar-worktrees/backup-recovery-schema`.
+
+- `scripts/exercise_backup_recovery.py --unit` : 20 tests réussis ; le décompte
+  précédent de 16 augmente d’un test d’alignement et de trois refus de schéma
+  (0012, 0013 et inconnu). L’alignement a échoué avant correction de `SCHEMA`.
+- `scripts/exercise_backup_recovery.py --typecheck` : zéro erreur sur les deux scripts.
+- `ruff check .` et le typage `app scripts/matching_diagnostics.py` : zéro erreur.
+- `make test-isolated` : 1 928 réussis, 12 ignorés, quatre avertissements de
+  dépréciation. Cette sélection sans PostgreSQL ne valide pas les scénarios ignorés.
+- `scripts/exercise_backup_recovery.py`, avec environnement initial vide et outils
+  locaux explicites : réussite sur deux PostgreSQL 16 neufs, image locale épinglée,
+  ports 55520/55521 et stockage tmpfs. Aucun téléchargement effectué.
+
+L’exercice vérifie avant sauvegarde les cinq champs ajoutés par 0014 : valeurs
+JSON et dates discriminantes, valeurs NULL permises et `is_historical` vrai/faux.
+Après restauration, les empreintes de toutes les tables publiques sont identiques
+avant quarantaine. Les comparaisons de lignes après quarantaine couvrent deux
+alertes, six notifications (dont un reçu confirmé complet et un état abandoned),
+deux actions de pause, deux caches, deux observations et une liaison alerte/livre.
+Seules les mutations prévues de quarantaine sont admises ; la reprise des
+préparations ne réactive aucune alerte et aucun envoi simulé ne suit la restauration.
+
+Les neuf contrôles négatifs existants réussissent : nouvelle sauvegarde échouée,
+mauvaise clé, mauvaise cible, mauvaise révision, écrasement, corruption, troncature,
+copie incomplète et cible non vide. Les deux conteneurs sont supprimés par leurs
+identifiants exacts ; les répertoires temporaires, clés et agents GnuPG de l’exercice
+sont nettoyés. Aucune ressource préexistante n’est modifiée. Cette preuve ne valide
+ni une sauvegarde indépendante, ni une restauration de production, ni RPO/RTO.
 
 ## Prérequis d'une exploitation réelle
 
@@ -124,6 +192,9 @@ kit factice ni aux logs. Aucun achat ou fournisseur n'est choisi ici.
 Le traitement actuel charge dump, bundle et empreintes en mémoire : le volume et les
 ressources réels doivent être mesurés, et le streaming évalué avant exploitation.
 La révision du code et le verrou de dépendances ne sont pas une image reconstruite
-vérifiée ; les fichiers effectivement déployés par bind mounts devront être attestés.
+vérifiée. Compose utilise désormais le code embarqué par le Dockerfile ; le contrôle
+après déploiement compare les fichiers versionnés dans le conteneur actif. Cette
+comparaison ne prouve ni une reconstruction reproductible de l’image ni une
+restauration réussie ; ces validations restent distinctes.
 L'exercice local ne valide ni transfert distant, coût, authentification réelle,
 volumes réels, quatre heures de restauration, ni reprise métier exactement une fois.

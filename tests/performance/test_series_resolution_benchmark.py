@@ -50,6 +50,7 @@ from app.providers.google_books import ProviderQueryResult
 from app.schemas.listing import ListingIngestPayload
 from app.services.book_metadata_service import BookMetadata, BookMetadataService
 from app.use_cases import ingest_listing
+from app.use_cases import link_bd_catalog as catalog_linking
 from app.use_cases.ingest_listing import ProcessListingUseCase
 from tests.database import sqlite_only_database
 from tests.telegram_fakes import telegram_reply
@@ -277,6 +278,7 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
         deferred.append((label, coro))
 
     monkeypatch.setattr(ingest_listing, "safe_create_task", _collect)
+    monkeypatch.setattr(catalog_linking, "safe_create_task", _collect)
     # `AsyncSessionLocal` est importé *dans* la fonction : c'est le module source
     # qu'il faut patcher, sinon la tâche différée ouvre une vraie session et
     # échoue avant même d'atteindre la BNF.
@@ -294,7 +296,7 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
 
     priced: list[tuple[uuid.UUID, str | None]] = []
     monkeypatch.setattr(
-        ingest_listing,
+        catalog_linking,
         "schedule_book_pricing",
         lambda book_id, reason=None: priced.append((book_id, reason)),
     )
@@ -447,13 +449,13 @@ async def test_benchmark_series_link_writes_six_links_and_prices_them(
 
     priced: list[tuple[uuid.UUID, str | None]] = []
     monkeypatch.setattr(
-        ingest_listing,
+        catalog_linking,
         "schedule_book_pricing",
         lambda book_id, reason=None: priced.append((book_id, reason)),
     )
 
     async def _one_flight() -> None:
-        await ingest_listing.link_books_from_bnf(
+        await catalog_linking.link_books_from_bnf(
             SERIES_NAME, alert_id, author="Tyler Johnson", series=True
         )
 

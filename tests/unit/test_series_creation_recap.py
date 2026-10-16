@@ -203,7 +203,7 @@ async def test_birdking_creation_confirms_four_rows_from_prepared_local_caches(
     from app.db.models.user import User
     from app.domain.enums import AlertStatus, ComparisonStatus
     from app.services.book_metadata_service import CatalogueVerdict, SeriesVolume
-    from app.use_cases import ingest_listing, prepare_bd_alert
+    from app.use_cases import link_bd_catalog, prepare_bd_alert
     from tests.add_fakes import DraftState
     from tests.database import sqlite_only_database
     from tests.screens import confirm_press
@@ -280,7 +280,7 @@ async def test_birdking_creation_confirms_four_rows_from_prepared_local_caches(
                 await session.commit()
                 return cache
 
-        monkeypatch.setattr(ingest_listing, 'price_book_now', collect)
+        monkeypatch.setattr(link_bd_catalog, 'price_book_now', collect)
         await save_alert(callback, state, user, db.session)
         text = message.edit_text.call_args.args[0]
         assert re.findall(r'📚 <b>Livre (\d+)</b>', text) == ['1', '2', '3', '4']

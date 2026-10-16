@@ -23,6 +23,7 @@ class MarketOffer:
     item_condition: str | None = None
     confidence: MatchConfidence = MatchConfidence.HIGH
     is_available: bool = True
+    is_historical: bool = False
     is_comparable: bool = True
     price_includes_shipping: bool = False
     raw_payload: dict[str, Any] | None = None
@@ -38,9 +39,11 @@ class MarketOffers(list[MarketOffer]):
         offers: Iterable[MarketOffer] = (),
         *,
         failed_providers: tuple[str, ...] = (),
+        historical_checked: bool = False,
     ) -> None:
         super().__init__(offers)
         self.failed_providers = failed_providers
+        self.historical_checked = historical_checked
 
 
 def normalize_search_isbn(raw_isbn: str | None) -> str | None:
