@@ -22,7 +22,8 @@ Date : 2026-10-14 · Statut : **accepté**. Première déclaration : `6292e2efcf
 
 - Contexte : L’utilisateur autorise une préparation manuelle accélérée, sans achat autonome.
 - Décision et raison : Au clic seulement, vérifier propriétaire et association à une alerte non supprimée, prérequis, session dédiée, verrou anti-double-clic et cache de lien ; préparer la transaction et le checkout.
-- Conséquences : Amende ADR-007. Le paiement/relais restent manuels. Échec incertain : verrou conservé ; blocage/limitation/échecs répétés : suspension sans relance automatique. La session validée sur le corps n’est jamais exposée. Le fil vendeur ouvert est un effet réel ; risques contractuels assumés, aucun contournement.
+- Conséquences : Amende ADR-007. Le paiement/relais restent manuels. Tout échec coupe la création pour la durée de sa cause (blocage/limitation 30 min, délai/réseau 15 min, autres 5 min) ; le verrou d'exécution est global, et la coupure est posée avant sa libération puis revérifiée dans le verrou. Un refus d'entrée `400 INVALID_INPUT` du backend de messagerie ouvre un repli unique, refusé si le corps porte déjà une transaction. La session validée sur le corps n'est jamais exposée. Le fil vendeur ouvert est un effet réel ; risques contractuels assumés, aucun contournement.
+- Amendement du 16 octobre 2026 : l'ancien seuil d'échecs doux et le verrou conservé après un échec incertain ne s'appliquent plus. La concurrence reste limitée, avec une fenêtre résiduelle assumée. Détails et limites dans [la procédure checkout](../vinted-checkout.md).
 - Observation historique du 14 octobre, source de consolidation `6292e2e` : refus anonyme et défi DataDome classés, suspension observée ; ce ne sont pas une réussite authentifiée ni une observation actuelle. Détails dans [la procédure checkout](../vinted-checkout.md).
 
 <a id="adr-048"></a>

@@ -142,11 +142,10 @@ Rien n'est purgé automatiquement : la clé Redis expire d'elle-même en 18 h.
 - **session anonyme** (sans écriture possible) : les routes du parcours sont
   atteintes — transaction refusée (`auth_required`), panier refusé par un **défi
   DataDome** `blocked` ;
-- **session authentifiée** (expérience du 14/10/2026, deux clics réels, sans
-  point relais ni paiement) : le vendeur n'a pu être résolu sur deux annonces
-  anciennes (page rendue sans `seller_id`), et la création du panier a été
-  refusée par **DataDome** (`403`, en-tête `x-dd-b`, corps captcha) mesuré avec
-  la session ;
+- **session authentifiée** (expérience du 14/10/2026, clics réels, sans point
+  relais ni paiement) : le vendeur n'a pu être résolu sur des annonces anciennes
+  (page rendue sans `seller_id`), et la création du panier a été refusée par
+  **DataDome** (`403`, en-tête `x-dd-b`, corps captcha) mesuré avec la session ;
 - le coupe-circuit suspend effectivement les préparations après un blocage
   (durée observée : 1800 s).
 
@@ -194,7 +193,7 @@ extension) : ce serait aggraver le risque, pas le réduire.
 
 ---
 
-## 9. État des hypothèses et accusations (audit du 14/10/2026, sans nouvelle requête)
+## 9. État des hypothèses et constats (audit du 14/10/2026, sans nouvelle requête)
 
 ### Hypothèses restantes, non vérifiées
 
@@ -202,8 +201,8 @@ extension) : ce serait aggraver le risque, pas le réduire.
    d'un repli fiable : page Mac (anonyme, article A) contenant `seller_id` ;
    page VPS (session, article B) rendant `200` **sans** `seller_id`. Les deux
    mesures varient par l'appareil, la session **et** l'article : la cause exacte
-   est **non établie**. Le repli ne garantit donc rien — d'où la correction : le
-   « vendeur introuvable » n'est **pas résolu**, il est **diagnostiqué**.
+   est **non établie**. Le repli ne garantit donc rien — le « vendeur introuvable »
+   n'est **pas résolu**, il est **diagnostiqué**.
 2. **`400 INVALID_INPUT` = rien créé.** C'est une **hypothèse fondée sur la
    convention HTTP** (un 400 rejette avant création), pas une propriété vérifiée
    de Vinted. Deux bornes sont posées : aucun repli si le corps porte une
@@ -214,7 +213,7 @@ extension) : ce serait aggraver le risque, pas le réduire.
    expire alors qu'une opération est en vol, un clic peut entrer. Le TTL couvre
    `2 × timeout` (verrouillé par un test) ; la fenêtre résiduelle est documentée.
 
-### Accusations couvertes par les tests isolés
+### Comportements couverts par les tests isolés
 
 - tout échec coupe la création (durée par cause, pas de tentative suivante) ;
 - **concurrence limitée** : deux annonces concurrentes ne produisent, dans une
@@ -227,7 +226,6 @@ extension) : ce serait aggraver le risque, pas le réduire.
 ### Statut de clôture
 
 **Le parcours serveur est un échec dans les conditions testées** (DataDome observé
-session authentifiée). Ce constat n'est **pas** une validation de la
-fonctionnalité. `VINTED_CHECKOUT_PREPARATION_ENABLED` reste `false` ; aucune
-nouvelle requête de checkout, capture de session ou tentative de renouvellement
-n'a lieu ; aucun push, merge, déploiement ou redémarrage n'a été fait.
+avec session authentifiée). Ce constat n'est **pas** une validation de la
+fonctionnalité : `VINTED_CHECKOUT_PREPARATION_ENABLED` reste `false`, le checkout
+serveur reste non opérationnel, et aucun contournement n'est ajouté.

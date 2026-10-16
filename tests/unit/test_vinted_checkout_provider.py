@@ -95,12 +95,7 @@ async def test_create_buyer_inquiry_falls_back_on_route_not_found() -> None:
 
 
 async def test_create_buyer_inquiry_falls_back_on_invalid_input() -> None:
-    """400 `INVALID_INPUT` = entrée refusée, rien créé : le repli reste légitime.
-
-    C'est la réponse observée du backend de messagerie pour une annonce jetable :
-    sans ce repli, l'utilisateur lit « réponse inattendue » alors que le chemin
-    historique du site est disponible et n'a rien à dupliquer.
-    """
+    """400 `INVALID_INPUT` : le repli sur le chemin historique s'applique."""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -141,11 +136,7 @@ async def test_failed_fallback_does_not_loop() -> None:
 
 
 async def test_invalid_input_with_a_transaction_is_not_a_valid_fallback() -> None:
-    """Hypothèse bornée : si le corps porte une transaction, on ne bascule pas.
-
-    Sans cette garde, le « 400 = rien créé » serait une promesse ; elle le
-    devient pas.
-    """
+    """Si le corps porte déjà une transaction, aucun repli n'est déclenché."""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

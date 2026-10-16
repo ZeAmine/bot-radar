@@ -65,11 +65,9 @@ CHECKOUT_SESSION_TTL_SECONDS = 18 * 3600
 # session injectée n'est qu'un visiteur anonyme.
 AUTH_COOKIE_NAMES = ("access_token_web", "_vinted_fr_session")
 
-# Coupe-circuit : clé Redis et **durée de coupure par cause**. Tout échec coupe :
-# un clic qui n'a pas abouti ne doit pas en déclencher un autre, et insister abîme
-# la réputation de l'IP et du compte. Les durées suivent la nature de l'échec — un
-# blocage ou une limitation se relâchent lentement ; un article vendu ne bloque pas
-# les autres articles, mais la coupure reste par prudence (aucun clic répété).
+# Coupe-circuit : clé Redis et durée de coupure par cause. Tout échec coupe ;
+# aucune relance automatique n'a lieu, seule une expiration suivie d'un clic
+# explicite.
 PAUSE_KEY = "radar:vinted_checkout:pause"
 MIN_FAILURE_PAUSE_SECONDS = 60
 FAILURE_PAUSE_SECONDS: dict[VintedCheckoutStatus, int] = {
@@ -187,18 +185,17 @@ def session_is_authenticated(cookies: Mapping[str, str]) -> bool:
 class CheckoutBackoff:
     """Coupe la création de checkout après un échec, pour une durée bornée.
 
-    Le but est de **couper, pas d'attendre** : un clic qui échoue ne doit pas en
-    déclencher un autre, et insister (défi anti-robot, session refusée, article
-    vendu, réponse inattendue) abîme la réputation de l'IP et du compte. La
-    coupure est posée dès le premier échec, avec la durée de la cause
-    (`FAILURE_PAUSE_SECONDS`) ; un statut inconnu coupe la durée minimale, jamais
-    rien.
+    Le but est de **ne pas insister** : un défi anti-robot, une limitation ou une
+    panne ne se contournent pas en recliquant, et réessayer abîme la réputation de
+    l'IP et du compte. La coupure est posée dès le premier échec, pour la durée de
+    la cause (`FAILURE_PAUSE_SECONDS`) ; un statut inconnu coupe la durée minimale.
+    Elle est portée par Redis, donc partagée si plusieurs clics arrivent en
+    parallèle.
 
-    La coupure est portée par Redis, donc partagée entre les clics concurrents.
-    Elle est **temporaire et sans boucle** : rien ne se relance tout seul ; après
-    expiration, c'est un clic **explicite** qui retente. Redis muet ne bloque
-    jamais l'utilisateur : la protection est un garde-fou, pas une dépendance
-    dure.
+    Elle est **temporaire et sans boucle** : rien ne se relance tout seul. Après
+    expiration, c'est un clic **explicite** de l'utilisateur qui retente. Redis
+    muet ne bloque jamais l'utilisateur : la protection est un garde-fou, pas une
+    dépendance dure.
 
     Le client Redis est résolu **à chaque appel** (`redis_getter` facultatif),
     jamais capturé à la construction : un client figé à l'import rendrait la
@@ -314,7 +311,7 @@ def _body_code(response: httpx.Response) -> str | None:
 
 
 def _refusal_detail(response: httpx.Response) -> str:
-    """Détail **sûr** d'un refus : statut et codes, jamais le corps ni l'URL."""
+    """Statut et codes d'un refus, sans corps ni URL."""
     parts = [f"HTTP {response.status_code}"]
     code = _body_code(response)
     message_code = _message_code(response)
@@ -337,34 +334,14 @@ def _carries_transaction(response: httpx.Response) -> bool:
 
 
 def _is_invalid_input(response: httpx.Response) -> bool:
-    """Refus d'entrée ouvert : repli légitime sur l'autre chemin de messagerie.
-
-    **Hypothèse, pas une garantie.** Un `400` est, par convention HTTP, un rejet
-    d'entrée **avant** création de ressource ; mais Vinted ne documente pas la
-    sémantique interne de cet endpoint, et ce n'est pas vérifié. Deux bornes sont
-    prises plutôt que de promettre :
-
-    - si le corps porte une transaction, **aucun repli** : on considère qu'une
-      opération existe déjà ;
-    - le repli est **unique** (aucune boucle), et un second refus termine le
-      parcours au lieu de réessayer.
-
-    Le cas mesuré en production est : le backend de messagerie répond
-    `400 INVALID_INPUT` à l'item (annonce réelle, ancienne ligne), et le chemin
-    historique du site existe pour les autres comptes.
-    """
+    """Un `400 code=INVALID_INPUT` sans transaction déjà présente dans le corps."""
     if response.status_code != 400 or _body_code(response) != "INVALID_INPUT":
         return False
     return not _carries_transaction(response)
 
 
 def _raise_for_response(response: httpx.Response, *, context: str) -> None:
-    """Traduit un refus Vinted en échec typé — sans inventer de code.
-
-    Le refus est journalisé avec son **contexte** et ses codes : sans cela, un
-    « réponse inattendue » ne dit ni où ni pourquoi, et le diagnostic se paie
-    d'une nouvelle tentative réelle.
-    """
+    """Traduit un refus Vinted en échec typé — sans inventer de code."""
     status = response.status_code
     if 200 <= status < 300:
         return
@@ -522,9 +499,7 @@ class VintedCheckoutProvider:
         )
         if response.status_code == 404 or _is_invalid_input(response):
             # Le backend de messagerie du compte n'est pas celui-ci : le site
-            # lui-même se rabat sur `/api/v2/conversations`. Un refus définitif
-            # d'entrée, sans transaction déjà portée par le corps, ouvre ce
-            # repli **unique** (voir `_is_invalid_input` — hypothèse bornée).
+            # lui-même se rabat sur `/api/v2/conversations`.
             logger.info(
                 "Ouverture de transaction refusée par le backend de messagerie "
                 "(%s) : repli unique sur le chemin historique.",
@@ -594,22 +569,12 @@ class VintedCheckoutProvider:
         """Lit l'identifiant vendeur sur la page publique de l'annonce.
 
         Repli pour les annonces ingérées avant que la charge d'ingestion ne
-        transporte l'identifiant. **Ce repli est peu fiable et on ne sait pas
-        pourquoi :**
+        transporte l'identifiant. La page peut ne pas le porter : elle rend alors
+        `None`, et l'appelant décide — ce module n'invente rien.
 
-        - sur un article mesuré depuis le VPS, avec session, la page rend `200`
-          (redirection 307 suivie) mais **ne contient aucun `seller_id`** ;
-        - sur un autre article, mesuré depuis le Mac en anonyme, la même page en
-          contenait 11.
-
-        Les deux mesures ne varient pas d'une seule cause (appareil, session et
-        article diffèrent) : la présence de `seller_id` n'est donc **pas
-        établie**. Une page lue sans identifiant rend `None`, et l'appelant
-        décide — ce module n'invente rien.
-
-        Chemin fiable : l'identifiant vendeur porté par la charge d'ingestion
-        (`parse_vinted_catalog_json` lit `user.id`). Le repli reste pour les
-        annonces plus anciennes, sans garantie.
+        La page est demandée **avec la session de compte** quand elle est
+        fournie : son `seller_id` est celui du vendeur de l'article, pas d'une
+        recommandation.
         """
         url = f"{SITE_URL}/items/{item_id}"
         headers = (

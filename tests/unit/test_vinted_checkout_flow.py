@@ -7,6 +7,7 @@ n'existe qu'au moment où l'utilisateur le demande.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from datetime import UTC, datetime
@@ -53,8 +54,7 @@ class FakeRedis:
     Le double modélise l'**expiration** et le `NX` : la coupure et le verrou se
     comportent comme en production, sinon un test de coupe-circuit ne prouverait
     rien (une coupure posée mais jamais active, ou un verrou écrasé par le second
-    clic, donnerait un faux vert). Il note aussi l'**ordre** des écritures : c'est
-    ce qui permet de vérifier que la coupure précède la libération du verrou.
+    clic, donnerait un faux vert).
     """
 
     def __init__(self) -> None:
@@ -126,9 +126,7 @@ def link_key(listing_id: uuid.UUID, telegram_user_id: int = TELEGRAM_USER_ID) ->
     return f"radar:vinted_checkout:link:{telegram_user_id}:{listing_id}"
 
 
-def lock_key(listing_id: uuid.UUID | None = None) -> str:
-    """Clé du verrou d'exécution, désormais **globale** (une seule création à la fois)."""
-    del listing_id  # conservé pour la lisibilité des appels
+def lock_key() -> str:
     return "radar:vinted_checkout:lock"
 
 
@@ -338,7 +336,7 @@ async def test_double_click_on_a_locked_listing_is_busy(
 
     async with sqlite_only_database() as db:
         listing = await seed_listing(db)
-        fake.store[lock_key(listing.id)] = "1"
+        fake.store[lock_key()] = "1"
         provider = mock_provider()
         result = await run_use_case(db, listing.id, provider)
 
@@ -367,7 +365,7 @@ async def test_session_refusal_cuts_further_creation(
         assert refused.retry_after_seconds is not None
         assert refused.retry_after_seconds > 0
         # Le verrou d'exécution est libéré, mais la coupure interdit un nouvel essai.
-        assert lock_key(listing.id) not in fake.store
+        assert lock_key() not in fake.store
 
         provider.create_buyer_inquiry.side_effect = None
         provider.create_buyer_inquiry.return_value = "4242"
@@ -689,8 +687,6 @@ async def test_two_different_listings_never_create_two_checkouts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Le verrou est global : cliquer sur deux annonces ne crée qu'une transaction."""
-    import asyncio
-
     monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
     fake = FakeRedis()
     configured_session(fake)
@@ -726,11 +722,7 @@ async def test_two_different_listings_never_create_two_checkouts(
 async def test_pause_is_set_before_the_lock_is_released(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Ordre garanti : il n'existe aucun instant « verrou libre et coupure absente ».
-
-    C'est la fenêtre où un clic concurrent relancerait une opération au résultat
-    déjà incertain — celle qu'il faut fermer.
-    """
+    """Ordre garanti : la coupure est posée avant la libération du verrou."""
     monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
     fake = FakeRedis()
     configured_session(fake)
@@ -752,24 +744,18 @@ async def test_pause_is_set_before_the_lock_is_released(
 async def test_cut_is_checked_again_inside_the_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Une coupure posée **après** le contrôle amont est revue avant d'agir.
-
-    Sans ce second contrôle, « une exécution à la fois » se lirait à tort comme
-    « jamais de doublon » : le clic qui gagne le verrou juste après un échec
-    relancerait une opération dont le résultat est incertain.
-    """
+    """Une coupure posée après le contrôle amont est revue dans le verrou."""
     monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
     fake = FakeRedis()
     configured_session(fake)
     patch_redis(monkeypatch, fake)
 
-    # Le contrôle amont ne voit rien ; la coupure apparaît avant l'intérieur.
     answers = [0, 600]
 
     from app.providers.vinted_checkout import CheckoutBackoff
 
     class LateBackoff:
-        """Ne rend la coupure qu'au second appel : celui de l'intérieur du verrou."""
+        """Ne rend la coupure qu'au second appel, celui de l'intérieur du verrou."""
 
         def __init__(self, inner: CheckoutBackoff) -> None:
             self.inner = inner
@@ -795,24 +781,17 @@ async def test_cut_is_checked_again_inside_the_lock(
 
 
 def test_lock_ttl_covers_the_worst_case_operation_window() -> None:
-    """Le verrou doit vivre plus longtemps que les deux appels qu'il couvre.
-
-    Sinon il expire en pleine opération et un clic suivant entre : le test échoue
-    si la durée d'attente configurée grimpe sans le verrou.
-    """
+    """Le verrou vit plus longtemps que les deux appels qu'il encadre."""
     assert LOCK_TTL_SECONDS > 2 * settings.VINTED_CHECKOUT_TIMEOUT_SECONDS
 
 
 async def test_lock_expiry_is_a_residual_window_not_a_guarantee() -> None:
-    """Documente la limite : verrou expiré **pendant** une opération en vol.
+    """Verrou expiré pendant une opération en vol : un clic peut entrer.
 
-    Le second appel peut entrer. Ce n'est pas une garantie de non-doublon : seule
-    la coupure posée à l'issue d'un échec le bloque. Le test verrouille ce fait
-    pour qu'aucun correctif ultérieur ne le confonde avec un verrou absolu.
+    Une fois la coupure posée, il est de nouveau bloqué ; ce test fixe la limite.
     """
     fake = FakeRedis()
     fake.store["radar:vinted_checkout:lock"] = "1"
-    # Verrou expiré depuis longtemps, aucune coupure : rien n'arrête.
     fake.expiry["radar:vinted_checkout:lock"] = time.monotonic() - 1
     assert (await fake.get("radar:vinted_checkout:lock")) is None
     assert await fake.set("radar:vinted_checkout:lock", "1", ex=45, nx=True) is True

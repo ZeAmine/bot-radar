@@ -43,18 +43,10 @@ from app.providers.vinted_checkout import (
 
 logger = logging.getLogger(__name__)
 
-# Durée du verrou d'exécution. Elle couvre le pire cas des deux appels sous
-# verrou (transaction + panier), soit `2 × VINTED_CHECKOUT_TIMEOUT_SECONDS` ; un
-# test verrouille cette relation. Ce n'est pas un garde-fou suffisant à lui seul :
-# si le verrou expire pendant qu'une opération est en vol, un autre clic peut
-# entrer (voir `_acquire_lock` — le contrôle du coupe-circuit dans le verrou est
-# la seconde barrière).
+# Durée du verrou anti-double-clic. Plus court que le cache de lien : au-delà,
+# un nouveau clic est une nouvelle tentative demandée par l'utilisateur.
 LOCK_TTL_SECONDS = 45
 
-# Le lien préparé est **par annonce** (on le réutilise tel quel) ; le verrou
-# d'exécution est **global** : une seule création de checkout à la fois, quel que
-# soit le nombre d'annonces cliquées. Deux clics sur deux annonces ne peuvent donc
-# pas produire deux transactions **tant que le verrou vit**.
 _LINK_KEY = "radar:vinted_checkout:link:{user_id}:{listing_id}"
 _LOCK_KEY = "radar:vinted_checkout:lock"
 
@@ -67,7 +59,6 @@ class CheckoutPreparation:
     checkout_url: str | None = None
     listing_url: str | None = None
     listing_title: str | None = None
-    # Renseigné quand la création est coupée : le handler peut annoncer le délai.
     retry_after_seconds: int | None = None
 
 
@@ -76,7 +67,6 @@ def _link_key(telegram_user_id: int, listing_id: uuid.UUID) -> str:
 
 
 def _lock_key() -> str:
-    """Clé du verrou **global** : une seule création de checkout à la fois."""
     return _LOCK_KEY
 
 
@@ -215,8 +205,6 @@ class PrepareVintedCheckoutUseCase:
                 seconds = await self.backoff.request_failure(exc.status)
                 return outcome(exc.status, retry_after=seconds)
         if not seller_id:
-            # Échec sans appel de création : la coupure s'applique quand même,
-            # pour ne pas relancer une résolution qui vient d'échouer.
             seconds = await self.backoff.request_failure(VintedCheckoutStatus.SELLER_UNKNOWN)
             return outcome(VintedCheckoutStatus.SELLER_UNKNOWN, retry_after=seconds)
 
@@ -224,10 +212,6 @@ class PrepareVintedCheckoutUseCase:
         if not await _acquire_lock(lock_key):
             return outcome(VintedCheckoutStatus.BUSY)
 
-        # Seconde barrière : le clic a gagné le verrou **après** l'échec d'un
-        # précédent (ou pendant que sa coupure venait d'être posée). Le contrôle
-        # est refait à l'intérieur du verrou, là où il est sûr — sinon « une
-        # exécution à la fois » se lirait à tort comme « jamais de doublon ».
         seconds_in_lock = await self.backoff.remaining_seconds()
         if seconds_in_lock > 0:
             await _release_lock(lock_key)
@@ -247,9 +231,6 @@ class PrepareVintedCheckoutUseCase:
                 transaction_id=transaction_id, purchase_id=purchase_id
             )
         except VintedCheckoutError as exc:
-            # Coupe **avant** libération : il n'existe aucun instant où le verrou
-            # est libre et la coupure absente (un clic concurrent sur ce point
-            # relancerait une opération dont le résultat est déjà incertain).
             seconds = await self.backoff.request_failure(exc.status)
             await _release_lock(lock_key)
             logger.info(
