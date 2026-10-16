@@ -39,6 +39,31 @@ class DependencyError(Exception):
 
 
 @dataclass(frozen=True)
+class InvarianceVerdict:
+    """Le résultat d'un contrôle d'invariance, en trois issues distinctes.
+
+    `verifiee` et `ecarts` ne se confondent pas en un booléen : « je n'ai pas pu
+    regarder » et « j'ai regardé, tout va bien » ne sont pas la même information,
+    et les traiter pareil reviendrait à garantir sans preuve. `detail` porte la
+    raison de la non-vérification, pour que l'opérateur sache quoi corriger.
+    """
+
+    verifiee: bool
+    ecarts: tuple[str, ...] = ()
+    detail: str = ""
+
+    @classmethod
+    def concluante(cls, ecarts: list[str]) -> InvarianceVerdict:
+        """L'inspection a abouti : les écarts constatés font foi."""
+        return cls(verifiee=True, ecarts=tuple(ecarts))
+
+    @classmethod
+    def non_verifiee(cls, detail: str) -> InvarianceVerdict:
+        """L'inspection n'a pas abouti : ni intact, ni modifié n'est établi."""
+        return cls(verifiee=False, detail=detail)
+
+
+@dataclass(frozen=True)
 class ServiceIdentity:
     """L'identité d'un conteneur, telle qu'elle permet de détecter un changement.
 

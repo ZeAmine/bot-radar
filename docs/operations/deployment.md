@@ -67,6 +67,10 @@ conteneur en service — contre `413c8c26…` pour la précédente. La chronolog
 n'aurait rien établi : le `.env` modifié une minute plus tôt ne change pas
 l'environnement résolu, et l'attribuer à la syntaxe `${VAR:?}` serait faux.
 
+*(Provenance : ces éléments proviennent de l'investigation en lecture seule
+autorisée avant l'implémentation. Aucun accès serveur supplémentaire n'a été
+effectué pour écrire cette page.)*
+
 La parade est `--no-deps` sur le démarrage applicatif, et l'invariance est
 contrôlée : `Id`, `StartedAt` et l'état d'exécution des deux services sont relevés
 avant l'arrêt de l'app, puis relus après son démarrage. Un écart — recréation,
@@ -74,6 +78,20 @@ redémarrage ou disparition — fait **échouer** le déploiement et est nommé
 explicitement. Aucune réparation automatique n'est tentée. Les dépendances sont
 aussi vérifiées opérationnelles **avant** l'arrêt : interrompre l'app alors qu'un
 service manque ne ferait que rendre le service indisponible pour rien.
+
+Si l'inspection d'après démarrage est **impossible** — commande en échec, relevé
+illisible, identité d'avant inconnue — le déploiement échoue aussi, avec un code
+non nul, même quand l'application est saine. Le message dit que l'invariance n'a
+pas pu être vérifiée et que ni « modifiées » ni « intactes » n'est établi : ne pas
+avoir pu regarder ne prouve pas que rien n'a bougé. Aucune réparation, aucun
+redémarrage et aucun retour arrière n'est déclenché sur cette seule base.
+
+Dans ce parcours borné à `app`, un changement de PostgreSQL ou de Redis est **un
+écart à signaler**, jamais un comportement autorisé. Modifier volontairement une
+dépendance — image, variable, `healthcheck` — relève d'une intervention séparée,
+explicite et revue : ce n'est pas un effet de bord acceptable d'un déploiement
+applicatif. Le contrôle d'invariance existe précisément pour rendre cet écart
+visible au lieu de le laisser passer.
 
 Une simulation ne prouve pas cette invariance. Le `--dry-run` du 16 octobre
 affichait les trois conteneurs `Running` sans rien dire de l'écart de
@@ -95,45 +113,61 @@ Pour un lot sans migration — c'est le cas des lots #120 et #121, le schéma re
 `downgrade` SQL et ne touche ni PostgreSQL ni Redis.
 
 **La référence de retour est l'image réellement en production juste avant le
-déploiement**, et non le tag de retour le plus ancien disponible. Avant le prochain
-déploiement, cette référence est le code de `dc88692`. Le tag conservé
-`bot-radar-app:rollback-20261016-010213` (`60ab3aac…`) reste utile comme filet
-historique, mais il correspond à une version **antérieure** à `dc88692` : le
-présenter comme le retour immédiat du prochain déploiement serait faux.
+déploiement.** Elle est capturée automatiquement, dans cet ordre :
 
-Vérifier la référence d'image attendue par Compose, sans supposer qu'un retagage
-suffit. `compose.yml` ne porte **aucune** clé `image:` pour `app` : le service est
-construit, donc Compose résout `bot-radar-app:latest` à partir du nom de projet
-(`bot-radar`) et du service (`app`). La résolution ne se lit pas dans
-`compose config` — `image` y vaut `null` — et le conteneur, lui, enregistre
-`bot-radar-app` sans suffixe. La vérification qui tranche est donc l'identité de
-l'image, pas la chaîne du tag :
+1. **Avant le build**, l'identifiant exact de l'image du conteneur `radar_app`
+   est lu (`docker inspect --format '{{.Image}}'`), un tag de sauvegarde unique
+   `bot-radar-app:rollback-<horodatage>` est créé sur cet identifiant, et le tag
+   est **vérifié** en comparant son `.Id` à l'identifiant capturé. Une
+   incohérence arrête le déploiement avant l'arrêt de l'app.
+2. **Après le build**, la présence de ce tag est revérifiée : c'est le moment où
+   `latest` a été réécrit, donc celui où l'image d'avant doit encore être
+   atteignable. Un tag disparu se découvrirait sinon au moment du retour
+   arrière, c'est-à-dire trop tard.
+
+La copie est nécessaire parce que `docker compose build app` réécrit
+`bot-radar-app:latest` **en place**. Le tag conservé reste utile comme filet
+historique, mais un tag ancien n'est **pas** le retour du prochain déploiement :
+le seul retour immédiat correct est celui créé lors de ce déploiement-là, et son
+nom est affiché par le script. `dc88692` est l'état connu de la production
+actuelle, pas une valeur à coder en dur.
+
+**Pour restaurer**, utiliser la référence applicative réellement attendue par la
+commande Compose, sans se fier au nom d'un tag supposé correct. `compose.yml` ne
+porte **aucune** clé `image:` pour `app` : le service est construit, donc Compose
+résout `bot-radar-app:latest` à partir du nom de projet (`bot-radar`) et du
+service (`app`). Cette résolution ne se lit pas dans `compose config` — `image` y
+vaut `null` — et le conteneur, lui, enregistre `bot-radar-app` sans suffixe. La
+vérification qui tranche est donc l'identité de l'image, pas la chaîne du tag :
 
 ```sh
-# Référence construite par Compose, et image réellement portée par le conteneur.
+# Nom de projet utilisé par Compose pour construire la référence.
 docker compose config --format json | python3 -c \
   'import json,sys; print(json.load(sys.stdin)["name"])'   # -> bot-radar
 
-# L'image du conteneur doit être celle de <projet>-app:latest après retagage.
-docker inspect radar_app --format '{{.Image}}'
-docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep bot-radar-app
+# Tag conservé par le dernier déploiement (affiché par le script).
+docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep 'rollback-'
 ```
 
-Aligner l'image de retour, puis démarrer seulement `app` :
+Aligner l'image de retour, puis démarrer **seulement** `app` :
 
 ```sh
 docker tag bot-radar-app:rollback-<horodatage> bot-radar-app:latest
 docker compose up -d --no-build --pull never --no-deps app
-docker inspect radar_app --format '{{.State.Health.Status}}'
 ```
 
-Le retagage ne vaut que si l'identité affichée par `docker inspect radar_app`
-correspond à celle du tag visé : c'est ce contrôle qui ferme la question, et non
-la supposition qu'un `docker tag` a bien été lu.
+Contrôler ensuite l'identité de l'image du conteneur redémarré **et** sa santé —
+un retagage ne vaut que si le conteneur tourne effectivement sur l'image visée :
+
+```sh
+docker inspect radar_app --format '{{.Image}}'
+docker inspect radar_app --format '{{.State.Health.Status}}'
+docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep 'rollback-'
+```
 
 Le `--no-deps` est ici aussi indispensable : sans lui, un retour arrière pourrait
 recréer une dépendance, exactement comme le déploiement du 16 octobre. Contrôler
-ensuite que `radar_postgres` et `radar_redis` ont gardé leur `Id` et leur
+enfin que `radar_postgres` et `radar_redis` ont gardé leur `Id` et leur
 `StartedAt` — un retour arrière qui a touché la base n'est pas un retour arrière
 applicatif.
 

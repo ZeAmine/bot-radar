@@ -27,6 +27,7 @@ from deploy import (  # noqa: E402
     step_start,
     step_stop,
 )
+from deploy_dependencies import ServiceIdentity  # noqa: E402
 from notify_deploy import send_telegram_notification  # noqa: E402
 
 
@@ -120,11 +121,37 @@ def test_rsync_never_sends_the_local_env():
 
 
 def test_migration_waits_for_a_healthy_container():
-    """Le démarrage après migration attend toujours la santé de l'image cible."""
-    remote = _FakeRemote()
-    assert step_start(_ctx(remote=remote)) == 0
+    """Le démarrage après migration attend toujours la santé de l'image cible.
 
-    script = remote.scripts[0]
+    Le contexte porte ici un relevé d'avant et un faux qui le confirme : sans
+    invariance vérifiable, l'étape refuse désormais de conclure au succès.
+    """
+
+    class _RemoteSain:
+        def __init__(self) -> None:
+            self.scripts: list[str] = []
+
+        def run(self, script: str) -> tuple[int, str, str]:
+            self.scripts.append(script)
+            if ".State.StartedAt" in script:
+                return 0, "postgres\tcid|2026-01-01T00:00:00Z|true\n", ""
+            return 0, "ok", ""
+
+    remote = _RemoteSain()
+    ctx = _ctx(
+        remote=remote,
+        dependencies_before={
+            "postgres": ServiceIdentity(
+                service="postgres",
+                container_id="cid",
+                started_at="2026-01-01T00:00:00Z",
+                running=True,
+            )
+        },
+    )
+    assert step_start(ctx) == 0
+
+    script = next(s for s in remote.scripts if "docker compose up" in s)
     assert f"-lt {HEALTH_ATTEMPTS}" in script
     assert "healthy" in script
     assert script.index("docker compose up") < script.index("healthy")
@@ -322,12 +349,20 @@ if args[0] == 'inspect':
         return next(i for i, c in enumerate(commands) if c.startswith(prefix))
 
     # L'arrêt de l'app précède toujours le relevé qui suit et la synchronisation.
-    assert _index("compose ps -a -q app") < _index("compose stop app")
-    if failure in {"stop", "running", "inspect"}:
-        assert code == {"stop": 34, "running": 1, "inspect": 36}[failure]
+    if failure == "inspect":
+        # L'inspection de l'image de retour échoue avant l'arrêt : l'app reste
+        # en service, ce qui est préférable à un déploiement sans filet.
+        assert code == 36
+        assert "compose stop app" not in commands
+        assert "rsync runtime" not in commands
+        assert runtime.read_text() == "old"
+    elif failure in {"stop", "running"}:
+        assert _index("compose ps -a -q app") < _index("compose stop app")
+        assert code == {"stop": 34, "running": 1}[failure]
         assert "rsync runtime" not in commands
         assert runtime.read_text() == "old"
     else:
+        assert _index("compose ps -a -q app") < _index("compose stop app")
         assert _index("compose stop app") < _index("rsync runtime")
         if failure == "sync":
             assert code == 35

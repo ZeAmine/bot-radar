@@ -17,7 +17,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
-from deploy import APP_ONLY_UP, Context, step_start, step_stop  # noqa: E402
+from deploy import (  # noqa: E402
+    APP_ONLY_UP,
+    ROLLBACK_TAG_PREFIX,
+    Context,
+    step_rebuild,
+    step_start,
+    step_stop,
+)
 from deploy_dependencies import (  # noqa: E402
     DEPENDENT_SERVICES,
     DependencyError,
@@ -71,9 +78,15 @@ class _RemoteIdentites:
     pas distinguer « rien n'a changé » de « je n'ai rien regardé ».
     """
 
-    def __init__(self, releves: list[str], codes: list[int] | None = None) -> None:
+    def __init__(
+        self,
+        releves: list[str],
+        codes: list[int] | None = None,
+        demarrage_code: int = 0,
+    ) -> None:
         self.releves = list(releves)
         self.codes = list(codes) if codes else [0] * len(releves)
+        self.demarrage_code = demarrage_code
         self.scripts: list[str] = []
 
     def run(self, script: str) -> tuple[int, str, str]:
@@ -83,7 +96,8 @@ class _RemoteIdentites:
             if index < len(self.releves):
                 return self.codes[index], self.releves[index], ""
             return 0, self.releves[-1], ""
-        return 0, "ok", ""
+        # Le script de démarrage : son code porte la santé de l'app.
+        return self.demarrage_code, "ok", ""
 
 
 def _ctx(**overrides) -> Context:
@@ -165,6 +179,98 @@ def test_step_start_succeeds_when_dependencies_are_unchanged():
     ctx = _ctx(remote=remote, dependencies_before=_releve(INCHANGE_POSTGRES, INCHANGE_REDIS))
 
     assert step_start(ctx) == 0
+
+
+# ------------------------------------------------- invariance non vérifiable
+
+
+def test_an_unverifiable_inspection_fails_even_with_a_healthy_app(capsys):
+    """App saine, mais inspection impossible : le déploiement n'est pas validé.
+
+    C'est le cas qui doit échouer « fermé ». Ne pas avoir pu relire l'état des
+    dépendances ne prouve pas qu'elles sont intactes : conclure au succès
+    reviendrait à garantir sans preuve.
+    """
+    remote = _RemoteIdentites([""], codes=[1], demarrage_code=0)
+    ctx = _ctx(remote=remote, dependencies_before=_releve(INCHANGE_POSTGRES, INCHANGE_REDIS))
+
+    assert step_start(ctx) == 1
+
+    sortie = capsys.readouterr().out
+    assert "NON VÉRIFIÉE" in sortie
+    # Ni modifiées ni intactes : l'incertitude est dite, pas comblée.
+    assert "Ni modifiées ni intactes" in sortie
+    assert "dépendances inchangées" not in sortie
+
+
+def test_an_unreadable_inspection_fails_even_with_a_healthy_app(capsys):
+    """Un relevé illisible est traité comme une inspection ratée, pas un succès."""
+    remote = _RemoteIdentites(["postgres\tcid-sans-les-trois-champs"])
+    ctx = _ctx(remote=remote, dependencies_before=_releve(INCHANGE_POSTGRES, INCHANGE_REDIS))
+
+    assert step_start(ctx) == 1
+    assert "NON VÉRIFIÉE" in capsys.readouterr().out
+
+
+def test_an_unknown_before_state_cannot_be_declared_intact(capsys):
+    """Sans relevé d'avant, il n'y a rien à comparer : le succès est refusé.
+
+    Ce cas ne doit pas se produire dans le parcours nominal — `step_stop`
+    capture toujours avant — mais s'il survient, il ne doit pas se lire comme
+    une invariance prouvée.
+    """
+    remote = _RemoteIdentites([_releve_texte(INCHANGE_POSTGRES, INCHANGE_REDIS)])
+    ctx = _ctx(remote=remote, dependencies_before=None)
+
+    assert step_start(ctx) == 1
+    assert "NON VÉRIFIÉE" in capsys.readouterr().out
+
+
+def test_an_unverifiable_inspection_never_triggers_a_repair():
+    """Aucune réparation n'est tentée sur la seule base d'une inspection ratée.
+
+    Les seules commandes envoyées sont le démarrage et le relevé : ni
+    redémarrage, ni `up` de dépendance, ni retour arrière.
+    """
+    remote = _RemoteIdentites([""], codes=[1])
+    ctx = _ctx(remote=remote, dependencies_before=_releve(INCHANGE_POSTGRES, INCHANGE_REDIS))
+
+    assert step_start(ctx) == 1
+
+    for script in remote.scripts:
+        assert "restart" not in script
+        assert "compose stop" not in script
+        # Aucun service dépendant n'est nommé comme cible d'un `up`.
+        assert "up -d" not in script or "--no-deps app" in script
+
+
+def test_the_invariance_check_runs_even_when_the_app_is_unhealthy():
+    """Santé en échec : le contrôle d'invariance a quand même lieu.
+
+    Un déploiement qui a touché PostgreSQL doit le dire, même si l'app n'est
+    pas saine — c'est même le moment où l'information compte le plus.
+    """
+    remote = _RemoteIdentites([_releve_texte(INCHANGE_POSTGRES, INCHANGE_REDIS)], demarrage_code=1)
+    ctx = _ctx(remote=remote, dependencies_before=_releve(INCHANGE_POSTGRES, INCHANGE_REDIS))
+
+    assert step_start(ctx) == 1
+
+    # Le relevé d'après démarrage a bien été demandé.
+    assert len([s for s in remote.scripts if ".State.StartedAt" in s]) == 1
+
+
+def test_a_drift_is_reported_even_when_the_app_is_unhealthy(capsys):
+    """App non saine **et** dépendance recréée : l'écart est nommé.
+
+    Les deux problèmes sont distincts, et l'écart ne doit pas être absorbé par
+    l'échec de santé.
+    """
+    recree = _identite("postgres", "d" * 64, POSTGRES_STARTED)
+    remote = _RemoteIdentites([_releve_texte(recree, INCHANGE_REDIS)], demarrage_code=1)
+    ctx = _ctx(remote=remote, dependencies_before=_releve(INCHANGE_POSTGRES, INCHANGE_REDIS))
+
+    assert step_start(ctx) == 1
+    assert "RECRÉÉ" in capsys.readouterr().out
 
 
 # ------------------------------------------------------------------- les écarts
@@ -373,3 +479,103 @@ def test_the_capture_script_inspects_every_required_service():
     # Les trois champs de l'identité sont demandés à Docker, pas deux sur trois.
     for champ in (".Id", ".State.StartedAt", ".State.Running"):
         assert champ in script
+
+
+# ------------------------------------------------- conservation de l'image de retour
+
+
+def test_the_stop_step_preserves_the_running_image_before_any_build():
+    """L'image du conteneur est taguée avant l'arrêt, donc avant le build.
+
+    `docker compose build app` réécrit `latest` en place : sans cette copie,
+    l'image réellement en service devient inatteignable et le retour arrière
+    n'a plus de référence à restaurer.
+    """
+    remote = _RemoteIdentites([_releve_texte(INCHANGE_POSTGRES, INCHANGE_REDIS)])
+    ctx = _ctx(remote=remote)
+
+    assert step_stop(ctx) == 0
+
+    arret = next(s for s in remote.scripts if "compose stop app" in s)
+    assert "docker inspect --format '{{.Image}}'" in arret
+    assert "docker tag" in arret
+    assert ROLLBACK_TAG_PREFIX in arret
+    # Le tag est créé avant l'arrêt de l'app : le conteneur doit tourner pour
+    # que son image soit celle qu'on veut conserver.
+    assert arret.index("docker tag") < arret.index("docker compose stop app")
+
+
+def test_the_stop_step_verifies_the_tag_points_to_the_captured_image():
+    """Le tag est vérifié, pas seulement créé.
+
+    Un tag qui ne pointerait pas sur l'image capturée restaurerait autre chose
+    que ce qui tournait : la vérification ferme cette possibilité. Le script
+    compare l'identifiant du tag à celui du conteneur et échoue sinon.
+    """
+    remote = _RemoteIdentites([_releve_texte(INCHANGE_POSTGRES, INCHANGE_REDIS)])
+    ctx = _ctx(remote=remote)
+
+    assert step_stop(ctx) == 0
+
+    arret = next(s for s in remote.scripts if "compose stop app" in s)
+    # Le contrôle compare les deux identifiants et refuse l'incohérence.
+    assert "tagged=$(docker inspect --format" in arret
+    assert '[ "$tagged" = "$image_id" ]' in arret
+    assert "tag de retour incohérent" in arret
+
+
+def test_the_rollback_tag_is_recorded_in_the_context():
+    """Le tag conservé est retenu, pour être revérifié après le build."""
+
+    class _RemoteTag(_RemoteIdentites):
+        def run(self, script):
+            self.scripts.append(script)
+            if ".State.StartedAt" in script:
+                return 0, _releve_texte(INCHANGE_POSTGRES, INCHANGE_REDIS), ""
+            if "docker tag" in script:
+                return (
+                    0,
+                    "image de retour conservée : bot-radar-app:rollback-20260101-120000 "
+                    "(sha256:abc)\n"
+                    "RADAR_ROLLBACK_TAG=bot-radar-app:rollback-20260101-120000\n"
+                    "arrêt app confirmé avant synchronisation\n",
+                    "",
+                )
+            return 0, "ok", ""
+
+    ctx = _ctx(remote=_RemoteTag([]))
+    assert step_stop(ctx) == 0
+    assert ctx.rollback_image == "bot-radar-app:rollback-20260101-120000"
+
+
+def test_the_build_rechecks_the_rollback_tag_still_exists():
+    """Après le build, le tag de retour est revérifié.
+
+    C'est le moment où `latest` a été réécrit : si le tag de retour a disparu,
+    il faut le savoir maintenant et non au moment du retour arrière.
+    """
+    remote = _RemoteIdentites([])
+    ctx = _ctx(remote=remote, rollback_image="bot-radar-app:rollback-20260101-120000")
+
+    assert step_rebuild(ctx) == 0
+
+    build = next(s for s in remote.scripts if "compose build app" in s)
+    assert "docker inspect" in build
+    assert "bot-radar-app:rollback-20260101-120000" in build
+    assert build.index("compose build app") < build.index("docker inspect")
+    assert "tag de retour disparu" in build
+
+
+def test_the_build_still_builds_when_no_rollback_tag_is_known():
+    """Sans tag connu, le build a lieu : la revérification est conditionnelle.
+
+    Le parcours nominal renseigne toujours le tag ; ce cas couvre une reprise
+    d'étape isolée, où l'absence de tag ne doit pas bloquer la construction.
+    """
+    remote = _RemoteIdentites([])
+    ctx = _ctx(remote=remote)
+
+    assert step_rebuild(ctx) == 0
+
+    build = next(s for s in remote.scripts if "compose build app" in s)
+    assert "docker inspect" not in build
