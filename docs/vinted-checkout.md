@@ -33,11 +33,11 @@ session, choisit son point relais et confirme lui-même le paiement.
 4. En cas d'échec, `[ Voir l'annonce ]` reste l'accès fonctionnel.
 
 Protections conservées : allowlist Telegram et association annonce ↔ alerte
-(vérifiée en base) ; verrou anti-double-clic atomique (`SET NX`, jeton de
-détenteur) ; cache du lien préparé ; **coupe-circuit par cause, dès le premier
-échec** (30 min après un blocage ou une limitation, 15 min après un délai ou une
-panne réseau, 5 min sinon) ; délais bornés ; session en clé Redis dédiée, jamais
-loguée ni renvoyée ; aucune relance automatique après une opération incertaine.
+(vérifiée en base) ; verrou anti-double-clic (`SET NX`, rattaché à un jeton) ;
+cache du lien préparé ; **coupe-circuit par cause, dès le premier échec** (30 min
+après un blocage ou une limitation, 15 min après un délai ou une panne réseau,
+5 min sinon) ; délais bornés ; session en clé Redis dédiée, jamais loguée ni
+renvoyée ; aucune relance automatique après une opération incertaine.
 
 **Ce que la fonctionnalité ne fait pas** : elle ne paie pas, ne choisit pas le
 point relais, ne confirme pas l'achat, et ne contourne aucune protection de
@@ -103,7 +103,7 @@ La session expire avec les jetons Vinted (quelques heures à ~une journée).
 | Vinted limite temporairement les demandes | réponse 429 |
 | Vinted n'a pas répondu à temps | délai dépassé ; vérifier les messages Vinted avant de recliquer |
 | Une préparation est déjà en cours | double clic : la première opération continue |
-| Préparations suspendues | coupe-circuit actif après un blocage ou des échecs (§4) |
+| La création de checkout est coupée | coupe-circuit actif après un échec (§4) |
 
 ---
 
@@ -113,11 +113,11 @@ La création est **coupée dès le premier échec**, pour la durée de sa cause 
 **30 min** après un **défi anti-robot** (DataDome) ou une **limitation** (HTTP
 429) ; **15 min** après un **délai dépassé** ou une **panne réseau** ; **5 min**
 pour le reste (session refusée, article indisponible, vendeur introuvable,
-réponse inattendue). Pendant la suspension, chaque clic répond « préparations
-suspendues » et propose l'annonce : **aucune relance automatique**, aucune boucle
-de reconnexion. La reprise est **explicite** : laisser expirer la pause et
+réponse inattendue). Pendant la suspension, chaque clic répond « la création de
+checkout est coupée » et propose l'annonce : **aucune relance automatique**, aucune
+boucle de reconnexion. La reprise est **explicite** : laisser expirer la pause et
 recliquer. La coupure est **globale** : un échec sur une annonce suspend aussi les
-autres.
+autres, comme le verrou.
 
 Résoudre un blocage est un travail **manuel dans le navigateur** (ouvrir
 l'annonce, terminer l'achat soi-même, éventuellement repasser par une
@@ -220,15 +220,21 @@ extension) : ce serait aggraver le risque, pas le réduire.
    conversation. Le repli vers `/api/v2/conversations` ne subsiste que sur un
    `404` (route absente, donc rien n'a pu être créé), une seule fois, sans boucle.
 3. **« Concurrence limitée », jamais « absence de doublon ».** Le verrou est
-   global, atomique (`SET NX`) et **possédé par un jeton** : seul son détenteur le
-   libère. Il vit 45 s, couvre `2 × timeout` (vérifié par un test), et il est
-   **délibérément conservé après une réussite** jusqu'à son expiration — le lien
-   mis en cache prend alors le relais. Limites assumées : si le verrou expire
+   global, atomique à l'acquisition (`SET NX`) et **rattaché à un jeton** : la
+   libération vérifie que la clé porte encore notre jeton avant de la supprimer.
+   Cette vérification n'est pas atomique (pas de `EVAL` Lua) : entre la lecture et
+   la suppression, la clé peut expirer puis être reprise, et le `DEL` retirerait
+   alors le verrou du nouveau détenteur — fenêtre résiduelle négligeable, car chaque
+   libération est précédée d'une pause active et la coupure est **revérifiée dans**
+   le verrou. Le verrou vit 45 s et couvre `2 × timeout` (vérifié par un test) ; il
+   est **délibérément conservé après une réussite** jusqu'à son expiration — le lien
+   mis en cache prend alors le relais **pour cette annonce** (une autre annonce reste
+   refusée `BUSY` jusqu'à 45 s). Autres limites assumées : si le verrou expire
    pendant une opération en vol, un clic peut entrer ; et si Redis est muet, ni le
    verrou ni la coupure ne s'appliquent (garde-fou, pas dépendance dure). Les
    requêtes de création **ne portent aucun identifiant d'idempotence** : après un
-   résultat incertain et l'expiration de la pause, un clic **explicite** peut
-   créer une **seconde** conversation. C'est une limite connue, pas une garantie
+   résultat incertain et l'expiration de la pause, un clic **explicite** peut créer
+   une **seconde** conversation. C'est une limite connue, pas une garantie
    d'unicité ; aucun second essai automatique n'a lieu.
 
 ### Comportements couverts par les tests isolés
@@ -236,7 +242,8 @@ extension) : ce serait aggraver le risque, pas le réduire.
 - tout échec coupe la création dès le premier essai (durée par cause) ;
 - **concurrence limitée** : deux clics concurrents ne produisent, tant que le
   verrou est vivant, qu'une opération — ce n'est pas l'absence de doublon ;
-- le verrou n'est libéré que par son détenteur (un verrou repris survit) ;
+- le verrou n'est libéré qu'après vérification de son jeton (un verrou repris
+  survit, sur un statut que l'ancien code libérait) ;
 - coupure posée avant la libération du verrou (ordre vérifié pas-à-pas) ;
 - coupure revérifiée à l'intérieur du verrou ;
 - `400 INVALID_INPUT` ne déclenche **aucun** repli ; `404` déclenche un repli

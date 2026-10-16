@@ -47,8 +47,7 @@ READY_FOOTER = (
 # dans le même clavier quand une annonce est connue.
 REFUSAL_TEXTS: dict[VintedCheckoutStatus, str] = {
     VintedCheckoutStatus.BUSY: (
-        "⏳ Une préparation est déjà en cours pour cette annonce. "
-        "Laisse-la se terminer, puis réessaie."
+        "⏳ Une préparation est déjà en cours. Laisse-la se terminer, puis réessaie."
     ),
     VintedCheckoutStatus.PAUSED: (
         "⏸ La création de checkout est **coupée** après un échec. "

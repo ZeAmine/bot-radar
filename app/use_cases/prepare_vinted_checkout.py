@@ -9,14 +9,13 @@ d'envoi de l'alerte (invariant n°1). Tout part d'ici, une seule fois par clic :
 3. sinon, une transaction d'achat puis un panier sont créés chez Vinted avec la
    session de compte injectée, et le lien de checkout est renvoyé à l'utilisateur.
 
-Concurrence : un verrou Redis court, **possédé** par un jeton de tentative,
-empêche deux clics rapprochés de lancer deux opérations, et n'est libéré que
-par le détenteur. Tout échec — y compris un résultat incertain (délai dépassé,
-réseau coupé) — **coupe** la création avant de libérer le verrou : rien ne
-relance automatiquement, et une opération peut avoir existé côté Vinted sans
-que ce module le sache. La reprise n'a lieu qu'après expiration **et** clic
-explicite ; sans identifiant d'idempotence, cette reprise peut alors créer une
-seconde conversation.
+Concurrence : un verrou Redis court, rattaché à un jeton de tentative et dont la
+libération vérifie ce jeton, empêche deux clics rapprochés de lancer deux
+opérations. Tout échec — y compris un résultat incertain (délai dépassé, réseau
+coupé) — **coupe** la création avant de libérer le verrou : rien ne relance
+automatiquement, et une opération peut avoir existé côté Vinted sans que ce module
+le sache. La reprise n'a lieu qu'après expiration **et** clic explicite ; sans
+identifiant d'idempotence, cette reprise peut alors créer une seconde conversation.
 """
 
 from __future__ import annotations

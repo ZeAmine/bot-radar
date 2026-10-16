@@ -796,14 +796,15 @@ async def test_release_never_deletes_another_holders_lock(
 
         async def steal_the_lock_then_fail(**_kwargs: Any) -> str:
             # Le verrou a expiré pendant l'opération et un autre clic l'a repris :
-            # notre propre libération ne doit pas le lui retirer.
+            # notre propre libération ne doit pas le lui retirer. Statut que même
+            # l'ancien code libérait, pour que ce test discrimine la propriété.
             fake.store[lock_key()] = "jeton-d-un-autre-detenteur"
-            raise VintedCheckoutError(VintedCheckoutStatus.NETWORK, "réseau coupé")
+            raise VintedCheckoutError(VintedCheckoutStatus.AUTH_REQUIRED, "session refusée")
 
         provider.create_buyer_inquiry.side_effect = steal_the_lock_then_fail
         result = await run_use_case(db, listing.id, provider)
 
-    assert result.status is VintedCheckoutStatus.NETWORK
+    assert result.status is VintedCheckoutStatus.AUTH_REQUIRED
     assert fake.store[lock_key()] == "jeton-d-un-autre-detenteur"
 
 
