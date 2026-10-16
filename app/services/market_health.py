@@ -359,13 +359,24 @@ async def notify_incomplete_refresh(
 ) -> None:
     """Le bilan d'une passe, quand elle a quelque chose à dire.
 
-    Trois situations, et trois seulement :
+    Le silence se décide sur le **type** de passe, pas sur sa réussite :
 
-    - la passe a tout traité : rien à signaler, elle se tait ;
-    - elle a été coupée par le plafond de durée — c'est le fonctionnement normal
-      d'un lot qui ne tient pas dans sa fenêtre —, la coupure est **décrite dans
-      le bilan** sans devenir un avertissement ;
-    - elle s'est arrêtée avant la fin pour une autre raison, et le fait est signalé.
+    - un passage glissant qui a traité sa sélection se tait — huit livres toutes
+      les trente minutes ne se racontent pas, et un message de routine à cette
+      fréquence rendrait invisible celui qui compte ;
+    - une passe **complète** rend son bilan, qu'elle aille au bout ou non. C'est un
+      rendez-vous planifié deux fois par jour, et le seul moment où la file entière
+      est reprise : la taire quand elle réussit laissait l'utilisateur sans nouvelle
+      du passage qui a effectivement tout rafraîchi. Le bilan d'une passe réussie est
+      **court** — quatre nombres et une phrase, sans paragraphe de reprise ;
+    - une passe interrompue, complète ou glissante, décrit sa coupure : par le
+      plafond de durée — fonctionnement normal d'un lot qui ne tient pas dans sa
+      fenêtre, décrit sans devenir un avertissement — ou par une autre raison, qui
+      est alors signalée comme telle.
+
+    Le titre dit le type de passe, jamais son achèvement : une passe complète coupée
+    reste un « Rafraîchissement complet », et c'est la ligne « Restants à traiter »
+    qui dit où elle s'est arrêtée.
 
     **Un bilan au plus par occurrence planifiée.** `occurrence` est l'identité de
     l'exécution prévue — l'identifiant du job et l'instant qu'il visait —, fournie
@@ -394,7 +405,13 @@ async def notify_incomplete_refresh(
     Sans `occurrence` — un appel hors planificateur —, le bilan part sans
     dédoublonnage : mieux vaut un doublon qu'un incident passé sous silence.
     """
-    if processed >= total and not interrupted:
+    # Le silence ne dépend pas de la réussite, mais du **type** de passe : un
+    # passage glissant qui a traité sa sélection n'a rien à dire — huit livres
+    # toutes les trente minutes ne se racontent pas —, tandis qu'une passe
+    # complète est un rendez-vous planifié deux fois par jour, et son bilan est
+    # attendu qu'elle aille au bout ou non. Le taire quand elle réussit laissait
+    # l'utilisateur sans nouvelle du seul moment où la file entière est reprise.
+    if incremental and processed >= total and not interrupted:
         return
 
     if occurrence is not None:
