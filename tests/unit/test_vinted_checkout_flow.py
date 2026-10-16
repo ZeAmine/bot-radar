@@ -29,6 +29,7 @@ from app.db.models.category import Category
 from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.db.models.user import User
+from app.db.repositories.listing_repo import ListingRepository
 from app.domain.enums import AlertStatus, VintedCheckoutStatus
 from app.providers.vinted_checkout import (
     REDIS_CHECKOUT_SESSION_KEY,
@@ -252,10 +253,15 @@ async def run_use_case(
 
 
 async def test_flag_off_is_announced_without_preparing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drapeau coupé : le clic ne lit ni session, ni annonce, ni Vinted."""
     monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", False)
     fake = FakeRedis()
     configured_session(fake)
     patch_redis(monkeypatch, fake)
+    session_read = AsyncMock()
+    monkeypatch.setattr(
+        "app.use_cases.prepare_vinted_checkout.resolve_checkout_cookies", session_read
+    )
 
     async with sqlite_only_database() as db:
         provider = mock_provider()
@@ -263,7 +269,10 @@ async def test_flag_off_is_announced_without_preparing(monkeypatch: pytest.Monke
 
     assert result.status is VintedCheckoutStatus.DISABLED
     assert result.checkout_url is None
+    session_read.assert_not_awaited()
     provider.create_buyer_inquiry.assert_not_awaited()
+    provider.fetch_item_seller_id.assert_not_awaited()
+    assert fake.log == []
 
 
 async def test_listing_without_alert_of_this_user_is_refused(
@@ -563,6 +572,37 @@ async def test_handler_keeps_listing_access_on_failure(
     assert [[button.text for button in row] for row in buttons] == [["Voir l'annonce"]]
 
 
+async def test_a_kept_buy_button_touches_nothing_when_the_flag_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un ancien message garde son bouton « Acheter » : coupé, il ne lit rien.
+
+    Le bouton disparaît des nouvelles alertes, mais un message déjà envoyé garde
+    son callback. Le clic doit répondre « désactivée » sans lire la session, sans
+    toucher la base ni Redis, et sans appeler Vinted.
+    """
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", False)
+    fake = FakeRedis()
+    configured_session(fake)
+    patch_redis(monkeypatch, fake)
+    session_read = AsyncMock()
+    monkeypatch.setattr(
+        "app.use_cases.prepare_vinted_checkout.resolve_checkout_cookies", session_read
+    )
+    listing_read = AsyncMock()
+    monkeypatch.setattr(ListingRepository, "get_listing_matched_to_user", listing_read)
+
+    callback = fake_callback(uuid.uuid4())
+    async with sqlite_only_database() as db:
+        await handle_buy_listing(callback, db.session)
+
+    text = callback.message.reply.await_args.args[0]
+    assert "désactivée" in text
+    session_read.assert_not_awaited()
+    listing_read.assert_not_awaited()
+    assert fake.log == []
+
+
 def test_refusal_without_a_known_listing_has_no_dead_button() -> None:
     text, keyboard = format_preparation_result(
         CheckoutPreparation(VintedCheckoutStatus.NOT_ASSOCIATED)
@@ -739,6 +779,32 @@ async def test_pause_is_set_before_the_lock_is_released(
     pause_set = fake.log.index("set:radar:vinted_checkout:pause")
     lock_del = fake.log.index("del:radar:vinted_checkout:lock")
     assert pause_set < lock_del
+
+
+async def test_release_never_deletes_another_holders_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verrou repris après expiration : l'ancien détenteur ne libère pas le nouveau."""
+    monkeypatch.setattr(settings, "VINTED_CHECKOUT_PREPARATION_ENABLED", True)
+    fake = FakeRedis()
+    configured_session(fake)
+    patch_redis(monkeypatch, fake)
+
+    async with sqlite_only_database() as db:
+        listing = await seed_listing(db)
+        provider = mock_provider()
+
+        async def steal_the_lock_then_fail(**_kwargs: Any) -> str:
+            # Le verrou a expiré pendant l'opération et un autre clic l'a repris :
+            # notre propre libération ne doit pas le lui retirer.
+            fake.store[lock_key()] = "jeton-d-un-autre-detenteur"
+            raise VintedCheckoutError(VintedCheckoutStatus.NETWORK, "réseau coupé")
+
+        provider.create_buyer_inquiry.side_effect = steal_the_lock_then_fail
+        result = await run_use_case(db, listing.id, provider)
+
+    assert result.status is VintedCheckoutStatus.NETWORK
+    assert fake.store[lock_key()] == "jeton-d-un-autre-detenteur"
 
 
 async def test_cut_is_checked_again_inside_the_lock(

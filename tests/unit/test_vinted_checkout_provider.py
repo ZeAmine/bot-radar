@@ -94,35 +94,32 @@ async def test_create_buyer_inquiry_falls_back_on_route_not_found() -> None:
     assert seen == [INQUIRIES_URL, f"{API_BASE_URL}/conversations"]
 
 
-async def test_create_buyer_inquiry_falls_back_on_invalid_input() -> None:
-    """400 `INVALID_INPUT` : le repli sur le chemin historique s'applique."""
+async def test_create_buyer_inquiry_does_not_fall_back_on_invalid_input() -> None:
+    """400 `INVALID_INPUT` : aucun effet de bord établi, donc aucune seconde création."""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url))
-        if len(seen) == 1:
-            return httpx.Response(400, json={"code": "INVALID_INPUT"})
-        return httpx.Response(
-            200, json={"conversation": {"id": 7, "transaction": {"id": 4242}}}
-        )
+        return httpx.Response(400, json={"code": "INVALID_INPUT"})
 
     async with prepared_provider(handler) as provider:
-        transaction_id = await provider.create_buyer_inquiry(
-            item_id="10377957794", seller_id="72804845", cookies=COOKIES
-        )
+        with pytest.raises(VintedCheckoutError) as excinfo:
+            await provider.create_buyer_inquiry(
+                item_id="10377957794", seller_id="72804845", cookies=COOKIES
+            )
 
-    assert transaction_id == "4242"
-    assert seen == [INQUIRIES_URL, f"{API_BASE_URL}/conversations"]
+    assert excinfo.value.status is VintedCheckoutStatus.UNEXPECTED
+    assert seen == [INQUIRIES_URL]  # une seule tentative, aucune création réputée sûre
 
 
-async def test_failed_fallback_does_not_loop() -> None:
-    """Repli unique : si le chemin historique échoue aussi, on ne réessaie pas."""
+async def test_route_not_found_falls_back_once_without_looping() -> None:
+    """Route absente : un seul repli ; s'il échoue aussi, on s'arrête."""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url))
         if len(seen) == 1:
-            return httpx.Response(400, json={"code": "INVALID_INPUT"})
+            return httpx.Response(404, json={"code": "NOT_FOUND"})
         return httpx.Response(403, json={"code": 106, "message_code": "access_denied"})
 
     async with prepared_provider(handler) as provider:
@@ -132,25 +129,7 @@ async def test_failed_fallback_does_not_loop() -> None:
             )
 
     assert excinfo.value.status is VintedCheckoutStatus.AUTH_REQUIRED
-    assert len(seen) == 2  # une tentative, un repli, aucune boucle
-
-
-async def test_invalid_input_with_a_transaction_is_not_a_valid_fallback() -> None:
-    """Si le corps porte déjà une transaction, aucun repli n'est déclenché."""
-    seen: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url))
-        return httpx.Response(400, json={"code": "INVALID_INPUT", "transaction_id": 777})
-
-    async with prepared_provider(handler) as provider:
-        with pytest.raises(VintedCheckoutError) as excinfo:
-            await provider.create_buyer_inquiry(
-                item_id="10373403907", seller_id="72804845", cookies=COOKIES
-            )
-
-    assert excinfo.value.status is VintedCheckoutStatus.UNEXPECTED
-    assert len(seen) == 1  # aucun repli déclenché
+    assert seen == [INQUIRIES_URL, f"{API_BASE_URL}/conversations"]
 
 
 async def test_refusal_is_logged_with_context_and_codes_only(caplog) -> None:

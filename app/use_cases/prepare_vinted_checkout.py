@@ -9,12 +9,14 @@ d'envoi de l'alerte (invariant n°1). Tout part d'ici, une seule fois par clic :
 3. sinon, une transaction d'achat puis un panier sont créés chez Vinted avec la
    session de compte injectée, et le lien de checkout est renvoyé à l'utilisateur.
 
-Concurrence : un verrou Redis court empêche deux clics rapprochés de lancer
-deux opérations. Un échec incertain (délai dépassé, réseau coupé) garde le
-verrou jusqu'à son expiration — le résultat peut exister côté Vinted, et une
-relance immédiate pourrait dupliquer une conversation. Un échec définitif
-(session invalide, article indisponible) libère le verrou : recliquer est
-légitime.
+Concurrence : un verrou Redis court, **possédé** par un jeton de tentative,
+empêche deux clics rapprochés de lancer deux opérations, et n'est libéré que
+par le détenteur. Tout échec — y compris un résultat incertain (délai dépassé,
+réseau coupé) — **coupe** la création avant de libérer le verrou : rien ne
+relance automatiquement, et une opération peut avoir existé côté Vinted sans
+que ce module le sache. La reprise n'a lieu qu'après expiration **et** clic
+explicite ; sans identifiant d'idempotence, cette reprise peut alors créer une
+seconde conversation.
 """
 
 from __future__ import annotations
@@ -108,19 +110,29 @@ async def _write_cached_link(key: str, url: str) -> None:
         logger.warning("Cache de checkout Vinted non écrit : %s", exc)
 
 
-async def _acquire_lock(key: str) -> bool:
-    """Verrou court anti-double-clic ; Redis muet ne bloque pas l'utilisateur."""
+async def _acquire_lock(key: str, token: str) -> bool:
+    """Verrou court anti-double-clic ; Redis muet ne bloque pas l'utilisateur.
+
+    La valeur du verrou est un jeton par tentative : un détenteur ne libère que
+    le sien, jamais celui qu'un autre a repris après expiration.
+    """
     try:
-        acquired = await get_redis_client().set(key, "1", ex=LOCK_TTL_SECONDS, nx=True)
+        acquired = await get_redis_client().set(
+            key, token, ex=LOCK_TTL_SECONDS, nx=True
+        )
     except Exception as exc:
         logger.warning("Verrou de checkout Vinted indisponible : %s", exc)
         return True
     return bool(acquired)
 
 
-async def _release_lock(key: str) -> None:
+async def _release_lock(key: str, token: str) -> None:
+    """Libère le verrou seulement s'il porte encore notre jeton."""
     try:
-        await get_redis_client().delete(key)
+        raw = await get_redis_client().get(key)
+        current = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else raw
+        if current == token:
+            await get_redis_client().delete(key)
     except Exception as exc:
         logger.debug("Verrou de checkout Vinted non libéré : %s", exc)
 
@@ -209,12 +221,13 @@ class PrepareVintedCheckoutUseCase:
             return outcome(VintedCheckoutStatus.SELLER_UNKNOWN, retry_after=seconds)
 
         lock_key = _lock_key()
-        if not await _acquire_lock(lock_key):
+        lock_token = uuid.uuid4().hex
+        if not await _acquire_lock(lock_key, lock_token):
             return outcome(VintedCheckoutStatus.BUSY)
 
         seconds_in_lock = await self.backoff.remaining_seconds()
         if seconds_in_lock > 0:
-            await _release_lock(lock_key)
+            await _release_lock(lock_key, lock_token)
             return outcome(VintedCheckoutStatus.PAUSED, retry_after=seconds_in_lock)
 
         try:
@@ -232,7 +245,7 @@ class PrepareVintedCheckoutUseCase:
             )
         except VintedCheckoutError as exc:
             seconds = await self.backoff.request_failure(exc.status)
-            await _release_lock(lock_key)
+            await _release_lock(lock_key, lock_token)
             logger.info(
                 "Préparation de checkout Vinted non aboutie (statut=%s).",
                 exc.status.value,
@@ -240,7 +253,7 @@ class PrepareVintedCheckoutUseCase:
             return outcome(exc.status, retry_after=seconds)
         except Exception:
             seconds = await self.backoff.request_failure(VintedCheckoutStatus.UNEXPECTED)
-            await _release_lock(lock_key)
+            await _release_lock(lock_key, lock_token)
             logger.exception("Préparation de checkout Vinted en échec inattendue.")
             return outcome(VintedCheckoutStatus.UNEXPECTED, retry_after=seconds)
 

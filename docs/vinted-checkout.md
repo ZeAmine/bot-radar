@@ -3,8 +3,9 @@
 > **Statut (mesuré le 14/10/2026)** : le parcours est une **expérimentation
 > clôturée en échec** dans les conditions testées — **ce constat n'est pas une
 > validation**. La préparation du panier reçoit un **défi DataDome** y compris
-> avec une session authentifiée ; la préparation serveur est **non
-> opérationnelle**. `VINTED_CHECKOUT_PREPARATION_ENABLED` reste `false` (par
+> avec une session authentifiée ; dans **notre environnement testé**, la
+> préparation serveur est **non opérationnelle** — sans que cela démontre une
+> impossibilité générale. `VINTED_CHECKOUT_PREPARATION_ENABLED` reste `false` (par
 > défaut) : le chemin décrit ci-dessous est inactif hors activation explicite.
 > Voir la clôture au §9.
 >
@@ -32,10 +33,11 @@ session, choisit son point relais et confirme lui-même le paiement.
 4. En cas d'échec, `[ Voir l'annonce ]` reste l'accès fonctionnel.
 
 Protections conservées : allowlist Telegram et association annonce ↔ alerte
-(vérifiée en base) ; verrou anti-double-clic atomique (`SET NX`) ; cache du lien
-préparé ; **coupe-circuit** (30 min après blocage ou limitation, 15 min après
-trois échecs doux) ; délais bornés ; session en clé Redis dédiée, jamais loguée
-ni renvoyée ; aucune relance automatique après une opération incertaine.
+(vérifiée en base) ; verrou anti-double-clic atomique (`SET NX`, jeton de
+détenteur) ; cache du lien préparé ; **coupe-circuit par cause, dès le premier
+échec** (30 min après un blocage ou une limitation, 15 min après un délai ou une
+panne réseau, 5 min sinon) ; délais bornés ; session en clé Redis dédiée, jamais
+loguée ni renvoyée ; aucune relance automatique après une opération incertaine.
 
 **Ce que la fonctionnalité ne fait pas** : elle ne paie pas, ne choisit pas le
 point relais, ne confirme pas l'achat, et ne contourne aucune protection de
@@ -107,12 +109,15 @@ La session expire avec les jetons Vinted (quelques heures à ~une journée).
 
 ## 4. Coupe-circuit et reprise
 
-Après un **défi anti-robot** (DataDome) ou une **limitation** (HTTP 429), les
-préparations sont suspendues **30 minutes** ; après **trois échecs** doux (session
-invalide, délai, panne réseau, réponse inattendue) en 15 minutes, elles le sont
-15 minutes. Pendant la suspension, chaque clic répond « préparations suspendues »
-et propose l'annonce : **aucune relance automatique**, aucune boucle de
-reconnexion. La reprise est **explicite** : laisser expirer la pause et recliquer.
+La création est **coupée dès le premier échec**, pour la durée de sa cause :
+**30 min** après un **défi anti-robot** (DataDome) ou une **limitation** (HTTP
+429) ; **15 min** après un **délai dépassé** ou une **panne réseau** ; **5 min**
+pour le reste (session refusée, article indisponible, vendeur introuvable,
+réponse inattendue). Pendant la suspension, chaque clic répond « préparations
+suspendues » et propose l'annonce : **aucune relance automatique**, aucune boucle
+de reconnexion. La reprise est **explicite** : laisser expirer la pause et
+recliquer. La coupure est **globale** : un échec sur une annonce suspend aussi les
+autres.
 
 Résoudre un blocage est un travail **manuel dans le navigateur** (ouvrir
 l'annonce, terminer l'achat soi-même, éventuellement repasser par une
@@ -149,10 +154,13 @@ Rien n'est purgé automatiquement : la clé Redis expire d'elle-même en 18 h.
 - le coupe-circuit suspend effectivement les préparations après un blocage
   (durée observée : 1800 s).
 
-**Conclusion** : la réussie authentifiée de bout en bout **n'a pas été atteinte**
-— le parcours est **non opérationnel**. Voir la clôture au §9 : ce n'est ni une
-validation ni une promesse, et la procédure de validation n'est pas à rejouer
-dans les conditions actuelles.
+**Conclusion, bornée à notre environnement de test** : la réussite authentifiée
+de bout en bout **n'a pas été atteinte** avec **notre** client et **notre**
+serveur — le parcours y est **non opérationnel**. Ce n'est **ni une validation ni
+une preuve d'impossibilité générale** : d'autres clients, dont des services
+d'« autobuy » commerciaux, annoncent ce parcours, mais leurs promesses ne
+constituent ni une preuve de fiabilité ni une autorisation de Vinted. Voir la
+clôture au §9.
 
 ## 7. Mécanisme établi (pourquoi ce n'est pas un simple lien)
 
@@ -201,31 +209,48 @@ extension) : ce serait aggraver le risque, pas le réduire.
    d'un repli fiable : page Mac (anonyme, article A) contenant `seller_id` ;
    page VPS (session, article B) rendant `200` **sans** `seller_id`. Les deux
    mesures varient par l'appareil, la session **et** l'article : la cause exacte
-   est **non établie**. Le repli ne garantit donc rien — le « vendeur introuvable »
-   n'est **pas résolu**, il est **diagnostiqué**.
-2. **`400 INVALID_INPUT` = rien créé.** C'est une **hypothèse fondée sur la
-   convention HTTP** (un 400 rejette avant création), pas une propriété vérifiée
-   de Vinted. Deux bornes sont posées : aucun repli si le corps porte une
-   transaction ; repli **unique**, jamais de boucle. Ce n'est pas une garantie.
-3. **« Concurrence limitée », avec fenêtre résiduelle documentée.** Ni le verrou
-   ni le repli ne garantissent l'absence de doublon. La coupure est posée avant
-   la libération du verrou et revérifiée dans le verrou ; néanmoins si le verrou
-   expire alors qu'une opération est en vol, un clic peut entrer. Le TTL couvre
-   `2 × timeout` (verrouillé par un test) ; la fenêtre résiduelle est documentée.
+   est **non établie**. Le repli HTML n'est **pas réparé** : quand
+   `seller_external_id` manque à l'ingestion **et** que la page ne le porte pas,
+   la préparation s'arrête sur `SELLER_UNKNOWN` et pose une coupure **globale**
+   de 5 min (un article sans identifiant vendeur suspend les autres).
+2. **Une réponse `400 INVALID_INPUT` ne laisse aucun effet de bord.** C'est une
+   hypothèse fondée sur la convention HTTP (un 400 rejette avant création), **non
+   vérifiée** chez Vinted. Comme elle n'est pas établie, **aucun repli n'est
+   tenté** sur ce code : un second essai pourrait créer une deuxième
+   conversation. Le repli vers `/api/v2/conversations` ne subsiste que sur un
+   `404` (route absente, donc rien n'a pu être créé), une seule fois, sans boucle.
+3. **« Concurrence limitée », jamais « absence de doublon ».** Le verrou est
+   global, atomique (`SET NX`) et **possédé par un jeton** : seul son détenteur le
+   libère. Il vit 45 s, couvre `2 × timeout` (vérifié par un test), et il est
+   **délibérément conservé après une réussite** jusqu'à son expiration — le lien
+   mis en cache prend alors le relais. Limites assumées : si le verrou expire
+   pendant une opération en vol, un clic peut entrer ; et si Redis est muet, ni le
+   verrou ni la coupure ne s'appliquent (garde-fou, pas dépendance dure). Les
+   requêtes de création **ne portent aucun identifiant d'idempotence** : après un
+   résultat incertain et l'expiration de la pause, un clic **explicite** peut
+   créer une **seconde** conversation. C'est une limite connue, pas une garantie
+   d'unicité ; aucun second essai automatique n'a lieu.
 
 ### Comportements couverts par les tests isolés
 
-- tout échec coupe la création (durée par cause, pas de tentative suivante) ;
-- **concurrence limitée** : deux annonces concurrentes ne produisent, dans une
-  fenêtre de verrou vivant, qu'une opération — ce n'est pas l'absence de doublon ;
+- tout échec coupe la création dès le premier essai (durée par cause) ;
+- **concurrence limitée** : deux clics concurrents ne produisent, tant que le
+  verrou est vivant, qu'une opération — ce n'est pas l'absence de doublon ;
+- le verrou n'est libéré que par son détenteur (un verrou repris survit) ;
 - coupure posée avant la libération du verrou (ordre vérifié pas-à-pas) ;
 - coupure revérifiée à l'intérieur du verrou ;
-- repli `INVALID_INPUT`, refusé si le corps porte une transaction, sans boucle ;
+- `400 INVALID_INPUT` ne déclenche **aucun** repli ; `404` déclenche un repli
+  unique, sans boucle ;
+- drapeau coupé : ni session lue, ni base, ni Redis, ni Vinted — y compris depuis
+  le bouton « Acheter » d'un ancien message ;
 - journaux de refus sans URL ni valeur sensible.
 
 ### Statut de clôture
 
-**Le parcours serveur est un échec dans les conditions testées** (DataDome observé
-avec session authentifiée). Ce constat n'est **pas** une validation de la
-fonctionnalité : `VINTED_CHECKOUT_PREPARATION_ENABLED` reste `false`, le checkout
-serveur reste non opérationnel, et aucun contournement n'est ajouté.
+**Dans notre environnement testé** (notre client, notre serveur, session
+authentifiée), le parcours serveur est un **échec** : DataDome a refusé la
+construction du panier. Ce constat n'est **pas** une validation de la
+fonctionnalité, et **pas** une preuve d'impossibilité technique générale : il est
+borné à ce qui a été observé. `VINTED_CHECKOUT_PREPARATION_ENABLED` reste `false`,
+le checkout serveur reste **non opérationnel**, et aucun contournement n'est
+ajouté.

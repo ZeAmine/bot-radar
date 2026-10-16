@@ -322,24 +322,6 @@ def _refusal_detail(response: httpx.Response) -> str:
     return ", ".join(parts)
 
 
-def _carries_transaction(response: httpx.Response) -> bool:
-    """Le corps porte-t-il un identifiant de transaction déjà créé ?"""
-    try:
-        data: Any = response.json()
-    except ValueError:
-        return False
-    if not isinstance(data, dict):
-        return False
-    return any(data.get(field) for field in ("transaction_id", "conversation_id"))
-
-
-def _is_invalid_input(response: httpx.Response) -> bool:
-    """Un `400 code=INVALID_INPUT` sans transaction déjà présente dans le corps."""
-    if response.status_code != 400 or _body_code(response) != "INVALID_INPUT":
-        return False
-    return not _carries_transaction(response)
-
-
 def _raise_for_response(response: httpx.Response, *, context: str) -> None:
     """Traduit un refus Vinted en échec typé — sans inventer de code."""
     status = response.status_code
@@ -497,9 +479,9 @@ class VintedCheckoutProvider:
         response = await self._post_json(
             INQUIRIES_URL, payload=payload, cookies=cookies
         )
-        if response.status_code == 404 or _is_invalid_input(response):
-            # Le backend de messagerie du compte n'est pas celui-ci : le site
-            # lui-même se rabat sur `/api/v2/conversations`.
+        if response.status_code == 404:
+            # Route absente : rien n'a pu être créé, le site lui-même se rabat
+            # alors sur `/api/v2/conversations`.
             logger.info(
                 "Ouverture de transaction refusée par le backend de messagerie "
                 "(%s) : repli unique sur le chemin historique.",
