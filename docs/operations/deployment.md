@@ -42,6 +42,43 @@ Le rsync exclut `.git` et `.env` : il préserve la configuration distante et ne
 transfère pas le secret local. Contrôler `APP_ENV=production`, code synchronisé,
 conteneur, schéma et scheduler. `.env.example` ne doit jamais écraser un `.env` réel.
 
+### Les dépendances ne font pas partie du déploiement
+
+Un déploiement applicatif ne touche ni PostgreSQL ni Redis, et le script le
+**vérifie** au lieu de le supposer.
+
+Le fait observé, le 16 octobre 2026 : `make deploy` a recréé `radar_postgres`
+(`Created` passé à `2026-10-16T01:02:47Z`) alors qu'il ne visait que `app`. Redis,
+lui, n'a pas bougé (conteneur `ca2d0d87…`, créé le `2026-09-25`), et le volume
+`bot-radar_postgres_data` n'a pas été recréé : aucune donnée n'a été perdue.
+
+Le mécanisme identifié : Compose réconcilie les dépendances d'un service avant de
+le démarrer. `up -d app` applique donc aussi `postgres` et `redis`, et recrée tout
+service dont l'empreinte de configuration a changé.
+
+La cause exacte du changement d'empreinte, **prouvée** : c'est la commande du
+`healthcheck` de `postgres`, modifiée par #117. La preuve n'est pas la chronologie
+mais la comparaison des configurations résolues. Les deux versions résolvent le
+**même** environnement (`POSTGRES_USER/PASSWORD/DB` identiques) et ne diffèrent que
+par `pg_isready -U radar_user -d radar_db` devenu `pg_isready -U "$${POSTGRES_USER}"
+-d "$${POSTGRES_DB}"`. Or `docker compose config --hash postgres` rend
+`cd74a20e…` pour la définition déployée — exactement l'empreinte portée par le
+conteneur en service — contre `413c8c26…` pour la précédente. La chronologie seule
+n'aurait rien établi : le `.env` modifié une minute plus tôt ne change pas
+l'environnement résolu, et l'attribuer à la syntaxe `${VAR:?}` serait faux.
+
+La parade est `--no-deps` sur le démarrage applicatif, et l'invariance est
+contrôlée : `Id`, `StartedAt` et l'état d'exécution des deux services sont relevés
+avant l'arrêt de l'app, puis relus après son démarrage. Un écart — recréation,
+redémarrage ou disparition — fait **échouer** le déploiement et est nommé
+explicitement. Aucune réparation automatique n'est tentée. Les dépendances sont
+aussi vérifiées opérationnelles **avant** l'arrêt : interrompre l'app alors qu'un
+service manque ne ferait que rendre le service indisponible pour rien.
+
+Une simulation ne prouve pas cette invariance. Le `--dry-run` du 16 octobre
+affichait les trois conteneurs `Running` sans rien dire de l'écart de
+configuration qui allait être résolu : il compare l'état, pas l'effet.
+
 ## Échec et retour
 
 L'interruption couvre synchronisation, construction, migration et démarrage jusqu'à
@@ -50,6 +87,58 @@ arrêté et l'arbre partiellement synchronisé ; ne pas redémarrer automatiquem
 l'ancien code sur cet arbre. Après démarrage, la cible peut être active malgré un
 contrôle échoué. Constater conteneur, code et schéma avant de choisir la reprise.
 Aucune restauration automatique, aucun downgrade destructeur ou version falsifiée.
+
+### Retour arrière de l'application, sans toucher la base
+
+Pour un lot sans migration — c'est le cas des lots #120 et #121, le schéma restant
+`0014_alert_market_freshness` — le retour arrière applicatif n'exige aucun
+`downgrade` SQL et ne touche ni PostgreSQL ni Redis.
+
+**La référence de retour est l'image réellement en production juste avant le
+déploiement**, et non le tag de retour le plus ancien disponible. Avant le prochain
+déploiement, cette référence est le code de `dc88692`. Le tag conservé
+`bot-radar-app:rollback-20261016-010213` (`60ab3aac…`) reste utile comme filet
+historique, mais il correspond à une version **antérieure** à `dc88692` : le
+présenter comme le retour immédiat du prochain déploiement serait faux.
+
+Vérifier la référence d'image attendue par Compose, sans supposer qu'un retagage
+suffit. `compose.yml` ne porte **aucune** clé `image:` pour `app` : le service est
+construit, donc Compose résout `bot-radar-app:latest` à partir du nom de projet
+(`bot-radar`) et du service (`app`). La résolution ne se lit pas dans
+`compose config` — `image` y vaut `null` — et le conteneur, lui, enregistre
+`bot-radar-app` sans suffixe. La vérification qui tranche est donc l'identité de
+l'image, pas la chaîne du tag :
+
+```sh
+# Référence construite par Compose, et image réellement portée par le conteneur.
+docker compose config --format json | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["name"])'   # -> bot-radar
+
+# L'image du conteneur doit être celle de <projet>-app:latest après retagage.
+docker inspect radar_app --format '{{.Image}}'
+docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep bot-radar-app
+```
+
+Aligner l'image de retour, puis démarrer seulement `app` :
+
+```sh
+docker tag bot-radar-app:rollback-<horodatage> bot-radar-app:latest
+docker compose up -d --no-build --pull never --no-deps app
+docker inspect radar_app --format '{{.State.Health.Status}}'
+```
+
+Le retagage ne vaut que si l'identité affichée par `docker inspect radar_app`
+correspond à celle du tag visé : c'est ce contrôle qui ferme la question, et non
+la supposition qu'un `docker tag` a bien été lu.
+
+Le `--no-deps` est ici aussi indispensable : sans lui, un retour arrière pourrait
+recréer une dépendance, exactement comme le déploiement du 16 octobre. Contrôler
+ensuite que `radar_postgres` et `radar_redis` ont gardé leur `Id` et leur
+`StartedAt` — un retour arrière qui a touché la base n'est pas un retour arrière
+applicatif.
+
+Ce retour restaure le **code applicatif**, pas la configuration : les paramètres
+PostgreSQL obligatoires et le `compose.yml` à jour restent en place, et c'est voulu.
 
 Les anciennes préparations BD exigent une maintenance bloquant les updates Telegram
 pour un retour vers un code qui ignore les intentions. Inhiber le scheduler seul

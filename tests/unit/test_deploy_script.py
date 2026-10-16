@@ -125,7 +125,7 @@ def test_migration_waits_for_a_healthy_container():
     assert step_start(_ctx(remote=remote)) == 0
 
     script = remote.scripts[0]
-    assert f'-lt {HEALTH_ATTEMPTS}' in script
+    assert f"-lt {HEALTH_ATTEMPTS}" in script
     assert "healthy" in script
     assert script.index("docker compose up") < script.index("healthy")
 
@@ -176,11 +176,38 @@ def test_migration_uses_the_target_image_without_starting_the_app():
 
 
 def test_stop_confirms_the_container_is_no_longer_running():
-    remote = _FakeRemote()
+    """L'arrêt de l'app est confirmé, et l'ordre avec le relevé est celui voulu.
+
+    Le relevé des dépendances précède l'arrêt : après, les valeurs ne
+    décriraient plus l'état d'avant le déploiement.
+    """
+
+    class _RemoteAvecReleve:
+        def __init__(self) -> None:
+            self.scripts: list[str] = []
+
+        def run(self, script: str) -> tuple[int, str, str]:
+            self.scripts.append(script)
+            if ".State.StartedAt" in script:
+                releve = (
+                    "postgres\tcid|2026-01-01T00:00:00Z|true\n"
+                    "redis\tcid2|2026-01-01T00:00:00Z|true\n"
+                )
+                return 0, releve, ""
+            return 0, "ok", ""
+
+    remote = _RemoteAvecReleve()
     assert step_stop(_ctx(remote=remote)) == 0
-    script = remote.scripts[0]
+
+    # Le relevé a été demandé, et il précède l'arrêt.
+    releves = [s for s in remote.scripts if ".State.StartedAt" in s]
+    arrets = [s for s in remote.scripts if "compose stop app" in s]
+    assert len(releves) == 1
+    assert len(arrets) == 1
+    assert remote.scripts.index(releves[0]) < remote.scripts.index(arrets[0])
+
+    script = arrets[0]
     assert "docker compose ps -a -q app" in script
-    assert "docker compose stop app" in script
     assert ".State.Running" in script
     assert '[ "$running" = false ]' in script
     assert script.index("docker compose stop app") < script.index(".State.Running")
@@ -205,13 +232,18 @@ def test_procedure_shell_uses_built_image_and_stops_on_failure(tmp_path, monkeyp
     runtime = tmp_path / "runtime"
     runtime.write_text("old")
     docker = tmp_path / "docker"
-    docker.write_text('''#!/usr/bin/env python3
+    docker.write_text("""#!/usr/bin/env python3
 import os, pathlib, sys
 args = sys.argv[1:]
 with open(os.environ['COMMAND_LOG'], 'a') as f:
     f.write(' '.join(args) + '\\n')
 image = pathlib.Path(os.environ['IMAGE_STATE'])
 running = pathlib.Path(os.environ['RUNNING_STATE'])
+# Les dépendances sont inspectées avant l'arrêt de l'app : le double doit
+# répondre à ce relevé, sinon tout le parcours s'arrête au contrôle préalable.
+if args[0] == 'inspect' and 'StartedAt' in ' '.join(args):
+    print('deadbeefcafe|2026-01-01T00:00:00Z|true')
+    sys.exit(0)
 if args[:2] == ['compose', 'stop']:
     if os.environ['FAILURE'] == 'stop': sys.exit(34)
     if os.environ['FAILURE'] != 'running': running.write_text('false')
@@ -227,16 +259,24 @@ if args[:2] == ['compose', 'run']:
     if 'upgrade' in args and os.environ['FAILURE'] == 'upgrade': sys.exit(32)
     if 'current' in args and os.environ['FAILURE'] == 'current': sys.exit(33)
     print('0010_alert_preparation (head)')
-if args[:2] == ['compose', 'up']: running.write_text('true')
+if args[:2] == ['compose', 'up']:
+    # La garde du 16 octobre 2026 : sans elle, Compose réconcilie les
+    # dépendances et peut recréer un service qu'on ne visait pas.
+    assert '--no-deps' in args, 'demarrage sans --no-deps : dependances exposees'
+    running.write_text('true')
 if args[:2] == ['compose', 'ps']: print('synthetic-cid')
 if args[0] == 'inspect':
     if os.environ['FAILURE'] == 'inspect': sys.exit(36)
     print(running.read_text() if '.State.Running' in args[2] else 'healthy')
-''')
+""")
     docker.chmod(0o755)
     env = dict(
-        os.environ, PATH=str(tmp_path) + os.pathsep + os.environ["PATH"],
-        COMMAND_LOG=str(log), IMAGE_STATE=str(image), RUNNING_STATE=str(running), FAILURE=failure,
+        os.environ,
+        PATH=str(tmp_path) + os.pathsep + os.environ["PATH"],
+        COMMAND_LOG=str(log),
+        IMAGE_STATE=str(image),
+        RUNNING_STATE=str(running),
+        FAILURE=failure,
     )
 
     def sync(argv):
@@ -259,40 +299,53 @@ if args[0] == 'inspect':
 
     trailing = []
     steps = tuple(
-        (label, _recorder(trailing, label) if action in (
-            deploy.step_preflight, deploy.step_verify, deploy.step_notify
-        ) else action)
+        (
+            label,
+            _recorder(trailing, label)
+            if action in (deploy.step_preflight, deploy.step_verify, deploy.step_notify)
+            else action,
+        )
         for label, action in deploy.STEPS
     )
     code = run_steps(steps, _ctx(remote=ShellRemote(), remote_dir=str(tmp_path)))
     commands = log.read_text().splitlines()
-    assert commands[0] == "compose ps -a -q app"
-    assert commands[1] == "compose stop app"
+
+    # Le relevé d'invariance ouvre le déploiement : il doit décrire l'état
+    # d'avant, donc précéder l'arrêt de l'app. Chaque service est résolu puis
+    # inspecté, l'un après l'autre.
+    assert commands[0] == "compose ps -a -q postgres"
+    assert ".State.StartedAt" in commands[1]
+    assert commands[2] == "compose ps -a -q redis"
+    assert ".State.StartedAt" in commands[3]
+
+    def _index(prefix: str) -> int:
+        return next(i for i, c in enumerate(commands) if c.startswith(prefix))
+
+    # L'arrêt de l'app précède toujours le relevé qui suit et la synchronisation.
+    assert _index("compose ps -a -q app") < _index("compose stop app")
     if failure in {"stop", "running", "inspect"}:
         assert code == {"stop": 34, "running": 1, "inspect": 36}[failure]
         assert "rsync runtime" not in commands
         assert runtime.read_text() == "old"
     else:
-        assert commands[2].startswith("inspect --format ")
-        assert commands[3] == "rsync runtime"
+        assert _index("compose stop app") < _index("rsync runtime")
         if failure == "sync":
             assert code == 35
-            assert len(commands) == 4
+        elif failure == "build":
+            assert _index("rsync runtime") < _index("compose build app")
+            assert code == 31
         else:
-            assert commands[4] == "compose build app"
-            if failure == "build":
-                assert code == 31
-                assert len(commands) == 5
+            assert _index("rsync runtime") < _index("compose build app")
+            assert _index("compose build app") < _index("compose run ")
+            migration = next(c for c in commands if c.startswith("compose run "))
+            assert migration.endswith("alembic app upgrade head")
+            if failure:
+                assert code == {"upgrade": 32, "current": 33}[failure]
             else:
-                assert commands[5].startswith("compose run ")
-                assert commands[5].endswith("alembic app upgrade head")
-                if failure:
-                    assert code == {"upgrade": 32, "current": 33}[failure]
-                else:
-                    assert code == 0
-                    assert commands[6].endswith("alembic app current")
-                    assert commands[7] == "compose up -d --no-build --pull never app"
-                    assert trailing[-2:] == ["Vérification", "Notification"]
+                assert code == 0
+                demarrage = commands[_index("compose up")]
+                assert demarrage == "compose up -d --no-build --pull never --no-deps app"
+                assert trailing[-2:] == ["Vérification", "Notification"]
     if failure:
         assert trailing == ["Pré-vol"]
         assert not any(c.startswith("compose up ") for c in commands)
@@ -320,8 +373,7 @@ def test_clean_commit_message_strips_github_prefixes():
         == "Recherche des variantes stabilisée"
     )
     assert (
-        clean_commit_message("refactor: clarification du pipeline")
-        == "Clarification du pipeline"
+        clean_commit_message("refactor: clarification du pipeline") == "Clarification du pipeline"
     )
     # Message déjà naturel sans préfixe
     assert (
@@ -409,9 +461,7 @@ def test_send_telegram_notification_http_post(monkeypatch):
     """Vérifie l'envoi HTTP effectif avec httpx mocké et token SecretStr."""
     from pydantic import SecretStr
 
-    monkeypatch.setattr(
-        "app.core.config.settings.TELEGRAM_BOT_TOKEN", SecretStr("123:dummy")
-    )
+    monkeypatch.setattr("app.core.config.settings.TELEGRAM_BOT_TOKEN", SecretStr("123:dummy"))
     monkeypatch.setattr("app.core.config.settings.TELEGRAM_ALLOWED_USER_IDS", [123456789])
 
     posted_urls: list[str] = []
