@@ -610,6 +610,19 @@ def clean_title_query(title: str) -> str:
     return cleaned or title
 
 
+# La liste blanche latine des titres mutile un auteur : « Juan Díaz Canales »
+# devient « Juan D az Canales », et le SRU ne rend plus rien. Seuls les
+# caractères qui cassent la syntaxe CQL sont retirés, jamais une lettre.
+_CQL_FORBIDDEN_CHARS = re.compile(r'["\r\n\t]+')
+_CQL_SPACES = re.compile(r"\s+")
+
+
+def clean_author_query(author: str) -> str:
+    """Rend un terme auteur sûr pour une valeur CQL, sans mutiler les lettres."""
+    without_forbidden = _CQL_FORBIDDEN_CHARS.sub(" ", author)
+    return _CQL_SPACES.sub(" ", without_forbidden).strip()
+
+
 class _PrologCompleteError(Exception):
     """Interrompt la lecture : la question posée au prolog a reçu sa réponse."""
 
@@ -1075,12 +1088,32 @@ class BookMetadataService:
 
         attempts: list[ProviderAttempt] = []
         clean_title_q = clean_title_query(title)
-        bnf_result, _panne = await self._bnf_records_result(
-            f'bib.title all "{clean_title_q}"',
-            author_hint=author_hint,
-            title_hint=clean_title_q,
-        )
-        attempts.append(_attempt(AUTORITE_BNF, "title", bnf_result))
+        # Sans l'auteur, la fenêtre de dix notices se remplit d'homonymes : « Le
+        # Voyage » annonce 23 823 notices et n'en rend aucune qui soit l'œuvre.
+        author_q = clean_author_query(author_hint) if author_hint else ""
+        if author_q:
+            bnf_result, _panne = await self._bnf_records_result(
+                f'bib.title all "{clean_title_q}" and bib.author all "{author_q}"',
+                author_hint=author_hint,
+                title_hint=clean_title_q,
+            )
+            attempts.append(_attempt(AUTORITE_BNF, "title", bnf_result))
+            # Repli strict : seule une conjonction réussie et vide est relancée.
+            # Une panne ne déclenche rien, elle ne prouve ni présence ni absence.
+            if bnf_result.status == ProviderQueryStatus.SUCCESS and not bnf_result.items:
+                bnf_result, _panne = await self._bnf_records_result(
+                    f'bib.title all "{clean_title_q}"',
+                    author_hint=author_hint,
+                    title_hint=clean_title_q,
+                )
+                attempts.append(_attempt(AUTORITE_BNF, "title", bnf_result))
+        else:
+            bnf_result, _panne = await self._bnf_records_result(
+                f'bib.title all "{clean_title_q}"',
+                author_hint=author_hint,
+                title_hint=clean_title_q,
+            )
+            attempts.append(_attempt(AUTORITE_BNF, "title", bnf_result))
         records = list(bnf_result.items)
         if not records and author_hint:
             anywhere_result, _anywhere_panne = await self._bnf_records_result(
