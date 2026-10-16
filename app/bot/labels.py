@@ -75,6 +75,10 @@ TITLE_ALERT_EXISTS = "⚠️ Alerte déjà existante"
 TITLE_HELP = "📖 Commandes"
 TITLE_STATS = "📊 Statistiques"
 TITLE_AUTOTUNE = "🧹 Auto-tuning des alertes"
+# L'écran de proposition a son propre titre : il dit ce qu'on propose, là où le hub
+# dit d'où l'on vient. Un seul titre pour les deux obligeait à relire le corps du
+# message pour savoir si l'on était devant une liste ou devant une décision.
+TITLE_EXCLUSIONS_PROPOSAL = "🧹 Exclusions proposées"
 TITLE_EDIT_EXCLUDES = "✏️ Mots-clés exclus"
 TITLE_OFFER = "💬 Offre suggérée"
 
@@ -101,7 +105,7 @@ FIELD_PRICE = "Prix"
 # treize caractères pour dire la même chose — et « estimé » se lit comme un doute
 # sur le montant, alors que la protection et le port sont, eux, bien réels.
 TOTAL_SUFFIX_TTC = "TTC"
-FIELD_FALSE_POSITIVES = "Faux positifs analysés"
+FIELD_FALSE_POSITIVES = "Faux positifs"
 FIELD_SUGGESTED_EXCLUDES = "Mots-clés exclus suggérés"
 FIELD_SUGGESTED_EXCLUDES_CUSTOM = "Mots-clés exclus suggérés (personnalisés)"
 
@@ -132,8 +136,9 @@ BTN_BACK_TO_AUTOTUNE = "Retour à la liste"
 # qu'une source, sinon le cinquième endroit finit par l'écrire autrement.
 BTN_BACK_TO_ALERT = "Retour à l'alerte"
 BTN_BACK_TO_FIELDS = "Retour aux champs"
-BTN_APPLY_EXCLUSIONS = "Appliquer les exclusions"
-BTN_EDIT_EXCLUSIONS = "Modifier la liste"
+BTN_APPLY_EXCLUSIONS = "Appliquer"
+BTN_EDIT_EXCLUSIONS = "Modifier"
+BTN_IGNORE_EXCLUSIONS = "Ignorer"
 BTN_EDIT_EXCLUSIONS_AGAIN = "Modifier à nouveau"
 BTN_DISCARD_CHANGES = "Revenir sans modifier"
 BTN_EDIT_ALERT_SETTINGS = "⚙️ Modifier l'alerte"
@@ -233,6 +238,47 @@ def format_price_line(
 def escape_html(value: str | None) -> str:
     """Échappe toute valeur dynamique : la donnée source ne modifie pas le formatage."""
     return html.escape(value or "", quote=False)
+
+
+# Longueur au-delà de laquelle la liste des faux positifs cesse d'être lisible sur
+# un téléphone. Le reste est compté, jamais passé sous silence : le nombre annoncé
+# est celui de l'inventaire, pas celui de l'extrait.
+MAX_LISTED_FALSE_POSITIVES = 3
+
+
+def exclusion_proposal_message(
+    alert_name: str,
+    disliked_titles: list[str],
+    exclusions: list[str],
+) -> str:
+    """Le message de proposition d'exclusions, écrit une seule fois.
+
+    Le scan proactif et l'analyse demandée produisaient deux textes différents pour
+    la même décision — l'un avec des emoji décoratifs et un paragraphe d'explication,
+    l'autre sans. Un seul gabarit les réunit : ce que l'utilisateur lit ne dépend plus
+    du chemin qui l'a mené là.
+
+    La forme est courte par construction. Le titre dit la proposition, le nom dit
+    l'alerte, les faux positifs **montrent** ce qui a été rejeté — sans quoi les
+    exclusions proposées seraient à croire sur parole —, et les exclusions proposées
+    sont la seule chose à décider. L'explication du moteur est retirée : elle
+    reformulait ce que la liste des faux positifs montre déjà. Aucune question finale
+    non plus — le bouton dit « Appliquer », il n'a pas besoin qu'on la lui pose.
+    """
+    listed = disliked_titles[:MAX_LISTED_FALSE_POSITIVES]
+    bullets = "\n".join(f"• <i>{escape_html(title)}</i>" for title in listed)
+    remainder = len(disliked_titles) - len(listed)
+    if remainder > 0:
+        bullets += f"\n• <i>… et {remainder} autre(s)</i>"
+
+    return (
+        f"{TITLE_EXCLUSIONS_PROPOSAL}\n\n"
+        f"{FIELD_NAME} : « {escape_html(alert_name)} »\n\n"
+        f"{FIELD_FALSE_POSITIVES} ({len(disliked_titles)}) :\n"
+        f"{bullets}\n\n"
+        f"{FIELD_SUGGESTED_EXCLUDES} :\n"
+        f"<code>{escape_html(', '.join(exclusions))}</code>"
+    )
 
 
 def join_list(values: list[str] | None) -> str:

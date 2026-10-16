@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.alert_latency import observe_background
 from app.core.redis import get_redis_client
@@ -25,8 +26,11 @@ from app.services.telegram_service import notify_admins
 
 logger = logging.getLogger(__name__)
 
-# Au-delà de ce délai sans collecte réussie, le retard doit être visible.
-STALE_AFTER_DAYS = 2
+# Au-delà de ce délai sans collecte réussie, le retard doit être visible. C'est la
+# **seule** référence de péremption du module : les deux contrôles — historique et
+# cote courante — la partagent. Deux valeurs distinctes rendaient le même incident
+# visible ou invisible selon le contrôle qui le regardait.
+STALE_AFTER_DAYS = 7
 
 # Un message par jour suffit : le job passe deux fois par jour.
 NOTIFY_KEY = "radar:market:stale_low:notified"
@@ -64,13 +68,17 @@ def _age_line(item: StaleCertifiedLow) -> str:
 def format_stale_certified_lows(
     items: list[StaleCertifiedLow],
     total: int | None = None,
-    *, historical: bool = True,
+    *, historical: bool = True, stale_after_days: int = STALE_AFTER_DAYS,
 ) -> str:
     """Message d'état : ce qui est figé, et pourquoi cela ne s'auto-corrige pas.
 
     `total` est le nombre réel de livres figés, quand il dépasse la liste affichée.
     Sans lui, un message tronqué à huit lignes annoncerait « 8 livres » pour cent onze :
     le contrôle qui sous-estime son propre incident vaut moins que pas de contrôle.
+
+    Le délai annoncé vient du seuil qui a servi à sélectionner les lignes. Écrit en
+    dur, il affichait « 48 heures » sous un seuil de sept jours — l'utilisateur
+    recevait un chiffre que le contrôle n'avait pas appliqué.
     """
     if not items:
         return ""
@@ -87,7 +95,8 @@ def format_stale_certified_lows(
     title = "Historique fournisseur non actualisé" if historical else "Offres non actualisées"
     return (
         f"⚠️ <b>{title}</b>\n\n"
-        f"{affected} livre(s) sans collecte réussie depuis plus de 48 heures :\n\n"
+        f"{affected} livre(s) sans collecte réussie depuis plus de "
+        f"{stale_after_days} jours :\n\n"
         f"{lines}{tail}"
     )
 
@@ -122,9 +131,17 @@ async def notify_stale_certified_lows(
                                            historical=True)
 
 
-async def notify_stale_current_collections(session: Any) -> int:
-    """Signale les offres sans collecte réussie depuis 48 heures."""
-    return await _notify_stale_collections(session, stale_after_days=2, historical=False)
+async def notify_stale_current_collections(
+    session: Any, *, stale_after_days: int = STALE_AFTER_DAYS,
+) -> int:
+    """Signale les offres sans collecte réussie depuis le seuil partagé de péremption.
+
+    Le seuil venait d'un `2` écrit en dur, à côté d'une constante qui valait autre
+    chose : le même livre pouvait être « périmé » pour un contrôle et pas pour
+    l'autre. Les deux lisent maintenant `STALE_AFTER_DAYS`.
+    """
+    return await _notify_stale_collections(session, stale_after_days=stale_after_days,
+                                           historical=False)
 
 
 async def _notify_stale_collections(
@@ -163,7 +180,11 @@ async def _notify_stale_collections(
             )
             return 0
 
-        await notify_admins(format_stale_certified_lows(items, total, historical=historical))
+        await notify_admins(
+            format_stale_certified_lows(
+                items, total, historical=historical, stale_after_days=stale_after_days
+            )
+        )
         logger.warning(
             "Cotes de marché figées signalées : %s livre(s) sans observation récente.",
             total,
@@ -201,6 +222,27 @@ SILENT_PROVIDER_MIN_OBSERVATIONS = 3
 # source muette sont deux incidents distincts qui ne doivent pas s'étouffer.
 SILENT_NOTIFY_KEY = "radar:market:silent_provider:notified"
 SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
+
+# Le bilan d'une passe planifiée se dédoublonne par **occurrence** : la clé porte
+# l'identifiant du job et l'instant que le planificateur visait. Deux tentatives de
+# la même occurrence partagent cette clé et ne produisent qu'un bilan.
+#
+# Comme la clé contient l'occurrence, deux passes distinctes ne peuvent pas se
+# confondre : la durée de conservation n'a donc **pas** à rester sous l'écart entre
+# deux exécutions. Seule compte la fenêtre pendant laquelle une même occurrence peut
+# être retentée.
+#
+# Cette fenêtre est étroite. APScheduler n'exécute pas une échéance manquée au-delà de
+# `misfire_grace_time` (une seconde par défaut sur ces jobs) : une occurrence n'est donc
+# jamais rejouée tardivement par le planificateur lui-même. Ce qui reste, c'est une
+# reprise rapprochée — redémarrage du processus après une passe écourtée, relance
+# manuelle, double soumission pendant un arrêt. Une heure couvre largement ces cas
+# sans jamais approcher les douze heures qui séparent deux passes complètes.
+#
+# Le TTL borne donc la garantie, et cette borne est assumée : au-delà, la clé a expiré
+# et une nouvelle tentative de la même occurrence repartirait pour un second bilan.
+INCOMPLETE_NOTIFY_KEY_PREFIX = "radar:market:pass_report:"
+INCOMPLETE_NOTIFY_TTL_SECONDS = 3600
 
 
 async def _claim_no_prices_notification_slot() -> bool:
@@ -272,22 +314,122 @@ async def notify_silent_providers(session: Any) -> int:
         return 0
 
 
+def next_full_pass_note() -> str:
+    """Annonce la prochaine passe **complète** planifiée, ou rien si elle est inconnue.
+
+    La règle tient en une phrase : on n'annonce que ce que le planificateur confirme.
+    Les passes glissantes à :15/:45 ne peuvent pas prendre en charge les livres
+    restants — un lot de huit livres par passage ne résorbe pas un arriéré —, donc
+    promettre « le reste suivra » sans nommer la passe complète serait une promesse
+    que rien ne tient. Si le planificateur ne répond pas, on ne dit rien : une phrase
+    en moins vaut mieux qu'une date fausse.
+
+    Les identifiants des passes complètes sont dynamiques (`refresh_prices_HH_MM`,
+    dérivés de `PRICE_REFRESH_TIMES`) : ils se cherchent par préfixe, jamais par un
+    nom écrit en dur qui cesserait de correspondre au premier changement d'horaire.
+    """
+    try:
+        from app.tasks.scheduler import scheduler
+
+        upcoming = [
+            job.next_run_time
+            for job in scheduler.get_jobs()
+            if job.id.startswith("refresh_prices_")
+            and not job.id.endswith("_incremental")
+            and getattr(job, "next_run_time", None) is not None
+        ]
+    except Exception as exc:  # pragma: no cover - dépend de l'état du planificateur
+        logger.debug("Prochaine passe complète inconnue : %s", exc)
+        return ""
+    if not upcoming:
+        return ""
+    moment = min(upcoming).astimezone(ZoneInfo("Europe/Paris"))
+    return f"\nProchaine passe complète prévue : {moment:%d/%m à %H:%M}."
+
+
 async def notify_incomplete_refresh(
     processed: int,
     total: int,
     *,
-    mode_label: str,
+    refreshed: int,
+    interrupted: bool,
+    incremental: bool,
+    batch_size: int = 0,
+    occurrence: str | None = None,
 ) -> None:
-    """Prévient quand la passe n'a pas traité tous les livres (plafond de durée)."""
-    if processed >= total:
+    """Le bilan d'une passe, quand elle a quelque chose à dire.
+
+    Trois situations, et trois seulement :
+
+    - la passe a tout traité : rien à signaler, elle se tait ;
+    - elle a été coupée par le plafond de durée — c'est le fonctionnement normal
+      d'un lot qui ne tient pas dans sa fenêtre —, la coupure est **décrite dans
+      le bilan** sans devenir un avertissement ;
+    - elle s'est arrêtée avant la fin pour une autre raison, et le fait est signalé.
+
+    **Un bilan au plus par occurrence planifiée.** `occurrence` est l'identité de
+    l'exécution prévue — l'identifiant du job et l'instant qu'il visait —, fournie
+    par le planificateur. Deux tentatives pour la même occurrence partagent la clé
+    et une seule passe ; deux occurrences distinctes ont deux clés, donc deux
+    bilans, même à douze heures d'écart.
+
+    La garantie est **bornée dans le temps**, et il faut le dire ainsi : la clé
+    expire avec `INCOMPLETE_NOTIFY_TTL_SECONDS`. Deux tentatives séparées par moins
+    que ce délai produisent un seul bilan ; une reprise plus tardive en produit un
+    second, la clé étant retombée. La borne couvre la fenêtre de réexécution prise en
+    charge, elle ne prétend pas à l'éternité.
+
+    Ce qui distingue cette clé d'une fenêtre de temps des autres alertes, c'est sa
+    durée : à vingt heures elle supprimait le bilan de la seconde passe quotidienne,
+    séparée de douze heures seulement. Ici la borne reste très inférieure à l'écart
+    entre deux occurrences, donc elle ne peut jamais avaler la suivante.
+
+    Sans `occurrence` — un appel hors planificateur —, le bilan part sans
+    dédoublonnage : mieux vaut un doublon qu'un incident passé sous silence.
+    """
+    if processed >= total and not interrupted:
         return
-    message = (
-        f"⚠️ <b>Rafraîchissement incomplet</b>\n\n"
-        f"Mode {mode_label} : {processed}/{total} livres traités.\n"
-        "Le reste attendra la prochaine passe."
+
+    if occurrence is not None:
+        claimed = await _claim_slot(
+            f"{INCOMPLETE_NOTIFY_KEY_PREFIX}{occurrence}", INCOMPLETE_NOTIFY_TTL_SECONDS
+        )
+        if not claimed:
+            logger.debug("Bilan déjà envoyé pour l'occurrence %s.", occurrence)
+            return
+
+    # « Rafraîchissement » est masculin : l'accord se fait sur le nom, pas sur le mot
+    # qui suit. « Rafraîchissement complète » se lisait comme une faute.
+    mode = "complet" if not incremental else "incrémental"
+    if incremental and batch_size:
+        mode = f"incrémental ({batch_size} livres)"
+
+    remaining = max(total - processed, 0)
+    lines = [
+        f"🔄 <b>Rafraîchissement {mode}</b>",
+        "",
+        f"Traités : {processed}/{total} livres",
+        f"Mis à jour : {refreshed} livres",
+    ]
+    if remaining:
+        lines.append(f"Restants à traiter : {remaining} livres")
+    else:
+        lines.append("Tous les livres du lot ont été traités.")
+
+    if interrupted:
+        lines.append("")
+        lines.append("<i>Plafond de durée atteint : les livres restants seront repris "
+                     "selon l'ordre de la file.</i>")
+        # La date n'est annoncée que pour une passe complète : c'est la seule dont
+        # la prise en charge des restants est réellement prévue.
+        if not incremental:
+            lines.append(next_full_pass_note())
+
+    await notify_admins("\n".join(lines))
+    logger.info(
+        "Bilan de passe (%s) : %d/%d traités, %d mis à jour, coupée=%s.",
+        mode, processed, total, refreshed, interrupted,
     )
-    await notify_admins(message)
-    logger.warning("Rafraîchissement incomplet : %d/%d livres traités.", processed, total)
 
 
 def _ratio_is_high(processed: int, count: int) -> bool:

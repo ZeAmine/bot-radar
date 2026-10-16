@@ -1002,3 +1002,129 @@ async def test_a_late_lookup_does_not_edit_an_alert_deleted_in_the_meantime():
         coro.close()
     assert journey["alert"].isbn == ANCIEN_ISBN
     assert journey["alert"].status == AlertStatus.DELETED
+
+
+# --- Variantes : ce qui est écrit, et ce qui est annoncé ---
+
+
+def _alerte_variantes(alert_id, variantes):
+    """Une alerte BD minimale portant déjà des variantes enregistrées."""
+    alert = MagicMock(
+        spec=Alert,
+        id=alert_id,
+        status=AlertStatus.ACTIVE,
+        category=None,
+        max_item_price_cents=1500,
+        variants=list(variantes),
+    )
+    alert.name = "Blacksad"
+    alert.include_keywords = ["blacksad"]
+    alert.exclude_keywords = []
+    return alert
+
+
+async def _enregistrer_variantes(texte, variantes_stockees, alert_id=None):
+    """Joue l'écran « Modifier → variantes » et rend l'alerte et les messages envoyés."""
+    from unittest.mock import patch
+
+    alert_id = alert_id or uuid.uuid4()
+    message = AsyncMock()
+    message.text = texte
+    state = AsyncMock()
+    state.get_data.return_value = {
+        "edit_alert_id": str(alert_id),
+        "edit_field": "variants",
+    }
+    user = MagicMock(spec=User, id=uuid.uuid4())
+    session = AsyncMock()
+    alert = _alerte_variantes(alert_id, variantes_stockees)
+    repo_mock = AsyncMock()
+    repo_mock.get_by_id.return_value = alert
+    repo_mock.count_by_user.return_value = 1
+
+    with patch("app.bot.handlers.alerts_manage._get_alert_repo", return_value=repo_mock):
+        await save_edited_field_value(message, state=state, db_user=user, db_session=session)
+
+    confirmations = [c.args[0] for c in message.answer.call_args_list if c.args]
+    return alert, confirmations
+
+
+@pytest.mark.asyncio
+async def test_the_shorter_input_replaces_the_list_and_confirms_it():
+    """Liste `A, B` puis saisie `A` : B part, et la modification est confirmée.
+
+    C'est le cas que l'intersection avec les variantes stockées traitait à l'envers :
+    `A` étant déjà présent, la saisie était annoncée « déjà présente » alors que la
+    liste changeait réellement — `B` disparaissait.
+    """
+    alert, confirmations = await _enregistrer_variantes(
+        "blacksad poche", ["blacksad poche", "blacksad tome 1"]
+    )
+
+    assert alert.variants == ["blacksad poche"]
+    assert any("Modification enregistrée" in c for c in confirmations)
+
+
+@pytest.mark.asyncio
+async def test_an_identical_list_announces_no_modification():
+    """Une liste finale identique à celle enregistrée ne s'annonce pas comme un changement.
+
+    La comparaison porte sur les formes normalisées : `Blacksad poche` saisi face à
+    `blacksad poche` stocké est la même variante, et l'annoncer comme une
+    modification ferait écrire ce qui n'a pas bougé.
+    """
+    alert, confirmations = await _enregistrer_variantes("Blacksad poche", ["blacksad poche"])
+
+    assert alert.variants == ["blacksad poche"]
+    assert any("Aucune modification" in c for c in confirmations)
+
+
+@pytest.mark.asyncio
+async def test_a_fully_rejected_input_leaves_the_stored_list_intact():
+    """Une saisie entièrement rejetée n'efface pas les variantes déjà enregistrées.
+
+    La saisie remplace la liste — mais un terme écarté n'est pas une demande
+    d'effacement : sans cette distinction, proposer un ISBN vidait la liste.
+    """
+    alert, confirmations = await _enregistrer_variantes("9782205089752", ["blacksad poche"])
+
+    assert alert.variants == ["blacksad poche"]
+    assert any("inchangée" in c for c in confirmations)
+    assert not any("Modification enregistrée" in c for c in confirmations)
+
+
+@pytest.mark.asyncio
+async def test_a_partial_rejection_names_what_was_kept_and_what_was_refused():
+    """Une saisie partiellement retenue dit les deux, sans confirmer en silence."""
+    alert, confirmations = await _enregistrer_variantes(
+        "blacksad poche, 9782205089752", ["blacksad tome 1"]
+    )
+
+    assert alert.variants == ["blacksad poche"]
+    annonce = next(c for c in confirmations if "Modification enregistrée" in c)
+    assert "blacksad poche" in annonce
+    assert "9782205089752" in annonce
+    assert "non retenu" in annonce.lower()
+
+
+@pytest.mark.asyncio
+async def test_a_variant_that_repeats_the_inclusion_is_accepted_from_the_user():
+    """Une variante écrite par l'utilisateur n'est pas refusée parce qu'elle reprend l'inclusion.
+
+    C'était la cause exacte du défaut : la saisie « blacksad integrale » pour
+    l'inclusion « blacksad » était écartée comme redondante, la liste restait vide,
+    et la confirmation annonçait pourtant « Modification enregistrée ».
+    """
+    alert, confirmations = await _enregistrer_variantes("blacksad integrale", [])
+
+    assert alert.variants == ["blacksad integrale"]
+    assert any("Modification enregistrée" in c for c in confirmations)
+
+
+@pytest.mark.asyncio
+async def test_skip_still_clears_the_variants():
+    """L'effacement volontaire reste possible, et il est annoncé comme tel."""
+    alert, confirmations = await _enregistrer_variantes("/skip", ["blacksad poche"])
+
+    assert alert.variants == []
+    assert any("effacées" in c for c in confirmations)

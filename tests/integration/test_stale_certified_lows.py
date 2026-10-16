@@ -271,3 +271,43 @@ async def test_fresh_undated_aggregate_does_not_prove_historical_refresh(session
     )
     assert total == 1
     assert rows[0][0] == "Grimr"
+
+
+async def test_a_book_last_collected_three_days_ago_is_not_expired(session):
+    """Un livre collecté il y a trois jours n'est pas périmé sous un seuil de sept.
+
+    Ce test échoue si le seuil retombe à deux jours : c'est la régression que la
+    décision de sept jours doit rendre impossible.
+    """
+    from app.services.market_health import STALE_AFTER_DAYS
+
+    book_id = await _book_with_cached_low(session, title="Grimr", low_cents=545)
+    cache = await session.scalar(
+        select(BookMarketCache).where(BookMarketCache.book_id == book_id)
+    )
+    cache.last_successful_collection_at = datetime.now(UTC) - timedelta(days=3)
+    await session.commit()
+
+    stale_after = datetime.now(UTC) - timedelta(days=STALE_AFTER_DAYS)
+    _, total = await MarketPriceRepository(session).find_stale_current_collections(
+        stale_after=stale_after,
+    )
+    assert total == 0
+
+
+async def test_a_book_last_collected_eight_days_ago_is_expired(session):
+    """Au-delà du seuil partagé, le livre est signalé — y compris jamais coté."""
+    from app.services.market_health import STALE_AFTER_DAYS
+
+    book_id = await _book_with_cached_low(session, title="Grimr", low_cents=545)
+    cache = await session.scalar(
+        select(BookMarketCache).where(BookMarketCache.book_id == book_id)
+    )
+    cache.last_successful_collection_at = datetime.now(UTC) - timedelta(days=8)
+    await session.commit()
+
+    stale_after = datetime.now(UTC) - timedelta(days=STALE_AFTER_DAYS)
+    _, total = await MarketPriceRepository(session).find_stale_current_collections(
+        stale_after=stale_after,
+    )
+    assert total == 1

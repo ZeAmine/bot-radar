@@ -18,7 +18,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.formatter import format_alert_card
+from app.bot.formatter import send_alert_card
 from app.bot.handlers.alerts_helpers import keyword_note
 from app.bot.handlers.alerts_view import show_alerts, view_single_alert
 from app.bot.handlers.autotune import pop_pending_variants, save_pending_variants
@@ -51,7 +51,12 @@ from app.db.repositories.category_repo import CategoryRepository
 from app.db.session import AsyncSessionLocal
 from app.domain.entities.alert import PauseActionProgress
 from app.domain.entities.alert_preparation import preparation_request
-from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
+from app.domain.rules.keyword_hygiene import (
+    TermRemoval,
+    assess_variants,
+    sanitize_exclusions,
+    sanitize_variants,
+)
 from app.services.ai.modules.keyword_variants import keyword_variants_module
 from app.services.ai.schemas import BookContext, book_context_from
 from app.services.alert_service import (
@@ -179,7 +184,6 @@ async def handle_select_edit_category(
         return
 
     alert = alerts[0]
-    card_text = format_alert_card(alert, current_index=page, total_count=total_count)
     keyboard = get_alert_card_keyboard(
         alert.id,
         alert.status,
@@ -190,7 +194,10 @@ async def handle_select_edit_category(
         pause_callback=await issue_pause_button(alert, db_session),
     )
     if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(card_text, reply_markup=keyboard)
+        await send_alert_card(
+            callback.message, alert, current_index=page, total_count=total_count,
+            reply_markup=keyboard, edit=True,
+        )
 
 
 @router.callback_query(F.data == "al_close")
@@ -856,33 +863,59 @@ async def _save_edited_field_value(
         book_to_price: uuid.UUID | None = None
         price_lines: list[str] = []
         previous_status = alert.status
+        # Ce que la confirmation doit dire, et rien de plus : une saisie dont tous les
+        # termes ont été écartés n'a rien écrit, et l'annoncer laisserait croire à une
+        # écriture qui n'a pas eu lieu.
+        variant_rejections: tuple[TermRemoval, ...] = ()
+        variants_unchanged = False
         # L'ISBN retenu quand il remplace celui de l'alerte : c'est le seul cas où les
         # mots-clés de l'ouvrage précédent doivent partir, et donc le seul où la
         # recherche du moteur est relancée.
         replaced_isbn: str | None = None
         new_work_context: BookContext | None = None
         if field in ("exclude_keywords", "include_keywords", "variants"):
-            if raw_text.lower() == "/skip" or raw_text in ("-", "aucun", "aucune"):
-                parsed = []
-            else:
-                parsed = parse_comma_separated_list(raw_text)
+            clears_field = raw_text.lower() == "/skip" or raw_text in ("-", "aucun", "aucune")
+            parsed = [] if clears_field else parse_comma_separated_list(raw_text)
 
             if field == "include_keywords" and not parsed:
                 raise AlertServiceError("Au moins un mot-clé requis pour surveiller l'alerte.")
             # Les variantes et exclusions saisies peuvent venir d'un copier-coller du
-            # moteur : le nettoyeur est le dernier filtre avant la base. Les mots-clés
-            # *inclus*, eux, sont l'intention de l'utilisateur et restent tels quels.
+            # moteur : le nettoyeur est le dernier filtre avant la base.
             if field == "variants":
                 # Une variante saisie peut être l'écriture d'une **inclusion** qualifiée
                 # (« blacksad integral » pour « blacksad intégrale ») et pas du seul titre :
-                # le nettoyeur reçoit donc aussi les mots-clés inclus.
-                parsed = sanitize_variants(
-                    parsed, alert.name, references=alert.include_keywords or ()
+                # le nettoyeur reçoit donc aussi les mots-clés inclus. `from_user` dit que
+                # c'est l'utilisateur qui écrit : il ne se voit pas récuser un terme parce
+                # qu'il reprend le titre, ce qui est la définition d'une variante — les
+                # règles d'identité du produit (nombres, mots reconnaissables) continuent
+                # de s'appliquer.
+                verdict = assess_variants(
+                    parsed,
+                    alert.name,
+                    references=alert.include_keywords or (),
+                    from_user=True,
                 )
-            elif field == "exclude_keywords":
-                parsed = sanitize_exclusions(parsed, alert.name)
-
-            setattr(alert, field, parsed)
+                # Les termes écartés sont retenus **avant** de savoir ce qu'on en fait :
+                # une saisie partiellement retenue doit pouvoir dire lesquels, et une
+                # saisie entièrement rejetée doit pouvoir le dire aussi.
+                variant_rejections = verdict.removals if verdict.removals else ()
+                parsed = verdict.values
+                # La saisie **remplace** la liste, comme l'annonce l'écran — sauf quand
+                # aucun terme n'a survécu : un rejet n'est pas une demande d'effacement,
+                # et réécrire une liste vide viderait les variantes déjà enregistrées.
+                if parsed or clears_field:
+                    # Équivalence sur formes normalisées : `parse_comma_separated_list`
+                    # compare des sous-chaînes brutes, donc « Blacksad » et « blacksad »
+                    # y cohabitent alors que la base les confond.
+                    before = {normalize_text(term) for term in alert.variants or []}
+                    after = {normalize_text(term) for term in parsed}
+                    variants_unchanged = before == after
+                    if not variants_unchanged:
+                        setattr(alert, field, parsed)
+            else:
+                if field == "exclude_keywords":
+                    parsed = sanitize_exclusions(parsed, alert.name)
+                setattr(alert, field, parsed)
 
         elif field == "name":
             if len(raw_text) < 2:
@@ -1019,7 +1052,6 @@ async def _save_edited_field_value(
                 # La cotation ouvre sa session après le commit de l’alerte en pause.
                 from app.core.constants import MatchConfidence
                 from app.db.repositories.book_repo import BookRepository
-                from app.utils.text import normalize_text
 
                 book_repo = BookRepository(db_session)
 
@@ -1119,12 +1151,41 @@ async def _save_edited_field_value(
         cat_slug = alert.category.slug if alert.category else "all"
         total_count = await alert_repo.count_by_user(db_user.id, category_slug=cat_slug)
 
-        await message.answer("✅ Modification enregistrée.")
-        card_text = format_alert_card(alert, current_index=0, total_count=total_count)
-        if price_lines:
-            card_text += "\n\n" + "\n".join(price_lines)
-        card_message = await message.answer(
-            card_text,
+        # La confirmation dit ce qui a été écrit, et rien de plus. Trois cas ne doivent
+        # jamais se lire comme une écriture complète : une liste identique à celle
+        # d'avant, une saisie dont aucun terme n'a été retenu, et une saisie
+        # partiellement retenue — celle-là a bien écrit quelque chose, mais pas tout ce
+        # qui était demandé, et le taire ferait passer un refus pour un succès.
+        if variant_rejections:
+            rejected = ", ".join(f"« {html.escape(item.raw)} »" for item in variant_rejections)
+            reasons = " ; ".join(
+                dict.fromkeys(str(item.reason) for item in variant_rejections)
+            )
+            if variants_unchanged or not parsed:
+                # Rien n'a été écrit : la liste enregistrée est intacte.
+                await message.answer(
+                    f"⚠️ Variante non retenue : {rejected}\n"
+                    f"<i>{html.escape(reasons)}</i>\n\n"
+                    "<i>La liste des variantes de l'alerte est inchangée.</i>"
+                )
+            else:
+                written = ", ".join(html.escape(term) for term in alert.variants or [])
+                await message.answer(
+                    "✅ Modification enregistrée.\n\n"
+                    f"Variantes retenues : {written}\n"
+                    f"Termes non retenus : {rejected}\n"
+                    f"<i>{html.escape(reasons)}</i>"
+                )
+        elif field == "variants" and variants_unchanged:
+            await message.answer("Aucune modification : la liste est identique.")
+        elif field == "variants" and not parsed:
+            await message.answer("✅ Variantes effacées.")
+        else:
+            await message.answer("✅ Modification enregistrée.")
+        card_message = await send_alert_card(
+            message,
+            alert,
+            total_count=total_count,
             reply_markup=get_alert_card_keyboard(
                 alert.id,
                 alert.status,
@@ -1134,6 +1195,7 @@ async def _save_edited_field_value(
                 preparation=getattr(alert, "preparation", None),
                 pause_callback=await issue_pause_button(alert, db_session),
             ),
+            suffix="\n\n" + "\n".join(price_lines) if price_lines else None,
         )
 
         if replaced_isbn is not None:

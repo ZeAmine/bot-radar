@@ -929,19 +929,21 @@ async def _save_alert(
         identity_changed = (alert.name, alert.isbn) != (name, isbn)
         vinted_url = alert.vinted_search_url or vinted_url
         if not prepared or alert.status != AlertStatus.ACTIVE:
-            from app.bot.formatter import format_alert_card
+            from app.bot.formatter import send_alert_card
             from app.bot.keyboards.alerts import get_alert_card_keyboard
             from app.use_cases.pause_alert import issue_pause_button
 
             if callback.message and hasattr(callback.message, "edit_text"):
                 with contextlib.suppress(Exception):
-                    await callback.message.edit_text(
-                        format_alert_card(alert),
+                    await send_alert_card(
+                        callback.message,
+                        alert,
                         reply_markup=get_alert_card_keyboard(
                             alert.id, alert.status, 0, 1, category_slug,
                             preparation=alert.preparation,
                             pause_callback=await issue_pause_button(alert, db_session),
                         ),
+                        edit=True,
                     )
             return
         books = await book_repo.get_all_books_for_alert(alert.id)
@@ -1013,6 +1015,10 @@ async def _save_alert(
     )
     if callback.message and hasattr(callback.message, "edit_text"):
         try:
-            await callback.message.edit_text(resp_text, reply_markup=vinted_btn)
+            # Le lien vers la recherche reste cliquable ; c'est l'aperçu déplié par
+            # Telegram qui est retiré — il poussait les boutons hors de l'écran.
+            await callback.message.edit_text(
+                resp_text, reply_markup=vinted_btn, disable_web_page_preview=True
+            )
         except Exception:
             logger.warning("Confirmation de création indisponible", exc_info=True)
