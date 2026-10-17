@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import time
+from collections import deque
 from typing import Any
 
 import httpx
@@ -37,14 +38,32 @@ logger = logging.getLogger("radar.vinted_scraper")
 
 API_CATALOG_ENDPOINT = "https://api.vinted.fr/svc-catalogue/items"
 
+BLOCK_ORIGIN_CLOUDFLARE = "cloudflare"
+BLOCK_ORIGIN_DATADOME = "datadome"
+BLOCK_ORIGIN_UNKNOWN = "indéterminé"
+
+
+def block_origin_hint(response: httpx.Response) -> str:
+    """Indice d'origine d'un 403, lu uniquement dans les en-têtes de la réponse."""
+    headers = response.headers
+    if headers.get("cf-ray") or "cloudflare" in headers.get("server", "").lower():
+        return BLOCK_ORIGIN_CLOUDFLARE
+    if "datadome" in ", ".join(headers.get_list("set-cookie")).lower():
+        return BLOCK_ORIGIN_DATADOME
+    return BLOCK_ORIGIN_UNKNOWN
+
 
 class VintedBlockError(Exception):
-    """Exception levée en cas de blocage Cloudflare/DataDome (403)."""
+    """Exception levée en cas de blocage Vinted (403)."""
 
     def __init__(
-        self, status_code: int = 403, message: str = "Blocage Cloudflare Vinted (403)"
+        self,
+        status_code: int = 403,
+        message: str = "Blocage Vinted (403)",
+        origin_hint: str = BLOCK_ORIGIN_UNKNOWN,
     ) -> None:
         self.status_code = status_code
+        self.origin_hint = origin_hint
         super().__init__(message)
 
 
@@ -58,6 +77,45 @@ class VintedRateLimitError(Exception):
     def __init__(self, status_code: int = 429, message: str = "Rate limit Vinted (429)") -> None:
         self.status_code = status_code
         super().__init__(message)
+
+
+REQUEST_KINDS = ("api", "html", "mint")
+
+
+class VintedRequestStats:
+    """Compteurs de requêtes émises vers Vinted, par type et sur fenêtre glissante."""
+
+    def __init__(self, window_seconds: float = 60.0) -> None:
+        self._window_seconds = window_seconds
+        self._timestamps: dict[str, deque[float]] = {kind: deque() for kind in REQUEST_KINDS}
+        self._totals: dict[str, int] = dict.fromkeys(REQUEST_KINDS, 0)
+
+    def record(self, kind: str, now: float | None = None) -> None:
+        moment = time.monotonic() if now is None else now
+        self._timestamps[kind].append(moment)
+        self._totals[kind] += 1
+        self._trim(kind, moment)
+
+    def totals(self) -> dict[str, int]:
+        return dict(self._totals)
+
+    def window_counts(self, now: float | None = None) -> dict[str, int]:
+        moment = time.monotonic() if now is None else now
+        return {kind: len(self._trim(kind, moment)) for kind in REQUEST_KINDS}
+
+    def reset(self) -> None:
+        for kind in REQUEST_KINDS:
+            self._timestamps[kind].clear()
+            self._totals[kind] = 0
+
+    def _trim(self, kind: str, now: float) -> deque[float]:
+        stamps = self._timestamps[kind]
+        while stamps and now - stamps[0] > self._window_seconds:
+            stamps.popleft()
+        return stamps
+
+
+vinted_request_stats = VintedRequestStats()
 
 
 DEFAULT_VINTED_HEADERS = {
@@ -191,6 +249,7 @@ class VintedSessionManager:
                     client.cookies.clear()
 
                 if client is not None:
+                    vinted_request_stats.record("mint")
                     resp = await client.get(
                         "https://www.vinted.fr/",
                         headers=DEFAULT_VINTED_HEADERS,
@@ -204,6 +263,7 @@ class VintedSessionManager:
                         follow_redirects=True,
                         proxy=settings.get_vinted_proxy(),
                     ) as mint_client:
+                        vinted_request_stats.record("mint")
                         resp = await mint_client.get(
                             "https://www.vinted.fr/",
                             headers=DEFAULT_VINTED_HEADERS,
@@ -344,6 +404,7 @@ async def fetch_vinted_page(
         api_params = catalog_url_to_api_params(url)
         api_headers = vinted_session_manager.get_api_headers()
 
+        vinted_request_stats.record("api")
         response = await client.get(
             API_CATALOG_ENDPOINT,
             params=api_params,
@@ -355,6 +416,7 @@ async def fetch_vinted_page(
             await vinted_session_manager.clear_session(client)
             if await vinted_session_manager.refresh_session(client):
                 api_headers = vinted_session_manager.get_api_headers()
+                vinted_request_stats.record("api")
                 response = await client.get(
                     API_CATALOG_ENDPOINT,
                     params=api_params,
@@ -380,8 +442,11 @@ async def fetch_vinted_page(
             logger.warning("Vinted rate limit (429) sur l'API: %s", url)
             raise VintedRateLimitError(429, f"Vinted rate limit (429) sur {url}")
         elif response.status_code == 403:
-            logger.warning("Vinted blocage Cloudflare/DataDome (403) sur l'API: %s", url)
-            raise VintedBlockError(403, f"Vinted blocage Cloudflare (403) sur {url}")
+            hint = block_origin_hint(response)
+            logger.warning("Vinted blocage 403 (indice: %s) sur l'API: %s", hint, url)
+            raise VintedBlockError(
+                403, f"Vinted blocage 403 (indice: {hint}) sur {url}", origin_hint=hint
+            )
         else:
             logger.debug(
                 "Vinted API statut %d pour %s, bascule vers catalogue HTML...",
@@ -391,6 +456,7 @@ async def fetch_vinted_page(
 
         # 2. Secours : Scraping du catalogue HTML classique
         headers = vinted_session_manager.get_auth_headers()
+        vinted_request_stats.record("html")
         html_response = await client.get(url, headers=headers)
 
         is_refresh_page = (
@@ -411,6 +477,7 @@ async def fetch_vinted_page(
             await vinted_session_manager.clear_session(client)
             if await vinted_session_manager.refresh_session(client):
                 headers = vinted_session_manager.get_auth_headers()
+                vinted_request_stats.record("html")
                 html_response = await client.get(url, headers=headers)
 
         if html_response.status_code == 200:
@@ -427,8 +494,11 @@ async def fetch_vinted_page(
             logger.warning("Vinted rate limit (429) sur le catalogue HTML: %s", url)
             raise VintedRateLimitError(429, f"Vinted rate limit (429) sur {url}")
         elif html_response.status_code == 403:
-            logger.warning("Vinted blocage Cloudflare (403) sur le catalogue HTML: %s", url)
-            raise VintedBlockError(403, f"Vinted blocage Cloudflare (403) sur {url}")
+            hint = block_origin_hint(html_response)
+            logger.warning("Vinted blocage 403 (indice: %s) sur le catalogue HTML: %s", hint, url)
+            raise VintedBlockError(
+                403, f"Vinted blocage 403 (indice: {hint}) sur {url}", origin_hint=hint
+            )
         else:
             logger.warning(
                 "Vinted statut HTTP inattendu %s pour: %s",

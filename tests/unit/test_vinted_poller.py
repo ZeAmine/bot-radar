@@ -7,18 +7,27 @@ import httpx
 import pytest
 
 from app.services.vinted_parsing import CATALOG_PAGE_SIZE
-from app.services.vinted_scraper import ScrapedVintedItem
+from app.services.vinted_scraper import (
+    ScrapedVintedItem,
+    VintedBlockError,
+    VintedCollectionError,
+    vinted_request_stats,
+)
 from app.tasks.vinted_poller import (
+    COLLECTION_FAILURE_ALERT_THRESHOLD,
     MAX_MEANINGFUL_CYCLE_GAP_S,
     MIN_CYCLE_GAP_SECONDS,
     WINDOW_LOG_EVERY_CYCLES,
+    AvailabilityLedger,
     CycleCadence,
+    FifoSet,
     dedupe_custom_searches,
     load_active_custom_searches,
     load_initial_seen_ids,
     poll_vinted_once,
     remaining_cycle_sleep,
     run_vinted_poller,
+    search_freshness_snapshot,
 )
 
 
@@ -273,7 +282,7 @@ async def test_cycle_sleep_subtracts_the_cycle_work(monkeypatch: pytest.MonkeyPa
         patch(
             "app.tasks.vinted_poller.load_initial_seen_ids",
             new_callable=AsyncMock,
-            return_value=set(),
+            return_value=FifoSet(),
         ),
         patch("app.tasks.vinted_poller.poll_vinted_once", side_effect=fake_poll),
         patch(
@@ -392,11 +401,283 @@ async def test_scraped_item_without_seller_id_leaves_the_payload_unchanged(
     assert "seller_external_id" not in raw_payload
 
 
+def test_availability_ledger_sums_and_expires_old_events() -> None:
+    """Le registre somme par catégorie et oublie les cycles sortis de la fenêtre."""
+    ledger = AvailabilityLedger(window_seconds=100.0)
+    ledger.add("scanned", 30.0, now=0.0)
+    ledger.add("blocked", 10.0, now=30.0)
+    ledger.add("scanned", 20.0, now=40.0)
+
+    snapshot = ledger.snapshot(now=50.0)
+    assert snapshot["scanned_s"] == pytest.approx(50.0)
+    assert snapshot["blocked_s"] == pytest.approx(10.0)
+    assert snapshot["window_s"] == pytest.approx(60.0)
+
+    expired = ledger.snapshot(now=500.0)
+    assert expired["window_s"] == pytest.approx(0.0)
+    assert expired["scanned_s"] == pytest.approx(0.0)
+
+
+def test_availability_ledger_ignores_zero_span_and_rejects_unknown_category() -> None:
+    """Une durée nulle n'ouvre aucun événement ; une catégorie inconnue est refusée."""
+    ledger = AvailabilityLedger()
+    ledger.add("scanned", 0.0, now=0.0)
+    assert ledger.snapshot(now=0.0)["window_s"] == 0.0
+    with pytest.raises(ValueError, match="catégorie de disponibilité inconnue"):
+        ledger.add("inconnue", 1.0, now=0.0)
+
+
+def test_search_freshness_snapshot_reports_the_oldest_scan() -> None:
+    """L'âge rendu est celui du plus ancien dernier scan réussi."""
+    first_seen = {("u1", "tech"): 100.0, ("u2", "jeux"): 100.0}
+    last_success = {("u1", "tech"): 130.0}
+
+    assert search_freshness_snapshot(first_seen, last_success, now=140.0) == {
+        "count": 2,
+        "worst_age_s": 40.0,
+    }
+    assert search_freshness_snapshot({}, {}, now=140.0) is None
+
+
+@pytest.mark.asyncio
+async def test_cycle_journal_and_status_expose_observability(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Des cycles nominaux laissent une ligne structurée et alimentent les champs de /status."""
+    import asyncio
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
+    stop_event = asyncio.Event()
+    calls = {"count": 0}
+    statuses: list[dict[str, object]] = []
+
+    async def fake_poll(*_args: object, **_kwargs: object) -> int:
+        calls["count"] += 1
+        if calls["count"] == 2:
+            stop_event.set()
+        return 0
+
+    async def fake_save(data: dict[str, object]) -> None:
+        statuses.append(dict(data))
+
+    with (
+        patch("app.tasks.vinted_poller.is_night_time", return_value=False),
+        patch(
+            "app.tasks.vinted_poller.load_initial_seen_ids",
+            new_callable=AsyncMock,
+            return_value=FifoSet(),
+        ),
+        patch("app.tasks.vinted_poller.poll_vinted_once", side_effect=fake_poll),
+        patch(
+            "app.tasks.vinted_poller.get_active_custom_searches_cached",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch("app.tasks.vinted_poller.save_poller_status", side_effect=fake_save),
+        patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
+        patch("app.tasks.vinted_poller.random.uniform", side_effect=[0.0, 30.0, 0.0, 30.0]),
+        patch("app.tasks.vinted_poller.random.randint", return_value=1),
+        patch("app.tasks.vinted_poller.remaining_cycle_sleep", return_value=0.0),
+        caplog.at_level(logging.INFO, logger="radar.vinted_poller"),
+    ):
+        await run_vinted_poller(stop_event)
+
+    journal = [r for r in caplog.records if getattr(r, "event", None) == "poller_cycle"]
+    assert len(journal) == 2
+    assert all(record.outcome == "scanned" for record in journal)
+    assert all(record.micro_pause_s == 30.0 for record in journal)
+    assert all(record.requests == {"api": 0, "html": 0, "mint": 0} for record in journal)
+    assert caplog.text.count("Micro-pause naturelle de 30.0s") == 2
+
+    active = [status for status in statuses if status.get("status") == "active"]
+    assert len(active) == 2
+    assert active[-1]["micro_pauses"] == 1
+    availability = active[-1]["availability"]
+    assert isinstance(availability, dict)
+    assert set(availability) == {
+        "window_s",
+        "scanned_s",
+        "night_s",
+        "blocked_s",
+        "network_error_s",
+        "unexpected_error_s",
+    }
+    assert availability["window_s"] == pytest.approx(
+        availability["scanned_s"]
+        + availability["night_s"]
+        + availability["blocked_s"]
+        + availability["network_error_s"]
+        + availability["unexpected_error_s"]
+    )
+    assert active[-1]["requests_60s"] == {"api": 0, "html": 0, "mint": 0}
+    assert active[-1]["search_stats"] is None
+
+
+@pytest.mark.asyncio
+async def test_consecutive_collection_failures_alert_once_and_recover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cinq cycles sans collecte notifient une fois ; la reprise notifie une fois."""
+    import asyncio
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
+    stop_event = asyncio.Event()
+    calls = {"count": 0}
+    statuses: list[dict[str, object]] = []
+
+    async def fake_poll(*_args: object, **_kwargs: object) -> int:
+        calls["count"] += 1
+        if calls["count"] <= COLLECTION_FAILURE_ALERT_THRESHOLD:
+            raise VintedCollectionError("réseau indisponible")
+        stop_event.set()
+        return 0
+
+    async def fake_save(data: dict[str, object]) -> None:
+        statuses.append(dict(data))
+
+    with (
+        patch("app.tasks.vinted_poller.is_night_time", return_value=False),
+        patch(
+            "app.tasks.vinted_poller.load_initial_seen_ids",
+            new_callable=AsyncMock,
+            return_value=FifoSet(),
+        ),
+        patch("app.tasks.vinted_poller.poll_vinted_once", side_effect=fake_poll),
+        patch(
+            "app.tasks.vinted_poller.get_active_custom_searches_cached",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch("app.tasks.vinted_poller.save_poller_status", side_effect=fake_save),
+        patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
+        patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
+        patch("app.tasks.vinted_poller.random.randint", return_value=10_000),
+        patch("app.tasks.vinted_poller.remaining_cycle_sleep", return_value=0.0),
+        patch("app.tasks.vinted_poller.notify_admins", new_callable=AsyncMock) as notify,
+    ):
+        await run_vinted_poller(stop_event)
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    assert calls["count"] == COLLECTION_FAILURE_ALERT_THRESHOLD + 1
+    assert statuses
+    assert statuses[0]["status"] == "active"
+    texts = [call.kwargs["text"] for call in notify.await_args_list]
+    assert len(texts) == 2
+    assert "dégradée" in texts[0]
+    assert "rétablie" in texts[1]
+
+
+@pytest.mark.asyncio
+async def test_block_cycle_reports_the_origin_hint_and_keeps_observability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un 403 s'arrête avec l'indice d'en-tête, un statut cooldown et la disponibilité."""
+    import asyncio
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
+    stop_event = asyncio.Event()
+    statuses: list[dict[str, object]] = []
+
+    async def fake_poll(*_args: object, **_kwargs: object) -> int:
+        stop_event.set()
+        raise VintedBlockError(403, "Blocage Vinted (403)", origin_hint="cloudflare")
+
+    async def fake_save(data: dict[str, object]) -> None:
+        statuses.append(dict(data))
+
+    with (
+        patch("app.tasks.vinted_poller.is_night_time", return_value=False),
+        patch(
+            "app.tasks.vinted_poller.load_initial_seen_ids",
+            new_callable=AsyncMock,
+            return_value=FifoSet(),
+        ),
+        patch("app.tasks.vinted_poller.poll_vinted_once", side_effect=fake_poll),
+        patch("app.tasks.vinted_poller.save_poller_status", side_effect=fake_save),
+        patch(
+            "app.tasks.vinted_poller.vinted_session_manager.clear_session",
+            new_callable=AsyncMock,
+        ),
+        patch("app.tasks.vinted_poller.notify_admins", new_callable=AsyncMock) as notify,
+        patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
+        patch("app.tasks.vinted_poller.random.randint", return_value=10_000),
+    ):
+        await run_vinted_poller(stop_event)
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    assert statuses[0]["status"] == "cooldown"
+    assert statuses[0]["reason"] == "Blocage Vinted (403, indice: cloudflare)"
+    assert isinstance(statuses[0]["availability"], dict)
+    texts = [call.kwargs["text"] for call in notify.await_args_list]
+    assert any("Pause de sécurité" in text for text in texts)
+
+
+@pytest.mark.asyncio
+async def test_custom_search_scan_updates_the_freshness_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un scan personnalisé réussi alimente la fraîcheur rendue par /status."""
+    import asyncio
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
+    stop_event = asyncio.Event()
+    statuses: list[dict[str, object]] = []
+    custom_url = "https://v.fr/custom"
+
+    async def fake_poll(*_args: object, **kwargs: object) -> int:
+        if kwargs.get("target_url") == custom_url:
+            stop_event.set()
+        return 0
+
+    async def fake_save(data: dict[str, object]) -> None:
+        statuses.append(dict(data))
+
+    with (
+        patch("app.tasks.vinted_poller.is_night_time", return_value=False),
+        patch(
+            "app.tasks.vinted_poller.load_initial_seen_ids",
+            new_callable=AsyncMock,
+            return_value=FifoSet(),
+        ),
+        patch("app.tasks.vinted_poller.poll_vinted_once", side_effect=fake_poll),
+        patch(
+            "app.tasks.vinted_poller.get_active_custom_searches_cached",
+            new_callable=AsyncMock,
+            return_value=[(custom_url, "tech")],
+        ),
+        patch("app.tasks.vinted_poller.save_poller_status", side_effect=fake_save),
+        patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
+        patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
+        patch("app.tasks.vinted_poller.random.randint", return_value=10_000),
+        patch("app.tasks.vinted_poller.remaining_cycle_sleep", return_value=0.0),
+    ):
+        await run_vinted_poller(stop_event)
+
+    active = [status for status in statuses if status.get("status") == "active"]
+    assert len(active) == 1
+    search_stats = active[0]["search_stats"]
+    assert isinstance(search_stats, dict)
+    assert search_stats["count"] == 1
+    assert 0 <= search_stats["worst_age_s"] < 5
+
+
 @pytest.fixture(autouse=True)
 async def isolated_baseline_storage(monkeypatch):
     """Les nouveaux jalons du poller sont persistés dans une base propre à chaque test."""
     from tests.database import sqlite_only_database
 
+    vinted_request_stats.reset()
     async with sqlite_only_database() as database:
         monkeypatch.setattr("app.tasks.vinted_poller.AsyncSessionLocal", database.maker)
         yield
