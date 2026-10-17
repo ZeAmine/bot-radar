@@ -376,6 +376,25 @@ async def test_build_exclusion_proposal_does_not_call_engine_below_threshold():
 
 
 @pytest.mark.asyncio
+async def test_build_exclusion_proposal_waits_for_the_third_signal():
+    """Deux faux positifs ne suffisent pas : le seuil partagé est trois."""
+    mock_engine = AsyncMock(return_value=(["figurine"], None))
+
+    with patch(
+        "app.services.ai.modules.auto_tuning.auto_tuning_module.suggest_exclusions",
+        new_callable=lambda: mock_engine,
+    ):
+        proposal = await build_exclusion_proposal(
+            alert_name="One Piece",
+            already_excluded=[],
+            disliked_titles=["Figurine Luffy", "Poster One Piece"],
+        )
+
+    assert proposal is None
+    mock_engine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_handle_tune_apply():
     """Vérifie l'application effective des exclusions et le nettoyage des faux positifs."""
     alert_id = uuid.uuid4()
@@ -870,6 +889,75 @@ async def test_handle_custom_exclusions_input_valid():
         assert kb.inline_keyboard[0][0].callback_data == f"ai_tune_apply:{alert_id}"
         assert kb.inline_keyboard[1][0].callback_data == f"ai_tune_edit:{alert_id}"
         assert kb.inline_keyboard[2][0].callback_data == f"ai_tune_cancel:{alert_id}"
+
+
+@pytest.mark.asyncio
+async def test_edited_exclusions_are_applied_verbatim_and_confirmed():
+    """La saisie éditée remplace la suggestion et rejoint les exclusions existantes.
+
+    Le cas observé : cinq exclusions déjà enregistrées, quatre suggestions, puis une
+    saisie `pacush, monstre, tome`. La fusion ne doit ni réutiliser l'ancienne
+    suggestion ni tronquer les termes ajoutés au plafond des propositions.
+    """
+    alert_id = uuid.uuid4()
+    await save_pending_tuning(alert_id, ["pacush", "ptiluc", "mythe", "relecture"])
+
+    existing = ["junji ito", "mary shelley roman", "poche", "père", "manga"]
+    alert = Alert(
+        id=alert_id,
+        name="Frankenstein",
+        user_id=uuid.uuid4(),
+        exclude_keywords=list(existing),
+    )
+    db_user = User(id=alert.user_id, telegram_user_id=123456)
+    db_session = MagicMock()
+    db_session.commit = AsyncMock()
+
+    message = MagicMock(spec=Message)
+    message.text = "pacush, monstre\ntome"
+    message.answer = AsyncMock()
+    state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
+    state.get_data = AsyncMock(return_value={"tuning_alert_id": str(alert_id)})
+    state.clear = AsyncMock()
+
+    with patch(
+        "app.bot.handlers.autotune.AlertRepository.get_by_id",
+        new_callable=AsyncMock,
+        return_value=alert,
+    ):
+        await handle_custom_exclusions_input(message, db_user, db_session, state)
+
+    assert await get_pending_tuning(alert_id) == ["pacush", "monstre", "tome"]
+
+    callback = MagicMock(spec=CallbackQuery)
+    callback.data = f"ai_tune_apply:{alert_id}"
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+
+    with (
+        patch(
+            "app.bot.handlers.autotune.AlertRepository.get_by_id",
+            new_callable=AsyncMock,
+            return_value=alert,
+        ),
+        patch(
+            "app.bot.handlers.autotune.clear_dislikes_for_alert",
+            new_callable=AsyncMock,
+            return_value=3,
+        ),
+    ):
+        await handle_tune_apply(callback, db_user, db_session)
+
+    assert alert.exclude_keywords == [*existing, "pacush", "monstre", "tome"]
+    confirmation = callback.message.edit_text.call_args[0][0]
+    assert "Exclusions appliquées" in confirmation
+    assert "monstre" in confirmation
+    assert "tome" in confirmation
+    assert "ptiluc" not in confirmation
+    assert "3 faux positifs traités retirés de la liste" in confirmation
 
 
 @pytest.mark.asyncio

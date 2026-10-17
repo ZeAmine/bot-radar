@@ -401,9 +401,13 @@ async def handle_tune_apply(
         if exc.lower() not in [e.lower() for e in current_excludes]:
             current_excludes.append(exc)
 
-    # Exclusions du moteur : le nettoyeur est le dernier filtre avant la base ;
-    # une exclusion numérique nue rejetterait toute annonce chiffrée.
-    alert.exclude_keywords = sanitize_exclusions(current_excludes, alert.name)
+    # Exclusions du moteur ou saisie éditée : le nettoyeur est le dernier filtre
+    # avant la base ; une exclusion numérique nue rejetterait toute annonce chiffrée.
+    # Le plafond des propositions ne s'applique pas à cette fusion : les termes déjà
+    # enregistrés sont conservés et la saisie de l'utilisateur ne perd pas sa fin.
+    alert.exclude_keywords = sanitize_exclusions(
+        current_excludes, alert.name, enforce_limit=False
+    )
 
     cleaned_count = await clear_dislikes_for_alert(alert.id, db_session)
     await db_session.commit()

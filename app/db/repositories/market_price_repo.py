@@ -321,7 +321,7 @@ class MarketPriceRepository:
     async def find_stale_current_collections(
         self, *, stale_after: datetime, limit: int = 8,
     ) -> tuple[list[tuple[str, str | None, int, datetime | None]], int]:
-        """Offres dont aucune collecte réussie n'a renouvelé la connaissance sous 48 h."""
+        """Offres dont aucune collecte réussie n'a renouvelé la connaissance sous sept jours."""
         last = BookMarketCache.last_successful_collection_at
         watched = select(AlertBook.book_id).join(Alert).join(Category).where(
             Category.slug == "bd_comics",

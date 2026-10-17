@@ -27,6 +27,7 @@ from app.db.repositories.autotune_repo import (
 )
 from app.db.session import AsyncSessionLocal
 from app.services.ai.modules.auto_tuning import (
+    MIN_DISLIKES_FOR_PROPOSAL,
     auto_tuning_module,
     build_exclusion_proposal,
     claim_autotune_slot,
@@ -164,7 +165,7 @@ def schedule_proactive_autotune_check(
 
 
 async def run_proactive_autotune_scan(bot: Bot | None = None) -> int:
-    """Scanne toutes les alertes ayant >= 2 dislikes non résolus (pour job APScheduler)."""
+    """Scanne les alertes ayant au moins le seuil de dislikes non résolus."""
     if not auto_tuning_module.is_enabled:
         return 0
 
@@ -173,7 +174,7 @@ async def run_proactive_autotune_scan(bot: Bot | None = None) -> int:
 
     async with AsyncSessionLocal() as session:
         alerts_to_tune = await get_all_alerts_with_dislike_threshold(
-            min_dislikes=2,
+            min_dislikes=MIN_DISLIKES_FOR_PROPOSAL,
             db_session=session,
         )
 

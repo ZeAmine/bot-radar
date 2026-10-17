@@ -80,10 +80,16 @@ partagés restent conservés. Le panneau affiche aussi l'état des tomes sans pr
 ## Absences et preuves
 
 À l'envoi, une ligne non chiffrée décrit l'état réel : sans relevé, échec de collecte,
-aucune offre datée, composition inconnue ou catalogue épuisé. Un panneau ouvert peut
-montrer une collecte en cours ; un message envoyé reste un instantané.
-Le panneau partagé relit immédiatement le cache, conserve le tome sélectionné,
-actualise progressivement et invalide le contexte après fermeture (ADR-042).
+aucune offre datée, composition inconnue ou catalogue épuisé. Un message envoyé
+reste un instantané.
+Le panneau partagé relit le cache et conserve le tome sélectionné. Il ne relance
+pas de collecte lorsqu'une cote exploitable ou une collecte réussie sans offre
+existe ; sans première cote, il déclenche la cotation initiale par le mécanisme
+existant, avec la garde de collecte en vol et le repos des échecs. Une résolution
+catalogue manquante peut être demandée une fois par période de 24 h ; la première
+cotation du tome retrouvé est ensuite demandée, sans repli sur un autre tome. Le
+message ouvert n'est pas actualisé automatiquement et le panneau est invalidé après
+fermeture (ADR-042).
 
 Contrôles existants : [offres](../../tests/unit/test_market_offer_rules.py),
 [comparateur](../../tests/unit/test_market_comparator.py),
@@ -95,22 +101,30 @@ une collecte réelle ; les procédures de session et leurs permissions restent d
 
 ## Minimum unique et fraîcheur — ADR-050
 
-Le panneau affiche un seul « Prix bas constaté », accompagné de la période et du
-nombre de relevés conservés. La fenêtre de calcul de 365 jours ne prouve pas une
-année complète de couverture du marché. Les données des anciens agrégats
-restent conservées, sans ligne « Ancien minimum (informatif) ». Un point historique
+Le panneau affiche un seul « Prix bas constaté », sans date ni période de relevés.
+La fenêtre de calcul de 365 jours ne prouve pas une année complète de couverture du
+marché. Les données des anciens agrégats restent conservées en interne, sans ligne
+« Ancien minimum (informatif) » ni compteur de relevés affiché. Un point historique
 fournisseur exige montant livré, date et provenance ; il est persisté séparément
 des offres disponibles et intégré aux observations admissibles des 365 derniers jours.
 Une collecte récente ne devient jamais la date d'un prix historique. Les totaux de
 série utilisent la même projection centrale et les règles d'occasion/état/marchand.
 
 La tentative, la réussite des offres et la récupération des preuves historiques
-ont des dates distinctes. Un minimum ancien dans sa fenêtre reste valide même si
-aucun nouveau relevé ne l'égale. Une collecte vide réussie vaut résultat, une panne
-sans résultat exploitable conserve les dernières offres avec avertissement ; elle
-ne renouvelle pas leur fraîcheur. Les avertissements de retard couvrent les livres
-surveillés, indépendamment de la présence d'un ancien agrégat. Le renouvellement
-Chasse valide/injecte un jeton et ne collecte pas toutes les alertes.
+ont des dates distinctes. Le pied du panneau porte la date de la **dernière
+vérification réussie** du livre et du tome affichés : elle avance après une collecte
+réussie même si le prix ne change pas, et reste inchangée après un échec. Une
+vérification qui n'a jamais réussi s'affiche « jamais » ; un cache historique sans
+date de succès exploitable s'affiche « inconnue ». La date d'un changement de prix
+ou d'une tentative échouée ne la remplace jamais. La ligne « Prochaine » n'apparaît
+que si le planificateur confirme qu'une passe complète prend ce livre en charge.
+
+Un minimum ancien dans sa fenêtre reste valide même si aucun nouveau relevé ne l'égale.
+Une collecte vide réussie vaut résultat ; une panne sans résultat exploitable
+conserve les dernières offres connues sans renouveler leur fraîcheur. Le panneau ne
+présente pas cette conservation comme une actualisation ni comme une panne : l'échec
+technique reste dans les logs. Le renouvellement Chasse valide/injecte un jeton et
+ne collecte pas toutes les alertes.
 
 ## Diagnostic et bilans de rafraîchissement
 

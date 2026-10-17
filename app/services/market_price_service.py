@@ -395,6 +395,14 @@ def _format_checked_at(moment: datetime | None) -> str:
     return aware.astimezone(_PARIS_TZ).strftime("%d/%m à %H:%M")
 
 
+def _format_verification_at(moment: datetime) -> str:
+    """Date locale de vérification, avec l'année seulement si elle lève une ambiguïté."""
+    aware = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    local = aware.astimezone(_PARIS_TZ)
+    pattern = "%d/%m à %H:%M" if local.year == datetime.now(_PARIS_TZ).year else "%d/%m/%Y à %H:%M"
+    return local.strftime(pattern)
+
+
 def _vinted_total_cents(listing: Listing) -> int | None:
     """Total payé sur Vinted, frais de port et de protection inclus.
 
@@ -596,7 +604,13 @@ def _extract_partners(
 
                 if previous is None or data["total_cents"] < previous["total_cents"]:
                     current[label] = data
-        return current
+        if current:
+            return current
+        # Une collecte réussie sans offre comparable ne doit pas ressusciter un
+        # relevé antérieur. En revanche, une tentative échouée ou incomplète
+        # laisse les dernières offres connues à l'écran.
+        if cache.collection_status not in {None, "failed", "partial", "skipped"}:
+            return {}
     snapshot_payload = getattr(latest_snapshot, "raw_payload", None)
 
     if isinstance(snapshot_payload, dict):
@@ -748,6 +762,11 @@ class MarketPriceService:
                 return PENDING_COTE_LINE
             return next((line for line in absences if line), COTE_UNAVAILABLE_LINE)
 
+        # Tome nommé par le titre mais absent du catalogue lié : dire le numéro,
+        # jamais le remplacer par le prix d'un autre tome ou de la série entière.
+        if book is None and tome_result and tome_result.tome_number is not None:
+            return f"ℹ️ Tome {tome_result.tome_number} détecté : cote indisponible pour ce tome."
+
         # Série reconnue, tome non résolu : ne rien dire du prix, le panneau liste les tomes.
 
         if len(books_in_series) > 1:
@@ -856,8 +875,8 @@ class MarketPriceService:
         latest_snapshot: Any = None,
         series_total_cents: int | None = None,
         catalogue_exhausted: bool = False,
-        refresh_note: str | None = None,
         additional_note: str | None = None,
+        next_check_at: datetime | None = None,
     ) -> str:
         """Génère le texte complet du panneau callback « Prix du marché ».
 
@@ -869,6 +888,10 @@ class MarketPriceService:
         a conclu qu'aucune source ne catalogue l'ouvrage. Il ne remplace quelque
         chose que là où il n'y a ni livre ni série — des livres contrediraient le
         verdict, et la cote qu'ils portent est plus récente que lui.
+
+        `next_check_at` n'est fourni que lorsque le planificateur confirme que ce
+        livre entre dans une prochaine passe ; la ligne « Prochaine » est absente
+        dans tous les autres cas.
         """
         books_in_series = books_in_series or []
 
@@ -887,6 +910,12 @@ class MarketPriceService:
                 details = MarketPriceService._single_book_card(book, [], latest_snapshot, None)
                 card = details + "\n\n" + card.split("\n\n", 1)[-1]
             books_in_series = _match_lot_books(books_in_series, tome_result.lot_tomes or [])
+        elif not book and tome_result and tome_result.tome_number is not None:
+            # Le texte nomme un tome que le catalogue ne fournit pas encore : afficher
+            # la série entière laisserait croire que l'un de ses prix est celui du tome.
+            card = MarketPriceService._unresolved_tome_card(
+                listing, tome_result.tome_number
+            )
         elif not book and books_in_series:
             card = MarketPriceService._series_card(listing, books_in_series, series_total_cents)
         elif not book and catalogue_exhausted:
@@ -896,41 +925,15 @@ class MarketPriceService:
                 book, books_in_series, latest_snapshot, series_total_cents
             )
 
-        targets = [book] if book else listable_series_books(books_in_series)
-        caches = [b.market_cache for b in targets if b.market_cache]
-        cache = max(
-            caches,
-            key=lambda c: _aware_checked_at(c.last_attempt_at or c.checked_at),
-            default=None,
-        )
-        statuses = {c.collection_status for c in caches}
-        status = (
-            "failed"
-
-            if statuses == {"failed"}
-            else "skipped"
-
-            if statuses == {"skipped"}
-            else "partial"
-
-            if statuses & {"failed", "partial", "skipped"}
-            else "complete"
-
-            if len(caches) > 1 and any(has_usable_price(c) for c in caches)
-            else None
-        )
-        note = (
-            refresh_note
-
-            if refresh_note is not None
-            else MarketPriceService._collection_note(cache, status=status)
-        )
-
         if additional_note:
-            note = "\n".join(filter(None, (note, additional_note)))
+            card = card.replace("\n\n", f"\n\n{additional_note}\n\n", 1)
 
-        if note:
-            card = card.replace("\n\n", f"\n\n{note}\n\n", 1)
+        footer_book = book
+        if footer_book is None and len(books_in_series) == 1:
+            footer_book = books_in_series[0]
+        footer = MarketPriceService._verification_footer(footer_book, next_check_at)
+        if footer:
+            card = card.rstrip() + "\n\n" + footer
         return card
 
     @staticmethod
@@ -1035,18 +1038,24 @@ class MarketPriceService:
         """Panneau d'un tome résolu : cote 1 an, comparatif par boutique, série."""
         cache = book.market_cache if book else None
         reference_cents, is_historical = reference_price(cache)
-
-        if cache is None or (reference_cents is None
-                             and cache.lowest_delivered_price_cents is None
-                             and cache.historical_low_1y_cents is None):
-            return MarketPriceService._no_market_price_card(book)
-
-        snapshots = book.__dict__.get("snapshots")
-        partners = _select_secondhand_partners(
-            _extract_partners(
-                cache, latest_snapshot, snapshots if isinstance(snapshots, list) else None
+        snapshots = book.__dict__.get("snapshots") if book else None
+        partners = (
+            _select_secondhand_partners(
+                _extract_partners(
+                    cache, latest_snapshot, snapshots if isinstance(snapshots, list) else None
+                )
             )
+            if cache is not None
+            else {}
         )
+
+        if cache is None or (
+            reference_cents is None
+            and cache.lowest_delivered_price_cents is None
+            and cache.historical_low_1y_cents is None
+            and not partners
+        ):
+            return MarketPriceService._no_market_price_card(book)
 
         lines = ["📊 <b>Prix du marché</b>\n"]
 
@@ -1074,14 +1083,8 @@ class MarketPriceService:
 
         if is_historical and reference_cents is not None:
             lines.append(
-                f"<b>Prix bas constaté :</b> {format_cents(reference_cents)} "
-                f"({_format_checked_at(cache.annual_low_observed_at)})"
+                f"<b>Prix bas constaté :</b> {format_cents(reference_cents)}"
             )
-
-
-        if is_historical and cache.annual_first_at and cache.annual_last_at:
-            lines.append(f"{cache.annual_count} relevé(s) conservé(s), "
-                         f"du {cache.annual_first_at:%d/%m/%Y} au {cache.annual_last_at:%d/%m/%Y}.")
 
 
         if partners:
@@ -1132,27 +1135,63 @@ class MarketPriceService:
         return "\n".join(lines)
 
     @staticmethod
-    def _collection_note(cache: BookMarketCache | None, *, status: str | None = None) -> str:
-        """Une tentative vide ou échouée ne rafraîchit pas un ancien prix."""
+    def _unresolved_tome_card(listing: Listing | None, tome_number: int) -> str:
+        """Panneau d'un tome explicitement nommé mais absent du catalogue lié.
 
-        if cache is None:
+        Afficher la série entière ferait passer le prix d'un autre tome pour celui
+        de l'annonce. Le numéro lu dans le titre est donc dit tel quel, avec
+        l'absence de cote correspondante.
+        """
+        lines = ["📊 <b>Prix du marché</b>\n"]
+        if listing is not None:
+            lines.append(
+                f"{CATEGORY_EMOJIS[CategorySlug.BD_COMICS]} "
+                f"<b>{html.escape(listing.title)}</b>"
+            )
+        lines.append(f"🔍 Tome {tome_number} détecté : cote indisponible pour ce tome.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _verification_footer(
+        book: Book | None, next_check_at: datetime | None
+    ) -> str:
+        """Date de la dernière vérification réussie, puis prochaine passe confirmée.
+
+        Une absence de cache n'autorise que « jamais ». Un cache historique sans
+        date de succès exploitable dit « inconnue » : la date du dernier changement
+        de prix ou d'une tentative échouée ne la remplace pas.
+        """
+        if book is None:
             return ""
-        moment = cache.last_attempt_at or cache.checked_at
-        date = f" ({_format_checked_at(moment)})" if moment else ""
-        status = status or cache.collection_status
+        loaded = _loaded_market_cache(book)
+        if loaded is None:
+            if "market_cache" not in book.__dict__:
+                return ""
+            last = "jamais"
+        else:
+            last = MarketPriceService._last_verification(loaded)
 
-        if status == "skipped":
-            return f"<i>Aucune source interrogée{date}</i>"
+        lines = [f"Dernière vérif. : {last}"]
+        if next_check_at is not None:
+            lines.append(f"Prochaine : {_format_verification_at(next_check_at)}")
+        return "\n".join(lines)
 
-        if status == "failed":
-            return f"<i>⚠️ Actualisation impossible{date} ; derniers relevés conservés.</i>"
-
-        if status == "partial":
-            return f"<i>⚠️ Actualisation partielle{date}</i>"
-
-        if status == "empty":
-            return f"<i>Aucune offre trouvée{date}</i>"
-        return f"<b>Actualisation :</b> {_format_checked_at(cache.checked_at)}"
+    @staticmethod
+    def _last_verification(cache: BookMarketCache) -> str:
+        """Date de la dernière collecte réussie, ou son absence qualifiée."""
+        if cache.last_successful_collection_at is not None:
+            return _format_verification_at(cache.last_successful_collection_at)
+        has_legacy_evidence = any(
+            (
+                cache.checked_at is not None,
+                _positive(cache.lowest_delivered_price_cents) is not None,
+                _positive(cache.historical_low_1y_cents) is not None,
+                _positive(cache.annual_low_cents) is not None,
+                bool(cache.current_offers),
+                cache.collection_status in {"complete", "empty", "partial"},
+            )
+        )
+        return "inconnue" if has_legacy_evidence else "jamais"
 
     @staticmethod
     def _best_offer_url(cache: BookMarketCache, partners: dict[str, Any]) -> str | None:

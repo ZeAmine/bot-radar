@@ -9,7 +9,11 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.db.repositories.book_repo import resolve_loaded_books
-from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceService
+from app.services.market_price_service import (
+    PENDING_COTE_LINE,
+    MarketPriceService,
+    extract_tome_number_from_title,
+)
 from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 
 
@@ -86,6 +90,113 @@ def test_series_matching_specific_tome_summary():
     assert "<b>Prix bas constaté (T2) :</b> 18,50 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart :</b> -6,50 € ✅" in summary
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Absolute martian manhunter TP volume 2",
+        "Absolute martian manhunter TP vol. 2",
+        "Absolute martian manhunter TP tome 2",
+        "Absolute martian manhunter TP T2",
+    ],
+)
+def test_tome_number_reads_every_usual_volume_spelling(title):
+    """`volume 2`, `vol. 2`, `tome 2` et `T2` désignent tous le tome 2."""
+    assert TomeExtractor.extract(title).tome_number == 2
+    assert extract_tome_number_from_title(title) == 2
+
+
+def test_volume_2_selects_the_second_tome_and_its_market_price():
+    """Le numéro lu dans le titre pilote bien la recherche du prix du tome 2."""
+    books = [
+        _create_mock_book("Absolute Martian Manhunter — Tome 1", 1400),
+        _create_mock_book("Absolute Martian Manhunter — Tome 2", 1850),
+        _create_mock_book("Absolute Martian Manhunter — Tome 3", 2100),
+    ]
+    listing = Listing(
+        source_name="vinted",
+        external_id="amm",
+        url="https://vinted.fr",
+        title="Absolute martian manhunter TP volume 2",
+        normalized_title="absolute martian manhunter tp volume 2",
+        category_slug="bd_comics",
+        item_price_cents=1600,
+        estimated_total_cents=2038,
+    )
+
+    book, series, tome_result = resolve_loaded_books(
+        alert_name="Absolute Martian Manhunter",
+        listing_title=listing.title,
+        listing_description=None,
+        books=books,
+    )
+
+    assert book is books[1]
+    assert tome_result.tome_number == 2
+    summary = MarketPriceService.get_comparison_summary(
+        listing=listing,
+        book=book,
+        books_in_series=series,
+        tome_result=tome_result,
+    )
+    assert summary is not None
+    assert "<b>Prix bas constaté (T2) :</b> 18,50 €" in summary
+    assert "<b>Prix bas constaté (T2) :</b> 14,00 €" not in summary
+
+    card = MarketPriceService.format_market_details_card(
+        listing=listing,
+        book=book,
+        books_in_series=series,
+        tome_result=tome_result,
+    )
+    assert "<b>Prix bas constaté :</b> 18,50 €" in card
+    assert "<b>Prix bas constaté :</b> 14,00 €" not in card
+
+
+def test_a_named_tome_absent_from_the_catalogue_is_not_replaced_by_another_tome():
+    """Tome 2 nommé mais non lié : le panneau dit l'absence, pas le prix du tome 1."""
+    books = [
+        _create_mock_book("Absolute Martian Manhunter — Tome 1", 1400),
+        _create_mock_book("Absolute Martian Manhunter — Tome 3", 2100),
+    ]
+    listing = Listing(
+        source_name="vinted",
+        external_id="amm",
+        url="https://vinted.fr",
+        title="Absolute martian manhunter TP volume 2",
+        normalized_title="absolute martian manhunter tp volume 2",
+        category_slug="bd_comics",
+        item_price_cents=1600,
+        estimated_total_cents=2038,
+    )
+
+    book, series, tome_result = resolve_loaded_books(
+        alert_name="Absolute Martian Manhunter",
+        listing_title=listing.title,
+        listing_description=None,
+        books=books,
+    )
+
+    assert book is None
+    assert tome_result.tome_number == 2
+    summary = MarketPriceService.get_comparison_summary(
+        listing=listing,
+        book=book,
+        books_in_series=series,
+        tome_result=tome_result,
+    )
+    assert summary == "ℹ️ Tome 2 détecté : cote indisponible pour ce tome."
+
+    card = MarketPriceService.format_market_details_card(
+        listing=listing,
+        book=book,
+        books_in_series=series,
+        tome_result=tome_result,
+    )
+    assert "Tome 2 détecté : cote indisponible pour ce tome." in card
+    assert "14,00 €" not in card
+    assert "21,00 €" not in card
 
 
 def test_series_matching_lot_summary():
@@ -180,7 +291,7 @@ def test_series_matching_lot_card():
     assert "Cote par tome (plus bas connu) :" in card
     assert "• Tome 1 : 16,00 €" in card
     assert "• Tome 2 : 18,50 €" in card
-    assert "Actualisation :" in card
+    assert "Actualisation" not in card
 
 
 def test_series_matching_chateau_des_animaux_lot_1_2_3():
@@ -559,7 +670,6 @@ async def test_handle_view_market_details_success():
         patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
         patch("app.use_cases.view_market_details.MarketPriceRepository") as mock_m_cls,
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel._refresh_panel", AsyncMock()) as mock_refresh,
     ):
         mock_l = MagicMock()
         mock_l.get_by_id = AsyncMock(return_value=mock_listing)
@@ -577,13 +687,13 @@ async def test_handle_view_market_details_success():
         mock_m_cls.return_value = mock_m
 
         await handle_view_market_details(mock_callback, mock_session)
-        await mock_refresh.call_args.args[0].task
-        mock_refresh.assert_awaited_once()
 
         mock_msg.reply.assert_called_once()
         text = mock_msg.reply.call_args[1]["text"]
         assert "📊 <b>Prix du marché</b>" in text
         assert "5,48 €" in text
+        assert "Dernière vérif. : inconnue" in text
+        assert "Actualisation" not in text
         mock_callback.answer.assert_called_once()
 
 
@@ -625,7 +735,6 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
         patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
         patch("app.use_cases.view_market_details.MarketPriceRepository") as mock_m_cls,
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel._refresh_panel", AsyncMock()) as mock_refresh,
     ):
         mock_l = MagicMock()
         mock_l.get_by_id = AsyncMock(return_value=mock_listing)
@@ -643,8 +752,6 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
         mock_m_cls.return_value = mock_m
 
         await handle_view_market_details(mock_callback, mock_session)
-        await mock_refresh.call_args.args[0].task
-        mock_refresh.assert_awaited_once()
 
     mock_msg.reply.assert_called_once()
     keyboard = mock_msg.reply.call_args[1]["reply_markup"]
@@ -1216,3 +1323,50 @@ def test_legacy_minimum_without_observation_never_becomes_annual_reference(date_
     assert "1,00 €" not in panel
     assert "Prix bas constaté" not in panel
     assert (book.market_cache.checked_at, book.market_cache.historical_low_at) == before
+
+
+@pytest.mark.asyncio
+async def test_opening_the_market_panel_does_not_fetch_a_new_price():
+    """Le panneau lit le cache : l'ouverture ne déclenche aucune collecte.
+
+    Les vérifications restent portées par le planificateur ; une consultation ne
+    doit ni dépendre d'un appel marchand ni faire passer un ancien relevé pour neuf.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from aiogram.types import CallbackQuery, Message
+
+    from app.bot.handlers.market_panel import open_panel
+    from app.use_cases.view_market_details import MarketPanelData
+
+    book = _create_mock_book("Les Indes fourbes", 548)
+    listing = Listing(
+        id=uuid.uuid4(),
+        source_name="vinted",
+        external_id="indes",
+        url="https://vinted.fr",
+        title="Les Indes fourbes",
+        normalized_title="les indes fourbes",
+        category_slug="bd_comics",
+        item_price_cents=900,
+    )
+    panel = MarketPanelData(
+        listing=listing,
+        book=book,
+        books_in_series=[book],
+        tome_result=None,
+        latest_snapshot=None,
+    )
+    callback = MagicMock(spec=CallbackQuery)
+    callback.message = MagicMock(spec=Message)
+    callback.message.reply = AsyncMock()
+
+    with (
+        patch("app.bot.handlers.market_panel._panels", {}),
+        patch("app.services.book_market_pricing.price_book_now", AsyncMock()) as mock_price,
+    ):
+        await open_panel(callback, panel)
+
+    mock_price.assert_not_awaited()
+    text = callback.message.reply.call_args[1]["text"]
+    assert "5,48 €" in text

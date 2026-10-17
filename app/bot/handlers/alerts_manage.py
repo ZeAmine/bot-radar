@@ -282,7 +282,7 @@ async def prompt_new_field_value(
         await callback.answer()
         panel = await ViewMarketDetailsUseCase(db_session).execute_for_alert(alert.id, db_user.id)
         if panel is not None:
-            await open_panel(callback, panel, user_id=db_user.id)
+            await open_panel(callback, panel)
         return
 
     if field == "conditions":

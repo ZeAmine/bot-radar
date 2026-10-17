@@ -71,22 +71,26 @@ ni une série historique exploitable ni la réussite de tous les fournisseurs.
 ## Déclencheurs réels après correction
 
 La création BD prépare les rattachements et attend la cotation centrale. Le bouton
-« Prix du marché » peut déclencher une collecte centrale attendue ; une lecture
-cache seule n'interroge pas les fournisseurs. Après l'envoi d'une annonce sans cote
-utilisable, la collecte de fond sert les annonces suivantes, sans HTTP préalable
-à Telegram. Les prix et preuves annuelles se consolident lors de ces écritures ;
-la projection annuelle expire selon les dates des observations, même sans nouveau minimum.
+« Prix du marché » lit le cache ; il ne relance pas une collecte si une cote
+exploitable ou une collecte réussie sans offre existe. Sans première cote, il
+déclenche la cotation initiale par le mécanisme existant, avec les gardes de
+collecte en vol et de repos des échecs. Les vérifications périodiques restent
+portées par le scheduler. Après l'envoi d'une annonce sans cote utilisable, la
+collecte de fond sert les annonces suivantes, sans HTTP préalable à Telegram.
+Les prix et preuves annuelles se consolident lors de ces écritures ; la projection
+annuelle expire selon les dates des observations, même sans nouveau minimum.
 
 Le scheduler unique conserve les passes complètes de 07 h / 19 h Europe/Paris,
 les lots à :15 / :45 et une reprise immédiate du lot au démarrage. Cible de réussite
-24 h, avertissement après 48 h, concurrence 4 et pauses fournisseurs conservées.
+24 h, avertissement après sept jours, concurrence 4 et pauses fournisseurs conservées.
 Les rattachements manquants sont repris avant la sélection, sans lancer une
 cotation massive en dehors des vagues bornées. Les collectes déjà en cours sont
 mutualisées. Une identification impossible reste signalée et ne vaut pas couverture.
 
-« Actualisation impossible » correspond à une collecte sans résultat actuel
-exploitable en échec ; les derniers relevés sont conservés. Une source en panne
-avec d'autres offres réussies constitue un résultat partiel. Les erreurs journales
+Le panneau date la dernière **vérification réussie** du livre et du tome affichés,
+même quand le montant n'a pas changé. Un échec conserve cette date et les dernières
+offres, sans avertissement d'indisponibilité à l'écran. Une collecte sans résultat
+actuel exploitable n'est donc pas une panne affichée ; les erreurs journales
 identifient timeout, limitation/statut HTTP, réponse invalide ou exception interne
 sans exposer les valeurs sensibles.
 
