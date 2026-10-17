@@ -19,11 +19,7 @@ def synthetic_health_transports(monkeypatch):
     client = MagicMock()
     client.set = AsyncMock(return_value=True)
     monkeypatch.setattr("app.services.market_health.get_redis_client", lambda: client)
-    monkeypatch.setattr("app.tasks.refresh_book_prices.notify_stale_certified_lows", AsyncMock())
-    monkeypatch.setattr("app.tasks.refresh_book_prices.notify_silent_providers", AsyncMock())
-    monkeypatch.setattr(
-        "app.tasks.refresh_book_prices.notify_stale_current_collections", AsyncMock(),
-    )
+    monkeypatch.setattr("app.tasks.refresh_book_prices.read_refresh_health", AsyncMock())
     monkeypatch.setattr("app.tasks.refresh_book_prices.resolve_scheduled_catalogues", AsyncMock())
 
 
@@ -238,8 +234,9 @@ async def test_refresh_processes_several_books_in_one_wave():
     # L'alerte reste produite : seule sa destination change.
     alertes = [s for s in sends if "Collecte de prix en échec" in s]
     assert len(alertes) == 1, "la passe complète doit signaler l'absence totale de cote"
-    assert "Passe complet (3 livres)" in alertes[0]
-    assert "3 livres traités, 0 cote disponible" in alertes[0]
+    assert "Traités : 3/3 livres" in alertes[0]
+    assert "Actualisées : 0 collectes" in alertes[0]
+    assert "Exceptions de traitement : 1" in alertes[0]
 
 
 
@@ -295,9 +292,7 @@ async def _passe_sans_offres(
     mp.setattr("app.services.market_health.get_redis_client", lambda: client)
     # Les deux autres contrôles de santé sont couverts ailleurs ; ici ils ne
     # doivent pas bruiter le comptage.
-    mp.setattr("app.tasks.refresh_book_prices.notify_stale_certified_lows", AsyncMock())
     mp.setattr("app.tasks.refresh_book_prices.asyncio.sleep", AsyncMock())
-    mp.setattr("app.tasks.refresh_book_prices.notify_silent_providers", AsyncMock())
 
     return await refresh_book_prices_task(
         registry=mock_registry, session=AsyncMock(), incremental=incremental, batch_size=8
@@ -383,8 +378,6 @@ async def test_provider_failure_is_degraded_not_a_book_error():
         client = MagicMock()
         client.set = AsyncMock(return_value=fenetre_ouverte)
         mp.setattr("app.services.market_health.get_redis_client", lambda: client)
-        mp.setattr("app.tasks.refresh_book_prices.notify_stale_certified_lows", AsyncMock())
-        mp.setattr("app.tasks.refresh_book_prices.notify_silent_providers", AsyncMock())
         mp.setattr("app.tasks.refresh_book_prices.asyncio.sleep", AsyncMock())
         return await refresh_book_prices_task(
             registry=registry, session=AsyncMock(), incremental=True, batch_size=8
@@ -439,8 +432,17 @@ async def test_only_a_written_cote_counts_as_updated():
         compteur = {"n": 0}
 
         async def fake_price_book_now(_book_id, **_kwargs):
+            from app.services.book_market_pricing import BookPricingResult
+
             compteur["n"] += 1
-            return _CacheEcrit() if compteur["n"] % 2 else _CacheSansCote()
+            wrote = compteur["n"] % 2
+            offer = MarketOffer(provider_name="source", item_price_cents=1000,
+                                shipping_price_cents=0, delivered_price_cents=1000,
+                                source_url="https://example.invalid")
+            _kwargs["result_sink"].append(BookPricingResult.from_offers(
+                [offer] if wrote else [], offer if wrote else None, None,
+            ))
+            return _CacheEcrit() if wrote else _CacheSansCote()
 
         mp.setattr(
             "app.tasks.refresh_book_prices.price_book_now", fake_price_book_now
@@ -465,17 +467,17 @@ async def test_a_failed_collection_is_never_counted_as_updated():
     n'a rien écrit : le compter comme mis à jour ferait disparaître l'incident
     derrière un chiffre rassurant.
     """
-    from app.tasks.refresh_book_prices import _cote_was_written
+    from app.tasks.refresh_book_prices import _book_result
 
     class Echec:
         comparison_status = ComparisonStatus.UNAVAILABLE
         collection_status = "failed"
         failed_provider_names = ["chasse_aux_livres"]
 
-    assert _cote_was_written(Echec()) is False
-    assert _cote_was_written(None) is False
-    assert _cote_was_written(_CacheSansCote()) is False
-    assert _cote_was_written(_CacheEcrit()) is True
+    assert _book_result(None, None).refreshed is False
+    assert _book_result(Echec(), None).refreshed is False
+    assert _book_result(_CacheSansCote(), None).refreshed is False
+    assert _book_result(_CacheEcrit(), None).refreshed is False
 
 
 # --- Reprise effective des livres laissés de côté ---
@@ -530,8 +532,6 @@ async def _passe_sur(
     mp.setattr("app.tasks.refresh_book_prices.persist_market_result", ecrit)
     mp.setattr("app.tasks.refresh_book_prices.asyncio.sleep", AsyncMock())
     mp.setattr("app.services.market_health.notify_admins", AsyncMock())
-    mp.setattr("app.tasks.refresh_book_prices.notify_stale_certified_lows", AsyncMock())
-    mp.setattr("app.tasks.refresh_book_prices.notify_silent_providers", AsyncMock())
     mp.setattr(_asyncio.get_running_loop(), "time", horloge.time)
 
     registre = MagicMock(failed_provider_names=set(), select_best_offer=lambda _o: None)

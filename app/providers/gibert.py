@@ -6,7 +6,7 @@ import httpx
 
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
-from app.providers.base import MarketOffer, MarketOffers
+from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers, failed_offers
 from app.providers.headers import COMMON_BROWSER_HEADERS
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class GibertProvider:
         """Recherche une offre d'occasion sur Gibert par ISBN-13 (exclut le neuf)."""
         _ = (title, author, edition)
         if not isbn13 or len(isbn13.strip()) < 10:
-            return []
+            return MarketOffers(attempts=(CollectionAttempt(self.name, status="skipped"),))
 
         clean_isbn = isbn13.strip()
         search_url = f"{self.base_url}/catalog/search"
@@ -52,9 +52,13 @@ class GibertProvider:
                 timeout=5.0,
             )
             if response.status_code != 200:
-                return MarketOffers(failed_providers=(self.name,))
+                return failed_offers(self.name, response=response)
 
             data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("Réponse invalide")
+            if not isinstance(data.get("products", data.get("items")), list):
+                raise ValueError("Liste de produits absente")
             items = data.get("products", data.get("items", []))
             if not items:
                 return []
@@ -98,5 +102,5 @@ class GibertProvider:
                 )
             ]
         except Exception as exc:
-            logger.debug("Erreur silencieuse connecteur Gibert: %s", exc)
-            return MarketOffers(failed_providers=(self.name,))
+            logger.debug("Collecte gibert échouée : %s", type(exc).__name__)
+            return failed_offers(self.name, error=exc)

@@ -41,7 +41,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.utils.text import normalize_text
+from app.utils.text import contains_normalized_keyword, normalize_text
 
 # Nombre maximal de variantes conservées sur une alerte. Au-delà, le moteur énumère.
 MAX_VARIANTS = 8
@@ -337,6 +337,7 @@ class Reason(StrEnum):
     FOREIGN_NUMBER = "nomme un numéro que ni le titre ni les mots-clés ne portent"
     DRIFTED_WRITING = "aucun mot du titre ni des mots-clés : ce n'est pas une écriture du produit"
     TITLE_EXCLUSION = "tient dans le titre : il tairait l'annonce cible"
+    IDENTITY_EXCLUSION = "contredit l’identité bibliographique confirmée"
     VOLUME_ONLY = "n'ajoute au titre qu'un numéro de tome : il tairait le tome voisin"
     DUPLICATE = "doublon d'un terme déjà présent"
     LIMIT = "trop long pour une recherche, ou au-delà du plafond de la famille"
@@ -454,10 +455,12 @@ def _exclusion_title_verdict(value: str, references: tuple[str, ...]) -> Reason 
     *plus large* d'un simple numéro, elle tairait le tome voisin (`names_only_a_volume`).
     Entre les deux vit la forme utile du rejet, celle qui précise le titre.
 
-    Une exclusion se juge face au **titre seul** : les mots-clés inclus décrivent la
-    veille, pas l'œuvre, et une exclusion qui les reprend ne dit rien de l'ouvrage.
+    Une exclusion se juge face au titre et aux métadonnées confirmées fournies.
     """
     title = references[0] if references else ""
+    if any(contains_normalized_keyword(normalize_text(identity), value)
+           for identity in references[1:] if identity):
+        return Reason.IDENTITY_EXCLUSION
     if _swallows_the_title(value, title):
         return Reason.TITLE_EXCLUSION
     if names_only_a_volume(value, title):
@@ -586,7 +589,10 @@ def assess_variants(
     return _clean_values(values, (title, *references), VARIANT_FAMILY, from_user=from_user)
 
 
-def assess_exclusions(values: list[str] | None, title: str) -> SanitizedValues:
+def assess_exclusions(
+    values: list[str] | None, title: str, *, author: str | None = None,
+    publisher: str | None = None,
+) -> SanitizedValues:
     """Verdict motivé du côté exclusions : ce qui reste, et ce qui part et pourquoi.
 
     Le titre est consulté pour écarter une exclusion qui tient *dans* lui
@@ -595,7 +601,7 @@ def assess_exclusions(values: list[str] | None, title: str) -> SanitizedValues:
     tome voisin. Une exclusion qui le précise, elle, est conservée : c'est la forme
     normale d'un rejet.
     """
-    return _clean_values(values, (title,), EXCLUSION_FAMILY)
+    return _clean_values(values, (title, author or "", publisher or ""), EXCLUSION_FAMILY)
 
 
 def sanitize_variants(
@@ -616,6 +622,9 @@ def sanitize_variants(
     ).values
 
 
-def sanitize_exclusions(values: list[str] | None, title: str) -> list[str]:
+def sanitize_exclusions(
+    values: list[str] | None, title: str, *, author: str | None = None,
+    publisher: str | None = None,
+) -> list[str]:
     """Exclusions qui tranchent réellement : ni chiffre nu, ni lettre seule, plafonnées."""
-    return assess_exclusions(values, title).values
+    return assess_exclusions(values, title, author=author, publisher=publisher).values

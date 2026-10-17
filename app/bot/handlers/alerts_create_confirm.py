@@ -2,7 +2,8 @@
 
 import html
 import logging
-from typing import cast
+import uuid
+from typing import Any, cast
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -47,6 +48,7 @@ from app.services.alert_service import (
     parse_comma_separated_list,
     parse_price_to_cents,
 )
+from app.services.book_metadata_service import generate_recommended_keywords
 from app.use_cases.book_search import (
     BookSearchUseCase,
     creation_bibliographic_identity,
@@ -180,14 +182,14 @@ async def select_alert_creation_edition(
     if meta.publisher is None and chosen.get("publisher"):
         updates["publisher"] = chosen["publisher"]
 
-    if data.get("creation_token") and (
-        (await state.get_data()).get("creation_token") != data["creation_token"]
-    ):
-        await callback.answer(STALE_CREATION_MESSAGE)
-        return
-    await state.update_data(data=updates)
-    updated_data = await state.get_data()
-    await state.set_state(AlertCreationState.confirm_creation)
+    async with draft_guard(state):
+        if not _same_draft(await state.get_data(), data):
+            return
+        await state.update_data(data=updates)
+        await state.update_data(draft_revision=int(data.get("draft_revision") or 0) + 1,
+                                pending_identity=None)
+        updated_data = await state.get_data()
+        await state.set_state(AlertCreationState.confirm_creation)
     await callback.answer("✅ Édition mise à jour")
 
     if callback.message and hasattr(callback.message, "edit_text"):
@@ -266,20 +268,22 @@ async def select_alert_creation_work(
         "isbn": isbn13,
         "is_series": False,
         "isbn_note": None,
+        "name": chosen_meta.title,
+        "include_keywords": generate_recommended_keywords(chosen_meta.title)[0],
         "author": author,
         "publisher": chosen_meta.publisher,
         "language": chosen_meta.language,
         "edition_alternatives": await _resolve_edition_choices(title, author),
         "book_context": book_context_from(chosen_meta).model_dump(),
     }
-    if data.get("creation_token") and (
-        (await state.get_data()).get("creation_token") != data["creation_token"]
-    ):
-        await callback.answer(STALE_CREATION_MESSAGE)
-        return
-    await state.update_data(data=updates)
-    updated_data = await state.get_data()
-    await state.set_state(AlertCreationState.confirm_creation)
+    async with draft_guard(state):
+        if not _same_draft(await state.get_data(), data):
+            return
+        await state.update_data(data=updates)
+        await state.update_data(draft_revision=int(data.get("draft_revision") or 0) + 1,
+                                pending_identity=None)
+        updated_data = await state.get_data()
+        await state.set_state(AlertCreationState.confirm_creation)
     await callback.answer("✅ Œuvre retenue")
 
     if callback.message and hasattr(callback.message, "edit_text"):
@@ -503,105 +507,113 @@ async def handle_creation_condition_confirm(callback: CallbackQuery, state: FSMC
     await back_to_recap(callback, state)
 
 
+def _same_draft(current: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+    return bool(current) and all(current.get(key) == snapshot.get(key) for key in (
+        "creation_token", "draft_revision", "name", "isbn", "current_edit_field",
+        "pending_identity",
+    ))
+
+
+async def _publish_edited_draft(
+    message: Message, state: FSMContext, snapshot: dict[str, Any], updates: dict[str, Any],
+    *, identity_changed: bool,
+) -> None:
+    async with draft_guard(state):
+        if not _same_draft(await state.get_data(), snapshot):
+            return
+        await state.update_data(**updates, pending_identity=None,
+                                draft_revision=int(snapshot.get("draft_revision") or 0) + 1,
+                                search_token=uuid.uuid4().int)
+        await state.set_state(AlertCreationState.confirm_creation)
+        current = await state.get_data()
+    recap, keyboard = build_creation_recap(current)
+    sent = await message.answer(recap, reply_markup=keyboard)
+    if identity_changed:
+        relaunch_keyword_search(event=message, loading_msg=sent, state=state, draft=current)
+
+
 @router.message(AlertCreationState.waiting_for_edit_field)
 async def process_creation_edit_input(message: Message, state: FSMContext) -> None:
-    """Traite la saisie textuelle pour le champ en cours de modification à la création."""
     data = await state.get_data()
     field = data.get("current_edit_field")
     raw_text = (message.text or "").strip()
-    # Un changement d'identité invalide les mots-clés : ils seront recalculés.
+    clears = raw_text.lower() in ("/skip", "-", "aucun", "aucune", "clear")
+    updates: dict[str, Any] = {}
     identity_changed = False
-
     if field == "name":
         if len(raw_text) < 2:
             await message.answer("⚠️ Le nom doit comporter au moins 2 caractères. Réessaie :")
             return
-        data = await state.get_data()
         number = requested_volume(raw_text) or data.get("requested_volume")
-        await state.update_data(
-            name=volume_title(raw_text, number) if number else raw_text,
-            requested_volume=number,
-        )
-
+        updates = {"name": volume_title(raw_text, number) if number else raw_text,
+                   "requested_volume": number}
     elif field == "isbn":
-        # `isbn_note` décrit la provenance de l'ISBN ou de son absence : changer l'ISBN
-        # invalide cette note, qui sinon contredit le récap (« non confirmé par la BNF »
-        # affiché sous un ISBN que l'utilisateur vient de faire confirmer).
-        if raw_text.lower() in ("/skip", "-", "aucun", "aucune", "clear"):
-            await state.update_data(
-                isbn=None,
-                is_series=not bool(data.get("requested_volume")),
-                language=None,
-                isbn_note=None,
-                # Les éditions proposal étaient celles de l'ISBN abandonné.
-                edition_alternatives=[],
-                work_choices=[],
-                **KEYWORDS_FROM_PREVIOUS_WORK,
-            )
+        identity_changed = True
+        if clears:
+            updates = {**KEYWORDS_FROM_PREVIOUS_WORK, "isbn": None,
+                       "is_series": bool(data.get("is_series")), "language": None,
+                       "isbn_note": None, "edition_alternatives": [], "work_choices": []}
         else:
-            clean_isbn = extract_clean_isbn(raw_text)
-            if not clean_isbn:
-                await message.answer(
-                    "⚠️ Format d'ISBN invalide (doit comporter 10 ou 13 chiffres). "
-                    "Réessaie (ou /skip) :"
-                )
+            isbn = extract_clean_isbn(raw_text)
+            if not isbn:
+                await message.answer("⚠️ Format d'ISBN invalide. Réessaie (ou /skip) :")
                 return
-            # Changer d'ISBN, c'est changer d'ouvrage : toute la fiche d'identité et les
-            # mots-clés calculés sur l'ancien sont réécrits, pas conservés.
-            realignment = await realign_draft_to_isbn(data, clean_isbn)
+            realignment = await realign_draft_to_isbn(data, isbn)
             if realignment.conflict:
-                # Garder cet ISBN ferait matcher l'alerte sur un autre livre et coter
-                # celui-ci : on nomme le vrai titre et on redemande la saisie.
-                await message.answer(
-                    f"⚠️ {realignment.conflict}\n\n"
-                    "Réessaie avec l'ISBN de l'ouvrage voulu (ou /skip) :"
-                )
+                if not _same_draft(await state.get_data(), data):
+                    return
+                async with draft_guard(state):
+                    if not _same_draft(await state.get_data(), data):
+                        return
+                    nonce = uuid.uuid4().hex[:10]
+                    await state.update_data(pending_identity={"isbn": isbn, "token": nonce})
+                keyboard = bind_creation_keyboard(InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="Remplacer l’œuvre",
+                                         callback_data=f"al_create_replace:yes:{nonce}"),
+                    InlineKeyboardButton(text="Conserver",
+                                         callback_data=f"al_create_replace:no:{nonce}"),
+                ]]), data.get("creation_token"))
+                await message.answer(f"⚠️ {html.escape(realignment.conflict)}\n\n"
+                                     "Confirme le remplacement. Réessaie ou /skip.",
+                                     reply_markup=keyboard)
                 return
-            await state.update_data(data=realignment.updates)
-            identity_changed = True
-
+            updates = realignment.updates
     elif field == "price":
         try:
-            price_cents = parse_price_to_cents(raw_text)
-            await state.update_data(max_item_price_cents=price_cents)
+            updates = {"max_item_price_cents": parse_price_to_cents(raw_text)}
         except AlertServiceError as exc:
-            await message.answer(f"⚠️ {exc}\nMerci d'indiquer un montant valide (ex: 15 ou 25) :")
+            await message.answer(f"⚠️ {exc}\nMerci d'indiquer un montant valide :")
             return
-
-    elif field == "include_keywords":
-        parsed = parse_comma_separated_list(raw_text)
-        if not parsed:
+    elif field in ("include_keywords", "exclude_keywords", "variants"):
+        parsed = [] if clears else parse_comma_separated_list(raw_text)
+        if field == "include_keywords" and not parsed:
             await message.answer("⚠️ Au moins un mot-clé requis. Réessaie :")
             return
-        await state.update_data(include_keywords=parsed)
+        updates = {field: parsed}
+    await _publish_edited_draft(message, state, data, updates, identity_changed=identity_changed)
 
-    elif field == "exclude_keywords":
-        if raw_text.lower() in ("/skip", "-", "aucun", "aucune"):
-            await state.update_data(exclude_keywords=[])
-        else:
-            await state.update_data(exclude_keywords=parse_comma_separated_list(raw_text))
 
-    elif field == "variants":
-        if raw_text.lower() in ("/skip", "-", "aucun", "aucune"):
-            await state.update_data(variants=[])
-        else:
-            await state.update_data(variants=parse_comma_separated_list(raw_text))
-
-    # Réafficher le récapitulatif mis à jour
-    updated_data = await state.get_data()
-    await state.set_state(AlertCreationState.confirm_creation)
-    recap_text, keyboard = build_creation_recap(updated_data)
-    recap_msg = await message.answer(recap_text, reply_markup=keyboard)
-
-    if identity_changed:
-        # Les variantes et exclusions portaient sur l'ancien ouvrage : le récap s'affiche
-        # sans elles, puis se complète sur place quand le moteur a répondu.
-        relaunch_keyword_search(
-            event=message,
-            loading_msg=recap_msg,
-            state=state,
-            draft=updated_data,
-        )
+@router.callback_query(F.data.startswith("al_create_replace:"))
+async def confirm_creation_identity(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    data = await state.get_data()
+    pending = data.get("pending_identity")
+    parts = (callback.data or "").split(":")
+    if (not pending or len(parts) != 3 or pending.get("token") != parts[2]
+            or not isinstance(callback.message, Message)):
+        return
+    if parts[1] not in {"yes", "no"}:
+        return
+    if parts[1] == "no":
+        await _publish_edited_draft(callback.message, state, data, {}, identity_changed=False)
+        return
+    result = await realign_draft_to_isbn(data, pending["isbn"], replace_identity=True)
+    if result.conflict or result.updates.get("identity_unconfirmed"):
+        await callback.message.answer("L’identité n’a pas pu être confirmée. Réessaie ou /skip.")
+        return
+    await _publish_edited_draft(
+        callback.message, state, data, result.updates, identity_changed=True,
+    )
 
 
 @router.callback_query(F.data == "al_create_edit:back")

@@ -23,6 +23,8 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from apscheduler.events import EVENT_SCHEDULER_SHUTDOWN
+from apscheduler.triggers.cron import CronTrigger
 
 import app.tasks.scheduler  # noqa: F401 - nécessaire pour résoudre le module ci-dessous
 
@@ -62,6 +64,7 @@ def _substituer_operations_metier(
             appels.append(nom)
             if collecte is not None:
                 collecte.append(kwargs)
+                observations["captured"].set()
                 # `next_run_time` est lu **pendant** l'exécution, comme le ferait une
                 # implémentation fautive : c'est la valeur qui doit différer de
                 # l'occurrence transmise.
@@ -124,7 +127,8 @@ async def _declencher_et_capturer(
     """
     appels: list[str] = []
     rafraichissements: list[dict[str, Any]] = []
-    observations: dict[str, Any] = {}
+    captured, stopped = asyncio.Event(), asyncio.Event()
+    observations: dict[str, Any] = {"captured": captured}
 
     # Les opérations métier sont substituées **avant** `create_scheduler()` : celui-ci
     # capture les noms du module au moment de l'appel, et un scheduler construit trop
@@ -136,25 +140,26 @@ async def _declencher_et_capturer(
     observations["scheduler"] = scheduler
     _verifier_jobs_sans_operation_metier_reelle(scheduler, espions)
 
-    demarre = False
+    job = scheduler.get_job("refresh_prices_07_00")
+    assert job is not None
+    assert isinstance(job.trigger, CronTrigger)
+    assert job.max_instances == 1
+    assert job.coalesce is True
+    for other in scheduler.get_jobs():
+        if other.id != job.id:
+            scheduler.remove_job(other.id)
+    job.modify(misfire_grace_time=5)
+    scheduler.add_listener(lambda _event: stopped.set(), EVENT_SCHEDULER_SHUTDOWN)
     try:
         scheduler.start(paused=True)
-        demarre = True
-        job = scheduler.get_job("refresh_prices_07_00")
-        assert job is not None
         vise = datetime.now(UTC) + (retard or timedelta())
         job.modify(next_run_time=vise)
-
         scheduler.resume()
-        echeance = asyncio.get_running_loop().time() + timeout
-        while not rafraichissements and asyncio.get_running_loop().time() < echeance:
-            await asyncio.sleep(0.02)
+        await asyncio.wait_for(captured.wait(), timeout=timeout)
     finally:
-        # Ne jamais convertir l'échec initial en erreur de nettoyage : un scheduler
-        # non démarré n'a rien à arrêter, et `shutdown` lèverait
-        # `SchedulerNotRunningError` en masquant la cause réelle.
-        if demarre and scheduler.running:
+        if scheduler.running:
             scheduler.shutdown(wait=False)
+            await asyncio.wait_for(stopped.wait(), timeout=timeout)
 
     assert rafraichissements, (
         f"le scheduler n'a pas déclenché le job (jobs invoqués : {appels})"

@@ -37,6 +37,7 @@ from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.db.session import AsyncSessionLocal
 from app.domain.rules.market_offer import is_comparable_secondhand_offer
 from app.providers.base import (
+    CollectionAttempt,
     MarketOffer,
     MarketOffers,
     extract_best_historical_low,
@@ -72,6 +73,7 @@ class BookPricingResult:
     cache_duration_hours: int
     historical_low_1y_cents: int | None
     failed_providers: tuple[str, ...] = ()
+    attempts: tuple[CollectionAttempt, ...] = ()
     current_observed_at: datetime | None = None
     historical_checked: bool = False
     collected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -83,6 +85,15 @@ class BookPricingResult:
             self.lowest_delivered_price_cents is not None
             or self.historical_low_1y_cents is not None
         )
+
+    @property
+    def current_collection_succeeded(self) -> bool:
+        if self.lowest_delivered_price_cents is not None:
+            return True
+        current = [a for a in self.attempts if a.operation == "current" and a.status != "skipped"]
+        if self.attempts:
+            return bool(current) and all(a.status == "success" for a in current)
+        return not self.failed_providers
 
     @staticmethod
     def from_offers(
@@ -110,6 +121,10 @@ class BookPricingResult:
                 cache_duration_hours=CACHE_HOURS_WITH_PRICE,
                 historical_low_1y_cents=historical_low_cents,
                 failed_providers=getattr(offers, "failed_providers", ()),
+                attempts=getattr(offers, "attempts", ()) or tuple(
+                    CollectionAttempt(name, status="failed", reason="unclassified")
+                    for name in getattr(offers, "failed_providers", ())
+                ),
                 historical_checked=getattr(offers, "historical_checked", False),
                 current_observed_at=best_offer.observed_at,
             )
@@ -125,6 +140,10 @@ class BookPricingResult:
                 cache_duration_hours=CACHE_HOURS_WITH_PRICE,
                 historical_low_1y_cents=historical_low_cents,
                 failed_providers=getattr(offers, "failed_providers", ()),
+                attempts=getattr(offers, "attempts", ()) or tuple(
+                    CollectionAttempt(name, status="failed", reason="unclassified")
+                    for name in getattr(offers, "failed_providers", ())
+                ),
                 historical_checked=getattr(offers, "historical_checked", False),
             )
 
@@ -138,6 +157,10 @@ class BookPricingResult:
             cache_duration_hours=CACHE_HOURS_WITHOUT_PRICE,
             historical_low_1y_cents=None,
             failed_providers=getattr(offers, "failed_providers", ()),
+            attempts=getattr(offers, "attempts", ()) or tuple(
+                CollectionAttempt(name, status="failed", reason="unclassified")
+                for name in getattr(offers, "failed_providers", ())
+            ),
             historical_checked=getattr(offers, "historical_checked", False),
         )
 
@@ -156,6 +179,7 @@ def pricing_stat(cache: BookMarketCache | None) -> str:
 async def fetch_offers_for_book(
     book: Book,
     registry: ProviderRegistry | None = None,
+    *, retry_transient: bool = False,
 ) -> list[MarketOffer]:
     """Interroge tous les fournisseurs pour un livre, ISBN valide et titre ensemble.
 
@@ -164,7 +188,8 @@ async def fetch_offers_for_book(
     qui manquait à la création d'une alerte — d'où une cote vide en base, donc
     une alerte partie sans prix alors que le bouton, lui, trouvait la cote.
     """
-    active_registry = registry or ProviderRegistry()
+    active_registry = registry or (ProviderRegistry(single_attempt=True)
+                                   if retry_transient else ProviderRegistry())
     try:
         offers = await asyncio.wait_for(
             active_registry.fetch_all_offers(
@@ -175,17 +200,69 @@ async def fetch_offers_for_book(
             ),
             timeout=BOOK_FETCH_TIMEOUT_SECONDS,
         )
+        if retry_transient:
+            retryable = [a for a in getattr(offers, "attempts", ())
+                         if a.status == "failed" and a.operation == "current"
+                         and (a.retry_after_seconds is None or a.retry_after_seconds <= 3)
+                         and (a.reason in {"timeout", "connection"}
+                              or (a.http_status is not None and a.http_status >= 500)
+                              or (a.http_status == 429 and a.retry_after_seconds is not None
+                                  and a.retry_after_seconds <= 3))]
+            names = {a.provider for a in retryable}
+            providers = [p for p in active_registry.providers if p.name in names]
+            if providers:
+                delay = max((a.retry_after_seconds or 0 for a in retryable), default=0)
+                if delay:
+                    await asyncio.sleep(delay)
+                retry_registry = ProviderRegistry(providers=providers)
+                for attempt in retryable:
+                    logger.warning("Reprise de collecte transitoire", extra={
+                        "book_id": str(book.id), "provider": attempt.provider,
+                        "operation": attempt.operation, "reason": attempt.reason,
+                        "http_status": attempt.http_status,
+                    })
+                try:
+                    retried = await asyncio.wait_for(retry_registry.fetch_all_offers(
+                        isbn13=normalize_search_isbn(book.isbn13), title=book.title,
+                        author=book.author, edition=book.edition,
+                    ), timeout=BOOK_FETCH_TIMEOUT_SECONDS)
+                except TimeoutError:
+                    retried = MarketOffers(
+                        failed_providers=tuple(sorted(names)) + ("reprise marché",),
+                        attempts=tuple(a for a in getattr(offers, "attempts", ())
+                                       if a.provider in names) + (CollectionAttempt(
+                                           "reprise marché", status="failed", reason="timeout",
+                                       ),),
+                    )
+                offers = MarketOffers(
+                    [o for o in offers if o.provider_name not in names] + list(retried),
+                    failed_providers=tuple(sorted(
+                        (set(getattr(offers, "failed_providers", ())) - names)
+                        | set(retried.failed_providers))),
+                    attempts=tuple(a for a in getattr(offers, "attempts", ())
+                                   if a.provider not in names) + retried.attempts,
+                    historical_checked=getattr(offers, "historical_checked", False)
+                    or retried.historical_checked,
+                )
         observed_at = datetime.now(UTC)
         for offer in offers:
             if offer.observed_at is None and not offer.is_historical:
                 offer.observed_at = observed_at
             if offer.observation_id is None:
                 offer.observation_id = uuid.uuid4()
+        for attempt in getattr(offers, "attempts", ()):
+            logger.log(logging.WARNING if attempt.status == "failed" else logging.INFO,
+                       "Collecte marché", extra={"book_id": str(book.id),
+                       "provider": attempt.provider, "operation": attempt.operation,
+                       "outcome": attempt.status, "reason": attempt.reason,
+                       "http_status": attempt.http_status,
+                       "duration_seconds": attempt.duration_seconds})
         return offers
     except TimeoutError:
-        names = tuple(provider.name for provider in active_registry.providers)
         logger.warning("Délai global de collecte dépassé pour %s", book.id)
-        return MarketOffers(failed_providers=names or ("collecte marché",))
+        return MarketOffers(failed_providers=("collecte marché",), attempts=(
+            CollectionAttempt("collecte marché", status="failed", reason="timeout"),
+        ))
 
 
 async def _refresh_series_totals(session: AsyncSession, book_id: uuid.UUID) -> None:
@@ -248,6 +325,7 @@ async def persist_market_result(
         existing = await repo.get_cache_by_book_id(book_id)
         if existing is not None and (
             result.failed_providers
+            or (result.attempts and all(a.status == "skipped" for a in result.attempts))
             or (
                 existing.comparison_status == ComparisonStatus.AVAILABLE
                 and existing.lowest_delivered_price_cents is not None
@@ -274,7 +352,7 @@ async def persist_market_result(
         cache_duration_hours=result.cache_duration_hours,
         historical_low_1y_cents=result.historical_low_1y_cents,
         observed_at=(result.current_observed_at if result.lowest_delivered_price_cents is not None
-                     else result.collected_at if not result.failed_providers else None),
+                     else result.collected_at if result.current_collection_succeeded else None),
     )
     await repo.refresh_annual_references([book_id], force=True)
     _stamp_collection(cache, result)
@@ -285,7 +363,7 @@ async def persist_market_result(
 def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None:
     """Conserve le résultat de tentative séparément de la date du dernier prix."""
     cache.last_attempt_at = result.collected_at
-    if result.lowest_delivered_price_cents is not None or not result.failed_providers:
+    if result.current_collection_succeeded:
         cache.last_successful_collection_at = result.collected_at
     if result.historical_checked:
         cache.historical_checked_at = result.collected_at
@@ -303,11 +381,14 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
         and not offer.is_historical
         and (offer.shipping_price_cents is not None or offer.price_includes_shipping)
     ]
-    if result.failed_providers and result.lowest_delivered_price_cents is None:
+    if (result.lowest_delivered_price_cents is None
+            and not result.current_collection_succeeded):
         cache.current_offers = retained_offers
     cache.collection_status = (
-        "partial"
-        if result.failed_providers and result.has_data
+        "skipped"
+        if result.attempts and all(a.status == "skipped" for a in result.attempts)
+        else "partial"
+        if result.failed_providers and (result.has_data or result.current_collection_succeeded)
         else "failed"
         if result.failed_providers
         else "complete"
@@ -320,14 +401,20 @@ async def price_book(
     session: AsyncSession,
     book: Book,
     registry: ProviderRegistry | None = None,
+    result_sink: list[BookPricingResult] | None = None,
+    retry_transient: bool = False,
 ) -> BookMarketCache:
     """Cote un livre et écrit sa cote dans la session courante (sans commit)."""
-    offers = await fetch_offers_for_book(book, registry=registry)
+    offers = await fetch_offers_for_book(
+        book, registry=registry, **({"retry_transient": True} if retry_transient else {}),
+    )
     result = BookPricingResult.from_offers(
         offers=offers,
         best_offer=ProviderRegistry.select_best_offer(offers),
         historical_low_cents=extract_best_historical_low(offers),
     )
+    if result_sink is not None:
+        result_sink.append(result)
     cache = await persist_market_result(session, book.id, result)
     logger.info(
         "Cote du livre ID %s (%s) : marché %s, minimum des observations conservées %s (%s).",
@@ -343,6 +430,7 @@ async def price_book(
 
 
 _pricing_tasks: dict[uuid.UUID, asyncio.Task[BookMarketCache | None]] = {}
+_pricing_results: dict[uuid.UUID, list[BookPricingResult]] = {}
 
 
 async def price_book_now(
@@ -350,17 +438,30 @@ async def price_book_now(
     *,
     reason: str,
     registry: ProviderRegistry | None = None,
+    result_sink: list[BookPricingResult] | None = None,
 ) -> BookMarketCache | None:
     """Partage une collecte déjà en vol entre le scheduler et les panneaux."""
     task = _pricing_tasks.get(book_id)
     if task is None:
+        results: list[BookPricingResult] = []
         task = safe_create_task(
-            _price_book_once(book_id, reason=reason, registry=registry),
+            _price_book_once(book_id, reason=reason, registry=registry, result_sink=results),
             name=f"price_book_{book_id}",
         )
         _pricing_tasks[book_id] = task
-        task.add_done_callback(lambda _done: _pricing_tasks.pop(book_id, None))
-    return await asyncio.shield(task)
+        _pricing_results[book_id] = results
+
+        def release(done: asyncio.Task[BookMarketCache | None]) -> None:
+            if _pricing_tasks.get(book_id) is done:
+                _pricing_tasks.pop(book_id, None)
+                _pricing_results.pop(book_id, None)
+
+        task.add_done_callback(release)
+    results = _pricing_results[book_id]
+    cache = await asyncio.shield(task)
+    if result_sink is not None:
+        result_sink.extend(results)
+    return cache
 
 
 async def _price_book_once(
@@ -368,6 +469,7 @@ async def _price_book_once(
     *,
     reason: str,
     registry: ProviderRegistry | None = None,
+    result_sink: list[BookPricingResult] | None = None,
 ) -> BookMarketCache | None:
     """Cote un livre dans sa propre session. N'élève jamais.
 
@@ -382,6 +484,14 @@ async def _price_book_once(
                 logger.warning("Cotation ignorée : livre ID %s introuvable (%s).", book_id, reason)
                 return None
             cache = await MarketPriceRepository(session).get_cache_by_book_id(book_id)
+            if (reason == "alert_created" and cache is not None
+                    and cache.collection_status in {"complete", "empty"}
+                    and cache.expires_at is not None):
+                expires = cache.expires_at
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=UTC)
+                if expires > datetime.now(UTC):
+                    return cache
             if cache is None:
                 cache = BookMarketCache(book_id=book_id)
                 session.add(cache)
@@ -389,7 +499,8 @@ async def _price_book_once(
             cache.last_attempt_at = attempted_at
             # Le tour reste acquis même si la collecte ou sa persistance échoue.
             await session.commit()
-            cache = await price_book(session, book, registry=registry)
+            cache = await price_book(session, book, registry=registry, result_sink=result_sink,
+                                     retry_transient=reason == "alert_created")
             await session.commit()
             return cache
     except Exception as exc:

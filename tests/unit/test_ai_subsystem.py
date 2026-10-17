@@ -188,7 +188,7 @@ async def test_natural_add_isbn_overruled_by_bnf():
     assert res.book_context.publication_year == 2022
     assert res.book_context.format_detail == "1 vol. (224 p.) : ill. en coul. ; 24 cm"
     assert res.isbn_note is None
-    bnf.verify_isbn.assert_awaited_once()
+    bnf.verify_isbn.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -310,11 +310,9 @@ async def test_natural_add_without_verifiable_isbn_falls_back_to_title():
     assert res is not None
     assert res.isbn13 is None
     assert res.book_context is None
-    assert res.isbn_note is not None
-    assert "BNF" in res.isbn_note
-    # Le modèle a soumis un code, donc l'ouvrage n'est pas « non identifié » : la note
-    # d'identité dit ce qui a été tenté, et la carte n'ajoute pas son avertissement.
-    assert res.book_unidentified is False
+    assert res.isbn_note is None
+    assert res.book_unidentified is True
+    bnf.verify_isbn.assert_not_awaited()
 
 
 @pytest.mark.asyncio

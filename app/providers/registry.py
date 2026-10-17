@@ -3,12 +3,21 @@
 import asyncio
 import logging
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
+from time import monotonic
 
 import httpx
 
 from app.domain.rules.market_offer import is_comparable_secondhand_offer
-from app.providers.base import BookMarketProvider, MarketOffer, MarketOffers, normalize_search_isbn
+from app.providers.base import (
+    BookMarketProvider,
+    CollectionAttempt,
+    MarketOffer,
+    MarketOffers,
+    failed_offers,
+    normalize_search_isbn,
+)
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 from app.providers.ebay_browse import EbayBrowseProvider
 from app.providers.gibert import GibertProvider
@@ -29,6 +38,7 @@ class ProviderRegistry:
         providers: list[BookMarketProvider] | None = None,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         http_client: httpx.AsyncClient | None = None,
+        single_attempt: bool = False,
     ) -> None:
         if providers is not None:
             self.providers = providers
@@ -38,7 +48,8 @@ class ProviderRegistry:
             # directs ne servent que de filet quand l'agrégateur ne répond pas.
             # eBay n'est ajouté que si ses identifiants sont configurés.
             default_providers: list[BookMarketProvider] = [
-                ChasseAuxLivresProvider(http_client=http_client),
+                ChasseAuxLivresProvider(http_client=http_client,
+                                       max_retries=0 if single_attempt else 2),
                 MomoxProvider(http_client=http_client),
                 RecyclivreProvider(http_client=http_client),
                 GibertProvider(http_client=http_client),
@@ -60,6 +71,7 @@ class ProviderRegistry:
     ) -> list[MarketOffer]:
         """Interroge un unique fournisseur sous protection de sémaphore et timeout."""
         async with self._semaphore:
+            started = monotonic()
             try:
                 offers = await asyncio.wait_for(
                     provider.get_offers(
@@ -76,17 +88,22 @@ class ProviderRegistry:
                         offer.observed_at = observed_at
                     if offer.observation_id is None:
                         offer.observation_id = uuid.uuid4()
-                return offers
-            except Exception as exc:
-                reason = (
-                    "timeout" if isinstance(exc, (TimeoutError, httpx.TimeoutException))
-                    else "http_status" if isinstance(exc, httpx.HTTPStatusError)
-                    else "invalid_response" if isinstance(exc, (ValueError, TypeError))
-                    else "internal_error"
+                attempts = getattr(offers, "attempts", ()) or (CollectionAttempt(
+                    provider.name,
+                    status="failed" if getattr(offers, "failed_providers", ()) else "success",
+                    reason="unclassified" if getattr(offers, "failed_providers", ()) else None,
+                ),)
+                return MarketOffers(
+                    offers or [], failed_providers=getattr(offers, "failed_providers", ()),
+                    historical_checked=getattr(offers, "historical_checked", False),
+                    attempts=tuple(replace(a, duration_seconds=monotonic() - started)
+                                   for a in attempts),
                 )
-                logger.warning("Collecte fournisseur échouée : %s (%s, %s)",
-                               provider.name, reason, type(exc).__name__)
-                return MarketOffers(failed_providers=(provider.name,))
+            except Exception as exc:
+                failed = failed_offers(provider.name, error=exc)
+                failed.attempts = tuple(replace(a, duration_seconds=monotonic() - started)
+                                        for a in failed.attempts)
+                return failed
 
     async def fetch_all_offers(
         self,
@@ -117,16 +134,24 @@ class ProviderRegistry:
 
         all_offers: list[MarketOffer] = []
         failures: set[str] = set()
+        attempts: list[CollectionAttempt] = []
         for provider, res in zip(self.providers, results, strict=True):
             if isinstance(res, BaseException):
                 failures.add(provider.name)
+                attempts.append(CollectionAttempt(
+                    provider.name, status="failed",
+                    reason=("cancelled" if isinstance(res, asyncio.CancelledError)
+                            else "internal_error"),
+                ))
             if isinstance(res, list):
                 all_offers.extend(res)
+                attempts.extend(getattr(res, "attempts", ()))
                 failures.update(getattr(res, "failed_providers", ()))
 
         self.failed_provider_names.update(failures)
         return MarketOffers(
             all_offers, failed_providers=tuple(sorted(failures)),
+            attempts=tuple(attempts),
             historical_checked=any(getattr(res, "historical_checked", False) for res in results),
         )
 

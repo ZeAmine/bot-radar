@@ -132,7 +132,7 @@ async def test_whole_collection_timeout_is_persisted(monkeypatch):
         cache = await book_market_pricing.price_book_now(book.id, reason="test", registry=registry)
         assert cache is not None
         assert cache.collection_status == "failed"
-        assert cache.failed_provider_names == ["slow_source"]
+        assert cache.failed_provider_names == ["collecte marché"]
 
 
 @pytest.mark.parametrize("failed", [False, True])
@@ -187,3 +187,86 @@ async def test_linked_book_keeps_refresh_metadata_with_production_autoflush_disa
         assert cache.collection_status == ("failed" if failed else "complete")
         assert cache.failed_provider_names == (["test_source"] if failed else [])
         assert cache.last_attempt_at is not None
+
+
+async def test_collection_health_counts_watched_books_once_and_separates_never_from_old():
+    from app.db.models.alert import Alert
+    from app.db.models.alert_book import AlertBook
+    from app.db.models.category import Category
+    from app.db.models.user import User
+    from app.db.repositories.market_price_repo import MarketPriceRepository
+    from app.domain.enums import AlertStatus
+
+    now = datetime.now(UTC)
+    async with postgres_replayed_database() as db:
+        repo = MarketPriceRepository(db.session)
+        assert await repo.collection_health_counts(stale_after=now - timedelta(days=7)) == (0, 0, 0)
+        user = User(telegram_user_id=424242)
+        bd = Category(slug="bd_comics", label="BD", emoji="B")
+        tech = Category(slug="tech", label="Tech", emoji="T")
+        db.session.add_all([user, bd, tech])
+        await db.session.flush()
+        books = {
+            name: Book(title=name, normalized_title=name)
+            for name in (
+                "never", "old", "fresh", "legacy", "deleted", "tech", "inactive", "unlinked",
+            )
+        }
+        db.session.add_all(books.values())
+        await db.session.flush()
+        for name, category, status, deleted in [
+            ("never", bd, AlertStatus.ACTIVE, None),
+            ("never", bd, AlertStatus.PAUSED, None),
+            ("old", bd, AlertStatus.PAUSED, None),
+            ("fresh", bd, AlertStatus.ACTIVE, None),
+            ("legacy", bd, AlertStatus.ACTIVE, None),
+            ("deleted", bd, AlertStatus.ACTIVE, now),
+            ("tech", tech, AlertStatus.ACTIVE, None),
+            ("inactive", bd, AlertStatus.DELETED, None),
+        ]:
+            alert = Alert(name=name, user_id=user.id, category_id=category.id,
+                          status=status, deleted_at=deleted)
+            db.session.add(alert)
+            await db.session.flush()
+            db.session.add(AlertBook(alert_id=alert.id, book_id=books[name].id))
+        db.session.add_all([
+            BookMarketCache(book_id=books["old"].id,
+                            last_successful_collection_at=now - timedelta(days=8)),
+            BookMarketCache(book_id=books["fresh"].id,
+                            last_successful_collection_at=now, historical_checked_at=now),
+            BookMarketCache(book_id=books["legacy"].id, lowest_delivered_price_cents=2059,
+                            checked_at=now, historical_checked_at=now),
+        ])
+        await db.session.commit()
+        assert await repo.collection_health_counts(stale_after=now - timedelta(days=7)) == (2, 1, 2)
+
+
+async def test_skipped_collection_preserves_informative_price_and_observation():
+    from app.providers.base import CollectionAttempt
+
+    async with postgres_replayed_database() as db:
+        old = datetime.now(UTC) - timedelta(days=3)
+        book = Book(title="Livre", normalized_title="livre")
+        db.session.add(book)
+        await db.session.flush()
+        cache = BookMarketCache(
+            book_id=book.id, lowest_delivered_price_cents=2059,
+            comparison_status=ComparisonStatus.UNAVAILABLE, checked_at=old,
+            last_successful_collection_at=old,
+            current_offers=[{"provider_name": "old_source", "delivered_price_cents": 2059}],
+        )
+        db.session.add(cache)
+        await db.session.commit()
+        registry = MagicMock()
+        registry.fetch_all_offers = AsyncMock(return_value=MarketOffers(
+            attempts=(CollectionAttempt("source", status="skipped"),),
+        ))
+        await price_book(db.session, book, registry=registry)
+        await db.session.commit()
+        async with db.maker() as reader:
+            persisted = await reader.get(BookMarketCache, cache.id)
+            assert persisted.collection_status == "skipped"
+            assert persisted.lowest_delivered_price_cents == 2059
+            assert persisted.checked_at.replace(tzinfo=UTC) == old
+            assert persisted.last_successful_collection_at.replace(tzinfo=UTC) == old
+            assert persisted.current_offers[0]["provider_name"] == "old_source"

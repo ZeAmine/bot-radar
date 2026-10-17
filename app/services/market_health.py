@@ -4,8 +4,11 @@ La date du prix minimum ne mesure pas la fraîcheur de la collecte. Les preuves
 persistées distinguent les deux, sans renouveler un relevé lors d'un échec.
 """
 
+import asyncio
+import html
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Any
@@ -14,6 +17,7 @@ from zoneinfo import ZoneInfo
 from app.core.alert_latency import observe_background
 from app.core.redis import get_redis_client
 from app.db.repositories.market_price_repo import MarketPriceRepository
+from app.providers.base import CollectionAttempt
 from app.services.market_price_service import (
     COTE_UNAVAILABLE_LINE,
     LOT_UNRESOLVED_LINE,
@@ -613,3 +617,196 @@ async def read_sent_cote_states() -> dict[str, int]:
         [f"{COTE_STATE_KEY_PREFIX}{state}" for state in COTE_STATES]
     )
     return {state: int(value or 0) for state, value in zip(COTE_STATES, values, strict=True)}
+
+
+@dataclass
+class RefreshPassResult:
+    total: int
+    stats: dict[str, int]
+    incremental: bool = False
+    occurrence: str | None = None
+    interrupted: bool = False
+    technical_interruption: bool = False
+    selection_known: bool = True
+    attempts: list[CollectionAttempt] = field(default_factory=list)
+    never_collected: int | None = None
+    stale_current: int | None = None
+    stale_history: int | None = None
+
+
+_incident_states: dict[str, dict[str, float]] = {}
+_incident_observations: dict[str, dict[str, float]] = {}
+_incident_pending: dict[str, str] = {}
+_incident_loaded = False
+_incident_lock = asyncio.Lock()
+_INCIDENT_KEY = "radar:market:incidents:v2"
+
+
+async def read_refresh_health(result: RefreshPassResult, session: Any) -> None:
+    try:
+        counts = await MarketPriceRepository(session).collection_health_counts(
+            stale_after=datetime.now(UTC) - timedelta(days=STALE_AFTER_DAYS),
+        )
+        result.never_collected, result.stale_current, result.stale_history = counts
+        logger.info("Fraîcheur des collectes", extra={"never_collected": counts[0],
+                    "stale_current": counts[1], "stale_history": counts[2]})
+    except Exception:
+        logger.warning("Diagnostic de fraîcheur indisponible", exc_info=True)
+
+
+def _incident_changes(
+    result: RefreshPassResult, previous: dict[str, dict[str, float]],
+) -> tuple[dict[str, dict[str, float]], dict[str, str]]:
+    updated = dict(previous)
+    samples: dict[str, list[bool]] = {}
+    for attempt in result.attempts:
+        if attempt.status != "skipped":
+            samples.setdefault(f"{attempt.provider}/{attempt.operation}", []).append(
+                attempt.status == "failed",
+            )
+    samples["passe"] = [result.technical_interruption]
+    samples["traitement"] = [True] * result.stats.get("errors", 0) + [False] * max(
+        result.stats["processed"] - result.stats.get("errors", 0), 0,
+    )
+    changes = {}
+    for key, observations in samples.items():
+        if not observations:
+            continue
+        failed = sum(observations)
+        old = previous.get(key)
+        if failed:
+            state = {"ratio": failed / len(observations), "count": float(len(observations))}
+            if old is None:
+                changes[key] = f"Nouvel incident : {html.escape(key)}"
+            elif (state["ratio"] == 1 and old["ratio"] < 1) or (
+                len(observations) >= 3 and old["count"] >= 3
+                and state["ratio"] - old["ratio"] >= 0.25
+            ):
+                changes[key] = f"Aggravation : {html.escape(key)}"
+            updated[key] = state
+        elif old is not None:
+            changes[key] = f"Rétablissement : {html.escape(key)}"
+            updated.pop(key, None)
+    return updated, changes
+
+
+async def _persist_incidents(client: Any) -> None:
+    try:
+        await client.set(_INCIDENT_KEY, json.dumps({
+            "observed": _incident_observations,
+            "notified": _incident_states,
+            "pending": _incident_pending,
+        }))
+    except Exception:
+        logger.warning("État des incidents conservé localement")
+
+
+async def notify_refresh_result(result: RefreshPassResult) -> None:
+    global _incident_loaded
+    async with _incident_lock:
+        client = get_redis_client()
+        if not _incident_loaded:
+            try:
+                stored = await client.get(_INCIDENT_KEY)
+                if isinstance(stored, (str, bytes)):
+                    loaded = json.loads(stored)
+                    if isinstance(loaded, dict):
+                        for target, values in (
+                            (_incident_observations, loaded.get("observed", loaded)),
+                            (_incident_states, loaded.get("notified", loaded)),
+                        ):
+                            if isinstance(values, dict):
+                                target.clear()
+                                target.update({key: value for key, value in values.items()
+                                               if isinstance(value, dict)
+                                               and isinstance(value.get("ratio"), (float, int))
+                                               and isinstance(value.get("count"), (float, int))})
+                        pending = loaded.get("pending", {})
+                        if isinstance(pending, dict):
+                            _incident_pending.clear()
+                            _incident_pending.update({key: value for key, value in pending.items()
+                                                      if isinstance(value, str)})
+            except Exception:
+                logger.warning("État des incidents Redis indisponible ; repli local")
+            _incident_loaded = True
+        updated, observed_changes = _incident_changes(result, _incident_observations)
+        for component, change in observed_changes.items():
+            if component not in _incident_states:
+                if component not in updated:
+                    if component not in _incident_pending:
+                        continue
+                    change = (
+                        f"Incident observé puis rétabli avant remise : {html.escape(component)}"
+                    )
+                elif component in _incident_pending:
+                    if component in _incident_observations:
+                        continue
+                    change = (f"{_incident_pending[component]}\n"
+                              f"Nouvel incident en cours : {html.escape(component)}")
+                else:
+                    change = f"Nouvel incident : {html.escape(component)}"
+            _incident_pending[component] = change
+        _incident_observations.clear()
+        _incident_observations.update(updated)
+        changes = list(_incident_pending.values())
+        await _persist_incidents(client)
+        if result.incremental and not changes:
+            return
+        key = (f"{INCOMPLETE_NOTIFY_KEY_PREFIX}{result.occurrence}"
+               if not result.incremental and result.occurrence else None)
+        if key and not await _claim_slot(key, INCOMPLETE_NOTIFY_TTL_SECONDS):
+            return
+        stats = result.stats
+        population = str(result.total) if result.selection_known else "?"
+        remaining = (str(max(result.total - stats["processed"], 0))
+                     if result.selection_known else "inconnu")
+        skipped = sum(a.status == "skipped" for a in result.attempts)
+        lines = [
+            "🔄 <b>Rafraîchissement "
+            + ("incrémental" if result.incremental else "complet") + "</b>",
+            f"Traités : {stats['processed']}/{population} livres",
+            f"Actualisées : {stats['refreshed']} collectes avec offre",
+            f"Caches réutilisés : {stats.get('reused', 0)}",
+            f"Tentatives fournisseur non effectuées : {skipped}",
+            f"Sans offre admissible : {stats.get('empty', stats['unavailable'])}",
+            f"Collectes dégradées : {stats['degraded']}",
+            f"Exceptions de traitement : {stats['errors']}",
+            f"Non parcourus : {remaining}",
+        ]
+        if result.technical_interruption:
+            lines.append("⚠️ Interruption technique de la passe.")
+        elif result.interrupted:
+            lines.append("Plafond de durée atteint.")
+        if result.never_collected is not None:
+            lines.extend([f"Jamais collectés : {result.never_collected}",
+                          f"Dernière collecte trop ancienne : {result.stale_current}",
+                          f"Historique non actualisé : {result.stale_history}"])
+        elif not result.incremental:
+            lines.append("Diagnostic de fraîcheur indisponible.")
+        lines.extend(changes)
+        failed = sorted({f"{a.provider}/{a.operation} ({a.reason or 'cause inconnue'})"
+                         for a in result.attempts if a.status == "failed"})
+        if stats["errors"] and not stats["refreshed"]:
+            lines.append("⚠️ Collecte de prix en échec ; aucun relevé courant actualisé.")
+        if stats["degraded"]:
+            lines.append("⚠️ Rafraîchissement dégradé")
+        if failed:
+            lines.append("Échecs observés : " + html.escape(", ".join(failed)))
+        try:
+            if await notify_admins("\n".join(lines)) is False:
+                raise RuntimeError("notification non remise")
+        except (Exception, asyncio.CancelledError) as exc:
+            if key:
+                _notification_deadlines.pop(key, None)
+                try:
+                    await client.delete(key)
+                except Exception:
+                    logger.warning("Créneau de bilan non libéré", exc_info=True)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            logger.warning("Bilan de rafraîchissement non remis", exc_info=True)
+            return
+        _incident_states.clear()
+        _incident_states.update(updated)
+        _incident_pending.clear()
+        await _persist_incidents(client)

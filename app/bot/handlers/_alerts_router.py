@@ -110,8 +110,8 @@ class CreationDraftMiddleware(BaseMiddleware):
         event: CallbackQuery, data: dict[str, Any],
     ) -> Any:
         state = data.get("state")
-        draft = await state.get_data() if state is not None else {}
         base, separator, received = (event.data or "").partition("@")
+        draft = await state.get_data() if state is not None else {}
         if not creation_callback_matches(event.data or "", draft):
             attempt = data.get("creation_attempt")
             if attempt is not None:
@@ -120,6 +120,8 @@ class CreationDraftMiddleware(BaseMiddleware):
             return None
         if separator:
             event = event.model_copy(update={"data": base})
+        if base.startswith("add_cat:"):
+            data["creation_callback_data"] = base + (f"@{received}" if separator else "")
         return await handler(event, data)
 
 router = Router(name="alerts_create")

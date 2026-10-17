@@ -87,9 +87,7 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
         await drain(repos["tasks"])
 
         # 1. L'ISBN du modèle est refusé : la BNF le rattache à un autre ouvrage.
-        bnf.confirm_isbn_for_title.assert_awaited_once_with(
-            ISBN_AUTRE_LIVRE, "La couleur des choses"
-        )
+        bnf.confirm_isbn_for_title.assert_not_awaited()
 
         recap = recap_text(loading_message)
         assert "<b>ISBN :</b> <code>9782369903086</code>" in recap
@@ -202,8 +200,8 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
 
             # 1. Sans confirmation BNF, l'alerte part en surveillance par titre.
             recap = recap_text(loading_message)
-            assert "<b>ISBN :</b> À confirmer" in recap
-            assert "surveillance par titre" in recap
+            assert "<b>ISBN :</b> introuvable" in recap
+            assert "Ouvrage non identifié" in recap
             assert not edition_buttons(loading_message)
 
             # 2. L'utilisateur corrige via le menu de modification.
@@ -366,9 +364,7 @@ async def test_add_typed_isbn_beats_model_proposal():
         await start_add_alert(message, state, db_session, db_user)
         await drain(repos["tasks"])
 
-        bnf.confirm_isbn_for_title.assert_awaited_once_with(
-            "9782369903086", "La couleur des choses"
-        )
+        bnf.confirm_isbn_for_title.assert_awaited_once_with("9782369903086", None)
 
         recap = recap_text(loading_message)
         assert "<b>ISBN :</b> <code>9782369903086</code>" in recap

@@ -311,12 +311,22 @@ def cote_absence_line(book: Book | None) -> str | None:
                  or cache.annual_low_cents is not None)):
         reason = _reference_reason(book) or "cote indisponible"
         return f"{COTE_UNAVAILABLE_LINE} ({reason})."
+    if cache is not None and cache.collection_status == "skipped":
+        return f"{COTE_UNAVAILABLE_LINE} (Aucune source interrogée)."
     if cache is not None and cache.collection_status == "failed":
         date = _format_checked_at(cache.last_attempt_at)
         return f"{COTE_UNAVAILABLE_LINE} (tentative du {date})."
     if cache is None or cache.checked_at is None:
         return PENDING_COTE_LINE
     return f"{NO_OFFER_LINE} (relevé du {_format_checked_at(cache.checked_at)})."
+
+
+def _current_collection_is_empty(cache: BookMarketCache) -> bool:
+    return cache.collection_status == "empty" or (
+        cache.collection_status == "partial" and cache.current_offers == []
+        and cache.last_successful_collection_at is not None
+        and cache.last_successful_collection_at == cache.last_attempt_at
+    )
 
 
 def format_cote_lines(book: Book | None) -> list[str]:
@@ -336,6 +346,8 @@ def format_cote_lines(book: Book | None) -> list[str]:
     market_cents = _positive(cache.lowest_delivered_price_cents)
     if market_cents is not None:
         label = ("Prix du marché" if reference_price(cache) == (market_cents, False)
+                 and cache.collection_status not in {"failed", "skipped"}
+                 and not _current_collection_is_empty(cache)
                  else "Dernière offre connue (informative)")
         lines.append(f"<b>{label} :</b> {format_cents(market_cents)}")
     historical_cents, historical = reference_price(cache)
@@ -609,11 +621,26 @@ class MarketPriceService:
         """Génère la ligne de comparaison épurée pour la légende Telegram."""
         if for_creation:
             lines = format_cote_lines(book)
+            has_known_price = bool(lines)
             if not lines:
                 absence = cote_absence_line(book)
                 lines = [absence if absence and "en cours" not in absence
                          else "<i>⚠️ Cote indisponible</i>"]
             cache = book.market_cache if book is not None else None
+            if cache is not None and cache.collection_status == "skipped":
+                if not any("Aucune source interrogée" in line for line in lines):
+                    lines.append("Aucune source interrogée ; derniers relevés conservés."
+                                 if has_known_price else "Aucune source interrogée.")
+            elif cache is not None and cache.collection_status == "failed":
+                retained = " ; prix conservés" if has_known_price else ""
+                lines.append(f"⚠️ Dernière collecte échouée{retained}. "
+                             f"Tentative du {_format_checked_at(cache.last_attempt_at)}.")
+            elif cache is not None and cache.collection_status == "partial":
+                lines.append("⚠️ Collecte partielle ; certaines données n’ont pas été actualisées.")
+            if (cache is not None and _current_collection_is_empty(cache)
+                  and not any(is_no_offer_line(line) for line in lines)):
+                date = _format_checked_at(cache.last_successful_collection_at)
+                lines.append(f"{NO_OFFER_LINE} (collecte du {date}).")
             if cache is None or _positive(cache.lowest_delivered_price_cents) is None:
                 lines.append("<b>Prix du marché :</b> Non renseigné")
             if cache is None or not reference_price(cache)[1]:
@@ -807,8 +834,10 @@ class MarketPriceService:
         status = (
             "failed"
             if statuses == {"failed"}
+            else "skipped"
+            if statuses == {"skipped"}
             else "partial"
-            if statuses & {"failed", "partial"}
+            if statuses & {"failed", "partial", "skipped"}
             else "complete"
             if len(caches) > 1 and any(has_usable_price(c) for c in caches)
             else None
@@ -944,7 +973,8 @@ class MarketPriceService:
         if current_price:
             label = (
                 "Dernière offre connue"
-                if cache.collection_status in ("failed", "empty")
+                if cache.collection_status in {"failed", "skipped"}
+                or _current_collection_is_empty(cache)
                 or MarketPriceService._is_expired(cache)
                 else "Meilleure offre actuelle"
             )
@@ -955,20 +985,25 @@ class MarketPriceService:
 
         if is_historical and reference_cents is not None:
             lines.append(
-                f"<b>Minimum sur 1 an :</b> {format_cents(reference_cents)} "
+                f"<b>Prix bas constaté :</b> {format_cents(reference_cents)} "
                 f"({_format_checked_at(cache.annual_low_observed_at)})"
             )
+
+        if is_historical and cache.annual_first_at and cache.annual_last_at:
+            lines.append(f"{cache.annual_count} relevé(s) conservé(s), "
+                         f"du {cache.annual_first_at:%d/%m/%Y} au {cache.annual_last_at:%d/%m/%Y}.")
 
         if partners:
             if is_historical:
                 lines.append(
                     "\n<b>Dernières offres connues :</b>"
-                    if cache.collection_status == "failed" or MarketPriceService._is_expired(cache)
+                    if cache.collection_status in {"failed", "skipped"}
+                    or MarketPriceService._is_expired(cache)
                     else "\n<b>Comparatif par boutique :</b>"
                 )
             else:
                 lines.append("<b>Dernières offres connues :</b>"
-                             if cache.collection_status == "failed"
+                             if cache.collection_status in {"failed", "skipped"}
                              or MarketPriceService._is_expired(cache)
                              else "<b>Comparatif par boutique :</b>")
             for merchant, data in sorted(
@@ -977,7 +1012,7 @@ class MarketPriceService:
                 total_cents = _positive(data.get("total_cents")) or 0
                 condition = normalize_secondhand_condition(data.get("condition"))
                 lines.append(f"• {merchant} : {format_cents(total_cents)} ({condition})")
-        elif not is_historical:
+        elif not is_historical and cache.collection_status != "skipped":
             lines.append("(Aucune offre d'occasion comparable en stock chez nos partenaires.)")
 
         if len(books_in_series) > 1:
@@ -1007,6 +1042,8 @@ class MarketPriceService:
         moment = cache.last_attempt_at or cache.checked_at
         date = f" ({_format_checked_at(moment)})" if moment else ""
         status = status or cache.collection_status
+        if status == "skipped":
+            return f"<i>Aucune source interrogée{date}</i>"
         if status == "failed":
             return f"<i>⚠️ Actualisation impossible{date} ; derniers relevés conservés.</i>"
         if status == "partial":
@@ -1054,7 +1091,7 @@ class MarketPriceService:
         forcément lancée.
         """
         cache = _loaded_market_cache(book) if book else None
-        if cache and cache.collection_status in ("failed", "empty"):
+        if cache and cache.collection_status in ("failed", "empty", "skipped"):
             absence = ""
         else:
             absence = cote_absence_line(book) or PENDING_COTE_LINE

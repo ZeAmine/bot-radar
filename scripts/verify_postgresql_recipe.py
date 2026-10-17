@@ -227,6 +227,168 @@ async def reset_synthetic_schema() -> None:
         await connection.close(timeout=5)
 
 
+async def _schema_constraints(connection: Any) -> list[Any]:
+    from sqlalchemy import text
+
+    return list(await connection.execute(text("""
+        SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname='public'
+        UNION ALL
+        SELECT c.relname, con.conname, pg_get_constraintdef(con.oid)
+        FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
+        JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'
+        ORDER BY 1, 2, 3
+    """)))
+
+
+async def seed_market_freshness_migration() -> dict[str, Any]:
+    from itertools import product
+
+    from sqlalchemy import MetaData, insert, select, text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(URL)
+    checked = datetime(2026, 10, 10, 12, tzinfo=UTC)
+    expected = {}
+    try:
+        async with engine.begin() as connection:
+            assert connection.dialect.name == "postgresql"
+            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                "0013_pause_actions"
+            )
+            metadata = MetaData()
+            await connection.run_sync(metadata.reflect)
+            tables = metadata.tables
+            for status, price, dated in product(
+                ("complete", "empty", "partial", "failed", None), (None, 0, 1200), (False, True)
+            ):
+                book_id, cache_id = uuid.uuid4(), uuid.uuid4()
+                await connection.execute(insert(tables["books"]), {
+                    "id": book_id, "title": "Synthétique 0014", "normalized_title": str(book_id),
+                    "language": "fr", "created_at": checked, "updated_at": checked,
+                })
+                await connection.execute(insert(tables["book_market_cache"]), {
+                    "id": cache_id, "book_id": book_id, "collection_status": status,
+                    "lowest_delivered_price_cents": price, "checked_at": checked if dated else None,
+                    "comparison_status": "AVAILABLE" if price else "UNAVAILABLE",
+                    "last_attempt_at": checked + timedelta(hours=1),
+                    "failed_provider_names": ["synthetic"] if status == "failed" else [],
+                    "current_offers": [{"provider": "synthetic", "price": price}],
+                    "historical_low_1y_cents": 700, "historical_low_at": checked,
+                    "annual_low_cents": 800, "annual_low_observed_at": checked,
+                    "annual_count": 1, "created_at": checked, "updated_at": checked,
+                })
+                successful = status in {"complete", "empty"} or (
+                    status == "partial" and price is not None and price > 0
+                )
+                expected[cache_id] = checked if dated and successful else None
+            original = {
+                name: [dict(row) for row in (await connection.execute(select(table))).mappings()]
+                for name, table in tables.items() if name != "alembic_version"
+            }
+            for row in original["book_market_cache"]:
+                expected.setdefault(row["id"], None)
+            return {"rows": original, "expected": expected,
+                    "constraints": await _schema_constraints(connection)}
+    finally:
+        await engine.dispose()
+
+
+async def verify_market_freshness_migration(before: dict[str, Any]) -> None:
+    from sqlalchemy import MetaData, insert, select, text, update
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(URL)
+    try:
+        async with engine.begin() as connection:
+            assert connection.dialect.name == "postgresql"
+            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                "0014_alert_market_freshness"
+            )
+            metadata = MetaData()
+            await connection.run_sync(metadata.reflect)
+            for name, rows in before["rows"].items():
+                table = metadata.tables[name]
+                if rows:
+                    columns = [table.c[key] for key in rows[0]]
+                    after = [dict(row) for row in (
+                        await connection.execute(select(*columns))
+                    ).mappings()]
+                    assert sorted(map(str, after)) == sorted(map(str, rows)), name
+                else:
+                    assert not (await connection.execute(select(table))).first(), name
+            assert await _schema_constraints(connection) == before["constraints"]
+            cache = metadata.tables["book_market_cache"]
+            for row in (await connection.execute(select(cache))).mappings():
+                assert row["last_successful_collection_at"] == before["expected"][row["id"]]
+                assert row["historical_checked_at"] is None
+            alerts = metadata.tables["alerts"]
+            for row in (await connection.execute(select(alerts))).mappings():
+                assert row["listing_baseline"] is None
+                assert row["catalogue_refresh_attempted_at"] is None
+            snapshots = metadata.tables["market_price_snapshots"]
+            historical_flags: list[Any] = list(await connection.scalars(
+                select(snapshots.c.is_historical)
+            ))
+            assert all(flag is False for flag in historical_flags)
+            schema_columns = (await connection.execute(text("""
+                SELECT table_name, column_name, is_nullable, data_type
+                FROM information_schema.columns WHERE table_schema='public'
+            """))).all()
+            for table_name, name, kind in (
+                ("alerts", "listing_baseline", "jsonb"),
+                ("alerts", "catalogue_refresh_attempted_at", "timestamp with time zone"),
+                ("book_market_cache", "last_successful_collection_at", "timestamp with time zone"),
+                ("book_market_cache", "historical_checked_at", "timestamp with time zone"),
+            ):
+                assert (table_name, name, "YES", kind) in schema_columns
+            assert ("market_price_snapshots", "is_historical", "NO", "boolean") in schema_columns
+            transaction = await connection.begin_nested()
+            try:
+                snapshot = dict(before["rows"]["market_price_snapshots"][0])
+                snapshot["id"] = uuid.uuid4()
+                assert await connection.scalar(insert(snapshots).values(snapshot).returning(
+                    snapshots.c.is_historical
+                )) is False
+                snapshot.update(id=uuid.uuid4(), is_historical=True)
+                assert await connection.scalar(insert(snapshots).values(snapshot).returning(
+                    snapshots.c.is_historical
+                )) is True
+                invalid = await connection.begin_nested()
+                try:
+                    snapshot.update(id=uuid.uuid4(), is_historical=None)
+                    try:
+                        await connection.execute(insert(snapshots).values(snapshot))
+                    except IntegrityError as error:
+                        sqlstate = getattr(error.orig, "sqlstate", None)
+                    else:
+                        raise AssertionError("is_historical accepte NULL")
+                    assert sqlstate == "23502"
+                finally:
+                    await invalid.rollback()
+                alert_id = before["rows"]["alerts"][0]["id"]
+                stamp = datetime(2026, 10, 11, 12, tzinfo=UTC)
+                await connection.execute(update(alerts).where(alerts.c.id == alert_id).values(
+                    listing_baseline={"synthetic": ["0014"]}, catalogue_refresh_attempted_at=stamp
+                ))
+                row = (await connection.execute(select(alerts).where(
+                    alerts.c.id == alert_id
+                ))).mappings().one()
+                assert row["listing_baseline"] == {"synthetic": ["0014"]}
+                assert row["catalogue_refresh_attempted_at"] == stamp
+            finally:
+                await transaction.rollback()
+            print("FINAL_MARKET_FRESHNESS_MIGRATION", json.dumps({
+                "chain": "0013→0014", "backend": connection.dialect.name,
+                "matrix_cases": 30, "old_rows_preserved": True,
+                "old_constraints_preserved": True, "success_backfill_verified": True,
+                "nullable_metadata_verified": True, "snapshot_default_and_not_null_verified": True,
+                "jsonb_timestamp_roundtrip_verified": True,
+            }), flush=True)
+    finally:
+        await engine.dispose()
+
+
 async def verify_migration(before: dict[str, list[dict[str, Any]]]) -> None:
     from sqlalchemy import MetaData, select, text
     from sqlalchemy.ext.asyncio import create_async_engine

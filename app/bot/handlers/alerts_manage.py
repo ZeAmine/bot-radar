@@ -631,13 +631,9 @@ def _conflicting_isbn_message(
         )
         >= TITLE_SIMILARITY_MIN
     )
-    old_author_words = set(normalize_text(current_author).split())
-    new_author_words = set(normalize_text(notice.author).split())
-    author_conflict = bool(
-        old_author_words
-        and new_author_words
-        and not (old_author_words <= new_author_words or new_author_words <= old_author_words)
-    )
+    from app.services.book_metadata_service import authors_conflict
+
+    author_conflict = authors_conflict(current_author, notice.author)
     if same_title and not author_conflict and not volume_conflict:
         return None
     who = f" de {notice.author}" if notice.author else ""
@@ -768,9 +764,11 @@ async def _refresh_alert_keywords(
                 outcome.variants, name, references=alert.include_keywords or ()
             ),
         ]))
-        alert.exclude_keywords = list(dict.fromkeys([
-            *(alert.exclude_keywords or []), *sanitize_exclusions(outcome.exclusions, name),
-        ]))
+        alert.exclude_keywords = sanitize_exclusions(
+            [*(alert.exclude_keywords or []), *outcome.exclusions], name,
+            author=book_context.author if book_context else None,
+            publisher=book_context.publisher if book_context else None,
+        )
         await session.commit()
 
     # Aucun bouton de relance sur cette fiche : le menu d'édition ne porte pas d'action

@@ -98,6 +98,7 @@ def patched(
     client: MagicMock,
     *,
     isbn_bnf: MagicMock | None = None,
+    natural_enabled: bool = True,
 ):
     """Patches de toutes les frontières du flux `/add`.
 
@@ -134,7 +135,7 @@ def patched(
         patch(
             "app.services.ai.modules.natural_add.NaturalAddModule.is_enabled",
             new_callable=PropertyMock,
-            return_value=True,
+            return_value=natural_enabled,
         ),
         patch("app.services.ai.modules.natural_add.natural_add_module.client", client),
         patch(
