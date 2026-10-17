@@ -3,6 +3,7 @@
 from aiogram import Router
 
 from app.bot.handlers import (
+    alert_chain_approval,
     alerts,
     autotune,
     callbacks,
@@ -24,9 +25,10 @@ def get_bot_router() -> Router:
     main_router.include_router(stats.router)
     main_router.include_router(autotune.router)
     main_router.include_router(alerts.router)
+    main_router.include_router(alert_chain_approval.router)
     main_router.include_router(callbacks.router)
     return main_router
 
 
 __all__ = ["get_bot_router", "start", "status", "help",
-    "categories", "alerts", "callbacks", "stats", "autotune"]
+    "categories", "alerts", "callbacks", "stats", "autotune", "alert_chain_approval"]
