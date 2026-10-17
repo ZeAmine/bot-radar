@@ -1,4 +1,4 @@
-"""Signale les collectes d'offres ou d'historique réellement absentes sous 48 h.
+"""Signale les collectes d'offres ou d'historique absentes depuis sept jours.
 
 La date du prix minimum ne mesure pas la fraîcheur de la collecte. Les preuves
 persistées distinguent les deux, sans renouveler un relevé lors d'un échec.
@@ -280,6 +280,35 @@ async def notify_silent_providers(session: Any) -> int:
         return 0
 
 
+def next_full_pass_at() -> datetime | None:
+    """Instant de la prochaine passe **complète** planifiée, ou ``None``.
+
+    Les identifiants des passes complètes sont dynamiques (`refresh_prices_HH_MM`,
+    dérivés de `PRICE_REFRESH_TIMES`) : ils se cherchent par préfixe, jamais par un
+    nom écrit en dur qui cesserait de correspondre au premier changement d'horaire.
+    Les passes glissantes à :15/:45 ne sont pas retenues : leur lot ne garantit pas
+    qu'un livre donné en fasse partie.
+    """
+    try:
+        from app.tasks.scheduler import scheduler
+
+        now = datetime.now(UTC)
+        upcoming = []
+        for job in scheduler.get_jobs():
+            if not job.id.startswith("refresh_prices_") or job.id.endswith("_incremental"):
+                continue
+            run_at = getattr(job, "next_run_time", None)
+            if run_at is None:
+                continue
+            aware = run_at if run_at.tzinfo else run_at.replace(tzinfo=UTC)
+            if aware > now:
+                upcoming.append(aware)
+    except Exception as exc:  # pragma: no cover - dépend de l'état du planificateur
+        logger.debug("Prochaine passe complète inconnue : %s", exc)
+        return None
+    return min(upcoming) if upcoming else None
+
+
 def next_full_pass_note() -> str:
     """Annonce la prochaine passe **complète** planifiée, ou rien si elle est inconnue.
 
@@ -289,28 +318,16 @@ def next_full_pass_note() -> str:
     promettre « le reste suivra » sans nommer la passe complète serait une promesse
     que rien ne tient. Si le planificateur ne répond pas, on ne dit rien : une phrase
     en moins vaut mieux qu'une date fausse.
-
-    Les identifiants des passes complètes sont dynamiques (`refresh_prices_HH_MM`,
-    dérivés de `PRICE_REFRESH_TIMES`) : ils se cherchent par préfixe, jamais par un
-    nom écrit en dur qui cesserait de correspondre au premier changement d'horaire.
     """
-    try:
-        from app.tasks.scheduler import scheduler
-
-        upcoming = [
-            job.next_run_time
-            for job in scheduler.get_jobs()
-            if job.id.startswith("refresh_prices_")
-            and not job.id.endswith("_incremental")
-            and getattr(job, "next_run_time", None) is not None
-        ]
-    except Exception as exc:  # pragma: no cover - dépend de l'état du planificateur
-        logger.debug("Prochaine passe complète inconnue : %s", exc)
+    moment = next_full_pass_at()
+    if moment is None:
         return ""
-    if not upcoming:
-        return ""
-    moment = min(upcoming).astimezone(ZoneInfo("Europe/Paris"))
-    return f"\nProchaine passe complète prévue : {moment:%d/%m à %H:%M}."
+    local = (
+        moment.astimezone(ZoneInfo("Europe/Paris"))
+        if moment.tzinfo
+        else moment.replace(tzinfo=UTC).astimezone(ZoneInfo("Europe/Paris"))
+    )
+    return f"\nProchaine passe complète prévue : {local:%d/%m à %H:%M}."
 
 
 async def notify_incomplete_refresh(

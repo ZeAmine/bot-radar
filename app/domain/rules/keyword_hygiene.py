@@ -491,6 +491,7 @@ def _clean_values(
     family: _Family,
     *,
     from_user: bool = False,
+    enforce_limit: bool = True,
 ) -> SanitizedValues:
     """Applique les règles communes, rejette les dégénérés, déduplique, plafonne.
 
@@ -504,6 +505,10 @@ def _clean_values(
     diffèrent que par un accent ou un espace sont la même variante, et les garder
     toutes les deux ne dit rien de plus au matching. Le plafond, lui, ne tronque plus
     en silence — les termes au-delà sont comptés et nommés.
+
+    `enforce_limit=False` réserve le plafond aux propositions du moteur : une liste
+    que l'utilisateur vient d'écrire et qui s'ajoute à ses exclusions déjà enregistrées
+    ne doit pas perdre ses derniers termes parce que le total dépasse le plafond.
     """
     cleaned: list[str] = []
     kept_indexes: list[int] = []
@@ -517,7 +522,7 @@ def _clean_values(
             key = normalize_text(value)
             if key in seen:
                 reason = Reason.DUPLICATE
-            elif len(cleaned) >= family.max_size:
+            elif enforce_limit and len(cleaned) >= family.max_size:
                 reason = Reason.LIMIT
         if reason is not None:
             removals.append(TermRemoval(index=index, raw=str(raw), reason=reason))
@@ -561,7 +566,7 @@ def assess_variants(
 
 def assess_exclusions(
     values: list[str] | None, title: str, *, author: str | None = None,
-    publisher: str | None = None,
+    publisher: str | None = None, enforce_limit: bool = True,
 ) -> SanitizedValues:
     """Verdict motivé du côté exclusions : ce qui reste, et ce qui part et pourquoi.
 
@@ -570,8 +575,16 @@ def assess_exclusions(
     fait que lui ajouter un numéro de tome (`names_only_a_volume`) — celle-là tairait le
     tome voisin. Une exclusion qui le précise, elle, est conservée : c'est la forme
     normale d'un rejet.
+
+    `enforce_limit=False` est réservé à la fusion d'une saisie utilisateur avec ses
+    exclusions existantes : le plafond des propositions ne doit pas en tronquer la fin.
     """
-    return _clean_values(values, (title, author or "", publisher or ""), EXCLUSION_FAMILY)
+    return _clean_values(
+        values,
+        (title, author or "", publisher or ""),
+        EXCLUSION_FAMILY,
+        enforce_limit=enforce_limit,
+    )
 
 
 def sanitize_variants(
@@ -594,7 +607,13 @@ def sanitize_variants(
 
 def sanitize_exclusions(
     values: list[str] | None, title: str, *, author: str | None = None,
-    publisher: str | None = None,
+    publisher: str | None = None, enforce_limit: bool = True,
 ) -> list[str]:
-    """Exclusions qui tranchent réellement : ni chiffre nu, ni lettre seule, plafonnées."""
-    return assess_exclusions(values, title, author=author, publisher=publisher).values
+    """Exclusions qui tranchent réellement : ni chiffre nu, ni lettre seule, plafonnées.
+
+    `enforce_limit=False` conserve tous les termes valides de la saisie utilisateur
+    lorsqu'ils rejoignent des exclusions déjà enregistrées.
+    """
+    return assess_exclusions(
+        values, title, author=author, publisher=publisher, enforce_limit=enforce_limit
+    ).values

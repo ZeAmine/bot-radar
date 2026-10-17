@@ -1,19 +1,27 @@
-"""Cycle de vie du panneau marché : cache immédiat et actualisation progressive."""
+"""Cycle de vie du panneau marché : lecture du cache et sélection des tomes."""
 
 import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from time import monotonic
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.bot.labels import BTN_CLOSE
+from app.core.constants import AlertStatus
 from app.core.tasks import safe_create_task
+from app.db.models.alert import Alert
+from app.db.models.book import Book
+from app.db.repositories.alert_repo import AlertRepository
+from app.db.repositories.book_repo import BookRepository
 from app.db.session import AsyncSessionLocal
-from app.services.book_market_pricing import price_book_now
+from app.services.book_market_pricing import first_collection_is_due, schedule_book_pricing
+from app.services.market_health import next_full_pass_at
 from app.services.market_price_service import MarketPriceService, extract_tome_number_from_title
+from app.services.tome_extractor import TomeExtractor
 from app.use_cases.view_market_details import MarketPanelData, ViewMarketDetailsUseCase
 
 logger = logging.getLogger(__name__)
@@ -27,14 +35,10 @@ class PanelView:
     panel: MarketPanelData
     listing_id: uuid.UUID | None = None
     alert_id: uuid.UUID | None = None
-    user_id: uuid.UUID | None = None
     selected_id: uuid.UUID | None = None
     closed: bool = False
-    refreshing: bool = True
-    failed: bool = False
     created_at: float = field(default_factory=monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    task: asyncio.Task[None] | None = None
 
 
 _panels: dict[tuple[int, int], PanelView] = {}
@@ -47,12 +51,10 @@ def _key(message: Message) -> tuple[int, int]:
 
 
 def close_panel(message: Message) -> None:
-    """Invalide le panneau avant sa suppression, même si une collecte est en vol."""
+    """Invalide le panneau avant sa suppression."""
     view = _panels.pop(_key(message), None)
     if view:
         view.closed = True
-        if view.task and not view.task.done():
-            view.task.cancel()
 
 
 def _expire_panels() -> None:
@@ -63,17 +65,162 @@ def _expire_panels() -> None:
         close_panel(next(iter(_panels.values())).message)
 
 
+def _next_check_for(view: PanelView, selected: Book | None) -> datetime | None:
+    """Prochaine passe qui prend réellement ce livre en charge, si elle est connue.
+
+    Une passe complète traite tous les livres des alertes actives ou en pause. Le
+    panneau ne l'annonce donc que pour un livre rattaché à une telle alerte : la
+    seule existence d'une tâche globale ne prouve pas que ce livre en fasse partie.
+    """
+    alert = view.panel.alert
+    if alert is None or selected is None:
+        return None
+    if alert.status not in {AlertStatus.ACTIVE, AlertStatus.PAUSED}:
+        return None
+    if getattr(alert, "deleted_at", None) is not None:
+        return None
+    return next_full_pass_at()
+
+
+def _request_first_collection(view: PanelView, book: Book | None) -> None:
+    """Demande la première cotation d'un livre qui n'en a jamais reçu.
+
+    Le prédicat écarte une cote exploitable, une collecte réussie sans offre et une
+    tentative récente. `schedule_book_pricing` conserve ses propres gardes : une
+    collecte déjà en vol pour ce livre n'est pas doublée.
+    """
+    if book is None:
+        return
+    alert = view.panel.alert
+    if alert is not None and (
+        alert.status not in {AlertStatus.ACTIVE, AlertStatus.PAUSED}
+        or getattr(alert, "deleted_at", None) is not None
+    ):
+        return
+    if not first_collection_is_due(book):
+        return
+    schedule_book_pricing(book.id, reason="market_panel")
+
+
+def _catalogue_attempt_is_recent(alert: Alert | None) -> bool:
+    if alert is None:
+        return False
+    attempted = alert.catalogue_refresh_attempted_at
+    if attempted is None:
+        return False
+    aware = attempted if attempted.tzinfo else attempted.replace(tzinfo=UTC)
+    return datetime.now(UTC) - aware < timedelta(hours=24)
+
+
+def _catalogue_resolution_is_needed(panel: MarketPanelData) -> bool:
+    """Le panneau manque-t-il d'un livre ou d'un tome que le catalogue peut fournir ?
+
+    La résolution est la même que celle du planificateur, mais déclenchée depuis le
+    panneau lorsqu'aucune première cotation n'est possible sans elle. Elle reste
+    limitée aux alertes actives ou en pause, et à une tentative par période de 24 h.
+    """
+    alert = panel.alert
+    if alert is None:
+        return False
+    if alert.status not in {AlertStatus.ACTIVE, AlertStatus.PAUSED}:
+        return False
+    if getattr(alert, "deleted_at", None) is not None:
+        return False
+    books = panel.books_in_series or ([panel.book] if panel.book else [])
+    if not books:
+        return True
+    if alert.isbn:
+        return False
+    if panel.book is None:
+        return True
+    if panel.tome_result and panel.tome_result.tome_number is not None:
+        wanted = panel.tome_result.tome_number
+        return not any(
+            extract_tome_number_from_title(book.title) == wanted for book in books
+        )
+    return (
+        extract_tome_number_from_title(panel.book.title) is None
+        and first_collection_is_due(panel.book)
+    )
+
+
+_catalogue_in_flight: set[uuid.UUID] = set()
+
+
+def _request_catalogue_resolution(view: PanelView) -> None:
+    """Résout le catalogue manquant sans relancer une requête à chaque ouverture."""
+    panel = view.panel
+    alert = panel.alert
+    if alert is None or not _catalogue_resolution_is_needed(panel):
+        return
+    if _catalogue_attempt_is_recent(alert) or alert.id in _catalogue_in_flight:
+        return
+    _catalogue_in_flight.add(alert.id)
+    tome_number = (
+        panel.tome_result.tome_number
+        if panel.tome_result and panel.tome_result.tome_number is not None
+        else None
+    )
+    safe_create_task(
+        _resolve_catalogue_once(alert.id, tome_number),
+        name=f"market_catalogue_{alert.id}",
+    )
+
+
+async def _resolve_catalogue_once(
+    alert_id: uuid.UUID, tome_number: int | None = None
+) -> None:
+    try:
+        async with AsyncSessionLocal() as db:
+            alert = await AlertRepository(db).get_by_id(alert_id)
+            if (
+                alert is None
+                or alert.status not in {AlertStatus.ACTIVE, AlertStatus.PAUSED}
+                or alert.deleted_at is not None
+                or _catalogue_attempt_is_recent(alert)
+            ):
+                return
+            alert_name = alert.name
+            alert.catalogue_refresh_attempted_at = datetime.now(UTC)
+            await db.commit()
+            await ViewMarketDetailsUseCase(db).resolve_alert_books(
+                alert_id, force_catalogue=True
+            )
+            books = await BookRepository(db).get_all_books_for_alert(alert_id)
+            if tome_number is not None:
+                target = next(
+                    (
+                        book
+                        for book in books
+                        if TomeExtractor.extract(
+                            book.title, series_key=alert_name
+                        ).tome_number
+                        == tome_number
+                    ),
+                    None,
+                )
+            elif len(books) == 1:
+                target = books[0]
+            else:
+                target = None
+            if target is not None and first_collection_is_due(target):
+                schedule_book_pricing(target.id, reason="market_panel")
+    except Exception:
+        logger.warning(
+            "Résolution catalogue depuis le panneau impossible pour %s",
+            alert_id,
+            exc_info=True,
+        )
+    finally:
+        _catalogue_in_flight.discard(alert_id)
+
+
 def _content(view: PanelView) -> tuple[str, InlineKeyboardMarkup]:
     from app.bot.handlers.callbacks import _tome_selection_rows
 
     panel = view.panel
     books = panel.books_in_series or ([panel.book] if panel.book else [])
     selected = next((b for b in books if b.id == view.selected_id), None)
-    notes: list[str] = []
-    if view.refreshing:
-        notes.append("Actualisation en cours…")
-    elif view.failed:
-        notes.append("⚠️ Actualisation impossible ; derniers relevés conservés.")
     missing_first = (
         view.alert_id
         and len(books) > 1
@@ -87,12 +234,12 @@ def _content(view: PanelView) -> tuple[str, InlineKeyboardMarkup]:
         latest_snapshot=panel.latest_snapshot if selected is panel.book else None,
         series_total_cents=panel.series_total_cents,
         catalogue_exhausted=panel.catalogue_exhausted,
-        refresh_note="<i>" + "\n".join(notes) + "</i>" if notes else None,
         additional_note=(
             "<i>Tome 1 absent du catalogue ; premier tome connu affiché.</i>"
             if missing_first
             else None
         ),
+        next_check_at=_next_check_for(view, selected),
     )
     source_id = view.listing_id or view.alert_id
     rows = _tome_selection_rows(source_id, books) if source_id and len(books) > 1 else []
@@ -117,10 +264,8 @@ async def render_panel(view: PanelView) -> None:
 async def open_panel(
     callback: CallbackQuery,
     panel: MarketPanelData,
-    *,
-    user_id: uuid.UUID | None = None,
 ) -> None:
-    """Affiche immédiatement le cache puis lance le travail dans une session dédiée."""
+    """Affiche le panneau depuis le cache puis initie les premiers travaux manquants."""
     if not isinstance(callback.message, Message):
         return
     _expire_panels()
@@ -129,13 +274,13 @@ async def open_panel(
         panel,
         listing_id=panel.listing.id if panel.listing else None,
         alert_id=panel.alert.id if panel.listing is None and panel.alert else None,
-        user_id=user_id,
         selected_id=panel.book.id if panel.book else None,
     )
     if (
         panel.book is None
         and panel.books_in_series
         and not (panel.tome_result and panel.tome_result.is_lot)
+        and not (panel.tome_result and panel.tome_result.tome_number is not None)
     ):
         books = sorted(
             panel.books_in_series, key=lambda b: extract_tome_number_from_title(b.title) or 999
@@ -149,9 +294,8 @@ async def open_panel(
         disable_web_page_preview=True,
     )
     _panels[_key(view.message)] = view
-    view.task = safe_create_task(
-        _refresh_panel(view), name=f"market_panel_{view.message.message_id}"
-    )
+    _request_first_collection(view, panel.book)
+    _request_catalogue_resolution(view)
 
 
 async def select_panel_tome(callback: CallbackQuery, book_id: uuid.UUID | None) -> bool:
@@ -170,70 +314,3 @@ async def select_panel_tome(callback: CallbackQuery, book_id: uuid.UUID | None) 
     await render_panel(view)
     await callback.answer()
     return True
-
-
-async def _reload(view: PanelView) -> None:
-    async with AsyncSessionLocal() as db:
-        use_case = ViewMarketDetailsUseCase(db)
-        if view.alert_id and view.user_id:
-            panel = await use_case.execute_for_alert(view.alert_id, view.user_id)
-        elif view.listing_id:
-            panel = await use_case.execute(view.listing_id, refresh=False)
-        else:
-            panel = None
-        if panel is not None:
-            if view.selected_id:
-                panel.book = next(
-                    (b for b in panel.books_in_series or [] if b.id == view.selected_id),
-                    panel.book,
-                )
-                if panel.book:
-                    panel.latest_snapshot = await use_case.market_repo.get_latest_snapshot(
-                        panel.book.id
-                    )
-            view.panel = panel
-
-
-async def _refresh_panel(view: PanelView) -> None:
-    try:
-        books = view.panel.books_in_series or ([view.panel.book] if view.panel.book else [])
-        if view.panel.alert and (
-            not books
-            or (
-                not view.panel.alert.isbn
-                and any(extract_tome_number_from_title(b.title) is None for b in books)
-            )
-        ):
-            async with AsyncSessionLocal() as db:
-                await ViewMarketDetailsUseCase(db).resolve_alert_books(
-                    view.panel.alert.id,
-                    view.user_id,
-                )
-            await _reload(view)
-            books = view.panel.books_in_series or ([view.panel.book] if view.panel.book else [])
-            if books:
-                view.selected_id = view.panel.book.id if view.panel.book else books[0].id
-        remaining = {book.id for book in books}
-        while remaining and not view.closed:
-            # La sélection courante passe en tête ; deux livres au plus par vague.
-            order = sorted(remaining, key=lambda book_id: book_id != view.selected_id)
-            wave = order[:1] if view.refreshing and view.selected_id in remaining else order[:2]
-            outcomes = await asyncio.gather(
-                *(price_book_now(book_id, reason="market_panel") for book_id in wave)
-            )
-            view.failed = view.failed or any(outcome is None for outcome in outcomes)
-            remaining.difference_update(wave)
-            await _reload(view)
-            view.refreshing = bool(remaining)
-            await render_panel(view)
-            if remaining:
-                await asyncio.sleep(1.2)
-        view.refreshing = False
-        await render_panel(view)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("Actualisation du panneau marché impossible")
-        view.failed = True
-        view.refreshing = False
-        await render_panel(view)

@@ -21,7 +21,7 @@ import logging
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +32,7 @@ from app.core.constants import ComparisonStatus, MatchConfidence
 from app.core.tasks import safe_create_task
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
-from app.db.repositories.book_repo import BookRepository
+from app.db.repositories.book_repo import FAILED_COLLECTION_REST_HOURS, BookRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.db.session import AsyncSessionLocal
 from app.domain.rules.market_offer import is_comparable_secondhand_offer
@@ -44,7 +44,7 @@ from app.providers.base import (
     normalize_search_isbn,
 )
 from app.providers.registry import ProviderRegistry
-from app.services.market_price_service import series_reference_total
+from app.services.market_price_service import has_usable_price, series_reference_total
 from app.utils.price import format_cents
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,37 @@ def pricing_stat(cache: BookMarketCache | None) -> str:
     if cache is not None and cache.comparison_status == ComparisonStatus.AVAILABLE:
         return "available"
     return "unavailable"
+
+
+def first_collection_is_due(book: Book) -> bool:
+    """Une première cotation manque-t-elle encore pour ce livre ?
+
+    Le panneau ne relance pas une collecte quand une cote exploitable, une collecte
+    réussie sans offre ou une tentative récente existe déjà. Le délai de repos des
+    échecs est celui du lot glissant, pour ne pas contourner sa protection.
+    """
+    if "market_cache" not in book.__dict__:
+        return False
+    cache = book.__dict__.get("market_cache")
+    if not isinstance(cache, BookMarketCache):
+        return cache is None
+    if has_usable_price(cache):
+        return False
+    if cache.last_successful_collection_at is not None:
+        return False
+    if cache.checked_at is not None:
+        return False
+    if cache.collection_status in {"empty", "complete"}:
+        return False
+    if cache.last_attempt_at is not None:
+        attempted = (
+            cache.last_attempt_at
+            if cache.last_attempt_at.tzinfo
+            else cache.last_attempt_at.replace(tzinfo=UTC)
+        )
+        if datetime.now(UTC) - attempted < timedelta(hours=FAILED_COLLECTION_REST_HOURS):
+            return False
+    return True
 
 
 async def fetch_offers_for_book(

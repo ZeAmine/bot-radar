@@ -1339,3 +1339,26 @@ async def test_two_distinct_occurrences_each_report_while_the_first_key_lives():
 
     assert len(sent) == 2, "chaque occurrence rend son bilan, sans attendre l'expiration"
     assert len(cles) == 2, "les deux occurrences ont des clés distinctes"
+
+
+@pytest.mark.asyncio
+async def test_the_seven_day_check_is_computed_from_the_successful_collection_date():
+    """Le seuil de sept jours est calculé, et porte sur la collecte réussie.
+
+    Le prix peut rester identique : c'est `last_successful_collection_at` qui
+    décide de la fraîcheur, jamais la date du dernier changement de montant.
+    """
+    finder = AsyncMock(return_value=([], 0))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            market_health.MarketPriceRepository,
+            "find_stale_current_collections",
+            finder,
+        )
+        before = datetime.now(UTC)
+        await market_health.notify_stale_current_collections(MagicMock())
+        after = datetime.now(UTC)
+
+    stale_after = finder.await_args.kwargs["stale_after"]
+    assert before - timedelta(days=7, seconds=1) <= stale_after <= after - timedelta(days=7)

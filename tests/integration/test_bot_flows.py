@@ -137,13 +137,6 @@ async def driver(monkeypatch, db_session) -> AsyncGenerator[tuple[Bot, Dispatche
     monkeypatch.setattr(preparation, "preparation_runner", preparation.PreparationRunner())
     monkeypatch.setattr(preparation, "price_book_now", cached_price)
 
-    monkeypatch.setattr(
-        market_panel,
-        "AsyncSessionLocal",
-        async_sessionmaker(db_session.bind, expire_on_commit=False),
-    )
-    monkeypatch.setattr(market_panel, "price_book_now", AsyncMock(return_value=None))
-
     for module_router in (alerts.router, callbacks.router):
         module_router._parent_router = None
 
@@ -154,12 +147,8 @@ async def driver(monkeypatch, db_session) -> AsyncGenerator[tuple[Bot, Dispatche
     dispatcher.include_router(callbacks.router)
     yield bot, dispatcher
     await storage.close()
-    views = list(market_panel._panels.values())
-    for view in views:
+    for view in list(market_panel._panels.values()):
         market_panel.close_panel(view.message)
-    import asyncio
-
-    await asyncio.gather(*(view.task for view in views if view.task), return_exceptions=True)
 
 
 def _tg_user() -> TgUser:
@@ -648,104 +637,73 @@ async def test_tome_buttons_allow_switching_without_a_global_series_button(drive
     """
     bot, dispatcher = driver
     user, listing, books = await _seed_series(db_session)
+    panel_data = f"market:{listing.id}"
+    await _feed(bot, dispatcher, _callback_update(panel_data, update_id=1), db_session, user)
 
-    # Une série déjà cotée ne rappelle pas les marchands, mais si la résolution
-    with patch(
-        "app.use_cases.view_market_details.price_book_now",
-        new=AsyncMock(return_value=None),
-    ):
-        panel_data = f"market:{listing.id}"
-        await _feed(bot, dispatcher, _callback_update(panel_data, update_id=1), db_session, user)
+    tome_buttons = _buttons_matching(bot, "market_tome:")
+    assert len(tome_buttons) == len(books), "la série n'a pas listé ses tomes"
+    panel = _texts(bot)[-1]
+    assert "Tome 1" in panel
+    for number, price in ((1, "5,09 €"), (2, "8,99 €"), (3, "9,83 €")):
+        assert f"Tome {number}" in panel
+        assert price in panel
 
-        tome_buttons = _buttons_matching(bot, "market_tome:")
-        assert len(tome_buttons) == len(books), "la série n'a pas listé ses tomes"
-        panel = _texts(bot)[-1]
-        assert "Tome 1" in panel
-        for number, price in ((1, "5,09 €"), (2, "8,99 €"), (3, "9,83 €")):
-            assert f"Tome {number}" in panel
-            assert price in panel
-
-        # Un tome se choisit toujours : c'est la suite du flux, pas un bouton mort.
-        await _feed(
-            bot,
-            dispatcher,
-            _callback_update(tome_buttons[1], update_id=2, message_id=bot.last_message_id),
-            db_session,
-            user,
-        )
-        assert "📊 <b>Prix du marché</b>" in _texts(bot)[-1]
-        assert _buttons_matching(bot, "market_details:") == []
-        reopened = _buttons_matching(bot, "market_tome:")
-        assert len(reopened) == len(books)
-        await _feed(
-            bot,
-            dispatcher,
-            _callback_update(reopened[0], update_id=3, message_id=bot.last_message_id),
-            db_session,
-            user,
-        )
+    # Un tome se choisit toujours : c'est la suite du flux, pas un bouton mort.
+    await _feed(
+        bot,
+        dispatcher,
+        _callback_update(tome_buttons[1], update_id=2, message_id=bot.last_message_id),
+        db_session,
+        user,
+    )
+    assert "📊 <b>Prix du marché</b>" in _texts(bot)[-1]
+    assert _buttons_matching(bot, "market_details:") == []
+    reopened = _buttons_matching(bot, "market_tome:")
+    assert len(reopened) == len(books)
+    await _feed(
+        bot,
+        dispatcher,
+        _callback_update(reopened[0], update_id=3, message_id=bot.last_message_id),
+        db_session,
+        user,
+    )
     assert "Tome 1" in _texts(bot)[-1]
 
 
-async def test_edit_market_refresh_keeps_the_selected_tome(driver, db_session, monkeypatch):
-    """Le tome 1 peut finir après la sélection du tome 2 sans réafficher le premier."""
-    import asyncio
-
-    from sqlalchemy.ext.asyncio import async_sessionmaker
-
+@pytest.mark.asyncio
+async def test_market_panel_reads_the_cache_and_keeps_the_selected_tome(driver, db_session):
+    """Le panneau ne relance aucune collecte : il lit le cache et garde le tome choisi."""
     from app.bot.handlers import market_panel
-    from app.providers.base import MarketOffer, MarketOffers
-    from app.services import book_market_pricing
 
     bot, dispatcher = driver
     user, _listing, books = await _seed_series(db_session)
     alert_id = (await db_session.execute(select(Alert.id))).scalar_one()
-    entered = asyncio.Event()
-    release = asyncio.Event()
 
-    async def fetch(book, registry=None):
-        _ = registry
-        if book.id == books[0].id:
-            entered.set()
-            await release.wait()
-        return MarketOffers(
-            [
-                MarketOffer(
-                    provider_name="test_source",
-                    item_price_cents=500,
-                    shipping_price_cents=100,
-                    delivered_price_cents=600,
-                    source_url="https://example.com/book",
-                    item_condition="Très bon état",
-                )
-            ]
+    with patch(
+        "app.services.book_market_pricing.price_book_now", new=AsyncMock()
+    ) as fetch:
+        await _feed(bot, dispatcher, _callback_update(f"ed_f:{alert_id}:market"), db_session, user)
+        message_id = bot.last_message_id
+        first = _texts(bot)[-1]
+        assert "Actualisation" not in first
+        assert "Dernière vérif. : inconnue" in first
+        assert "5,09 €" in first
+        fetch.assert_not_awaited()
+
+        buttons = _buttons_matching(bot, "market_tome:")
+        await _feed(
+            bot,
+            dispatcher,
+            _callback_update(buttons[1], message_id=message_id),
+            db_session,
+            user,
         )
+        selected = _texts(bot)[-1]
+        assert "<b>Blacksad — Tome 2</b>" in selected
+        assert "8,99 €" in selected
+        assert "Dernière vérif. : inconnue" in selected
+        fetch.assert_not_awaited()
 
-    monkeypatch.setattr(book_market_pricing, "fetch_offers_for_book", fetch)
-    monkeypatch.setattr(
-        book_market_pricing,
-        "AsyncSessionLocal",
-        async_sessionmaker(db_session.bind, expire_on_commit=False),
-    )
-    monkeypatch.setattr(market_panel, "price_book_now", book_market_pricing.price_book_now)
-    await _feed(bot, dispatcher, _callback_update(f"ed_f:{alert_id}:market"), db_session, user)
-    message_id = bot.last_message_id
-    assert "Vinted" not in _texts(bot)[-1]
-    assert "Actualisation en cours" in _texts(bot)[-1]
-    await asyncio.wait_for(entered.wait(), 2)
-    buttons = _buttons_matching(bot, "market_tome:")
-    await _feed(
-        bot, dispatcher, _callback_update(buttons[1], message_id=message_id), db_session, user
-    )
-    assert "<b>Blacksad — Tome 2</b>" in _texts(bot)[-1]
-    release.set()
-    view = market_panel._panels[(CHAT_ID, message_id)]
-    await asyncio.wait_for(view.task, 5)
-    final = _texts(bot)[-1]
-    assert "<b>Blacksad — Tome 2</b>" in final
-    assert "Actualisation en cours" not in final
-    assert "6,00 €" in final
-    assert "<b>Actualisation :</b>" in final
     await _feed(
         bot,
         dispatcher,
