@@ -43,21 +43,8 @@ jobs:
   # PostgreSQL pour que requêtes JSON, upserts et types natifs ne divergent plus.
   test-postgres:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        # Même image officielle, sans la limite de pulls anonymes Docker Hub des runners.
-        image: public.ecr.aws/docker/library/postgres:16-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
+    # Le pull d'un service GitHub Actions se produit avant les steps : une relance
+    # ne peut donc pas le protéger. Le conteneur est démarré explicitement ici.
     steps:
       - uses: actions/checkout@v4
 
@@ -67,6 +54,51 @@ jobs:
 
       - name: Installer le projet et les outils de dev
         run: pip install -c requirements.lock -e ".[dev]"
+
+      - name: Récupérer l'image PostgreSQL avec relance bornée
+        run: |
+          image=public.ecr.aws/docker/library/postgres:16-alpine
+          for attempt in 1 2 3; do
+            if docker pull "$image"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              delay=$((attempt * 5))
+              echo "Pull PostgreSQL en échec (tentative $attempt/3), relance dans ${delay}s." >&2
+              sleep "$delay"
+            fi
+          done
+          echo "Pull PostgreSQL en échec après 3 tentatives." >&2
+          exit 1
+
+      - name: Démarrer PostgreSQL
+        run: |
+          docker run -d --name botradar-postgres \
+            -e POSTGRES_USER=test \
+            -e POSTGRES_PASSWORD=test \
+            -e POSTGRES_DB=test \
+            -p 5432:5432 \
+            --health-cmd "pg_isready -U test" \
+            --health-interval 5s \
+            --health-timeout 5s \
+            --health-retries 5 \
+            public.ecr.aws/docker/library/postgres:16-alpine
+
+      - name: Attendre PostgreSQL
+        run: |
+          for attempt in $(seq 1 30); do
+            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' botradar-postgres)
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs botradar-postgres
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs botradar-postgres
+          exit 1
 
       - name: Migrations sur une base PostgreSQL vierge
         env:
@@ -82,6 +114,10 @@ jobs:
           INTERNAL_API_TOKEN: "ci_internal_token_test"
           TEST_DATABASE_URL: "postgresql+asyncpg://test:test@localhost:5432/test"
         run: pytest tests/integration/ -v
+
+      - name: Arrêter PostgreSQL
+        if: always()
+        run: docker rm -f botradar-postgres || true
 
   # Publier un tag affirme que tout l'historique depuis le précédent est vert :
   # un commit intermédiaire cassé n'est visible qu'au bisect si `HEAD` passe.
