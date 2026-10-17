@@ -510,3 +510,13 @@ Le blocage de rejeu local est levé ; la cause historique du ralentissement n'es
 pas revendiquée comme réparée. Aucun code applicatif, migration, PostgreSQL,
 service réel, base Git ou opération de livraison modifié/exécuté dans ce diagnostic.
 CI et intégration de base restent sous leurs mandats distincts.
+
+### Intégration autorisée de main — 17 octobre 2026
+
+Le [rapport d'intégration](reliability-main-integration.md) décrit le merge de
+`034f48e` (#124–#126), la réconciliation du seul garde d'occurrence et la conservation
+des garanties des deux parents. Les contrôles de l'arbre intégré passent : Ruff,
+typecheck, 2 182 réussites en suite complète et 106 réussites PostgreSQL ciblées,
+avec concurrence réelle et preuve peuplée 0013→0014. La ressource est supprimée.
+La CI doit être observée sur le nouveau SHA après push ; aucune fusion dans main
+ni aucun déploiement n'est couvert par ce mandat.

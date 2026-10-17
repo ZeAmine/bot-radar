@@ -115,9 +115,13 @@ sans cible sélectionne unitaires et performance ; `--target` peut sélectionner
 explicitement des tests d'intégration compatibles SQLite. `make test-isolated`
 sélectionne `unit --target tests` via cette même recette, sans second dispositif.
 Les trois tests d'occurrence peuvent démarrer un scheduler asyncio natif isolé :
-un seul job de test `refresh_prices_07_00`, exécuteur asyncio et stockage mémoire.
-Le test appelle l'enveloppe produit inchangée avec une collecte doublée ; les autres
-jobs produit sont retirés de cette seule instance de test. Le garde refuse le
+un seul job `refresh_prices_07_00`, exécuteur asyncio et stockage mémoire.
+Un seul prédicat autorise une coroutine du module de test ou l'enveloppe réelle
+d'occurrence. Pour celle-ci, les opérations métier connues référencées doivent
+être substituées, en comparaison avec leur identité dans leurs modules d'origine.
+Le test vérifie les substitutions avant de retirer les autres jobs de sa seule
+instance, puis exerce l'enveloppe réelle et attend l'arrêt du scheduler.
+Le garde refuse le
 scheduler produit complet, les autres fonctions/configurations et les schedulers
 en sous-processus. HTTP, Redis et sockets restent interdits, y compris dans les
 enfants. Le refus des transports est aussi exercé dans une sonde séparée dont les

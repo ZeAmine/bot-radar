@@ -24,8 +24,65 @@ ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = "bfabcca7dbf4f8f6af2de058b167a93dd80816b8"
 PORT = 55514
 
+# Opérations métier que le module du planificateur appelle, et que les tests
+# d'occurrence doivent substituer avant de construire le scheduler. La liste est
+# explicite : elle sert à vérifier une résolution de nom, pas à inspecter du code.
+OPERATIONS_METIER_SCHEDULER = (
+    "recover_bd_preparations",
+    "recover_notifications",
+    "cleanup_old_data_task",
+    "run_proactive_autotune_scan",
+    "refresh_book_prices_task",
+)
 
-def _isolated_occurrence_scheduler(scheduler: Any, node: str) -> bool:
+
+def _noms_globaux_referenced(fonction: Any) -> tuple[str, ...]:
+    """Noms globaux qu'une fonction peut résoudre à l'exécution.
+
+    `co_names` couvre les attributs et les globales ; on ne prétend pas en déduire
+    tous les effets possibles, seulement repérer les opérations métier connues.
+    """
+    code = getattr(fonction, "__code__", None)
+    if code is None:
+        return ()
+    return tuple(code.co_names)
+
+
+def _identite_operations_applicatives() -> dict[str, int]:
+    """Identité des opérations métier telles que leurs **modules d'origine** les portent.
+
+    Les tests d'occurrence ne remplacent que l'attribut du module du planificateur :
+    l'attribut homonyme du module d'origine reste la fonction applicative. C'est cette
+    référence-là qui sert de témoin, et elle ne dépend donc pas de l'ordre entre le
+    relevé et la substitution.
+
+    Lecture seule de `sys.modules` : aucun import n'est déclenché ici, sans quoi les
+    tests dont un sous-processus importe un paquet `app` temporaire seraient perturbés.
+
+    Un nom absent du relevé n'est pas une erreur en soi : le contrôle qui l'utilise
+    échoue explicitement s'il a besoin d'un témoin manquant.
+    """
+    origine = {
+        "recover_bd_preparations": "app.use_cases.prepare_bd_alert",
+        "recover_notifications": "app.tasks.recover_notifications",
+        "cleanup_old_data_task": "app.tasks.cleanup",
+        "run_proactive_autotune_scan": "app.tasks.proactive_autotune",
+        "refresh_book_prices_task": "app.tasks.refresh_book_prices",
+    }
+    identites: dict[str, int] = {}
+    for nom, module_nom in origine.items():
+        module = sys.modules.get(module_nom)
+        if module is None:
+            continue
+        fonction = getattr(module, nom, None)
+        if fonction is not None:
+            identites[nom] = id(fonction)
+    return identites
+
+
+def _isolated_occurrence_scheduler(
+    scheduler: Any, node: str, original_operations: dict[str, int],
+) -> bool:
     from inspect import iscoroutinefunction
 
     from apscheduler.executors.asyncio import AsyncIOExecutor
@@ -46,12 +103,34 @@ def _isolated_occurrence_scheduler(scheduler: Any, node: str) -> bool:
     if any(type(store) is not MemoryJobStore for store in scheduler._jobstores.values()):
         return False
     jobs = scheduler.get_jobs()
-    return (
-        len(jobs) == 1
-        and jobs[0].id == "refresh_prices_07_00"
-        and iscoroutinefunction(jobs[0].func)
-        and jobs[0].func.__module__.split(".")[-1] == "test_scheduler_occurrence"
-    )
+    if len(jobs) != 1 or jobs[0].id != "refresh_prices_07_00":
+        return False
+    function = jobs[0].func
+    if not iscoroutinefunction(function):
+        return False
+    if function.__module__.split(".")[-1] == "test_scheduler_occurrence":
+        return True
+    if function.__name__ != "job_avec_occurrence":
+        assert not function.__module__.startswith("app.") or (
+            function.__module__ == "app.tasks.scheduler"
+        ), "job pointe vers une opération applicative non substituée"
+        return False
+    assert function.__module__ == "app.tasks.scheduler", "fermeture d'occurrence inattendue"
+    scheduler_module = sys.modules.get("app.tasks.scheduler")
+    if not original_operations:
+        original_operations.update(_identite_operations_applicatives())
+    for reference in _noms_globaux_referenced(function):
+        if reference not in OPERATIONS_METIER_SCHEDULER:
+            continue
+        assert reference in original_operations, (
+            f"opération applicative {reference} non relevée — contrôle impossible"
+        )
+        current = getattr(scheduler_module, reference, None)
+        assert current is not None, f"opération {reference} introuvable dans le planificateur"
+        assert id(current) != original_operations[reference], (
+            f"fermeture encore liée à l'opération applicative non substituée {reference}"
+        )
+    return True
 
 
 def guard(*, site: bool = False) -> dict[str, int]:
@@ -137,6 +216,9 @@ def guard(*, site: bool = False) -> dict[str, int]:
 
         original_start = BaseScheduler.start
         permitted_schedulers = []
+        # Relevé paresseux : calculé seulement si un wrapper d'occurrence est
+        # effectivement inspecté, pour ne rien importer à l'installation de la garde.
+        identite_operations: dict[str, int] = {}
 
         def forbidden(scheduler: Any, *args: Any, **kwargs: Any) -> None:
             node = os.environ.get("RADAR_FINAL_NODE", "")
@@ -145,6 +227,11 @@ def guard(*, site: bool = False) -> dict[str, int]:
                 "test_cancelling_shutdown_does_not_recancel_the_poller_cleanup",
                 "test_shutdown_cancellation_still_drains_and_closes_clients[drain]",
                 "test_shutdown_cancellation_still_drains_and_closes_clients[http]",
+                "test_async_job_in_flight_is_cancelled_and_cleaned_before_resource_closure",
+                "test_shutdown_awaits_async_cleanup_of_a_real_scheduler_job",
+                "test_caller_cancellation_during_job_cleanup_still_closes_in_order",
+                "test_missing_default_executor_is_not_treated_as_no_producer",
+                "test_shutdown_waits_for_a_slow_producer_then_finishes_cleanly",
             )
             if not site and node in {
                 "tests/unit/test_unified_lifespan.py::" + name for name in allowed
@@ -157,7 +244,9 @@ def guard(*, site: bool = False) -> dict[str, int]:
                 permitted_schedulers.append(scheduler)
                 original_start(scheduler, *args, **kwargs)
                 return
-            if not site and _isolated_occurrence_scheduler(scheduler, node):
+            if not site and _isolated_occurrence_scheduler(
+                scheduler, node, identite_operations,
+            ):
                 permitted_schedulers.append(scheduler)
                 original_start(scheduler, *args, **kwargs)
                 return
