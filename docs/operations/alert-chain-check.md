@@ -5,8 +5,10 @@ n'autorise aucune correction. Déploiement manuel du dispositif.
 
 Périmètre : une stagnation entre l'ingestion d'annonces et les notifications
 Telegram. Le script [`scripts/check_alert_chain.py`](../../scripts/check_alert_chain.py)
-compare, sur une fenêtre glissante, les annonces reçues, les notifications
-acquittées et les correspondances encore bloquées après la reprise F03-B.
+compare, sur une fenêtre glissante, les annonces reçues, les correspondances
+créées, les notifications acquittées et les correspondances encore actionnables
+en retard. Un incident critique exige qu'une notification ait été réellement
+attendue.
 
 ## Ce que le contrôle fait et ne fait pas
 
@@ -27,25 +29,33 @@ plus que la base est saine : il prouve qu'un symptôme précis n'a pas été obs
 
 | Paramètre | Défaut | Sens |
 | --- | --- | --- |
-| `--window-hours` | `2` | Fenêtre des annonces et des acquittements |
-| `--stuck-hours` | `1` | Âge minimal d'une correspondance bloquée |
-| `--min-stuck` | `3` | Nombre de blocages persistants déclenchant l'alerte |
+| `--window-hours` | `2` | Fenêtre des annonces, des correspondances et des acquittements |
+| `--stuck-hours` | `1` | Âge minimal d'une correspondance actionnable en retard |
 | `--max-sample` | `8` | Identifiants listés dans le message |
 | `--dedup-seconds` | `3600` | Fenêtre du dédoublonnage Redis |
 
-Déclenchement, dans cet ordre :
+Déclenchement déterministe, dans cet ordre :
 
-1. **Critique** — des annonces ont été ingérées et **zéro** acquittement.
-2. **Avertissement** — des acquittements existent mais `--min-stuck` blocages
-   persistent.
-3. Sinon rien. **Un silence sans ingestion ne déclenche jamais** : rien n'a été
-   collecté, ce n'est pas un incident.
+1. **Critique** — `matches_created > 0` et `matches_notified = 0` :
+   « correspondances créées sans aucune notification acquittée ».
+2. **Critique** — `blocked_actionable_due > 0` : « correspondances actionnables
+   en retard ».
+3. **Aucun incident** — `matches_created = 0` et `blocked_actionable_due = 0`,
+   même si des annonces ont été ingérées : « aucune correspondance créée sur la
+   fenêtre ; aucune notification attendue ».
+4. `non_terminal_due > 0` sans `blocked_actionable_due` : **aucun incident**,
+   l'information reste dans le relevé.
 
-Une correspondance est « bloquée » si `notified_at IS NULL`, créée avant le seuil,
-dans un état que la reprise F03-B doit progresser (`ready`, `deferred`, `sending`)
-ou `unknown` **avec un reçu exploitable**, et dont `next_attempt_at` est passé.
-`notified` et `abandoned` sont terminaux ; `unknown` sans reçu n'autorise aucun
-nouvel envoi et n'est pas, à lui seul, un blocage actionnable.
+Des annonces ingérées sans aucune correspondance ne déclenchent donc rien : il
+n'y avait rien à notifier. C'est un fait, pas une preuve de bonne santé.
+
+`blocked_actionable_due` compte les correspondances `notified_at IS NULL`, dans un
+état que la reprise F03-B doit progresser (`ready`, `deferred`, `sending`), dont
+`next_attempt_at` est passé et créées avant `--stuck-hours` (garde contre les
+correspondances en cours d'envoi). `notified` et `abandoned` sont terminaux.
+`non_terminal_due` compte, à titre informatif, toutes les correspondances non
+terminales dont la prochaine tentative est passée ; il ne déclenche aucun
+incident à lui seul.
 
 ## Exécution manuelle
 
@@ -85,8 +95,9 @@ vaut donc `inconnu` par défaut dans le conteneur. Pour l'attester, passer
 ## Trace et statuts
 
 La trace JSONL conserve, pour chaque exécution : `alert_id`, horodatage, seuils,
-résultats (compteurs, échantillon), statut et commit analysé. Le script n'écrit
-que trois statuts :
+résultats (`ingested`, `acknowledged`, `matches_created`, `matches_notified`,
+`blocked_actionable_due`, `non_terminal_due`, échantillon), statut et commit
+analysé. Le script n'écrit que trois statuts :
 
 - `ouvert` — incident détecté (nouveau ou toujours reproduit, même `alert_id`) ;
 - `vérifié` — un relevé ultérieur ne reproduit plus le symptôme ;

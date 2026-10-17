@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
@@ -82,7 +83,17 @@ async def _seed(session: AsyncSession, *, now: datetime, matches: list[dict[str,
     await session.commit()
 
 
-def _snapshot(*, now: datetime, ingested: int, acknowledged: int, blocked: int) -> Snapshot:
+def _snapshot(
+    *,
+    now: datetime,
+    ingested: int = 0,
+    acknowledged: int = 0,
+    matches_created: int = 0,
+    matches_notified: int | None = None,
+    blocked: int = 0,
+    non_terminal: int = 0,
+) -> Snapshot:
+    notified = acknowledged if matches_notified is None else matches_notified
     return Snapshot(
         window_start=now - timedelta(hours=2),
         stuck_before=now - timedelta(hours=1),
@@ -90,36 +101,65 @@ def _snapshot(*, now: datetime, ingested: int, acknowledged: int, blocked: int) 
         stuck_hours=1.0,
         ingested=ingested,
         acknowledged=acknowledged,
-        blocked_total=blocked,
+        matches_created=matches_created,
+        matches_notified=notified,
+        blocked_actionable_due=blocked,
+        non_terminal_due=non_terminal,
         blocked_sample=(),
     )
 
 
-def test_evaluate_ignores_silence_without_ingestion():
+def test_evaluate_ignores_ingestion_without_any_match():
     now = datetime.now(UTC)
-    verdict = evaluate(_snapshot(now=now, ingested=0, acknowledged=0, blocked=12), min_stuck=3)
+    verdict = evaluate(
+        _snapshot(now=now, ingested=142, acknowledged=0, matches_created=0, blocked=0)
+    )
+    assert verdict.incident is False
+    assert verdict.severity == "ok"
+    assert "aucune correspondance créée" in verdict.reason
+
+
+def test_evaluate_flags_created_matches_without_notification():
+    now = datetime.now(UTC)
+    verdict = evaluate(_snapshot(now=now, ingested=5, acknowledged=0, matches_created=2))
+    assert verdict.incident is True
+    assert verdict.severity == "critical"
+    assert verdict.reason == "correspondances créées sans aucune notification acquittée"
+
+
+def test_evaluate_ignores_created_matches_that_were_notified():
+    now = datetime.now(UTC)
+    verdict = evaluate(
+        _snapshot(now=now, ingested=5, acknowledged=2, matches_created=2, blocked=0)
+    )
     assert verdict.incident is False
     assert verdict.severity == "ok"
 
 
-def test_evaluate_flags_missing_acknowledgement_as_critical():
+def test_evaluate_flags_blocked_actionable_matches():
     now = datetime.now(UTC)
-    verdict = evaluate(_snapshot(now=now, ingested=5, acknowledged=0, blocked=1), min_stuck=3)
+    verdict = evaluate(
+        _snapshot(now=now, ingested=5, acknowledged=2, matches_created=2, blocked=1)
+    )
     assert verdict.incident is True
     assert verdict.severity == "critical"
+    assert verdict.reason == "correspondances actionnables en retard"
 
 
-def test_evaluate_flags_persistent_blockage_as_warning():
+def test_evaluate_keeps_non_terminal_due_information_without_incident():
     now = datetime.now(UTC)
-    verdict = evaluate(_snapshot(now=now, ingested=5, acknowledged=2, blocked=3), min_stuck=3)
-    assert verdict.incident is True
-    assert verdict.severity == "warning"
-
-
-def test_evaluate_below_threshold_is_not_an_incident():
-    now = datetime.now(UTC)
-    verdict = evaluate(_snapshot(now=now, ingested=5, acknowledged=2, blocked=2), min_stuck=3)
+    verdict = evaluate(
+        _snapshot(
+            now=now,
+            ingested=5,
+            acknowledged=1,
+            matches_created=1,
+            blocked=0,
+            non_terminal=2,
+        )
+    )
     assert verdict.incident is False
+    assert verdict.severity == "ok"
 
 
 @pytest.mark.parametrize(
@@ -210,8 +250,11 @@ async def test_collect_snapshot_classifies_only_actionable_blockages():
 
     assert snapshot.ingested == 9
     assert snapshot.acknowledged == 1
-    assert snapshot.blocked_total == 4
-    assert len(snapshot.blocked_sample) == 4
+    assert snapshot.matches_created == 9
+    assert snapshot.matches_notified == 1
+    assert snapshot.blocked_actionable_due == 3
+    assert snapshot.non_terminal_due == 6
+    assert len(snapshot.blocked_sample) == 3
 
 
 def test_format_alert_has_no_title_url_or_secret():
@@ -223,7 +266,10 @@ def test_format_alert_has_no_title_url_or_secret():
         stuck_hours=1.0,
         ingested=5,
         acknowledged=0,
-        blocked_total=4,
+        matches_created=2,
+        matches_notified=0,
+        blocked_actionable_due=4,
+        non_terminal_due=2,
         blocked_sample=(
             BlockedMatch(
                 match_id=str(uuid.uuid4()),
@@ -237,7 +283,7 @@ def test_format_alert_has_no_title_url_or_secret():
     )
     text = format_alert(
         snapshot,
-        Verdict(True, "critical", "des annonces ont été ingérées sans aucun acquittement"),
+        Verdict(True, "critical", "correspondances créées sans aucune notification acquittée"),
         alert_id="alert-123",
         commit="abc123",
         now=now,
@@ -245,6 +291,7 @@ def test_format_alert_has_no_title_url_or_secret():
     assert "alert-123" in text
     assert "abc123" in text
     assert "🚨" in text
+    assert "Correspondances créées" in text
     assert "http" not in text
     assert "Titre confidentiel" not in text
 
@@ -276,7 +323,6 @@ async def test_run_check_opens_then_verifies_on_reobservation(tmp_path):
         "state_file": state_file,
         "window_hours": 2.0,
         "stuck_hours": 1.0,
-        "min_stuck": 3,
         "max_sample": 8,
         "dedup_seconds": 3600,
         "commit": "abc123",
@@ -297,6 +343,13 @@ async def test_run_check_opens_then_verifies_on_reobservation(tmp_path):
         )
         first = await run_check(session=database.session, now=now, **kwargs)
         second = await run_check(session=database.session, now=now + timedelta(minutes=5), **kwargs)
+        await database.session.execute(
+            update(ListingMatch).values(
+                notified_at=now,
+                notification_state=NotificationState.NOTIFIED.value,
+            )
+        )
+        await database.session.commit()
         third = await run_check(
             session=database.session, now=now + timedelta(hours=10), **kwargs
         )
@@ -341,7 +394,6 @@ async def test_run_check_dry_run_writes_nothing_and_sends_nothing(tmp_path, caps
             state_file=state_file,
             window_hours=2.0,
             stuck_hours=1.0,
-            min_stuck=3,
             max_sample=8,
             dedup_seconds=3600,
             commit="abc123",
