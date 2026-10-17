@@ -176,7 +176,9 @@ async def link_books_from_bnf(
     except Exception as exc:
         if expected_preparation_token is not None:
             raise PreparationError("catalog_write") from exc
-        logger.warning("Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc)
+        logger.warning(
+            "Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc, exc_info=True
+        )
         return False
 
     # La cote part en arrière-plan pour les alertes suivantes de l'ouvrage.
