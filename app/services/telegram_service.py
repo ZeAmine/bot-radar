@@ -13,7 +13,7 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramUnauthorizedError,
 )
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.bot.keyboards.listings import listing_alert_keyboard
 from app.bot.labels import abbreviate_condition, escape_html, join_list
@@ -477,12 +477,16 @@ async def send_listing_alert(
 async def notify_admins(
     text: str,
     bot: Bot | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> bool:
     """Diffuse un message d'état système à tous les utilisateurs Telegram autorisés.
 
     Le client par défaut est l'instance partagée du bot : en créer un à chaque
     notification ouvrait une nouvelle session réseau pour un envoi, alors que le
     cycle de vie du client est déjà géré par le processus.
+
+    Rend `True` seulement si **tous** les envois ont abouti : un appelant qui
+    journalise ce booléen ne doit jamais enregistrer un succès fictif.
     """
     allowed_ids = settings.TELEGRAM_ALLOWED_USER_IDS
     if not allowed_ids:
@@ -497,11 +501,14 @@ async def notify_admins(
     delivered = True
     for user_id in allowed_ids:
         try:
-            await target_bot.send_message(
-                chat_id=user_id,
-                text=text,
-                parse_mode="HTML",
-            )
+            call: dict[str, Any] = {
+                "chat_id": user_id,
+                "text": text,
+                "parse_mode": "HTML",
+            }
+            if reply_markup is not None:
+                call["reply_markup"] = reply_markup
+            await target_bot.send_message(**call)
         except Exception as exc:
             delivered = False
             logger.warning(

@@ -400,8 +400,9 @@ async def test_run_check_opens_then_verifies_on_reobservation(tmp_path):
     state_file = tmp_path / "state" / "alert-chain.jsonl"
     sent: list[str] = []
 
-    async def send(text: str) -> None:
+    async def send(text: str, _markup=None) -> bool:
         sent.append(text)
+        return True
 
     async def claim(_key: str, _ttl: int) -> bool:
         return True
@@ -447,9 +448,11 @@ async def test_run_check_opens_then_verifies_on_reobservation(tmp_path):
     assert records[1]["alert_id"] == records[0]["alert_id"]
     assert records[2]["resolves"] == records[0]["alert_id"]
     assert find_open_alert(records) is None
-    assert len(sent) == 3
+    # Une seule alerte pour l'incident : le relevé suivant ne renotifie pas le
+    # même incident encore ouvert, puis la clôture part une fois.
+    assert len(sent) == 2
     assert "🚨" in sent[0]
-    assert "vérifié" in sent[2]
+    assert "vérifié" in sent[1]
     assert "Titre confidentiel" not in "\n".join(sent)
 
 
@@ -458,8 +461,9 @@ async def test_run_check_dry_run_writes_nothing_and_sends_nothing(tmp_path, caps
     state_file = tmp_path / "state" / "alert-chain.jsonl"
     sent: list[str] = []
 
-    async def send(text: str) -> None:
+    async def send(text: str, _markup=None) -> bool:
         sent.append(text)
+        return True
 
     async def claim(_key: str, _ttl: int) -> bool:
         return True
@@ -514,7 +518,7 @@ async def test_impossible_check_does_not_close_open_alert(tmp_path, monkeypatch)
 
     monkeypatch.setattr(check_alert_chain, "collect_snapshot", boom)
 
-    async def send(_text: str) -> None:
+    async def send(_text: str, _markup=None) -> bool:
         raise AssertionError("aucune notification attendue")
 
     async def claim(_key: str, _ttl: int) -> bool:

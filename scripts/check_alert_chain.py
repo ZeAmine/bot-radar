@@ -12,6 +12,11 @@ que le même détecteur la reproduit. Elle n'est marquée « vérifiée » que l
 relevé ultérieur ne la reproduit plus. Un correctif proposé, fusionné ou déployé
 ne clôt jamais une alerte par lui-même.
 
+L'identité de l'incident et les décisions humaines vivent dans le répertoire
+d'état partagé décrit par `app.services.alert_chain_state` : l'`alert_id` reste
+donc stable d'une exécution jetable à l'autre, et une autorisation enregistrée par
+le bot est relue ici. Ce script n'exécute **aucune** correction.
+
 Usage :
     python scripts/check_alert_chain.py
     python scripts/check_alert_chain.py --dry-run
@@ -34,7 +39,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from html import escape
 from pathlib import Path
-from time import monotonic
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -44,6 +48,7 @@ from app.core.logging import setup_logging
 from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.domain.enums import NotificationState
+from app.services import alert_chain_state as state
 
 logger = logging.getLogger("radar.alert_chain")
 
@@ -53,13 +58,17 @@ DEFAULT_WINDOW_HOURS = 2.0
 DEFAULT_STUCK_HOURS = 1.0
 DEFAULT_MAX_SAMPLE = 8
 DEFAULT_DEDUP_SECONDS = 3600
+DEFAULT_APPROVAL_TTL_SECONDS = 86400
 
 INCIDENT_DEDUP_KEY = "radar:alert_chain:incident:notified"
 RESOLUTION_DEDUP_KEY = "radar:alert_chain:resolved:notified"
+TECHNICAL_ALERT_DEDUP_KEY = "radar:alert_chain:technical:notified"
 
-STATUS_OPEN = "ouvert"
-STATUS_VERIFIED = "vérifié"
 STATUS_OK = "ok"
+
+APPROVAL_LABEL = (
+    "Autoriser l'analyse et la préparation d'un correctif — sans merge ni déploiement"
+)
 
 # États qu'une reprise F03-B doit faire progresser. `notified` et `abandoned` sont
 # terminaux. `unknown` n'autorise aucun nouvel envoi, mais un `unknown` porteur d'un
@@ -70,10 +79,8 @@ ACTIONABLE_STATES = (
     NotificationState.SENDING.value,
 )
 
-SendMessage = Callable[[str], Awaitable[None]]
+SendMessage = Callable[[str, Any], Awaitable[bool]]
 ClaimSlot = Callable[[str, int], Awaitable[bool]]
-
-_dedup_deadlines: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
@@ -262,6 +269,17 @@ def _short(value: str) -> str:
     return value[:8]
 
 
+def approval_keyboard(alert_id: str) -> Any:
+    """Clavier Telegram liant chaque bouton à cet `alert_id` précis.
+
+    La définition vit dans le handler pour qu'une seule source décrive les libellés
+    et les `callback_data` : un bouton émis ici doit être reconnu là-bas.
+    """
+    from app.bot.handlers.alert_chain_approval import approval_keyboard as build
+
+    return build(alert_id)
+
+
 def format_alert(
     snapshot: Snapshot,
     verdict: Verdict,
@@ -299,6 +317,10 @@ def format_alert(
         f"<b>Commit main analysé :</b> <code>{escape(commit)}</code>",
         f"<b>Alerte :</b> <code>{alert_id}</code>",
         "<i>Vérifier les journaux du conteneur radar_app puis la reprise F03-B.</i>",
+        "",
+        f"<b>{escape(APPROVAL_LABEL)}</b>",
+        "<i>Cette autorisation est seulement enregistrée : aucune correction n'est "
+        "lancée automatiquement, et le merge comme le déploiement restent manuels.</i>",
     ]
     return "\n".join(lines)
 
@@ -327,6 +349,34 @@ def format_resolution(
             f"<b>Horodatage :</b> {now.isoformat(timespec='seconds')}",
             f"<b>Commit main analysé :</b> <code>{escape(commit)}</code>",
             "<b>Statut :</b> vérifié (rejeu du même contrôle après livraison)",
+        ]
+    )
+
+
+def format_technical_alert(
+    *,
+    failures: int,
+    detail: str,
+    commit: str,
+    now: datetime,
+) -> str:
+    """Alerte technique distincte : un contrôle impossible n'est pas un incident.
+
+    Le vocabulaire reste volontairement séparé de celui d'un incident métier : un
+    contrôle qui n'a pas pu s'exécuter ne prouve ni la présence ni l'absence du
+    symptôme, et ne doit donc jamais être lu comme une clôture.
+    """
+    return "\n".join(
+        [
+            "🛠 <b>Contrôle impossible (maintenance)</b>",
+            "",
+            f"Le détecteur n'a pas pu s'exécuter {failures} fois de suite.",
+            f"<b>Dernier détail :</b> {escape(detail)}",
+            "",
+            "<i>Un contrôle impossible ne prouve ni la présence ni l'absence du "
+            "symptôme. Aucun incident n'est clôturé de ce fait.</i>",
+            f"<b>Horodatage :</b> {now.isoformat(timespec='seconds')}",
+            f"<b>Commit main analysé :</b> <code>{escape(commit)}</code>",
         ]
     )
 
@@ -417,9 +467,9 @@ def find_open_alert(records: Iterable[dict[str, Any]]) -> str | None:
             continue
         status = record.get("status")
         alert_id = record.get("alert_id")
-        if status == STATUS_OPEN and isinstance(alert_id, str):
+        if status == state.IncidentStatus.OPEN.value and isinstance(alert_id, str):
             open_ids[alert_id] = None
-        elif status == STATUS_VERIFIED:
+        elif status == state.IncidentStatus.VERIFIED.value:
             resolved = record.get("resolves")
             if isinstance(resolved, str):
                 open_ids.pop(resolved, None)
@@ -428,27 +478,60 @@ def find_open_alert(records: Iterable[dict[str, Any]]) -> str | None:
     return next(reversed(open_ids))
 
 
+def _dedup_path(directory: Path, key: str) -> Path:
+    safe = key.replace(":", "_").replace("/", "_")
+    return directory / "dedup" / f"{safe}.json"
+
+
+def claim_on_disk(*, directory: Path, key: str, ttl_seconds: int, now: datetime) -> bool:
+    """Réserve un créneau de notification, en s'appuyant sur le disque partagé.
+
+    Le repli mémoire d'origine ne survivait pas à un `compose run --rm` : deux
+    exécutions séparées pouvaient donc notifier deux fois. L'état est ici écrit
+    dans le répertoire partagé, sous verrou, et reste valable d'un conteneur à
+    l'autre comme après un redémarrage.
+    """
+    path = _dedup_path(directory, key)
+    with state.exclusive_lock(directory):
+        claimed_at = state.parse_datetime(state.read_json_object(path).get("claimed_at"))
+        if claimed_at is not None and now.timestamp() - claimed_at.timestamp() < ttl_seconds:
+            return False
+        state.write_json_atomic(path, {"key": key, "claimed_at": now.isoformat()})
+    return True
+
+
 async def _claim_notification_slot(key: str, ttl_seconds: int) -> bool:
-    """Dédoublonne une notification ; repli local si Redis est indisponible."""
-    now = monotonic()
-    if _dedup_deadlines.get(key, 0.0) > now:
-        return False
+    """Dédoublonne une notification via Redis, puis le disque partagé."""
     try:
         from app.core.redis import get_redis_client
 
-        claimed = bool(await get_redis_client().set(key, "1", ex=ttl_seconds, nx=True))
+        return bool(await get_redis_client().set(key, "1", ex=ttl_seconds, nx=True))
     except Exception:
-        logger.warning("Dédoublonnage Redis indisponible ; repli local pour %s", key)
-        claimed = True
-    if claimed:
-        _dedup_deadlines[key] = now + ttl_seconds
-    return claimed
+        logger.warning("Dédoublonnage Redis indisponible ; repli disque pour %s", key)
+        return True
 
 
-async def _send_via_admins(text: str) -> None:
+async def _claim_with_fallback(
+    *,
+    key: str,
+    ttl_seconds: int,
+    now: datetime,
+    claim: ClaimSlot,
+    directory: Path | None,
+) -> bool:
+    """Tente Redis, et retombe sur le disque pour un dédoublonnage réellement durable."""
+    if directory is None:
+        return await claim(key, ttl_seconds)
+    if not await claim(key, ttl_seconds):
+        return False
+    return claim_on_disk(directory=directory, key=key, ttl_seconds=ttl_seconds, now=now)
+
+
+async def _send_via_admins(text: str, reply_markup: Any = None) -> bool:
+    """Envoie via le service Telegram et rend le succès réel de la diffusion."""
     from app.services.telegram_service import notify_admins
 
-    await notify_admins(text)
+    return await notify_admins(text, reply_markup=reply_markup)
 
 
 async def run_check(
@@ -461,13 +544,29 @@ async def run_check(
     dedup_seconds: int,
     commit: str,
     now: datetime,
+    approval_ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS,
     send: SendMessage = _send_via_admins,
     claim: ClaimSlot = _claim_notification_slot,
     dry_run: bool = False,
 ) -> int:
-    """Exécute un contrôle, met à jour la trace et notifie si nécessaire."""
-    records = read_records(state_file) if state_file is not None else []
-    open_alert_id = find_open_alert(records)
+    """Exécute un contrôle, met à jour la trace et notifie si nécessaire.
+
+    L'état qui fait autorité est le répertoire partagé, pas la trace JSONL : c'est
+    lui qui porte l'`alert_id` stable, la suspension et les décisions humaines.
+    """
+    directory = state_file.parent if state_file is not None else None
+
+    if directory is not None and state.is_suspended(directory):
+        logger.info(
+            "Maintenance suspendue : aucun traitement",
+            extra={"event": "alert_chain_check", "status": "suspendu"},
+        )
+        return EXIT_OK
+
+    open_incident = (
+        state.find_open_incident(directory) if directory is not None else None
+    )
+    open_alert_id = open_incident.alert_id if open_incident is not None else None
 
     snapshot = await collect_snapshot(
         session,
@@ -482,24 +581,64 @@ async def run_check(
     alert_id = open_alert_id
     status = STATUS_OK
     message: str | None = None
+    markup: Any = None
     resolves: str | None = None
 
     if action == "open":
         alert_id = str(uuid.uuid4())
-        status = STATUS_OPEN
+        status = state.IncidentStatus.OPEN.value
         message = format_alert(snapshot, verdict, alert_id=alert_id, commit=commit, now=now)
+        markup = approval_keyboard(alert_id)
+        await _claim_with_fallback(
+            key=INCIDENT_DEDUP_KEY,
+            ttl_seconds=dedup_seconds,
+            now=now,
+            claim=claim,
+            directory=directory,
+        )
     elif action == "continue":
-        status = STATUS_OPEN
-        if await claim(INCIDENT_DEDUP_KEY, dedup_seconds):
+        status = state.IncidentStatus.OPEN.value
+        if await _claim_with_fallback(
+            key=INCIDENT_DEDUP_KEY,
+            ttl_seconds=dedup_seconds,
+            now=now,
+            claim=claim,
+            directory=directory,
+        ):
             message = format_alert(
                 snapshot, verdict, alert_id=alert_id or "", commit=commit, now=now
             )
+            markup = approval_keyboard(alert_id or "")
     elif action == "resolve":
-        status = STATUS_VERIFIED
+        status = state.IncidentStatus.VERIFIED.value
         resolves = alert_id
         message = format_resolution(snapshot, alert_id=alert_id or "", commit=commit, now=now)
-        if not await claim(RESOLUTION_DEDUP_KEY, dedup_seconds):
+        if not await _claim_with_fallback(
+            key=RESOLUTION_DEDUP_KEY,
+            ttl_seconds=dedup_seconds,
+            now=now,
+            claim=claim,
+            directory=directory,
+        ):
             message = None
+
+    if directory is not None and not dry_run:
+        if action == "open" and alert_id is not None:
+            state.record_incident(
+                directory=directory,
+                alert_id=alert_id,
+                commit=commit,
+                severity=verdict.severity,
+                reason=verdict.reason,
+                now=now,
+            )
+        elif action == "resolve" and resolves is not None:
+            state.record_resolution(
+                directory=directory, alert_id=resolves, commit=commit, now=now
+            )
+        state.expire_stale_requests(
+            directory=directory, now=now, ttl_seconds=approval_ttl_seconds
+        )
 
     record = build_record(
         now=now,
@@ -541,7 +680,17 @@ async def run_check(
         if state_file is not None:
             append_record(state_file, record)
         if message:
-            await send(message)
+            delivered = await send(message, markup)
+            if delivered:
+                record["notification"] = "envoyée"
+            else:
+                record["notification"] = "échec"
+                logger.error(
+                    "Notification non délivrée ; aucun succès n'est enregistré",
+                    extra={"event": "alert_chain_notify_failed", "alert_id": alert_id},
+                )
+        if directory is not None:
+            state.reset_technical_failures(directory=directory)
 
     return EXIT_INCIDENT if verdict.incident else EXIT_OK
 
@@ -554,7 +703,7 @@ def _resolve_state_file(args: argparse.Namespace) -> Path | None:
     configured = os.environ.get("ALERT_CHAIN_STATE_FILE")
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".local" / "state" / "botradar" / "alert-chain.jsonl"
+    return state.state_dir() / "alert-chain.jsonl"
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -566,6 +715,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--commit", default=os.environ.get("GIT_COMMIT", "inconnu"))
     parser.add_argument("--state-file", default=None)
     parser.add_argument("--no-state", action="store_true")
+    parser.add_argument(
+        "--approval-ttl-seconds", type=int, default=DEFAULT_APPROVAL_TTL_SECONDS
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -587,8 +739,46 @@ async def _main(args: argparse.Namespace) -> int:
             dedup_seconds=args.dedup_seconds,
             commit=args.commit,
             now=datetime.now(UTC),
+            approval_ttl_seconds=args.approval_ttl_seconds,
             dry_run=args.dry_run,
         )
+
+
+async def report_technical_failure(
+    *,
+    directory: Path,
+    commit: str,
+    now: datetime,
+    detail: str,
+    send: SendMessage = _send_via_admins,
+    claim: ClaimSlot = _claim_notification_slot,
+    dedup_seconds: int = DEFAULT_DEDUP_SECONDS,
+) -> int:
+    """Compte un contrôle impossible et alerte une seule fois, de façon bornée.
+
+    Un contrôle impossible n'est pas un incident et ne clôt rien. Le compteur se
+    réinitialise après un contrôle réussi : l'alerte technique signale donc une
+    impossibilité *durable*, pas un incident isolé.
+    """
+    failures = state.record_technical_failure(directory=directory, now=now, detail=detail)
+    if failures < state.TECHNICAL_FAILURE_THRESHOLD:
+        return EXIT_ERROR
+    if state.technical_alert_sent(directory):
+        return EXIT_ERROR
+    if not await claim(TECHNICAL_ALERT_DEDUP_KEY, dedup_seconds):
+        return EXIT_ERROR
+    message = format_technical_alert(
+        failures=failures, detail=detail, commit=commit, now=now
+    )
+    delivered = await send(message, None)
+    if delivered:
+        state.mark_technical_alert_sent(directory=directory, now=now)
+    else:
+        logger.error(
+            "Alerte technique non délivrée",
+            extra={"event": "alert_chain_technical_notify_failed"},
+        )
+    return EXIT_ERROR
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -600,7 +790,21 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
     except Exception as exc:
         logger.error("Contrôle impossible : %s", type(exc).__name__)
-        return EXIT_ERROR
+        if args.dry_run or args.no_state:
+            return EXIT_ERROR
+        try:
+            return asyncio.run(
+                report_technical_failure(
+                    directory=_resolve_state_file(args).parent,  # type: ignore[union-attr]
+                    commit=args.commit,
+                    now=datetime.now(UTC),
+                    detail=type(exc).__name__,
+                )
+            )
+        except Exception:
+            logger.error("Signalement du contrôle impossible en échec")
+            return EXIT_ERROR
+
 
 
 if __name__ == "__main__":

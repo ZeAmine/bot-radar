@@ -1,7 +1,8 @@
 # Contrôle de silence de la chaîne d'alerte (niveau 1)
 
 Statut : procédure actuelle, **lecture seule**. Ce contrôle ne corrige rien et
-n'autorise aucune correction. Déploiement manuel du dispositif.
+n'autorise aucune correction. Il **capture** une autorisation humaine, sans
+exécuter quoi que ce soit. Aucun timer n'est activé par ce dépôt.
 
 Périmètre : une stagnation entre l'ingestion d'annonces et les notifications
 Telegram. Le script [`scripts/check_alert_chain.py`](../../scripts/check_alert_chain.py)
@@ -13,9 +14,12 @@ traitement dont le délai admissible est dépassé.
 ## Ce que le contrôle fait et ne fait pas
 
 - **Fait** : lit `listings` et `listing_matches`, qualifie l'incident et envoie
-  une alerte Telegram via `notify_admins`. Écrit une trace JSONL locale.
+  une alerte Telegram via `notify_admins`, avec un clavier d'approbation. Écrit
+  une trace JSONL et un état durable partagé (incidents, décisions).
 - **Ne fait pas** : aucune écriture en base, aucun appel IA, aucune correction,
-  aucun déploiement, aucune modification de CI, permissions, secrets ou workflows.
+  aucun agent de correction, aucun worktree automatique, aucune ouverture de PR,
+  aucun merge, aucun déploiement, aucune modification de CI, permissions, secrets
+  ou workflows.
 - **Aucun secret** n'apparaît dans le message ni dans la trace : uniquement des
   identifiants internes (`alert_id`, `match_id`, `listing_id`), des états, des
   compteurs et le SHA du commit. Ni titre, ni URL d'annonce, ni donnée personnelle.
@@ -68,33 +72,34 @@ Un `unknown` **sans** reçu n'est ni renvoyé ni finalisable : il ne compte que 
 
 ## Exécution manuelle
 
+Le service `app` monte désormais le volume nommé `alert_chain_state` sur
+`/var/lib/botradar` : `up`, `exec` et `run` voient donc le **même** répertoire
+d'état. Aucune option `-v` n'est plus nécessaire, et il ne faut pas en ajouter :
+un montage différent créerait un second état, donc un second `alert_id`.
+
 Depuis le conteneur applicatif (code déjà présent dans l'image) :
 
 ```sh
 docker compose run --rm --no-deps -T app python scripts/check_alert_chain.py
 ```
 
-Simulation sans notification ni écriture de trace :
+Simulation sans notification ni écriture persistante :
 
 ```sh
 docker compose exec -T app python scripts/check_alert_chain.py --dry-run
 ```
 
-Avec une trace persistée dans un répertoire monté :
-
-```sh
-docker compose run --rm --no-deps -T \
-  -v /var/lib/botradar:/var/lib/botradar \
-  -e ALERT_CHAIN_STATE_FILE=/var/lib/botradar/alert-chain.jsonl \
-  app python scripts/check_alert_chain.py
-```
-
-Le répertoire monté doit être inscriptible par l'utilisateur du conteneur
-(`appuser`, uid `1001`). `--no-state` désactive la trace ; `--dry-run` l'affiche
-sans l'écrire et sans notifier.
+Le répertoire d'état est inscriptible par `appuser` (uid `1001`) : l'image crée
+`/var/lib/botradar` avec ces droits avant `USER appuser`, et un volume neuf hérite
+de cette initialisation. `--no-state` désactive l'état durable ; `--dry-run`
+l'affiche sans l'écrire et sans notifier.
 
 Codes de sortie : `0` aucun incident, `1` incident détecté, `2` contrôle impossible
 (base ou configuration indisponible).
+
+**Un code `2` n'est pas une absence de symptôme.** Il ne clôt jamais un incident :
+au contraire, l'incident ouvert est conservé. Il n'est pas non plus confondu avec
+un incident métier : voir « Contrôles impossibles » ci-dessous.
 
 L'image applicative ne contient pas `.git` (le rsync l'exclut) : le commit analysé
 vaut donc `inconnu` par défaut dans le conteneur. Pour l'attester, passer
@@ -103,10 +108,10 @@ vaut donc `inconnu` par défaut dans le conteneur. Pour l'attester, passer
 
 ## Trace et statuts
 
-La trace JSONL conserve, pour chaque exécution : `alert_id`, horodatage, seuils,
-résultats (`ingested`, `acknowledged`, `matches_created`, `matches_notified`,
-`blocked_actionable_due`, `non_terminal_due`, échantillon), statut et commit
-analysé. Le script n'écrit que trois statuts :
+La trace JSONL (`alert-chain.jsonl`) conserve, pour chaque exécution : `alert_id`,
+horodatage, seuils, résultats (`ingested`, `acknowledged`, `matches_created`,
+`matches_notified`, `blocked_actionable_due`, `non_terminal_due`, échantillon),
+statut et commit analysé. Le script n'écrit que trois statuts :
 
 - `ouvert` — incident détecté (nouveau ou toujours reproduit, même `alert_id`) ;
 - `vérifié` — un relevé ultérieur ne reproduit plus le symptôme ;
@@ -120,9 +125,110 @@ rejoué après livraison, ne la reproduit plus. S'il la reproduit, l'alerte rest
 `ouvert` (statut « rouvert » côté humain) et une nouvelle alerte part selon le
 dédoublonnage — **aucune correction automatique**.
 
+## État durable partagé
+
+Le répertoire `/var/lib/botradar` fait autorité sur trois questions, et une seule
+source répond à chacune :
+
+| Fichier | Autorité | Contenu |
+| --- | --- | --- |
+| `incidents.jsonl` | État des incidents | Un fait par ouverture et par clôture |
+| `decisions.jsonl` | Décisions humaines | Approbation, refus, expiration, suspension, reprise |
+| `suspension.json` | État de suspension | Drapeau et dernier changement |
+| `technical.json` | Contrôles impossibles | Compteur consécutif et alerte technique déjà émise |
+| `dedup/*.json` | Dédoublonnage inter-processus | Créneau de notification réservé |
+
+Les deux journaux sont *append-only* et les écritures sont atomiques
+(`tempfile` + `os.replace`), sous verrou `flock`. L'état courant est reconstruit
+par relecture complète : une interruption ne peut perdre qu'une écriture non
+terminée, jamais réécrire l'histoire. **Aucun fichier dérivé ne fait autorité**,
+et il n'en existe pas.
+
+Conséquences vérifiées par les tests : l'`alert_id` survit à `compose run`,
+`compose exec`, à un redémarrage et à un déploiement ; deux exécutions séparées
+sans Redis ne notifient pas deux fois le même incident.
+
+Le volume survit à `make deploy` : `step_stop` et `step_start` ne le touchent pas.
+Pour l'inspecter ou le sauvegarder, l'opérateur agit sur le volume Docker
+(`docker volume inspect bot-radar_alert_chain_state`), jamais sur le dépôt.
+
+## Approbation humaine
+
+L'alerte porte deux boutons, chacun strictement lié à son `alert_id` :
+
+- « Autoriser l'analyse et la préparation d'un correctif — sans merge ni
+  déploiement » ;
+- « Refuser ».
+
+Une décision n'est enregistrée que si **toutes** les conditions tiennent :
+utilisateur dans `TELEGRAM_ALLOWED_USER_IDS`, incident encore **ouvert**, demande
+**non expirée** (24 h par défaut), **aucune décision déjà enregistrée**, et
+`alert_id` connu. Une décision expirée, refusée, ou liée à un incident résolu
+**ne déclenche rien**. Un double clic est refusé et le dit.
+
+L'approbation est **seulement enregistrée** : aucun exécuteur de correction n'est
+branché à ce stade, et le message le dit explicitement. Le merge et le déploiement
+restent manuels dans tous les cas.
+
+Commandes opérateur, réservées au allowlist :
+
+| Commande | Effet |
+| --- | --- |
+| `/maintenance_status` | Suspension, incident ouvert, décision, compteur d'échecs |
+| `/maintenance_stop` | Suspend les nouveaux traitements de maintenance |
+| `/maintenance_resume` | Reprend, sur décision explicite uniquement |
+
+## Suspension (STOP)
+
+`STOP` suspend **uniquement la maintenance**. Le bot métier, PostgreSQL, Redis et
+le polling ne sont pas touchés, et le bot ne reçoit aucun privilège système ni
+accès au socket Docker.
+
+Sous suspension, le détecteur sort en `0` **sans incident et sans notification**,
+et les incidents ouverts sont **conservés**. La reprise exige
+`/maintenance_resume` : rien ne reprend tout seul.
+
+La suspension couvre les nouveaux lancements. Elle n'interrompt pas un travail
+déjà en cours : aucun travail long n'existe à ce niveau. Pour arrêter aussi le
+déclencheur système, l'opérateur agit sur l'hôte, hors du bot :
+
+```sh
+# arrêter les déclenchements à venir
+sudo systemctl stop botradar-alert-chain.timer
+
+# empêcher toute réactivation au redémarrage
+sudo systemctl disable botradar-alert-chain.timer
+
+# état du service et du timer
+systemctl status botradar-alert-chain.timer
+systemctl list-timers botradar-alert-chain.timer
+```
+
+Pour une désactivation durable des deux côtés, suspendre **et** désactiver le
+timer. L'un ne remplace pas l'autre : la suspension est logique, le timer est
+système.
+
+## Contrôles impossibles
+
+Un contrôle impossible (code `2`, base ou configuration indisponible) **ne clôt
+jamais** un incident et ne crée aucun incident métier. Il n'est pas confondu avec
+une absence de symptôme.
+
+Le compteur d'échecs consécutifs est persistant. Après **4 échecs consécutifs**,
+une **seule** alerte technique distincte est envoyée — vocabulaire séparé, aucune
+réutilisation du statut d'incident — puis le silence se poursuit jusqu'à une
+reprise réussie. Un contrôle réussi remet le compteur à zéro et réarme l'alerte
+technique pour une panne ultérieure. Si l'alerte technique n'est pas délivrée,
+elle n'est **pas** marquée comme envoyée : l'opérateur n'est pas trompé.
+
 ## Timer (à ne pas activer sans accord)
 
-Activation manuelle uniquement, après revue. Exemple `systemd` (oneshot + timer) :
+Activation manuelle uniquement, après revue, et **jamais** par un agent : c'est
+une autorisation séparée. Exemple `systemd` (oneshot + timer).
+
+Le volume est attaché au service `app` : la commande ci-dessous ne monte rien et
+ne doit rien monter. Un `-v` ajouté ici créerait un état distinct de celui du bot,
+donc un `alert_id` différent — exactement le défaut que ce lot corrige.
 
 `/etc/systemd/system/botradar-alert-chain.service`
 
@@ -136,11 +242,15 @@ Requires=docker.service
 Type=oneshot
 User=ubuntu
 WorkingDirectory=/home/ubuntu/bot-radar
-Environment=ALERT_CHAIN_STATE_FILE=/var/lib/botradar/alert-chain.jsonl
-ExecStart=/usr/bin/docker compose run --rm --no-deps -T \
-  -v /var/lib/botradar:/var/lib/botradar \
-  app python scripts/check_alert_chain.py
+ExecStart=/bin/sh -c 'GIT_COMMIT=$(cat .deployed_commit) exec docker compose run \
+  --rm --no-deps -T app python scripts/check_alert_chain.py'
 ```
+
+Le commit est lu dans `.deployed_commit`, que `make deploy` écrit à chaque
+livraison : le relevé atteste donc le code réellement déployé. Une valeur figée
+dans l'unité deviendrait fausse au déploiement suivant, et le message prétendrait
+analyser un commit qui n'est plus celui qui tourne. Sans cette variable, le commit
+vaut `inconnu` — l'image ne contient pas `.git`.
 
 `/etc/systemd/system/botradar-alert-chain.timer`
 
@@ -160,13 +270,17 @@ WantedBy=timers.target
 Alternative `cron` :
 
 ```cron
-*/15 * * * * cd /home/ubuntu/bot-radar && /usr/bin/docker compose run --rm --no-deps -T -v /var/lib/botradar:/var/lib/botradar -e ALERT_CHAIN_STATE_FILE=/var/lib/botradar/alert-chain.jsonl app python scripts/check_alert_chain.py >> /var/log/botradar-alert-chain.log 2>&1
+*/15 * * * * cd /home/ubuntu/bot-radar && GIT_COMMIT=$(cat /home/ubuntu/bot-radar/.deployed_commit) /usr/bin/docker compose run --rm --no-deps -T app python scripts/check_alert_chain.py >> /var/log/botradar-alert-chain.log 2>&1
 ```
 
 Si l'opérateur veut voir le code `1` comme un échec, ne pas ajouter
 `SuccessExitStatus` : le service restera `failed` tant que l'incident dure, ce
 qui est le comportement attendu. Le `--no-deps` évite de recréer `postgres` et
 `redis` (leçon d'invariance du déploiement).
+
+Rappel d'exploitation : un timer actif et une suspension logique sont deux
+leviers distincts. Le premier arrête les déclenchements, le second arrête le
+traitement. Voir « Suspension (STOP) » pour les commandes d'arrêt.
 
 ## Durcissement optionnel : rôle PostgreSQL en lecture seule
 

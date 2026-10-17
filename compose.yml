@@ -23,6 +23,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    volumes:
+      - alert_chain_state:/var/lib/botradar
     networks:
       - default
       - web_gateway
@@ -67,3 +69,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  alert_chain_state:
