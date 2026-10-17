@@ -19,9 +19,14 @@ qualifié TTC ; le marqueur d'écart ferme la ligne, sans approbation verte à �
 Le récap de création et sa confirmation utilisent la même carte ; alternatives
 d'édition proposées uniquement à partir de deux éditions exploitables.
 
-Le signalement faux positif est confirmé/annulable. L'auto-tuning produit une
-**proposition** : application telle quelle ou édition manuelle, jamais modification
-silencieuse des critères. Les dislikes sont purgés atomiquement à l'application,
+Le signalement faux positif est confirmé/annulable. Le scan périodique et le
+déclenchement après signalement attendent le **troisième** faux positif d'une même
+alerte ; une analyse demandée explicitement par `/autotune` reste possible avant.
+L'auto-tuning produit une **proposition** : application telle quelle ou édition
+manuelle, jamais modification silencieuse des critères. La liste éditée remplace la
+suggestion ; à l'application, elle rejoint les exclusions déjà enregistrées et le
+plafond des propositions ne peut pas en tronquer la fin. La confirmation affiche la
+liste réellement enregistrée. Les dislikes sont purgés atomiquement à l'application,
 conservés à l'annulation. Exclusions copiables en `<code>`. Scan et clic partagent
 la construction de proposition ; un créneau Redis atomique est acquis avant l'IA,
 refusé si Redis manque, relâché si rien n'est émis. Les variantes proposées restent

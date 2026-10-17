@@ -276,3 +276,124 @@ async def test_fetch_never_dates_an_undated_historical_point():
     offers = await fetch_offers_for_book(_book(), registry=_registry([historical, current]))
     assert offers[0].observed_at is None
     assert offers[1].observed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_successful_check_advances_the_date_even_when_the_price_is_unchanged():
+    """Une vérification réussie compte même si le montant reste identique."""
+    book = _book()
+    previous = datetime.now(UTC) - timedelta(days=1)
+    collected_at = previous + timedelta(hours=12)
+    existing = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=book.id,
+        lowest_delivered_price_cents=470,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=previous,
+        last_successful_collection_at=previous,
+        last_attempt_at=previous,
+    )
+    repo = MagicMock()
+    repo.save_snapshot = AsyncMock()
+    repo.refresh_annual_references = AsyncMock()
+    repo.update_or_create_cache = AsyncMock(return_value=existing)
+    repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
+
+    offer = _offer("synthetic", 470)
+    result = BookPricingResult.from_offers(
+        offers=[offer], best_offer=offer, historical_low_cents=None
+    )
+    result = result.__class__(**{**result.__dict__, "collected_at": collected_at})
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.services.book_market_pricing.MarketPriceRepository", lambda _s: repo
+        )
+        cache = await persist_market_result(AsyncMock(), book.id, result)
+
+    assert cache.last_successful_collection_at == collected_at
+    assert cache.last_attempt_at == collected_at
+    assert cache.lowest_delivered_price_cents == 470
+
+
+@pytest.mark.asyncio
+async def test_a_successful_check_with_a_new_price_advances_the_date():
+    """Un prix modifié et un prix identique datent tous deux la vérification réussie."""
+    book = _book()
+    previous = datetime.now(UTC) - timedelta(days=1)
+    collected_at = previous + timedelta(hours=12)
+    updated = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=book.id,
+        lowest_delivered_price_cents=600,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=previous,
+        last_successful_collection_at=previous,
+        last_attempt_at=previous,
+    )
+    repo = MagicMock()
+    repo.save_snapshot = AsyncMock()
+    repo.refresh_annual_references = AsyncMock()
+    repo.update_or_create_cache = AsyncMock(return_value=updated)
+    repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
+
+    offer = _offer("synthetic", 600)
+    result = BookPricingResult.from_offers(
+        offers=[offer], best_offer=offer, historical_low_cents=None
+    )
+    result = result.__class__(**{**result.__dict__, "collected_at": collected_at})
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.services.book_market_pricing.MarketPriceRepository", lambda _s: repo
+        )
+        cache = await persist_market_result(AsyncMock(), book.id, result)
+
+    assert cache.last_successful_collection_at == collected_at
+    assert cache.lowest_delivered_price_cents == 600
+
+
+@pytest.mark.asyncio
+async def test_a_failed_attempt_after_a_success_keeps_the_successful_date():
+    """Un échec ne remet pas le compteur de fraîcheur à zéro."""
+    book = _book()
+    previous = datetime.now(UTC) - timedelta(days=1)
+    collected_at = previous + timedelta(hours=12)
+    existing = BookMarketCache(
+        id=uuid.uuid4(),
+        book_id=book.id,
+        lowest_delivered_price_cents=470,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=previous,
+        last_successful_collection_at=previous,
+        last_attempt_at=previous,
+        expires_at=datetime.now(UTC) + timedelta(hours=2),
+    )
+    repo = MagicMock()
+    repo.save_snapshot = AsyncMock()
+    repo.refresh_annual_references = AsyncMock()
+    repo.get_cache_by_book_id = AsyncMock(return_value=existing)
+    repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
+
+    result = BookPricingResult(
+        offers=[],
+        lowest_delivered_price_cents=None,
+        best_provider_name=None,
+        best_source_url=None,
+        confidence=None,
+        comparison_status=ComparisonStatus.UNAVAILABLE,
+        cache_duration_hours=24,
+        historical_low_1y_cents=None,
+        failed_providers=("synthetic",),
+        collected_at=collected_at,
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.services.book_market_pricing.MarketPriceRepository", lambda _s: repo
+        )
+        cache = await persist_market_result(AsyncMock(), book.id, result)
+
+    assert cache.last_successful_collection_at == previous
+    assert cache.last_attempt_at == collected_at
+    assert cache.lowest_delivered_price_cents == 470

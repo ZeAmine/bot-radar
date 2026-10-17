@@ -75,7 +75,7 @@ class AutoTuningModule(BaseAIModule):
 auto_tuning_module = AutoTuningModule()
 
 # Nombre de faux positifs en dessous duquel aucune analyse n'est menée.
-MIN_DISLIKES_FOR_PROPOSAL = 2
+MIN_DISLIKES_FOR_PROPOSAL = 3
 
 
 @dataclass(frozen=True)

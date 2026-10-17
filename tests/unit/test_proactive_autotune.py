@@ -89,7 +89,7 @@ async def test_autotune_claim_released_when_no_proposal():
 
 @pytest.mark.asyncio
 async def test_check_and_trigger_proactive_autotune_success():
-    """Vérifie qu'une alerte avec >=2 faux positifs reçoit une proposition Telegram proactive."""
+    """Trois faux positifs déclenchent la proposition proactive."""
     alert_id = uuid.uuid4()
     alert = Alert(
         id=alert_id,
@@ -115,7 +115,13 @@ async def test_check_and_trigger_proactive_autotune_success():
         patch("app.tasks.proactive_autotune.AlertRepository", return_value=mock_alert_repo),
         patch(
             "app.tasks.proactive_autotune.get_disliked_titles_for_alert",
-            AsyncMock(return_value=["Harry Potter DVD Coffret", "Harry Potter Jeu PS4"]),
+            AsyncMock(
+                return_value=[
+                    "Harry Potter DVD Coffret",
+                    "Harry Potter Jeu PS4",
+                    "Harry Potter Mug",
+                ]
+            ),
         ),
         patch(
             "app.tasks.proactive_autotune.auto_tuning_module.suggest_exclusions",
@@ -145,6 +151,37 @@ async def test_check_and_trigger_proactive_autotune_success():
         assert kb[0][0].callback_data == f"ai_tune_apply:{alert_id}"
         assert kb[1][0].callback_data == f"ai_tune_edit:{alert_id}"
         assert kb[2][0].callback_data == f"ai_tune_dismiss:{alert_id}"
+
+
+@pytest.mark.asyncio
+async def test_two_false_positives_do_not_trigger_the_proposal():
+    """Le deuxième signalement ne suffit plus : le seuil est le troisième."""
+    alert_id = uuid.uuid4()
+    alert = Alert(id=alert_id, name="Tintin", status=AlertStatus.ACTIVE, exclude_keywords=[])
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    mock_session = AsyncMock()
+    mock_alert_repo = MagicMock()
+    mock_alert_repo.get_by_id = AsyncMock(return_value=alert)
+
+    with (
+        patch("app.tasks.proactive_autotune.claim_autotune_slot", AsyncMock(return_value=True)),
+        patch("app.tasks.proactive_autotune.release_autotune_claim", AsyncMock()) as mock_release,
+        patch("app.tasks.proactive_autotune.AsyncSessionLocal") as mock_session_ctx,
+        patch("app.tasks.proactive_autotune.AlertRepository", return_value=mock_alert_repo),
+        patch(
+            "app.tasks.proactive_autotune.get_disliked_titles_for_alert",
+            AsyncMock(return_value=["Tintin Figurine", "Tintin Poster"]),
+        ),
+    ):
+        mock_session_ctx.return_value.__aenter__.return_value = mock_session
+
+        res = await check_and_trigger_proactive_autotune(alert_id, bot, chat_id=123456789)
+
+    assert res is False
+    bot.send_message.assert_not_awaited()
+    mock_release.assert_awaited_once_with(alert_id)
 
 
 @pytest.mark.asyncio
@@ -198,7 +235,7 @@ async def test_check_and_trigger_emits_once_under_concurrency():
         patch("app.tasks.proactive_autotune.AlertRepository", return_value=mock_alert_repo),
         patch(
             "app.tasks.proactive_autotune.get_disliked_titles_for_alert",
-            AsyncMock(return_value=["Figurine One Piece", "T-shirt One Piece"]),
+            AsyncMock(return_value=["Figurine One Piece", "T-shirt One Piece", "Mug One Piece"]),
         ),
         patch(
             "app.tasks.proactive_autotune.auto_tuning_module.suggest_exclusions",
@@ -305,7 +342,7 @@ async def test_run_proactive_autotune_scan():
         patch(
             "app.tasks.proactive_autotune.get_all_alerts_with_dislike_threshold",
             AsyncMock(return_value=[(alert, user, 3)]),
-        ),
+        ) as mock_threshold,
         patch(
             "app.tasks.proactive_autotune.check_and_trigger_proactive_autotune",
             AsyncMock(return_value=True),
@@ -316,6 +353,7 @@ async def test_run_proactive_autotune_scan():
 
         count = await run_proactive_autotune_scan(bot)
         assert count == 1
+        assert mock_threshold.await_args.kwargs["min_dislikes"] == 3
         mock_trigger.assert_awaited_once_with(
             alert_id=alert.id,
             bot=bot,
