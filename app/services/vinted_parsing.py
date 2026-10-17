@@ -32,11 +32,6 @@ class ScrapedVintedItem:
     item_price_cents: int
     url: str
     photo_url: str | None
-    # Identifiant du vendeur tel que le catalogue le porte. Il sert au clic sur
-    # « Acheter » (transaction acheteur↔vendeur) : le transporter dès l'ingestion
-    # évite une requête supplémentaire au moment du clic. Absent du parsing HTML,
-    # qui ne l'expose pas.
-    seller_external_id: str | None = None
     published_at: datetime | None = None
 
 
@@ -229,17 +224,6 @@ def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
         if not item_id or not title:
             continue
 
-        # Identifiant vendeur : le catalogue le publie (`user.id`), la charge
-        # d'ingestion le transporte pour le clic sur « Acheter ». Un vendeur
-        # absent ou mal formé reste None, jamais une chaîne inventée.
-        raw_user = raw.get("user") or {}
-        raw_seller_id = raw_user.get("id") if isinstance(raw_user, dict) else None
-        seller_external_id = (
-            str(raw_seller_id).strip() if raw_seller_id is not None else ""
-        )
-        if not seller_external_id.isdigit():
-            seller_external_id = ""
-
         # Extraction du prix en centimes
         price_cents = 0
         price_data = raw.get("price") or {}
@@ -295,7 +279,6 @@ def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
                 item_price_cents=price_cents,
                 url=item_url,
                 photo_url=photo_url,
-                seller_external_id=seller_external_id or None,
                 published_at=parse_publication_date(raw.get("published_at")),
             )
         )

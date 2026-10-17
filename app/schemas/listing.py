@@ -39,9 +39,6 @@ class ListingIngestPayload(BaseModel):
     condition: str | None = Field(default=None, max_length=100)
     seller_name: str | None = Field(default=None, max_length=255)
     seller_rating: Decimal | None = Field(default=None, ge=0, le=5)
-    # Identifiant vendeur du catalogue Vinted. Optionnel : les annonces déjà en
-    # base ne le portent pas.
-    seller_external_id: str | None = Field(default=None, max_length=64)
 
     photos: list[str] = Field(default_factory=list, max_length=1)
     isbn13: str | None = Field(default=None, max_length=13)
