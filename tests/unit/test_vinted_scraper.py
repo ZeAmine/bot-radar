@@ -246,9 +246,6 @@ def test_parse_vinted_catalog_json():
     assert item.condition == "Neuf sans étiquette"
     assert item.url == "https://www.vinted.fr/items/10113230090-les-legendes-marvel"
     assert item.photo_url == "https://images1.vinted.net/t/01/f800/main.webp?s=123"
-    # L'identifiant vendeur voyage avec l'annonce : le clic « Acheter » en aura
-    # besoin sans refaire d'appel catalogue.
-    assert item.seller_external_id == "72804845"
 
     # Le payload d'ingestion ne transporte que la couverture
     payload = to_ingest_payload(item)

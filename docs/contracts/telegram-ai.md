@@ -5,11 +5,11 @@ Le flux d'envoi est défini dans [le contrat d'alerte](alert-pipeline.md).
 
 ## Présentation et gestes explicites
 
-Clavier d'annonce : « Acheter » (callback uniquement si configuré) et « Voir l'annonce » ;
-ligne BD « Prix du marché » ; dernière ligne « Faux positif » et « Négocier ».
+Clavier d'annonce : « Voir l'annonce » ; ligne BD « Prix du marché » ; dernière
+ligne « Faux positif » et « Négocier ».
 Ces libellés restent sans émoji, ainsi que « Signalé », y compris après annulation ou
 confirmation du faux positif. Les autres émojis restent. Aucun bouton factice « Payer »
-ou « Dressing / Lot ». Le [checkout](../vinted-checkout.md) ne paie jamais.
+ou « Dressing / Lot ». Le bot ne paie jamais.
 
 La charte canonique est [labels](../../app/bot/labels.py), dont la docstring est
 consommée par [test_charte_copy](../../tests/unit/test_charte_copy.py) : libellés de

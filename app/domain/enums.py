@@ -87,28 +87,3 @@ class ProviderQueryStatus(StrEnum):
     UNAUTHORIZED = "unauthorized"
     UNAVAILABLE = "unavailable"
     INVALID_RESPONSE = "invalid_response"
-
-
-class VintedCheckoutStatus(StrEnum):
-    """Issue d'une préparation de checkout Vinted (bouton « Acheter »).
-
-    Une préparation réussie rend un lien de checkout ; toute autre issue
-    conserve un accès fonctionnel à l'annonce, et son nom dit à l'utilisateur
-    laquelle des causes s'est présentée.
-    """
-
-    READY = "ready"
-    ALREADY_READY = "already_ready"
-    BUSY = "busy"
-    PAUSED = "paused"
-    DISABLED = "disabled"
-    NOT_CONFIGURED = "not_configured"
-    NOT_ASSOCIATED = "not_associated"
-    SELLER_UNKNOWN = "seller_unknown"
-    UNAVAILABLE = "unavailable"
-    AUTH_REQUIRED = "auth_required"
-    BLOCKED = "blocked"
-    RATE_LIMITED = "rate_limited"
-    TIMEOUT = "timeout"
-    NETWORK = "network"
-    UNEXPECTED = "unexpected"

@@ -22,7 +22,7 @@ Introduction Git : 2026-09-24 · Statut : **accepté**. Première déclaration :
 
 - Contexte : Un lien préfabriqué de paiement échouait sans session et contexte de transaction.
 - Décision et raison : Supprimer Payer et ses callbacks ; conserver l’accès direct à l’annonce.
-- Conséquences : Amendé par ADR-047 : seule la préparation de checkout au clic est permise, relais et paiement manuels. Le bouton Payer reste supprimé ; ADR-049 exclut les userscripts.
+- Conséquences : Le bouton Payer reste supprimé. ADR-047 (préparation de checkout au clic) a été retirée par ADR-051 ; ADR-049 exclut les userscripts, extensions et scripts injectés.
 
 <a id="adr-008"></a>
 

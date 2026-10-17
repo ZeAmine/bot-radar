@@ -60,8 +60,9 @@ Conserver les identifiants et expliciter tout remplacement plutôt que renuméro
 | ADR-044 | Changer d’édition réaligne la fiche ; une annonce décrit la cote à l’envoi | [catalogue-market](catalogue-market.md#adr-044) |
 | ADR-045 | Les homonymes ne doivent pas masquer les replis d'une nouveauté | [catalogue-market](catalogue-market.md#adr-045) |
 | ADR-046 | La préparation BD porte une intention durable et une version | [catalogue-market](catalogue-market.md#adr-046) |
-| ADR-047 | Le bouton « Acheter » prépare un checkout à la demande, jamais un paiement | [marketplace](marketplace.md#adr-047) |
+| ADR-047 | Le bouton « Acheter » prépare un checkout à la demande, jamais un paiement — retiré par ADR-051 | [marketplace](marketplace.md#adr-047) |
 | ADR-048 | Le parcours local assisté — un marqueur, un clic, rien d'autre | [marketplace](marketplace.md#adr-048) |
 | ADR-049 | Aucun userscript, aucune extension, aucun script injecté — le seul parcours est intégré au bot | [marketplace](marketplace.md#adr-049) |
 
 | ADR-050 | Nouveautés au premier scan et minimum annuel unique vérifiable | [catalogue-market](catalogue-market.md#adr-050) |
+| ADR-051 | Le checkout Vinted automatisé est retiré | [marketplace](marketplace.md#adr-051) |
