@@ -74,7 +74,7 @@ def test_unknown_state_stays_acceptable_but_lower_states_do_not():
 def test_normalize_condition_keeps_unusual_labels():
     assert normalize_secondhand_condition("Très bon état +") == "Très bon"
     assert normalize_secondhand_condition("Comme neuf sous blister") == "Comme neuf"
-    # Un état inattendu n'est plus déformé en « Très bon »
+    # Un état inattendu reste inchangé, pas déformé en « Très bon »
     assert normalize_secondhand_condition("État Satisfaction") == "État Satisfaction"
     assert normalize_secondhand_condition(None) == "Occasion"
 

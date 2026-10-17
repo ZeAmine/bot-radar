@@ -63,18 +63,14 @@ def test_parse_query_title_and_author():
 
 def test_clean_bnf_helpers():
     """Vérifie le nettoyage des champs bruts issus de la BNF."""
-    # Titres
     assert clean_bnf_title("La saga de Grimr / Jérémie Moreau") == "La saga de Grimr"
     assert clean_bnf_title("Ion mud / Amaury Bündgen") == "Ion mud"
 
-    # Créateurs
     assert clean_bnf_creator("Moreau, Jérémie (1987-....). Auteur du texte") == "Jérémie Moreau"
     assert clean_bnf_creator("Legrand, Ismaël (Auteur du texte)") == "Ismaël Legrand"
-    # Rôle BNF non parenthésé : il ne doit pas coller au nom jusqu'aux boutons.
     assert clean_bnf_creator("Fébule, Nicolas. Auteur du texte") == "Nicolas Fébule"
     assert clean_bnf_creator("Develle, Jeanne. Auteur du texte") == "Jeanne Develle"
 
-    # Éditeurs
     assert clean_bnf_publisher("Éditions Delcourt (Paris)") == "Éditions Delcourt"
     assert clean_bnf_publisher("Casterman (Bruxelles)") == "Casterman"
 
@@ -98,11 +94,9 @@ def test_clean_bnf_series_title_keeps_the_tome_number_the_subtitle_hides():
     assert clean_bnf_series_title(tome_1) == "Manuel du cuisinier amateur Tome 1"
     assert clean_bnf_series_title(tome_2) == "Manuel du cuisinier amateur Tome 2"
 
-    # Un sous-titre sans marqueur ne change rien : le titre de base est rendu tel quel.
     assert (
         clean_bnf_series_title("Ion mud : un long voyage / Amaury Bündgen") == "Ion mud"
     )
-    # Un simple nombre n'est pas un numéro de tome : « Blade Runner 2049 » reste un one-shot.
     assert (
         clean_bnf_series_title("Blade Runner : l'univers du film. 2049")
         == "Blade Runner"
@@ -111,15 +105,12 @@ def test_clean_bnf_series_title_keeps_the_tome_number_the_subtitle_hides():
 
 def test_generate_recommended_keywords():
     """Vérifie la génération automatique des mots-clés d'inclusion, d'exclusion et variantes."""
-    # Deathbringer
     inc, exc, var = generate_recommended_keywords("Deathbringer", "Ismaël Legrand")
     assert "deathbringer" in inc
     assert "figurine" in exc
     assert "warhammer" in exc
     assert "death bringer" in var
 
-    # La saga de Grimr — une seule inclusion, sans article : l'alternative n'est pas
-    # un critère de plus (le matcher exige toutes les inclusions).
     inc_g, exc_g, var_g = generate_recommended_keywords("La saga de Grimr", "Jérémie Moreau")
     assert inc_g == ["saga de grimr"]
     assert "roman" in exc_g
@@ -148,8 +139,6 @@ async def test_lookup_by_title_and_author_mocked():
         assert "deathbringer" in res.recommended_includes
         assert "death bringer" in res.recommended_variants
 
-        # Le verdict accompagne la notice : sans lui, une BNF muette et une BNF
-        # vide se liraient pareil (ADR-041).
         verdict = await service.lookup_by_title_and_author(
             "deathbringer de ismael le Grand"
         )
@@ -176,7 +165,6 @@ async def test_lookup_series_notices_keeps_the_tomes_and_drops_the_lookalikes():
             title="Blacksad Tome 3", author="Juan Díaz Canales",
             isbn13="9782205051484", source=AUTORITE_BNF,
         ),
-        # Même préfixe de titre, autre auteur : ce n'est pas un tome de la série.
         BookMetadata(
             title="Blacksad : la bande dessinée noire", author="Un Autre",
             isbn13="9780000000002", source=AUTORITE_BNF,
@@ -216,8 +204,6 @@ async def test_lookup_series_notices_is_bounded_and_deduplicates_isbns():
 
     assert len(verdict.notices) == 3
     assert len({notice.isbn13 for notice in verdict.notices}) == 3
-    # Titre vide : personne n'a été interrogé, et le verdict ne peut donc jamais
-    # dire « aucune source ne le connaît ».
     assert empty.notices == ()
     assert empty.consulted == ()
 
@@ -241,9 +227,6 @@ async def test_lookup_series_notices_dit_qui_a_repondu_et_qui_s_est_tu():
         ),
     ]
 
-    # 1. Toutes les autorités interrogées ont répondu, aucune ne connaît la série.
-    # La BNF d'abord ; comme elle rend moins de tomes que le plafond, le repli
-    # OpenLibrary est interrogé lui aussi, et il a répondu — sans rien trouver.
     with _mock_bnf_typed(service, []):
         exhausted = await service.lookup_series_notices("Absolute Martian Manhunter")
     assert exhausted.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY)
@@ -251,7 +234,6 @@ async def test_lookup_series_notices_dit_qui_a_repondu_et_qui_s_est_tu():
     assert exhausted.notices == ()
     assert is_catalogue_exhausted(exhausted) is True
 
-    # 2. La BNF s'est tue : rien n'est établi, et le verdict n'est pas rendu.
     with (
         patch.object(
             service,
@@ -270,7 +252,6 @@ async def test_lookup_series_notices_dit_qui_a_repondu_et_qui_s_est_tu():
     assert silent.notices == ()
     assert is_catalogue_exhausted(silent) is False
 
-    # 3. Les tomes sont trouvés : la question ne se pose plus.
     with _mock_bnf_typed(service, tomes):
         found = await service.lookup_series_notices("Blacksad")
     assert found.unavailable == ()
@@ -284,8 +265,6 @@ async def test_lookup_by_title_and_author_dit_qui_a_repondu_et_qui_s_est_tu():
     Le repli par titre consulte aussi les deux autorités secondaires : un silence
     d'**une** d'elles suffit à interdire le verdict, même quand la BNF a répondu.
     """
-    # Un titre sans auteur : le repli large de la BNF ne se déclenche pas, et le
-    # verdict ne nomme que les autorités réellement interrogées.
 
     from app.domain.rules.catalogue_search import is_catalogue_exhausted
 
@@ -299,7 +278,6 @@ async def test_lookup_by_title_and_author_dit_qui_a_repondu_et_qui_s_est_tu():
             has_results=False,
         )
 
-    # 1. La BNF et le repli ont répondu, aucun n'a rendu l'ouvrage.
     with (
         _mock_bnf_typed(service, []),
         patch.object(
@@ -316,7 +294,6 @@ async def test_lookup_by_title_and_author_dit_qui_a_repondu_et_qui_s_est_tu():
     assert exhausted.notices == ()
     assert is_catalogue_exhausted(exhausted) is True
 
-    # 2. Le repli s'est tu : le verdict se tait, et l'autorité muette est nommée.
     with (
         _mock_bnf_typed(service, []),
         patch.object(
@@ -329,8 +306,6 @@ async def test_lookup_by_title_and_author_dit_qui_a_repondu_et_qui_s_est_tu():
     assert partial.unavailable == (AUTORITE_OPENLIBRARY,)
     assert is_catalogue_exhausted(partial) is False
 
-    # 3. La BNF rend une notice : la question ne se pose plus, et le repli n'est
-    # même pas interrogé — le verdict dit qui a parlé, pas qui aurait pu.
     notice = BookMetadata(
         title="Absolute Martian Manhunter", author="Deniz Camp",
         isbn13="9782369904151", source=AUTORITE_BNF,
@@ -382,13 +357,9 @@ async def test_lookup_series_notices_completes_with_openlibrary_when_bnf_is_shor
     openlibrary = AsyncMock(
         return_value=_openlibrary_result(
             [
-                # Même ISBN que la BNF : ignoré, la notice BNF fait foi.
                 _series_doc("Blacksad Tome 2", ["9782369903086"], "Juan Díaz Canales"),
-                # Un vrai tome manquant.
                 _series_doc("Blacksad Tome 5", ["9782205051407"], "Juan Díaz Canales"),
-                # Même préfixe, autre auteur : pas un tome de la série.
                 _series_doc("Blacksad Tome 6", ["9782205051506"], "Un Autre"),
-                # Titre étranger à la série.
                 _series_doc("Une tout autre série", ["9782205051605"], "Un Autre"),
             ]
         )
@@ -505,7 +476,6 @@ def test_title_similarity_ignores_case_accents_and_subtitle():
     assert title_similarity("La couleur des choses", "la Couleur des Choses") == 1.0
     assert title_similarity("La couleur des choses", "Keeping two") < 0.4
     assert title_similarity("", "Keeping two") == 0.0
-    # Un titre voisin plus long n'est pas un simple sous-titre
     assert title_similarity("La couleur des choses", "De la couleur des choses") < 1.0
 
 
@@ -522,14 +492,12 @@ async def test_verify_isbn_rejects_isbn_belonging_to_another_book():
     service = BookMetadataService(http_client=FakeBnFClient())
 
     assert await service.verify_isbn("9782369903062", "La couleur des choses") is None
-    # Le bon ISBN passe et renvoie la notice qui l'atteste
     verified = await service.verify_isbn("9782369903086", "La couleur des choses")
     assert verified is not None
     assert verified.isbn13 == "9782369903086"
     assert verified.author == "Martin Panchaud"
     assert verified.publication_year == 2022
 
-    # Un ISBN au checksum invalide n'est jamais interrogé
     assert await service.verify_isbn("97823699030", "La couleur des choses") is None
 
 
@@ -572,7 +540,6 @@ async def test_resolve_for_alert_sees_a_series_when_the_tome_number_hides_in_the
     resolution = await service.resolve_for_alert("Manuel du cuisinier amateur")
 
     assert resolution is not None
-    # Le titre de base reste celui de l'affichage : ni sous-titre, ni numéro.
     assert resolution.best.title == "Manuel du cuisinier amateur"
     assert [alt.isbn13 for alt in resolution.alternatives] == ["9782812321689"]
 
@@ -592,7 +559,6 @@ async def test_openlibrary_fallback_resolves_book_absent_from_bnf():
     assert resolution is not None
     assert resolution.best.source == "openlibrary"
     assert resolution.best.confidence == MatchConfidence.MEDIUM
-    # Édition francophone retenue, pas la traduction anglaise regroupée dans le document
     assert resolution.best.isbn13 == "9782369903086"
     assert resolution.best.author == "Martin Panchaud"
     assert resolution.best.format_detail == "236 p."
@@ -662,7 +628,6 @@ async def test_openlibrary_verifies_isbn_unknown_to_bnf():
     assert verified.source == "openlibrary"
     assert verified.isbn13 == "9782369903086"
 
-    # Même ISBN, autre ouvrage attendu : refusé
     assert await service.verify_isbn("9782369903086", "Klara and the Sun") is None
 
 
@@ -707,7 +672,6 @@ async def test_openlibrary_lookup_by_isbn_fallback():
     assert meta is not None
     assert meta.title == "La couleur des choses"
 
-    # Un code inconnu des deux côtés ne remonte rien
     inconnu = BookMetadataService(
         http_client=FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[])
     )
@@ -732,10 +696,6 @@ def test_clean_openlibrary_author_strips_role():
     assert clean_openlibrary_author("J. R. R. Tolkien") == "J. R. R. Tolkien"
 
 
-# --- Cas réel : « Les Enfants perdus », homonymie BNF -----------------------------
-# Le titre d'une BD de 2025 est aussi celui d'un roman de 1989. La BNF ne connaît
-# que le roman : le prendre pour l'œuvre demandée affichait son ISBN, son auteur et
-# son éditeur comme s'ils étaient ceux de la BD.
 def _homonym_records() -> list[BookMetadata]:
     return [
         BookMetadata(
@@ -830,8 +790,6 @@ async def test_resolve_for_alert_exposes_homonyms_instead_of_choosing_silently()
         "Rosemonde Ahou de Saintange",
         "Nef",
     ]
-    # Les homonymes ne sont pas des éditions : l'ISBN du roman ne doit jamais
-    # apparaître dans les éditions concurrentes de la BD.
     assert [edition.isbn13 for edition in resolution.editions()] == ["9782214080627"]
 
 
@@ -848,7 +806,6 @@ async def test_resolve_for_alert_author_hint_designs_the_homonym():
     assert resolution.best.author == "Nef"
     assert resolution.best.isbn13 == "9782810206087"
     assert resolution.author_hint_match == "matched"
-    # L'indice d'auteur tranche : le roman n'est plus un homonyme à arbitrer.
     assert resolution.is_ambiguous is False
 
 
@@ -961,14 +918,12 @@ async def test_confirm_isbn_for_title_separates_conflict_from_absence():
     assert conflict.notice.title == "La couleur des choses"
     assert conflict.notice.author == "Martin Panchaud"
 
-    # Une BNF qui ne connaît pas ce code : personne ne le connaît, personne ne le contredit.
     muet = BookMetadataService(
         http_client=FakeCatalogueClient(bnf_empty=True, openlibrary_docs=[])
     )
     unknown = await muet.confirm_isbn_for_title("9782810206087", "Les Enfants perdus")
     assert unknown.outcome == "inconnu"
 
-    # Un code mal saisi n'est jamais interrogé : c'est une absence, pas un verdict.
     mal_saisi = await service.confirm_isbn_for_title("97828102060", "X")
     assert mal_saisi.outcome == "inconnu"
     assert mal_saisi.consulted == (), "personne n'a été consulté"
@@ -984,7 +939,6 @@ async def test_resolve_input_returns_a_resolution_for_a_typed_isbn():
     assert resolution is not None
     assert resolution.best.isbn13 == "9782369903086"
     assert resolution.is_ambiguous is False
-    # Un ISBN nomme un tome : rien à détecter, et l'alerte garde son code.
     assert resolution.notice_titles == ()
 
 
@@ -1151,8 +1105,6 @@ async def test_lookup_by_isbn_ne_change_pas_pour_ses_appelants():
         pytest.param("confirme", {}, "la notice est requise", id="confirme-sans-notice"),
         pytest.param("contradiction", {}, "la notice est requise", id="contradiction-sans-notice"),
         pytest.param(
-            # Le cas que trois champs facultatifs rendaient lisible : une notice rendue
-            # et une panne dans le même objet, lisible comme une confirmation.
             "confirme",
             {"notice": BookMetadata(title="X"), "panne": "délai dépassé"},
             "ce n'est pas un silence",
@@ -1217,16 +1169,6 @@ async def test_verdict_refuse_un_isbn_malforme_sans_appeler_personne():
     assert service.http_client.requetes == [], "aucun appel réseau pour une saisie invalide"
 
 
-# --- Le garde-fou « fail-closed » de la réponse SRU ------------------------------
-#
-# Le `XMLParser` de la C de CPython ne prend que `target` et `encoding` :
-# `resolve_entities` comme `forbid_entities` y lèvent un TypeError. Ce qu'il
-# n'expose pas non plus, c'est une poignée pour dire au parseur « n'accepte
-# aucune entité ». Ce qui reste possible est donc une *déclaration* d'entité
-# dans le sous-ensemble interne du document — et expat l'honore : sans le garde,
-# un `&isbn;` déclaré par la réponse devient un ISBN que la BNF aurait « confirmé ».
-# Le garde refuse donc le document entier, et le dit : un refus sans motif se
-# lirait comme une absence de notice.
 
 
 def _sru(record: str, doctype: str = "") -> bytes:
@@ -1364,13 +1306,6 @@ async def test_une_doctype_ne_peut_pas_confirmer_un_isbn():
     assert verdict.consulted == (AUTORITE_BNF, AUTORITE_OPENLIBRARY), "le repli a bien été tenté"
 
 
-# --- Le faux positif que le garde par octets ne pouvait pas voir -----------------
-#
-# `b"<!DOCTYPE" in resp.content` cherchait le littéral dans les octets. Or le
-# littéral peut apparaître dans le *texte* d'une notice — via un CDATA, seul
-# endroit XML où `<` n'a pas besoin d'être échappé. La réponse était alors
-# écartée comme une panne alors qu'elle était parfaitement lisible : une
-# recherche d'octets ne voit pas la structure du document.
 
 
 @pytest.mark.asyncio
@@ -1442,8 +1377,6 @@ def test_la_garde_reconnait_la_declaration_et_son_menson():
 
     assert _declares_doctype(declaree), "une déclaration avec entité interne est refusée"
     assert _declares_doctype(externe), "une entité externe est refusée"
-    # Le garde par octets laissait passer celle-ci : en UTF-16, les octets
-    # `<!DOCTYPE` ne sont pas là. C'était un contournement, pas un oubli.
     assert b"<!DOCTYPE" not in declaree_utf16, "le cas ne vaut rien s'il contient les octets"
     assert _declares_doctype(declaree_utf16), "une entité interne en UTF-16 est refusée"
     assert not _declares_doctype(cdata), "un CDATA n'est pas une déclaration"
@@ -1454,7 +1387,6 @@ def test_la_garde_reconnait_la_declaration_et_son_menson():
     assert not _declares_doctype(b"   \n "), "des blancs ne déclarent rien"
 
 
-# --- Identifiant d'autorité : ce que la notice porte vraiment --------------------
 _SRU_EAN_NU = b"""<?xml version="1.0" encoding="UTF-8"?>
 <srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/">
  <srw:numberOfRecords>1</srw:numberOfRecords><srw:records>
@@ -1515,9 +1447,6 @@ async def test_bnf_never_confirms_an_isbn_and_openlibrary_does():
     assert provenance_note(verdict.notice) == OPENLIBRARY_SOURCE_NOTE
 
 
-# ---------------------------------------------------------------------------
-# Troisieme source : Google Books n'entre qu'apres les deux autres (ADR-033)
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -1552,7 +1481,6 @@ async def test_google_books_is_the_last_resort_and_names_its_provenance(monkeypa
     assert resolution.best.publication_year == 2026
     assert resolution.best.format_detail == "240 p."
     assert provenance_note(resolution.best) == GOOGLE_BOOKS_SOURCE_NOTE
-    # Les deux premières ont été tentées, et avant elle.
     assert client.openlibrary_queries != []
     assert client.google_books_queries
     assert "Dailycieux" in client.google_books_queries[0]

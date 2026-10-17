@@ -15,10 +15,8 @@ down_revision: str | None = "0004_alert_books_book_id_index"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-# Une cote 1 an superieure a un prix livre que nous avons nous-memes releve pour
-# le meme livre est une cote fausse : neuf livres etaient dans ce cas au deploiement
-# (dont Dead Train, 22,90 EUR contre 13,57 EUR observes). La correction n'abaisse que,
-# ne cree jamais de cote et ne touche pas aux livres qui n'en ont pas.
+# Une cote 1 an supérieure à un prix livré relevé pour le même livre est fausse :
+# la correction n'abaisse que, ne crée jamais de cote et ignore les livres sans cote.
 _SQL = """
 UPDATE book_market_cache AS c
 SET historical_low_1y_cents = observed.min_delivered,
@@ -36,8 +34,8 @@ WHERE observed.book_id = c.book_id
 
 
 def upgrade() -> None:
-    # Le schéma initial ne créait pas ces colonnes, pourtant déjà présentes
-    # sur l'ancienne production. Une installation vierge doit aussi passer.
+    # Colonnes absentes du schéma initial mais présentes en production :
+    # IF NOT EXISTS gère les deux cas.
     op.execute(
         "ALTER TABLE book_market_cache "
         "ADD COLUMN IF NOT EXISTS historical_low_1y_cents INTEGER"

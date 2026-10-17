@@ -217,9 +217,8 @@ class TestStrictFallback:
         report = await service.resolve_for_alert_report("Dailycieux", "Whoogy's")
 
         assert report.resolution is None
-        # Conjonction, puis repli titre seul, puis l'élargissement `anywhere` que
-        # le chemin existant applique déjà quand l'auteur est fourni et que rien
-        # n'est revenu. Trois requêtes réelles, trois tentatives.
+        # Conjonction, repli titre seul, puis `anywhere` : trois requêtes réelles,
+        # trois tentatives.
         assert [cql.split(" all")[0] for cql in calls] == [
             "bib.title",
             "bib.title",

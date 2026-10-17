@@ -20,10 +20,8 @@ from app.use_cases.notification_admission import MAX_AGE, complete_stored_receip
 
 logger = logging.getLogger(__name__)
 
-# Période de balayage de la reprise. Les backoffs d'admission valent au moins une minute
-# (`notification_admission.py`, `recover_notifications.py`) : balayer deux fois par minute
-# divise par deux l'attente entre l'échéance d'une reprise et sa tentative, sans jamais
-# devancer un `retry_after` de Telegram — la date d'échéance reste la borne.
+# Période de balayage : les backoffs d'admission valent au moins une minute, balayer
+# deux fois par minute divise l'attente sans devancer un `retry_after` de Telegram.
 RECOVERY_SCAN_SECONDS = 30
 
 

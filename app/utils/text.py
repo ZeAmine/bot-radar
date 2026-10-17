@@ -24,14 +24,9 @@ def normalize_text(text: str | None) -> str:
     without_accents = "".join(c for c in nfkd if not unicodedata.combining(c))
     lowered = without_accents.lower()
 
-    # Normalisation des apostrophes et tirets
     cleaned = re.sub(r"['’‘`ʼ]", " ", lowered)
     cleaned = re.sub(r"[-–—_]", " ", cleaned)
-
-    # Remplacement de toute ponctuation non alphanumérique par un espace
     cleaned = re.sub(r"[^\w\s]", " ", cleaned)
-
-    # Réduction des espaces multiples
     tokens = cleaned.split()
     return " ".join(tokens)
 

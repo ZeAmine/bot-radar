@@ -19,11 +19,8 @@ from app.core.redis import get_redis_client
 
 logger = logging.getLogger(__name__)
 
-# Le menu Telegram ne montre que les quatre gestes du quotidien. Les autres commandes
-# restent **vivantes** et documentées dans /help : c'est le menu qui est court, pas le
-# bot. Un menu de treize entrées repousse les quatre utiles hors de l'écran, et la
-# modification, la pause ou la suppression d'une alerte passent déjà par les boutons de
-# sa carte — les lister au même niveau qu'/add suggérait une seconde voie à entretenir.
+# Menu Telegram volontairement court : les quatre gestes du quotidien seulement ;
+# les autres commandes restent vivantes et documentées dans /help.
 BOT_COMMANDS = [
     BotCommand(command="add", description="Créer une alerte (recherche auto)"),
     BotCommand(command="show", description="Afficher les alertes"),
@@ -63,7 +60,6 @@ def create_dispatcher(storage: BaseStorage | None = None) -> Dispatcher:
 
     dp = Dispatcher(storage=storage)
 
-    # Enregistrement du middleware d'authentification et de throttling
     auth_middleware = AuthMiddleware()
     throttling_middleware = ThrottlingMiddleware()
     dp.message.middleware(auth_middleware)
@@ -71,12 +67,10 @@ def create_dispatcher(storage: BaseStorage | None = None) -> Dispatcher:
     dp.callback_query.middleware(auth_middleware)
     dp.callback_query.middleware(throttling_middleware)
 
-    # Filet au niveau de l'update : il voit le résultat de toute la chaîne de
-    # routeurs, donc les callbacks qu'aucun handler n'a filtrés — ceux qu'un
-    # middleware de callback_query ne verrait jamais.
+    # Filet au niveau de l'update : seul niveau qui voit les callbacks qu'aucun
+    # handler ne filtre, contrairement à un middleware de callback_query.
     dp.update.outer_middleware(UnconsumedCallbackMiddleware())
 
-    # Enregistrement des routeurs
     dp.include_router(get_bot_router())
 
     return dp
@@ -91,6 +85,5 @@ async def setup_bot_commands(bot: Bot) -> None:
         logger.error("Erreur lors de la configuration des commandes Telegram: %s", exc)
 
 
-# Instances singleton
 bot: Bot = create_bot()
 dp: Dispatcher = create_dispatcher()

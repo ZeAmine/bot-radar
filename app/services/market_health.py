@@ -30,17 +30,11 @@ from app.services.telegram_service import notify_admins
 
 logger = logging.getLogger(__name__)
 
-# Au-delà de ce délai sans collecte réussie, le retard doit être visible. C'est la
-# **seule** référence de péremption du module : les deux contrôles — historique et
-# cote courante — la partagent. Deux valeurs distinctes rendaient le même incident
-# visible ou invisible selon le contrôle qui le regardait.
 STALE_AFTER_DAYS = 7
 
-# Un message par jour suffit : le job passe deux fois par jour.
 NOTIFY_KEY = "radar:market:stale_low:notified"
 NOTIFY_TTL_SECONDS = 20 * 3600
 
-# Au-delà, la liste devient un mur : on annonce le reste en une ligne.
 MAX_LISTED = 8
 
 
@@ -199,52 +193,20 @@ async def _notify_stale_collections(
         return 0
 
 
-# --- Alertes de fin de passe ---
-
-# Seuil d'erreurs au-delà duquel la passe est considérée comme défaillante.
 ERROR_RATIO_THRESHOLD = 0.5
-# En dessous de ce nombre d'erreurs, le ratio n'a pas de sens statistique.
 MIN_ERRORS_FOR_ALERT = 3
 
-# Un fournisseur dont les relevés se taisent depuis ce délai est signalé.
 SILENT_PROVIDER_AFTER_HOURS = 48
-# Dédoublonnage propre à « aucune cote » : comme les deux autres, cette alerte
-# ne part qu'une fois par fenêtre. Sans elle, elle suivait le rythme du job
-# glissant, soit jusqu'à quarante-huit messages par jour.
 NO_PRICES_NOTIFY_KEY = "radar:market:no_prices:notified"
 NO_PRICES_NOTIFY_TTL_SECONDS = 20 * 3600
-# Même fenêtre pour « rafraîchissement dégradé » : le job glissant passe toutes
-# les trente minutes, et cette alerte était la seule à le suivre à ce rythme.
 HIGH_ERROR_NOTIFY_KEY = "radar:market:high_error:notified"
 HIGH_ERROR_NOTIFY_TTL_SECONDS = 20 * 3600
-# Fenêtre de sollicitation : un fournisseur doit avoir été réellement interrogé
-# pendant cette période avant que son silence ne devienne un incident.
 PROVIDER_RECENT_WINDOW_DAYS = 7
 SILENT_PROVIDER_MIN_OBSERVATIONS = 3
 
-# Dédoublonnage propre aux sources silencieuses : un figement de cote et une
-# source muette sont deux incidents distincts qui ne doivent pas s'étouffer.
 SILENT_NOTIFY_KEY = "radar:market:silent_provider:notified"
 SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
 
-# Le bilan d'une passe planifiée se dédoublonne par **occurrence** : la clé porte
-# l'identifiant du job et l'instant que le planificateur visait. Deux tentatives de
-# la même occurrence partagent cette clé et ne produisent qu'un bilan.
-#
-# Comme la clé contient l'occurrence, deux passes distinctes ne peuvent pas se
-# confondre : la durée de conservation n'a donc **pas** à rester sous l'écart entre
-# deux exécutions. Seule compte la fenêtre pendant laquelle une même occurrence peut
-# être retentée.
-#
-# Cette fenêtre est étroite. APScheduler n'exécute pas une échéance manquée au-delà de
-# `misfire_grace_time` (une seconde par défaut sur ces jobs) : une occurrence n'est donc
-# jamais rejouée tardivement par le planificateur lui-même. Ce qui reste, c'est une
-# reprise rapprochée — redémarrage du processus après une passe écourtée, relance
-# manuelle, double soumission pendant un arrêt. Une heure couvre largement ces cas
-# sans jamais approcher les douze heures qui séparent deux passes complètes.
-#
-# Le TTL borne donc la garantie, et cette borne est assumée : au-delà, la clé a expiré
-# et une nouvelle tentative de la même occurrence repartirait pour un second bilan.
 INCOMPLETE_NOTIFY_KEY_PREFIX = "radar:market:pass_report:"
 INCOMPLETE_NOTIFY_TTL_SECONDS = 3600
 
@@ -409,12 +371,6 @@ async def notify_incomplete_refresh(
     Sans `occurrence` — un appel hors planificateur —, le bilan part sans
     dédoublonnage : mieux vaut un doublon qu'un incident passé sous silence.
     """
-    # Le silence ne dépend pas de la réussite, mais du **type** de passe : un
-    # passage glissant qui a traité sa sélection n'a rien à dire — huit livres
-    # toutes les trente minutes ne se racontent pas —, tandis qu'une passe
-    # complète est un rendez-vous planifié deux fois par jour, et son bilan est
-    # attendu qu'elle aille au bout ou non. Le taire quand elle réussit laissait
-    # l'utilisateur sans nouvelle du seul moment où la file entière est reprise.
     if incremental and processed >= total and not interrupted:
         return
 
@@ -426,20 +382,11 @@ async def notify_incomplete_refresh(
             logger.debug("Bilan déjà envoyé pour l'occurrence %s.", occurrence)
             return
 
-    # « Rafraîchissement » est masculin : l'accord se fait sur le nom, pas sur le mot
-    # qui suit. « Rafraîchissement complète » se lisait comme une faute.
     mode = "complet" if not incremental else "incrémental"
     if incremental and batch_size:
         mode = f"incrémental ({batch_size} livres)"
 
     remaining = max(total - processed, 0)
-    # « Traités » et « mis à jour » ne répondent pas à la même question : un livre
-    # interrogé dont les fournisseurs sont muets a bien été traité, mais n'a rien
-    # écrit. Sans cette ligne, l'écart entre les deux se lisait comme un manque, alors
-    # qu'il dit exactement ce que la passe a produit. Elle est dérivée, jamais
-    # recomptée : `processed` est la somme des verdicts, dont `refreshed` est la part
-    # qui a écrit une cote — les deux identités du bilan tiennent donc par
-    # construction, et non par un compteur parallèle qui pourrait diverger.
     unchanged = max(processed - refreshed, 0)
     lines = [
         f"🔄 <b>Rafraîchissement {mode}</b>",
@@ -457,8 +404,6 @@ async def notify_incomplete_refresh(
         lines.append("")
         lines.append("<i>Plafond de durée atteint : les livres restants seront repris "
                      "selon l'ordre de la file.</i>")
-        # La date n'est annoncée que pour une passe complète : c'est la seule dont
-        # la prise en charge des restants est réellement prévue.
         if not incremental:
             lines.append(next_full_pass_note())
 
@@ -532,9 +477,6 @@ async def notify_no_prices_found(
         return
     if processed == 0 or available > 0:
         return
-    # `total` est la sélection, pas le catalogue : en mode incrémental la
-    # sélection EST le lot, donc `processed == total` toujours, et compter ne
-    # prouve rien. C'est le mode qui dit ce qu'une passe a couvert.
     if incremental:
         logger.debug(
             "Lot incrémental de %d livres sans cote : aucun verdict, "
@@ -542,7 +484,6 @@ async def notify_no_prices_found(
             processed,
         )
         return
-    # `processed > 0` implique une sélection non vide, donc `total > 0`.
     if processed < total:
         logger.debug(
             "Passe partielle (%d/%d) sans cote : aucun verdict.", processed, total
@@ -564,12 +505,6 @@ async def notify_no_prices_found(
     logger.warning("Collecte de prix en échec sur une passe complète (%d livres).", processed)
 
 
-# --- Diagnostic : avec quelle cote une alerte BD part-elle ? ---
-#
-# Le diagnostic au repos ne peut pas trancher : le job glissant finit par coter un
-# livre lié, si bien que la base affiche « cote utilisable » longtemps après une
-# alerte partie muette. Ces compteurs-ci mesurent l'instant de l'envoi, et rien
-# d'autre : un compteur par état, incrémenté après que l'alerte est partie.
 
 COTE_STATE_KEY_PREFIX = "radar:cote_sent_state:"
 COTE_STATES = ("real", "pending", "no_offer", "searching", "uncatalogued", "unavailable")

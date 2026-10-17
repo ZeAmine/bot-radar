@@ -99,8 +99,6 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
             id=uuid.uuid4(), telegram_user_id=123
         ))
 
-        # Le récap n'est pas encore publié : le handler a rendu la main sur le jalon.
-        # Le récap complet attend la recherche, il ne bloque pas le retour.
         assert loading_message.edit_text.await_count == 1
         assert "🔎 <b>La couleur des choses</b> identifié" in (
             loading_message.edit_text.await_args[0][0]
@@ -108,7 +106,6 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
 
         await drain(repos["tasks"])
 
-        # Deux éditions successives : le jalon, puis le récap final.
         assert loading_message.edit_text.await_count == 2
         milestone = loading_message.edit_text.await_args_list[0][0][0]
         assert "🔎 <b>La couleur des choses</b> identifié" in milestone
@@ -121,9 +118,6 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
         ] == ["🔍 Variantes & exclusions en cours..."]
 
         recap = recap_text(loading_message)
-        # La carte est celle du brouillon : un titre unique, aucun en-tête de parcours.
-        # C'est ce qui permet de la ré-afficher à l'identique après un changement
-        # d'édition.
         assert recap.startswith(f"{RECAP_TITLE}\n\n<b>ISBN :</b> <code>9782369903086</code>")
         assert not any(banner in recap for banner in ROUTE_BANNERS)
     finally:
@@ -207,10 +201,8 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         await save_alert(confirm_callback, state, db_user, db_session)
         confirmation = confirm_message.edit_text.call_args[0][0]
 
-        # La cote et le bas constaté, tous deux déjà connus du catalogue.
         assert "<b>Dernière offre connue (informative) :</b> 18,00 €" in confirmation
         assert "<b>Prix bas constaté :</b> 16,50 €" in confirmation
-        # Ni la plateforme, ni une date qui daterait du moment de la création.
         assert "Momox" not in confirmation
         assert "chasse_aux_livres" not in confirmation
         assert "Chasse" not in confirmation
@@ -221,13 +213,11 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
             "Telegram.</i>"
         )
 
-        # La confirmation reprend la fiche, même ordre et mêmes émojis que le récap.
         assert confirmation.startswith("✅ <b>Alerte créée</b>")
         assert "<b>Titre :</b> La couleur des choses" in confirmation
         assert f"<b>Auteur :</b> {BNF_EDITION.author}" in confirmation
         assert f"<b>Éditeur :</b> {BNF_EDITION.publisher}" in confirmation
         assert "<b>Prix maximum :</b> 12,00 €" in confirmation
-        # Les états complets, libellés du référentiel ItemCondition.
         conditions_ligne = "<b>États acceptés :</b> NAE, NSE, TBE"
         assert conditions_ligne in confirmation
     finally:
@@ -271,12 +261,6 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
         assert create_kwargs["variants"] == ["couleurdeschoses"]
         assert create_kwargs["exclude_keywords"] == ["keeping two"]
 
-        # La confirmation rejoue les mots-clés qu'elle affiche : ce qui est annoncé est
-        # ce qui est stocké. Elle est la carte de récap relue, donc elle porte les mêmes
-        # lignes que lui — variantes et exclusions comprises : c'est une seule
-        # construction, elles ne peuvent plus manquer d'un côté et pas de l'autre. Les
-        # valeurs sont celles écrites en base (passées par le nettoyeur), pas celles du
-        # moteur : le brouillon est relu tel qu'il vient d'être enregistré.
         confirmation = confirm_message.edit_text.call_args[0][0]
         keywords_line = f"<b>Mots-clés inclus :</b> {', '.join(create_kwargs['include_keywords'])}"
         assert keywords_line in confirmation
@@ -322,7 +306,6 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
         recap = recap_text(loading_message)
         assert recap == build_creation_recap(state.data)[0]
 
-        # L'utilisateur bascule sur l'autre édition.
         switch_message = MagicMock(spec=Message)
         switch_message.edit_text = AsyncMock()
         switch_callback = MagicMock()
@@ -335,7 +318,6 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
         switch_recap = switch_message.edit_text.call_args[0][0]
         assert switch_recap == build_creation_recap(state.data)[0]
 
-        # Le contenu a bien changé — c'est l'édition suivie qui diffère.
         assert switch_recap != recap
         assert "<code>9782369904151</code>" in switch_recap
         assert "<b>Édition :</b> Editions çà et là · 224 p. · 19 cm" in switch_recap
@@ -418,8 +400,7 @@ async def test_series_alert_starts_book_resolution_at_creation():
     confirmation = confirm_message.edit_text.call_args[0][0]
     assert "✅ <b>Alerte créée</b>" in confirmation
     assert "<b>Titre :</b> Blacksad" in confirmation
-    # La confirmation reprend le récap ligne pour ligne : l'indication de série est la
-    # même phrase, à la même place — sous le titre, en italique, isolée.
+    # Indication de série : même phrase que le récap, sous le titre, en italique, isolée.
     confirm_lines = confirmation.splitlines()
     assert confirm_lines[0] == "✅ <b>Alerte créée</b>"
     assert confirm_lines[1] == ""

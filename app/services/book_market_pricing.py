@@ -272,8 +272,8 @@ async def _refresh_series_totals(session: AsyncSession, book_id: uuid.UUID) -> N
     écriture, un seul chemin). Une alerte sans ISBN mais à un seul livre relié
     n'est pas une série : son total reste ``NULL``, l'écran n'a rien à sommer.
     """
-    # En production autoflush=False : populate_existing écraserait autrement
-    # les métadonnées de collecte encore en mémoire lors de la relecture.
+    # Autoflush désactivé en production : sans ce flush, la relecture avec
+    # populate_existing écraserait les métadonnées de collecte en mémoire.
     await session.flush()
     repo = MarketPriceRepository(session)
     alert_ids = await repo.get_alert_ids_linked_to_book(book_id)
@@ -320,7 +320,7 @@ async def persist_market_result(
         await repo.save_snapshot(book_id, offer)
 
     if result.lowest_delivered_price_cents is None:
-        # Règle de résilience : un silence réseau ne doit pas priver l'utilisateur
+        # Résilience : un silence réseau ne doit pas priver l'utilisateur
         # d'un prix déjà connu et encore frais.
         existing = await repo.get_cache_by_book_id(book_id)
         if existing is not None and (
@@ -497,7 +497,7 @@ async def _price_book_once(
                 session.add(cache)
             attempted_at = datetime.now(UTC)
             cache.last_attempt_at = attempted_at
-            # Le tour reste acquis même si la collecte ou sa persistance échoue.
+            # L'essai est validé avant la collecte : il reste acquis si elle échoue.
             await session.commit()
             cache = await price_book(session, book, registry=registry, result_sink=result_sink,
                                      retry_transient=reason == "alert_created")

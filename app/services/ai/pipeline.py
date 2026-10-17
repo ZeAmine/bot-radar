@@ -40,12 +40,11 @@ class AIPostAlertPipeline:
     ) -> None:
         """Exécute l'enrichissement en tâche de fond et met à jour l'alerte."""
         try:
-            # Courte respiration pour laisser Telegram délivrer le premier message
+            # Laisser Telegram délivrer le message initial avant la note.
             await asyncio.sleep(0.4)
 
             lines_to_notify: list[str] = []
 
-            # 1. Analyse textuelle combinée (modules actifs du registre : ex. profit_scoring)
             active_modules = ai_registry.get_active_post_alert_modules()
             chunks: dict[str, str] = {}
             for module in active_modules:
@@ -82,7 +81,6 @@ class AIPostAlertPipeline:
                                 if html_line:
                                     lines_to_notify.append(html_line)
 
-            # 2. Note d'enrichissement si des analyses sont disponibles
             if lines_to_notify:
                 full_text = "\n\n".join(lines_to_notify)
                 await bot.send_message(

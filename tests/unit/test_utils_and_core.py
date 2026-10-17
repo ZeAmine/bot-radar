@@ -81,7 +81,6 @@ def test_utils_text_contains_normalized_keyword_matches_unnormalized_entrypoint(
     verrouille cette équivalence ; il ne la prouve pas, il empêche qu'elle se casse.
     """
     normalized = "bd 1984 xavier coste sarbacane tres bon etat"
-    # Le texte brut dont `normalized` est la normalisation
     raw = "BD 1984 — Xavier Coste : Sarbacane, Très bon état."
     keywords = [
         "1984",
@@ -104,7 +103,6 @@ def test_utils_text_contains_normalized_keyword_matches_unnormalized_entrypoint(
 
     assert normalize_text(normalized) == normalized, "le texte de test doit être normalisé"
 
-    # Cas limites : entrées vides ou sans mots ne doivent jamais matcher ni lever.
     assert contains_normalized_keyword("", "1984") is False
     assert contains_normalized_keyword(None, "1984") is False
     assert contains_normalized_keyword(normalized, None) is False
@@ -124,7 +122,6 @@ def test_utils_text_contains_normalized_keyword_is_not_fooled_by_substrings():
     assert contains_normalized_keyword(normalized, "tome 6") is True
     assert contains_normalized_keyword(normalized, "tome") is True
     assert contains_normalized_keyword(normalized, "tome 7") is False
-    # Expression multi-mots : les mots doivent être contigus, dans l'ordre.
     assert contains_normalized_keyword(normalized, "blacksad tome 6") is True
     assert contains_normalized_keyword(normalized, "tome blacksad") is False
     assert contains_normalized_keyword(normalized, "blacksad 6") is False
@@ -148,16 +145,13 @@ def test_utils_text_keyword_pattern_cache_reuses_pattern():
 
 def test_utils_isbn_conversion_and_cleaning():
     """Vérifie la conversion et le nettoyage d'ISBNs complexes."""
-    # ISBN-10 vers 13
     assert isbn10_to_isbn13("2070365034") == "9782070365036"
     assert isbn10_to_isbn13("2-070-36503-4") == "9782070365036"
     assert isbn10_to_isbn13("invalid") is None
 
-    # Extraction d'ISBN-13 dans une phrase ou URL
     raw_text = "Vends BD Batman ISBN 978-2-36577-000-2 en très bon état"
     assert extract_clean_isbn(raw_text) == "9782365770002"
 
-    # Extraction depuis chaîne brute compacte
     assert extract_clean_isbn("9782803672080") == "9782803672080"
     assert extract_clean_isbn("2070365034") == "9782070365036"
     assert extract_clean_isbn("") is None
@@ -184,12 +178,9 @@ def test_isbn_check_digit_and_normalization():
 
 def test_extract_clean_isbn_rejects_invalid_check_digit():
     """Un ISBN mal saisi n'est jamais propagé : l'alerte ne doit pas matcher un mauvais livre."""
-    # Clé de contrôle invalide
     assert extract_clean_isbn("9782365770000") is None
     assert extract_clean_isbn("2070365038") is None
-    # Ni ISBN-10 ni ISBN-13 exploitables dans un texte
     assert extract_clean_isbn("prix 12 euros, très bon état") is None
-    # Un code valide présent après un code invalide est retenu
     assert extract_clean_isbn("9782365770000 / 9782803672080") == "9782803672080"
 
 

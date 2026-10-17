@@ -55,7 +55,6 @@ class NegotiationModule(BaseAIModule):
         if price_cents <= 0:
             return None
 
-        # Si le moteur IA est configuré, générer une offre par le modèle
         if self.client.is_configured:
             price_eur = price_cents / 100.0
             user_prompt = (
@@ -82,7 +81,7 @@ class NegotiationModule(BaseAIModule):
                         message=payload.message.strip(),
                     )
 
-        # Repli algorithmique déterministe (moteur non configuré ou indisponible)
+        # Repli déterministe si le moteur est indisponible ou non configuré.
         price_eur = price_cents / 100.0
         if price_eur <= 8:
             discount = 1.0 if price_eur >= 5 else 0.0

@@ -35,8 +35,7 @@ from app.use_cases.book_search import (
     result_from_resolution,
 )
 
-# ISBN 9782810206087 (« Les Enfants perdus », Neyef) :ISBN-13 valide qu'aucune
-# autorité moquée ici ne connaît — cas `not_found` réel du Lot 0.
+# ISBN 9782810206087 : ISBN-13 valide qu'aucune autorité moquée ici ne connaît.
 ISBN_INTROUVABLE = "9782810206087"
 ISBN_CANDIDAT = "9782369903086"
 ISBN_AUTRE_OUVRAGE = "9782369903062"

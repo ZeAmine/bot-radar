@@ -79,7 +79,6 @@ async def show_alerts(
     """
     alert_repo = _get_alert_repo(db_session)
 
-    # Vérifier si l'utilisateur a passé un terme de recherche (ex: /show Soli ou ISBN)
     args = (message.text or "").strip().split(maxsplit=1)
     if len(args) > 1:
         query = args[1].strip()
@@ -101,7 +100,6 @@ async def show_alerts(
             await send_alert_card(message, alert, total_count=1, reply_markup=keyboard)
             return
 
-        # Plusieurs correspondances : afficher la liste avec boutons d'accès direct
         buttons = [
             [
                 InlineKeyboardButton(
@@ -124,7 +122,6 @@ async def show_alerts(
         )
         return
 
-    # Comportement par défaut sans argument : pagination complète
     total_count = await alert_repo.count_by_user(db_user.id)
     if total_count == 0:
         await message.answer("Aucune alerte active pour le moment. Utilise /add pour en créer une.")

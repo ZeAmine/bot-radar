@@ -22,9 +22,8 @@ from app.db.models.category import Category
 from app.services.tome_extractor import TomeExtractor, TomeMatchResult
 from app.utils.text import normalize_text
 
-# Un livre dont la collecte vient d'échouer ne revient pas en tête du lot suivant :
-# le job glissant passe toutes les trente minutes, et ``checked_at`` vide le
-# replaçait devant tous les autres. On le retente après ce repos.
+# Repos d'un livre dont la collecte a échoué : sa ``checked_at`` vide le ferait
+# sinon repasser en tête de chaque lot glissant.
 FAILED_COLLECTION_REST_HOURS = 6
 
 
@@ -168,7 +167,6 @@ class BookRepository:
     ) -> AlertBook:
         """Associe une alerte à un livre avec son niveau de confiance."""
         await self._lock_membership(alert_id)
-        # Vérifier si l'association existe déjà
         stmt = select(AlertBook).where(
             AlertBook.alert_id == alert_id,
             AlertBook.book_id == book_id,
@@ -263,7 +261,7 @@ class BookRepository:
         books = await self.get_all_books_for_alert(alert_id)
         if not books:
             return None
-        # Privilégier un livre qui possède déjà un cache de prix valide (live ou historique 1 an)
+        # Priorité au livre ayant déjà une cote valide (live ou historique un an).
         for b in books:
             if b.market_cache and (
                 b.market_cache.lowest_delivered_price_cents is not None
@@ -354,8 +352,7 @@ def _resolve_counted_lot(
     for book in books:
         for number in _catalogue_tome_numbers(book.title, series_key):
             per_number[number] = per_number.get(number, 0) + 1
-    # Un tome porté par deux fiches (éditions concurrentes) ne dit pas lequel le
-    # vendeur a mis dans le lot : sans ce refus, la cote cumulerait le même tome.
+    # Tome porté par deux fiches : refus, sinon la cote cumulerait deux fois le même tome.
     if any(count > 1 for count in per_number.values()):
         return None
     if len(per_number) != announced_count:

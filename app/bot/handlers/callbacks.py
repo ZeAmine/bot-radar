@@ -69,13 +69,8 @@ async def _listing_or_answer(
     return listing
 
 
-# Préfixe des boutons par tome du panneau « 📊 Prix du marché ». Telegram refuse
-# un `callback_data` de plus de 64 octets — une contrainte de l'API, pas une
-# préférence — et rejette alors le message entier avec BUTTON_DATA_INVALID : deux
-# UUID en texte clair en faisaient 85, si bien que le panneau ne s'affichait plus
-# du tout, précisément quand le tome n'était pas identifié, seul cas où ces
-# boutons existent. Les deux identifiants passent donc en base64url sans
-# remplissage : 57 octets, et le préfixe reste lisible.
+# Préfixe des boutons par tome du panneau de marché : deux UUID en base64url
+# sans remplissage pour rester sous les 64 octets de `callback_data` (Telegram).
 TOME_REF_PREFIX = "market_tome:"
 
 
@@ -108,7 +103,7 @@ def _decode_tome_ref(data: str | None) -> tuple[uuid.UUID, uuid.UUID] | None:
     if len(parts) != 3:
         return None
     try:
-        # ``binascii.Error`` (``ValueError``) et ``uuid.UUID`` lèvent toutes deux ici.
+        # ``binascii.Error`` est un ``ValueError``, comme l'erreur levée par ``uuid.UUID``.
         return _decode_uuid(parts[1]), _decode_uuid(parts[2])
     except ValueError:
         return None
@@ -182,8 +177,7 @@ async def _show_market_details(
     if listing_id is None:
         return
 
-    # La résolution — alerte, ISBN, tome, catalogue, cotation — vit dans le cas
-    # d'usage : ce handler ne fait que présenter ce qu'elle renvoie.
+    # La résolution — alerte, ISBN, tome, catalogue, cotation — vit dans le cas d'usage.
     panel = await ViewMarketDetailsUseCase(db_session).execute(listing_id, refresh=False)
     if panel is None:
         await callback.answer("Annonce introuvable.", show_alert=True)
@@ -293,8 +287,7 @@ async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
         catalogue_exhausted=is_uncatalogued(alert) if alert else False,
     )
 
-    # Depuis un tome, les autres tomes restent à portée de pouce : la sélection
-    # n'est jamais un cul-de-sac (condition unique `len(books_in_series) > 1`).
+    # Depuis un tome, la sélection reste ouverte aux autres tomes de la série.
     keyboard_rows: list[list[InlineKeyboardButton]] = []
     if books_in_series and len(books_in_series) > 1:
         keyboard_rows = _tome_selection_rows(listing.id, books_in_series)

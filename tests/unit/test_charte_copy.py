@@ -54,11 +54,7 @@ from app.services.price_calculator import format_price_summary
 from app.services.telegram_service import build_listing_caption
 from app.use_cases.book_search import result_from_report
 
-# Le harnais de parcours : les écrans de copie sont joués par les vrais handlers, jamais
-# par un appel direct à `creation_card`. Les simulations sont partagées — doubles dans
-# `tests/add_fakes.py`, câblage dans `tests/add_journey.py`, écrans dans `tests/screens.py`
-# — et jamais recopiées ici : deux copies donneraient deux chaînes légèrement
-# différentes, donc deux vérités sur ce que l'utilisateur lit.
+# Les écrans sont joués par les vrais handlers ; les simulations partagées ne
 from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
@@ -220,9 +216,6 @@ def test_absent_exclusions_read_as_not_provided_not_zero():
     assert FIELD_EXCLUDE_KEYWORDS == "Mots-clés exclus"
 
 
-# ---------------------------------------------------------------------------
-# Ligne de prix : regle de charte, valable pour toutes les alertes a venir
-# ---------------------------------------------------------------------------
 
 
 def test_price_line_puts_the_total_in_parentheses():
@@ -266,9 +259,6 @@ def test_price_calculations_are_untouched():
     assert calculate_estimated_total(400, fallback_defaults=True) == 778
 
 
-# ---------------------------------------------------------------------------
-# Cote de marche : la ligne nomme sa source, elle ne se justifie pas
-# ---------------------------------------------------------------------------
 
 
 def _rendered_market_strings() -> list[str]:
@@ -311,9 +301,6 @@ def test_market_panel_does_not_explain_the_reference_price_in_parentheses():
         assert "Cote d'occasion basée" not in text, text
 
 
-# ---------------------------------------------------------------------------
-# Bouton de confirmation : il ne repete pas ce que l'ecran vient d'annoncer
-# ---------------------------------------------------------------------------
 
 
 def test_dislike_confirmation_button_is_short():
@@ -332,11 +319,6 @@ def test_dislike_confirmation_button_is_short():
     assert cancel.text == BTN_CANCEL
 
 
-# ---------------------------------------------------------------------------
-# Charte de rendu (ADR-022) : libellé gras / valeur romaine, consigne en
-# italique, avertissement italique et isolé. Trois pertes invisibles aux autres
-# tests parce qu'elles ne se voient qu'à l'écran — donc trois verrous ici.
-# ---------------------------------------------------------------------------
 
 
 def test_charte_documents_its_three_rendering_rules():
@@ -362,8 +344,6 @@ def test_field_labels_are_bold_and_values_stay_roman():
     assert "<b>Prix :</b>" in line
     assert "<b>4,00 €" not in line
     assert "<b>7,78 €" not in line
-    # « TTC » qualifie le montant, ce n'est pas le libellé d'un champ : le gras
-    # de « Prix : » ne déborde pas sur lui.
     assert "TTC" in line
     assert "<b>TTC</b>" not in line
 
@@ -424,8 +404,6 @@ async def test_the_alert_sent_to_telegram_bolds_labels_and_leaves_values_roman()
         photos=[],
     )
 
-    # L'enrichissement IA n'est pas le sujet de ce verrou : sa coroutine est seulement
-    # retenue, puis refermée sans être jouée.
     postponed: list = []
     with patch("app.services.telegram_service.safe_create_task", new=defer_task(postponed)):
         sent = await send_listing_alert(bot, 12345, listing, alert_keywords=["blacksad"])
@@ -461,7 +439,6 @@ def _caption_renders(root: pathlib.Path) -> list[str]:
     for path in sorted(root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         # Les noms sous lesquels ce module tient le rendu. Un `import … as ts` ne le
-        # nomme pas ici : il le laisse derrière son module, que l'on regarde aussi.
         imported = {
             alias.asname or alias.name
             for node in ast.walk(tree)
@@ -499,22 +476,7 @@ def test_no_screen_renders_the_listing_caption():
     )
 
 
-# ---------------------------------------------------------------------------
-# Libellés de charte : labels.py est la source unique, aucun écran ne les recopie
-# ---------------------------------------------------------------------------
-
-
-# Les écrans dont la charte relit les littéraux : handlers, fiche d'alerte, claviers
-# et légende d'annonce. Le formatter et les claviers échappaient au verrou, qui ne
-# lisait que `handlers` — `keyboards/alerts.py` réécrivait dès lors les sept libellés
-# du menu d'édition, exactement la dérive que le verrou devait empêcher.
-#
-# `app/services/ai/pipeline.py` reste dehors à dessein : il compose un **prompt**
-# pour le modèle (`Prix : …`), pas un écran que l'utilisateur lit — l'ajouter au
-# périmètre y produirait un faux positif. Le brancher sur `FIELD_PRICE` serait pire
-# encore : renommer un libellé d'IHM changerait alors le prompt sans toucher à sa
-# version, donc sans changer la clé de cache d'analyse, et l'ancien résultat serait
-# servi en silence pendant sept jours. Un prompt n'est pas un libellé d'affichage.
+# `app/services/ai/pipeline.py` reste dehors : c'est un prompt, pas un écran ; le
 _SCREEN_SOURCES = (
     pathlib.Path("app/bot/handlers"),
     pathlib.Path("app/bot/formatter.py"),
@@ -690,13 +652,7 @@ def test_no_button_carries_an_arrow():
     )
 
 
-# ---------------------------------------------------------------------------
-# Copie observee : l'ecran de prix et la confirmation, joues par leurs handlers
-#
-# Les deux ecrans lisent la meme carte de creation, et c'est ce que ces tests
-# regardent — le **message envoye**, jamais le resultat d'une fonction de rendu
-# appelee a la main.
-# ---------------------------------------------------------------------------
+# Copie observée : l'écran de prix et la confirmation lisent la même carte de
 
 
 async def _price_screen_text(kind: str) -> tuple[str, AsyncMock]:
@@ -800,7 +756,6 @@ async def test_the_price_screen_of_a_book_is_the_creation_card_without_the_price
     # Hors serie et ouvrage identifie : la seule indication en italique est la consigne.
     assert "série" not in rendered.lower()
     assert rendered.count("<i>") == 1
-    # Les lignes ecrites a la main, avec leurs emojis, ont disparu au profit de la carte.
     assert "✍️" not in rendered
     assert "🔢" not in rendered
     assert "🔑 <b>Inclus :</b>" not in rendered
@@ -889,17 +844,13 @@ async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
     ]
     assert "<b>Prix du marché :</b> Non renseigné" in confirmation
     assert "<b>Prix bas constaté :</b> Non renseigné" in confirmation
-    # Le bloc de cote n'appartient qu'a la confirmation : c'est ce que l'ecran vient de
-    # produire, pas un critere de veille.
+    # Le bloc de cote n'appartient qu'à la confirmation : relevé produit, pas critère de veille.
     assert PENDING_COTE_LINE not in recap
     assert "<i>⚠️ Cote indisponible</i>" in confirmation
     # Chaque ecran garde son propre pied : la consigne n'est pas la meme.
     assert confirmation.endswith(
         "\n\n<i>Les annonces correspondant à ces critères déclencheront une alerte Telegram.</i>"
     )
-
-
-# --- Aperçus de liens désactivés ---
 
 
 @pytest.mark.asyncio
@@ -968,9 +919,6 @@ def test_no_handler_sends_a_card_without_the_option():
                     fautifs.append(f"{chemin.name}:{noeud.lineno}")
 
     assert fautifs == [], f"passe par send_alert_card : {fautifs}"
-
-
-# --- Message de proposition d'exclusions ---
 
 
 def test_the_exclusion_proposal_has_no_explanation_paragraph():
@@ -1058,7 +1006,6 @@ def test_the_exclusion_proposal_escapes_hostile_false_positive_titles():
     assert "<i>Blacksad &lt;script&gt;</i>" in texte
     assert "&amp;lt;" not in texte, "double échappement"
     # Les balises volontaires du gabarit survivent : trois titres listés, plus le
-    # reste compté. Le plafond est de trois, donc quatre `<i>` fermants.
     assert texte.count("<i>") == texte.count("</i>") == 4
 
 
@@ -1097,9 +1044,7 @@ def test_the_exclusion_proposal_escapes_only_once():
     for double in ("&amp;lt;", "&amp;amp;", "&amp;gt;"):
         assert double not in texte, double
 
-    # Aucun appelant n'échappe les arguments qu'il passe **à ce gabarit**. D'autres
-    # messages du même fichier échappent légitimement leurs propres champs : seule
-    # la valeur reçue par `exclusion_proposal_message` est examinée ici.
+    # Seule la valeur reçue par `exclusion_proposal_message` est examinée : d'autres
     for chemin in ("app/tasks/proactive_autotune.py", "app/bot/handlers/autotune.py"):
         arbre = ast.parse(pathlib.Path(chemin).read_text())
         appels = [

@@ -27,7 +27,6 @@ async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Base de test neuve (PostgreSQL si la CI la rejoue, sinon SQLite), catégorie amorcée."""
     async with postgres_replayed_database() as database:
         session = database.session
-        # Insérer les catégories initiales de test
         cat_bd = Category(
             id=uuid.uuid4(),
             slug="bd_comics",
@@ -72,11 +71,9 @@ async def test_ingest_unauthorized(async_client: AsyncClient):
         "item_price_cents": 1000,
     }
 
-    # Sans header Authorization
     res_no_auth = await async_client.post("/api/v1/ingest/listings", json=payload)
     assert res_no_auth.status_code == 403 or res_no_auth.status_code == 401
 
-    # Avec un token invalide
     res_bad_auth = await async_client.post(
         "/api/v1/ingest/listings",
         json=payload,
@@ -105,7 +102,6 @@ async def test_ingest_valid_listing_and_duplicate(authenticated_client: AsyncCli
         "isbn13": "9782205078054",
     }
 
-    # 1. Première ingestion
     response1 = await authenticated_client.post("/api/v1/ingest/listings", json=payload)
     assert response1.status_code == 200
 
@@ -114,7 +110,6 @@ async def test_ingest_valid_listing_and_duplicate(authenticated_client: AsyncCli
     assert data1["estimated_total_cents"] == 1369  # 900 + 70 + 399
     assert "listing_id" in data1
 
-    # 2. Deuxième ingestion (même source + external_id) -> Détection de doublon
     response2 = await authenticated_client.post("/api/v1/ingest/listings", json=payload)
     assert response2.status_code == 200
 
@@ -142,11 +137,9 @@ async def test_ingest_bd_listing_with_market_comparison(
     from app.db.models.category import Category
     from app.db.models.user import User
 
-    # Récupérer la catégorie BD
     stmt_cat = select(Category).where(Category.slug == "bd_comics")
     cat_bd = (await test_db_session.execute(stmt_cat)).scalar_one()
 
-    # Créer un utilisateur avec Telegram ID
     user = User(
         id=uuid.uuid4(),
         telegram_user_id=987654321,
@@ -154,7 +147,6 @@ async def test_ingest_bd_listing_with_market_comparison(
     )
     test_db_session.add(user)
 
-    # Créer une alerte BD active
     alert = Alert(
         id=uuid.uuid4(),
         user_id=user.id,
@@ -167,7 +159,6 @@ async def test_ingest_bd_listing_with_market_comparison(
     )
     test_db_session.add(alert)
 
-    # Créer le livre au catalogue avec son cache marché
     book = Book(
         id=uuid.uuid4(),
         isbn13="9782205078054",
@@ -223,7 +214,6 @@ async def test_ingest_bd_listing_with_market_comparison(
         assert "22,00 €" in comparison_line
         assert "-8,31 €" in comparison_line
 
-    # Vérifier que le livre est bien relié à l'alerte
     stmt_link = select(AlertBook).where(
         AlertBook.alert_id == alert.id,
         AlertBook.book_id == book.id,

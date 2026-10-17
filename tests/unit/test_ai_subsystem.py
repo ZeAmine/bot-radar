@@ -640,10 +640,10 @@ def test_profit_scoring_module(sample_listing):
     assert "<b>Indice pépite :</b> 8,5/10" in html
     assert "Excellente marge nette" in html
 
-    # Vérifier l'exclusion des livres / BDs (gérés par Chasse-aux-Livres)
+    # Livres et BDs exclus : gérés par Chasse-aux-Livres.
     assert profit_scoring_module.build_prompt_chunk(sample_listing, None) is None
 
-    # Vérifier la génération de prompt dynamique pour produits non-livres (Tech, Gaming, etc.)
+    # Prompt dynamique pour les produits non-livres (tech, gaming, etc.).
     tech_listing = Listing(
         id=uuid.uuid4(),
         title="Nintendo Switch OLED Blanche complète",
@@ -779,10 +779,7 @@ async def test_natural_add_without_alternatives_leaves_empty_list():
 
 
 
-# --- Cas réel : « Les Enfants perdus », homonymie BNF -----------------------------
-# La BNF ne connaît que le roman de 1989. Le rattacher à la BD de 2025 affichait son
-# ISBN, son auteur et son éditeur comme s'ils étaient ceux de la BD, et les variantes
-# calculées ensuite raisonnaient sur le roman.
+# Cas réel : « Les Enfants perdus », homonymie BNF.
 ENFANTS_PERDUS_ROMAN = BookMetadata(
     title="Les Enfants perdus",
     author="Rosemonde Ahou de Saintange",

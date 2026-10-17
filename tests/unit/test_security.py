@@ -64,13 +64,12 @@ def test_security_headers_middleware():
 
 def test_payload_size_limit_middleware():
     client = TestClient(app)
-    # Test rejet payload > 512 Ko
+    # Rejet d'un payload > 512 Ko.
     large_headers = {"content-length": "600000", "content-type": "application/json"}
     response = client.post("/api/v1/ingest/listings", headers=large_headers, content=b"{}")
     assert response.status_code == 413
     assert "Payload trop volumineux" in response.json()["detail"]
 
-    # Test payload de taille normale
     normal_headers = {"content-length": "20", "content-type": "application/json"}
     response = client.post("/api/v1/ingest/listings",
                            headers=normal_headers, content=b'{"test": 1}')
@@ -140,13 +139,11 @@ def test_rate_limit_middleware():
     rate_limiter.reset_for_test()
     ip_headers = {"X-Forwarded-For": "203.0.113.42"}
 
-    # Route /api/v1/internal est limitée à 30 req/min
-    # Les 30 premières requêtes passent
+    # Route /api/v1/internal limitée à 30 req/min : les 30 premières passent.
     for _ in range(30):
         res = client.get("/api/v1/internal/refresh-prices", headers=ip_headers)
         assert res.status_code != 429
 
-    # La 31e doit être rejetée en HTTP 429
     res_blocked = client.get("/api/v1/internal/refresh-prices", headers=ip_headers)
     assert res_blocked.status_code == 429
     assert res_blocked.headers.get("Retry-After") is not None
@@ -197,7 +194,6 @@ async def test_sliding_window_rate_limiter():
     limiter = SlidingWindowRateLimiter()
     key = "test_user_limit"
 
-    # 3 requêtes max sur 10 secondes
     ok1, rem1, _ = await limiter.check_rate_limit(key, max_requests=3, window_seconds=10)
     ok2, rem2, _ = await limiter.check_rate_limit(key, max_requests=3, window_seconds=10)
     ok3, rem3, _ = await limiter.check_rate_limit(key, max_requests=3, window_seconds=10)
@@ -209,7 +205,6 @@ async def test_sliding_window_rate_limiter():
     assert ok3 is True
     assert rem3 == 0
 
-    # 4e requête doit être bloquée
     blocked, rem4, retry_after = await limiter.check_rate_limit(key, max_requests=3,
         window_seconds=10)
     assert blocked is False
@@ -218,7 +213,6 @@ async def test_sliding_window_rate_limiter():
 
 
 def test_anti_ssrf_validator():
-    # Hôtes et IPs interdits
     assert is_safe_external_url("http://localhost:8000")[0] is False
     assert is_safe_external_url("http://127.0.0.1:8000")[0] is False
     assert is_safe_external_url("http://169.254.169.254/latest/meta-data")[0] is False
@@ -227,11 +221,9 @@ def test_anti_ssrf_validator():
     assert is_safe_external_url("file:///etc/passwd")[0] is False
     assert is_safe_external_url("ftp://example.com")[0] is False
 
-    # URLs légitimes
     assert is_safe_external_url("https://www.vinted.fr/catalog?search_text=rip")[0] is True
     assert is_safe_external_url("https://www.chasse-aux-livres.fr/prix/2800142449")[0] is True
 
-    # Filtrage par domaine autorisé
     ok_domain, _ = is_safe_external_url(
         "https://www.vinted.fr/items/123", allowed_domains=("vinted.fr", "vinted.com")
     )
@@ -253,13 +245,11 @@ async def test_throttling_middleware():
     cb.answer = AsyncMock()
     data = {"event_from_user": user}
 
-    # 1ère et 2e actions autorisées
     r1 = await middleware(handler, cb, data)
     r2 = await middleware(handler, cb, data)
     assert r1 == "success"
     assert r2 == "success"
 
-    # 3e action dans la même seconde bloquée
     r3 = await middleware(handler, cb, data)
     assert r3 is None
     assert cb.answer.call_count == 1

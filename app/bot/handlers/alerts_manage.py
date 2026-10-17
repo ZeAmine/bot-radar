@@ -285,14 +285,12 @@ async def prompt_new_field_value(
             await open_panel(callback, panel, user_id=db_user.id)
         return
 
-    # 1. Conditions : cases à cocher interactives
     if field == "conditions":
         await callback.answer()
         await state.clear()
         await _show_conditions_menu(callback, alert)
         return
 
-    # Actions intelligentes IA
     if field == "ai_variants":
         await state.clear()
         alert_key = str(alert.id)
@@ -323,7 +321,6 @@ async def prompt_new_field_value(
             from app.services.ai.modules.keyword_variants import keyword_variants_module
 
             snapshot = BibliographicSnapshot.capture(alert)
-            # Le résultat peut arriver après une édition/retrait. Libérer la lecture avant IA.
             await db_session.rollback()
             variants = await keyword_variants_module.generate_variants(snapshot.name)
             current = await alert_repo.lock_bibliographic_result(alert_id, snapshot)
@@ -438,7 +435,6 @@ async def prompt_new_field_value(
         await process_autotune_for_alert(callback, alert, db_session)
         return
 
-    # 2. Tous les autres champs : bloc <code> cliquable pour copier en 1 clic
     await callback.answer()
     await state.set_state(AlertEditState.waiting_for_new_value)
     await state.update_data(
@@ -599,8 +595,6 @@ def _edition_work_title(title: str, author: str | None = None) -> str:
     )
     normalized = normalize_text(title)
     if author:
-        # Une notice peut répéter ses auteurs après le titre. Ne retirer ce
-        # suffixe que si le nom rendu par l’autorité apparaît comme mot entier.
         author_name = normalize_text(author)
         author_match = re.search(rf"\b{re.escape(author_name)}\b", normalized)
         if author_match and author_match.start() > 0:
@@ -771,8 +765,6 @@ async def _refresh_alert_keywords(
         )
         await session.commit()
 
-    # Aucun bouton de relance sur cette fiche : le menu d'édition ne porte pas d'action
-    # IA. La note le dit donc sans renvoyer à un geste qui n'existe pas à l'écran.
     note = keyword_note(outcome, retry_label=None)
     if note:
         await target.answer(f"<i>{note}</i>", parse_mode="HTML")
@@ -813,8 +805,6 @@ async def _save_edited_field_value(
         return
 
     try:
-        # L'autorité est consultée avant le verrou SQL. La cohérence du titre
-        # sera ensuite jugée sur l'alerte relue, et non sur l'objet initial.
         notice = None
         clean_isbn = None
         request_token = None
@@ -861,14 +851,8 @@ async def _save_edited_field_value(
         book_to_price: uuid.UUID | None = None
         price_lines: list[str] = []
         previous_status = alert.status
-        # Ce que la confirmation doit dire, et rien de plus : une saisie dont tous les
-        # termes ont été écartés n'a rien écrit, et l'annoncer laisserait croire à une
-        # écriture qui n'a pas eu lieu.
         variant_rejections: tuple[TermRemoval, ...] = ()
         variants_unchanged = False
-        # L'ISBN retenu quand il remplace celui de l'alerte : c'est le seul cas où les
-        # mots-clés de l'ouvrage précédent doivent partir, et donc le seul où la
-        # recherche du moteur est relancée.
         replaced_isbn: str | None = None
         new_work_context: BookContext | None = None
         if field in ("exclude_keywords", "include_keywords", "variants"):
@@ -877,34 +861,16 @@ async def _save_edited_field_value(
 
             if field == "include_keywords" and not parsed:
                 raise AlertServiceError("Au moins un mot-clé requis pour surveiller l'alerte.")
-            # Les variantes et exclusions saisies peuvent venir d'un copier-coller du
-            # moteur : le nettoyeur est le dernier filtre avant la base.
             if field == "variants":
-                # Une variante saisie peut être l'écriture d'une **inclusion** qualifiée
-                # (« blacksad integral » pour « blacksad intégrale ») et pas du seul titre :
-                # le nettoyeur reçoit donc aussi les mots-clés inclus. `from_user` dit que
-                # c'est l'utilisateur qui écrit : il ne se voit pas récuser un terme parce
-                # qu'il reprend le titre, ce qui est la définition d'une variante — les
-                # règles d'identité du produit (nombres, mots reconnaissables) continuent
-                # de s'appliquer.
                 verdict = assess_variants(
                     parsed,
                     alert.name,
                     references=alert.include_keywords or (),
                     from_user=True,
                 )
-                # Les termes écartés sont retenus **avant** de savoir ce qu'on en fait :
-                # une saisie partiellement retenue doit pouvoir dire lesquels, et une
-                # saisie entièrement rejetée doit pouvoir le dire aussi.
                 variant_rejections = verdict.removals if verdict.removals else ()
                 parsed = verdict.values
-                # La saisie **remplace** la liste, comme l'annonce l'écran — sauf quand
-                # aucun terme n'a survécu : un rejet n'est pas une demande d'effacement,
-                # et réécrire une liste vide viderait les variantes déjà enregistrées.
                 if parsed or clears_field:
-                    # Équivalence sur formes normalisées : `parse_comma_separated_list`
-                    # compare des sous-chaînes brutes, donc « Blacksad » et « blacksad »
-                    # y cohabitent alors que la base les confond.
                     before = {normalize_text(term) for term in alert.variants or []}
                     after = {normalize_text(term) for term in parsed}
                     variants_unchanged = before == after
@@ -959,8 +925,6 @@ async def _save_edited_field_value(
                     if conflicting and alert.isbn != clean_isbn:
                         previous_isbn, previous_name = alert.isbn, alert.name
                         previous_snapshot = BibliographicSnapshot.capture(alert)
-                        # Aucune écriture avant confirmation. Le rollback libère
-                        # le verrou ; relire l'utilisateur qu'il vient d'expirer.
                         await db_session.rollback()
                         await db_session.refresh(db_user)
                         await state.update_data(
@@ -1005,12 +969,6 @@ async def _save_edited_field_value(
                         return
                 if notice is not None and extract_clean_isbn(notice.isbn13 or "") != clean_isbn:
                     raise AlertServiceError("La notice ne confirme pas l’ISBN demandé.")
-                # Changer d'ISBN, c'est changer d'ouvrage : les variantes et les
-                # exclusions ont été raisonnées sur la fiche précédente, et une
-                # variante suffit à contourner la contrainte d'inclusion. Elles
-                # partent dans le même commit que l'ISBN, et la recherche repart
-                # après — l'alerte ne peut pas les garder pour un livre qu'elle ne
-                # surveille plus.
                 if alert.isbn != clean_isbn:
                     replaced_isbn = clean_isbn
                     new_work_context = book_context_from(notice) if notice else None
@@ -1025,29 +983,20 @@ async def _save_edited_field_value(
                     alert.exclude_keywords = [term for term in alert.exclude_keywords or []
                                               if term != original_isbn]
                     alert.book_search_exhausted_at = None
-                    # Une proposition de variantes encore en attente de confirmation
-                    # décrit l'ouvrage précédent : l'appliquer après ce changement
-                    # ferait matcher l'alerte sur l'ancien livre. Le bouton de la
-                    # proposition le dit alors (« Les suggestions ont expiré. »).
                 alert.isbn = clean_isbn
                 if original_isbn != clean_isbn:
-                    # Invalider l'ancien catalogue avant de lier la nouvelle fiche.
                     await alert_repo.reset_bibliographic_identity(alert)
                     await alert_repo.invalidate_preparation(alert, author_hint=None)
-                # Nettoyer d'éventuels ISBN numériques résiduels dans les mots-clés
                 alert.include_keywords = [
                     kw
                     for kw in (alert.include_keywords or [])
                     if kw != original_isbn
                 ]
-                # Mettre à jour l'URL de recherche Vinted
                 base_vinted = "https://www.vinted.fr/catalog?search_start_type=item_page_isbn"
                 alert.vinted_search_url = (
                     f"{base_vinted}&search_text={clean_isbn}&order=newest_first"
                 )
 
-                # La fiche et sa liaison sont écrites avant la préparation de la cote.
-                # La cotation ouvre sa session après le commit de l’alerte en pause.
                 from app.core.constants import MatchConfidence
                 from app.db.repositories.book_repo import BookRepository
 
@@ -1115,10 +1064,6 @@ async def _save_edited_field_value(
             alert = refreshed
         elif book_to_price is not None and request is None:
             prepared_name = alert.name
-            # Parcours publié des anciennes lignes NULL (#81) : garde fraîche
-            # ISBN/nom/statut. updated_at inclut aussi les écritures de cote,
-            # donc n'est pas un jeton d'identité. F04 utilise son propre jeton
-            # dans la branche de préparation ci-dessus, qui reste inchangée.
             with contextlib.suppress(TelegramAPIError):
                 await message.answer("📊 <i>Préparation des prix du marché…</i>")
             await price_book_now(book_to_price, reason="isbn_edited")
@@ -1133,7 +1078,6 @@ async def _save_edited_field_value(
             ):
                 await db_session.rollback()
                 return
-            # Le cache vient d’une autre session : relire, jamais rattacher l’objet retourné.
             priced_book = await book_repo.get_by_id(book_to_price, refresh=True)
             price_lines = format_cote_lines(priced_book)
             if not price_lines:
@@ -1149,18 +1093,12 @@ async def _save_edited_field_value(
         cat_slug = alert.category.slug if alert.category else "all"
         total_count = await alert_repo.count_by_user(db_user.id, category_slug=cat_slug)
 
-        # La confirmation dit ce qui a été écrit, et rien de plus. Trois cas ne doivent
-        # jamais se lire comme une écriture complète : une liste identique à celle
-        # d'avant, une saisie dont aucun terme n'a été retenu, et une saisie
-        # partiellement retenue — celle-là a bien écrit quelque chose, mais pas tout ce
-        # qui était demandé, et le taire ferait passer un refus pour un succès.
         if variant_rejections:
             rejected = ", ".join(f"« {html.escape(item.raw)} »" for item in variant_rejections)
             reasons = " ; ".join(
                 dict.fromkeys(str(item.reason) for item in variant_rejections)
             )
             if variants_unchanged or not parsed:
-                # Rien n'a été écrit : la liste enregistrée est intacte.
                 await message.answer(
                     f"⚠️ Variante non retenue : {rejected}\n"
                     f"<i>{html.escape(reasons)}</i>\n\n"
@@ -1197,8 +1135,6 @@ async def _save_edited_field_value(
         )
 
         if replaced_isbn is not None:
-            # Après le commit, comme la cote : la tâche ouvrira sa propre session et
-            # doit trouver l'alerte déjà sur son nouvel ISBN.
             safe_create_task(
                 _refresh_alert_keywords(
                     alert.id,
@@ -1258,7 +1194,6 @@ async def toggle_pause_alert(
     progress.stage = "confirmation"
     await callback.answer("⏸ Alerte mise en pause.")
     progress.stage = "card"
-    # Le navigateur de carte attend un UUID d'alerte, pas le jeton du bouton.
     from app.db.models.pause_action import PauseAction
     action = await db_session.get(PauseAction, progress.token)
     assert action is not None

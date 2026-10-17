@@ -67,9 +67,8 @@ def isbn10_to_isbn13(isbn10: str) -> str | None:
     return core + str(check_digit)
 
 
-# Préfixes GS1 qui désignent un livre. Un code-barres peut commencer par 2 (prix
-# complémentaire) : c'est un autre produit, et l'attacher à une alerte ferait porter
-# le mauvais identifiant au bon livre.
+# Préfixes GS1 qui désignent un livre. Un code-barres en 2 (prix complémentaire)
+# est un autre produit : l'attacher porterait le mauvais identifiant au bon livre.
 _BOOK_EAN_PREFIXES = ("978", "979")
 
 
@@ -106,20 +105,17 @@ def _isbn_candidates(text: str) -> list[str]:
     """Liste les codes ISBN plausibles présents dans un texte, du plus explicite au plus large."""
     candidates: list[str] = []
 
-    # 1. ISBN-13 explicites (ex: 9782803672080 ou 978-2-8036-7208-0)
     isbn13_pattern = r"(?:978|979)[-\s]?[0-9][-\s]?[0-9]{2,5}[-\s]?[0-9]{2,5}[-\s]?[0-9]"
     for match in re.finditer(isbn13_pattern, text):
         cleaned = re.sub(r"[^0-9]", "", match.group(0))
         if len(cleaned) == 13:
             candidates.append(cleaned)
 
-    # 2. ISBN-10 avec frontières de mots
     for raw10 in re.findall(r"\b[0-9]{9}[0-9X]\b", text.upper().replace("-", " ")):
         # La conversion recalcule la clé de contrôle : ne convertir que si l'ISBN-10 est valide.
         converted = isbn10_to_isbn13(raw10) if is_valid_isbn10(raw10) else None
         candidates.append(converted or raw10)
 
-    # 3. Repli si la chaîne entière est un code compact
     compact = re.sub(r"[^0-9X]", "", text.strip().upper())
     if compact.isdigit() and len(compact) == 13:
         candidates.append(compact)

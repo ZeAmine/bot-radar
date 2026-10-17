@@ -55,8 +55,7 @@ def get_conditions_toggle_keyboard(selected_conditions: list[str]) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# Marqueurs d'édition. Le même numéro indexe la ligne « Édition » du récap et
-# le bouton qui la bascule : c'est ce qui rend le choix lisible sans seconde légende.
+# Le même ordinal indexe la ligne « Édition » du récap et le bouton qui la bascule.
 EDITION_ORDINALS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣")
 
 
@@ -437,7 +436,6 @@ def get_alerts_list_keyboard(
     if row:
         buttons.append(row)
 
-    # Ligne de navigation paginée
     nav_row: list[InlineKeyboardButton] = []
     page_prefix = (
         f"al_list_page:{category_slug}"
@@ -459,7 +457,6 @@ def get_alerts_list_keyboard(
     if nav_row:
         buttons.append(nav_row)
 
-    # Ligne d'actions globales : retour au choix de catégorie ou fermer
     buttons.append(
         [
             InlineKeyboardButton(text=BTN_CATEGORIES, callback_data="al_list_cat_menu"),

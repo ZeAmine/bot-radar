@@ -143,13 +143,8 @@ class _ResolvedWork:
     edition_alternatives: list[EditionAlternative] = field(default_factory=list)
     work_choices: list[WorkAlternative] = field(default_factory=list)
     # Ce que la résolution a pu prouver sur la nature de l'œuvre. Vide quand aucune
-    # résolution n'a eu lieu (série déjà annoncée, ISBN explicitement saisi, produit
-    # non littéraire) : une preuve ne s'invente pas faute d'avoir cherché.
     series: SeriesSignal = field(default_factory=SeriesSignal)
     # Une recherche de titre a été menée et **aucune** source n'a rien rendu : ni
-    # notice, ni ISBN. Ce n'est pas la même chose qu'un ouvrage hors du périmètre du
-    # catalogue (un produit, une série) — là, personne n'a cherché. Le récap ne peut
-    # pas déduire ce fait de l'absence de données : il le faut explicite.
     unidentified: bool = False
     search_result: BookSearchResult | None = None
 
@@ -191,7 +186,6 @@ class NaturalAddModule(BaseAIModule):
             if category not in valid_cats:
                 category = "bd_comics"
 
-            # Nettoyer et valider les états
             raw_conditions = payload.conditions
             valid_conditions = None
             if isinstance(raw_conditions, list):
@@ -206,10 +200,8 @@ class NaturalAddModule(BaseAIModule):
 
             raw_name = str(payload.name or user_text[:40]).strip()
             # Nettoyage de sécurité : retirer tout suffixe de prix ou de filtre résiduel (ex: "- max
-            # 7€", "max 7 €", "7€")
             clean_name = price_suffix_regex.sub("", raw_name).strip() or raw_name
 
-            # Nettoyer include_keywords pour retirer d'éventuels suffixes de prix
             raw_includes = payload.include_keywords or [clean_name]
             clean_includes = []
             for k in raw_includes:
@@ -217,7 +209,6 @@ class NaturalAddModule(BaseAIModule):
                 if k_clean and k_clean not in clean_includes:
                     clean_includes.append(k_clean)
 
-            # Nettoyer exclude_keywords
             clean_excludes = [
                 str(k).strip()
                 for k in (payload.exclude_keywords or [])
@@ -234,10 +225,6 @@ class NaturalAddModule(BaseAIModule):
             author = payload.author.strip() if payload.author else None
             publisher = payload.publisher.strip() if payload.publisher else None
 
-            # Ce que l'utilisateur a lui-même écrit (« Les Enfants perdus de Nef »)
-            # designerait la notice de Nef mieux que ce que le moteur suppose de
-            # l'ouvrage. Un indice d'auteur se lit aussi dans la saisie brute quand le
-            # modèle n'en donne pas : sans lui, deux homonymes sont indiscernables. Le
             # prix de fin de saisie n'est pas un mot d'auteur.
             typed_query = price_suffix_regex.sub("", user_text).strip()
             author_hint = author or parse_query_title_and_author(typed_query)[1]
@@ -255,7 +242,6 @@ class NaturalAddModule(BaseAIModule):
                 clean_name = (volume_title(resolved.book.title, number)
                               if number else resolved.book.title)
                 # La BNF fait autorité sur l'auteur et l'éditeur dès qu'elle a
-                # répondu : sa notice remplace ce que le moteur a supposé.
                 author = resolved.book.author or author
                 publisher = resolved.book.publisher or publisher
 
@@ -265,15 +251,10 @@ class NaturalAddModule(BaseAIModule):
                 clean_name = volume_title(clean_name, number)
 
             # La résolution peut révéler une œuvre numérotée que le moteur n'avait pas
-            # vue — y compris par une notice voisine qu'elle n'a pas retenue. L'ISBN
-            # est alors écarté, sinon il verrouillerait l'alerte sur ce volume, et les
-            # mots-clés du récap seraient ceux de ce volume, pas de la série.
             series = resolved.series
             if series.is_series:
                 is_series = True
 
-            # Les inclusions sont un ET, pas des suggestions : l'identité bibliographique
-            # sert à identifier l'œuvre, sans exiger auteur ou éditeur dans l'annonce.
             if category == CategorySlug.BD_COMICS.value:
                 clean_includes, _, _ = generate_recommended_keywords(clean_name)
 
@@ -361,8 +342,6 @@ class NaturalAddModule(BaseAIModule):
             verified = metadata_from_result(isbn_result) if isbn_result else None
             if verified is not None and isbn_result is not None:
                 # Les éditions concurrentes ne valent que si le titre désigne une œuvre
-                # unique : sinon elles décrivent l'homonyme retenu par le score, pas
-                # l'ouvrage que l'ISBN vient d'identifier.
                 return _ResolvedWork(
                     isbn13=candidate,
                     book=verified,
@@ -378,8 +357,6 @@ class NaturalAddModule(BaseAIModule):
             note = result.note or ""
             if typed_isbn:
                 # L'utilisateur a lui-même donné cet ISBN : le garder vaut mieux que de
-                # perdre sa saisie. La BNF se tait sur un ouvrage récent, ce n'est pas
-                # une contradiction — mais le récap doit le dire.
                 return _ResolvedWork(
                     isbn13=typed_isbn,
                     isbn_note=f"{note}. ISBN saisi, non confirmé par la BNF",
@@ -389,15 +366,12 @@ class NaturalAddModule(BaseAIModule):
 
         if confirmed is not None and result is not None:
             # Les éditions concurrentes sont portées par `edition_alternatives`, que le
-            # récap transforme en boutons numérotés : les redire ici en texte ne
-            # produirait qu'un doublon de l'information déjà rendue.
             return _ResolvedWork(
                 isbn13=result.reference.isbn13 if result.reference else confirmed.isbn13,
                 book=confirmed,
                 isbn_note=result.note,
                 edition_alternatives=_editions_of(result),
                 # La nature de l'œuvre se lit sur toute la résolution, notices voisines
-                # comprises : la retenue ne porte pas toujours le numéro qui la trahit.
                 series=SeriesSignal(is_series=result.is_series and not typed_isbn),
                 search_result=(replace(result, is_series=False, series_volumes=())
                                if typed_isbn else result),
@@ -415,7 +389,6 @@ class NaturalAddModule(BaseAIModule):
                 )
             )
         # Ni notice, ni ISBN d'aucune sorte : l'ouvrage n'est pas identifié, et c'est
-        # un fait à dire à l'utilisateur — pas un vide à afficher.
         return _ResolvedWork(unidentified=True, search_result=result)
 
 

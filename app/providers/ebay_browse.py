@@ -110,7 +110,7 @@ class EbayBrowseProvider:
         if not token:
             return MarketOffers(failed_providers=(self.name,))
 
-        # Priorité absolue à l'ISBN-13 (GTIN), sinon requête textuelle combinée
+        # ISBN-13 prioritaire (GTIN), sinon recherche textuelle combinée.
         confidence = MatchConfidence.HIGH
         if isbn13 and len(isbn13.strip()) >= 10:
             query = f"gtin:{isbn13.strip()}"
@@ -157,7 +157,6 @@ class EbayBrowseProvider:
         offers: list[MarketOffer] = []
 
         for item in items:
-            # 1. Vérification du prix article
             price_info = item.get("price", {})
             currency = price_info.get("currency")
             if currency != "EUR":
@@ -172,7 +171,7 @@ class EbayBrowseProvider:
             if item_price_cents <= 0:
                 continue
 
-            # 2. Vérification obligatoire des frais de livraison (ne jamais comparer si inconnu)
+            # Livraison obligatoire : une offre sans frais connus n'est pas comparable.
             shipping_options = item.get("shippingOptions", [])
             if not shipping_options:
                 continue

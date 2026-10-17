@@ -63,14 +63,12 @@ from app.use_cases.link_bd_catalog import link_books_from_bnf
 
 logger = logging.getLogger("radar.backfill_series")
 
-# Pause entre deux alertes : la BNF et OpenLibrary sont des services publics, et
-# le backfill peut lier des dizaines de séries d'affilée. Un quart de seconde est
-# invisible pour l'utilisateur et pour l'autorité.
+# Pause entre deux alertes : la BNF et OpenLibrary sont des services publics, et le
+# backfill peut enchaîner des dizaines de séries.
 AUTHORITY_PAUSE_SECONDS = 0.35
 
-# Attente des cotations lancées par la liaison : chacune est bornée, côté marchands,
-# par le délai de collecte d'un livre (20 s, `book_market_pricing`). Les passes
-# tournent en parallèle, donc cette durée borne la plus lente et non leur somme.
+# Les cotations lancées par la liaison tournent en parallèle : cette attente borne la
+# plus lente (collecte d'un livre, 20 s via `book_market_pricing`), pas leur somme.
 PRICING_DRAIN_SECONDS = 30.0
 
 EXIT_CLEAN, EXIT_REMAINING, EXIT_ERROR = 0, 1, 2
@@ -100,9 +98,6 @@ class BackfillReport:
     candidate_isbns: tuple[str, ...]
     dry_run: bool
     error: str | None = None
-
-
-# --------------------------------------------------------------- dépendances
 
 
 async def read_eligible_alerts(*, limit: int | None = None) -> list[SeriesAlert]:
@@ -162,9 +157,6 @@ async def link_series(alert: SeriesAlert) -> None:
     )
 
 
-# ------------------------------------------------------------------ backfill
-
-
 async def backfill_alert(
     alert: SeriesAlert,
     *,
@@ -220,9 +212,6 @@ async def backfill(
             )
         )
     return reports
-
-
-# -------------------------------------------------------------------- rendu
 
 
 def format_instant(moment: datetime) -> str:
@@ -295,8 +284,8 @@ def as_json(
     dry_run: bool,
 ) -> str:
     """La même information sans mise en forme, en-tête comprise."""
-    # Chaque rapport dit son mode : une passe mêlant écriture et rapport ne verrait
-    # pas ses totaux autrement.
+    # Sommes par mode de chaque rapport : les tomes ajoutés et ceux restant à lier ne
+    # se confondent pas.
     added = sum(len(r.candidate_isbns) for r in reports if not r.dry_run and not r.error)
     pending = sum(len(r.candidate_isbns) for r in reports if r.dry_run and not r.error)
     return json.dumps(
@@ -336,9 +325,6 @@ def exit_code(reports: Sequence[BackfillReport], *, dry_run: bool) -> int:
     return EXIT_CLEAN
 
 
-# ---------------------------------------------------------------------- CLI
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -367,9 +353,8 @@ async def run(args: argparse.Namespace) -> int:
 
     reports = await backfill(alerts, dry_run=args.dry_run) if alerts else []
 
-    # Les tomes viennent d'être liés ; leurs cotations courent encore en tâche de
-    # fond. Sortir maintenant les annulerait, et laisserait sans prix ce que la
-    # passe vient justement de rattacher.
+    # Les cotations courent encore en tâche de fond : sortir maintenant les annulerait
+    # et laisserait sans prix les tomes que la passe vient de lier.
     await wait_all_background_tasks(timeout=PRICING_DRAIN_SECONDS)
 
     if args.json:

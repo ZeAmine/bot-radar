@@ -81,8 +81,7 @@ def comparison_line_from_loaded_books(
         books_in_series=series,
         tome_result=tome_result,
     )
-    # Le livre sera rattrapé en arrière-plan, sans retarder Telegram. Le message
-    # envoyé est un instantané : il ne promet pas un résultat qui ne le modifiera pas.
+    # Le livre est rattrapé en arrière-plan ; le message est un instantané.
     absence = line or cote_absence_line(book)
     if absence == PENDING_COTE_LINE:
         absence = COTE_NOT_READY_LINE
@@ -145,9 +144,7 @@ async def _link_bd_catalog_background(
             )
             if book is not None:
                 book_id = book.id
-                # Le livre lié peut venir d'un `add_book` dont `market_cache` n'est pas
-                # chargé : on le relit par le dépôt (qui précharge la relation) avant
-                # de décider s'il faut le coter.
+                # `add_book` ne charge pas `market_cache` : relire par le dépôt.
                 loaded = await BookRepository(session).get_by_id(book.id)
                 needs_price = loaded is not None and not has_usable_price(loaded.market_cache)
             await recalculate_invalidated_series(session)
@@ -156,9 +153,7 @@ async def _link_bd_catalog_background(
         logger.debug("Liaison catalogue BD différée ignorée pour %s : %s", alert_id, exc)
         return
 
-    # La résolution de fond cote le livre qu'elle vient de lier. La cotation part
-    # après le commit : une cote lancée plus tôt ouvrirait une session qui ne verrait
-    # pas encore le livre, et le job glissant finirait par être le seul à le coter.
+    # La cotation part après le commit, sinon sa session ne verrait pas le livre.
     if book_id is not None and needs_price:
         schedule_book_pricing(book_id, reason="bd_resolved")
 
@@ -187,7 +182,6 @@ class ListingAlertSender(Protocol):
     ) -> DeliveryResult: ...
 
 
-# Alerte à notifier, ligne de cote, état du catalogue et livre résolu.
 PendingSend = tuple[Any, Any, str | None, bool, Book | None]
 
 
@@ -258,7 +252,6 @@ class ProcessListingUseCase:
                         )
                         return response
                     except BaseException:
-                        # Le rollback et F09 conservent leur protection et leur ordre.
                         await self._rollback_before_release()
                         raise
             except BaseException as exc:
@@ -293,7 +286,6 @@ class ProcessListingUseCase:
                 await asyncio.shield(rollback)
             except asyncio.CancelledError:
                 cancelled = True
-        # La tâche SQL est terminée avant toute sortie du gate ; elle n'est pas détachée.
         rollback.result()
         if cancelled:
             raise asyncio.CancelledError
@@ -306,7 +298,6 @@ class ProcessListingUseCase:
         admission_deadline: float | None = None,
     ) -> ListingIngestResponse:
         """Traite l'annonce avec garantie de latence minimale sur l'envoi d'alerte."""
-        # 1. Vérification des doublons
         existing_listing = await self.listing_repo.get_by_source_and_external_id(
             source_name=payload.source_name,
             external_id=payload.external_id,
@@ -380,15 +371,12 @@ class ProcessListingUseCase:
                         catalog_ready,
                         resolved_book,
                     ) = await self._comparison_from_catalog_isbn(listing, alert)
-                # Aucune alerte BD ne part sans bloc de cote : un cache manquant
-                # se dit à l’envoi ; sinon → recherche de l’ouvrage (la résolution
-                # de fond va réellement la lancer, cf. `if not catalog_ready`).
+                # Aucune alerte BD ne part sans bloc de cote.
                 if market_line is None:
                     if catalog_ready:
                         market_line = COTE_NOT_READY_LINE
                     elif is_uncatalogued(alert):
-                        # Aucun livre, et la recherche a déjà répondu : annoncer
-                        # « recherche en cours » serait la faire attendre pour rien.
+                        # Recherche déjà répondue : pas de « recherche en cours ».
                         market_line = NO_CATALOGUE_LINE
                     else:
                         market_line = SEARCHING_BOOK_LINE
@@ -529,8 +517,7 @@ class ProcessListingUseCase:
                     )
             if listing.category_slug == CategorySlug.BD_COMICS.value:
                 if notification_sent:
-                    # Mesure après l'envoi, jamais avant : le diagnostic porte sur la
-                    # ligne que l'utilisateur a réellement reçue.
+                    # Mesure après l'envoi, sur la ligne réellement reçue.
                     safe_create_task(
                         record_sent_cote_state(classify_sent_cote_state(market_line)),
                         name=f"cote_state_{alert.id}",
@@ -560,14 +547,7 @@ class ProcessListingUseCase:
                 )
             )
 
-        # Toutes les alertes sont parties : la cote des livres qui en sont dépourvus
-        # peut enfin partir chez les marchands, pour que la prochaine l'affiche.
-        # Pour une série (alerte BD sans ISBN), pas seulement le tome que l'annonce
-        # a désigné : **chaque** volume lié sans cote exploitable part en cotation.
-        # C'est la garantie E1 — le prix bas de chaque volume finit en base sans
-        # attendre le job glissant — et elle ne retarde rien, l'envoi est fini.
-        # `alert_books` est chargé en eager par `get_active_alerts_by_category`
-        # pour les BD : la boucle ne rouvre aucune session.
+        # Cotation après tous les envois ; chaque volume lié sans cote part aussi.
         if listing.category_slug == CategorySlug.BD_COMICS.value:
             for alert_id, (alert, _match_result, _line, _ready, _book) in zip(
                 context.alert_ids, pending_sends, strict=True
@@ -609,7 +589,6 @@ class ProcessListingUseCase:
                     name=f"bd_catalog_{arguments['alert_id']}",
                 )
 
-        # Écriture locale après tous les envois, jamais ajoutée à un lecteur pré-alerte.
         final_started = None
         final_called = False
         final_result = "committed"

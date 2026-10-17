@@ -43,10 +43,7 @@ class ProviderRegistry:
         if providers is not None:
             self.providers = providers
         else:
-            # Chasse-aux-livres est un agrégateur multi-boutiques : il est interrogé en
-            # premier et ses résultats portent déjà l'historique 1 an. Les connecteurs
-            # directs ne servent que de filet quand l'agrégateur ne répond pas.
-            # eBay n'est ajouté que si ses identifiants sont configurés.
+            # Chasse-aux-livres porte l'historique 1 an (directs=filet) ; eBay si configuré.
             default_providers: list[BookMarketProvider] = [
                 ChasseAuxLivresProvider(http_client=http_client,
                                        max_retries=0 if single_attempt else 2),
@@ -184,8 +181,8 @@ class ProviderRegistry:
         if not comparable_offers:
             return None
 
-        # Un même marchand peut être remonté par l'agrégateur et par son connecteur
-        # direct : on ne garde que son offre la moins chère avant le tri final.
+        # Marchand remonté deux fois (agrégateur + connecteur) : garder l'offre
+        # la moins chère avant le tri final.
         cheapest_by_merchant: dict[str, MarketOffer] = {}
         for offer in comparable_offers:
             key = ProviderRegistry._merchant_key(offer)
@@ -193,5 +190,4 @@ class ProviderRegistry:
             if best is None or offer.delivered_price_cents < best.delivered_price_cents:
                 cheapest_by_merchant[key] = offer
 
-        # Tri croissant par delivered_price_cents
         return min(cheapest_by_merchant.values(), key=lambda o: o.delivered_price_cents)

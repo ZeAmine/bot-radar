@@ -57,9 +57,8 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="autotune_router")
 
-# Suggestions de variantes orthographiques en attente de confirmation. Volontairement
-# en mémoire seule, à la différence du store d'exclusions : ces suggestions sont
-# jetables et se régénèrent d'un simple appel à /autotune.
+# Suggestions de variantes en attente de confirmation : volontairement en mémoire
+# seule, jetables et régénérées par un appel à /autotune, contrairement aux exclusions.
 @dataclass(frozen=True)
 class _PendingVariants:
     values: list[str]
@@ -195,11 +194,9 @@ async def handle_autotune_command(
         )
         return
 
-    # Vérifier l'argument optionnel (nom d'alerte ou recherche)
     args = (message.text or "").strip().split(maxsplit=1)
     target_query = args[1].strip().lower() if len(args) > 1 else None
 
-    # Si une alerte spécifique est ciblée
     if target_query:
         alert_repo = AlertRepository(db_session)
         matched_alerts = await alert_repo.search_by_user(db_user.id, target_query)
@@ -212,16 +209,13 @@ async def handle_autotune_command(
         await process_autotune_for_alert(message, target_alert, db_session)
         return
 
-    # Recherche globale : trouver toutes les alertes de l'utilisateur avec des faux positifs
     alerts_with_dislikes = await get_alerts_with_dislikes(db_user.id, db_session)
 
-    # Si une seule alerte a des faux positifs, la traiter directement
     if len(alerts_with_dislikes) == 1:
         target_alert, _ = alerts_with_dislikes[0]
         await process_autotune_for_alert(message, target_alert, db_session)
         return
 
-    # Sinon, afficher le hub complet
     await show_autotune_hub(message, db_user.id, db_session)
 
 
@@ -298,7 +292,7 @@ async def process_autotune_for_alert(
         titles_bullet = "\n".join(f"• <i>{escape_html(t)}</i>" for t in disliked_titles[:5])
 
         if proposal is None:
-            # Purger les faux positifs résolus déjà couverts par les exclusions existantes
+            # Faux positifs résolus (déjà couverts) purgés de la liste.
             await clear_dislikes_for_alert(alert.id, db_session)
             await db_session.commit()
 
@@ -322,11 +316,10 @@ async def process_autotune_for_alert(
                 await target.answer(res_text, reply_markup=back_kb)
             return
 
-        # Mettre en cache pour la confirmation
         await save_pending_tuning(alert.id, proposal.exclusions)
 
-        # Le même gabarit que le scan proactif : une seule forme pour la même décision,
-        # quel que soit le chemin qui a mené à la proposition.
+        # Même gabarit que le scan proactif : une seule forme pour la même décision,
+        # quel que soit le chemin.
         text = exclusion_proposal_message(alert.name, disliked_titles, proposal.exclusions)
         keyboard = _proposal_keyboard(alert.id)
 
@@ -390,8 +383,8 @@ async def handle_tune_apply(
     except ValueError:
         return
 
-    # L'alerte est validée AVANT de consommer la suggestion : une erreur de lecture
-    # ne doit pas détruire une analyse payante, l'utilisateur peut la réappliquer.
+    # L'alerte est validée avant de consommer la suggestion : une erreur de lecture
+    # ne doit pas détruire une analyse payante, réapplicable sinon.
     alert_repo = AlertRepository(db_session)
     alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
     if not alert:
@@ -408,11 +401,10 @@ async def handle_tune_apply(
         if exc.lower() not in [e.lower() for e in current_excludes]:
             current_excludes.append(exc)
 
-    # Les exclusions viennent du moteur : le nettoyeur est le dernier filtre avant
-    # la base. Une exclusion numérique nue rejetterait toute annonce chiffrée.
+    # Exclusions du moteur : le nettoyeur est le dernier filtre avant la base ;
+    # une exclusion numérique nue rejetterait toute annonce chiffrée.
     alert.exclude_keywords = sanitize_exclusions(current_excludes, alert.name)
 
-    # Suppression des faux positifs résolus pour cette alerte
     cleaned_count = await clear_dislikes_for_alert(alert.id, db_session)
     await db_session.commit()
 
@@ -682,8 +674,8 @@ async def handle_var_apply(
     alert_repo = AlertRepository(db_session)
     alert = await alert_repo.get_by_id(alert_id, user_id=db_user.id)
     if not alert:
-        # L'alerte est introuvable : les variantes restent en mémoire, une
-        # validation ultérieure n'a pas à déclencher une nouvelle analyse.
+        # Alerte introuvable : les variantes restent en mémoire, une validation
+        # ultérieure ne déclenche pas de nouvelle analyse.
         await callback.answer("Alerte introuvable.", show_alert=True)
         return
     if pending.snapshot is not None and await alert_repo.lock_bibliographic_result(

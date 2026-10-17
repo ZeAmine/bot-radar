@@ -244,8 +244,8 @@ class ListingRepository:
             result = await self.session.execute(stmt)
             marked = result.scalar_one_or_none() is not None
             if not marked:
-                # Colonnes scalaires : aucune valeur ORM éventuellement périmée.
-                # READ COMMITTED voit le marqueur posé par la transaction concurrente.
+                # Colonnes scalaires, jamais de valeur ORM périmée : READ COMMITTED
+                # voit le marqueur posé par la transaction concurrente.
                 persisted_at = await self.session.scalar(
                     select(ListingMatch.notified_at).where(
                         ListingMatch.alert_id == alert_id,

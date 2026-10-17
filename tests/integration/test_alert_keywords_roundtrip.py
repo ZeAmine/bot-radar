@@ -64,7 +64,7 @@ async def session_maker() -> AsyncGenerator[async_sessionmaker[AsyncSession], No
     """
     async with postgres_replayed_database() as database:
         maker = database.maker
-        # L'identité de l'alerte est posée par une session qui se ferme ensuite.
+        # Le semis se fait dans une session qui se referme avant la relecture.
         async with maker() as seeding:
             seeding.add(
                 User(telegram_user_id=TEST_TELEGRAM_USER_ID, is_allowed=True),
@@ -94,8 +94,7 @@ async def _write_alert(
     category = await session.scalar(
         select(Category).where(Category.slug == CategorySlug.BD_COMICS.value)
     )
-    # L'absence d'utilisateur ou de catégorie est un échec du semis, pas une
-    # raison de laisser passer un None en cascade jusqu'à la colonne.
+    # Un semis incomplet est un échec, pas une raison de laisser passer un None en cascade.
     assert user is not None
     assert category is not None
 
@@ -122,10 +121,8 @@ async def test_an_exclusion_qualified_by_the_title_survives_the_database(
     sans numéro — celle qu'ADR-027 protège et qu'ADR-029 laisse intacte.
     """
     name = "Deep It"
-    # Cas réel de l'incident : des qualificatifs qui éliminent des lots entiers, à
-    # côté des termes que la règle refuse — un chiffre nu et un caractère seul.
-    # « hs », lui, est volontairement gardé : une exclusion de deux lettres tranche
-    # encore quelque chose, et la règle le dit.
+    # Cas réel : des qualificatifs qui éliminent des lots entiers, à côté des termes
+    # refusés par la règle (chiffre nu, caractère seul) ; « hs » reste gardé par la règle.
     exclusions = [
         "deep it coffret",
         "deep it intégrale",
@@ -198,10 +195,7 @@ async def test_the_reloaded_exclusions_are_not_cleaned_a_second_time(
         assert sanitize_variants(list(stored.variants), stored.name) == list(stored.variants)
 
 
-# ---------------------------------------------------------------------------------
-# Changer d'ISBN depuis « Modifier » : les mots-clés de l'ouvrage précédent partent,
-# ceux du nouveau sont cherchés puis écrits — dans la base, pas seulement en mémoire.
-# ---------------------------------------------------------------------------------
+# Changer d'ISBN depuis « Modifier » : les mots-clés du nouveau ouvrage sont écrits en base.
 
 ANCIEN_ISBN = "9782369903086"
 NOUVEL_ISBN = "9782369904151"
@@ -271,11 +265,9 @@ async def _edit_the_isbn(
         )
         assert user is not None
         with (
-            # La tâche de fond ouvre sa propre session : elle doit écrire dans la base
-            # du test, et non dans celle d'un processus sans base.
+            # La tâche de fond ouvre sa propre session : elle doit écrire dans la base du test.
             patch("app.bot.handlers.alerts_manage.AsyncSessionLocal", new=session_maker),
-            # Ici la recherche doit vraiment **tourner** : elle est retenue, puis jouée,
-            # comme la boucle d'événements le ferait après le retour du handler.
+            # La recherche tourne pour de vrai : retenue puis jouée après le handler.
             patch(
                 "app.bot.handlers.alerts_manage.safe_create_task",
                 new=_capture_task(tasks),

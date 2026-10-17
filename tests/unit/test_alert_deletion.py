@@ -33,7 +33,6 @@ async def test_delete_completely_cleans_alert_and_orphans():
         normalized_title="spider man kraven",
     )
 
-    # Mock de la requête des livres liés
     mock_books_res = MagicMock()
     mock_books_res.scalars.return_value.all.return_value = [book_id]
 

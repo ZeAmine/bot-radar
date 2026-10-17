@@ -25,7 +25,7 @@ def test_calculate_total_all_known():
 
 
 def test_calculate_total_unknown_shipping_or_protection():
-    # Sans fallback : total null
+    # Sans fallback : total nul
     assert calculate_estimated_total(900, 70, None) is None
     assert calculate_estimated_total(900, None, 399) is None
     assert calculate_estimated_total(900, None, None) is None
@@ -41,11 +41,10 @@ def test_calculate_total_unknown_shipping_or_protection():
 
 def test_format_price_summary():
     # Format de charte : le prix d'abord, le total entre parenthèses, marqué « TTC ».
-    # Total fourni explicitement : 9,00 € + frais = 13,69 € estimés
     summary_known = format_price_summary(item_price_cents=900, estimated_total_cents=1369)
     assert summary_known == "<b>Prix :</b> 9,00 € (13,69 € TTC)"
 
-    # Total manquant : calcul automatique du total estimé (15,00 € -> 19,33 €)
+    # Total manquant : calcul automatique du total estimé.
     summary_auto_fallback = format_price_summary(item_price_cents=1500, estimated_total_cents=None)
     assert summary_auto_fallback == "<b>Prix :</b> 15,00 € (19,33 € TTC)"
 

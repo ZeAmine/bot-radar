@@ -45,12 +45,11 @@ def test_get_cancel_edit_keyboard():
 def test_get_edit_conditions_keyboard():
     alert_id = uuid.uuid4()
 
-    # Quand accepted_conditions est None -> tous les états sont cochés
+    # None : tous les états sont cochés.
     kb_all = get_edit_conditions_keyboard(alert_id, None)
     for row in kb_all.inline_keyboard[:-2]:
         assert row[0].text.startswith("✅")
 
-    # Quand seulement un état est sélectionné
     kb_sel = get_edit_conditions_keyboard(alert_id, ["Très bon état"])
     found_checked = False
     for row in kb_sel.inline_keyboard[:-2]:
@@ -116,7 +115,6 @@ async def test_prompt_new_field_value_shows_code_block_to_copy():
 
     callback.message.edit_text.assert_awaited_once()
     call_args = callback.message.edit_text.call_args[0][0]
-    # Doit contenir le bloc <code> cliquable pour copier en 1 clic
     assert "<code>tome 1, coffret</code>" in call_args
     assert "Valeur actuelle" in call_args
     state.set_state.assert_awaited_once()
@@ -172,8 +170,7 @@ async def test_save_edited_field_value_updates_list():
         max_item_price_cents=1500,
         exclude_keywords=["tome 1", "coffret"],
     )
-    # `name=` passée à MagicMock nomme le mock, ce n'est pas l'attribut : le nettoyeur
-    # de mots-clés lit le titre de l'alerte, il doit donc être posé explicitement.
+    # `name=` nomme le mock, pas l'attribut : le nettoyeur lit le titre de l'alerte.
     mock_alert.name = "Bleach"
     repo_mock = AsyncMock()
     repo_mock.get_by_id.return_value = mock_alert
@@ -369,9 +366,7 @@ async def test_save_edited_field_value_accepts_isbn_matching_alert():
             "app.db.repositories.market_price_repo.MarketPriceRepository",
             return_value=AsyncMock(),
         ),
-        # L'alerte n'avait aucun ISBN : en poser un change d'ouvrage, donc la
-        # recherche de mots-clés repart en arrière-plan (couverte par les parcours
-        # dédiés plus bas).
+        # Alerte sans ISBN : en poser un change d'ouvrage, la recherche repart.
         patch("app.bot.handlers.alerts_manage.safe_create_task", new=_capture_task(tasks)),
     ):
         await save_edited_field_value(message, state=state, db_user=user, db_session=session)
@@ -410,15 +405,8 @@ async def test_handle_edit_condition_toggle():
     callback.answer.assert_awaited()
 
 
-# ---------------------------------------------------------------------------------
 # Parcours « Modifier → ISBN » : changer d'ouvrage rend ses mots-clés à l'alerte.
-#
-# Ces tests traversent les vrais handlers (`prompt_new_field_value` puis
-# `save_edited_field_value`) et ne simulent que les frontières : la notice, le moteur,
-# la base et la tâche de fond. Ils verrouillent trois cas — l'alerte portait déjà les
-# mots-clés du moteur, une recherche était encore en vol quand l'ouvrage a changé une
-# seconde fois, et le nouvel ISBN ne donne rien à personne.
-# ---------------------------------------------------------------------------------
+# Les vrais handlers sont traversés ; seules les frontières sont doublées.
 
 ANCIEN_ISBN = "9782369903086"
 NOUVEL_ISBN = "9782369904151"
@@ -527,8 +515,7 @@ def _isbn_journey(
         preparation=None,
         updated_at=datetime.now(UTC),
     )
-    # `name=` en argument de `MagicMock` nomme le mock, ce n'est pas l'attribut : le
-    # titre de l'alerte est lu par le nettoyeur de mots-clés et par la carte.
+    # `name=` nomme le mock, pas l'attribut : le titre est lu par le nettoyeur et la carte.
     alert.name = "La couleur des choses"
     alert_repo = AsyncMock()
     alert_repo.get_by_id.return_value = alert
@@ -658,8 +645,7 @@ async def test_changing_the_isbn_from_edit_replaces_the_previous_works_keywords(
 
         await _drain(journey["tasks"])
 
-    # Ceux du nouvel ouvrage sont écrits, à partir de sa fiche : la recherche a été
-    # posée sur l'ISBN affiché, pas sur celui qui vient d'être remplacé.
+    # Les variantes du nouvel ouvrage viennent de sa fiche, pas de l'ISBN remplacé.
     assert journey["alert"].variants == ANCIENNES_VARIANTES + NOUVELLES_VARIANTES
     assert journey["alert"].exclude_keywords == ANCIENNES_EXCLUSIONS + NOUVELLES_EXCLUSIONS
     args, kwargs = journey["words"].await_args
@@ -1004,7 +990,7 @@ async def test_a_late_lookup_does_not_edit_an_alert_deleted_in_the_meantime():
     assert journey["alert"].status == AlertStatus.DELETED
 
 
-# --- Variantes : ce qui est écrit, et ce qui est annoncé ---
+# Variantes : ce qui est écrit, et ce qui est annoncé.
 
 
 def _alerte_variantes(alert_id, variantes):

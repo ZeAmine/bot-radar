@@ -78,7 +78,6 @@ def test_matcher_variants():
         include_keywords=["blacksad intégrale"],
         variants=["blacksad integral"],
     )
-    # L'annonce utilise la variante
     res = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -94,7 +93,6 @@ def test_matcher_condition_accepted_and_rejected():
     alert = create_test_alert(
         accepted_conditions=["Neuf avec étiquette", "Très bon état"],
     )
-    # État accepté
     res_ok = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -105,7 +103,6 @@ def test_matcher_condition_accepted_and_rejected():
     )
     assert res_ok.is_match is True
 
-    # État rejeté
     res_rejected = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -121,7 +118,6 @@ def test_matcher_condition_accepted_and_rejected():
 def test_matcher_price_under_and_over_threshold():
     alert = create_test_alert(max_price_cents=1500)
 
-    # Sous le seuil (12,00 €)
     res_under = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -133,7 +129,6 @@ def test_matcher_price_under_and_over_threshold():
     assert res_under.is_match is True
     assert res_under.price_matches is True
 
-    # Égal au seuil (15,00 €)
     res_equal = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -144,7 +139,6 @@ def test_matcher_price_under_and_over_threshold():
     )
     assert res_equal.is_match is True
 
-    # Au-dessus du seuil (15,01 €)
     res_over = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -177,7 +171,7 @@ def test_matcher_multi_keywords_must_all_match():
         name="Batman Terre Un",
     )
 
-    # Cas 1 : Seulement "integrale" présent (faux positif Bec-en-fer) -> DOIT ÉCHOUER
+    # Faux positif Bec-en-fer : seul « intégrale » est présent.
     res1 = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -188,7 +182,7 @@ def test_matcher_multi_keywords_must_all_match():
     )
     assert res1.is_match is False
 
-    # Cas 2 : Seulement "batman" présent (faux positif 100 couvertures) -> DOIT ÉCHOUER
+    # Faux positif 100 couvertures : seul « batman » est présent.
     res2 = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -199,7 +193,6 @@ def test_matcher_multi_keywords_must_all_match():
     )
     assert res2.is_match is False
 
-    # Cas 3 : Les 3 mots-clés sont présents -> DOIT RÉUSSIR
     res3 = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -214,7 +207,7 @@ def test_matcher_multi_keywords_must_all_match():
 def test_matcher_word_boundaries_no_substring_confusion():
     alert = create_test_alert(include_keywords=["rip"])
 
-    # "strip" ne doit pas matcher "rip"
+    # « strip » ne doit pas matcher « rip ».
     res_strip = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -225,7 +218,6 @@ def test_matcher_word_boundaries_no_substring_confusion():
     )
     assert res_strip.is_match is False
 
-    # "RIP" en mot entier doit matcher
     res_rip = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -255,7 +247,6 @@ def test_matcher_phrase_exclusion_blocks_simpson():
 
 
 def test_matcher_isbn_hybrid_fallback():
-    # Alerte créée avec ISBN et nom distinctif "Soli Deo Gloria"
     alert = create_test_alert(
         name="Soli Deo Gloria",
         include_keywords=["9791034768974"],
@@ -263,7 +254,6 @@ def test_matcher_isbn_hybrid_fallback():
     )
     alert.isbn = "9791034768974"
 
-    # 1. Annonce avec ISBN exact dans le titre ou métadonnée -> Match direct
     res_direct = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -274,7 +264,6 @@ def test_matcher_isbn_hybrid_fallback():
     )
     assert res_direct.is_match is True
 
-    # 2. Annonce d'un vendeur sans ISBN (titre seul) -> Match via Fallback hybride
     res_hybrid = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="bd_comics",
@@ -285,7 +274,6 @@ def test_matcher_isbn_hybrid_fallback():
     )
     assert res_hybrid.is_match is True
 
-    # 3. Annonce hors catégorie BD -> Rejeté
     res_wrong_cat = evaluate_listing_against_alert(
         alert=alert,
         listing_category_slug="vetements",
@@ -296,7 +284,7 @@ def test_matcher_isbn_hybrid_fallback():
     )
     assert res_wrong_cat.is_match is False
 
-    # 4. Titre court : « Intégrale » accentué compte comme contexte BD
+    # « Intégrale » accentué compte comme contexte BD.
     alert_rip = create_test_alert(
         name="RIP",
         include_keywords=["rip"],
@@ -315,7 +303,6 @@ def test_matcher_isbn_hybrid_fallback():
 
 
 def test_matcher_title_with_author_separator_matches_catalog_items():
-    # 1. Alerte 1984 — Xavier Coste contre annonce "1984 en BD"
     alert_1984 = create_test_alert(
         name="1984 — Xavier Coste",
         include_keywords=["1984"],
@@ -334,7 +321,6 @@ def test_matcher_title_with_author_separator_matches_catalog_items():
     )
     assert res_1984.is_match is True
 
-    # 2. Alerte Tout seul — Chabouté contre annonce "Tout seul"
     alert_seul = create_test_alert(
         name="Tout seul — Chabouté",
         include_keywords=["tout seul"],
@@ -353,7 +339,6 @@ def test_matcher_title_with_author_separator_matches_catalog_items():
     )
     assert res_seul.is_match is True
 
-    # 3. Alerte La Route — Manu Larcenet contre annonce "BD La route" (15 € <= 18 €)
     alert_route = create_test_alert(
         name="La Route — Manu Larcenet",
         include_keywords=["la route"],
@@ -372,7 +357,6 @@ def test_matcher_title_with_author_separator_matches_catalog_items():
     )
     assert res_route_ok.is_match is True
 
-    # 4. Alerte La Route — Manu Larcenet contre annonce à 20 € (> 18 € max) -> Rejetée par le prix
     res_route_overprice = evaluate_listing_against_alert(
         alert=alert_route,
         listing_category_slug="bd_comics",
@@ -397,7 +381,7 @@ def test_matcher_clean_title_with_author_keywords():
     )
     alert_1984.isbn = "9782377316588"
 
-    # Match grâce à la présence du mot-clé auteur 'coste'
+    # Match grâce au mot-clé auteur « coste ».
     res_author_match = evaluate_listing_against_alert(
         alert=alert_1984,
         listing_category_slug="bd_comics",
@@ -408,7 +392,7 @@ def test_matcher_clean_title_with_author_keywords():
     )
     assert res_author_match.is_match is True
 
-    # Rejet si roman George Orwell sans contexte BD ni mot-clé auteur
+    # Roman Orwell : sans contexte BD ni mot-clé auteur, rejet.
     res_unrelated_novel = evaluate_listing_against_alert(
         alert=alert_1984,
         listing_category_slug="bd_comics",
@@ -430,7 +414,7 @@ def test_matcher_comic_franchise_prefix_not_false_positive():
     )
     alert_kraven.isbn = "9791039147125"
 
-    # Annonce d'une autre BD Spider-Man sans mot-clé Kraven -> REJET
+    # Autre BD Spider-Man, sans « kraven » : rejet.
     res_other = evaluate_listing_against_alert(
         alert=alert_kraven,
         listing_category_slug="bd_comics",
@@ -448,7 +432,6 @@ def test_matcher_comic_franchise_prefix_not_false_positive():
         or "non satisfait" in res_other.reason.lower()
     )
 
-    # Annonce de la bonne BD Kraven -> MATCH
     res_kraven = evaluate_listing_against_alert(
         alert=alert_kraven,
         listing_category_slug="bd_comics",

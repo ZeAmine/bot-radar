@@ -8,11 +8,11 @@ from typing import Any
 
 logger = logging.getLogger("radar.tasks")
 
-# Ensemble retenant les références fortes vers les tâches en cours d'exécution
+# Références fortes vers les tâches en cours (anti-GC)
 _background_tasks: set[asyncio.Task[Any]] = set()
-# Nettoyages SQL explicitement enregistrés : à attendre, jamais à annuler par le drainage.
+# Nettoyages SQL à attendre, jamais annulés par le drainage.
 _cleanup_tasks: set[asyncio.Task[Any]] = set()
-# Réveiller uniquement les drainages actifs si une nouvelle tâche est enregistrée.
+# Réveille les drainages actifs à chaque enregistrement de tâche.
 _drain_events: set[asyncio.Event] = set()
 
 

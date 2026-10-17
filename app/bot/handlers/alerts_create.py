@@ -68,11 +68,6 @@ from app.utils.text import normalize_text, strip_html_tags
 
 logger = logging.getLogger(__name__)
 
-# Pied de la confirmation de création, identique pour toutes les catégories. Une seule
-# formulation : les deux branches (livre et produit) annoncent la même chose, donc elles
-# ne peuvent pas diverger. Le pied décrit le mécanisme réel — une annonce éligible
-# déclenche une alerte au prochain passage du poller — sans promettre d'instantanéité
-# ni de surveillance permanente.
 _CONFIRMATION_FOOTER = (
     "<i>Les annonces correspondant à ces critères déclencheront une alerte Telegram.</i>"
 )
@@ -141,10 +136,6 @@ async def _finalize_loading_message(
     try:
         await event.answer(text, reply_markup=keyboard)
     except TelegramBadRequest as exc:
-        # Un handler qui lève vaut « update non traité » pour Telegram, qui rejoue
-        # alors le même update : l'utilisateur voit « Recherche IA en cours » en
-        # boucle. Un refus de formatage HTML est un défaut de rendu, pas une panne :
-        # on le journalise et on renvoie le récap sans balisage.
         logger.warning("Réponse Telegram refusée (%s), renvoi du récap en texte brut.", exc)
         await event.answer(strip_html_tags(text), reply_markup=keyboard, parse_mode=None)
 
@@ -248,16 +239,8 @@ async def _search_keywords_in_background(
             logger.info("Brouillon modifié pendant la recherche IA : %s", name)
             return
 
-        # La recherche n'est « définitive » que si le moteur a répondu. Sinon le bouton
-        # « Variantes & Exclusions IA » reste sous la carte, et un seul appui
-        # relance : un échec ne doit pas se payer d'un détour par « Modifier ».
         finalized = outcome.answered
 
-        # Les variantes du brouillon sont **remplacées** ici, alors que les exclusions sont
-        # fusionnées — asymétrie assumée : le récap n'est publié que par cette tâche, donc
-        # l'utilisateur n'a pas pu saisir de variante entre-temps, et le brouillon est vide ou
-        # vient d'être remis à zéro par un changement d'ouvrage. Les deux gestes convergeraient
-        # dès que l'écran deviendrait éditable avant le retour du moteur.
         updated = {
             **current,
             "variants": _variants_for_category(
@@ -267,8 +250,6 @@ async def _search_keywords_in_background(
                 _merge_keywords(current.get("exclude_keywords"), outcome.exclusions), name,
                 author=current.get("author"), publisher=current.get("publisher")
             ),
-            # La note et l'état de la recherche voyagent avec le brouillon : changer
-            # d'édition ou de prix plus tard ne doit pas les perdre au re-rendu.
             "keyword_note": keyword_note(outcome),
             "keywords_finalized": finalized,
         }
@@ -319,7 +300,6 @@ async def start_add_alert(
             inline_query = parts[1].strip()
 
     if inline_query and db_user and db_session:
-        # Étape 1 : Pré-vérification immédiate en base de données (zéro IA, zéro réseau)
         clean_query, inline_price_cents = extract_inline_price_and_clean_query(inline_query)
         isbn_candidate = extract_clean_isbn(clean_query)
         alert_repo = _get_alert_repo(db_session)
@@ -346,7 +326,6 @@ async def start_add_alert(
         return
 
     if inline_query and natural_add_module.is_enabled:
-        # Feedback visuel immédiat : indicateur de frappe + message d'attente
         if isinstance(event, Message) and event.bot:
             with contextlib.suppress(Exception):
                 await event.bot.send_chat_action(chat_id=event.chat.id, action="typing")
@@ -363,12 +342,10 @@ async def start_add_alert(
         )
         loading_msg = await event.answer(loading_text, reply_markup=loading_kb)
 
-        # Parsing en langage naturel par le moteur IA configuré
         parsed = await natural_add_module.parse_prompt(inline_query)
         if parsed:
             if (await state.get_data()).get("creation_token") != token:
                 return
-            # Étape 2 : Post-vérification après identification de l'œuvre
             if db_user and db_session:
                 alert_repo = _get_alert_repo(db_session)
                 existing = await alert_repo.find_existing(
@@ -377,7 +354,6 @@ async def start_add_alert(
                     title=parsed.name,
                 )
                 if existing:
-                    # Binaire : l'alerte existe déjà -> arrêt immédiat sans récap ni variante IA
                     await render_existing_alert_response(
                         event,
                         state,
@@ -407,7 +383,6 @@ async def start_add_alert(
                 "max_item_price_cents": parsed.max_price_cents,
                 "selected_conditions": parsed.conditions,
                 "isbn_note": parsed.isbn_note,
-                # L'ouvrage n'est identifié par personne : la carte le dit en tête.
                 "book_unidentified": parsed.book_unidentified,
                 "book_context": (
                     parsed.book_context.model_dump() if parsed.book_context else None
@@ -415,8 +390,6 @@ async def start_add_alert(
                 "edition_alternatives": [
                     edition.model_dump() for edition in parsed.edition_alternatives
                 ],
-                # Un titre homonyme ne propose que des œuvres à choisir : sans elles,
-                # l'avertissement du récap n'aurait rien derrière quoi se trancher.
                 "work_choices": [
                     work.model_dump() for work in parsed.work_choices
                 ],
@@ -430,10 +403,6 @@ async def start_add_alert(
                 await state.update_data(data=state_data)
                 await state.set_state(AlertCreationState.confirm_creation)
 
-            # Jalon : l'ouvrage est identifié et la suite part en arrière-plan. Ce
-            # message est un simple statut — il ne doit surtout pas attendre la
-            # réponse du moteur, ni porter un clavier qui validerait une alerte dont
-            # les mots-clés sont encore en cours.
             found_details = " · ".join(
                 html.escape(bit) for bit in (parsed.author, parsed.publisher) if bit
             )
@@ -474,7 +443,6 @@ async def start_add_alert(
             )
             return
 
-        # Fallback si l'IA n'a pas pu structurer la demande : sélection de catégorie
         async with draft_guard(state):
             if (await state.get_data()).get("creation_token") != token:
                 return
@@ -540,8 +508,6 @@ async def handle_category_selected(
         return
     category_slug = interaction.partition("@")[0].split(":")[1]
 
-    # Changer de catégorie rebat les cartes : une recherche bibliographique encore en
-    # vol n'a plus à écrire dans le nouveau brouillon.
     async with draft_guard(state):
         data = await state.get_data()
         if (
@@ -571,7 +537,6 @@ async def handle_category_selected(
             )
         return
 
-    # Pas d'inline_query, demander la saisie du produit / titre selon la catégorie
     if category_slug == CategorySlug.BD_COMICS.value:
         prompt = (
             "📚 <b>Alerte Livres & BD</b>\n\n"
@@ -646,7 +611,6 @@ async def handle_update_existing_alert_price(
     parts = callback.data.split(":")  # type: ignore
     data = await state.get_data()
     if data.get("creation_token") or parts == ["upd_alert_price", ""]:
-        # Le bouton lié désigne la proposition serveur, jamais un ID/prix libre du callback.
         alert_id_str = str(data.get("existing_alert_id") or "")
         proposed_price = data.get("new_max_price_cents")
         if not alert_id_str or proposed_price is None:
@@ -724,9 +688,6 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
         return
 
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
-    # Réponse immédiate : le spinner du bouton est levé avant l'appel. Répondre
-    # après le moteur dépasserait la fenêtre de Telegram, qui renverrait « query is
-    # too old » et rejouerait l'update. Le verdict de la recherche est dans la carte.
     await callback.answer()
 
     loading_kb = InlineKeyboardMarkup(
@@ -753,9 +714,6 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
             return
         data = current
 
-        # « Rien de pertinent » et « personne n'a répondu » sont deux réponses : la note
-        # les dit, et le brouillon la conserve pour les rendus suivants. Un échec laisse
-        # le bouton de relance en place, donc rien n'est marqué comme définitif.
         finalized = outcome.answered
         updated_draft = {
             **data,
@@ -833,8 +791,6 @@ async def _save_alert(
     author = data.get("author")
     publisher = data.get("publisher")
     includes = data.get("include_keywords", [])
-    # Dernier point de passage avant la base : une liste brute du moteur ne peut pas
-    # être stockée, même si un chemin amont a laissé passer une énumération.
     excludes = sanitize_exclusions(data.get("exclude_keywords", []), name,
                                    author=author, publisher=publisher)
     variants = _variants_for_category(data.get("variants", []), name, includes)
@@ -854,15 +810,6 @@ async def _save_alert(
     )
     cat_id_str = data.get("category_id")
 
-    # Le brouillon tel qu'il vient d'être écrit : la confirmation relit la carte de
-    # récap, mais sur les valeurs réellement enregistrées — les listes passées par le
-    # nettoyeur, pas celles du moteur. `is_series` suit, et c'est le même drapeau que
-    # celui du récap : les deux écrans ne peuvent pas se contredire. La note du moteur
-    # n'est relue que si le moteur a **répondu** : son verdict (« aucune variante de
-    # frappe ») est une vérité de l'alerte, la même sur les deux écrans. La note
-    # d'échec, elle, reste au brouillon : elle nomme le bouton « ✨ Variantes &
-    # Exclusions IA », absent de ce clavier, et parle d'une alerte à créer — or elle
-    # est créée.
     stored_draft = {
         **data,
         "exclude_keywords": excludes,
@@ -871,7 +818,6 @@ async def _save_alert(
         "keyword_note": data.get("keyword_note") if data.get("keywords_finalized") else None,
     }
 
-    # 1. Catégorie
     category_repo = _get_category_repo(db_session)
     category = None
     if cat_id_str:
@@ -887,7 +833,6 @@ async def _save_alert(
         book = None
 
         if isbn:
-            # 1. One-Shot ou tome spécifique : Persistance définitive de l'ISBN en base
             book = await book_repo.get_by_isbn13(isbn)
             if not book:
                 created = await book_repo.create(
@@ -898,14 +843,8 @@ async def _save_alert(
                     publisher=publisher,
                     language=data.get("language") or "und",
                 )
-                # `create` rend un objet dont `market_cache` n'est pas chargé : la
-                # confirmation lit cette relation (`format_cote_lines`) après le commit,
-                # et une lecture paresseuse y lèverait en async. On relit le livre comme
-                # le ferait `get_by_isbn13`, pour que la confirmation n'ait qu'un chemin,
-                # que le livre soit nouveau ou déjà au catalogue.
                 book = await book_repo.get_by_id(created.id)
 
-            # 2. Création de l'alerte liée à l'ISBN
             vinted_url = f"https://www.vinted.fr/catalog?search_start_type=item_page_isbn&search_text={isbn}&order=newest_first"
             alert = await alert_repo.create(
                 user_id=db_user.id,
@@ -920,11 +859,9 @@ async def _save_alert(
                 vinted_search_url=vinted_url,
             )
 
-            # 3. Liaison alerte <-> livre de référence
             if book:
                 await book_repo.link_alert_to_book(alert.id, book.id, MatchConfidence.HIGH)
         else:
-            # Série multi-tomes : Création propre de l'alerte sans faux livre unique ni fausse cote
             vinted_url = f"https://www.vinted.fr/catalog?search_text={urllib.parse.quote_plus(name)}&order=newest_first"
             alert = await alert_repo.create(
                 user_id=db_user.id,
@@ -956,8 +893,6 @@ async def _save_alert(
                 identified.normalized_title = normalize_text(volume["title"])
                 await book_repo.link_alert_to_book(alert.id, identified.id, MatchConfidence.HIGH)
 
-        # La surveillance ne devient active qu'après la préparation du catalogue
-        # et des cotes. L'ingestion reste ensuite une simple lecture du cache.
         alert.status = AlertStatus.PAUSED
         alert.preparation = PreparationRequest(
             author_hint=author,
@@ -984,7 +919,7 @@ async def _save_alert(
         )
         current = await alert_repo.get_by_id(alert.id, refresh=True)
         if current is None:
-            return  # Suppression pendant la préparation : aucun rattachement/écran ancien.
+            return  # Alerte supprimée pendant la préparation : ne rien réattacher.
         alert = current
         identity_changed = (alert.name, alert.isbn) != (name, isbn)
         vinted_url = alert.vinted_search_url or vinted_url
@@ -1034,15 +969,12 @@ async def _save_alert(
             extra_lines=extra_lines or None,
         )
         if identity_changed:
-            # La fiche initiale (auteur, édition, provenance) ne décrit plus les
-            # critères actuels : afficher l'alerte relue, jamais cet ancien brouillon.
             from app.bot.formatter import format_alert_card
 
             resp_text = format_alert_card(alert)
             if extra_lines:
                 resp_text += "\n\n" + "\n".join(extra_lines)
     else:
-        # Tech ou Vêtements (sans livre ni cote de livres)
         vinted_url = (
             f"https://www.vinted.fr/catalog?search_text={urllib.parse.quote_plus(name)}"
             "&order=newest_first"
@@ -1061,9 +993,6 @@ async def _save_alert(
         )
         await creation_attempt.commit_and_close(db_session)
 
-        # Même carte que le récap, avec son propre en-tête : un produit se relit comme
-        # un livre, à la ligne d'identifiant près, qu'il n'a pas — sa catégorie dit
-        # qu'il n'a rien à y trouver.
         resp_text = creation_card(
             stored_draft,
             header=ALERT_CREATED_TITLE,
@@ -1075,8 +1004,6 @@ async def _save_alert(
     )
     if callback.message and hasattr(callback.message, "edit_text"):
         try:
-            # Le lien vers la recherche reste cliquable ; c'est l'aperçu déplié par
-            # Telegram qui est retiré — il poussait les boutons hors de l'écran.
             await callback.message.edit_text(
                 resp_text, reply_markup=vinted_btn, disable_web_page_preview=True
             )

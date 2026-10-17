@@ -186,7 +186,7 @@ class AlertRepository:
         if current is None:
             return None
         # Même verrou de ligne que lock_for_edit, sans expirer user/alert_books
-        # déjà chargés par l'ingestion. Les champs de garde seuls sont relus.
+        # déjà chargés par l'ingestion ; seuls les champs de garde sont relus.
         locked = await self.session.scalar(select(Alert.id).where(
             Alert.id == alert_id, Alert.deleted_at.is_(None), Alert.status != AlertStatus.DELETED,
         ).with_for_update())
@@ -376,15 +376,12 @@ class AlertRepository:
         if not await self.lock_for_edit(alert, include_deleted=True):
             return {"alert_id": alert_id, "deleted_books_count": 0}
 
-        # 1. Identifier les livres liés à cette alerte
         stmt_books = select(AlertBook.book_id).where(AlertBook.alert_id == alert_id)
         linked_book_ids = list((await self.session.execute(stmt_books)).scalars().all())
 
-        # 2. Supprimer l'alerte
         await self.session.delete(alert)
         await self.session.flush()
 
-        # 3. Supprimer les livres orphelins
         deleted_books_count = 0
         for book_id in linked_book_ids:
             stmt_other = (
@@ -408,7 +405,6 @@ class AlertRepository:
         """Purge toutes les alertes marquées DELETED ainsi que les livres orphelins."""
         from app.db.models.book import Book
 
-        # Trouver toutes les alertes soft-deleted
         stmt_deleted = select(Alert).where(
             sa_or(
                 Alert.status == AlertStatus.DELETED,
@@ -422,7 +418,6 @@ class AlertRepository:
         for a in deleted_alerts:
             await self.delete_completely(a)
 
-        # Vérifier aussi s'il reste des livres orphelins sans aucun lien alert_books
         stmt_orphans = select(Book).where(~Book.alert_books.any())
         orphan_books = list((await self.session.execute(stmt_orphans)).scalars().all())
         deleted_orphans_count = len(orphan_books)
@@ -470,7 +465,7 @@ class AlertRepository:
         if matched:
             return matched
 
-        # Repli : vérifier si le mot-clé est contenu dans include_keywords
+        # Repli : terme cherché dans les mots-clés des alertes de l'utilisateur.
         all_alerts = await self.list_by_user(user_id, limit=50, category_slug=category_slug)
         norm_q = clean_q.lower()
         keyword_matches = [
@@ -510,7 +505,7 @@ class AlertRepository:
             if existing is not None and not inspect.isawaitable(existing):
                 return existing
 
-        # Recherche via alert_books si un livre correspond à l'ISBN ou au titre
+        # Second chemin : livres liés par ISBN ou titre.
         if isbn or (title and len(title.strip()) >= 3):
             import inspect
 

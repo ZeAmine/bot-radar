@@ -138,9 +138,8 @@ async def handle_status(message: Message, db_session: Any) -> None:
     else:
         poller_status = "⚪ <b>Inconnu</b> (aucun état exploitable)"
 
-    # Timestamp de réception persistée → timestamp du marquage, avant commit.
-    # Succès notifiés seulement ; recollectes et reprises SQL ne sont pas isolées.
-    # Ce n'est ni publication → découverte, ni le délai d'un accusé ou d'une lecture.
+    # Réception persistée → marquage, avant commit ; succès notifiés seulement.
+    # Ni publication → découverte, ni délai d'un accusé ou d'une lecture.
     latency = await StatsRepository(db_session).get_notification_latency_ms(days=7)
     if latency["count"] and latency["p50_ms"] is not None:
         latency_line = f"<b>Réception → marquage :</b> {latency['p50_ms']} ms <i>(notifiés)</i>"

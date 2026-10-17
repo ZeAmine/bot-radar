@@ -119,7 +119,6 @@ def test_capture_logs_in_and_reads_the_home_attribute():
         token = capture_token(client, "membre@example.org", "mot-de-passe")
 
     assert token == "jeton-membre.signature"
-    # Le formulaire a bien reçu ses champs anti-rejeu et l'identité soumise.
     assert "SOURCE-PAGE-123" in posted["body"]
     assert "FINGERPRINT-456" in posted["body"]
     assert "membre%40example.org" in posted["body"]

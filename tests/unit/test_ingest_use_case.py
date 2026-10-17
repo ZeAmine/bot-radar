@@ -52,7 +52,6 @@ async def test_process_listing_duplicate(mock_db: AsyncMock) -> None:
     """Vérifie qu'un doublon est détecté immédiatement sans notifier."""
     use_case = ProcessListingUseCase(db=mock_db)
 
-    # Simuler une annonce existante
     existing_mock = MagicMock()
     existing_mock.id = uuid.uuid4()
     existing_mock.estimated_total_cents = 1200
@@ -91,7 +90,6 @@ def test_deterministic_matcher_adapter() -> None:
     from app.core.constants import AlertStatus
     from app.domain.rules.listing_match import evaluate_listing_against_alert
 
-    # Mock alerte
     alert_mock = MagicMock()
     alert_mock.id = uuid.uuid4()
     alert_mock.name = "Tintin"
@@ -137,7 +135,6 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         session_local.return_value.__aexit__.return_value = None
         use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
 
-        # Simuler le repo listing
         mock_listing = MagicMock()
         mock_listing.id = uuid.uuid4()
         mock_listing.source_name = "vinted"
@@ -191,7 +188,6 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         assert resp.is_duplicate is False
         assert len(resp.matches) == 1
 
-        # Vérifier que send_alert a reçu la ligne de marché épurée
         mock_send_alert.assert_awaited_once()
         _, kwargs = mock_send_alert.call_args
         assert kwargs["market_comparison_line"] == (
@@ -451,7 +447,6 @@ async def test_series_alert_prices_every_linked_volume_after_the_send(mock_db: A
         )
         await use_case.execute(payload, raw_payload={})
 
-    # Les deux volumes sont cotés, après l'envoi.
     assert f"price:alert_sent:{book.id}" in calls
     assert f"price:alert_sent:{sibling.id}" in calls
     assert calls.index("send") < calls.index(f"price:alert_sent:{sibling.id}")
@@ -511,7 +506,6 @@ async def test_series_alert_does_not_reprice_a_priced_sibling(mock_db: AsyncMock
         )
         await use_case.execute(payload, raw_payload={})
 
-    # Seul le tome résolu (sans cote) est coté.
     assert f"price:alert_sent:{book.id}" in calls
     assert f"price:alert_sent:{sibling.id}" not in calls
     assert schedule.call_count == 1
@@ -561,7 +555,6 @@ async def test_isbn_alert_does_not_price_siblings(mock_db: AsyncMock) -> None:
         )
         await use_case.execute(payload, raw_payload={})
 
-    # Seul le livre résolu est coté — l'alerte ISBN n'a pas de série à couvrir.
     assert f"price:alert_sent:{book.id}" in calls
     assert f"price:alert_sent:{sibling.id}" not in calls
     assert schedule.call_count == 1

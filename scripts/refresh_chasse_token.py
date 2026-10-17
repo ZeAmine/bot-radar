@@ -54,18 +54,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sync_chasse_session import push_token_to_radar, validate_token  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-# httpx journalise chaque URL complète en INFO — dont /rest/jcd qui porte le
-# duih. Le secret ne doit atteindre aucun journal : même réglage que la
-# production, appliqué avant la première requête.
+# httpx journalise chaque URL complète en INFO — dont /rest/jcd qui porte le duih.
+# Le secret ne doit atteindre aucun journal : même réglage que la production.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("radar.refresh_chasse_token")
 
 BASE_URL = "https://www.chasse-aux-livres.fr"
 LOGIN_URL = f"{BASE_URL}/login?protect=true"
 
-# Chrome normal, français : le site sert une coquille vide aux clients qu'il
-# identifie comme automates (constat ADR-036), et le formulaire de connexion
-# se prélève sur la page rendue avec ces mêmes en-têtes.
+# Chrome normal, français : le site sert une coquille vide aux clients assimilés à
+# des automates (ADR-036) ; le formulaire se lit avec ces mêmes en-têtes.
 LOGIN_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -156,9 +154,8 @@ def capture_token(client: httpx.Client, email: str, password: str) -> str | None
         logger.error("Connexion impossible (%s).", type(exc).__name__)
         return None
     if 'id="login"' in response.text:
-        # Le formulaire est toujours là : identifiants refusés ou formulaire
-        # devenu incompatible. Dans les deux cas, rien à pousser — et le code
-        # de sortie 2 du cron reste le voyant, pas un silence.
+        # Formulaire encore présent : identifiants refusés ou formulaire devenu
+        # incompatible. Rien à pousser, le code de sortie 2 du cron reste le voyant.
         logger.error(
             "Connexion refusée (HTTP %s) : le formulaire est toujours présent "
             "— identifiants refusés ou formulaire changé.",

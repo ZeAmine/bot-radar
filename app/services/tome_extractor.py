@@ -12,7 +12,6 @@ def _normalize(text: str) -> str:
     return stripped.lower().strip()
 
 
-# Dictionnaire de correspondance sous-titre -> numéro de tome pour les séries majeures
 SERIES_SUBTITLES: dict[str, dict[str, int]] = {
     "rip": {
         "derrick": 1,
@@ -158,7 +157,6 @@ class TomeMatchResult:
 class TomeExtractor:
     """Analyseur haute performance en mémoire (< 0.2ms) pour détecter tomes et lots."""
 
-    # Mots-clés annonçant un lot
     LOT_KEYWORDS = [
         "lot",
         "integrale",
@@ -180,12 +178,10 @@ class TomeExtractor:
         norm_title = _normalize(title)
         norm_desc = _normalize(description or "")
 
-        # 1. Vérification d'un lot / bundle (prioritaire sur la détection d'un tome unique)
         lot_res = cls._detect_lot(norm_title, norm_desc)
         if lot_res.is_lot:
             return lot_res
 
-        # 2. Recherche explicite d'un tome dans le titre
         tome_num = cls._detect_tome_number(norm_title)
         if tome_num is not None:
             return TomeMatchResult(
@@ -194,12 +190,10 @@ class TomeExtractor:
                 confidence="high",
             )
 
-        # 3. Recherche par sous-titre de série dans le titre
         if series_key:
             norm_key = _normalize(series_key)
             sub_map = SERIES_SUBTITLES.get(norm_key)
             if not sub_map:
-                # Tentative de match partiel sur la clé (ex: "1629 — Les naufragés..." -> "1629")
                 for k, v in SERIES_SUBTITLES.items():
                     if k in norm_key:
                         sub_map = v
@@ -224,8 +218,6 @@ class TomeExtractor:
                             confidence="medium",
                         )
 
-            # 3.1 Détection du Tome 1 éponyme quand le 1er album porte le titre de la série
-            # (ex: "Le Combat Ordinaire" où "Tome 1" n'est pas imprimé sur la couverture)
             eponymous_series = {"le combat ordinaire"}
             if (
                 any(ep in norm_key for ep in eponymous_series)
@@ -240,7 +232,6 @@ class TomeExtractor:
                     confidence="medium",
                 )
 
-        # 4. Recherche de repli dans la description (confiance medium)
         desc_tome = cls._detect_tome_number(norm_desc)
         if desc_tome is not None:
             return TomeMatchResult(
@@ -249,7 +240,6 @@ class TomeExtractor:
                 confidence="medium",
             )
 
-        # 5. Aucun tome spécifique trouvé
         return TomeMatchResult(is_lot=False, tome_number=None, confidence="none")
 
     @classmethod
@@ -260,8 +250,6 @@ class TomeExtractor:
             search_texts.append(desc)
 
         for text in search_texts:
-            # A. Séquences de tomes énumérés avec séparateurs (points, virgules, tirets, etc.)
-            # Ex: "1.2.3", "1. 2. 3", "1,2,3", "1, 2, 3", "1-2-3", "1/2/3", "t1-2-3"
             seq_match = re.search(
                 r"(?:^|[\s,;:(])(?:tomes?|t\.?|vols?|volumes?)?\s*([0-9]{1,2}(?:\s*(?:[.,\-/+&]|et)\s*[0-9]{1,2}){1,9})(?:$|[\s,;:!?)])",
                 text,
@@ -274,8 +262,6 @@ class TomeExtractor:
                 if len(parts) >= 2:
                     try:
                         nums = [int(p) for p in parts]
-                        # Disambiguation: "2/8", "vol 2/8", "tome 1/5" est une fraction
-                        # (Tome X sur Y), PAS un lot
                         if len(nums) == 2 and "/" in raw_seq:
                             pass
                         elif all(1 <= n <= 50 for n in nums):
@@ -306,7 +292,6 @@ class TomeExtractor:
                     except ValueError:
                         pass
 
-            # B. Plage de tomes (ex: 'tomes 1 a 4', '1 a 3', '1 à 3', '1 au 3', '1-3')
             range_match = re.search(
                 r"(?:^|[\s,;:(])(?:tomes?|t\.?|vols?|volumes?)?\s*([0-9]{1,2})\s*(?:a|au|à|\-|et)\s*(?:t\.?|tomes?)?\s*([0-9]{1,2})(?:$|[\s,;:!?)])(?!\s*(?:€|eur|euros?|ct|cts|%|cm|mm|kg|g|ans?|mois))",
                 text,
@@ -323,7 +308,6 @@ class TomeExtractor:
                         confidence="high",
                     )
 
-            # C. Énumération explicite avec préfixe : ex 't1 t2 t3' ou 'tome 1, 2, 3'
             enum_matches = re.findall(r"\b(?:t|tome)\s*([0-9]{1,2})\b(?!\s*(?:€|eur|euros?))", text)
             if len(enum_matches) >= 2:
                 try:
@@ -338,7 +322,6 @@ class TomeExtractor:
                 except Exception:
                     pass
 
-            # D. Mot-clé 'lot' dans le texte avec nombre de tomes (ex: 'lot 3 bd', 'lot de 4')
             lot_count_match = re.search(
                 r"\blot\s*(?:de)?\s*([0-9]{1,2})\s*(?:bd|mangas?|livres?|tomes?)?\b",
                 text,
@@ -348,7 +331,6 @@ class TomeExtractor:
                 if 2 <= count <= 30:
                     return TomeMatchResult(is_lot=True, lot_count=count, confidence="high")
 
-            # E. Nombre explicite de tomes/volumes (ex: '(3 volumes)', '3 tomes')
             vol_count_match = re.search(
                 r"(?:\b(?:lot\s*(?:de)?\s*)?|[(\[])([0-9]{1,2})\s*(?:volumes?|vols?|tomes?|bd|livres?)\b(?!\s*(?:€|eur|euros?|ct|cts|%))",
                 text,
@@ -358,7 +340,6 @@ class TomeExtractor:
                 if 2 <= count <= 30:
                     return TomeMatchResult(is_lot=True, lot_count=count, confidence="high")
 
-            # F. Mot-clé générique de lot
             for kw in cls.LOT_KEYWORDS:
                 if re.search(rf"\b{re.escape(kw)}\b", text):
                     return TomeMatchResult(is_lot=True, confidence="medium")
@@ -368,7 +349,6 @@ class TomeExtractor:
     @classmethod
     def _detect_tome_number(cls, text: str) -> int | None:
         """Extrait un numéro de tome unitaire à partir d'un texte normalisé."""
-        # 0. Format fraction de tome (ex: 'vol 2/8', 'tome 1/5', 't2/8', 't. 2/8', 'rip 2/6')
         m_frac = re.search(
             r"(?:(?:\b(?:tomes?|t\.?|vols?|volumes?|livre)\s*\.?\s*)|\bt)([0-9]{1,2})\s*\/\s*([0-9]{1,2})\b",
             text,
@@ -386,7 +366,7 @@ class TomeExtractor:
             if 1 <= num < total <= 20:
                 return num
 
-        # 1. Mot clé tome/volume : 'tome 3', 't3', 't.3', 'vol 3', 'livre 3'
+        # Mot-clé de tome : « tome 3 », « t3 », « vol 3 ».
         m = re.search(
             r"\b(?:tome|t|vol|volume|livre)\s*\.?\s*([0-9]{1,2})\b(?!\s*(?:€|eur|euros?|ct|cts|%))",
             text,
@@ -396,14 +376,14 @@ class TomeExtractor:
             if 1 <= num <= 50:
                 return num
 
-        # 2. Format dièse : '#3', '# 3'
+        # Format dièse : « #3 », « # 3 ».
         m_hash = re.search(r"#\s*([0-9]{1,2})\b", text)
         if m_hash:
             num = int(m_hash.group(1))
             if 1 <= num <= 50:
                 return num
 
-        # 3. Chiffres romains : 'tome iii', 't. iv', 'volume ii'
+        # Chiffres romains : « tome iii », « t. iv ».
         m_roman = re.search(
             r"\b(?:tome|t|vol|volume|livre)\s*\.?\s*([ivx]{1,4})\b",
             text,
@@ -413,24 +393,24 @@ class TomeExtractor:
             if roman_str in ROMAN_NUMERALS:
                 return ROMAN_NUMERALS[roman_str]
 
-        # 4. Format tirets/cadratins : '-6-', '- 6 -', '—6—' (très courant en BD)
+        # Entre tirets ou cadratins : « -6- », « —6— », courant en BD.
         m_hyphen = re.search(r"[-_—–]\s*([0-9]{1,2})\s*[-_—–]", text)
         if m_hyphen:
             num = int(m_hyphen.group(1))
             if 1 <= num <= 50:
                 return num
 
-        # 5. Format parenthèses ou crochets isolés : '(6)', '[6]'
+        # Parenthèses ou crochets : « (6) », « [6] ».
         m_paren = re.search(r"(?:^|[\s])(?:\(|\[)\s*([0-9]{1,2})\s*(?:\)|\])(?:$|[\s])", text)
         if m_paren:
             num = int(m_paren.group(1))
             if 1 <= num <= 50:
                 return num
 
-        # 6. Format suffixe direct : 'rip 2' ou 'blacksad 3' (si seul à la fin)
+        # Suffixe direct : « rip 2 », en fin de texte seulement.
         m_end = re.search(r"\b([1-9]|1[0-9]|20)\s*$", text)
         if m_end:
-            # Ne pas matcher si précédé d'un séparateur de séquence (ex: "1.2.3")
+            # Séparateur avant le nombre (« 1.2.3 ») : séquence, pas suffixe.
             if re.search(r"[.,\-/+&]\s*\d+\s*$", text):
                 return None
             num = int(m_end.group(1))

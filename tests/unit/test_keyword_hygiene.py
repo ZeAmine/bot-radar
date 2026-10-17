@@ -226,10 +226,8 @@ def test_only_the_rule_decides_what_counts_as_degenerate():
     dépendent du contexte, donc ils ne sont pas jouables sur une liste qu'on relit sans
     son contexte.
     """
-    # Un titre sans rapport avec les termes : seul le doublon et le plafond peuvent
-    # décider, sinon la règle du titre parlerait avant eux. Les termes sont donc des
-    # fautes de frappe sur le titre lui-même — ils passent la garde d'identité, sans
-    # quoi les motifs contextuels ne seraient jamais atteints.
+    # Termes passant la garde d'identité : seul le doublon ou le plafond peut décider,
+    # sinon la règle du titre parlerait avant eux.
     title = "Absolute Martian Manhunter"
     misspellings = [f"absolute martian manhunt{letter}" for letter in "abcdefghi"]
     values = [misspellings[0], misspellings[0], *misspellings[1:]]
@@ -438,8 +436,7 @@ def test_a_variant_of_a_qualified_include_is_not_a_drift():
         variant_identity_verdict("blacksad integral", ("Blacksad", "blacksad intégrale"))
         is None
     )
-    # La redondance, elle, se juge bien sur les références : reprendre une inclusion
-    # n'ajoute rien, et l'écriture le refuse.
+    # La redondance se juge bien sur les références : reprendre une inclusion n'ajoute rien.
     assert sanitize_variants(
         ["blacksad integral"], "Blacksad", references=["blacksad intégrale"]
     ) == []

@@ -48,7 +48,7 @@ class BookMarketCache(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     historical_low_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Projection dérivée exclusivement des observations datées conservées.
+    # Projection dérivée uniquement des observations datées conservées.
     annual_low_cents: Mapped[int | None] = mapped_column(Integer)
     annual_low_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     annual_low_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
@@ -66,5 +66,4 @@ class BookMarketCache(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     failed_provider_names: Mapped[list[str] | None] = mapped_column(JSON)
     current_offers: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
 
-    # Relations
     book: Mapped["Book"] = relationship("Book", back_populates="market_cache")

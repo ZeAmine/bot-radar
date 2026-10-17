@@ -27,13 +27,12 @@ from app.services.price_calculator import format_price_summary
 
 logger = logging.getLogger(__name__)
 
-# Limite de légende de `send_photo` : au-delà, Telegram refuse la photo pour la
-# légende, alors que le message texte en accepte 4096. L'information passe avant
-# l'image — jamais l'inverse.
+# Limite de légende de `send_photo` : au-delà, Telegram refuse la photo, alors
+# que le message texte en accepte 4096. L'information passe avant l'image.
 PHOTO_CAPTION_LIMIT = 1024
 
-# Reprise après un refus de Telegram : le refus porte sur le contenu téléchargé à
-# l'instant, une seconde tentative immédiate reprendrait le même résultat en cache.
+# Reprise après refus : le refus porte sur le contenu téléchargé, une tentative
+# immédiate reprendrait le même résultat en cache.
 PHOTO_RETRY_DELAY_SECONDS = 1.0
 
 
@@ -235,8 +234,8 @@ async def send_listing_alert(
                     timing.first_call_at = started_at
 
                 def record_transport(result: str, ended_at: float | None) -> None:
-                    # Capturer le début avant le client, mais émettre après : le log
-                    # de préparation ne doit pas gonfler le chrono du transport.
+                    # Capturer le début avant le client, émettre après : le log ne doit pas
+                    # gonfler le chrono du transport.
                     if first_call:
                         latency.emit(
                             timing,
@@ -262,9 +261,8 @@ async def send_listing_alert(
                     diagnostic(DeliveryResult("unknown", transport, reason="cancelled"), number)
                     raise
                 except Exception as exc:
-                    # aiogram BaseSession.check_response traduit les réponses négatives
-                    # 400/401/403/404 en ces types. Réseau, décodage, 5xx et exceptions
-                    # non documentées ne prouvent pas l'absence d'acceptation.
+                    # aiogram `check_response` traduit les 400/401/403/404 en ces types ;
+                    # réseau, décodage, 5xx et exceptions inconnues ne prouvent pas un refus.
                     rejected = isinstance(
                         exc,
                         (
@@ -352,8 +350,8 @@ async def send_listing_alert(
                             and result.reason != "photo_content_rejected"):
                         completed = True
                         return result
-                    # Aucun nouvel essai photo lorsque le client est revenu sans exception,
-                    # comme auparavant (y compris le cas anormal None).
+                    # Aucun nouvel essai photo quand le client revient sans exception,
+                    # y compris sur le cas anormal None.
                     if result.outcome == "unknown":
                         completed = True
                         return result

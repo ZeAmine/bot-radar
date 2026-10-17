@@ -244,7 +244,7 @@ class VintedSessionManager:
                 return False
             self.last_attempt = time.time()
             try:
-                # Si un client persistant est fourni, vider son jar anti-cookies périmés
+                # Client persistant fourni : purger son jar des cookies périmés.
                 if client is not None and hasattr(client.cookies, "clear"):
                     client.cookies.clear()
 
@@ -317,7 +317,7 @@ class VintedSessionManager:
 
     async def ensure_valid_session(self, client: httpx.AsyncClient, force: bool = False) -> None:
         """Vérifie proactivement la session et anticipe l'expiration du token JWT."""
-        # 1. Si pas de cookies en mémoire vive, tenter de restaurer depuis Redis
+        # Pas de cookies en mémoire : restaurer depuis Redis.
         if not self.cookies:
             redis_cookies = await self.load_cookies_from_redis()
             if redis_cookies:
@@ -328,7 +328,7 @@ class VintedSessionManager:
         token = self.cookies.get("access_token_web")
         token_exp = get_jwt_exp(token) if token else None
 
-        # Rotation proactive : renouveler si le jeton expire dans moins de 30 minutes (1800s)
+        # Rotation proactive : renouveler si le jeton expire sous 30 minutes.
         token_expiring_soon = False
         if token_exp:
             time_left = token_exp - now
@@ -351,7 +351,7 @@ class VintedSessionManager:
             if now - self.last_attempt > 15:
                 await self.refresh_session(client)
         else:
-            # Synchroniser les cookies connus dans le client s'ils n'y sont pas déjà
+            # Propager les cookies connus au client.
             if hasattr(client.cookies, "set"):
                 for k, v in self.cookies.items():
                     client.cookies.set(k, v, domain=".vinted.fr")
@@ -400,7 +400,6 @@ async def fetch_vinted_page(
     try:
         await vinted_session_manager.ensure_valid_session(client)
 
-        # 1. Tentative API Interne JSON (/svc-catalogue/items)
         api_params = catalog_url_to_api_params(url)
         api_headers = vinted_session_manager.get_api_headers()
 
@@ -454,7 +453,6 @@ async def fetch_vinted_page(
                 url,
             )
 
-        # 2. Secours : Scraping du catalogue HTML classique
         headers = vinted_session_manager.get_auth_headers()
         vinted_request_stats.record("html")
         html_response = await client.get(url, headers=headers)
@@ -520,7 +518,6 @@ def to_ingest_payload(
     isbn13: str | None = None,
 ) -> dict[str, Any]:
     """Convertit une annonce extraite en payload pour l'API d'ingestion."""
-    # Calcul des frais standards Vinted
     protection_cents = calculate_buyer_protection_cents(item.item_price_cents)
     shipping_cents = DEFAULT_SHIPPING_CENTS
 

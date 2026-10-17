@@ -48,5 +48,4 @@ class BotEvent(Base, UUIDPrimaryKeyMixin):
         nullable=False,
     )
 
-    # Relations
     user: Mapped["User | None"] = relationship("User", back_populates="events")

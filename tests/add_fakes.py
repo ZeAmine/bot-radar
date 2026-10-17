@@ -36,8 +36,7 @@ from app.services.book_metadata_service import (
 )
 from tests.telegram_fakes import telegram_message
 
-# Bandeaux de parcours qui ont disparu au profit d'un titre unique : leur présence
-# signalerait que la carte redeviendrait dépendante du chemin qui l'a produite.
+# Bandeaux interdits : leur présence signalerait une carte dépendante du chemin qui l'a produite.
 ROUTE_BANNERS = (
     "Alerte configurée en langage naturel",
     "Modification enregistrée",
@@ -53,7 +52,7 @@ BNF_EDITION = BookMetadata(
     publication_year=2022,
     format_detail="1 vol. (224 p.) : ill. en coul. ; 24 cm",
 )
-# Autre édition de la même œuvre : c'est celle-là que l'utilisateur va choisir.
+# Autre édition de la même œuvre, choisie par l'utilisateur.
 BNF_ALTERNATIVE = BookMetadata(
     title="La couleur des choses",
     author="Martin Panchaud",
@@ -210,8 +209,7 @@ def fake_book_search(
         async def search_by_isbn(self, isbn: str, expected_title: str | None = None):
             verdict = await bnf.confirm_isbn_for_title(isbn, expected_title)
             if not isinstance(verdict, IsbnVerdict):
-                # Service simulé d'un test écrit pour l'ancien joint (`verify_isbn`) :
-                # on dérive le verdict de sa réponse, sans rien changer au code réel.
+                # Faux service sans `confirm_isbn_for_title` : verdict dérivé de `verify_isbn`.
                 notice = await bnf.verify_isbn(isbn, expected_title or "")
                 verdict = (
                     IsbnVerdict(

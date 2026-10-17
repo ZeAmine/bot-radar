@@ -287,7 +287,6 @@ async def test_save_alert_tech_creates_alert_without_books():
     ):
         await save_alert(callback, state, db_user, db_session)
 
-    # Vérifications
     mock_alert_repo.create.assert_called_once()
     create_kwargs = mock_alert_repo.create.call_args[1]
     assert create_kwargs["name"] == "Raspberry Pi 4"
@@ -295,14 +294,9 @@ async def test_save_alert_tech_creates_alert_without_books():
     assert create_kwargs["max_item_price_cents"] == 5000
     assert "search_text=Raspberry+Pi+4" in create_kwargs["vinted_search_url"]
 
-    # BookRepository ne doit JAMAIS être appelé pour un produit tech
     mock_book_repo.create.assert_not_called()
     mock_book_repo.link_alert_to_book.assert_not_called()
 
-    # Le message de confirmation est la carte de récap relue, avec son propre en-tête :
-    # mêmes libellés de champ, et aucune ligne ISBN — un produit n'a pas d'identifiant à
-    # trouver, sa catégorie le dit. Le bandeau de catégorie du message précédent, lui,
-    # n'appartient pas à la carte.
     callback.message.edit_text.assert_called_once()
     conf_text = callback.message.edit_text.call_args[0][0]
     assert "Alerte créée" in conf_text
@@ -333,7 +327,6 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     state.set_state = AsyncMock()
     state.clear = AsyncMock()
 
-    # 1. Test du menu Modifier
     await edit_alert_creation_prompt(callback, state)
     callback.answer.assert_called_once()
     callback.message.edit_text.assert_called_once()
@@ -349,17 +342,13 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     assert "al_create_edit:variants" in actions
     assert "al_create_edit:conditions" in actions
     assert "al_create_edit:back" in actions
-    # Le bouton « Recommencer » a disparu avec son handler : aucun callback orphelin.
     assert not any("restart" in action for action in actions)
 
-    # Les libellés sont nus : rien entre parenthèses, la valeur courante ne tronque
-    # plus le nom du champ. Le clavier réel est inspecté, pas une constante.
     labels = [btn.text for row in kb.inline_keyboard for btn in row]
     assert "(" not in "".join(labels)
     assert "Prix maximum" in labels
     assert "Retour au récapitulatif" in labels
 
-    # 2. Test de la sous-option modification de prix
     callback.answer.reset_mock()
     callback.message.edit_text.reset_mock()
     callback.data = "al_create_edit:price"
@@ -367,7 +356,6 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     state.set_state.assert_called_once_with(AlertCreationState.waiting_for_edit_field)
     assert "Prix maximum" in callback.message.edit_text.call_args[0][0]
 
-    # 3. Test de la sous-option retour au récapitulatif
     callback.answer.reset_mock()
     callback.message.edit_text.reset_mock()
     state.set_state.reset_mock()
@@ -416,10 +404,8 @@ async def test_edit_menu_labels_are_bare_for_a_bd_with_an_isbn():
         "États acceptés",
         "Retour au récapitulatif",
     ]
-    # Ni la valeur de l'ISBN ni celle du prix ne débordent dans un libellé.
     assert "9781799510871" not in str(kb.inline_keyboard)
     assert "10,00 €" not in str(kb.inline_keyboard)
-    # Aucun callback orphelin : le bouton supprimé ne survit pas dans le clavier.
     assert not any(
         "restart" in (button.callback_data or "") for button in buttons
     )
@@ -553,7 +539,6 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     with _natural_add_patches(fake_result, KeywordVariantsOutcome.unanswered()) as tasks:
         await start_add_alert(message, state, db_session, db_user)
 
-        # Le handler rend la main sur le jalon : le récap attend la recherche.
         assert loading_message.edit_text.await_count == 1
         await _drain(tasks)
 
@@ -561,15 +546,11 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     message.answer.assert_awaited_once()
     assert "L'IA analyse votre demande" in message.answer.call_args[0][0]
 
-    # Le message d'attente progresse en deux fois : le jalon « ouvrage trouvé », puis
-    # le récap. Le seul `answer` reste le message d'attente initial.
     assert loading_message.edit_text.await_count == 2
     milestone = loading_message.edit_text.await_args_list[0][0][0]
     assert "🔎 <b>Asterix tome 1</b> identifié" in milestone
 
     edited_text = loading_message.edit_text.call_args[0][0]
-    # Le récap est la carte du brouillon, quel que soit le chemin qui y mène : un
-    # titre unique le précède, aucun bandeau de parcours ne s'intercale.
     assert edited_text.startswith(f"{RECAP_TITLE}\n\n")
     for banner in ("Alerte configurée en langage naturel", "Modification enregistrée"):
         assert banner not in edited_text
@@ -577,16 +558,13 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     assert "<b>Titre :</b> Asterix tome 1" in edited_text
     assert "<b>Prix maximum :</b> 10,00 €" in edited_text
     assert state.state is AlertCreationState.confirm_creation
-    # Le moteur n'a pas répondu : le récap le dit plutôt que de laisser croire à un avis.
     assert "L'IA n'a pas répondu après une relance" in edited_text
-    # Et il ne laisse pas cette carte sans issue : le bouton de relance est dessous.
     keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
     assert any(
         button.callback_data == f"alert_create_ai_variants@{state.data['creation_token']}"
         for row in keyboard.inline_keyboard
         for button in row
     )
-    # Aucune alerte existante : rien à signaler.
     milestone = loading_message.edit_text.await_args_list[0][0][0]
     assert "Déjà surveillé" not in milestone
 
@@ -631,7 +609,6 @@ async def test_start_add_alert_natural_add_interrupts_when_already_watched():
     )
 
     alert_repo = MagicMock()
-    # 1ère vérification brute (avant IA) ne trouve rien, 2ème vérification après parsing IA trouve
     alert_repo.find_existing = AsyncMock(side_effect=[None, already])
 
     with (
@@ -653,10 +630,8 @@ async def test_start_add_alert_natural_add_interrupts_when_already_watched():
     ):
         await start_add_alert(message, state, AsyncMock(), db_user)
 
-        # Aucune recherche de variantes n'est lancée en arrière-plan
         variants_mock.assert_not_called()
 
-        # Le message édite le message d'attente pour afficher l'alerte existante et la mise à jour
         edited_text = loading_message.edit_text.call_args[0][0]
         assert "Cette BD est déjà surveillée dans tes alertes" in edited_text
         assert "Astérix le Gaulois" in edited_text
@@ -664,16 +639,13 @@ async def test_start_add_alert_natural_add_interrupts_when_already_watched():
         assert "15,00 €" in edited_text
         assert "20,00 €" in edited_text
 
-        # Charte, règle 2 : les trois phrases d'information et de consigne sont en italique…
         assert "<i>Cette BD est déjà surveillée dans tes alertes.</i>" in edited_text
         assert "<i>Tu as indiqué un prix de 20,00 €.</i>" in edited_text
         assert edited_text.count("<i>") == 3
-        # … et la règle 1 tient : libellés gras, valeurs en romain, jamais italiques.
         assert "<b>Prix maximum actuel :</b> 15,00 €" in edited_text
         assert "<i>15,00 €" not in edited_text
         assert "<b>Statut :</b> Active" in edited_text
 
-        # Clavier avec mise à jour et conservation
         kb = loading_message.edit_text.call_args[1]["reply_markup"]
         callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
         token = state.data["creation_token"]
@@ -682,7 +654,6 @@ async def test_start_add_alert_natural_add_interrupts_when_already_watched():
         assert state.data["existing_alert_id"] == str(already.id)
         assert state.data["new_max_price_cents"] == 2000
 
-        # Le récapitulatif de création n'est jamais proposé
         assert "Confirmer la création de cette alerte ?" not in edited_text
         assert state.state is not AlertCreationState.confirm_creation
 
@@ -728,17 +699,13 @@ async def test_start_add_alert_pre_check_avoids_ia_when_already_watched():
     ):
         await start_add_alert(message, state, AsyncMock(), db_user)
 
-        # L'IA n'est jamais appelée
         parse_mock.assert_not_called()
 
-        # Le message répond directement avec l'alerte existante
         message.answer.assert_called_once()
         text = message.answer.call_args[0][0]
         assert "Cette BD est déjà surveillée dans tes alertes" in text
         assert "Astérix le Gaulois" in text
 
-        # Charte, règle 2 : la phrase d'information et la consigne du pied sont en italique,
-        # la règle 1 garde les valeurs en romain.
         assert "<i>Cette BD est déjà surveillée dans tes alertes.</i>" in text
         assert (
             "<i>Pour modifier son prix maximum, entre un nouveau montant "
@@ -820,7 +787,6 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
         await start_add_alert(message, state, AsyncMock(), User(id=uuid.uuid4()))
         await _drain(tasks)
 
-    # La génération de mots-clés reçoit la fiche vérifiée de l'ouvrage
     keywords_mock.assert_awaited_once_with(
         "La couleur des choses",
         category_slug="bd_comics",
@@ -829,15 +795,12 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
 
     edited_text = loading_message.edit_text.call_args[0][0]
     assert "9782369903086" in edited_text
-    # La provenance secondaire de l'ISBN reste signalée dans la carte compacte.
     assert "Source OpenLibrary (repli BNF)" in edited_text
     assert "<b>ISBN :</b> <code>9782369903086</code>" in edited_text
-    # Exclusions du parsing puis celles ancrées sur la fiche, sans doublon
     assert "roman poche" in edited_text
     assert "keeping two" in edited_text
     assert "couleurdeschoses" in edited_text
 
-    # Le brouillon se lit à plat : les variantes se posent dans l'état du parsing.
     assert state.data["exclude_keywords"] == ["roman poche", "keeping two"]
     assert state.data["variants"] == ["couleurdeschoses"]
     assert state.data["book_context"]["isbn13"] == "9782369903086"
@@ -907,7 +870,6 @@ async def test_start_add_alert_natural_add_reports_engine_had_nothing_to_say():
 
     edited_text = loading_message.edit_text.call_args[0][0]
     assert "L'IA n'a trouvé aucune variante ni exclusion pertinente" in edited_text
-    # Un avis du moteur ne doit jamais se lire comme un silence du moteur.
     assert "pas répondu à temps" not in edited_text
     assert state.data["variants"] == []
     assert state.data["exclude_keywords"] == []
@@ -949,17 +911,14 @@ async def test_start_add_alert_natural_add_drops_stale_recap_if_draft_changed():
 
     with _natural_add_patches(fake_result, outcome) as tasks:
         await start_add_alert(message, state, AsyncMock(), User(id=uuid.uuid4()))
-        # L'utilisateur change d'ouvrage pendant que le moteur travaille.
         await state.update_data(name="Iznogoud")
 
         await _drain(tasks)
 
-    # Seul le jalon est à l'écran : aucun récap d'un produit abandonné.
     assert loading_message.edit_text.await_count == 1
     assert "Alerte configurée en langage naturel" not in (
         loading_message.edit_text.await_args[0][0]
     )
-    # Et rien n'a été écrit dans le brouillon courant.
     assert state.data["variants"] == []
 
 
@@ -1107,7 +1066,6 @@ async def test_select_alert_creation_edition_switches_isbn():
     callback.message = message
     callback.answer = AsyncMock()
 
-    # Le clic revalide l'ISBN choisi : l'autorité doit le connaître pour l'attacher.
     known = BookResolution(
         best=BookMetadata(
             title="La couleur des choses",
@@ -1130,8 +1088,6 @@ async def test_select_alert_creation_edition_switches_isbn():
     text = message.edit_text.call_args[0][0]
     assert "<b>Éditeur :</b> Futuropolis" in text
     assert "<b>ISBN :</b> <code>9782369904151</code>" in text
-    # Sans millésime ni format, la ligne « Édition » n'aurait rien de plus à dire
-    # que « Éditeur » : elle est omise plutôt que dupliquée.
     assert "<b>Édition :</b>" not in text
 
     keyboard = message.edit_text.call_args[1]["reply_markup"]
@@ -1184,8 +1140,6 @@ async def test_finalize_loading_message_falls_back_to_plain_text():
     from app.bot.handlers.alerts_create import _finalize_loading_message
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-    # Dans l'incident, l'édition du message d'attente échoue puis l'envoi aussi :
-    # c'est ce second échec qui faisait remonter l'exception au webhook.
     loading_msg = AsyncMock()
     loading_msg.edit_text = AsyncMock(side_effect=TelegramBadRequest(
         method=None, message="message is not modified"

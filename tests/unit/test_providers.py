@@ -19,10 +19,6 @@ from app.providers.momox import MomoxProvider
 from app.providers.recyclivre import RecyclivreProvider
 from app.providers.registry import ProviderRegistry
 
-# ==============================================================================
-# HELPER HISTORIQUE 1 AN
-# ==============================================================================
-
 
 def test_extract_best_historical_low_empty():
     """Aucune offre ⇒ aucune valeur (pas de faux historique bas)."""
@@ -81,11 +77,6 @@ def test_extract_best_historical_low_returns_minimum():
         ),
     ]
     assert extract_best_historical_low(offers) == 900
-
-
-# ==============================================================================
-# TESTS EBAY BROWSE API
-# ==============================================================================
 
 
 @pytest.mark.asyncio
@@ -151,11 +142,11 @@ async def test_ebay_browse_reject_unknown_shipping_or_currency(
                 {
                     "title": "Sans port",
                     "price": {"value": "10.00", "currency": "EUR"},
-                    "shippingOptions": [],  # Port inconnu -> Doit être rejeté
+                    "shippingOptions": [],
                 },
                 {
                     "title": "Mauvaise devise",
-                    "price": {"value": "10.00", "currency": "USD"},  # Devise USD -> Rejeté
+                    "price": {"value": "10.00", "currency": "USD"},
                     "shippingOptions": [{"shippingCost": {"value": "2.00", "currency": "USD"}}],
                 },
             ]
@@ -191,17 +182,11 @@ async def test_ebay_browse_error_handling(monkeypatch: pytest.MonkeyPatch):
         assert offers == []
 
 
-# ==============================================================================
-# TESTS MOMOX, RECYCLIVRE, GIBERT
-# ==============================================================================
-
-
 @pytest.mark.asyncio
 async def test_momox_shipping_rules():
     """Vérifie la règle de livraison Momox (gratuite dès 19 €, sinon 2,99 €)."""
     provider = MomoxProvider()
 
-    # Offre 1 : 10 € -> port 2,99 € -> 12,99 €
     res_under = httpx.Response(
         200,
         json={
@@ -218,7 +203,6 @@ async def test_momox_shipping_rules():
         assert offers_under[0].shipping_price_cents == 299
         assert offers_under[0].delivered_price_cents == 1299
 
-    # Offre 2 : 25 € -> port gratuit 0 € -> 25,00 €
     res_over = httpx.Response(
         200,
         json={
@@ -262,7 +246,6 @@ async def test_gibert_used_only_filtering():
     """Vérifie que Gibert ne retient que les offres d'occasion."""
     provider = GibertProvider()
 
-    # Produit d'occasion disponible
     res_used = httpx.Response(
         200,
         json={"products": [{"used_price": 8.00, "url": "https://gibert.com/123"}]},
@@ -275,7 +258,6 @@ async def test_gibert_used_only_filtering():
         assert offers[0].shipping_price_cents == 350
         assert offers[0].delivered_price_cents == 1150
 
-    # Produit neuf uniquement -> Rejet
     res_new = httpx.Response(
         200,
         json={"products": [{"price": 15.00, "condition": "Neuf", "is_used": False}]},
@@ -284,11 +266,6 @@ async def test_gibert_used_only_filtering():
         mock_get.return_value = res_new
         offers_new = await provider.get_offers(isbn13="9782205078054", title="Blacksad")
         assert len(offers_new) == 0
-
-
-# ==============================================================================
-# TESTS REGISTRY ET SÉLECTION UNIFIÉE
-# ==============================================================================
 
 
 def test_registry_select_best_offer():
@@ -304,7 +281,7 @@ def test_registry_select_best_offer():
         provider_name="momox",
         item_price_cents=1200,
         shipping_price_cents=299,
-        delivered_price_cents=1499,  # La plus basse !
+        delivered_price_cents=1499,  # La plus basse.
         source_url="https://momox.fr",
     )
     offer_gibert = MarketOffer(
@@ -319,11 +296,6 @@ def test_registry_select_best_offer():
     assert best is not None
     assert best.provider_name == "momox"
     assert best.delivered_price_cents == 1499
-
-
-# ==============================================================================
-# ROBUSTESSE : HISTORIQUE, ISBN ET SÉLECTION
-# ==============================================================================
 
 
 def test_extract_best_historical_low_ignores_invalid_values():

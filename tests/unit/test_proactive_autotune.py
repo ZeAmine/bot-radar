@@ -31,18 +31,14 @@ async def test_pending_tuning_cache_lifecycle():
     alert_id = uuid.uuid4()
     exclusions = ["dvd", "blu-ray", "figurine"]
 
-    # Sauvegarde
     await save_pending_tuning(alert_id, exclusions)
 
-    # Lecture
     retrieved = await get_pending_tuning(alert_id)
     assert retrieved == exclusions
 
-    # Extraction (pop)
     popped = await pop_pending_tuning(alert_id)
     assert popped == exclusions
 
-    # Vérification que le cache est vide après pop
     empty = await get_pending_tuning(alert_id)
     assert empty == []
 
@@ -145,7 +141,6 @@ async def test_check_and_trigger_proactive_autotune_success():
         assert "Exclusions proposées" in kwargs["text"]
         assert "dvd, jeu" in kwargs["text"]
 
-        # Vérification des boutons interactifs
         kb = kwargs["reply_markup"].inline_keyboard
         assert kb[0][0].callback_data == f"ai_tune_apply:{alert_id}"
         assert kb[1][0].callback_data == f"ai_tune_edit:{alert_id}"
