@@ -72,7 +72,6 @@ class MomoxProvider:
             if item_price_cents <= 0:
                 return []
 
-            # Application des règles de livraison Momox
             shipping_price_cents = (
                 0
                 if item_price_cents >= self.FREE_SHIPPING_THRESHOLD_CENTS

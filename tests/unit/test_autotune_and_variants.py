@@ -84,13 +84,10 @@ async def test_handle_create_ai_variants():
         state.update_data.assert_called_once()
         updated_data = state.update_data.call_args[1]
         assert "onepiece" in updated_data["variants"]
-        # « one piece tomes » répète le titre : le nettoyeur l'écarte, comme le fait
-        # déjà le module en amont. Une variante qui contient le titre n'ajoute rien,
-        # l'annonce qu'elle validerait contient déjà le mot-clé d'inclusion.
+        # « one piece tomes » répète le titre : le nettoyeur l'écarte, comme en amont.
         assert "one piece tomes" not in updated_data["variants"]
         assert "figurine" in updated_data["exclude_keywords"]
 
-        # Doit afficher le message de chargement puis le récapitulatif mis à jour
         assert callback.message.edit_text.call_count == 2
         last_text = callback.message.edit_text.call_args[0][0]
         assert "Variantes :" in last_text
@@ -135,8 +132,7 @@ async def test_handle_create_ai_variants_reports_engine_decision_when_nothing_fo
     callback.answer.assert_awaited_once()
     assert callback.message.edit_text.call_count == 2
     last_text = callback.message.edit_text.call_args[0][0]
-    # La carte ne s'habille pas d'un en-tête de cas particulier : titre unique, et
-    # c'est elle qui porte la note.
+    # La carte garde un titre unique et porte la note, sans en-tête de cas particulier.
     assert last_text.startswith(RECAP_TITLE)
     assert "n'a trouvé aucune variante ni exclusion pertinente" in last_text
 
@@ -249,7 +245,6 @@ async def test_handle_autotune_with_dislikes():
     ):
         await handle_autotune_command(message, db_user, db_session)
 
-        # Doit envoyer le message de chargement puis le résultat final
         assert message.answer.call_count == 2
         text = message.answer.call_args[0][0]
         assert "🧹 Exclusions proposées" in text
@@ -427,7 +422,6 @@ async def test_handle_tune_apply():
         callback.message.edit_text.assert_called_once()
         text = callback.message.edit_text.call_args[0][0]
         assert "2 faux positifs traités retirés de la liste" in text
-        # Vérifie les boutons de retour : hub prioritaire et alerte secondaire
         kb = callback.message.edit_text.call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == "ai_tune_hub"
         assert kb.inline_keyboard[1][0].callback_data == f"al_edit:{alert.id}"
@@ -497,17 +491,14 @@ async def test_handle_var_apply():
     ):
         await handle_var_apply(callback, db_user, db_session)
 
-        # Les mots-clés obligatoires restent intacts
         assert alert.include_keywords == ["One Piece"]
-        # Les variantes sont ajoutées à alert.variants ; celle qui répète le titre est
-        # écartée au passage, comme le fait déjà le module en amont.
+        # Celle qui répète le titre est écartée, comme le fait le module en amont.
         assert "onepiece" in alert.variants
         assert "one piece tomes" not in alert.variants
         db_session.commit.assert_called_once()
 
         callback.answer.assert_called_once()
         callback.message.edit_text.assert_called_once()
-        # Bouton retour vers l'alerte
         kb = callback.message.edit_text.call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == f"al_edit:{alert.id}"
 
@@ -521,7 +512,6 @@ async def test_autotune_concurrency_lock():
     callback = MagicMock(spec=CallbackQuery)
     callback.answer = AsyncMock()
 
-    # Simuler une analyse déjà en cours
     _active_tuning_alerts.add(str(alert_id))
     try:
         await process_autotune_for_alert(callback, alert, MagicMock())
@@ -688,7 +678,7 @@ async def test_handle_tune_cancel_preserves_dislikes():
     ) as mock_clear:
         await handle_tune_cancel(callback, db_user, db_session)
 
-        # Les faux positifs ne sont PAS supprimés lors d'une annulation
+        # Une annulation ne supprime jamais les faux positifs.
         mock_clear.assert_not_called()
         assert await get_pending_tuning(alert_id) == []
         callback.answer.assert_called_once_with("Opération annulée.")
@@ -711,7 +701,6 @@ async def test_show_autotune_hub():
 
     alert1 = Alert(id=uuid.uuid4(), name="Persepolis", user_id=user_id)
 
-    # 1. Cas avec alertes restantes
     with patch(
         "app.bot.handlers.autotune.get_alerts_with_dislikes",
         new_callable=AsyncMock,
@@ -725,7 +714,6 @@ async def test_show_autotune_hub():
         assert kb.inline_keyboard[0][0].callback_data == f"ai_tune_select:{alert1.id}"
         assert kb.inline_keyboard[1][0].callback_data == "ai_tune_close"
 
-    # 2. Cas où toutes les alertes ont été traitées
     callback.message.edit_text.reset_mock()
     with patch(
         "app.bot.handlers.autotune.get_alerts_with_dislikes",

@@ -120,7 +120,6 @@ def setup_logging(log_level: str = "INFO") -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level.upper())
 
-    # Supprimer les handlers existants pour éviter les doublons
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
@@ -128,7 +127,6 @@ def setup_logging(log_level: str = "INFO") -> None:
     handler.setFormatter(JSONFormatter())
     root_logger.addHandler(handler)
 
-    # Réduire le bruit des bibliothèques externes
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

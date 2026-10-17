@@ -53,12 +53,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("radar.sync_chasse_session")
 
-# Ouvrages-sondes : la validation doit prouver que la série 1 an répond, sur un
-# titre dont elle est connue publiquement — sinon « aucune offre » ferait passer
-# pour un jeton refusé. Une seule sonde serait un point unique de panne : si
-# l'ouvrage disparaît du site, un jeton pourtant valide serait rejeté à chaque
-# passe, c'est-à-dire le silence que ce script existe pour empêcher. La deuxième
-# sonde n'est interrogée que si la première n'a rien rendu.
+# Ouvrages-sondes : la validation doit prouver que la série 1 an répond. Deux sondes
+# pour qu'un ouvrage retiré du site ne fasse pas rejeter un jeton pourtant valide.
 PROBE_CANDIDATES: tuple[tuple[str, str], ...] = (
     ("9782380463972", "Dead Train T1"),
     ("9782205088168", "Le Monde sans fin"),

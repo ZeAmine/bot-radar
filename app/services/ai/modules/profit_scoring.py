@@ -30,8 +30,7 @@ class ProfitScoringModule(BasePostAlertModule):
         if not self.is_enabled or not listing.item_price_cents:
             return None
 
-        # Exclure les livres / BDs / Mangas : Chasse-aux-Livres fournit déjà
-        # la cote réelle du marché
+        # Livres/BD/Mangas exclus : Chasse-aux-Livres fournit déjà la cote.
         if listing.category_slug in (CategorySlug.BD_COMICS.value, "livres", "mangas"):
             return None
 
@@ -101,7 +100,7 @@ class ProfitScoringModule(BasePostAlertModule):
 
     def format_telegram_html(self, result: ProfitScoringResult | None) -> str | None:
         if not result or result.pepite_score is None or result.pepite_score < 6.5:
-            # Ne pas encombrer l'utilisateur si la rentabilité est médiocre (< 6.5/10)
+            # Seuil 6.5/10 : ne pas encombrer l'utilisateur pour une rentabilité médiocre.
             return None
 
         score_val = result.pepite_score

@@ -100,10 +100,7 @@ async def test_handle_status_day_active():
         assert "scan -" in text
         assert "00:00 - 07:00" in text
         assert "<b>Alertes actives (10) :</b>" in text
-        # La section « Latence » rend les deux mesures : le délai que l'application
-        # contrôle, et la cadence qui reste la seule part réellement réductible.
-        # Percentiles interpolés (sémantique `percentile_cont`) sur [0,98 ; 4,09] s :
-        # p50 = 2,535 s et p95 = 3,9345 s.
+        # La section Latence rend les deux mesures (contrôlable + cadence), percentiles interpolés.
         assert "<b>Latence</b>" in text
         assert "<b>Réception → marquage :</b> 2535 ms" in text
         assert "<b>Cadence de scrutation :</b> 17.4 s" in text
@@ -309,9 +306,7 @@ def test_health_command_removed():
 
     command_names = [cmd.command for cmd in BOT_COMMANDS]
     assert "health" not in command_names
-    # /status n'est plus au menu — le menu est réduit à quatre entrées — mais la
-    # commande reste vivante et c'est /help qui la rend retrouvable. La retirer de
-    # l'aide serait la supprimer pour de bon.
+    # /status reste vivant hors menu et figure dans /help (ne pas le retirer).
     assert "/health" not in HELP_TEXT
     assert "/status" in HELP_TEXT
 

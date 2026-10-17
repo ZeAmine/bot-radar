@@ -42,8 +42,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     async def shutdown_services() -> None:
         stop_event.set()
-        # Le shutdown asyncio d'APScheduler est différé et ne joint pas ses jobs.
-        # Son exécuteur 3.x efface _pending_futures : conserver les producteurs avant.
+        # Shutdown APScheduler différé : son exécuteur 3.x efface _pending_futures,
+        # d'où la capture des producteurs avant l'arrêt.
         stopped = asyncio.Event()
 
         def scheduler_stopped(_event: SchedulerEvent) -> None:
@@ -81,7 +81,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        # Opération locale fortement retenue et toujours jointe, jamais détachée.
+        # Nettoyage local, retenu par une référence forte : jamais détaché.
         cleanup = asyncio.create_task(shutdown_services(), name="shutdown-services")
         caller_cancellation: asyncio.CancelledError | None = None
         while True:
@@ -116,7 +116,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 
 def create_app() -> FastAPI:
     """Fabrique de l'application FastAPI."""
-    # Désactivation de la documentation interactive et du schéma OpenAPI en production
+    # Production : ni documentation interactive ni schéma OpenAPI exposés.
     docs_url = None if settings.is_production else "/docs"
     redoc_url = None if settings.is_production else "/redoc"
     openapi_url = None if settings.is_production else "/openapi.json"

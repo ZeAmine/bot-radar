@@ -339,12 +339,10 @@ async def test_shutdown_cancellation_still_drains_and_closes_clients(monkeypatch
     assert not registered
 
 
-# --- Cycle de vie réel d'APScheduler : job asynchrone en cours à l'arrêt ---
+
 #
-# Ces scénarios utilisent un vrai `AsyncIOScheduler` et son exécuteur asyncio réel.
-# Le lanceur isolé les autorise nommément (`scripts/verify_consolidation.py`) : l'exécuteur
-# asyncio 3.x efface `_pending_futures` pendant `shutdown`, donc remplacer cette collection
-# par un double supprimerait exactement le comportement à démontrer.
+# Ces scénarios utilisent un vrai AsyncIOScheduler.
+# Le double masquerait le comportement à démontrer (effacement de `_pending_futures` au shutdown).
 
 
 def _lifespan_patches(scheduler):

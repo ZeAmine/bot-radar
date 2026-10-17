@@ -22,7 +22,6 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Table: users
     op.create_table(
         "users",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -41,7 +40,6 @@ def upgrade() -> None:
     )
     op.create_index("ix_users_telegram_user_id", "users", ["telegram_user_id"])
 
-    # Table: categories
     op.create_table(
         "categories",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -93,7 +91,6 @@ def upgrade() -> None:
         ],
     )
 
-    # Table: alerts
     op.create_table(
         "alerts",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -122,7 +119,6 @@ def upgrade() -> None:
     op.create_index("ix_alerts_user_id", "alerts", ["user_id"])
     op.create_index("ix_alerts_status", "alerts", ["status"])
 
-    # Table: books
     op.create_table(
         "books",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -149,7 +145,6 @@ def upgrade() -> None:
     op.create_index("ix_books_isbn13", "books", ["isbn13"])
     op.create_index("ix_books_normalized_title", "books", ["normalized_title"])
 
-    # Table: alert_books
     op.create_table(
         "alert_books",
         sa.Column("alert_id", sa.Uuid(), nullable=False),
@@ -163,7 +158,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("alert_id", "book_id"),
     )
 
-    # Table: listings
     op.create_table(
         "listings",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -196,7 +190,6 @@ def upgrade() -> None:
     op.create_index("ix_listings_normalized_title", "listings", ["normalized_title"])
     op.create_index("ix_listings_received_at", "listings", ["received_at"])
 
-    # Table: listing_matches
     op.create_table(
         "listing_matches",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -217,7 +210,6 @@ def upgrade() -> None:
     op.create_index("ix_listing_matches_alert_id", "listing_matches", ["alert_id"])
     op.create_index("ix_listing_matches_listing_id", "listing_matches", ["listing_id"])
 
-    # Table: market_price_snapshots
     op.create_table(
         "market_price_snapshots",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -246,7 +238,6 @@ def upgrade() -> None:
         "ix_market_price_snapshots_provider_name", "market_price_snapshots", ["provider_name"]
     )
 
-    # Table: book_market_cache
     op.create_table(
         "book_market_cache",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -272,7 +263,6 @@ def upgrade() -> None:
     )
     op.create_index("ix_book_market_cache_expires_at", "book_market_cache", ["expires_at"])
 
-    # Table: bot_events
     op.create_table(
         "bot_events",
         sa.Column("id", sa.Uuid(), nullable=False),

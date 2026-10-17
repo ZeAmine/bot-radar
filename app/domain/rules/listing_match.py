@@ -83,10 +83,7 @@ DEFAULT_BD_GOODIES_EXCLUSIONS: list[str] = [
     "jaquette seule",
 ]
 
-# Dictionnaire d'équivalences multilingues pour éradiquer les faux positifs
-# transfrontaliers (ES, DE, IT, EN)
 MULTILINGUAL_EXCLUSION_MAPPING: dict[str, list[str]] = {
-    # Boîtes et emballages vides
     "boite vide": [
         "caja vacia", "solo caja", "caja sin", "nur ovp", "nur huelle",
         "leere ovp", "leere huelle", "solo scatola", "empty box",
@@ -96,11 +93,9 @@ MULTILINGUAL_EXCLUSION_MAPPING: dict[str, list[str]] = {
     "boitier seul": ["solo caja", "nur huelle", "solo custodia", "case only"],
     "jaquette seule": ["solo caratula", "nur cover", "solo copertina", "cover only"],
 
-    # Éléments sans jeu / sans cartouche
     "sans jeu": ["sin juego", "ohne spiel", "senza gioco", "no game"],
     "sans cartouche": ["sin cartucho", "ohne modul", "senza cartuccia", "no cartridge"],
 
-    # Accessoires et alimentations
     "chargeur": ["cargador", "netzteil", "ladekabel", "alimentatore", "charger"],
     "chargeur seul": ["solo cargador", "nur netzteil", "charger only"],
     "alimentation": ["cargador", "netzteil", "alimentatore", "power supply"],
@@ -110,13 +105,11 @@ MULTILINGUAL_EXCLUSION_MAPPING: dict[str, list[str]] = {
     "coque seule": ["solo funda", "nur huelle", "case only"],
     "housse": ["funda", "tasche", "custodia", "pouch", "sleeve"],
 
-    # État défectueux / pour pièces
     "pour pieces": ["para piezas", "defekt", "bastler", "per ricambi", "per parti", "for parts"],
     "hs": ["averiado", "defekt", "non funzionante", "broken"],
     "en panne": ["averiado", "defekt", "guasto"],
     "casse": ["roto", "kaputt", "rotto", "broken"],
 
-    # Vêtements : défauts
     "tache": ["mancha", "fleck", "macchia", "stain"],
     "trou": ["agujero", "loch", "buco", "hole"],
     "fake": ["falso", "falsa", "falschung", "imitacion", "replica"],
@@ -164,9 +157,7 @@ def expand_exclusions_multilingual(exclusions: list[str]) -> list[str]:
     return list(_expand_exclusions_cached(tuple(exclusions)))
 
 
-# Marqueurs de langue étrangère pour les jeux vidéo (rejet des jaquettes non-françaises)
 FOREIGN_GAME_LANGUAGE_PATTERNS = [
-    # Espagnol
     r"\ben\s+castellano\b",
     r"\ben\s+espa[nñ]ol\b",
     r"\bcaja\s+en\s+espa[nñ]ol\b",
@@ -178,7 +169,6 @@ FOREIGN_GAME_LANGUAGE_PATTERNS = [
     r"\bvendo\s+juego\b",
     r"\bversi[oó]n\s+espa[nñ]ola\b",
     r"\bcaja\s+y\s+manual\s+en\s+espa[nñ]ol\b",
-    # Allemand
     r"\bauf\s+deutsch\b",
     r"\bdeutsche\s+version\b",
     r"\bdeutsche\s+texte\b",
@@ -186,7 +176,6 @@ FOREIGN_GAME_LANGUAGE_PATTERNS = [
     r"\bneuwertig\b",
     r"\bsehr\s+guter\s+zustand\b",
     r"\bversand\s+m[oö]glich\b",
-    # Italien
     r"\bin\s+italiano\b",
     r"\blingua\s+italiana\b",
     r"\bscatola\s+in\s+italiano\b",
@@ -196,7 +185,6 @@ FOREIGN_GAME_LANGUAGE_PATTERNS = [
     r"\bgioco\s+per\s+nintendo\b",
 ]
 
-# Marqueurs explicites attestant d'une édition française PAL-FR
 FRENCH_PAL_FR_PATTERNS = [
     r"\bpal\s+fr\b",
     r"\bversion\s+fran[cç]aise\b",
@@ -247,7 +235,6 @@ def isbn_digits(value: str | None) -> str:
     return re.sub(r"[^\dX]", "", value.upper())
 
 
-# Suite de chiffres assez longue pour être un ISBN recopié (avec ou sans tirets).
 _ISBN_LIKE_RUN = re.compile(r"\d[\d\-\s]{8,}\d")
 
 
@@ -325,10 +312,6 @@ def usable_variants(
     Le titre et les inclusions sont facultatifs pour ne pas alourdir les appels qui
     n'ont que la liste : sans référence, le verdict d'identité ne décide rien.
     """
-    # Court-circuit : la grande majorité des alertes n'ont aucune variante, et leur
-    # couple (alerte, annonce) ne doit rien construire — ni tuple pour la mémoïsation,
-    # ni référence à hacher. Le coût du guarde-fou ne doit peser que sur celles qui en
-    # ont.
     if not alert_variants:
         return []
     return list(
@@ -410,8 +393,6 @@ def default_exclusion_hit(
     for c_excl in exclusions:
         if not contains_normalized_keyword(normalized_title, c_excl):
             continue
-        # Les mots-clés inclus restent bruts : ils viennent de l'alerte, pas du texte
-        # déjà normalisé, et ils sont peu nombreux — c'est le titre qui est long.
         if any(contains_keyword(kw, c_excl) for kw in includes):
             continue
         return c_excl
@@ -430,7 +411,6 @@ def evaluate_listing_against_alert(
     listing_raw_url: str | None = None,
 ) -> MatchResult:
     """Évalue si une annonce correspond aux critères d'une alerte."""
-    # 1. Vérification du statut de l'alerte
     if alert.status != AlertStatus.ACTIVE:
         return MatchResult(
             is_match=False,
@@ -439,7 +419,6 @@ def evaluate_listing_against_alert(
             evaluated_count=1,
         )
 
-    # 2. Vérification de la catégorie
     alert_cat_slug: str | None = None
     if hasattr(alert, "category") and alert.category:
         alert_cat_slug = alert.category.slug
@@ -455,7 +434,6 @@ def evaluate_listing_against_alert(
             evaluated_count=2,
         )
 
-    # 3. Vérification du prix maximum de l'article
     if price_is_above_max(alert.max_item_price_cents, listing_item_price_cents):
         return MatchResult(
             is_match=False,
@@ -465,14 +443,10 @@ def evaluate_listing_against_alert(
             evaluated_count=3,
         )
 
-    # Texte consultable normalisé une fois : les regex n'enlèvent pas les accents.
     searchable_text = normalize_text(
         f"{listing_normalized_title} {listing_normalized_description or ''}"
     )
 
-    # 4. Règle stricte anti-faux-positifs par ISBN (Priorité absolue)
-    # Si l'alerte est configurée avec un ISBN spécifique, la correspondance
-    # DOIT être exacte sur cet ISBN.
     hybrid_matched = False
     isbn_route = ""
     if getattr(alert, "isbn", None):
@@ -497,17 +471,14 @@ def evaluate_listing_against_alert(
                 isbn_route = "isbn_text"
 
         if not isbn_matched:
-            # Fallback hybride pour vendeurs occasionnels sans ISBN renseigné
             hybrid_matched = False
             if listing_category_slug == "bd_comics" and alert.name:
                 clean_alert_isbn = isbn_digits(alert.isbn)
 
-                # 1. Découpage du nom de l'alerte
                 clean_title = alert.name.split("—")[0].split(" - ")[0].strip()
                 norm_work_title = normalize_text(clean_title)
                 norm_alert_name = normalize_text(alert.name)
 
-                # Protection franchise comics (Spider-Man, Batman, etc.)
                 is_franchise = norm_work_title in FRANCHISE_PREFIXES
                 sub_title = (
                     alert.name.split("—")[-1].split(" - ")[-1].strip()
@@ -537,10 +508,6 @@ def evaluate_listing_against_alert(
                     w for w in norm_work_title.split() if w not in stop_words and len(w) > 2
                 ]
 
-                # Titre complet ou sous-titre spécifique présent dans l'annonce.
-                # Le titre de l'annonce et `searchable_text` sont déjà normalisés, et
-                # les trois Norm* ci-dessus aussi : ce sont des Confrontations sur du
-                # texte normalisé, pas des normalisations.
                 title_in_listing = (
                     contains_normalized_keyword(listing_normalized_title, norm_alert_name)
                     or contains_normalized_keyword(searchable_text, norm_alert_name)
@@ -564,8 +531,6 @@ def evaluate_listing_against_alert(
                     )
                 )
 
-                # 2. Vérification stricte des include_keywords : en l'absence d'ISBN textuel,
-                # les mots-clés choisis par l'utilisateur (ou une variante) DOIVENT être présents !
                 non_isbn_kws = [
                     kw
                     for kw in (alert.include_keywords or [])
@@ -598,9 +563,6 @@ def evaluate_listing_against_alert(
                     )
 
                 if is_franchise:
-                    # Pour les franchises (Spider-Man, Batman...), le préfixe seul ne suffit pas.
-                    # Il faut soit le sous-titre d'album, soit que les
-                    # mots-clés choisis soient spécifiques
                     has_specific_kws = (
                         user_kws_match
                         and bool(alert.include_keywords)
@@ -616,17 +578,12 @@ def evaluate_listing_against_alert(
                         len(title_sig_words) >= 2
                         or (user_kws_match and len(norm_work_title) >= 6)
                     ):
-                        # Titre distinctif ou Lot détecté
                         hybrid_matched = True
                     else:
-                        # Titre court / 1 mot / chiffres (ex: "1984", "RIP", "Blast")
-                        # Exige un contexte BD (mot bd, tome, volume, etc.)
-                        # ou la mention de l'auteur / variante
                         author_part = alert.name.split("—")[-1].strip() if "—" in alert.name else ""
                         author_words = [
                             w for w in normalize_text(author_part).split() if len(w) >= 4
                         ]
-                        # Mots-clés additionnels (auteur ou variante) présents dans include_keywords
                         for kw in (alert.include_keywords or []):
                             for w in normalize_text(kw).split():
                                 if (
@@ -664,7 +621,6 @@ def evaluate_listing_against_alert(
     if hybrid_matched:
         isbn_route = "isbn_hybrid"
 
-    # 5. Vérification des exclusions par défaut selon la catégorie
     if listing_category_slug == "bd_comics":
         category_defaults = DEFAULT_BD_GOODIES_EXCLUSIONS
     elif listing_category_slug == "tech":
@@ -689,7 +645,6 @@ def evaluate_listing_against_alert(
             decisive_details=(("expanded_exclusion_index", expanded_defaults.index(default_hit)),),
         )
 
-    # Vérification des mots-clés exclus configurés par l'utilisateur (avec extension multilingue)
     expanded_user_excludes = expand_exclusions_multilingual(
         usable_exclusions(alert.exclude_keywords, alert.name)
     )
@@ -705,7 +660,6 @@ def evaluate_listing_against_alert(
             ),
         )
 
-    # 5bis. Filtre qualité Jeux Vidéo : Rejet des éditions étrangères non-PAL-FR
     if listing_category_slug == "gaming":
         has_foreign_language = any(
             bool(re.search(pat, searchable_text, re.IGNORECASE))
@@ -724,9 +678,6 @@ def evaluate_listing_against_alert(
                     evaluated_count=7,
                 )
 
-    # 6. Vérification des mots-clés inclus (Règle stricte anti-faux-positifs)
-    # Si le texte de l'annonce ne contient pas textuellement les chiffres de l'ISBN,
-    # les mots-clés de l'alerte doivent obligatoirement être présents !
     isbn_textually_present = False
     clean_alert_isbn = ""
     if getattr(alert, "isbn", None):
@@ -762,15 +713,6 @@ def evaluate_listing_against_alert(
         all_includes_match = True
 
     if not all_includes_match:
-        # Vérification des variantes alternatives (OU logique entre variantes).
-        #
-        # Vérification des variantes alternatives (OU logique entre variantes).
-        # Aucune garde de catégorie : le mécanisme n'est pas propre aux livres. C'est le
-        # parcours d'ingestion de bout en bout (tests/unit/test_ingest_to_telegram.py) qui
-        # le tient pour acquis sur une alerte tech — la variante « geforce rtx 4070 »
-        # valide une annonce que le mot-clé « nvidia rtx 4070 dual » ne décrit pas. Ce qui
-        # est filtré n'est donc pas la catégorie, mais l'identité : `usable_variants`
-        # écarte une variante devenue étrangère au produit.
         variant_matched = False
         for variant_index, raw_variant in enumerate(
             usable_variants(
@@ -798,7 +740,6 @@ def evaluate_listing_against_alert(
 
     matched_keywords_count = len(alert.include_keywords or [])
 
-    # 6. Vérification de l'état si l'alerte a des conditions restreintes
     if not condition_is_accepted(alert.accepted_conditions, listing_condition):
         return MatchResult(
             is_match=False,
@@ -808,7 +749,6 @@ def evaluate_listing_against_alert(
             evaluated_count=9,
         )
 
-    # Tous les critères sont validés
     return MatchResult(
         is_match=True,
         keyword_match_score=matched_keywords_count,

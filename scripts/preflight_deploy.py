@@ -334,7 +334,7 @@ def check_remote_code(
         print(f"        {DIM}{err.strip()[:100]}{RESET}")
 
     if post_sync:
-        # Compose ne masque plus le code de l'image par des bind mounts.
+        # Le conteneur sert le code de son image, pas les fichiers synchronisés.
         image_files = [
             name for name in files
             if name.startswith(("app/", "alembic/", "scripts/")) or name == "alembic.ini"
@@ -359,9 +359,8 @@ def check_remote_code(
             report.ok("code servi par radar_app", "empreintes des fichiers cibles identiques")
 
 
-# Alembic écrit « révision (head) » ; ses lignes de log partagent l'entrée standard
-# (`2>&1`) et un identifiant alphanumérique comme premier mot, si bien qu'une simple
-# lecture du premier mot prendrait « INFO » pour une révision.
+# Alembic écrit « révision (head) » ; ses logs partagent `2>&1` et commencent aussi
+# par un mot alphanumérique : lire le premier mot prendrait « INFO » pour une révision.
 _REVISION_LINE = re.compile(r"^([A-Za-z0-9_]+)\s+\((?:head|branch[^)]*)\)")
 _HEAD_LINE = re.compile(r"^([A-Za-z0-9_]+)\s+\(head\)", re.MULTILINE)
 

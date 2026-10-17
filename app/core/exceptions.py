@@ -18,9 +18,6 @@ class BotRadarError(Exception):
 RadarBotError = BotRadarError
 
 
-# --- Erreurs de Domaine (Métier pur) ---
-
-
 class DomainError(BotRadarError):
     """Erreur survenue au niveau des règles de gestion métier."""
 
@@ -37,18 +34,12 @@ class InvalidAlertError(DomainError):
     """Configuration d'alerte invalide ou incohérente."""
 
 
-# --- Erreurs de Fournisseurs / Adaptateurs Externes ---
-
-
 class ProviderError(BotRadarError):
     """Erreur lors de l'interaction avec un service tiers (API, Scraping, LLM)."""
 
 
 class MarketPriceProviderError(ProviderError):
     """Erreur lors de l'interrogation d'un comparateur de prix externe."""
-
-
-# --- Erreurs de Persistance / Repositories ---
 
 
 class RepositoryError(BotRadarError):

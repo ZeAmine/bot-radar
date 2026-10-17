@@ -189,7 +189,6 @@ async def test_run_reports_changes_without_writing_by_default():
         code = await cck.run(args)
 
     assert code == cck.EXIT_CHANGES
-    # Aucune écriture : l'alerte en mémoire est intacte.
     assert alert.variants == FAMILY
 
 

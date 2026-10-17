@@ -9,7 +9,6 @@ Ce module regroupe les sous-modules spécialisés :
 
 from aiogram import Router
 
-# Ré-export du flux de création
 from app.bot.handlers._alerts_router import router as alerts_create_router
 from app.bot.handlers.alerts_create import (
     handle_category_selected,
@@ -27,16 +26,12 @@ from app.bot.handlers.alerts_create_confirm import (
     handle_cancel_command,
     prompt_new_price,
 )
-
-# Ré-export des aides et formateurs
 from app.bot.handlers.alerts_helpers import (
     extract_inline_price_and_clean_query,
     format_alerts_list_text,
     process_bd_query_lookup,
     process_tech_or_clothes_query,
 )
-
-# Ré-export du flux de gestion / modification
 from app.bot.handlers.alerts_manage import (
     confirm_soft_delete_alert,
     handle_close_alert_menu,
@@ -57,8 +52,6 @@ from app.bot.handlers.alerts_manage import (
 from app.bot.handlers.alerts_manage import (
     router as alerts_manage_router,
 )
-
-# Ré-export du flux de consultation
 from app.bot.handlers.alerts_view import (
     CATEGORY_ARG_MAP,
     display_alerts_list,
@@ -75,18 +68,15 @@ from app.bot.handlers.alerts_view import (
     router as alerts_view_router,
 )
 
-# Ré-export des classes de repository pour rétrocompatibilité et isolation des tests unitaires
+# Ré-export pour rétrocompatibilité et isolation des tests unitaires.
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.category_repo import CategoryRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
-
-# Ré-export des utilitaires ISBN
 from app.utils.isbn import extract_clean_isbn, isbn10_to_isbn13
 
-# Routeur principal d'agrégation. L'annulation est incluse en premier : elle doit
-# être arbitrée avant tout handler d'état qui accepte du texte libre, sinon `/cancel`
-# serait consommé comme un titre.
+# L'annulation est incluse en premier : elle doit être arbitrée avant tout
+# handler d'état qui accepte du texte libre, sinon /cancel serait un titre.
 router = Router(name="alerts_router")
 router.include_router(cancel_router)
 router.include_router(alerts_create_router)
@@ -94,26 +84,21 @@ router.include_router(alerts_view_router)
 router.include_router(alerts_manage_router)
 
 __all__ = [
-    # Router
     "router",
     "cancel_router",
     "alerts_create_router",
     "alerts_view_router",
     "alerts_manage_router",
-    # Repositories
     "AlertRepository",
     "CategoryRepository",
     "BookRepository",
     "MarketPriceRepository",
-    # ISBN
     "extract_clean_isbn",
     "isbn10_to_isbn13",
-    # Helpers
     "extract_inline_price_and_clean_query",
     "format_alerts_list_text",
     "process_bd_query_lookup",
     "process_tech_or_clothes_query",
-    # Create
     "start_add_alert",
     "handle_category_selected",
     "handle_query_input",
@@ -125,7 +110,6 @@ __all__ = [
     "edit_alert_creation_prompt",
     "prompt_new_price",
     "back_to_recap",
-    # View
     "CATEGORY_ARG_MAP",
     "show_alerts",
     "paginate_alerts",
@@ -136,7 +120,6 @@ __all__ = [
     "handle_list_category_menu",
     "handle_select_list_category",
     "paginate_alerts_list",
-    # Manage
     "handle_edit_command",
     "show_edit_categories",
     "handle_edit_category_menu",

@@ -47,7 +47,6 @@ from app.use_cases.ingest_listing import ProcessListingUseCase
 from tests.database import sqlite_only_database
 from tests.telegram_fakes import telegram_reply
 
-# ---------------------------------------------------------------- scorers fixés
 N_BD_ALERTS = 40
 N_TECH_ALERTS = 40
 N_ACTIVE_ALERTS = N_BD_ALERTS + N_TECH_ALERTS
@@ -56,9 +55,7 @@ MEASURED_ITERATIONS = 150
 BLACKSAD_ISBN = "9782205049657"
 BUDGET_MS = 500.0  # Garde-fou existant : cas d’usage complet avec doubles.
 
-# ADR-003 : < 100 µs par évaluation alerte×annonce. La constante existe pour que le
-# seuil et son message ne puissent pas diverger, comme c'était le cas avec un 500 µs
-# écrit en dur sous un docstring qui annonçait 100.
+# ADR-003 : < 100 µs par évaluation alerte×annonce ; seuil et message partagent la constante.
 ADR003_MATCHING_BUDGET_US = 100.0
 
 
@@ -342,7 +339,6 @@ async def test_benchmark_cpu_matching_only(benchmark_db: AsyncSession) -> None:
         "listing_raw_url": "https://www.vinted.fr/items/90000000123-blacksad-tome-6",
     }
 
-    # Warmup
     for alert in alerts:
         evaluate_listing_against_alert(alert=alert, **listing_args)
 

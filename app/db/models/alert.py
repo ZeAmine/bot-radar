@@ -46,7 +46,6 @@ class Alert(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     catalogue_refresh_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    # Listes de mots-clés et variantes
     include_keywords: Mapped[list[str]] = mapped_column(
         JSON().with_variant(JSONB, "postgresql"),
         default=list,
@@ -66,25 +65,22 @@ class Alert(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Seuil de prix article seul (hors port et protection)
     max_item_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Total des prix de référence des tomes d'une série (NULL : aucune cote exploitable).
-    # Réécrit à chaque écriture de cote par `persist_market_result` — jamais ailleurs.
+    # Total des prix de référence des tomes (NULL : aucune cote exploitable). Réécrit
+    # à chaque écriture de cote par `persist_market_result`, jamais ailleurs.
     series_total_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Verdict « aucune source ne catalogue cet ouvrage » : la date du relevé qui l'a
-    # établi, NULL tant que la recherche n'a pas conclu. Une date plutôt qu'un drapeau :
-    # le fait se lit comme une observation datée, et il se remplace au relevé suivant.
-    # Écrit par l'enrichissement de fond (`link_books_from_bnf`), jamais par un écran.
+    # Date du relevé ayant conclu qu'aucune source ne catalogue cet ouvrage (NULL tant
+    # que la recherche n'a pas abouti). Écrite uniquement par `link_books_from_bnf`.
     book_search_exhausted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
-    # États acceptés (liste de chaînes ou null si tous acceptés)
+    # NULL : tous les états acceptés
     accepted_conditions: Mapped[list[str] | None] = mapped_column(
         JSON().with_variant(JSONB, "postgresql"),
         nullable=True,
     )
 
-    # Statut de l'alerte
     decision_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0,
                                                  server_default="0")
     status: Mapped[AlertStatus] = mapped_column(
@@ -100,13 +96,11 @@ class Alert(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=True,
     )
 
-    # Horodatage pour soft delete
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
 
-    # Relations
     user: Mapped["User"] = relationship("User", back_populates="alerts")
     category: Mapped["Category"] = relationship("Category", back_populates="alerts")
     alert_books: Mapped[list["AlertBook"]] = relationship(

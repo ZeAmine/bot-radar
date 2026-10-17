@@ -142,8 +142,7 @@ def patched(
             "app.services.ai.modules.natural_add.BookSearchUseCase",
             fake_book_search(bnf),
         ),
-        # Les callbacks de sélection (œuvre, édition) revalident leur ISBN : ils
-        # consomment le même cas d'usage, dans leur propre module.
+        # Les callbacks de sélection (œuvre, édition) revalident leur ISBN via le même cas d'usage.
         patch(
             "app.bot.handlers.alerts_create_confirm.BookSearchUseCase",
             fake_book_search(bnf),
@@ -158,10 +157,8 @@ def patched(
                 answered=True,
             ),
         ),
-        # La vérification d'un ISBN saisi à la main passe par `alerts_helpers`, pas
-        # par `natural_add` : sans ce double, le parcours dépend du vrai réseau BNF
-        # (et d'un client HTTP partagé lié à la boucle d'un autre test). Depuis le
-        # contrat partagé, ce joint est le cas d'usage, pas le service.
+        # Un ISBN saisi à la main se vérifie via `alerts_helpers`, pas `natural_add` :
+        # sans ce double, le parcours dépend du vrai réseau BNF et d'un client HTTP partagé.
         patch(
             "app.bot.handlers.alerts_helpers.BookSearchUseCase",
             fake_book_search(isbn_bnf),

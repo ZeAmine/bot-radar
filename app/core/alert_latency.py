@@ -147,8 +147,8 @@ def observe_background[**P, R](
                 )
                 with timing_context(snapshot):
                     try:
-                        # La coroutine métier n'est créée qu'ici : fermer une tâche
-                        # jamais démarrée ne laisse pas une seconde coroutine orpheline.
+                        # Coroutine créée uniquement ici : fermer une tâche jamais
+                        # démarrée ne laisse pas de coroutine orpheline.
                         return await function(*args, **kwargs)
                     except BaseException as exc:
                         outcome = (

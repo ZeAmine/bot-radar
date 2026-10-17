@@ -11,12 +11,10 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-# Charger les variables d'environnement depuis le fichier .env
 env_path = Path(__file__).resolve().parent.parent / ".env"
 if env_path.exists():
     load_dotenv(env_path)
 
-# Ajouter le répertoire racine au PYTHONPATH
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logging.basicConfig(
@@ -118,18 +116,15 @@ async def run_local_poller() -> None:
     poll_cycle = 0
 
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        # Phase 1: Premier cycle pour initialiser les IDs déjà présents
         logger.info("Initialisation du cache des annonces récentes...")
         initial_items = await fetch_vinted_page(default_bd_url, client)
         for item in initial_items:
             seen_ids.add(item.external_id)
         logger.info("Cache initialisé avec %d annonces Vinted actives.", len(seen_ids))
 
-        # Synchronisation initiale des cookies vers le serveur
         await sync_cookies_to_vps(client)
         last_cookie_sync = time.time()
 
-        # Phase 2: Boucle infinie de surveillance en direct
         logger.info("Surveillance Vinted en temps réel active. En attente de nouvelles annonces...")
         while True:
             poll_cycle += 1
@@ -146,7 +141,6 @@ async def run_local_poller() -> None:
                 last_searches_refresh = now
 
             try:
-                # 1. Surveiller le flux Livres global
                 items = await fetch_vinted_page(default_bd_url, client)
                 if items:
                     new_items = [it for it in items if it.external_id not in seen_ids]
@@ -177,7 +171,6 @@ async def run_local_poller() -> None:
                             except Exception as exc:
                                 logger.debug("Erreur envoi annonce: %s", exc)
 
-                # 2. Surveiller 1 recherche personnalisée (Tech / Raspberry Pi, etc.) en round-robin
                 if custom_searches:
                     custom_url, custom_slug = custom_searches[poll_cycle % len(custom_searches)]
                     await asyncio.sleep(random.uniform(1.0, 2.0))
@@ -216,14 +209,14 @@ async def run_local_poller() -> None:
                                 except Exception as exc:
                                     logger.debug("Erreur envoi annonce: %s", exc)
 
-                # Gestion de la mémoire : éviter la croissance infinie du set
+                # Éviter la croissance infinie du set.
                 if len(seen_ids) > 15000:
                     seen_ids = set(list(seen_ids)[-8000:])
 
             except Exception as exc:
                 logger.error("Erreur cycle poller : %s", exc)
 
-            # Pause intelligente avec léger jitter
+            # Pause entre deux cycles, avec jitter pour éviter un rythme fixe.
             jitter = random.uniform(-1.5, 2.0)
             await asyncio.sleep(max(5.0, POLL_INTERVAL_SECONDS + jitter))
 

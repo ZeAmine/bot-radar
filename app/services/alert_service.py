@@ -64,7 +64,6 @@ def validate_and_parse_vinted_url(url: str) -> dict[str, Any]:
     except Exception as err:
         raise AlertServiceError("Format d'URL invalide.") from err
 
-    # Extraction des paramètres d'URL (query params)
     query_params = parse_qs(parsed.query)
 
     search_text: str | None = None

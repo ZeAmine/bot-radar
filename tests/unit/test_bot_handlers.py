@@ -42,7 +42,6 @@ async def test_handle_start():
     args, kwargs = message.answer.call_args
     assert args[0] == START_TEXT
     assert "reply_markup" in kwargs
-    # Vérifier la présence du bouton
     buttons = kwargs["reply_markup"].inline_keyboard
     assert len(buttons) == 1
     assert buttons[0][0].text == "➕ Créer une alerte"
@@ -350,7 +349,6 @@ async def test_paginate_alerts_with_category_slug(pause_database):
     args, kwargs = callback.message.edit_text.call_args
     assert "Veste Patagonia" in args[0]
     keyboard = kwargs["reply_markup"]
-    # Vérifier que le bouton précédent pointe vers al_page:clothes:0
     nav_buttons = keyboard.inline_keyboard[1]
     assert any("al_page:clothes:0" in b.callback_data for b in nav_buttons)
 
@@ -424,8 +422,7 @@ def test_cancel_router_matches_slash_cancel_and_bare_cancel():
             filter_obj.callback(event)
             for handler in cancel_router.message.handlers
             for filter_obj in handler.filters
-            # `magic` est renseigné pour les filtres de texte ; les filtres de
-            # commande et d'état ne s'évaluent pas hors dispatcher.
+            # `magic` : filtres de texte ; commande/état ne s'évaluent pas hors dispatcher.
             if filter_obj.magic is not None
         )
 

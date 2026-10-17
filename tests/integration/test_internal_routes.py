@@ -186,6 +186,5 @@ async def test_get_book_market_price(internal_client: AsyncClient):
     assert data["best_provider_name"] == "ebay"
     assert data["comparison_status"] == "available"
 
-    # Test avec un ISBN inexistant
     res_not_found = await internal_client.get("/api/v1/internal/books/0000000000000/market-price")
     assert res_not_found.status_code == 404

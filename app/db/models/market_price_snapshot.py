@@ -42,7 +42,7 @@ class MarketPriceSnapshot(Base, UUIDPrimaryKeyMixin):
         index=True,
         nullable=False,
     )
-    # NULL sur les anciens relevés : leur checked_at garde son sens d'origine.
+    # NULL pour les anciens relevés, dont checked_at garde le sens d'origine.
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     annual_eligible: Mapped[bool | None] = mapped_column(Boolean)
     observed_merchant: Mapped[str | None] = mapped_column(String(100))
@@ -58,5 +58,4 @@ class MarketPriceSnapshot(Base, UUIDPrimaryKeyMixin):
         nullable=True,
     )
 
-    # Relations
     book: Mapped["Book"] = relationship("Book", back_populates="snapshots")

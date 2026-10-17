@@ -53,10 +53,8 @@ async def check_and_trigger_proactive_autotune(
     if not auto_tuning_module.is_enabled:
         return False
 
-    # Le créneau d'émission est réservé AVANT l'appel au moteur : `SET NX` est
-    # atomique, donc deux analyses concurrentes de la même alerte (scan planifié et
-    # clic « Faux positif ») ne peuvent pas produire deux propositions. Le créneau
-    # est relâché si rien n'a finalement été émis.
+    # Créneau réservé AVANT l'appel au moteur (`SET NX` atomique) : deux analyses
+    # concurrentes de la même alerte ne peuvent pas produire deux propositions.
     if not await claim_autotune_slot(alert_id):
         logger.debug("Auto-Tuning proactif : créneau déjà réservé pour l'alerte %s", alert_id)
         return False
@@ -88,12 +86,11 @@ async def check_and_trigger_proactive_autotune(
 
             new_exclusions = proposal.exclusions
 
-            # Mettre en cache pour la validation 1-clic
+            # Mise en cache pour la validation en un clic.
             await save_pending_tuning(alert.id, new_exclusions)
 
-        # Le message vient du gabarit partagé : le scan proactif et l'analyse demandée
-        # disent la même chose de la même façon, sans emoji décoratif ni explication
-        # qui reformule la liste des faux positifs.
+        # Gabarit partagé : scan proactif et analyse demandée disent la même chose,
+        # sans explication qui reformule la liste des faux positifs.
         text = exclusion_proposal_message(alert.name, disliked_titles, new_exclusions)
 
         keyboard = InlineKeyboardMarkup(
@@ -136,10 +133,8 @@ async def check_and_trigger_proactive_autotune(
             logger.error("Erreur lors de l'envoi de la proposition proactive: %s", exc)
             return False
     finally:
-        # Rien n'a été émis (alerte inactive, moins de 2 dislikes, moteur muet,
-        # rien de nouveau ou envoi en échec) : le créneau est relâché pour qu'une
-        # analyse ultérieure puisse réessayer. Une proposition réellement envoyée
-        # garde son créneau 24 h, ce qui évite de la répéter à chaque scan.
+        # Rien émis : créneau relâché pour permettre un nouvel essai. Une proposition
+        # réellement envoyée le garde 24 h, sans répétition à chaque scan.
         if not emitted:
             await release_autotune_claim(alert_id)
 
@@ -192,7 +187,7 @@ async def run_proactive_autotune_scan(bot: Bot | None = None) -> int:
         )
         if success:
             notified_count += 1
-            # Petit délai pour éviter le spam Telegram
+            # Délai pour éviter le spam Telegram.
             await asyncio.sleep(1.0)
 
     logger.info("Scan Auto-Tuning proactif terminé : %d alerte(s) notifiée(s)", notified_count)

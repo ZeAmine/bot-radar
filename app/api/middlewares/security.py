@@ -13,7 +13,7 @@ from app.core.redis import get_redis_pool
 
 logger = logging.getLogger("radar.security.middleware")
 
-# Limiteur global partagé
+# Instance partagée par les middlewares de rate limiting
 rate_limiter = SlidingWindowRateLimiter(redis_pool_factory=get_redis_pool)
 
 
@@ -23,17 +23,17 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
 
-        # Protection contre le MIME-sniffing
+        # Anti MIME-sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"
-        # Protection contre le Clickjacking
+        # Anti clickjacking
         response.headers["X-Frame-Options"] = "DENY"
-        # Enforcing HTTPS strict
+        # HSTS strict : HTTPS imposé, sous-domaines inclus
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # Politique de référent sécurisée
+        # Référent restreint
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        # Masquage de l'empreinte logicielle
+        # Masque la bannière serveur
         response.headers["Server"] = "BotRadar-API"
-        # Désactivation des fonctionnalités sensibles du navigateur
+        # Capteurs navigateur désactivés
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
 
         return response
@@ -95,12 +95,12 @@ class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Protection anti-brute-force et anti-flood sur les routes sensibles de l'API."""
 
-    # Règles de rate limiting : (préfixe de route, max_requêtes, fenêtre_secondes)
+    # (préfixe de route, max_requêtes, fenêtre_secondes)
     ROUTE_LIMITS = [
-        ("/api/v1/internal", 30, 60),       # Anti brute-force sur routes internes (30 req/min)
-        ("/api/v1/books", 30, 60),          # Recherche bibliographique (30 req/min, même classe)
-        ("/api/v1/ingest", 1200, 60),       # Ingestion des annonces (1200 req/min)
-        ("/api/v1/telegram/webhook", 120, 60), # Webhook Telegram (120 req/min)
+        ("/api/v1/internal", 30, 60),       # Anti brute-force
+        ("/api/v1/books", 30, 60),          # Même classe que les routes internes
+        ("/api/v1/ingest", 1200, 60),       # Trafic d'ingestion attendu élevé
+        ("/api/v1/telegram/webhook", 120, 60), # Trafic webhook Telegram attendu
     ]
 
     def __init__(
@@ -131,7 +131,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
 
-        # Vérifier si la route courante est soumise à une limitation
         matching_rule = None
         for prefix, max_req, window_sec in self.ROUTE_LIMITS:
             if path.startswith(prefix):

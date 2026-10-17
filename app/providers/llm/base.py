@@ -144,8 +144,6 @@ class BaseLLMClient(ABC):
         """Le moteur est utilisable si l'IA est globalement active et la clé présente."""
         return bool(settings.AI_ENABLED and self.api_key.strip())
 
-    # --- Traduction filaire, à fournir par chaque adaptateur ---
-
     @abstractmethod
     def chat_endpoint(self) -> str:
         """URL absolue de l'appel de génération de texte."""
@@ -171,8 +169,6 @@ class BaseLLMClient(ABC):
     @abstractmethod
     def health_request(self) -> tuple[str, dict[str, str]]:
         """URL et en-têtes de la sonde de santé, spécifique du fournisseur."""
-
-    # --- Comportement commun ---
 
     async def complete(
         self,

@@ -533,7 +533,7 @@ async def test_match_changes_between_pending_read_and_retry_update(
                 await asyncio.gather(running, return_exceptions=True)
         assert response.matches[0].notification_sent
         assert use.listing_repo.mark_notified.await_count == 2
-        # Point 6 : la réservation durable précède le marquage (échoué puis repris).
+        # La réservation durable précède le marquage, échoué puis repris.
         assert calls == 5
         assert commit_stages == [
             "_execute_serialized", "reserve", "_persist_confirmed_delivery",

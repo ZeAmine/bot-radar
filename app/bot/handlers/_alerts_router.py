@@ -45,7 +45,7 @@ def bind_creation_keyboard(
             if raw and _creation_action(raw):
                 base = raw.split("@")[0]
                 if base.startswith("upd_alert_price:"):
-                    base = "upd_alert_price:"  # ID/prix déjà dans le FSM ; respecter les 64 octets.
+                    base = "upd_alert_price:"  # Valeur déjà en FSM ; limite Telegram : 64 octets.
                 button = button.model_copy(update={"callback_data": f"{base}@{token}"})
             bound.append(button)
         rows.append(bound)
@@ -76,8 +76,8 @@ class CreationDraftMiddleware(BaseMiddleware):
                 await event.answer()  # Acquittement seul, hors de la protection métier.
             async with draft_guard(state) as attempt:
                 draft = await state.get_data()
-                # Le middleware FSM a pu lire cet état AVANT l'attente du verrou.
-                # Les filtres doivent décider sur l'état relu, y compris sans nonce historique.
+                # Le middleware FSM a pu lire l'état avant l'attente du verrou : les filtres
+                # doivent décider sur l'état relu, y compris sans nonce historique.
                 data["raw_state"] = await state.get_state()
                 if (
                     action == "alert_create_confirm"

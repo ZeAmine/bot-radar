@@ -56,7 +56,7 @@ def test_get_conditions_toggle_keyboard():
     keyboard = get_conditions_toggle_keyboard(selected)
     buttons = keyboard.inline_keyboard
 
-    # Doit contenir les conditions + le bouton de confirmation
+    # Conditions à cocher, puis le bouton de confirmation en dernière ligne.
     assert len(buttons) > 1
     found_checked = False
     for row in buttons[:-1]:
@@ -104,7 +104,6 @@ def test_get_edit_category_selection_keyboard():
 
 def test_get_alert_card_keyboard():
     alert_id = uuid.uuid4()
-    # Test avec statut ACTIVE et pagination sans filtre spécifique
     token = f"al_pause:p_{uuid.uuid4().hex}"
     keyboard = get_alert_card_keyboard(
         alert_id, AlertStatus.ACTIVE, current_page=0, total_pages=2, pause_callback=token
@@ -119,7 +118,6 @@ def test_get_alert_card_keyboard():
     assert rows[2][0].callback_data == "al_list_cat:all:0"
     assert rows[2][1].callback_data == "ed_cat_menu"
 
-    # Test avec filtre de catégorie
     keyboard_cat = get_alert_card_keyboard(
         alert_id, AlertStatus.ACTIVE, current_page=1, total_pages=3, category_slug="tech"
     )
@@ -133,8 +131,7 @@ def test_get_alert_card_keyboard():
 def test_get_alert_edit_fields_keyboard():
     alert_id = uuid.uuid4()
 
-    # BD & Comics : Titre, ISBN, Prix max, Mots-clés, Exclusions, Variantes, États + Retour (8
-    # boutons)
+    # BD & Comics : Titre, ISBN, Prix max, Mots-clés, Exclusions, Variantes, États (+ Retour).
     kb_bd = get_alert_edit_fields_keyboard(alert_id, category_slug="bd_comics")
     buttons_bd = kb_bd.inline_keyboard
     callbacks_bd = [b[0].callback_data for b in buttons_bd]
@@ -213,7 +210,7 @@ def test_get_alerts_list_keyboard():
         mock_alerts, current_page=0, total_pages=3, category_slug="tech")
     rows = keyboard.inline_keyboard
 
-    # rangées : 5 boutons, puis 2, puis la navigation (« Suivant »), puis les actions.
+    # Quatre rangées : 5 boutons, 2 boutons, navigation, actions.
     assert len(rows) == 4
     assert len(rows[0]) == 5
     assert len(rows[1]) == 2

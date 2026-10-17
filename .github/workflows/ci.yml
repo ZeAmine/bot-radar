@@ -39,9 +39,8 @@ jobs:
           INTERNAL_API_TOKEN: "ci_internal_token_test"
         run: pytest -v
 
-  # Les tests d'intégration tournent sur SQLite par défaut. Ce job les rejoue
-  # sur PostgreSQL pour que les requêtes JSON, les upserts et les types natifs
-  # ne puissent plus diverger entre les deux dialectes.
+  # Les tests d'intégration tournent sur SQLite par défaut ; ce job les rejoue sur
+  # PostgreSQL pour que requêtes JSON, upserts et types natifs ne divergent plus.
   test-postgres:
     runs-on: ubuntu-latest
     services:
@@ -84,9 +83,8 @@ jobs:
           TEST_DATABASE_URL: "postgresql+asyncpg://test:test@localhost:5432/test"
         run: pytest tests/integration/ -v
 
-  # Publier un tag, c'est affirmer que tout l'historique depuis le précédent est
-  # vert. Sans cette étape, un commit de milieu de série peut casser alors que
-  # `HEAD` passe : le défaut n'apparaît qu'au moment d'un bisect.
+  # Publier un tag affirme que tout l'historique depuis le précédent est vert :
+  # un commit intermédiaire cassé n'est visible qu'au bisect si `HEAD` passe.
   history:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest

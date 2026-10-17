@@ -24,9 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = "bfabcca7dbf4f8f6af2de058b167a93dd80816b8"
 PORT = 55514
 
-# Opérations métier que le module du planificateur appelle, et que les tests
-# d'occurrence doivent substituer avant de construire le scheduler. La liste est
-# explicite : elle sert à vérifier une résolution de nom, pas à inspecter du code.
+# Opérations métier que le planificateur appelle et que les tests d'occurrence
+# substituent avant le scheduler ; liste explicite, vérifiée par résolution de nom.
 OPERATIONS_METIER_SCHEDULER = (
     "recover_bd_preparations",
     "recover_notifications",

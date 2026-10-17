@@ -150,8 +150,7 @@ async def test_process_bd_query_lookup_refuses_to_attach_a_homonym():
         "Rosemonde Ahou de Saintange",
         "Nef",
     ]
-    # Les mots-clés d'inclusion dérivent du titre demandé, sans article redondant :
-    # une seule inclusion, qui accepte les deux formulations (« La couleur… », « Couleur… »).
+    # Inclusion sans article redondant : une seule entrée accepte les deux formulations.
     assert stored["include_keywords"] == ["enfants perdus"]
 
 

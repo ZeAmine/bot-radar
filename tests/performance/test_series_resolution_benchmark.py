@@ -55,7 +55,6 @@ from app.use_cases.ingest_listing import ProcessListingUseCase
 from tests.database import sqlite_only_database
 from tests.telegram_fakes import telegram_reply
 
-# ---------------------------------------------------------------- scorers fixés
 SERIES_NAME = "The Grocery"
 SERIES_KEYWORD = "the grocery"
 WARMUP_ITERATIONS = 3
@@ -63,12 +62,9 @@ MEASURED_ITERATIONS = 20
 BUDGET_MS = 500.0  # Execute complet avec doubles, y compris ses commits.
 BNF_LATENCY_MS = 300.0  # Latence simulée de la BNF, bien au-dessus du budget
 SERIES_NOTICES = 6  # taille du jeu de tomes simulé dans ce fichier
-# Sélection sur 60 notices : CPU pur de filtrage. Le seuil est serré parce que
-# l'opération est locale — une régression ici se voit en quelques dizaines de µs.
+# Sélection sur 60 notices : CPU pur local ; seuil serré, régression visible en quelques µs.
 SERIES_LOOKUP_BUDGET_MS = 5.0
-# Vol de 6 tomes : 6 liaisons en base + 6 cotations déclenchées. Mesuré à ~9 ms,
-# budget à 100 ms : il attrape l'introduction d'un appel bloquant (une vraie
-# requête BNF dépasse 300 ms) sans dépendre de la machine qui exécute.
+# Vol de 6 tomes : budget 100 ms pour attraper un appel bloquant, sans dépendre de la machine.
 SERIES_LINK_BUDGET_MS = 100.0
 
 
@@ -270,8 +266,7 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
 
     def _collect(coro: Coroutine[Any, Any, Any], name: str | None = None) -> None:
         label = name or ""
-        # La mesure de cote est un compteur Redis : hors du chemin mesuré, et
-        # sans Redis elle nuirait à la mesure plus qu'elle ne l informing.
+        # Mesure de cote (compteur Redis) hors du chemin mesuré, fermée faute de Redis.
         if label.startswith("cote_state"):
             coro.close()
             return
@@ -279,9 +274,7 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
 
     monkeypatch.setattr(ingest_listing, "safe_create_task", _collect)
     monkeypatch.setattr(catalog_linking, "safe_create_task", _collect)
-    # `AsyncSessionLocal` est importé *dans* la fonction : c'est le module source
-    # qu'il faut patcher, sinon la tâche différée ouvre une vraie session et
-    # échoue avant même d'atteindre la BNF.
+    # `AsyncSessionLocal` importé dans la fonction : patcher le module source, sinon vraie session.
     monkeypatch.setattr("app.db.session.AsyncSessionLocal", session_maker)
 
     async def _slow_bnf(
@@ -301,8 +294,7 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
         lambda book_id, reason=None: priced.append((book_id, reason)),
     )
 
-    # Le marqueur d'envoi est posé par le bot : c'est la sortie réelle de la
-    # fonction d'alerte, pas une instrumentation du use case.
+    # Marqueur d'envoi posé par le bot : sortie réelle de l'alerte, pas une instrumentation.
     bot = _make_mock_bot()
     bot.send_photo.side_effect = lambda *_a, **_k: _mark_sent(events)
 
@@ -317,15 +309,12 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
         measured = i >= WARMUP_ITERATIONS
         if measured:
             durations.append(elapsed_ms)
-        # On ne mesure pas la résolution ici : elle est exécutée plus bas, une
-        # fois pour toutes, avec son ordre. Les coroutines jetées sont fermées
-        # pour ne pas laisser d'avertissement « never awaited ».
+        # Résolution mesurée plus bas ; les coroutines jetées sont fermées (never awaited).
         for _label, coro in deferred:
             coro.close()
         deferred.clear()
 
-    # Une itération de plus, cette fois gardée : c'est elle qui porte la preuve
-    # de l'ordre. Les précédentes ne servaient qu'à mesurer le chemin d'envoi.
+    # Itération gardée en plus : elle porte la preuve de l'ordre, pas la mesure.
     events.clear()
     use_case = ProcessListingUseCase(db=session, bot=bot)
     await use_case.execute(_make_payload(999), raw_payload={"bench": "order"})
@@ -356,14 +345,9 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
         f"la BNF mockée a mis {series_ms:.0f} ms : le test ne prouve plus rien si elle "
         "répond instantanément"
     )
-    # L'ordre est la preuve : l'alerte est partie, le use case est rendu, et
-    # seulement ensuite le catalogue est cherché.
+    # L'ordre est la preuve : alerte partie, use case rendu, puis catalogue cherché.
     assert order[:3] == ["envoi", "retour", "bnf"], order
-    # Et la tâche différée a fait son travail, après coup : le chemin d'ingestion
-    # relance la découverte de **série** (`series=not alert.isbn`), donc les six
-    # tomes liés partent en cote, pas le seul titre de l'annonce. Une tâche qui ne
-    # travaille pas ne prouverait rien non plus. Le motif « bnf_link » dit que la
-    # cote part après la liaison, jamais avant.
+    # Découverte de série relancée : six tomes liés cotés après la liaison, motif « bnf_link ».
     assert len(priced) == SERIES_NOTICES, priced
     assert {reason for _book_id, reason in priced} == {"bnf_link"}, priced
 
@@ -461,16 +445,14 @@ async def test_benchmark_series_link_writes_six_links_and_prices_them(
 
     durations: list[float] = []
     for index in range(WARMUP_ITERATIONS + MEASURED_ITERATIONS):
-        # Un vol ne compte que ses propres cotations : la liste est remise à zéro
-        # à chaque itération, l'accumulation dirait « au moins six » sans plus.
+        # Un vol ne compte que ses cotations : liste remise à zéro, sinon « au moins six ».
         priced.clear()
         start = time.perf_counter()
         await _one_flight()
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         if index >= WARMUP_ITERATIONS:
             durations.append(elapsed_ms)
-        # Chaque vol repart d'un catalogue vierge : on mesure toujours six tomes
-        # à écrire, jamais un catalogue déjà rempli par le vol précédent.
+        # Chaque vol repart d'un catalogue vierge : toujours six tomes à écrire, jamais plus.
         async with session_maker() as cleanup:
             # Garder l'alerte propriétaire : un résultat ne doit pas lier une alerte supprimée.
             for model in (AlertBook, BookMarketCache, Listing, Book):
@@ -485,8 +467,7 @@ async def test_benchmark_series_link_writes_six_links_and_prices_them(
     print(_report_line("link_books_from_bnf", durations))
     print(f"  Cotations déclenchées au dernier vol : {len(priced)}")
 
-    # Six tomes liés, six cotations, et chacune nommée « bnf_link » : la cote
-    # part après le commit, jamais avant.
+    # Six tomes liés, six cotations « bnf_link » : la cote part après le commit, jamais avant.
 
     assert p95 < SERIES_LINK_BUDGET_MS, (
         f"p95={p95:.1f} ms dépasse le budget de vol de {SERIES_LINK_BUDGET_MS:.0f} ms"

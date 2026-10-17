@@ -45,24 +45,12 @@ logger = logging.getLogger("radar.vinted_poller")
 
 VINTED_POLLER_STATUS_KEY = "radar:vinted_poller_status"
 
-# Un heartbeat de couverture de fenêtre tous les N cycles. Assez espacé pour ne pas
-# noyer les logs (deux cibles à 15 s d'intervalle), assez fréquent pour qu'un plafond
-# silencieux de l'API soit visible dans la demi-heure.
 WINDOW_LOG_EVERY_CYCLES = 20
 
-# Nombre d'écarts entre cycles conservés pour la métrique de cadence. Assez pour
-# absorber une micro-pause ou un cycle lent sans que le p50 soit tiré par un seul
-# incident, assez court pour que la cadence affichée suive un changement réel.
 CYCLE_GAP_SAMPLES = 40
 
-# Au-delà, l'écart n'est plus un cycle de scrutation mais une interruption : reprise
-# du mode nuit, fin d'une pause anti-blocage de 3 à 60 min, ou blocage du process.
-# L'inclure ferait lire 30 min de p50 là où la cadence réelle est de 15 s.
 MAX_MEANINGFUL_CYCLE_GAP_S = 90.0
 
-# Plancher de la pause entre deux cycles. Il borne aussi le sommeil restant après
-# déduction du travail du cycle : une ingestion ou un envoi Telegram lent ne peut pas
-# coller deux scrutations l'une à l'autre.
 MIN_CYCLE_GAP_SECONDS = 6.0
 
 COLLECTION_FAILURE_ALERT_THRESHOLD = 5
@@ -310,7 +298,6 @@ def is_peak_hours(now: datetime | None = None) -> bool:
     minute = now.minute
     time_float = hour + minute / 60.0
 
-    # Heures de pointe Vinted : Déjeuner (11h30 - 14h00) et Soirée (18h00 - 22h30)
     lunch_peak = 11.5 <= time_float <= 14.0
     evening_peak = 18.0 <= time_float <= 22.5
     return lunch_peak or evening_peak
@@ -395,9 +382,6 @@ async def load_active_custom_searches() -> list[tuple[str, str]]:
         return []
 
 
-# Les recherches personnalisées ne changent que sur action de l'utilisateur
-# (création, modification ou suppression d'une alerte). Les relire à chaque cycle,
-# soit toutes les 12 à 15 secondes, est une requête SQL sans objet.
 CUSTOM_SEARCH_TTL_SECONDS = 60.0
 _custom_searches_cache: tuple[float, list[tuple[str, str]]] | None = None
 
@@ -614,10 +598,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
     ) as vinted_client:
         consecutive_blocks = 0
         poll_cycle = 0
-        # Historique des écarts entre deux cycles, pour rendre la cadence observable.
-        # C'est le délai qui décide de la position dans la file : le traitement interne
-        # ne pèse que ~17 ms face à des cycles de plusieurs secondes. Sans mesure, une
-        # cadence dégradée se lit comme une cadence normale.
         cadence = CycleCadence()
         availability = AvailabilityLedger()
         consecutive_collection_failures = 0
@@ -628,8 +608,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
         search_last_success: dict[tuple[str, str], float] = {}
 
         while not stop_event.is_set():
-            # 0. Vérification du Mode Nuit (suspension nocturne pour préserver l'IP et éviter les
-            # bans)
             if is_night_time():
                 night_started = time.monotonic()
                 remaining = get_night_mode_remaining_seconds()
@@ -670,8 +648,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     ),
                 })
                 await vinted_session_manager.clear_session(vinted_client)
-                # Pause cadencée par tranches de 60s max pour rester immédiatement réactif à
-                # stop_event
                 while is_night_time() and not stop_event.is_set():
                     sleep_chunk = min(60.0, max(5.0, get_night_mode_remaining_seconds()))
                     with contextlib.suppress(TimeoutError):
@@ -711,7 +687,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
             bd_scan_ok = False
             requests_before = vinted_request_stats.totals()
             try:
-                # 1. Surveiller le flux global Livres (capture 100% des nouveautés en continu)
                 count_bd = await poll_vinted_once(
                     seen_ids=seen_ids,
                     vinted_client=vinted_client,
@@ -721,8 +696,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 )
                 bd_scan_ok = True
 
-                # 2. Surveiller les recherches actives hors-livres (Électronique, Vêtements, Jeux
-                # Vidéo)
                 custom_searches = await get_active_custom_searches_cached()
                 now_monotonic = time.monotonic()
                 current_search_keys = set(custom_searches)
@@ -732,8 +705,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 for new_key in current_search_keys - set(search_first_seen):
                     search_first_seen[new_key] = now_monotonic
                 if custom_searches and not stop_event.is_set():
-                    # Interroger 1 recherche personnalisée par cycle en round-robin pour préserver
-                    # l'IP
                     custom_url, custom_slug = custom_searches[poll_cycle % len(custom_searches)]
                     await asyncio.sleep(random.uniform(1.2, 2.0))
                     count_custom = await poll_vinted_once(
@@ -745,7 +716,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     )
                     search_last_success[(custom_url, custom_slug)] = time.monotonic()
 
-                # Si une alerte de blocage avait eu lieu et qu'on réussit, réinitialiser et avertir
                 if consecutive_blocks > 0:
                     logger.info(
                         "🛡️ Garde anti-blocage : Connexion Vinted rétablie avec succès (IP propre).")
@@ -794,14 +764,11 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     "message": "Surveillance Vinted active",
                 })
 
-                # Si trop d'IDs en mémoire, purger les plus anciens
                 if len(seen_ids) > seen_ids.max_size:
                     seen_ids.trim()
 
             except (VintedBlockError, VintedRateLimitError) as block_exc:
                 consecutive_blocks += 1
-                # Progression adaptée pour Cloudflare : 3m (180s), 7m (420s), 15m (900s), 30m
-                # (1800s), max 60m (3600s)
                 cooldown_map = {1: 180, 2: 420, 3: 900, 4: 1800}
                 cooldown = cooldown_map.get(consecutive_blocks, 3600)
                 cooldown_until = time.time() + cooldown
@@ -841,7 +808,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
 
                 await vinted_session_manager.clear_session(vinted_client)
 
-                # Notification Telegram proactive
                 safe_create_task(
                     notify_admins(
                         text=(
@@ -907,14 +873,10 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 outcome = "unexpected_error"
                 logger.error("Erreur inattendue dans la boucle du Vinted Poller: %s", exc)
 
-            # Cadence adaptative (heures de pointe vs standard, VPS vs proxy résidentiel)
             target_interval = get_adaptive_poll_interval()
             jitter = random.uniform(-2.5, 3.5)
             sleep_time = max(MIN_CYCLE_GAP_SECONDS, target_interval + jitter)
 
-            # Le travail du cycle (collecte, ingestion, envoi Telegram) est déduit de la pause
-            # au lieu de s'y ajouter : une rafale d'annonces n'allonge plus la cadence et ne
-            # retarde plus la détection des annonces suivantes.
             work_seconds = time.monotonic() - cycle_started
             sleep_time = remaining_cycle_sleep(sleep_time, work_seconds)
 

@@ -87,7 +87,7 @@ async def test_creation_reloads_a_cache_written_in_another_session(monkeypatch):
         monkeypatch.setattr(preparation, "AsyncSessionLocal", database.maker)
         monkeypatch.setattr(preparation, "preparation_runner", preparation.PreparationRunner())
         state = DraftState()
-        # Ce double local doit fournir l'identité FSM utilisée par le guard du point 5.
+        # L'identité FSM est requise par le guard de création.
         state.storage = object()
         state.key = ("synthetic", 1414)
         state.data = {

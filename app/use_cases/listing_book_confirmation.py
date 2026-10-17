@@ -87,7 +87,7 @@ async def confirm_listing_book(
             and (not confirmed.author or not same_author(request.author_hint, confirmed.author))
         ):
             return
-        # Objet transitoire pour les règles de tome/lot existantes, pas encore de SQL.
+        # Objet transitoire pour les règles de tome/lot existantes, sans SQL.
         from app.db.models.book import Book
 
         candidate = Book(title=confirmed.title, isbn13=listing_isbn)

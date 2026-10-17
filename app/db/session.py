@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.config import settings
 
-# Création du moteur asynchrone
 engine: AsyncEngine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
@@ -19,7 +18,6 @@ engine: AsyncEngine = create_async_engine(
     pool_pre_ping=True,
 )
 
-# Fabrique de sessions
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,

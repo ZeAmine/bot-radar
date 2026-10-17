@@ -132,7 +132,6 @@ async def test_recipient_transport_ack_persistence_and_final_are_distinct(journe
     assert all(await journey.states())
     assert [r.duration_ms for r in events(caplog, "transport_attempt")] == pytest.approx([200, 200])
     # Six commits : ingestion, réservation 1, reçu 1, réservation 2, reçu 2, final.
-    # Les deux réservations durables font partie du travail depuis le point 6.
     assert [r.duration_ms for r in events(caplog, "entry_to_ack")] == pytest.approx([600, 1500])
     assert [r.duration_ms for r in events(caplog, "ack_to_persistence")] == pytest.approx(
         [300, 300]

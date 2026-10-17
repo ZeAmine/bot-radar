@@ -14,11 +14,8 @@ from app.services.book_catalog_service import (
 
 
 def test_isbn10_to_isbn13_conversion():
-    # Exemple ISBN-10 valide : 220507805X -> ISBN-13 : 9782205078053
     assert isbn10_to_isbn13("220507805X") == "9782205078053"
-    # Format avec tirets
     assert isbn10_to_isbn13("2-205-07805-X") == "9782205078053"
-    # Longueur invalide
     assert isbn10_to_isbn13("123") is None
 
 

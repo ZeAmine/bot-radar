@@ -129,7 +129,6 @@ async def test_vinted_session_manager_manual_and_redis():
     mgr = VintedSessionManager()
     assert mgr.cookies == {}
 
-    # Test injection manuelle avec mock Redis
     with patch.object(mgr, "_save_cookies_to_redis", new_callable=AsyncMock) as mock_save:
         await mgr.set_manual_session(
             {"anon_id": "test-anon-123", "access_token_web": "jwt-token-456"}
@@ -171,7 +170,6 @@ def test_is_session_refresh_page_and_jwt_exp():
         is False
     )
 
-    # Test JWT decode
     now = int(time.time())
     header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode("utf-8").rstrip("=")
     payload = (
@@ -195,10 +193,7 @@ def test_catalog_url_to_api_params():
     assert params["attribute_ids[status]"] == "1,2"
     assert params["attribute_ids[language_book]"] == "6436"
     assert params["order"] == "newest_first"
-    # La fenêtre doit couvrir le débit du flux entre deux cycles, sinon les annonces
-    # publiées dans l'intervalle passent dessous sans jamais être vues. 24 items ne
-    # couvraient que ~34 s face à un flux de 2 500 annonces/h, alors que la cadence
-    # monte à 35 s au p90 et que la micro-pause dure 30 à 45 s.
+    # La fenêtre doit couvrir le débit du flux entre deux cycles (p90 35 s).
     assert params["per_page"] == str(CATALOG_PAGE_SIZE) == "96"
 
     url_search = "https://www.vinted.fr/catalog?search_text=zelda+switch"
@@ -247,7 +242,6 @@ def test_parse_vinted_catalog_json():
     assert item.url == "https://www.vinted.fr/items/10113230090-les-legendes-marvel"
     assert item.photo_url == "https://images1.vinted.net/t/01/f800/main.webp?s=123"
 
-    # Le payload d'ingestion ne transporte que la couverture
     payload = to_ingest_payload(item)
     assert payload["external_id"] == "10113230090"
     assert payload["item_price_cents"] == 400
@@ -302,12 +296,10 @@ async def test_fetch_vinted_page_api_success():
 async def test_fetch_vinted_page_fallback_to_html():
     fake_client = AsyncMock()
     fake_client.cookies = httpx.Cookies()
-    # 1er appel (API): statut 500
     api_resp = AsyncMock()
     api_resp.status_code = 500
     api_resp.headers = {"content-type": "text/html"}
 
-    # 2e appel (HTML fallback): statut 200 avec SAMPLE_HTML
     html_resp = AsyncMock()
     html_resp.status_code = 200
     html_resp.headers = {"content-type": "text/html"}
@@ -435,7 +427,6 @@ async def test_vinted_session_manager_proactive_jwt_refresh():
     mgr = VintedSessionManager()
     now = int(time.time())
 
-    # Jeton expirant dans 10 minutes (600s < 1800s)
     header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode("utf-8").rstrip("=")
     payload = (
         base64.urlsafe_b64encode(json.dumps({"exp": now + 600}).encode("utf-8"))
@@ -483,11 +474,9 @@ async def test_fetch_vinted_page_401_self_healing_retry():
     fake_client = AsyncMock()
     fake_client.cookies = httpx.Cookies()
 
-    # 1er appel API: 401
     resp_401 = AsyncMock()
     resp_401.status_code = 401
 
-    # 2e appel API (rejeu après refresh): 200 OK
     resp_200 = AsyncMock()
     resp_200.status_code = 200
     resp_200.headers = {"content-type": "application/json"}
@@ -583,7 +572,6 @@ def test_fifo_set_discard_and_remove_synchronization():
     assert "a" not in fset
     assert list(fset._order) == ["c"]
 
-    # discard d'un élément absent ne lève rien
     fset.discard("unknown")
     assert list(fset._order) == ["c"]
 

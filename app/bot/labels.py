@@ -47,24 +47,18 @@ import html
 
 from app.domain.enums import ItemCondition
 
-# ---------------------------------------------------------------------------
-# Mentions d'absence — une donnée absente n'est jamais un zéro
-# ---------------------------------------------------------------------------
+# Mentions d'absence : une donnée absente n'est jamais un zéro.
 
 NOT_PROVIDED = "Non renseigné"
 UNAVAILABLE = "Indisponible"
 TO_CONFIRM = "À confirmer"
 
-# ---------------------------------------------------------------------------
-# Statuts d'alerte, en toutes lettres, sans emoji
-# ---------------------------------------------------------------------------
+# Statuts d'alerte, en toutes lettres, sans emoji.
 
 STATUS_ACTIVE = "Active"
 STATUS_PAUSED = "En pause"
 
-# ---------------------------------------------------------------------------
-# Titres d'écrans — un seul emoji de fonction, en tête de message
-# ---------------------------------------------------------------------------
+# Titres d'écrans : un seul emoji de fonction, en tête de message.
 
 TITLE_NEW_OFFER = "🆕 {title}"
 TITLE_ALERTS = "📚 Mes alertes"
@@ -75,16 +69,10 @@ TITLE_ALERT_EXISTS = "⚠️ Alerte déjà existante"
 TITLE_HELP = "📖 Commandes"
 TITLE_STATS = "📊 Statistiques"
 TITLE_AUTOTUNE = "🧹 Auto-tuning des alertes"
-# L'écran de proposition a son propre titre : il dit ce qu'on propose, là où le hub
-# dit d'où l'on vient. Un seul titre pour les deux obligeait à relire le corps du
-# message pour savoir si l'on était devant une liste ou devant une décision.
+# Titre propre à l'écran de proposition, sans quoi il faut relire le corps du message.
 TITLE_EXCLUSIONS_PROPOSAL = "🧹 Exclusions proposées"
 TITLE_EDIT_EXCLUDES = "✏️ Mots-clés exclus"
 TITLE_OFFER = "💬 Offre suggérée"
-
-# ---------------------------------------------------------------------------
-# Libellés de champs — les mêmes mots d'un écran à l'autre
-# ---------------------------------------------------------------------------
 
 FIELD_NAME = "Nom"
 FIELD_ISBN = "ISBN"
@@ -100,18 +88,11 @@ FIELD_PUBLISHER = "Éditeur"
 FIELD_EDITION = "Édition"
 FIELD_PERIOD = "Période"
 FIELD_PRICE = "Prix"
-# Le total qui suit le prix n'a pas de libellé : « TTC » suffit, et il tient la
-# ligne sans la tronquer sur un téléphone. « Total estimé » y était long de
-# treize caractères pour dire la même chose — et « estimé » se lit comme un doute
-# sur le montant, alors que la protection et le port sont, eux, bien réels.
+# Pas de libellé détaillé : « TTC » suffit et garde la ligne lisible sur téléphone.
 TOTAL_SUFFIX_TTC = "TTC"
 FIELD_FALSE_POSITIVES = "Faux positifs"
 FIELD_SUGGESTED_EXCLUDES = "Mots-clés exclus suggérés"
 FIELD_SUGGESTED_EXCLUDES_CUSTOM = "Mots-clés exclus suggérés (personnalisés)"
-
-# ---------------------------------------------------------------------------
-# Navigation et boutons — libellés explicites et constants
-# ---------------------------------------------------------------------------
 
 BTN_PREVIOUS = "Précédent"
 BTN_NEXT = "Suivant"
@@ -129,9 +110,7 @@ BTN_ALERTS_LIST = "Liste des alertes"
 BTN_BACK_TO_MENU = "Retour au menu"
 BTN_BACK_TO_RECAP = "Retour au récapitulatif"
 BTN_BACK_TO_AUTOTUNE = "Retour à la liste"
-# « Retour à l'alerte » et « Retour aux champs » revenaient écrits en dur à quatre
-# et deux endroits, sur deux fichiers pour la première : un libellé qui revient n'a
-# qu'une source, sinon le cinquième endroit finit par l'écrire autrement.
+# Un libellé qui revient n'a qu'une source, sinon il finit écrit autrement ailleurs.
 BTN_BACK_TO_ALERT = "Retour à l'alerte"
 BTN_BACK_TO_FIELDS = "Retour aux champs"
 BTN_APPLY_EXCLUSIONS = "Appliquer"
@@ -141,12 +120,10 @@ BTN_EDIT_EXCLUSIONS_AGAIN = "Modifier à nouveau"
 BTN_DISCARD_CHANGES = "Revenir sans modifier"
 BTN_EDIT_ALERT_SETTINGS = "⚙️ Modifier l'alerte"
 BTN_ANALYSIS_RUNNING = "⏳ Analyse en cours"
-# Le récap de création nomme son bouton de suggestion IA dans sa note d'échec : le
-# libellé vit ici, à côté du bouton qui le porte, pour que la note et le clavier ne
-# puissent pas diverger (ils l'avaient fait : la note disait encore « ✨ … »).
+# La note d'échec du récap nomme ce bouton : le libellé vit ici pour que note et
+# clavier ne divergent pas.
 BTN_AI_VARIANTS_CREATE = "Variantes & Exclusions IA"
-# Un bouton ne répète pas l'action qu'il propose déjà à l'écran : « Confirmer »
-# suffit, le message juste au-dessus dit ce qui est confirmé.
+# Le message au-dessus dit ce qui est confirmé : un bouton « Confirmer » suffit.
 BTN_CONFIRM = "Confirmer"
 BTN_REPORTED = "Signalé"
 
@@ -160,11 +137,6 @@ def period_button(label: str, is_current: bool) -> str:
     return f"✅ {label}" if is_current else label
 
 
-# ---------------------------------------------------------------------------
-# Helpers de formatage
-# ---------------------------------------------------------------------------
-
-
 def format_price_cents(cents: int | None) -> str:
     """Montant en centimes, ou « Non renseigné » — jamais zéro à la place d'un inconnu."""
     if cents is None:
@@ -172,9 +144,8 @@ def format_price_cents(cents: int | None) -> str:
     return f"{cents / 100:.2f} €".replace(".", ",")
 
 
-# Abréviations d'états : convention d'affichage du bot, valable partout — messages
-# comme boutons. Un libellé complet tient une ligne à lui seul ; à trois lettres,
-# une série d'états tient sur une seule ligne.
+# Abréviations d'états valables partout, messages comme boutons : un libellé complet
+# tiendrait une ligne à lui seul, trois lettres font tenir une série sur une ligne.
 CONDITION_SHORT: dict[str, str] = {
     ItemCondition.NEW_WITH_TAG.value: "NAE",
     ItemCondition.NEW_WITHOUT_TAG.value: "NSE",
@@ -238,9 +209,8 @@ def escape_html(value: str | None) -> str:
     return html.escape(value or "", quote=False)
 
 
-# Longueur au-delà de laquelle la liste des faux positifs cesse d'être lisible sur
-# un téléphone. Le reste est compté, jamais passé sous silence : le nombre annoncé
-# est celui de l'inventaire, pas celui de l'extrait.
+# Au-delà, la liste devient illisible sur un téléphone ; le reste est compté, jamais
+# passé sous silence : le nombre annoncé est celui de l'inventaire, pas de l'extrait.
 MAX_LISTED_FALSE_POSITIVES = 3
 
 

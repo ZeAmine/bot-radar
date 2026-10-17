@@ -35,7 +35,6 @@ class Book(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     language: Mapped[str] = mapped_column(String(10), default="fr", nullable=False)
     cover_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Relations
     alert_books: Mapped[list["AlertBook"]] = relationship(
         "AlertBook",
         back_populates="book",

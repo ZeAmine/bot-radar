@@ -64,17 +64,16 @@ class GibertProvider:
                 return []
 
             product = items[0]
-            # Distinction stricte : retenir l'offre occasion en stock
+            # Occasion en stock uniquement : le neuf est rejeté.
             used_price_val = product.get("used_price", product.get("occasion_price"))
             if not used_price_val:
-                # Si non séparé, vérifier le champ condition
+                # Aucun prix d'occasion séparé : se fier au champ condition.
                 if product.get("is_used") or product.get("condition", "").lower() in (
                     "occasion",
                     "used",
                 ):
                     used_price_val = product.get("price")
                 else:
-                    # Produit neuf uniquement : rejet
                     return []
 
             item_price_cents = round(float(used_price_val) * 100)

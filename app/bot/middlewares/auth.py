@@ -34,7 +34,6 @@ class AuthMiddleware(BaseMiddleware):
                 await event.answer(self.UNAUTHORIZED_MESSAGE, show_alert=True)
             return None
 
-        # Synchronisation de l'utilisateur avec la base de données
         async with AsyncSessionLocal() as session:
             user_repo = UserRepository(session)
             db_user = await user_repo.get_or_create(

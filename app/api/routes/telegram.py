@@ -90,7 +90,7 @@ async def handle_telegram_webhook(
                 error_response["current_status"] = pause_progress.current_status
             return error_response
         logger.exception("Erreur lors du traitement de l'update Telegram: %s", exc)
-        # On retourne HTTP 200 à Telegram pour éviter les renvois en boucle d'updates erronées
+        # Répondre 200 évite que Telegram renvoie l'update défectueux en boucle
         return {"status": "error", "message": "Erreur interne traitée"}
 
     if pause_progress is not None and pause_progress.effect != "not_started":

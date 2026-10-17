@@ -23,13 +23,10 @@ class SlidingWindowRateLimiter:
         redis_pool_factory: Callable[[], aioredis.ConnectionPool] | None = None,
     ) -> None:
         self._redis_pool_factory = redis_pool_factory
-        # Repli mémoire : dict de deque de timestamps (float)
         self._memory_store: dict[str, deque[float]] = defaultdict(deque)
         self._last_cleanup: float = time.time()
-        # Client Redis partagé, construit paresseusement une seule fois par instance
         self._redis_client: aioredis.Redis | None = None
-        # Vrai tant que Redis n'a pas répondu : évite de répéter le même avertissement
-        # à chaque requête tout en gardant la panne visible.
+        # Un seul avertissement par panne, le drapeau retombe dès que Redis répond.
         self._redis_degraded: bool = False
 
     def _get_redis_client(self) -> aioredis.Redis | None:
@@ -76,7 +73,6 @@ class SlidingWindowRateLimiter:
         now = time.time()
         clear_before = now - window_seconds
 
-        # 1. Tentative via Redis
         client = self._get_redis_client()
         if client:
             redis_key = f"rl:{key}"
@@ -94,7 +90,6 @@ class SlidingWindowRateLimiter:
                     remaining = max(0, max_requests - current_count)
                     return True, remaining, 0
 
-                # Trop de requêtes : récupérer le plus ancien élément pour calculer retry_after
                 oldest = await client.zrange(redis_key, 0, 0, withscores=True)
                 if oldest:
                     oldest_time = float(oldest[0][1])
@@ -104,9 +99,8 @@ class SlidingWindowRateLimiter:
 
                 return False, 0, retry_after
             except Exception as exc:
-                # Le repli mémoire fonctionne, mais silencieusement : une panne de
-                # Redis ne doit pas pouvoir faire disparaître la protection anti-flood
-                # des diagnostics. Un seul avertissement par episode.
+                # Repli silencieux : un seul avertissement par panne, mais la protection
+                # anti-flood des diagnostics reste active.
                 if not self._redis_degraded:
                     logger.warning(
                         "Rate-limiter : Redis injoignable, repli sur le compteur mémoire "
@@ -115,11 +109,9 @@ class SlidingWindowRateLimiter:
                     )
                 self._redis_degraded = True
 
-        # 2. Repli en mémoire locale
         self._cleanup_memory_if_needed(now)
         timestamps = self._memory_store[key]
 
-        # Nettoyage des timestamps expirés dans la deque
         while timestamps and timestamps[0] <= clear_before:
             timestamps.popleft()
 
@@ -128,7 +120,6 @@ class SlidingWindowRateLimiter:
             remaining = max_requests - len(timestamps)
             return True, remaining, 0
 
-        # Limite atteinte
         oldest_ts = timestamps[0]
         retry_after = max(1, int(window_seconds - (now - oldest_ts)))
         return False, 0, retry_after

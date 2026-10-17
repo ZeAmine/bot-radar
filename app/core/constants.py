@@ -38,10 +38,10 @@ CATEGORY_EMOJIS = {
     CategorySlug.GAMING: "🎮",
 }
 
-# États standards d'articles d'occasion (une seule définition : ItemCondition)
+# États standards d'occasion : une seule définition, l'enum ItemCondition
 STANDARD_CONDITIONS = [condition.value for condition in ItemCondition]
 
-# États sélectionnés par défaut par catégorie (libellés de ItemCondition)
+# États sélectionnés par défaut (libellés de ItemCondition)
 _NEW_AND_VERY_GOOD = [
     ItemCondition.NEW_WITH_TAG.value,
     ItemCondition.NEW_WITHOUT_TAG.value,
@@ -52,7 +52,7 @@ DEFAULT_CLOTHES_CONDITIONS = list(_NEW_AND_VERY_GOOD)
 DEFAULT_TECH_CONDITIONS = [*_NEW_AND_VERY_GOOD, ItemCondition.GOOD.value]
 DEFAULT_GAMING_CONDITIONS = [*_NEW_AND_VERY_GOOD, ItemCondition.GOOD.value]
 
-# Mots-clés d'exclusion anti-pièges par défaut
+# Exclusions anti-pièges par défaut
 DEFAULT_TECH_EXCLUSIONS = [
     "boitier seul",
     "coque seule",

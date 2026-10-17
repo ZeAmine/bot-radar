@@ -105,7 +105,6 @@ def test_rsync_never_sends_the_local_env():
     argv = rsync_argv(_ctx())
 
     assert "--exclude=.env" in argv
-    # Le filtre documenté dans AGENTS.md reste la référence, pas une copie divergente.
     assert set(RSYNC_EXCLUDES) == {
         ".venv",
         "__pycache__",
@@ -226,7 +225,6 @@ def test_stop_confirms_the_container_is_no_longer_running():
     remote = _RemoteAvecReleve()
     assert step_stop(_ctx(remote=remote)) == 0
 
-    # Le relevé a été demandé, et il précède l'arrêt.
     releves = [s for s in remote.scripts if ".State.StartedAt" in s]
     arrets = [s for s in remote.scripts if "compose stop app" in s]
     assert len(releves) == 1
@@ -337,9 +335,8 @@ if args[0] == 'inspect':
     code = run_steps(steps, _ctx(remote=ShellRemote(), remote_dir=str(tmp_path)))
     commands = log.read_text().splitlines()
 
-    # Le relevé d'invariance ouvre le déploiement : il doit décrire l'état
-    # d'avant, donc précéder l'arrêt de l'app. Chaque service est résolu puis
-    # inspecté, l'un après l'autre.
+    # Le relevé d'invariance ouvre le déploiement : il décrit l'état d'avant,
+    # donc précède l'arrêt de l'app.
     assert commands[0] == "compose ps -a -q postgres"
     assert ".State.StartedAt" in commands[1]
     assert commands[2] == "compose ps -a -q redis"
@@ -348,10 +345,9 @@ if args[0] == 'inspect':
     def _index(prefix: str) -> int:
         return next(i for i, c in enumerate(commands) if c.startswith(prefix))
 
-    # L'arrêt de l'app précède toujours le relevé qui suit et la synchronisation.
+    # L'arrêt de l'app précède la synchronisation et le build.
     if failure == "inspect":
-        # L'inspection de l'image de retour échoue avant l'arrêt : l'app reste
-        # en service, ce qui est préférable à un déploiement sans filet.
+        # L'inspection échoue avant l'arrêt : l'app reste en service.
         assert code == 36
         assert "compose stop app" not in commands
         assert "rsync runtime" not in commands
@@ -410,7 +406,6 @@ def test_clean_commit_message_strips_github_prefixes():
     assert (
         clean_commit_message("refactor: clarification du pipeline") == "Clarification du pipeline"
     )
-    # Message déjà naturel sans préfixe
     assert (
         clean_commit_message("Le backoff du provider rendu injectable")
         == "Le backoff du provider rendu injectable"
@@ -472,7 +467,6 @@ def test_step_notify_survives_remote_failure(monkeypatch):
         lambda _c: ("abcdef123456", ["feat(bot): test"]),
     )
 
-    # step_notify retourne 0 pour ne pas invalider un déploiement déjà sain
     assert step_notify(ctx) == 0
 
 

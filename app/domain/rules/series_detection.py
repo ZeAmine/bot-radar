@@ -30,16 +30,14 @@ from dataclasses import dataclass, field
 
 from app.utils.text import normalize_text
 
-# Marqueur explicite de tome, lu sur un titre **normalisé** (« Vol. 2 » y devient
-# « vol 2 », « T.2 » devient « t 2 », « T2 » reste « t2 »). Le `\b` devant la lettre
-# évite de confondre le « t » final d'un mot avec un marqueur : « nuit 2 » n'en est
-# pas un, « blacksad t2 » en est un.
+# Marqueur explicite de tome, lu sur un titre normalisé (« Vol. 2 » → « vol 2 »).
+# Le `\b` évite de confondre le « t » final d'un mot (« nuit 2 ») avec un marqueur.
 _MARKER = re.compile(
     r"\b(?:tomes?|t|vols?|volumes?|livres?|books?|parties?|parts?)\s*(\d{1,4})\b"
 )
 
-# Numéro collé en fin de titre, sans mot-marqueur : « One Piece 12 ». Borné à trois
-# chiffres : une année de publication à quatre chiffres n'est pas un numéro de tome.
+# Numéro collé en fin de titre, sans mot-marqueur : « One Piece 12 ». Trois chiffres
+# au plus, une année à quatre chiffres n'étant pas un numéro de tome.
 _TRAILING_NUMBER = re.compile(r"\s(\d{1,3})$")
 
 # Un préfixe plus court que cela n'identifie rien : « 2 » seul n'est pas un titre.

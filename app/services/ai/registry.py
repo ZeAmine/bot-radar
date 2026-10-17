@@ -19,7 +19,6 @@ class AIRegistry:
         self._all_modules: dict[str, BaseAIModule] = {}
         self._post_alert_modules: dict[str, BasePostAlertModule] = {}
 
-        # Enregistrement des modules disponibles
         self.register(natural_add_module)
         self.register(profit_scoring_module)
         self.register(negotiation_module)
@@ -47,5 +46,4 @@ class AIRegistry:
         return [m for m in self._post_alert_modules.values() if m.is_enabled]
 
 
-# Instance singleton du registre
 ai_registry = AIRegistry()

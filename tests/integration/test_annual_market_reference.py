@@ -366,7 +366,7 @@ def test_mixed_lot_labels_are_shared_by_summary_and_panel():
     tome = TomeMatchResult(is_lot=True, lot_tomes=[1, 2], confidence="high")
     summary = market.MarketPriceService.get_comparison_summary(listing, None, books, tome)
     panel = market.MarketPriceService.format_market_details_card(listing, None, books, tome)
-    # Libellé compact restauré : le lot annonce son total, sans suffixe de dates.
+    # Libellé compact : le lot annonce son total, sans suffixe de dates.
     assert "<b>Prix du marché (Lot) :</b> ~3,00 €" in summary
     assert "<b>Total du lot :</b> ~3,00 €" in panel
     assert "3,00" in summary
@@ -446,6 +446,6 @@ async def test_history_only_with_failed_offers_does_not_fake_current_freshness(e
     rows, total = await evidence.repo.find_stale_current_collections(
         stale_after=evidence.clock.now-timedelta(hours=48),
     )
-    # Le livre de cette fixture n'est associé à aucune alerte : la requête ne le surveille pas.
+    # Livre sans alerte associée : la requête ne le surveille pas.
     assert rows == []
     assert total == 0

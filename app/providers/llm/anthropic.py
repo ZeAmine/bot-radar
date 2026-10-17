@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 API_VERSION = "2023-06-01"
 DEFAULT_MAX_TOKENS = 2048
 MAX_IMAGES = 5
-# Rappel de format : l'API Messages n'a pas de mode JSON, la contrainte vient du prompt.
+# L'API Messages n'a pas de mode JSON : la contrainte vient du prompt.
 JSON_INSTRUCTION = "Réponds uniquement par un objet JSON valide, sans texte autour."
 
 

@@ -113,8 +113,7 @@ async def test_creation_waits_for_price_before_activating_and_confirming(
 
     monkeypatch.setattr(preparation, "price_book_now", collect)
     await save_alert(callback, state, user, database.session)
-    # L'activation est désormais committée dans une session dédiée. Relire les
-    # deux états durables vérifie la frontière, au lieu de compter les anciens mocks.
+    # L'activation est committée dans une session dédiée : les deux états durables le vérifient.
     async with database.maker() as observer:
         alert = (await observer.execute(select(Alert))).scalar_one()
         assert alert.status == AlertStatus.ACTIVE

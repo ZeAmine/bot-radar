@@ -95,7 +95,6 @@ def test_series_matching_lot_summary():
         _create_mock_book("RIP — Tome 2", 1850),
         _create_mock_book("RIP — Tome 3", 2000),
     ]
-    # Total marché = 16.00 + 18.50 + 20.00 = 54.50 €
     listing = Listing(
         source_name="vinted",
         external_id="456",
@@ -117,7 +116,6 @@ def test_series_matching_lot_summary():
     assert summary is not None
     assert "<b>Prix bas constaté (Lot) :</b> ~54,50 €" in summary
     assert "Prix du marché" not in summary
-    # Gain : 25.00 - 54.50 = -29.50 €
     assert "<b>Écart :</b> -29,50 € ✅" in summary
 
 
@@ -202,7 +200,6 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
 
     books = [b1, b2, b3, b4]
 
-    # Extraction depuis le titre de l'utilisateur
     tome_res = TomeExtractor.extract(
         title="Le château des animaux,  1.2.3",
         series_key="Le château des animaux",
@@ -229,22 +226,16 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     )
     assert summary is not None
     assert "Prix du marché" not in summary
-    # Hist: 12.67 + 15.48 + 14.15 = 42.30 €
     assert "<b>Prix bas constaté (Lot) :</b> ~42,30 €" in summary
-    # Écart vs prix bas: 37.18 - 42.30 = -5.12 €
     assert "<b>Écart :</b> -5,12 € ✅" in summary
 
 
 @pytest.mark.parametrize(
     ("lot_tomes", "item_total_cents", "expected_label", "expected_icon", "expected_diff"),
     [
-        # Lot de 2 tomes consécutifs (T1 + T2 = 16.00 + 18.50 = 34.50 €)
         ([1, 2], 2500, "<b>Prix bas constaté (Lot) :</b> ~34,50 €", "✅", "-9,50 €"),
-        # Lot de 2 tomes non-consécutifs (T1 + T3 = 16.00 + 20.00 = 36.00 €)
         ([1, 3], 3000, "<b>Prix bas constaté (Lot) :</b> ~36,00 €", "✅", "-6,00 €"),
-        # Lot de 3 tomes (T1 + T2 + T3 = 54.50 €), prix Vinted supérieur (écart défavorable)
         ([1, 2, 3], 6000, "<b>Prix bas constaté (Lot) :</b> ~54,50 €", "⛔️", "+5,50 €"),
-        # Lot de 1 tome dans une liste de lot (T2 = 18.50 €)
         ([2], 1500, "<b>Prix bas constaté (Lot) :</b> ~18,50 €", "✅", "-3,50 €"),
     ],
 )
@@ -370,7 +361,6 @@ async def test_handle_market_tome_select():
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
-    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
     mock_session.execute.return_value = MagicMock()
     mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
@@ -438,7 +428,6 @@ async def test_market_tome_view_keeps_the_tome_selection_when_series_has_several
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
-    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
     mock_session.execute.return_value = MagicMock()
     mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
@@ -504,7 +493,6 @@ async def test_series_panel_offers_tome_selection_even_when_the_tome_is_resolved
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
-    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
     mock_session.execute.return_value = MagicMock()
     mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
@@ -520,7 +508,6 @@ async def test_series_panel_offers_tome_selection_even_when_the_tome_is_resolved
         mock_l_cls.return_value = mock_l
 
         mock_b = MagicMock()
-        # Le tome est résolu par le texte de l'annonce — la série reste ouverte.
         mock_b.resolve_book_for_listing = AsyncMock(return_value=(tome2, books, None))
         mock_b_cls.return_value = mock_b
 
@@ -565,7 +552,6 @@ async def test_handle_view_market_details_success():
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
-    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
     mock_session.execute.return_value = MagicMock()
     mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
@@ -632,7 +618,6 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
     mock_callback.answer = AsyncMock()
 
     mock_session = AsyncMock()
-    # execute est asynchrone, mais le résultat SQL et sa lecture sont synchrones.
     mock_session.execute.return_value = MagicMock()
     mock_session.execute.return_value.scalar_one_or_none.return_value = None
     with (
@@ -650,7 +635,6 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
         mock_l_cls.return_value = mock_l
 
         mock_b = MagicMock()
-        # Tome non résolu : c'est ce cas qui produit les boutons par tome.
         mock_b.resolve_book_for_listing = AsyncMock(return_value=(None, books, None))
         mock_b_cls.return_value = mock_b
 
@@ -703,7 +687,6 @@ def test_market_tome_ref_round_trip():
 
     assert len(ref.encode()) <= 64
     assert _decode_tome_ref(ref) == (listing_id, book_id)
-    # Une donnée tronquée, forgée ou d'un autre panneau ne doit pas lever.
     assert _decode_tome_ref(None) is None
     assert _decode_tome_ref("market_details:x") is None
     assert _decode_tome_ref("market_tome:pas-du-base64:non-plus") is None
@@ -745,7 +728,6 @@ def test_series_card_distingue_une_absence_constatee_d_une_cote_en_cours():
 
     assert "⏳ 1 tome(s) en cours de cote…" in card
     assert "🔍 1 tome(s) sans aucune offre trouvée." in card
-    # L'attente générique n'existe plus : chaque silence a son compte.
     assert PENDING_COTE_LINE not in card
 
 
@@ -776,7 +758,6 @@ def test_series_card_counts_every_unpriced_tome_when_none_is_priced():
     )
     assert "Cotes par tome" in card
     assert "⏳ 2 tome(s) en cours de cote…" in card
-    # Le total Vinted reste affiché : c'est la seule information fiable ici.
     assert "11,98 €" in card
 
 
@@ -805,12 +786,10 @@ def test_rip_tome_titles_cleaning_no_stray_parenthesis():
 
 def test_fraction_volume_not_treated_as_lot():
     """Vérifie que 'vol 2/8' ou 'tome 1/5' est bien extrait en tome unitaire et non en lot."""
-    # Cas exact de l'annonce utilisateur
     res = TomeExtractor.extract("Batman par Grant Morrison vol 2/8: RIP", series_key="rip")
     assert res.is_lot is False
     assert res.tome_number == 2
 
-    # Autres variantes fractionnaires
     res2 = TomeExtractor.extract("Blacksad tome 1/5", series_key="blacksad")
     assert res2.is_lot is False
     assert res2.tome_number == 1
@@ -891,20 +870,16 @@ def test_market_details_card_series_tomes_formatting():
         books_in_series=books,
     )
 
-    # Titre strictement 'Prix du marché'
     assert "📊 <b>Prix du marché</b>\n" in card
     assert "Amarillo" not in card.split("\n")[0]
 
-    # Pas d'entrée parasite non numérotée sans cote
     assert "• Blacksad : Cote indisponible" not in card
     assert "Cote indisponible" not in card
 
-    # Section Autres tomes de la série
     assert "<b>Autres tomes de la série :</b>" in card
     assert "• Tome 1 : 4,70 €" in card
     assert "• Tome 2 : 5,26 €" in card
     assert "• Tome 4 : 6,70 €" in card
-    # Tome courant en gras
     assert "• <b>Tome 5 : 3,19 €</b>" in card
     assert "• Tome 6 : 5,12 €" in card
     assert "• Tome 7 : 10,49 €" in card
@@ -937,7 +912,6 @@ async def test_resolve_book_for_listing_does_not_swallow_tome2_when_single_gener
     )
 
     assert tome_res.tome_number == 2
-    # Ne doit SURTOUT PAS renvoyer le livre générique comme étant le Tome 2 !
     assert resolved_book is None
     assert books_in_series == [generic_book]
 
@@ -1009,7 +983,6 @@ async def test_resolve_book_for_listing_one_shot_returns_single_book():
     assert resolved_book.id == one_shot.id
 
 
-# --- Lot dénombré : le vendeur donne un compte, pas des numéros ---
 
 _CHATEAU_COTES = [
     ("Le Château des animaux — Tome 1 (Miss Bengalore)", 670),
@@ -1061,7 +1034,6 @@ def test_counted_lot_resolves_to_the_whole_series_and_prices_it():
     assert tome_res.is_lot is True
     assert tome_res.lot_count == 4
     assert tome_res.lot_tomes == [1, 2, 3, 4]
-    # La composition vient de nous, pas du vendeur : le libellé doit le dire.
     assert tome_res.composition_inferred is True
 
     summary = MarketPriceService.get_comparison_summary(
