@@ -5,8 +5,10 @@ n'autorise aucune correction. Déploiement manuel du dispositif.
 
 Périmètre : une stagnation entre l'ingestion d'annonces et les notifications
 Telegram. Le script [`scripts/check_alert_chain.py`](../../scripts/check_alert_chain.py)
-compare, sur une fenêtre glissante, les annonces reçues, les notifications
-acquittées et les correspondances encore bloquées après la reprise F03-B.
+compare, sur une fenêtre glissante, les annonces reçues, les correspondances
+créées, les notifications acquittées et les correspondances encore actionnables
+en retard. Un incident critique exige qu'une correspondance attende réellement un
+traitement dont le délai admissible est dépassé.
 
 ## Ce que le contrôle fait et ne fait pas
 
@@ -18,34 +20,51 @@ acquittées et les correspondances encore bloquées après la reprise F03-B.
   identifiants internes (`alert_id`, `match_id`, `listing_id`), des états, des
   compteurs et le SHA du commit. Ni titre, ni URL d'annonce, ni donnée personnelle.
 
-Un relevé sans incident **ne prouve pas** l'absence de bug. Ce contrôle ne couvre
-ni la collecte Vinted, ni la réception réelle côté Telegram, ni la chaîne des prix,
-ni la vivacité du scheduler, ni l'état de PostgreSQL/Redis. Il ne prouve pas non
-plus que la base est saine : il prouve qu'un symptôme précis n'a pas été observé.
+Un relevé sans incident **ne prouve pas** l'absence de bug, **ni que le matching
+est sain**, **ni qu'une notification a été reçue par Telegram**. Il signifie
+seulement qu'aucune correspondance actionnable échue n'a été observée. Ce contrôle
+ne couvre ni la collecte Vinted, ni la réception réelle côté Telegram, ni la
+chaîne des prix, ni la vivacité du scheduler, ni l'état de PostgreSQL/Redis.
 
 ## Signaux et seuils
 
 | Paramètre | Défaut | Sens |
 | --- | --- | --- |
-| `--window-hours` | `2` | Fenêtre des annonces et des acquittements |
-| `--stuck-hours` | `1` | Âge minimal d'une correspondance bloquée |
-| `--min-stuck` | `3` | Nombre de blocages persistants déclenchant l'alerte |
+| `--window-hours` | `2` | Fenêtre des annonces, des correspondances et des acquittements |
+| `--stuck-hours` | `1` | Âge minimal d'une correspondance actionnable en retard |
 | `--max-sample` | `8` | Identifiants listés dans le message |
 | `--dedup-seconds` | `3600` | Fenêtre du dédoublonnage Redis |
 
-Déclenchement, dans cet ordre :
+Déclenchement déterministe :
 
-1. **Critique** — des annonces ont été ingérées et **zéro** acquittement.
-2. **Avertissement** — des acquittements existent mais `--min-stuck` blocages
-   persistent.
-3. Sinon rien. **Un silence sans ingestion ne déclenche jamais** : rien n'a été
-   collecté, ce n'est pas un incident.
+1. **Critique** — `blocked_actionable_due > 0` : une correspondance attend
+   réellement un traitement, son échéance `next_attempt_at` est passée et elle est
+   plus ancienne que `--stuck-hours`. Une correspondance fraîche ou une reprise
+   prévue dans le futur n'est pas comptée.
+2. **Aucun incident** — sinon. `matches_created` et `matches_notified` restent des
+   compteurs de contexte : leur seule valeur ne déclenche jamais d'incident.
 
-Une correspondance est « bloquée » si `notified_at IS NULL`, créée avant le seuil,
-dans un état que la reprise F03-B doit progresser (`ready`, `deferred`, `sending`)
-ou `unknown` **avec un reçu exploitable**, et dont `next_attempt_at` est passé.
-`notified` et `abandoned` sont terminaux ; `unknown` sans reçu n'autorise aucun
-nouvel envoi et n'est pas, à lui seul, un blocage actionnable.
+Des annonces ingérées sans aucune correspondance ne déclenchent donc rien : il
+n'y avait rien à notifier. C'est un fait, pas une preuve de bonne santé.
+
+`blocked_actionable_due` compte les correspondances `notified_at IS NULL`, dans un
+état que la reprise F03-B doit faire progresser (`ready`, `deferred`, `sending`, ou
+`unknown` avec un reçu exploitable), dont `next_attempt_at` est passée et créées
+avant `--stuck-hours` (garde contre les correspondances en cours d'envoi).
+`notified` et `abandoned` sont terminaux. `non_terminal_due` compte, à titre
+informatif, toutes les correspondances non terminales échues ; il ne déclenche
+aucun incident à lui seul.
+
+### `unknown` avec ou sans reçu (F03-B)
+
+`unknown` n'autorise **aucun nouvel envoi** : `recover_notifications` s'arrête sur
+cet état. Mais un `unknown` porteur d'un reçu exploitable (`telegram_message_id > 0`,
+`telegram_chat_id != 0`, `telegram_bot_id > 0`, `attempt_id` non nul) reste
+**actionnable pour sa finalisation** : `complete_stored_receipt` exécute le
+marquage SQL, sans renvoyer de message. Un tel reçu resté non finalisé au-delà de
+la garde d'âge est donc un vrai blocage et compte dans `blocked_actionable_due`.
+Un `unknown` **sans** reçu n'est ni renvoyé ni finalisable : il ne compte que dans
+`non_terminal_due`, sans incident.
 
 ## Exécution manuelle
 
@@ -85,8 +104,9 @@ vaut donc `inconnu` par défaut dans le conteneur. Pour l'attester, passer
 ## Trace et statuts
 
 La trace JSONL conserve, pour chaque exécution : `alert_id`, horodatage, seuils,
-résultats (compteurs, échantillon), statut et commit analysé. Le script n'écrit
-que trois statuts :
+résultats (`ingested`, `acknowledged`, `matches_created`, `matches_notified`,
+`blocked_actionable_due`, `non_terminal_due`, échantillon), statut et commit
+analysé. Le script n'écrit que trois statuts :
 
 - `ouvert` — incident détecté (nouveau ou toujours reproduit, même `alert_id`) ;
 - `vérifié` — un relevé ultérieur ne reproduit plus le symptôme ;

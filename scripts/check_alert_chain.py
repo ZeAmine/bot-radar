@@ -2,11 +2,10 @@
 """Détecte une stagnation entre l'ingestion d'annonces et les notifications Telegram.
 
 Contrôle en **lecture seule** : ce script n'écrit jamais en base, n'appelle aucun
-moteur IA et ne corrige rien. Il observe une fenêtre glissante et compare trois
-faits — annonces reçues, notifications acquittées, correspondances encore
-bloquées après la reprise F03-B. Une alerte n'est émise que si des annonces ont
-été ingérées et qu'aucune n'a été acquittée, ou qu'un nombre suffisant de
-correspondances reste bloqué après le seuil.
+moteur IA et ne corrige rien. Il observe une fenêtre glissante et ne déclare un
+incident critique que lorsqu'une correspondance attend réellement un traitement
+dont le délai admissible est dépassé. La simple création de correspondances, une
+correspondance fraîche ou une reprise prévue dans le futur ne déclenchent rien.
 
 La clôture suit le **symptôme**, pas le correctif : une alerte reste ouverte tant
 que le même détecteur la reproduit. Elle n'est marquée « vérifiée » que lorsqu'un
@@ -16,7 +15,7 @@ ne clôt jamais une alerte par lui-même.
 Usage :
     python scripts/check_alert_chain.py
     python scripts/check_alert_chain.py --dry-run
-    python scripts/check_alert_chain.py --window-hours 2 --stuck-hours 1 --min-stuck 3
+    python scripts/check_alert_chain.py --window-hours 2 --stuck-hours 1
 
 Codes de sortie : 0 aucun incident, 1 incident détecté, 2 contrôle impossible.
 """
@@ -52,7 +51,6 @@ EXIT_OK, EXIT_INCIDENT, EXIT_ERROR = 0, 1, 2
 
 DEFAULT_WINDOW_HOURS = 2.0
 DEFAULT_STUCK_HOURS = 1.0
-DEFAULT_MIN_STUCK = 3
 DEFAULT_MAX_SAMPLE = 8
 DEFAULT_DEDUP_SECONDS = 3600
 
@@ -63,10 +61,9 @@ STATUS_OPEN = "ouvert"
 STATUS_VERIFIED = "vérifié"
 STATUS_OK = "ok"
 
-# États qu'une reprise F03-B doit faire progresser : une correspondance qui y
-# reste après le seuil et la fenêtre de reprise est bloquée. `notified` et
-# `abandoned` sont terminaux ; `unknown` sans reçu n'autorise aucun nouvel envoi
-# et n'est donc pas, à lui seul, un blocage actionnable.
+# États qu'une reprise F03-B doit faire progresser. `notified` et `abandoned` sont
+# terminaux. `unknown` n'autorise aucun nouvel envoi, mais un `unknown` porteur d'un
+# reçu exploitable reste actionnable pour sa finalisation (marquage SQL).
 ACTIONABLE_STATES = (
     NotificationState.READY.value,
     NotificationState.DEFERRED.value,
@@ -101,7 +98,10 @@ class Snapshot:
     stuck_hours: float
     ingested: int
     acknowledged: int
-    blocked_total: int
+    matches_created: int
+    matches_notified: int
+    blocked_actionable_due: int
+    non_terminal_due: int
     blocked_sample: tuple[BlockedMatch, ...]
 
 
@@ -114,23 +114,23 @@ class Verdict:
     reason: str
 
 
-def evaluate(snapshot: Snapshot, *, min_stuck: int) -> Verdict:
+def evaluate(snapshot: Snapshot) -> Verdict:
     """Qualifie un relevé sans aucun accès externe.
 
-    Un silence sans ingestion n'est jamais un incident : rien n'a été collecté,
-    il n'y a donc rien à notifier. C'est un fait, pas une preuve de bonne santé.
+    Un incident critique exige une correspondance réellement en attente de
+    traitement, dont le délai admissible est dépassé : actionnable, échue et plus
+    ancienne que la garde d'âge. La simple création de correspondances, une
+    correspondance fraîche ou une reprise future ne déclenchent rien.
     """
-    if snapshot.ingested == 0:
-        return Verdict(False, "ok", "aucune annonce ingérée sur la fenêtre")
-    if snapshot.acknowledged == 0:
+    if snapshot.blocked_actionable_due > 0:
+        return Verdict(True, "critical", "correspondances actionnables en retard")
+    if snapshot.matches_created == 0:
         return Verdict(
-            True, "critical", "des annonces ont été ingérées sans aucun acquittement"
+            False, "ok", "aucune correspondance créée sur la fenêtre ; aucune notification attendue"
         )
-    if snapshot.blocked_total >= min_stuck:
-        return Verdict(
-            True, "warning", f"{snapshot.blocked_total} correspondance(s) bloquée(s) après reprise"
-        )
-    return Verdict(False, "ok", "aucun symptôme détecté")
+    return Verdict(
+        False, "ok", "aucune correspondance actionnable échue ; aucun incident détecté"
+    )
 
 
 def decide(*, incident: bool, open_alert_id: str | None) -> str:
@@ -145,7 +145,7 @@ def decide(*, incident: bool, open_alert_id: str | None) -> str:
 
 
 def _blocked_filter(*, now: datetime, stuck_before: datetime) -> Any:
-    retryable_receipt = and_(
+    finalizable_receipt = and_(
         ListingMatch.notification_state == NotificationState.UNKNOWN.value,
         ListingMatch.telegram_message_id > 0,
         ListingMatch.telegram_chat_id != 0,
@@ -155,7 +155,17 @@ def _blocked_filter(*, now: datetime, stuck_before: datetime) -> Any:
     return and_(
         ListingMatch.notified_at.is_(None),
         ListingMatch.created_at < stuck_before,
-        or_(ListingMatch.notification_state.in_(ACTIONABLE_STATES), retryable_receipt),
+        or_(ListingMatch.notification_state.in_(ACTIONABLE_STATES), finalizable_receipt),
+        or_(ListingMatch.next_attempt_at.is_(None), ListingMatch.next_attempt_at <= now),
+    )
+
+
+def _non_terminal_filter(*, now: datetime) -> Any:
+    return and_(
+        ListingMatch.notified_at.is_(None),
+        ListingMatch.notification_state.not_in(
+            (NotificationState.NOTIFIED.value, NotificationState.ABANDONED.value)
+        ),
         or_(ListingMatch.next_attempt_at.is_(None), ListingMatch.next_attempt_at <= now),
     )
 
@@ -168,7 +178,7 @@ async def collect_snapshot(
     stuck_hours: float,
     max_sample: int,
 ) -> Snapshot:
-    """Lit les annonces, les acquittements et les correspondances bloquées."""
+    """Lit les annonces, les correspondances et les blocages actionnables."""
     window_start = now - timedelta(hours=window_hours)
     stuck_before = now - timedelta(hours=stuck_hours)
 
@@ -178,7 +188,15 @@ async def collect_snapshot(
         )
         or 0
     )
-    acknowledged = (
+    matches_created = (
+        await session.scalar(
+            select(func.count())
+            .select_from(ListingMatch)
+            .where(ListingMatch.created_at >= window_start)
+        )
+        or 0
+    )
+    matches_notified = (
         await session.scalar(
             select(func.count())
             .select_from(ListingMatch)
@@ -191,9 +209,17 @@ async def collect_snapshot(
     )
 
     blocked_filter = _blocked_filter(now=now, stuck_before=stuck_before)
-    blocked_total = (
+    blocked_actionable_due = (
         await session.scalar(
             select(func.count()).select_from(ListingMatch).where(blocked_filter)
+        )
+        or 0
+    )
+    non_terminal_due = (
+        await session.scalar(
+            select(func.count())
+            .select_from(ListingMatch)
+            .where(_non_terminal_filter(now=now))
         )
         or 0
     )
@@ -223,8 +249,11 @@ async def collect_snapshot(
         window_hours=window_hours,
         stuck_hours=stuck_hours,
         ingested=int(ingested),
-        acknowledged=int(acknowledged),
-        blocked_total=int(blocked_total),
+        acknowledged=int(matches_notified),
+        matches_created=int(matches_created),
+        matches_notified=int(matches_notified),
+        blocked_actionable_due=int(blocked_actionable_due),
+        non_terminal_due=int(non_terminal_due),
         blocked_sample=sample,
     )
 
@@ -243,13 +272,8 @@ def format_alert(
 ) -> str:
     """Message Telegram : preuve, gravité et identifiants, sans titre ni URL."""
     head = "🚨" if verdict.severity == "critical" else "⚠️"
-    label = (
-        "aucune notification acquittée"
-        if verdict.severity == "critical"
-        else "notifications bloquées"
-    )
     lines = [
-        f"{head} <b>Chaîne d'alerte : {label}</b>",
+        f"{head} <b>Chaîne d'alerte : incident</b>",
         "",
         f"<b>Gravité :</b> {escape(verdict.severity)}",
         "<b>Fenêtre :</b> "
@@ -257,7 +281,10 @@ def format_alert(
         f"<b>Motif :</b> {escape(verdict.reason)}",
         f"<b>Annonces ingérées :</b> {snapshot.ingested}",
         f"<b>Notifications acquittées :</b> {snapshot.acknowledged}",
-        f"<b>Correspondances bloquées :</b> {snapshot.blocked_total}",
+        f"<b>Correspondances créées :</b> {snapshot.matches_created}",
+        f"<b>Correspondances notifiées :</b> {snapshot.matches_notified}",
+        f"<b>Correspondances actionnables en retard :</b> {snapshot.blocked_actionable_due}",
+        f"<b>Correspondances non terminales échues :</b> {snapshot.non_terminal_due}",
     ]
     if snapshot.blocked_sample:
         lines += ["", "<b>Échantillon bloqué :</b>"]
@@ -292,7 +319,10 @@ def format_resolution(
             "des annonces récentes sont acquittées ou aucun blocage ne persiste.",
             f"<b>Annonces ingérées :</b> {snapshot.ingested}",
             f"<b>Notifications acquittées :</b> {snapshot.acknowledged}",
-            f"<b>Correspondances bloquées :</b> {snapshot.blocked_total}",
+            f"<b>Correspondances créées :</b> {snapshot.matches_created}",
+            f"<b>Correspondances notifiées :</b> {snapshot.matches_notified}",
+            f"<b>Correspondances actionnables en retard :</b> {snapshot.blocked_actionable_due}",
+            f"<b>Correspondances non terminales échues :</b> {snapshot.non_terminal_due}",
             "",
             f"<b>Horodatage :</b> {now.isoformat(timespec='seconds')}",
             f"<b>Commit main analysé :</b> <code>{escape(commit)}</code>",
@@ -324,7 +354,6 @@ def build_record(
     commit: str,
     snapshot: Snapshot,
     verdict: Verdict,
-    min_stuck: int,
     resolves: str | None = None,
 ) -> dict[str, Any]:
     """Trace persistée : seuils, requête, résultat et statut d'une observation."""
@@ -338,12 +367,14 @@ def build_record(
         "thresholds": {
             "window_hours": snapshot.window_hours,
             "stuck_hours": snapshot.stuck_hours,
-            "min_stuck": min_stuck,
         },
         "results": {
             "ingested": snapshot.ingested,
             "acknowledged": snapshot.acknowledged,
-            "blocked_total": snapshot.blocked_total,
+            "matches_created": snapshot.matches_created,
+            "matches_notified": snapshot.matches_notified,
+            "blocked_actionable_due": snapshot.blocked_actionable_due,
+            "non_terminal_due": snapshot.non_terminal_due,
             "severity": verdict.severity,
             "reason": verdict.reason,
             "blocked_sample": _sample_as_dicts(snapshot.blocked_sample),
@@ -426,7 +457,6 @@ async def run_check(
     state_file: Path | None,
     window_hours: float,
     stuck_hours: float,
-    min_stuck: int,
     max_sample: int,
     dedup_seconds: int,
     commit: str,
@@ -446,7 +476,7 @@ async def run_check(
         stuck_hours=stuck_hours,
         max_sample=max_sample,
     )
-    verdict = evaluate(snapshot, min_stuck=min_stuck)
+    verdict = evaluate(snapshot)
     action = decide(incident=verdict.incident, open_alert_id=open_alert_id)
 
     alert_id = open_alert_id
@@ -479,7 +509,6 @@ async def run_check(
         commit=commit,
         snapshot=snapshot,
         verdict=verdict,
-        min_stuck=min_stuck,
         resolves=resolves,
     )
 
@@ -494,7 +523,10 @@ async def run_check(
             "severity": verdict.severity,
             "ingested": snapshot.ingested,
             "acknowledged": snapshot.acknowledged,
-            "blocked_total": snapshot.blocked_total,
+            "matches_created": snapshot.matches_created,
+            "matches_notified": snapshot.matches_notified,
+            "blocked_actionable_due": snapshot.blocked_actionable_due,
+            "non_terminal_due": snapshot.non_terminal_due,
             "window_hours": snapshot.window_hours,
             "stuck_hours": snapshot.stuck_hours,
             "commit": commit,
@@ -529,7 +561,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--window-hours", type=float, default=DEFAULT_WINDOW_HOURS)
     parser.add_argument("--stuck-hours", type=float, default=DEFAULT_STUCK_HOURS)
-    parser.add_argument("--min-stuck", type=int, default=DEFAULT_MIN_STUCK)
     parser.add_argument("--max-sample", type=int, default=DEFAULT_MAX_SAMPLE)
     parser.add_argument("--dedup-seconds", type=int, default=DEFAULT_DEDUP_SECONDS)
     parser.add_argument("--commit", default=os.environ.get("GIT_COMMIT", "inconnu"))
@@ -552,7 +583,6 @@ async def _main(args: argparse.Namespace) -> int:
             state_file=_resolve_state_file(args),
             window_hours=args.window_hours,
             stuck_hours=args.stuck_hours,
-            min_stuck=args.min_stuck,
             max_sample=args.max_sample,
             dedup_seconds=args.dedup_seconds,
             commit=args.commit,
