@@ -68,6 +68,5 @@ class ListingMatch(Base, UUIDPrimaryKeyMixin):
         nullable=False,
     )
 
-    # Relations
     alert: Mapped["Alert"] = relationship("Alert", back_populates="matches")
     listing: Mapped["Listing"] = relationship("Listing", back_populates="matches")

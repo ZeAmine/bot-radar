@@ -14,9 +14,8 @@ from __future__ import annotations
 
 import urllib.parse
 
-# --- Cas réel : « La couleur des choses » de Martin Panchaud ---------------------
-# Deux éditions BNF pour le même titre, et un ISBN réel attribué à un AUTRE ouvrage
-# du même éditeur (« Keeping two »), le type d'erreur produite par un LLM.
+# Deux éditions BNF du même titre, et un ISBN réel attribué à un autre ouvrage
+# du même éditeur (« Keeping two ») — l'erreur typique d'un LLM.
 BNF_RECORD_TEMPLATE = """<srw:record>
 <srw:recordSchema>dc</srw:recordSchema>
 <srw:recordData>
@@ -94,9 +93,8 @@ BNF_RECORDS = [
     OTHER_BOOK_SAME_PUBLISHER,
 ]
 
-# Réponse BNF réelle pour « Manuel du cuisinier amateur » (Whoogy's). La notice de
-# référence, sans sous-titre, n'a pas d'ISBN et est donc écartée : les deux candidats
-# sont les tomes, que seul le numéro perdu après le « : » distingue.
+# Réponse BNF réelle pour « Manuel du cuisinier amateur » (Whoogy's) : la notice de
+# référence, sans ISBN, est écartée ; les tomes se distinguent par le numéro après « : ».
 BNF_MANUEL_TOMES = [
     BNF_RECORD_TEMPLATE.format(
         ark="471752286",
@@ -125,8 +123,8 @@ BNF_MANUEL_TOMES = [
 ]
 
 
-# Document OpenLibrary : un même document regroupe toutes les éditions de l'œuvre,
-# y compris une traduction anglaise (9780261102217) qui ne doit pas être retenue.
+# Un document OpenLibrary regroupe toutes les éditions de l'œuvre, dont une
+# traduction anglaise (9780261102217) à ne pas retenir.
 OPENLIBRARY_DOC = {
     "title": "La couleur des choses",
     "author_name": ["Martin Panchaud (Auteur du texte)"],
@@ -136,8 +134,6 @@ OPENLIBRARY_DOC = {
     "language": ["fre"],
     "isbn": ["9782369903086", "2369903082", "9782072909207", "9780261102217"],
 }
-# Volume Google Books : la notice porte ses deux identifiants, dont un ISBN-10 que
-# `isbn_from_identifier` doit savoir convertir pour que le code demandé soit reconnu.
 GOOGLE_BOOKS_ITEM = {
     "volumeInfo": {
         "title": "Dailycieux",

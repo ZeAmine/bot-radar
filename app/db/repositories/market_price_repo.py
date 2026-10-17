@@ -257,11 +257,11 @@ class MarketPriceRepository:
         conservé pour compatibilité des rapports, la dernière collecte et le total.
         Le montant brut ne détermine jamais l'admission ni la fraîcheur.
         """
-        # Dernière observation certifiée, par livre. Réutilisée telle quelle dans le
-        # HAVING : c'est le même agrégat, pas une approximation recalculée.
+        # Dernière observation certifiée par livre, réutilisée telle quelle dans le
+        # HAVING : même agrégat, pas une approximation recalculée.
         last_certified = BookMarketCache.historical_checked_at
-        # Comptage sur le jeu déjà filtré : une fonction de fenêtre s'applique après
-        # le HAVING et avant le LIMIT, donc elle voit les livres que la liste tronque.
+        # Fonction de fenêtre évaluée après le HAVING et avant le LIMIT : le total
+        # porte sur les livres déjà filtrés, liste tronquée comprise.
         total_matching = func.count().over().label("total_matching")
 
         stmt = (
@@ -283,18 +283,16 @@ class MarketPriceRepository:
             )
             .group_by(Book.id, Book.title, Book.isbn13, BookMarketCache.historical_low_1y_cents,
                       BookMarketCache.historical_checked_at, Book.created_at)
-            # « Ancien » et « jamais observé » sont deux façons d'être figé, pas deux
-            # conditions cumulables : un `AND` les rendait mutuellement exclusives et
-            # la requête ne pouvait plus rien renvoyer. Un livre jamais observé est
-            # plus inquiétant qu'un livre ancien, pas moins.
+            # Ancien ou jamais observé, les deux cas comptent ; un `AND` les
+            # rendrait exclusifs, or jamais observé est au moins aussi inquiétant.
             .having(or_(last_certified <= stale_after,
                         last_certified.is_(None) & (Book.created_at <= stale_after)))
             .order_by(Book.title)
             .limit(limit)
         )
         result = await self.session.execute(stmt)
-        # Titre et ISBN viennent du modèle ; les agrégats filtrés n'ont pas de type :
-        # SQLAlchemy ne les propage pas au Tuple.
+        # Titre et ISBN viennent du modèle ; les agrégats filtrés n'ont pas de type
+        # propagé au Tuple par SQLAlchemy.
         found: list[tuple[str, str | None, int, datetime | None]] = []
         total = 0
         for title, isbn, low, last_seen, matching in result.all():

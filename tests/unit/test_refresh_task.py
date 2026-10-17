@@ -193,10 +193,8 @@ async def test_refresh_processes_several_books_in_one_wave():
     mock_registry.fetch_all_offers = AsyncMock(side_effect=[[], RuntimeError("timeout"), []])
     mock_registry.select_best_offer = MagicMock(return_value=None)
 
-    # Sans ce garde-fou, l'alerte « aucune cote » part pour de vrai : c'est le
-    # vrai bot (token du .env local) qui l'envoie, et la fenêtre de
-    # dédoublonnage Redis (`redis://redis`, injoignable hors compose) renvoie
-    # « slot libre » à chaque passe — d'où un message à chaque pytest.
+    # Sans ce garde-fou, l'alerte part pour de vrai à chaque pytest : le bot local
+    # (jeton du .env) l'envoie, Redis hors compose renvoie « slot libre ».
     sends: list[str] = []
 
     async def faux_notify(text: str) -> None:
@@ -237,10 +235,6 @@ async def test_refresh_processes_several_books_in_one_wave():
     assert "Traités : 3/3 livres" in alertes[0]
     assert "Actualisées : 0 collectes" in alertes[0]
     assert "Exceptions de traitement : 1" in alertes[0]
-
-
-
-# --- L'alerte « aucune cote », exercée par la tâche et non par son aide ---------
 
 
 def _livres(n: int) -> list[Book]:
@@ -284,14 +278,12 @@ async def _passe_sans_offres(
         sends.append(text)
 
     mp.setattr("app.services.market_health.notify_admins", faux_notify)
-    # Fenêtre ouverte : chaque passe tente l'envoi, c'est le test qui compte.
-    # La pause anti-rate-limit est neutralisée : elle est réelle et sans
-    # rapport avec ce que ces tests observent.
+    # Fenêtre pilotée par le test : chaque passe tente l'envoi. La pause
+    # anti-rate-limit, réelle mais hors sujet ici, est neutralisée.
     client = MagicMock()
     client.set = AsyncMock(return_value=fenetre_ouverte)
     mp.setattr("app.services.market_health.get_redis_client", lambda: client)
-    # Les deux autres contrôles de santé sont couverts ailleurs ; ici ils ne
-    # doivent pas bruiter le comptage.
+    # Les deux autres contrôles de santé, couverts ailleurs, ne doivent pas bruiter le comptage.
     mp.setattr("app.tasks.refresh_book_prices.asyncio.sleep", AsyncMock())
 
     return await refresh_book_prices_task(
@@ -395,9 +387,6 @@ async def test_provider_failure_is_degraded_not_a_book_error():
     assert "chasse_aux_livres" in alertes[0]
 
 
-# --- « Traité » n'est pas « mis à jour » ---
-
-
 class _CacheEcrit:
     """Un cache dont la collecte a réellement abouti à une cote utilisable."""
 
@@ -453,9 +442,7 @@ async def test_only_a_written_cote_counts_as_updated():
         registry.failed_provider_names = set()
         await _run_wave(livres, registry, None, semaphore, stats)
 
-    # Les quatre livres ont été traités…
     assert stats["processed"] == 4
-    # … mais deux seulement ont écrit une cote.
     assert stats["refreshed"] == 2
 
 
@@ -478,9 +465,6 @@ async def test_a_failed_collection_is_never_counted_as_updated():
     assert _book_result(Echec(), None).refreshed is False
     assert _book_result(_CacheSansCote(), None).refreshed is False
     assert _book_result(_CacheEcrit(), None).refreshed is False
-
-
-# --- Reprise effective des livres laissés de côté ---
 
 
 class _HorlogePilotee:
@@ -572,8 +556,6 @@ async def test_a_book_left_behind_by_a_cut_pass_is_treated_by_the_next_one():
     assert ecrits, "la première passe doit avoir traité quelque chose"
     assert laisses, "et laisser le reste de côté"
 
-    # La passe suivante : le livre non atteint revient dans la sélection, et il est
-    # traité pour de bon.
     ecrits_seconde: list[uuid.UUID] = []
     with pytest.MonkeyPatch.context() as mp:
         seconde = await _passe_sur(

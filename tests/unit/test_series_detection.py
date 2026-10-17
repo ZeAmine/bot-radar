@@ -19,18 +19,15 @@ from tests.add_fakes import fake_book_search
 
 VOLUME_2_TITLE = "Absolute Martian Manhunter Vol. 2"
 SERIES_TITLE = "Absolute Martian Manhunter"
-# Les deux codes réels rendus par le repli pour cette œuvre : l'édition de référence
-# (titre sans numéro) et le document du tome 2.
+# Les deux codes réels du repli : l'édition de référence (sans numéro) et le tome 2.
 ISBN_VOLUME_1 = "9781799505204"
 ISBN_VOLUME_2 = "9781799510871"
 
 # Cas BNF réel : les deux tomes ne se distinguent que par un numéro caché après le
-# sous-titre, que `clean_bnf_title` coupe. Le titre de base est le même des deux côtés.
+# sous-titre, que `clean_bnf_title` coupe.
 MANUEL_TITLE = "Manuel du cuisinier amateur"
 ISBN_MANUEL_1 = "9782812321344"
 ISBN_MANUEL_2 = "9782812321689"
-
-# --- Règle pure -----------------------------------------------------------------
 
 
 def test_marker_word_forms_are_detected():
@@ -118,9 +115,6 @@ def test_a_roman_numeral_volume_is_not_claimed():
     signal = detect_series(query_title=SERIES_TITLE, notices=[f"{SERIES_TITLE} Tome II"])
 
     assert signal.is_series is False
-
-
-# --- Chemin de création manuel ---------------------------------------------------
 
 
 class _FakeService:
@@ -264,8 +258,8 @@ async def test_creation_builds_a_series_alert_without_isbn():
     assert stored["isbn"] is None
     # Le titre de l'alerte est celui de la série, pas celui d'un volume.
     assert stored["name"] == SERIES_TITLE
-    # L'indication n'est plus une donnée du brouillon : elle se dérive de `is_series`,
-    # donc deux rendus de la même fiche ne peuvent pas se contredire.
+    # L'indication se dérive de `is_series` : deux rendus de la même fiche ne
+    # peuvent pas se contredire.
     assert "series_note" not in stored
     # Les mots-clés portent sur la série : « … vol 2 » ne verrait jamais le tome 3.
     assert stored["include_keywords"] == ["absolute martian manhunter"]
@@ -273,10 +267,8 @@ async def test_creation_builds_a_series_alert_without_isbn():
     # Pas d'éditions concurrentes : ce seraient celles d'un tome.
     assert stored["edition_alternatives"] == []
 
-    # Le récap réellement affiché porte l'indication, hors de la liste des informations
-    # et en italique : l'alerte n'a pas d'identifiant, mais elle ne fait pas croire à un
-    # oubli. Les tomes repérés ne sont plus énumérés, et la ligne ISBN a disparu — elle
-    # répétait la même phrase que l'indication.
+    # L'indication figure hors de la liste et en italique, faute d'identifiant à
+    # afficher ; ni ligne ISBN ni énumération des tomes ne la répètent.
     from app.bot.handlers.alerts_helpers import RECAP_TITLE
 
     recap = creation_card(stored)

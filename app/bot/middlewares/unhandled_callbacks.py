@@ -24,7 +24,7 @@ from aiogram.types import TelegramObject, Update
 
 logger = logging.getLogger(__name__)
 
-# Ce que voit l'utilisateur : le bouton cesse de tourner, et la raison reste courte.
+# Le bouton cesse de tourner ; la raison affichée reste courte.
 STALE_CALLBACK_MESSAGE = "⏳ Ce bouton n'est plus actif. Relance la commande."
 
 

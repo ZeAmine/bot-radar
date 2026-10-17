@@ -112,7 +112,6 @@ def create_listing(estimated_total_cents: int | None) -> Listing:
 
 
 def test_comparator_vinted_cheaper_than_market():
-    # Total Vinted 13,69 €, référence documentée 22,00 € : écart −8,31 €.
     book = create_book_with_cache(lowest_delivered_cents=2200, annual_low_cents=2200)
     listing = create_listing(estimated_total_cents=1369)
 
@@ -124,7 +123,6 @@ def test_comparator_vinted_cheaper_than_market():
 
 
 def test_comparator_vinted_very_good_deal_fire_badge():
-    # Économie importante (>= 10 €) -> Badge ✅
     book = create_book_with_cache(lowest_delivered_cents=3000, annual_low_cents=3000)
     listing = create_listing(estimated_total_cents=1500)
 
@@ -136,7 +134,6 @@ def test_comparator_vinted_very_good_deal_fire_badge():
 
 
 def test_comparator_vinted_more_expensive_than_market():
-    # Total Vinted 25,00 €, référence documentée 20,00 € : écart +5,00 €.
     book = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
     listing = create_listing(estimated_total_cents=2500)
 
@@ -148,7 +145,6 @@ def test_comparator_vinted_more_expensive_than_market():
 
 
 def test_comparator_small_difference_warning():
-    # Écart très faible (50 centimes) -> Vinted plus cher donc ⛔️
     book = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
     listing = create_listing(estimated_total_cents=2050)
 
@@ -189,13 +185,11 @@ def test_gap_marker_closes_the_line_and_stays_out_of_a_null_gap():
     below_line = next(line for line in summary_below.splitlines() if "Écart :" in line)
     equal_line = next(line for line in summary_equal.splitlines() if "Écart :" in line)
 
-    # le marqueur ferme la ligne, il ne l'ouvre pas
     assert above_line.endswith("⛔️")
     assert below_line.endswith("✅")
     assert not above_line.startswith(("✅", "⛔️"))
     assert not below_line.startswith(("✅", "⛔️"))
 
-    # à l'égalité : aucun marqueur, la parenthèse suffit
     assert equal_line == "<b>Écart :</b> 0,00 € (au prix de référence)"
     assert "✅" not in equal_line
     assert "⛔️" not in equal_line
@@ -224,8 +218,6 @@ def test_comparator_no_book_or_cache():
 
 
 def test_comparator_with_historical_low_1y():
-    # Vinted total : 13,69 €, Plus bas historique : 18,50 €
-    # L'écart est calculé par rapport au prix bas constaté (13,69 - 18,50 = -4,81 €)
     book = create_book_with_cache(lowest_delivered_cents=2200, annual_low_cents=1850)
     listing = create_listing(estimated_total_cents=1369)
 
@@ -236,7 +228,6 @@ def test_comparator_with_historical_low_1y():
     assert "<b>Écart :</b> -4,81 € ✅" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
-    # Les lignes redondantes Vinted, Offres et Écart sont supprimées
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
@@ -284,7 +275,6 @@ def test_comparator_market_details_card_excludes_amazon_de():
 
 
 def test_comparator_historical_low_when_status_unavailable():
-    # Même si l'offre en direct est indisponible, le prix bas historique sert de référence
     book = create_book_with_cache(
         status=ComparisonStatus.UNAVAILABLE,
         lowest_delivered_cents=None,
@@ -298,21 +288,17 @@ def test_comparator_historical_low_when_status_unavailable():
     assert "<b>Prix bas constaté :</b> 18,50 €" in summary
     assert "<b>Écart :</b> -4,81 € ✅" in summary
 
-    # Vérifier que le panneau 'Prix du marché' affiche le prix bas constaté
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "📊 <b>Prix du marché</b>" in card
     assert "<b>Prix bas constaté :</b> 18,50 €" in card
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
-    # La parenthèse qui expliquait la cote prenait la moitié de l'écran pour
-    # répéter le titre : elle est supprimée, et ce test verrouille son absence.
     assert "Cote d'occasion basée sur le plus bas prix" not in card
     assert "nous avons pu constater" not in card
 
 
 def test_comparator_single_book_series_fallback():
-    # Si book est None mais que books_in_series contient 1 livre
     book = create_book_with_cache(
         lowest_delivered_cents=None,
         annual_low_cents=1548,
@@ -329,7 +315,6 @@ def test_comparator_single_book_series_fallback():
 
 
 def test_comparator_no_price_at_all_returns_unavailable():
-    # Si le cache n'a ni offre directe ni historique 1 an
     book = create_book_with_cache(
         lowest_delivered_cents=None,
         annual_low_cents=None,
@@ -343,7 +328,6 @@ def test_comparator_no_price_at_all_returns_unavailable():
 def test_comparator_excludes_brand_new_and_inferior_conditions():
     """Vérifie l'exclusion des offres Neuf/inférieures et le plafonnement à 5 offres."""
     book = create_book_with_cache(lowest_delivered_cents=869)
-    # Injecter des partenaires mélangés (Neuf, Bon, Correct, Très bon, Comme neuf)
     book.market_cache.raw_payload = {
         "partners": {
             "Rakuten": {
@@ -418,7 +402,6 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
     assert "• Bal : 9,80 € (Très bon)" in card
     assert "• Amazon : 10,50 € (Comme neuf)" in card
 
-    # Vérifier l'exclusion absolue des états inférieurs et du Neuf
     assert "Momox" not in card
     assert "(Bon)" not in card
     assert "Abebooks" not in card
@@ -427,7 +410,7 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
     assert "Les Libraires" not in card
     assert "(Neuf)" not in card
 
-    # Limite stricte de 5 offres (Ebay qui est la 6e valide ne doit pas être affichée)
+    # Ebay est la 6e offre valide : le plafond de 5 la laisse dehors.
     assert "Ebay" not in card
 
     assert "Actualisation :" in card
@@ -474,13 +457,10 @@ def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_
 
     card = MarketPriceService.format_market_details_card(listing, book)
 
-    # 1. Vérifier la présence de la cote 1 an
     assert "<b>Prix bas constaté :</b> 5,48 €" in card
-    # 2. Vérifier la présence du comparatif boutique
     assert "<b>Comparatif par boutique :</b>" in card
     assert "• Momox : 21,04 € (Très bon)" in card
     assert "• Fnac : 27,15 € (Très bon)" in card
-    # 3. Vérifier le lien vers la meilleure offre
     assert '<a href="https://momox.fr/indes">Consulter l\'offre</a>' in card
 
 
@@ -505,13 +485,12 @@ def test_summary_and_card_share_the_same_reference_price():
 def test_summary_uses_vinted_total_including_shipping():
     """L'écart compare le total Vinted (port inclus), pas le prix de l'article seul."""
     book = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
-    # Prix article 1 500 cts, total estimé 2 400 cts (protection + port)
     listing = create_listing(estimated_total_cents=None)
     listing.item_price_cents = 1500
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    # 1 500 + 75 (5 % arrondi) + 70 + 288 (port) = 1 933 cts -> 1 933 - 2 000
+    # 1 500 + 75 (5 %) + 70 + 288 (port) = 1 933 cts : écart -0,67 € contre 2 000 cts.
     assert "<b>Écart :</b> -0,67 € ✅" in summary
 
 
@@ -615,9 +594,6 @@ def test_details_card_escapes_offer_link():
     assert "?a=1&b=2" not in card
 
 
-# --------------------------------------------------------------------------- E4 : totaux
-
-
 def _tome_book(title: str, price_cents: int | None) -> Book:
     """Un tome de série avec (ou sans) cote en base."""
     book = Book(
@@ -717,9 +693,6 @@ def test_lot_card_without_any_price_announces_the_pending_cotes():
     )
     assert "⏳ 2 tome(s) en cours de cote…" in card
     assert "Total du lot" not in card
-
-
-# --------------------------------------------------------------------------- E5 : absences
 
 
 def _tome_book_with_settled_absence(title: str, *, checked_at: datetime | None = None) -> Book:
@@ -825,8 +798,7 @@ def test_the_panel_of_an_uncatalogued_series_says_it_and_lets_books_win():
     assert NO_CATALOGUE_LINE in card
     assert PENDING_COTE_LINE not in card
 
-    # Sans le verdict, le même panneau annonce l'attente : c'est le verdict qui
-    # change la phrase, pas une absence de livre qui traînerait partout.
+    # Sans le verdict, le même panneau annonce l'attente.
     waiting = MarketPriceService.format_market_details_card(listing, None)
     assert PENDING_COTE_LINE in waiting
     assert NO_CATALOGUE_LINE not in waiting

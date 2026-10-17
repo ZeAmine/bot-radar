@@ -75,7 +75,7 @@ def create_scheduler() -> AsyncIOScheduler:
         id="recover_notifications", max_instances=1, coalesce=True, replace_existing=True,
     )
 
-    # Parsing des horaires configurés (ex: '07:00,19:00')
+    # Format attendu : « 07:00,19:00 ».
     times = [t.strip() for t in settings.PRICE_REFRESH_TIMES.split(",") if ":" in t]
     for time_str in times:
         try:
@@ -100,8 +100,8 @@ def create_scheduler() -> AsyncIOScheduler:
                 "Format d'horaire invalide pour PRICE_REFRESH_TIMES '%s': %s", time_str, exc
             )
 
-    # Lot glissant : minimum de 8, ajusté à la population par le repository.
-    # Cible de réussite à 24 h ; une source indisponible reste signalée après 48 h.
+    # Lot glissant : minimum de 8, ajusté à la population par le repository ;
+    # cible de réussite à 24 h, source indisponible signalée après 48 h.
     scheduler.add_job(
         refresh_job("refresh_prices_incremental", incremental=True, batch_size=8),
         trigger=CronTrigger(minute="15,45", timezone="Europe/Paris"),
@@ -114,7 +114,6 @@ def create_scheduler() -> AsyncIOScheduler:
     )
     logger.info("Job planifié : rafraîchissement glissant BD toutes les 30 min (lots adaptés).")
 
-    # Job quotidien de nettoyage et purge des données obsolètes à 03:30 Europe/Paris
     scheduler.add_job(
         cleanup_old_data_task,
         trigger=CronTrigger(hour=3, minute=30, timezone="Europe/Paris"),
@@ -126,7 +125,6 @@ def create_scheduler() -> AsyncIOScheduler:
     )
     logger.info("Job planifié : nettoyage nocturne des données à 03:30 Europe/Paris.")
 
-    # Job d'Auto-Tuning proactif des alertes toutes les 4 heures en journée
     scheduler.add_job(
         run_proactive_autotune_scan,
         trigger=CronTrigger(hour="10,14,18,22", minute=0, timezone="Europe/Paris"),

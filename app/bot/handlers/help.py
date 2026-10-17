@@ -8,14 +8,8 @@ from app.bot.labels import TITLE_HELP
 
 router = Router(name="help_router")
 
-# L'aide est la seule liste de commandes du bot : elle décrit ce que le bot fait,
-# pas l'implémentation. Les libellés suivent la charte (tutoiement, pas
-# d'exclamation) et les intitulés de boutons déjà visibles à l'écran.
-#
-# Le menu Telegram ne montre que les quatre premières ; les autres restent des
-# commandes vivantes, et c'est ici qu'on les retrouve. Elles sont groupées par le
-# moment où on les utilise, pas par ordre alphabétique : une commande qu'on ne
-# cherche pas ne se trouve pas dans une liste triée par son nom.
+# Seule liste complète des commandes : le menu Telegram n'en affiche que quatre.
+# Groupées par moment d'usage, libellés tutoyés et sans exclamation.
 HELP_TEXT = (
     f"{TITLE_HELP}\n\n"
     "<b>Au menu</b>\n"

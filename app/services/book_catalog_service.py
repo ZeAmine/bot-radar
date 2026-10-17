@@ -63,13 +63,11 @@ class BookCatalogService:
         4. Titre seul : confiance low (non utilisé pour comparaison automatique).
         5. Aucun match : (None, None).
         """
-        # 1. Recherche par ISBN-13
         if isbn13 and len(isbn13.strip()) == 13:
             book = await self.book_repo.get_by_isbn13(isbn13.strip())
             if book:
                 return book, MatchConfidence.HIGH
 
-        # 2. Recherche par ISBN-10 converti
         if isbn10 and len(isbn10.strip()) == 10:
             converted = isbn10_to_isbn13(isbn10.strip())
             if converted:
@@ -77,14 +75,12 @@ class BookCatalogService:
                 if book:
                     return book, MatchConfidence.HIGH
 
-        # 3. Recherche par titre normalisé
         normalized_query_title = normalize_text(title)
         candidate_books = await self.book_repo.get_by_normalized_title(normalized_query_title)
 
         if not candidate_books:
             return None, None
 
-        # Si auteur et édition correspondent
         if author:
             norm_author = normalize_text(author)
             for b in candidate_books:
@@ -97,5 +93,4 @@ class BookCatalogService:
                         return b, MatchConfidence.MEDIUM
                     return b, MatchConfidence.MEDIUM
 
-        # 4. Titre seul (confiance low)
         return candidate_books[0], MatchConfidence.LOW

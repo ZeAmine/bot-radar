@@ -29,12 +29,10 @@ async def test_find_existing_alert():
     mock_result.scalar_one_or_none.return_value = mock_alert
     session.execute.return_value = mock_result
 
-    # Recherche par ISBN
     found_by_isbn = await repo.find_existing(user_id, isbn="9782413078128")
     assert found_by_isbn is not None
     assert found_by_isbn.name == "Deathbringer"
 
-    # Recherche par titre
     found_by_title = await repo.find_existing(user_id, title="Deathbringer")
     assert found_by_title is not None
     assert found_by_title.isbn == "9782413078128"
@@ -69,8 +67,6 @@ async def test_find_existing_alert_via_alert_books_title():
         status=AlertStatus.ACTIVE,
     )
 
-    # Premier execute (Alert directe) retourne None,
-    # deuxième execute (join AlertBook) retourne mock_alert
     mock_direct_res = MagicMock()
     mock_direct_res.scalar_one_or_none.return_value = None
     mock_book_res = MagicMock()

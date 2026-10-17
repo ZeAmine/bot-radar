@@ -119,9 +119,8 @@ class ViewMarketDetailsUseCase:
                 target_isbn=target_isbn,
             )
 
-        # Le total vient de l'alerte, et la cotation qui vient peut-être d'avoir
-        # lieu dans `_refresh_price_if_needed` vient de le réécrire dans sa propre
-        # session : on relit plutôt que d'afficher la valeur du début d'entrée.
+        # La cotation peut avoir réécrit le total de l'alerte dans sa propre session :
+        # relire plutôt que d'afficher la valeur du début d'entrée.
         series_total: int | None = None
         catalogue_exhausted = False
         if alert is not None:
@@ -293,10 +292,8 @@ class ViewMarketDetailsUseCase:
             return book
 
         try:
-            # La recherche se fait sur le nom de l'alerte, qui est aussi le titre
-            # retenu pour la fiche : sans ISBN, c'est ce qui fait converger deux
-            # ouvertures du panneau vers le même livre au lieu d'en créer un par
-            # clic.
+            # Recherche sur le nom de l'alerte, aussi titre de la fiche : sans ISBN,
+            # deux ouvertures convergent vers le même livre au lieu d'en créer un.
             fallback_title = alert.name if alert else listing.title
             catalog = BookCatalogService(self.db)
             if not book:

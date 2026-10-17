@@ -34,18 +34,13 @@ from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.providers.chasse_aux_livres")
 
-# Cle Redis du jeton anti-bot injecte par `scripts/sync_chasse_session.py`.
 REDIS_SESSION_KEY = "radar:chasse:duih"
 
-# Attente entre deux tentatives. Injectable pour que les tests qui exercent le
-# backoff ne paient pas les délais en temps réel : en production c'est
-# `asyncio.sleep`, jamais autre chose.
+# Attente entre deux tentatives, injectable pour les tests.
 Sleeper = Callable[[float], Awaitable[None]]
 
-# Similarité minimale entre le titre attendu et celui renvoyé par l'agrégateur.
 TITLE_COHERENCE_MIN = 0.72
 
-# Vocabulaire générique d'édition, sans valeur discriminante pour identifier une œuvre.
 _TITLE_STOP_WORDS = frozenset(
     {
         "tome",
@@ -253,8 +248,6 @@ class ChasseAuxLivresProvider:
         if not expected or not found:
             return True
 
-        # Un tome différent est un refus immédiat : la similarité des titres de la
-        # même série est trop élevée pour distinguer deux volumes.
         expected_tome = extract_tome_number_from_title(expected)
         found_tome = extract_tome_number_from_title(found)
         if expected_tome is not None and found_tome is not None and expected_tome != found_tome:
@@ -280,8 +273,7 @@ class ChasseAuxLivresProvider:
     ) -> list[MarketOffer]:
         """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
         _ = edition
-        # 1. Tentative par ISBN : uniquement si le code passe sa clé de contrôle,
-        # sinon la recherche renverrait l'ouvrage d'un autre livre.
+        # ISBN utilisé seulement s'il passe sa clé de contrôle.
         clean_isbn = normalize_search_isbn(isbn13)
         failures: set[str] = set()
         historical_checked = False
@@ -296,9 +288,7 @@ class ChasseAuxLivresProvider:
             if offers:
                 return offers
 
-        # 2. Repli par Titre (+ auteur éventuel) : même si la requête part du
-        # titre, l'ISBN attendu accompagne la recherche — un résultat qui
-        # affiche ce code prouve l'identité quoi que dise la graphie (ADR-035).
+        # Repli par titre (+ auteur) ; l'ISBN attendu prouve l'identité (ADR-035).
         if title and len(title.strip()) > 0:
             t_query = title.strip()
             if author:
@@ -330,7 +320,6 @@ class ChasseAuxLivresProvider:
         max_retries = self.max_retries
         for attempt in range(max_retries + 1):
             try:
-                # Étape 1 : Récupérer la page de recherche avec ses cookies et son token hash
                 resp1 = await client.get(
                     search_url,
                     headers=CHASSE_BROWSER_HEADERS,
@@ -368,7 +357,6 @@ class ChasseAuxLivresProvider:
 
                 data_hash = hash_match.group(1)
 
-                # Étape 2 : Récupérer les résultats agrégés via l'endpoint REST
                 ajax_headers = _build_ajax_headers(search_url)
                 rest_url = f"{self.BASE_URL}/rest/search-results?h={data_hash}&p=1&l=1&b=d"
                 resp2 = await client.get(
@@ -387,7 +375,6 @@ class ChasseAuxLivresProvider:
                 if not d_html:
                     return []
 
-                # Récupération fine et vérifiée des offres partenaires d'occasion
                 deep_offers = await self._try_deep_lookup(
                     client,
                     d_html,
@@ -426,7 +413,6 @@ class ChasseAuxLivresProvider:
             product_path = url_match.group(1)
             product_url = f"{self.BASE_URL}{product_path}"
 
-            # Extraction ISBN et Titre depuis d_html
             isbn_match = re.search(r"ISBN&nbsp;:\s*(\d{10,13})", d_html)
             found_isbn = normalize_search_isbn(isbn_match.group(1)) if isbn_match else None
             title_match = re.search(
@@ -444,16 +430,7 @@ class ChasseAuxLivresProvider:
             if not found_title or found_title.isdigit():
                 found_title = slug_title or query
 
-            # Contrôle strict de cohérence du titre (rejet si hors sujet, ex: Ogrest pour Loba Loca)
-            # On vérifie contre le titre affiché et contre le slug URL qui
-            # contient les sous-titres et collections complètes
-            #
-            # L'ISBN exact prime sur le titre (ADR-035) : quand le résultat
-            # affiche le code même que celui cherché, l'identité est prouvée et
-            # la graphie ne vétote plus — le site orthographie les volumes de
-            # façons très diverses (« 1629, ou l'effrayante histoire… » pour
-            # « Les naufragés du Jakarta T1 »), et un refus ici prive la série
-            # de toute cote alors que le bon livre est sous nos yeux.
+            # Cohérence sur titre affiché et slug ; ISBN identique prime (ADR-035).
             isbn_proven = bool(expected_isbn) and found_isbn == expected_isbn
 
             title_coherent = self.is_title_coherent(expected_title, found_title) or (
@@ -509,7 +486,6 @@ class ChasseAuxLivresProvider:
             if not isinstance(raw_offers, dict):
                 return failed_offers(self.name, reason="invalid_response")
 
-            # Si le moteur eBay (22) n'a pas encore répondu au premier appel, interroger retry=1
             if "22" not in raw_offers:
                 retry_url = (
                     f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
@@ -549,7 +525,7 @@ class ChasseAuxLivresProvider:
                         .title()
                     )
 
-                    # Exclusion stricte des marchands étrangers (ex: Amazon DE)
+                    # Marchands étrangers exclus (ex. Amazon DE).
                     if is_merchant_excluded(merchant_raw) or is_merchant_excluded(merchant_clean):
                         continue
 
@@ -563,12 +539,10 @@ class ChasseAuxLivresProvider:
                     if tot <= 0:
                         continue
 
-                    # Filtrage STRICT occasion : exclusion absolue du Neuf
                     if is_brand_new_partner({"is_used": is_used, "condition": sub_cond}):
                         continue
 
-                    # Filtrage STRICT état : uniquement Très bon et Comme neuf
-                    # (rejet Bon, Correct, etc.)
+                    # États retenus : Très bon et Comme neuf (Bon, Correct rejetés).
                     if not is_very_good_or_better(sub_cond):
                         continue
 
@@ -589,7 +563,7 @@ class ChasseAuxLivresProvider:
                     if best_used is None or tot < best_used["total_cents"]:
                         best_used = entry
 
-            # Extraction du minimum historique sur 1 an via l'API /rest/jcd de Chasse-aux-livres
+            # Plus bas historique sur 1 an via l'API /rest/jcd.
             hist_low_1y_cents: int | None = None
             history_attempt = CollectionAttempt(self.name, "history", "failed", "missing_metadata")
             historical_failed = True
@@ -658,8 +632,7 @@ class ChasseAuxLivresProvider:
             if historical_failed:
                 logger.warning("Historique Chasse-aux-livres non reçu : réponse vide, "
                                "invalide ou refusée")
-            # Zéro Neuf déguisé : Si aucune occasion n'est en stock,
-            # renvoyer l'historique seul ou None
+            # Aucune occasion en stock : retourner l'historique seul (cote indisponible).
             if not best_used:
                 if hist_low_1y_cents:
                     return MarketOffers([*historical_points,

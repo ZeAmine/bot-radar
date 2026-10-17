@@ -287,9 +287,8 @@ async def refresh_book_prices_task(
 
     stats = {
         "processed": 0,
-        # Distinct de « processed » : un livre interrogé dont les fournisseurs sont
-        # muets a bien été traité, mais n'a rien écrit. C'est ce compteur-là qui
-        # répond à « le rafraîchissement a-t-il servi à quelque chose ? ».
+        # Distinct de « processed » : un livre traité dont les fournisseurs sont
+        # muets n'a rien écrit. C'est lui qui dit si la passe a servi à quelque chose.
         "refreshed": 0,
         "empty": 0,
         "reused": 0,
@@ -300,9 +299,8 @@ async def refresh_book_prices_task(
     }
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max_duration_seconds
-    # Une passe coupée par le plafond de durée n'est pas une anomalie : c'est le
-    # fonctionnement prévu d'un lot qui ne tient pas dans sa fenêtre. Elle part au
-    # bilan comme une information, jamais comme un avertissement.
+    # Passe coupée par le plafond de durée : fonctionnement prévu d'un lot qui ne
+    # tient pas dans sa fenêtre, transmis comme information et non comme alerte.
     interrupted = False
     report = RefreshPassResult(0, stats, incremental, occurrence, selection_known=False)
     try:

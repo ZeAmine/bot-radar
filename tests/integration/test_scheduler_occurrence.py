@@ -30,9 +30,8 @@ import app.tasks.scheduler  # noqa: F401 - nécessaire pour résoudre le module 
 
 scheduler_module = sys.modules["app.tasks.scheduler"]
 
-# Jobs planifiés par `create_scheduler()` et opération métier à neutraliser.
-# Toute fonction atteinte par un job doit figurer ici : un job non couvert fait
-# échouer le helper plutôt que de s'exécuter réellement.
+# Jobs planifiés par `create_scheduler()` et opération métier à neutraliser : un job
+# non couvert fait échouer le helper plutôt que de s'exécuter réellement.
 _OPERATIONS_METIER = (
     "recover_bd_preparations",
     "recover_notifications",
@@ -65,9 +64,8 @@ def _substituer_operations_metier(
             if collecte is not None:
                 collecte.append(kwargs)
                 observations["captured"].set()
-                # `next_run_time` est lu **pendant** l'exécution, comme le ferait une
-                # implémentation fautive : c'est la valeur qui doit différer de
-                # l'occurrence transmise.
+                # `next_run_time` est lu pendant l'exécution, comme le ferait une
+                # implémentation fautive : il doit différer de l'occurrence transmise.
                 scheduler = observations.get("scheduler")
                 if scheduler is not None:
                     job = scheduler.get_job("refresh_prices_07_00")
@@ -76,8 +74,7 @@ def _substituer_operations_metier(
                     )
             return {}
 
-        # Nom distinctif : la vérification s'appuie sur l'identité de l'espion,
-        # mais un nom lisible rend l'échec immédiatement compréhensible.
+        # Nom lisible ; la vérification s'appuie sur l'identité de l'espion, pas sur son nom.
         _espion.__name__ = f"espion_{nom}"
         return _espion
 
@@ -104,9 +101,8 @@ def _verifier_jobs_sans_operation_metier_reelle(
     for job in scheduler.get_jobs():
         if id(job.func) in substituees:
             continue
-        # `job_avec_occurrence` est la fermeture réelle du module : elle porte le
-        # mécanisme d'occurrence à vérifier, et n'appelle que des noms du module,
-        # eux-mêmes substitués.
+        # `job_avec_occurrence` est la fermeture réelle : elle porte le mécanisme
+        # d'occurrence à vérifier et n'appelle que des noms du module, substitués.
         assert getattr(job.func, "__name__", "") == "job_avec_occurrence", (
             f"job non substitué : {job.id} ({getattr(job.func, '__name__', '?')}) "
             f"pointe vers {getattr(job.func, '__module__', '?')} et pourrait exécuter "
@@ -130,9 +126,8 @@ async def _declencher_et_capturer(
     captured, stopped = asyncio.Event(), asyncio.Event()
     observations: dict[str, Any] = {"captured": captured}
 
-    # Les opérations métier sont substituées **avant** `create_scheduler()` : celui-ci
-    # capture les noms du module au moment de l'appel, et un scheduler construit trop
-    # tôt figerait les fonctions réelles dans ses jobs.
+    # Les opérations métier sont substituées avant `create_scheduler()` : celui-ci
+    # capture les noms du module à l'appel, un scheduler construit trop tôt les fige.
     espions = _substituer_operations_metier(
         monkeypatch, appels, rafraichissements, observations
     )
@@ -211,8 +206,7 @@ async def test_the_transmitted_time_is_the_triggered_run_not_the_next_one(
     )
     assert ecart_a_lexecution < 1.0
 
-    # La prochaine exécution du cron de 07:00 est un autre moment de la journée :
-    # l'occurrence transmise ne peut pas lui être égale.
+    # La prochaine exécution du cron de 07:00 ne peut pas être l'occurrence transmise.
     prochaine = resultat["prochaine_execution"]
     assert prochaine is not None, "la prochaine exécution doit être observable"
     assert recu.astimezone(UTC) != prochaine.astimezone(UTC), (

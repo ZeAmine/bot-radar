@@ -12,14 +12,8 @@ OVERLAY_LINK_REGEX = re.compile(
     re.DOTALL,
 )
 
-# Taille de la fenêtre de catalogue demandée à Vinted. Elle doit couvrir le débit
-# réel du flux entre deux scrutations, sinon les annonces publiées dans l'intervalle
-# passent sous la fenêtre et ne sont jamais vues — une perte silencieuse, sans erreur.
-# Mesuré en production : le flux global BD dépasse 2 500 annonces/h, soit ~10/min.
-# À 24 items la fenêtre ne couvrait que ~34 s, alors que la cadence de scrutation monte
-# à 35 s au p90 et que la micro-pause anti-détection dure 30 à 45 s : la perte était
-# réelle. 96 items coûtent +29 ms de fetch (164 -> 193 ms) et couvrent ~5 min.
-# 192 est le plafond de l'API : au-delà, elle renvoie 96 items sans erreur.
+# Fenêtre de catalogue : elle doit couvrir le débit du flux entre deux
+# scrutations, sinon perte silencieuse. Au-delà de 192, l'API renvoie 96 items sans erreur.
 CATALOG_PAGE_SIZE = 96
 
 @dataclass
@@ -60,7 +54,6 @@ def parse_vinted_overlay_title(raw_title: str) -> tuple[str, str, int]:
             except ValueError:
                 price_cents = 0
     else:
-        # Fallback si format différent
         match_price = re.search(r"([0-9.,]+)\s*€", decoded)
         if match_price:
             try:
@@ -224,7 +217,6 @@ def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
         if not item_id or not title:
             continue
 
-        # Extraction du prix en centimes
         price_cents = 0
         price_data = raw.get("price") or {}
         price_amount = price_data.get("amount")
@@ -237,7 +229,6 @@ def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
         if price_cents <= 0:
             continue
 
-        # Extraction de l'état (condition)
         item_box = raw.get("item_box") or {}
         second_line = str(item_box.get("second_line") or "").strip()
         condition = "Très bon état"
@@ -249,7 +240,6 @@ def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
                 _, rest = acc_label.split(", État: ", 1)
                 condition = rest.split(",")[0].strip() or "Très bon état"
 
-        # URL de l'annonce
         raw_url = str(raw.get("url") or "").strip()
         if raw_url.startswith("http"):
             item_url = raw_url
@@ -258,7 +248,7 @@ def parse_vinted_catalog_json(data: dict[str, Any]) -> list[ScrapedVintedItem]:
         else:
             item_url = f"https://www.vinted.fr/items/{item_id}"
 
-        # Photo de couverture affichée dans l'alerte Telegram
+        # Photo de couverture affichée dans l'alerte.
         photo_url = None
 
         main_photo = raw.get("photo") or {}

@@ -127,10 +127,8 @@ def _plan_family(
     if not only_degenerate:
         return after, outcome.removals
 
-    # Portée restreinte : on repart de la liste d'origine et on n'en retire que ce qui
-    # est dégénéré par lui-même. Tout le reste est conservé tel quel — y compris ce que
-    # le titre, la déduplication ou le plafond auraient écarté — pour qu'un rejeu
-    # aveugle ne puisse pas emporter un terme qualifié.
+    # Portée restreinte : seul le dégénéré par lui-même est retiré, tout le reste est
+    # conservé tel quel pour qu'un rejeu aveugle n'emporte pas un terme qualifié.
     dropped = {
         removal.index for removal in outcome.removals if removal.reason.is_degenerate
     }
@@ -415,9 +413,8 @@ async def run(args: argparse.Namespace) -> int:
         print(f"{RED}--apply et --dry-run s'excluent.{RESET}", file=sys.stderr)
         return EXIT_ERROR
 
-    # On n'écrit pas ce qu'on n'a pas lu. Un diff non motivé se subit ; il faut qu'il
-    # ait été affiché, ou que l'appelant prenne explicitement la responsabilité de
-    # passer outre — c'est ce que dit `--yes`, et rien d'autre ne le dispense.
+    # On n'écrit pas ce qu'on n'a pas lu : le diff doit avoir été affiché, ou `--yes`
+    # assume explicitement le passage outre.
     if args.apply and not args.diff and not args.yes:
         print(
             f"{RED}Refus d'écrire : le diff n'a pas été lu.{RESET}\n"

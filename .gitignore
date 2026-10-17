@@ -1,4 +1,3 @@
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -23,12 +22,11 @@ wheels/
 .installed.cfg
 *.egg
 
-# Environment & Secrets (NEVER COMMIT SECRETS)
+# Environnement et secrets : ne jamais commiter (.env.example excepté).
 .env
 .env.*
 !.env.example
 
-# IDEs
 .idea/
 .vscode/
 .cursor/*
@@ -42,7 +40,6 @@ wheels/
 *.swo
 .DS_Store
 
-# Testing & Linters
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -50,11 +47,10 @@ htmlcov/
 .coverage
 .coverage.*
 
-# Docker & local db data
 postgres_data/
 redis_data/
 
-# Scratch & temporary development scripts
+# Scripts temporaires de développement.
 scratch/
 
 # Artefacts de l'IDE Freebuff (identifiant de projet local)

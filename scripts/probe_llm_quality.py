@@ -89,8 +89,8 @@ class KeywordCase:
 
 
 NATURE_CASES = (
-    # La demande d'origine : un comics numéroté que le moteur n'a pas reconnu comme
-    # série. La détection déterministe le rattrape désormais ; ce cas mesure le filet.
+    # Cas de régression : un comics numéroté que la détection déterministe doit
+    # rattraper quand le moteur le lit comme une œuvre unique.
     NatureCase(
         label="série numérotée non annoncée",
         prompt="Absolute Martian Manhunter, 10€",
@@ -264,8 +264,8 @@ async def run(args: argparse.Namespace) -> int:
     print(f"  passes      : {args.passes} par cas")
     print(f"  {DIM}la clé n'est jamais affichée{RESET}")
 
-    # Les modules reçoivent le client par assignation : c'est le point d'injection que
-    # les tests utilisent, et le seul qui mesure le chemin réel sans le réécrire.
+    # Les modules reçoivent le client par assignation : c'est le point d'injection des
+    # tests, le seul qui mesure le chemin réel sans le réécrire.
     natural_add_module.client = client
     keyword_variants_module.client = client
 

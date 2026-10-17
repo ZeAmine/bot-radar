@@ -83,14 +83,13 @@ async def cleanup_old_data_task(
             for alert_id in sorted(alert_ids):
                 await refresh_series_total(session, alert_id)
 
-            # Purge des annonces sans alerte liée (évite l'explosion du stockage sur VPS)
+            # Purge des annonces sans alerte liée : limite la croissance du stockage.
             stmt_unmatched_listings = delete(Listing).where(
                 Listing.received_at < listings_threshold,
                 ~Listing.matches.any(),
             )
             res_listings = await session.execute(stmt_unmatched_listings)
 
-            # Purge des alertes supprimées et des livres orphelins (avec leurs caches et snapshots)
             from app.db.repositories.alert_repo import AlertRepository
 
             alert_repo = AlertRepository(session)

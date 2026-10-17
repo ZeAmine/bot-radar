@@ -42,6 +42,5 @@ class AlertBook(Base):
         nullable=False,
     )
 
-    # Relations
     alert: Mapped["Alert"] = relationship("Alert", back_populates="alert_books")
     book: Mapped["Book"] = relationship("Book", back_populates="alert_books")

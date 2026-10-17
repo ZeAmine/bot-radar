@@ -20,7 +20,7 @@ async def test_update_or_create_cache_never_uses_live_price_as_historical_low():
     session.add = MagicMock()
     repo = MarketPriceRepository(session)
 
-    # Simuler qu'aucun cache n'existe encore, et qu'aucun relevé ne l'atteste
+    # Aucun cache existant, aucun relevé pour l'attester.
     repo.get_cache_by_book_id = AsyncMock(return_value=None)
 
     book_id = uuid.uuid4()
@@ -34,7 +34,6 @@ async def test_update_or_create_cache_never_uses_live_price_as_historical_low():
         historical_low_1y_cents=None,  # Le fournisseur n'a pas fourni d'historique
     )
 
-    # L'historique bas DOIT être None, et non pas 2189
     assert cache.lowest_delivered_price_cents == 2189
     assert cache.historical_low_1y_cents is None
     assert cache.historical_low_at is None
@@ -58,7 +57,6 @@ async def test_update_or_create_cache_preserves_existing_certified_historical_lo
     )
     repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
 
-    # Nouvelle offre en direct à 21,89 € sans historique fourni
     cache = await repo.update_or_create_cache(
         book_id=book_id,
         lowest_delivered_price_cents=2189,
@@ -69,7 +67,6 @@ async def test_update_or_create_cache_preserves_existing_certified_historical_lo
         historical_low_1y_cents=None,
     )
 
-    # Le prix en direct est mis à jour à 21,89 €, mais l'historique bas reste strictement à 6,70 €
     assert cache.lowest_delivered_price_cents == 2189
     assert cache.historical_low_1y_cents == 670
 
@@ -122,7 +119,7 @@ async def test_legacy_value_is_not_rewritten_by_a_recomputation():
         id=uuid.uuid4(),
         book_id=book_id,
         lowest_delivered_price_cents=2063,
-        historical_low_1y_cents=2290,  # 22,90 EUR certifie par l'agregateur
+        historical_low_1y_cents=2290,  # 22,90 € certifié par l'agrégateur
         historical_low_at=datetime.now(UTC),
         comparison_status=ComparisonStatus.AVAILABLE,
     )

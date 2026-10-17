@@ -35,8 +35,6 @@ from deploy_dependencies import (  # noqa: E402
     decode_capture,
 )
 
-# --------------------------------------------------------------------- doublures
-
 POSTGRES_ID = "179105aa2890d53b2c258d0512450d7a8261fa131658f509ccfc1320851b997e"
 REDIS_ID = "ca2d0d871cb6c2f2f5d716458269ba29cd2cddb7bd2d4364adbd071cb07d5ff1"
 POSTGRES_STARTED = "2026-10-16T01:02:48.053688530Z"
@@ -115,9 +113,6 @@ INCHANGE_POSTGRES = _identite("postgres", POSTGRES_ID, POSTGRES_STARTED)
 INCHANGE_REDIS = _identite("redis", REDIS_ID, REDIS_STARTED)
 
 
-# ------------------------------------------------------- la commande de démarrage
-
-
 def test_the_start_command_excludes_dependencies():
     """`--no-deps` est présent : c'est la parade au mécanisme observé.
 
@@ -162,9 +157,6 @@ def test_step_start_actually_sends_the_guarded_command():
     assert "--no-deps app" in demarrage[0]
 
 
-# ------------------------------------------------------- dépendances inchangées
-
-
 def test_unchanged_dependencies_are_accepted():
     """Mêmes identifiants et mêmes démarrages : aucun écart."""
     avant = _releve(INCHANGE_POSTGRES, INCHANGE_REDIS)
@@ -179,9 +171,6 @@ def test_step_start_succeeds_when_dependencies_are_unchanged():
     ctx = _ctx(remote=remote, dependencies_before=_releve(INCHANGE_POSTGRES, INCHANGE_REDIS))
 
     assert step_start(ctx) == 0
-
-
-# ------------------------------------------------- invariance non vérifiable
 
 
 def test_an_unverifiable_inspection_fails_even_with_a_healthy_app(capsys):
@@ -260,7 +249,6 @@ def test_the_invariance_check_runs_even_when_the_app_is_unhealthy():
 
     assert step_start(ctx) == 1
 
-    # Le relevé d'après démarrage a bien été demandé.
     assert len([s for s in remote.scripts if ".State.StartedAt" in s]) == 1
 
 
@@ -276,9 +264,6 @@ def test_a_drift_is_reported_even_when_the_app_is_unhealthy(capsys):
 
     assert step_start(ctx) == 1
     assert "RECRÉÉ" in capsys.readouterr().out
-
-
-# ------------------------------------------------------------------- les écarts
 
 
 def test_a_recreated_dependency_is_a_failure():
@@ -317,8 +302,7 @@ def test_a_restarted_dependency_is_a_failure_even_with_the_same_id():
 
     assert len(ecarts) == 1
     assert "REDÉMARRÉ" in ecarts[0]
-    # Le message nomme les deux instants : l'identifiant, lui, est inchangé, et
-    # c'est bien ce qui distingue un redémarrage d'une recréation.
+    # Le message nomme les deux instants : un redémarrage n'est pas une recréation.
     assert REDIS_STARTED in ecarts[0]
     assert "identifiant inchangé" in ecarts[0]
 
@@ -356,9 +340,6 @@ def test_both_dependencies_can_drift_at_once():
     ecarts = compare(_releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(recree, redemarre))
 
     assert len(ecarts) == 2
-
-
-# --------------------------------------------------- contrôle préalable au départ
 
 
 def test_a_missing_dependency_stops_before_the_app_is_stopped():
@@ -429,9 +410,6 @@ def test_operational_reports_every_missing_service():
     assert any("redis" in p for p in problemes)
 
 
-# ------------------------------------------------------------- lecture du relevé
-
-
 def test_the_capture_payload_round_trips():
     """Le relevé produit par le script distant est relu sans perte."""
     payload = _releve_texte(INCHANGE_POSTGRES, INCHANGE_REDIS)
@@ -486,9 +464,6 @@ def test_the_capture_script_inspects_every_required_service():
         assert champ in script
 
 
-# ------------------------------------------------- conservation de l'image de retour
-
-
 def test_the_stop_step_preserves_the_running_image_before_any_build():
     """L'image du conteneur est taguée avant l'arrêt, donc avant le build.
 
@@ -505,8 +480,7 @@ def test_the_stop_step_preserves_the_running_image_before_any_build():
     assert "docker inspect --format '{{.Image}}'" in arret
     assert "docker tag" in arret
     assert ROLLBACK_TAG_PREFIX in arret
-    # Le tag est créé avant l'arrêt de l'app : le conteneur doit tourner pour
-    # que son image soit celle qu'on veut conserver.
+    # Le tag est créé avant l'arrêt : l'image du conteneur en service est capturée.
     assert arret.index("docker tag") < arret.index("docker compose stop app")
 
 
@@ -523,7 +497,6 @@ def test_the_stop_step_verifies_the_tag_points_to_the_captured_image():
     assert step_stop(ctx) == 0
 
     arret = next(s for s in remote.scripts if "compose stop app" in s)
-    # Le contrôle compare les deux identifiants et refuse l'incohérence.
     assert "tagged=$(docker inspect --format" in arret
     assert '[ "$tagged" = "$image_id" ]' in arret
     assert "tag de retour incohérent" in arret

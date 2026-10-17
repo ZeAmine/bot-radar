@@ -114,9 +114,7 @@ async def link_books_from_bnf(
 
         to_price: list[uuid.UUID] = []
         async with AsyncSessionLocal() as session:
-            # Le verdict s'écrit là où il est connu, et seulement quand il est
-            # concluant : une notice arrivée efface l'exhaustion, une autorité muette
-            # ne la réécrit pas (elle ne prouve rien, ni dans un sens ni dans l'autre).
+            # Le verdict s'écrit seulement s'il est concluant ; une autorité muette ne réécrit rien.
             alert_repo = AlertRepository(session)
             current = await alert_repo.lock_bibliographic_result(
                 alert_id, snapshot, require_preparation=expected_preparation_token is not None,
@@ -136,8 +134,7 @@ async def link_books_from_bnf(
             book_repo = BookRepository(session)
             catalog = BookCatalogService(session)
             if initial_volumes:
-                # Remplace les seuls liens de cette préparation par la sélection
-                # confirmée, dans la même transaction et sous sa garde de version.
+                # Remplace les seuls liens de cette préparation par la sélection confirmée.
                 await book_repo.clear_alert_books(alert_id)
             for notice in notices:
                 isbn13 = notice.isbn13
@@ -161,19 +158,16 @@ async def link_books_from_bnf(
                     and extract_tome_number_from_title(notice.title) is not None
                     and extract_tome_number_from_title(book.title) is None
                 ):
-                    # Même ISBN certifié, titre de tome enfin explicite : les anciennes
-                    # fiches issues d'un titre d'œuvre sont réalignées sans changer d'ouvrage.
+                    # Même ISBN certifié : réaligne le titre de tome sans changer d'ouvrage.
                     book.title = notice.title
                     book.normalized_title = normalize_text(notice.title)
                 await book_repo.link_alert_to_book(alert_id=alert_id, book_id=book.id)
-                # `add_book` rend un livre dont `market_cache` n'est pas chargé : on
-                # relit par le dépôt (qui précharge la relation) avant de décider.
+                # `add_book` ne charge pas `market_cache` : relire par le dépôt.
                 loaded = await book_repo.get_by_id(book.id)
                 if loaded is not None and not has_usable_price(loaded.market_cache):
                     to_price.append(book.id)
             if wait_for_prices:
-                # Les ISBN déjà confirmés à la création restent liés même si la
-                # seconde découverte est muette. Leurs cotes sont préparées aussi.
+                # ISBN confirmés à la création restent liés même si la découverte est muette.
                 for linked in await book_repo.get_all_books_for_alert(alert_id):
                     if linked.id not in to_price and not has_usable_price(linked.market_cache):
                         to_price.append(linked.id)
@@ -185,14 +179,12 @@ async def link_books_from_bnf(
         logger.warning("Liaison ISBN BNF ignorée pour l'alerte %s : %s", alert_id, exc)
         return False
 
-    # La cote part en arrière-plan : c'est elle qui fera apparaître la ligne de prix
-    # sur les alertes suivantes de cet ouvrage.
+    # La cote part en arrière-plan pour les alertes suivantes de l'ouvrage.
     if not schedule_prices:
         return True
     if wait_for_prices:
         import asyncio
 
-        # Deux livres par vague : la création attend ses propres cotes seulement.
         for start in range(0, len(to_price), 2):
             results = await asyncio.gather(
                 *(
@@ -242,10 +234,7 @@ async def resolve_bd_catalog_book(
         if not book:
             has_lot = bool(tome_result and tome_result.is_lot and tome_result.lot_tomes)
             if not has_lot:
-                # Une alerte sans ISBN est une série : l'annonce non résolue
-                # relance la découverte de **tous** ses tomes, pas seulement
-                # d'un titre. Une alerte à ISBN garde sa recherche unitaire.
-                # L'appel reste après l'envoi (`safe_create_task`), invariant n°1.
+                # Alerte sans ISBN : relancer la découverte de tous ses tomes (après l'envoi).
                 safe_create_task(
                     link_books_from_bnf(
                         alert_name,

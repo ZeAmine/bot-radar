@@ -30,8 +30,7 @@ from app.services.book_metadata_service import (  # noqa: E402
 
 ISBN_BD = "9782369903062"  # La couleur des choses, Martin Panchaud, Çà et là
 
-# Un instant figé : un rapport doit dire quand il a été produit, et un test
-# ne peut pas dépendre de l'heure à laquelle il tourne.
+# Instant figé : le rapport date sa production, un test ne dépend pas de l'heure.
 INSTANT = datetime(2026, 10, 4, 22, 11, 9, tzinfo=UTC)
 ISBN_HOMONYME = "9782214080627"  # Les Enfants perdus, l'homonyme de 1989
 
@@ -43,8 +42,7 @@ NOTICE_BD = BookMetadata(
 )
 NOTICE_HOMONYME = BookMetadata(title="Les Enfants perdus", author="Jean Roucas")
 
-# Même ouvrage, mais rendu par l'autorité secondaire : c'est la provenance, pas le
-# contenu, que l'audit doit rendre visible.
+# Même ouvrage rendu par l'autorité secondaire : l'audit montre la provenance.
 NOTICE_HOMONYME_REPLI = BookMetadata(
     title="Les Enfants perdus", author="Jean Roucas", source="openlibrary"
 )
@@ -83,7 +81,7 @@ def _alerte(**kwargs) -> audit.AlertIdentity:
     return audit.AlertIdentity(**{**defauts, **kwargs})
 
 
-# (libellé du cas, identité, notice, codes attendus dans l'ordre)
+# Les codes attendus sont comparés dans l'ordre.
 CAS = [
     pytest.param(
         "ISBN rattaché à un autre ouvrage",
@@ -514,7 +512,7 @@ def test_le_json_expose_l_autorite_de_chaque_verdict():
     assert payload["population"] == {"auditees": 2, "inactives": 1}
 
 
-# --- L'en-tête : l'instant et la population ---
+# L'en-tête : l'instant et la population.
 
 
 def _conforme(*, inactive: bool = False) -> audit.AlertVerdict:
@@ -595,7 +593,7 @@ def test_un_rapport_vide_reste_identifiable():
     assert "Population auditée : 0 alerte(s) porteuse(s) d'un ISBN (dont 0 inactive(s))" in rapport
 
 
-# --- Codes de sortie, en pilotant run() sans base ---
+# Codes de sortie, en pilotant run() sans base.
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -750,7 +748,7 @@ async def test_deux_executions_sur_une_base_qui_change_donnent_deux_effectifs(
 
     assert "Population auditée : 1 alerte(s) porteuse(s) d'un ISBN (dont 0 inactive(s))" in premier
     assert "Population auditée : 3 alerte(s) porteuse(s) d'un ISBN (dont 1 inactive(s))" in second
-    # Les deux « ligne 2 » — l'effectif — diffèrent ; la ligne 1, l'instant, peut non.
+    # L'effectif (ligne 2) diffère ; l'instant (ligne 1) peut être le même.
     assert premier.splitlines()[1] != second.splitlines()[1]
 
 

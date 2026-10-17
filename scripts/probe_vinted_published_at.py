@@ -58,10 +58,8 @@ GREEN, RED, YELLOW, DIM, BOLD, RESET = (
 _NESTED_OBJECTS = ("item_box", "price", "photo", "user", "size")
 _NESTED_LISTS = ("photos",)
 
-# Un nom de clé qui évoque une date. Volontairement large : la sonde doit lever
-# des candidats à qualifier à la main, pas décider à leur place. Un `updated_at`
-# peut être une republication, un bump ou un rafraîchissement — pas la date de
-# publication d'origine. Seule la relecture de la valeur départage.
+# Détection de date volontairement large : la sonde lève des candidats à qualifier
+# à la main. Un `updated_at` peut être une republication, pas la date d'origine.
 _DATE_HINTS = (
     "date", "time", "created", "updated", "published", "upload", "bump",
     "refresh", "timestamp",

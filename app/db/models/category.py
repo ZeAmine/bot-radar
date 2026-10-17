@@ -27,7 +27,6 @@ class Category(Base, UUIDPrimaryKeyMixin):
         nullable=False,
     )
 
-    # Relations
     alerts: Mapped[list["Alert"]] = relationship(
         "Alert",
         back_populates="category",

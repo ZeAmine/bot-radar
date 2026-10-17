@@ -66,8 +66,8 @@ async def get_book_by_isbn(
     try:
         result = await BookSearchUseCase().search_by_isbn(isbn.strip())
     except InvalidIsbnError as exc:
-        # Seule l'erreur de validation précise vaut 422 : toute autre
-        # `ValueError` remonte en erreur interne générique, sans détails.
+        # Seule l'erreur de validation d'ISBN vaut 422 ; toute autre ValueError
+        # remonte en erreur interne générique, sans détails.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),

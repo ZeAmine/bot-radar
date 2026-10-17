@@ -27,7 +27,6 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_allowed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
-    # Relations
     alerts: Mapped[list["Alert"]] = relationship(
         "Alert",
         back_populates="user",

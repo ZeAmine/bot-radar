@@ -30,10 +30,8 @@ def test_message_says_what_is_frozen_and_for_how_long():
     assert "Dead Train" in message
     assert "13,57 €" not in message
     assert "rien depuis 23 j" in message
-    # Jamais observé est plus grave qu'anciennement observé : les deux se disent.
     assert "jamais observée" in message
     assert "3,90 €" not in message
-    # Le message explique pourquoi le chiffre reste là.
     assert "Historique fournisseur non actualisé" in message
     assert "Agrégats historiques" not in message
 
@@ -98,7 +96,6 @@ async def test_notification_is_sent_once_per_window():
     assert first == 1
     assert second == 0
     assert len(sent) == 1
-    # La réservation doit être un vrai NX court, sinon le dédoublonnage ne tient pas.
     assert client.set.await_args.kwargs["nx"] is True
 
 
@@ -161,9 +158,6 @@ async def test_a_silent_redis_does_not_silence_the_signal():
     assert len(sent) == 1
 
 
-# --- Source de cotation muette depuis 48 h ---
-
-
 @pytest.mark.asyncio
 async def test_a_silent_provider_is_reported_once_per_window():
     """Une source qui cesse de répondre ne se signale pas d'elle-même."""
@@ -192,7 +186,6 @@ async def test_a_silent_provider_is_reported_once_per_window():
     assert len(sent) == 1
     assert "momox" in sent[0]
     assert "48 h" in sent[0]
-    # L'âge de la dernière réponse se dit en heures : c'est ce qui a changé.
     assert "50 h" in sent[0]
 
 
@@ -231,9 +224,6 @@ async def test_a_broken_silent_check_never_breaks_the_refresh():
         assert await market_health.notify_silent_providers(MagicMock()) == 0
 
 
-# --- Alertes de fin de passe ---
-
-
 @pytest.mark.asyncio
 async def test_an_incomplete_pass_is_reported():
     """Une passe tronquée par le plafond de durée doit se voir, pas se taire.
@@ -256,8 +246,6 @@ async def test_an_incomplete_pass_is_reported():
     assert len(sent) == 1
     text = sent[0]
     assert "5/12" in text
-    # Les nombres sont distincts et nommés : traités, mis à jour, sans mise à jour,
-    # restants. « Traités » et « mis à jour » ne répondent pas à la même question.
     assert "Traités : 5/12 livres" in text
     assert "Mis à jour : 4 livres" in text
     assert "Sans mise à jour : 1 livres" in text
@@ -468,7 +456,6 @@ async def test_a_successful_complete_pass_still_reports_its_bilan():
     assert "Mis à jour : 200 livres" in text
     assert "Sans mise à jour : 76 livres" in text
     assert "Tous les livres du lot ont été traités." in text
-    # Le bilan d'une réussite est court : rien à reprendre, donc rien à annoncer.
     assert "Restants" not in text
     assert "Plafond" not in text
     assert "Prochaine passe" not in text
@@ -523,7 +510,6 @@ async def test_an_interrupted_sliding_pass_still_reports():
 
     assert len(sent) == 1
     assert "Restants à traiter : 192 livres" in sent[0]
-    # Un passage glissant ne peut pas résorber l'arriéré : il ne promet aucune date.
     assert "Prochaine passe" not in sent[0]
 
 
@@ -650,7 +636,6 @@ async def test_un_lot_incremental_sans_cote_ne_signale_rien():
         )
 
     assert sent == [], "un lot partiel ne peut pas conclure à une panne"
-    # Rien n'est même réservé : on n'a pas consommé la fenêtre d'une future alerte.
     assert client.set.await_count == 0
 
 
@@ -768,9 +753,6 @@ async def test_high_error_ratio_is_sent_once_and_names_the_providers():
     assert client.set.await_args_list[0].kwargs["nx"] is True
 
 
-# --- Diagnostic : avec quelle cote une alerte BD part-elle ? ---
-
-
 def test_classify_sent_cote_state_names_the_five_outcomes():
     """La mesure doit distinguer une cote chiffrée des quatre lignes sans prix.
 
@@ -791,10 +773,9 @@ def test_classify_sent_cote_state_names_the_five_outcomes():
     assert classify_sent_cote_state("<b>Prix bas constaté :</b> 19,98 €") == "real"
     assert classify_sent_cote_state(PENDING_COTE_LINE) == "pending"
     assert classify_sent_cote_state(SEARCHING_BOOK_LINE) == "searching"
-    # La ligne d'absence est datée : elle se reconnaît à sa phrase, pas à son tout.
+    # La ligne d'absence est datée : sa phrase l'identifie, pas toute la ligne.
     assert classify_sent_cote_state(f"{NO_OFFER_LINE} (relevé du 06/10 à 11:30).") == "no_offer"
-    # Aucune source ne catalogue l'ouvrage : ce n'est pas une recherche en cours,
-    # et surtout pas une cote chiffrée qu'on aurait mesurée.
+    # Non catalogué : ni recherche en cours, ni cote chiffrée.
     assert classify_sent_cote_state(NO_CATALOGUE_LINE) == "uncatalogued"
     # Une ligne absente est un livre dont la cote manque, pas une recherche qui n'a pas lieu.
     assert classify_sent_cote_state(None) == "pending"
@@ -832,9 +813,6 @@ async def test_a_silent_redis_loses_the_measure_not_the_alert():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(market_health, "get_redis_client", lambda: client)
         await market_health.record_sent_cote_state("searching")
-
-
-# --- Le seuil réellement livré ---
 
 
 def test_the_shipped_threshold_is_seven_days():
@@ -887,9 +865,6 @@ def test_the_reported_delay_matches_the_threshold_that_selected_the_rows():
     text = format_stale_certified_lows([item], 1, stale_after_days=7)
     assert "plus de 7 jours" in text
     assert "48 heures" not in text
-
-
-# --- Un bilan au plus par occurrence planifiée ---
 
 
 def _fenetres_ouvertes(mp):
@@ -979,7 +954,6 @@ async def test_the_deduplication_of_one_occurrence_does_not_silence_the_next():
         mp.setattr(market_health, "notify_admins", fake_notify)
         cles = _fenetres_ouvertes(mp)
 
-        # Même job, deux jours différents : deux occurrences, donc deux clés.
         for jour in ("16", "17"):
             await market_health.notify_incomplete_refresh(
                 5, 12, refreshed=4, interrupted=True, incremental=False,
@@ -1060,9 +1034,6 @@ def test_the_next_scheduled_run_is_a_different_occurrence():
     assert dixhuit != dixhuit_trente
 
 
-# --- La borne du dédoublonnage : le TTL, et lui seul, décide ---
-
-
 class _RedisQuiExpire:
     """Redis minimal qui honore vraiment `ex` : la clé redevient libre après le délai.
 
@@ -1123,7 +1094,6 @@ async def test_two_attempts_beyond_the_ttl_produce_a_second_report():
 
         occurrence = "refresh_prices_07_00@2026-10-16T07:00:00+00:00"
         for _ in range(2):
-            # Le repli mémoire est vidé : seul le TTL Redis peut dédoublonner ici.
             mp.setattr(market_health, "_notification_deadlines", {})
             await market_health.notify_incomplete_refresh(
                 5, 12, refreshed=4, interrupted=True, incremental=False, occurrence=occurrence,
@@ -1253,8 +1223,7 @@ def test_a_delayed_execution_keeps_the_identity_of_what_was_scheduled():
     assert "19:00" in premier, "le jeton porte l'instant prévu"
     assert "19:30" not in premier, "l'heure réelle ne doit pas dater l'occurrence"
 
-    # Et la preuve que les deux sources sont distinctes : daté de l'heure réelle, le
-    # même instant donnerait un autre jeton, dans la tranche de 19:30.
+    # Daté de l'heure réelle, le même instant donnerait un autre jeton.
     depuis_heure_reelle = _occurrence_token(
         "refresh_prices_19_00", now=prevu + timedelta(minutes=31)
     )
@@ -1277,8 +1246,7 @@ def test_a_run_crossing_a_boundary_keeps_its_token_until_notification():
     # La passe dure plus d'une heure : elle franchit deux frontières de tranche.
     fin = datetime(2026, 10, 16, 20, 31, tzinfo=UTC)
     assert _occurrence_token("refresh_prices_19_00", scheduled_for=debut) == jeton
-    # Recalculé à l'heure de fin, le jeton serait différent — c'est précisément ce que
-    # le calcul unique au début de la passe évite.
+    # Recalculé à l'heure de fin, le jeton serait différent : c'est ce que le calcul unique évite.
     assert _occurrence_token("refresh_prices_19_00", scheduled_for=fin) != jeton
 
 
@@ -1324,7 +1292,7 @@ async def test_a_retry_is_still_deduplicated_over_the_whole_conservation_window(
             await market_health.notify_incomplete_refresh(
                 5, 12, refreshed=4, interrupted=True, incremental=False, occurrence=occurrence,
             )
-            # Bien plus tard que l'ancienne borne de quinze minutes, mais dans l'heure.
+            # 45 minutes après la première tentative : encore dans l'heure de conservation.
             etat["t"] = 45 * 60
 
     assert len(sent) == 1, "une reprise dans la période de conservation reste absorbée"

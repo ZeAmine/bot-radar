@@ -32,36 +32,29 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
 
-    # Base de données PostgreSQL & Cache Redis
     DATABASE_URL: str = "postgresql+asyncpg://radar_user:radar_password@localhost:5432/radar_db"
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # Telegram Bot
     TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
     TELEGRAM_ALLOWED_USER_IDS: Annotated[list[int], BeforeValidator(parse_allowed_user_ids)] = []
     TELEGRAM_WEBHOOK_SECRET: SecretStr = SecretStr("")
 
-    # API Tokens (Ingestion et communication interne)
     INGEST_API_TOKEN: SecretStr = SecretStr("")
     INTERNAL_API_TOKEN: SecretStr = SecretStr("")
 
-    # eBay Browse API (Optionnel)
     EBAY_CLIENT_ID: str = ""
     EBAY_CLIENT_SECRET: SecretStr = SecretStr("")
     EBAY_ENV: str = "PRODUCTION"
 
-    # Chasse-aux-livres (Session utilisateur pour historique 1 an /rest/jcd)
+    # Session utilisateur Chasse-aux-livres (historique 1 an, API /rest/jcd)
     CHASSE_AUX_LIVRES_DUIH: str | None = None
 
-    # Troisième source d'identification d'un ouvrage, après la BNF et OpenLibrary
-    # (ADR-033). Optionnelle : vide, la source n'est ni interrogée ni annoncée. Elle
-    # n'est donc **pas** dans `validate_production_secrets()` — l'app démarre sans.
+    # Troisième source d'identification (ADR-033), optionnelle : vide, elle n'est ni
+    # interrogée ni annoncée, et l'app démarre sans.
     GOOGLE_BOOKS_API_KEY: SecretStr = SecretStr("")
 
-    # Planification
     PRICE_REFRESH_TIMES: str = "07:00,19:00"
 
-    # Surveillance Vinted en temps réel
     RADAR_API_URL: str = "http://127.0.0.1:8000"
     BOTRADAR_API_URL: str | None = None
 
@@ -95,8 +88,7 @@ class Settings(BaseSettings):
         import random
         return random.choice(proxies)
 
-    # Moteur IA — les noms sont neutres : changer de fournisseur est une variable
-    # d'environnement, pas une modification de code. Voir `app/providers/llm/`.
+    # Moteur IA interchangeable via l'environnement (voir `app/providers/llm/`).
     AI_PROVIDER: str = "openai-compatible"
     AI_API_KEY: SecretStr = SecretStr("")
     AI_BASE_URL: str = "https://api.deepseek.com/v1"

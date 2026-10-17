@@ -1,15 +1,7 @@
 .PHONY: help dev test test-isolated lint bench check-history format migrate revision up down clean \
         lock check-lock preflight verify-deploy deploy pr verify
 
-# Les outils viennent du venv du dépôt quand il existe, sinon du PATH. `make` doit
-# fonctionner sans `source .venv/bin/activate` : en local le venv est là, en CI il
-# n'y est pas mais les outils sont installés. Un appel explicite reste prioritaire :
-# `make PYTHON=/usr/bin/python3.12 test`.
-#
-# Le repli est le nom nu du binaire, pas une chaîne vide : si l'outil n'est nulle
-# part, la recette échoue sur « command not found », ce qui se lit. Une résolution
-# vide exécuterait à la place un début de recette tronqué (`make test` deviendrait
-# `-v`), c'est-à-dire une erreur incompréhensible.
+# Outils : venv si présent sinon PATH ; repli sur le nom nu du binaire (erreur lisible plutôt qu'une commande tronquée).
 PYTHON  ?= $(shell test -x .venv/bin/python  && echo .venv/bin/python  || echo python3)
 RUFF    ?= $(shell test -x .venv/bin/ruff    && echo .venv/bin/ruff    || echo ruff)
 MYPY    ?= $(shell test -x .venv/bin/mypy    && echo .venv/bin/mypy    || echo mypy)
@@ -57,14 +49,11 @@ lint:
 	$(RUFF) check .
 	$(MYPY) app scripts/matching_diagnostics.py
 
-# Le verrouillage n'a de valeur que s'il suit `pyproject.toml`. Ce contrôle est
-# hors réseau : il échoue si une dépendance a été ajoutée sans être épinglée.
+# check-lock : hors réseau, échoue si une dépendance est ajoutée sans être épinglée dans pyproject.toml.
 check-lock:
 	$(PYTHON) scripts/check_lock.py
 
-# Régénération à faire après toute modification de `pyproject.toml`, puis commiter
-# le fichier : c'est lui que le Dockerfile et la CI lisent. Les commentaires
-# d'en-tête sont conservés, seule la liste des versions est réécrite.
+# lock : régénérer après modification de pyproject.toml ; Dockerfile et CI lisent ce fichier (en-tête conservé).
 lock:
 	@grep "^#" requirements.lock > requirements.lock.new
 	@$(PYTHON) -m pip freeze \
@@ -75,37 +64,24 @@ lock:
 	@mv requirements.lock.new requirements.lock
 	@$(MAKE) --no-print-directory check-lock
 
-# Garantit qu'aucun commit de la branche n'est rouge : le travail est rejoué dans
-# un worktree jetable par commit, du plus ancien au plus récent.
-# Usage : make check-history | BASE=<tag|sha> | STEPS=ruff,mypy,pytest
+# check-history : rejeu par commit dans worktree jetable, du plus ancien au plus récent (BASE, STEPS).
 check-history:
 	$(PYTHON) scripts/check_history.py $(if $(BASE),--base $(BASE),) \
 		$(if $(STEPS),--steps $(STEPS),) $(if $(MAX_COMMITS),--max-commits $(MAX_COMMITS),)
 
-# Un push ne déploie rien : le VPS est une cible rsync, pas un clone. Ces deux
-# commandes encadrent la synchronisation pour que l'écart soit visible.
+# preflight/verify-deploy : encadrent la sync rsync pour rendre l'écart visible (push ne déploie rien).
 preflight:
 	$(PYTHON) scripts/preflight_deploy.py
 
 verify-deploy:
 	$(PYTHON) scripts/preflight_deploy.py --post-sync
 
-# La procédure complète, dans l'ordre, en s'arrêtant au premier échec. Les étapes
-# individuelles restent disponibles : un déploiement interrompu se reprend à la main.
-# Usage : make deploy | DEPLOY_ARGS=--dry-run
+# deploy : procédure complète dans l'ordre, s'arrêtant au premier échec ; reprise manuelle possible.
 deploy:
 	$(PYTHON) scripts/deploy.py $(if $(DEPLOY_ARGS),$(DEPLOY_ARGS),)
 
-# Le push direct sur `main` est refusé par la protection : le chemin normal est la
-# branche, puis la PR. Cette cible enchaîne les quatre gestes dans l'ordre, et
-# s'arrête au premier échec — les étapes suivantes ne rattrapent pas la précédente.
-#
-# Le commit porte sur `STAGE`, pas sur tout l'arbre : `git add -A` balayerait ici
-# n'importe quel travail d'un autre thread ou d'une autre feature qui traîne dans le
-# même répertoire de travail. Le périmètre est donc explicite, et la liste des
-# fichiers retenus est imprimée avant le commit : elle se relit, elle ne se devine pas.
-# Usage : make pr MESSAGE="..." TITLE="..." [BRANCH=<nom>] [STAGE="chemins"]
-# Ou, pour un message sur plusieurs paragraphes : MESSAGE_FILE=<chemin> TITLE="..."
+# pr : branche puis PR, gestes enchaînés jusqu'au premier échec (push direct sur main refusé).
+# Le commit porte sur STAGE (pas git add -A) pour ne pas balayer le travail d'autres tâches.
 pr:
 	@if [ -z "$(TITLE)" ] || { [ -z "$(MESSAGE)" ] && [ -z "$(MESSAGE_FILE)" ]; }; then \
 		echo "usage: make pr (MESSAGE=\"...\" | MESSAGE_FILE=<chemin>) TITLE=\"...\" [BRANCH=<nom>] [STAGE=\"chemins\"]"; \

@@ -58,11 +58,7 @@ from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger("radar.alerts_create_confirm")
 
-# L'annulation vit sur son propre routeur, inclus **avant** celui de la création.
-# La saisie d'un titre est un handler d'état qui accepte tout texte ; enregistré
-# avant, il absorbait `/cancel` comme un titre et lançait une recherche BNF sur le
-# mot « cancel ». Le routeur dédié rend l'annulation prioritaire quel que soit
-# l'ordre d'import des modules.
+# L'annulation est incluse avant la création, sinon /cancel serait pris pour un titre.
 cancel_router = Router(name="alerts_cancel")
 
 
@@ -83,10 +79,7 @@ async def handle_cancel_command(message: Message, state: FSMContext) -> None:
     await message.answer("❌ Opération annulée avec succès.")
 
 
-# Brouillon vidé (alerte déjà créée, session expirée) : re-rendre un récap par
-# défaut afficherait « Titre : Alerte » et des critères vides, que l'utilisateur
-# lirait comme une création en cours. On le dit, et on retire le clavier qui n'a
-# plus d'objet.
+# Brouillon vidé : re-rendre un récap viderait les critères.
 DRAFT_GONE_MESSAGE = STALE_CREATION_MESSAGE
 EMPTY_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[])
 
@@ -97,11 +90,7 @@ async def _end_draft_without_recap(callback: CallbackQuery) -> None:
         await callback.message.edit_text(DRAFT_GONE_MESSAGE, reply_markup=EMPTY_KEYBOARD)
 
 
-# `save_alert` n'agit que dans l'état `confirm_creation`. Le bouton, lui, survit à
-# l'état dans l'historique : après une création, une annulation ou une session
-# perdue. Sans ce filet, aucun handler ne répondait au callback et Telegram faisait
-# tourner le bouton indéfiniment. On acquitte sans réécrire le message : un second
-# appui suit souvent une création réussie, et éditer effacerait la confirmation.
+# Bouton périmé : acquitter sans réécrire pour ne pas effacer la confirmation.
 @router.callback_query(F.data == "alert_create_confirm")
 async def stale_alert_create_confirm(callback: CallbackQuery) -> None:
     """Acquitte un « Créer l'alerte » périmé, pour que le bouton cesse de tourner."""
@@ -148,9 +137,7 @@ async def select_alert_creation_edition(
         await callback.answer("Édition sans ISBN exploitable.", show_alert=True)
         return
 
-    # Un clic ne confirme pas un ISBN : l'édition repasse par la politique
-    # d'autorité. Le choix d'hier, rejoué aujourd'hui, ne contourne donc jamais un
-    # statut `partial` (repli pendant une panne) ni une contradiction.
+    # Un clic ne confirme pas un ISBN : repasse par la politique d'autorité.
     title = str(data.get("name") or "").strip()
     try:
         confirmed = await BookSearchUseCase().search_by_isbn(isbn13, expected_title=title or None)
@@ -178,7 +165,6 @@ async def select_alert_creation_edition(
         "language": meta.language, "book_context": book_context_from(meta).model_dump(),
         "author": meta.author, "publisher": meta.publisher,
     }
-    # L'éditeur et l'année décrits par la BNF suivent l'édition choisie.
     if meta.publisher is None and chosen.get("publisher"):
         updates["publisher"] = chosen["publisher"]
 
@@ -197,10 +183,7 @@ async def select_alert_creation_edition(
         try:
             await callback.message.edit_text(recap_text, reply_markup=keyboard)
         except TelegramBadRequest as exc:
-            # Cliquer l'édition **déjà retenue** reconstruit une carte identique ; Telegram
-            # refuse alors une édition « sans changement ». Ce n'est pas une panne : la
-            # carte affichée est déjà la bonne, et l'ISBN n'a pas bougé. Toute autre
-            # erreur Telegram (formatage, droits, réseau) doit continuer de remonter.
+            # Édition identique : Telegram refuse « message is not modified ».
             if "message is not modified" not in str(exc):
                 raise
             logger.debug(
@@ -236,9 +219,7 @@ async def select_alert_creation_work(
 
     title = str(data.get("name") or chosen.get("title") or "")
 
-    # Lever l'ambiguïté n'est pas confirmer : l'œuvre choisie repasse par la politique
-    # d'autorité. Pendant une panne, aucun callback ne promeut donc un candidat en
-    # `found` — le brouillon reste celui d'une alerte textuelle.
+    # Lever l'ambiguïté n'est pas confirmer : repasse par la politique d'autorité.
     try:
         confirmed = await BookSearchUseCase().search_by_isbn(isbn13, expected_title=title or None)
     except Exception as exc:
@@ -262,8 +243,7 @@ async def select_alert_creation_work(
     author = chosen_meta.author
 
     updates: dict[str, object] = {
-        # D'abord l'état vierge laissé par l'ouvrage précédent, ensuite la fiche de
-        # l'œuvre choisie : le spread ne doit pas écraser ce qu'on vient d'établir.
+        # L'état vierge de l'ouvrage précédent vient en premier.
         **KEYWORDS_FROM_PREVIOUS_WORK,
         "isbn": isbn13,
         "is_series": False,
@@ -318,14 +298,11 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
         "Choisis l'information à modifier :"
     )
 
-    # Un libellé nu, sans valeur entre parenthèses : la valeur courante est déjà
-    # affichée juste après la saisie, et sur un téléphone la parenthèse tronque le
-    # libellé au lieu de l'éclairer. Chaque bouton nomme le champ, rien d'autre.
+    # Libellés nus : la valeur courante s'affiche après la saisie.
     buttons = [
         [InlineKeyboardButton(text="Nom / Titre", callback_data="al_create_edit:name")],
     ]
 
-    # Pour les BD/Comics ou si un ISBN est présent
     if category_slug == CategorySlug.BD_COMICS.value or isbn:
         buttons.append(
             [InlineKeyboardButton(text=FIELD_ISBN, callback_data="al_create_edit:isbn")]
@@ -402,7 +379,6 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
             await callback.message.edit_text(text, reply_markup=keyboard)
         return
 
-    # Champs textuels
     await callback.answer()
     data = await state.get_data()
     await state.set_state(AlertCreationState.waiting_for_edit_field)

@@ -28,7 +28,6 @@ class UserRepository:
         """Récupère ou crée un utilisateur Telegram."""
         user = await self.get_by_telegram_id(telegram_user_id)
         if user:
-            # Mise à jour des informations de profil si changées
             updated = False
             if username and user.username != username:
                 user.username = username

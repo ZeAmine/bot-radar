@@ -92,7 +92,7 @@ async def test_add_homonym_title_attaches_nothing_until_chosen():
 
             recap = recap_text(loading_message)
             assert "<b>ISBN :</b> À confirmer" in recap
-            # La note est échappée par le récap : on compare sur un fragment sans apostrophe.
+            # La note est échappée par le récap : comparaison sur un fragment sans apostrophe.
             assert "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre." in recap
             # Aucune donnée du roman : ni l'ISBN, ni l'auteur, ni l'éditeur.
             assert "9782214080627" not in recap
@@ -101,14 +101,12 @@ async def test_add_homonym_title_attaches_nothing_until_chosen():
 
             keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
             buttons = work_buttons(keyboard)
-            # Un bouton tient le nom de famille et le millésime : l'éditeur complet
-            # ne discrimine pas deux homonymes et se faisait tronquer par Telegram.
+            # Nom de famille et millésime : l'éditeur complet se fait tronquer par Telegram.
             assert [button.text for button in buttons] == [
                 "1️⃣ Saintange · 1989",
                 "2️⃣ Nef · 2025",
             ]
 
-            # L'utilisateur désigne la BD : la fiche bascule sur elle.
             switch_message = MagicMock(spec=Message)
             switch_message.edit_text = AsyncMock()
             switch_callback = MagicMock()

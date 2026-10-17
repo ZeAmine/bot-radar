@@ -45,8 +45,7 @@ def test_synced_files_excludes_what_rsync_excludes():
     """Un fichier hors filtre ne doit jamais être comparé : le distant peut diverger."""
     files = pf.synced_files()
 
-    # `app/main.py` est suivi par git depuis le début du dépôt : contrairement à un
-    # fichier nouvellement créé, le test ne dépend pas de l'état du commit.
+    # `app/main.py` est suivi par git : le test ne dépend pas d'un fichier récent.
     assert "app/main.py" in files
     assert ".env" not in files
     assert not any(path.startswith("vendor/") for path in files)
@@ -70,8 +69,7 @@ def test_local_alembic_head_matches_the_repository():
     from alembic.script import ScriptDirectory
     assert ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini"))).get_heads() == [head]
 
-    # `sys.executable`, pas `.venv/bin/python` : ce test tourne aussi dans le
-    # worktree jetable de `check-history`, qui n'a pas de venv.
+    # `sys.executable`, pas `.venv/bin/python` : `check-history` n'a pas de venv.
     proc = subprocess.run(
         [sys.executable, "-m", "alembic", "heads"],
         cwd=REPO_ROOT,

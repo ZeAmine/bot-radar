@@ -105,14 +105,10 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
     message, loading_message = message_with_recap("/add les enfants perdus neyef, 12€")
     state = DraftState()
 
-    # L'avertissement d'ambiguïté produit par l'autorité (contrat d'ADR-028, déjà
-    # vérifié sur `ambiguity_note`), puis celui du moteur : ce que l'utilisateur lit.
     note_bnf = "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre."
     note_ia = "⚠️ L'IA n'a trouvé aucune variante de frappe pour cet ouvrage."
 
     patches = patched(repos, fake_bnf(homonyme), client)
-    # Le moteur apporte des exclusions mais aucune variante de frappe : c'est la
-    # deuxième ligne de la capture.
     keywords = patch(
         "app.bot.handlers.alerts_create.keyword_variants_module."
         "generate_variants_and_exclusions",
@@ -138,34 +134,23 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
 
     assert lines[0] == RECAP_TITLE
     assert lines[1] == ""
-    # Les deux avertissements se suivent : aucun blanc ne les sépare.
     assert lines[2] == f"<i>{html.escape(note_bnf)}</i>"
     assert lines[3] == f"<i>{note_ia}</i>"
-    # … et chacune **une seule fois**. Elles ont d'abord vécu sous les critères, et la
-    # demande était de ne plus avoir à faire l'aller-retour. Un second passage en bas de
-    # carte laisserait ce bloc-ci intact : seule l'unicité dit qu'il n'y en a pas deux.
     assert recap.count(f"<i>{html.escape(note_bnf)}</i>") == 1
     assert recap.count(f"<i>{note_ia}</i>") == 1
-    # … et un seul blanc les sépare de la liste des informations.
     assert lines[4] == ""
     assert lines[5].startswith("<b>ISBN :</b>")
     assert "<b>Auteur :</b> Non renseigné" in lines
-    # Aucune notice n'a confirmé l'identité : l'auteur supposé ne devient pas une donnée.
     assert "<b>Langue :</b> Non renseigné" in recap
     assert "<b>Année :</b> Non renseigné" in recap
 
-    # « supprime l'espace entre auteur et prix maximum »
     prix = index_of_line(lines, "<b>Prix maximum :</b>")
     assert lines[prix - 1] != "", "aucune ligne vide avant « Prix maximum »"
     assert lines[prix - 1].startswith("<b>")
 
-    # La loupe ne signale plus un manque ; le jalon d'identification, lui, la garde.
     assert "🔎" not in recap
     assert any("🔎" in ecran for ecran in ecrans[:-1]), "le jalon garde sa loupe"
 
-    # « Alerte créée » relit la même carte : les **deux** avertissements, à la même
-    # place. Le verdict du moteur a été rendu : il ne nomme aucun bouton et ne parle
-    # d'aucune création à venir, donc rien ne justifie de le taire ici.
     confirm_callback, confirm_message = confirm_press()
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     confirmation_repos = repositories(ISBN_INCONNU)
@@ -174,8 +159,6 @@ async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirm
         entered.start()
     try:
         await save_alert(confirm_callback, state, db_user, AsyncMock())
-        # La création programme la liaison BNF : la laisser pendante ferait d'une
-        # coroutine jamais attendue un avertissement qui pollue les tests voisins.
         await drain(confirmation_repos["tasks"])
     finally:
         for entered in reversed(patches):
@@ -231,12 +214,10 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     alert_repo = MagicMock()
     alert_repo.find_existing = AsyncMock(return_value=None)
 
-    # 1. `/add` sans rien d'autre : le bot demande la catégorie.
     depart = incoming_message("/add")
     await start_add_alert(depart, state)
     assert "Choisis la catégorie" in depart.answer.call_args[0][0]
 
-    # 2. L'utilisateur choisit « Livres » : le bot demande le titre.
     choix = MagicMock()
     choix.data = f"add_cat:bd_comics@{(await state.get_data())['creation_token']}"
     choix.message = MagicMock()
@@ -245,7 +226,6 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     await handle_category_selected(choix, state, db_session, db_user)
     assert "Alerte Livres & BD" in choix.message.edit_text.call_args[0][0]
 
-    # 3. Il tape le titre : aucune source ne le connaît, la carte s'ouvre sur le prix.
     saisie = incoming_message("whoogys dailycieux")
     with (
         patch(
@@ -260,7 +240,6 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     assert f"<i>{UNIDENTIFIED_WORK_NOTE}</i>" in ecran_prix
     assert "<b>Auteur :</b> Non renseigné" in ecran_prix
 
-    # 4. Il donne son prix maximum : le récap se pose, prêt à valider.
     prix_saisi = incoming_message("30")
     await process_max_price_input(prix_saisi, state, db_session)
 
@@ -279,7 +258,6 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     assert lines[12] == "<b>Prix maximum :</b> 30,00 €"
     assert "🔎" not in recap
 
-    # 5. « Créer l'alerte » : la confirmation dit la même chose, et l'alerte existe.
     confirm_callback, confirm_message = confirm_press()
     repos = repositories(ISBN_INCONNU)
     patches = patched(repos, MagicMock(), MagicMock())
@@ -295,7 +273,6 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     repos["alert_repo"].create.assert_awaited_once()
     assert repos["alert_repo"].create.call_args.kwargs["name"] == "whoogys dailycieux"
     assert repos["alert_repo"].create.call_args.kwargs["isbn"] is None
-    # Aucun livre n'est créé : il n'y a pas d'identifiant à rattacher.
     repos["book_repo"].create.assert_not_called()
 
     confirmation = confirm_message.edit_text.call_args[0][0]

@@ -65,11 +65,8 @@ async def allowed_synthetic_recipient(monkeypatch):
 
 TELEGRAM_CHAT_ID = 987654321
 
-# La page de catalogue telle que Vinted la sert en JSON (API interne
-# /svc-catalogue/items) : deux annonces réalistes, l'une de technologie, l'autre de
-# BD. Le parseur de production en extrait les `ScrapedVintedItem`, et le convertisseur
-# en déduit la charge — prix, protection (0,70 € + 5 %), port (2,88 €) et couverture —
-# calculés par le produit, pas par le test.
+# Page de catalogue telle que l'API interne Vinted la sert : deux annonces réalistes.
+# Prix, protection et port sont calculés par le produit, pas par le test.
 CATALOG_FEED: dict = {
     "items": [
         {
@@ -96,9 +93,8 @@ GPU_ITEM_ID = "5512345678"
 BD_ITEM_ID = "7712345678"
 BD_ISBN = "9782205078054"
 
-# Le mot-clé de l'alerte tech ne figure nulle part dans l'annonce : c'est la variante
-# qui la valide. Les légendes sont les textes littéraux remis à Telegram, ligne pour
-# ligne.
+# Le mot-clé de l'alerte tech est absent de l'annonce : c'est la variante qui la valide.
+# Les légendes sont les textes littéraux remis à Telegram, ligne pour ligne.
 INCLUDE_KEYWORDS = ["nvidia rtx 4070 dual"]
 VARIANT_THAT_MATCHES = "geforce rtx 4070"
 

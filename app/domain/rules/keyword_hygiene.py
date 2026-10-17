@@ -43,46 +43,22 @@ from enum import StrEnum
 
 from app.utils.text import contains_normalized_keyword, normalize_text
 
-# Nombre maximal de variantes conservées sur une alerte. Au-delà, le moteur énumère.
 MAX_VARIANTS = 8
 
-# Nombre maximal d'exclusions conservées sur une alerte.
 MAX_EXCLUSIONS = 6
 
-# Un mot-clé plus long qu'un titre vraisemblable n'est pas un mot-clé.
 _MAX_TERM_LENGTH = 40
 
-# Un mot assez long pour qu'un début commun veuille dire quelque chose. En dessous, un
-# « op » et un « one » se ressemblent par accident : le préfixe n'est plus une preuve.
 _WORD_PREFIX_MIN = 3
 
-# Proximité d'un **mot** admise comme faute de frappe. Le seuil vit sur le mot, jamais sur
-# la phrase : comparer « geforce rtx 4070 » à « NVIDIA RTX 4070 » ne rend que 0.5, alors
-# que c'est le même produit — une similarité globale rejetterait l'alias de marque.
+# Proximité au niveau du mot ; « geforce rtx 4070 » et « NVIDIA RTX 4070 » sont le même produit.
 _WORD_SIMILARITY_MIN = 0.8
 
-# Un ISBN est un code, pas une orthographe : « les enfants perdus 9782214080627 »
-# n'est pas une variante du titre.
 _ISBN_LIKE = re.compile(r"\d[\d\-\s]{8,}\d")
 
-# Énumération dégénérée : « 2a ». Aucun vendeur n'écrit un titre ainsi ; cette famille
-# n'existe que parce que le moteur a décliné un suffixe sur le numéro du titre. Les lettres
-# collées au chiffre sont le signal : « 13mini » n'est pas concerné (la lettre est suivie
-# d'une autre lettre, donc pas de frontière de mot).
-#
-# Deux limites connues, laissées telles quelles : le motif exige **un seul** chiffre devant
-# les lettres, donc « 10b » (deux chiffres) passe ; et il attrape aussi des suffixes
-# d'unité légitimes (« 5g », « 4k », « 3d »). Le faux positif reste rare — il faut un
-# token chiffre+lettre, un titre qui ne le recouvre pas, et les mêmes nombres des deux
-# côtés (« router 5g » pour « 5G Router ») — et il va dans le sens sûr, celui du retrait.
-# Les deux règles d'identité, elles, ne le rattraperaient pas : elles laisseraient passer
-# cette variante. Le rendre exact demanderait de rendre ce prédicat dépendant du titre, ce
-# qui lui ferait perdre son rôle de frontière titre-indépendante (`Reason.is_degenerate`,
-# `--only-degenerate`). À rouvrir si un cas réel se présente.
+# Énumération dégénérée type « 2a » (titre-indépendant) : « 5g » retiré, « 10b » laissé.
 _DEGENERATE_ENUMERATION = re.compile(r"\b\d[a-z]{1,2}\b")
 
-# Mots qui ne désignent qu'un découpage du titre, quand ils suivent celui-ci :
-# « one piece tome 2 ». Ils ne portent aucune confusion propre.
 _VOLUME_MARKERS = frozenset(
     {
         "t",
@@ -103,9 +79,7 @@ _VOLUME_MARKERS = frozenset(
     }
 )
 
-# Un numéro de tome tient sur trois chiffres au plus. Au-delà, c'est un millésime
-# (« Blade Runner 2049 ») : une exclusion qui nomme une année peut viser un autre
-# ouvrage, elle n'est pas un simple numéro collé au titre.
+# Numéro de tome sur 3 chiffres max ; au-delà c'est un millésime.
 _MAX_VOLUME_NUMBER_DIGITS = 3
 
 
@@ -203,8 +177,6 @@ def _shares_no_distinctive_word(value: str, references: Sequence[str]) -> bool:
     value_words = normalize_text(value).split()
     if not value_words:
         return True
-    # Aucune référence exploitable — brouillon sans nom, alerte au nom vide — ne décide
-    # rien, comme partout dans cette famille : `'' in terme` est toujours vrai.
     if not any(normalize_text(reference).split() for reference in references):
         return False
     for reference in references:
@@ -400,9 +372,7 @@ class _Family:
     is_degenerate: Callable[[str], bool]
     title_verdict: Callable[[str, tuple[str, ...]], Reason | None]
     reason_degenerate: Reason
-    # Une famille peut distinguer ce que le moteur **propose** de ce que
-    # l'utilisateur **écrit**. Le drapeau évite de faire porter au verdict de titre
-    # un argument dont la famille des exclusions n'a que faire.
+    # Distingue proposition du moteur d'écriture utilisateur ; exclusions n'en ont pas besoin.
     honours_user_authorship: bool = False
 
 

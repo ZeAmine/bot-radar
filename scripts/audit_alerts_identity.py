@@ -70,9 +70,6 @@ from app.services.book_metadata_service import (
 )
 from app.utils.text import normalize_text
 
-# Le SRU de la BNF est une autorité publique : on l'interroge par lots, pas à la
-# demande. Un quart de seconde entre deux notices est invisible pour l'utilisateur et
-# pour l'autorité elle-même.
 BNF_PAUSE_SECONDS = 0.35
 
 EXIT_CLEAN, EXIT_ANOMALIES, EXIT_ERROR = 0, 1, 2
@@ -85,11 +82,7 @@ AUTEUR_DIVERGENT = "auteur_divergent"
 EDITEUR_DIVERGENT = "editeur_divergent"
 VARIANTE_ISBN_ETRANGER = "variante_isbn_etranger"
 
-# Seuls les libellés sont ici : les identifiants viennent du service, et la liste des
-# autorités réellement interrogées vient du verdict, qui l'écrit en faisant les appels.
-# La troisième source a son libellé ici comme les deux autres : le dict est indexé par
-# le slug que le verdict porte, donc l'oublier rendrait le rapport muet sur l'autorité
-# qui vient pourtant de répondre.
+# Libellés indexés par le slug porté par le verdict : un oubli rendrait le rapport
 LIBELLE_AUTORITE = {
     AUTORITE_BNF: "la BNF",
     AUTORITE_OPENLIBRARY: "OpenLibrary",
@@ -113,8 +106,7 @@ class AlertIdentity:
     author: str | None = None
     publisher: str | None = None
     variants: Sequence[str] = field(default_factory=tuple)
-    # Le rapport doit dire combien d'alertes en pause il a regardées : sans cela,
-    # deux rapports portant le même nombre d'anomalies ne se comparent pas.
+    # Nombre d'alertes en pause auditées : sans lui, deux rapports portant le même
     inactive: bool = False
 
 
@@ -170,9 +162,7 @@ def inspect_identity(
     autorite = libelle_autorite(verdict.autorite)
 
     if notice is None:
-        # Le verdict dit qui a été consulté — et un code mal formé n'a été soumis à
-        # personne : accuser une autorité de l'ignorer reviendrait d'inventer la
-        # consultation qui a produit ce verdict.
+        # Un code mal formé n'a été soumis à personne : accuser une autorité de
         if verdict.consulted:
             consultees = " ni ".join(libelle_autorite(a) for a in verdict.consulted)
             findings.append(
@@ -264,9 +254,7 @@ class AlertVerdict:
             return None
         motif = f"autorité muette : {self.verdict.panne}"
         if self.verdict.notice is not None:
-            # Une notice de repli obtenue après un silence de la BNF ne l'a pas
-            # remplacée, elle s'y ajoute : le dire empêche de lire une panne comme
-            # une confirmation, et comme un refus.
+            # Une notice de repli ne remplace pas la BNF, elle s'y ajoute : le dire
             motif += " — notice de repli écartée : la BNF n'a pas tranché"
         return motif
 
@@ -297,8 +285,6 @@ async def audit(
         except Exception as exc:  # noqa: BLE001 — une panne réseau n'est pas un verdict
             reponse = IsbnVerdict(outcome="silence", panne=f"{type(exc).__name__}: {exc}")
         if reponse.outcome == "silence":
-            # Personne n'a pu répondre, repli ou non : l'alerte est mise de côté, et
-            # le motif le dit. Une indisponibilité ne doit jamais se lire comme un refus.
             verdicts.append(AlertVerdict(identity, verdict=reponse))
             continue
         verdicts.append(
@@ -349,9 +335,7 @@ def render(
     """
     lines: list[str] = [render_entete(verdicts, audit_le), ""]
     anomalies = unverified = replis = 0
-    # Une réponse venue d'ailleurs que la BNF, et elle seule. Un ISBN que personne ne
-    # connaît n'est pas un repli : c'est une absence de réponse, déjà signalée comme
-    # anomalie. Compter les deux ensemble dirait « réponse de : aucune autorité ».
+    # Repli : réponse venue d'ailleurs que la BNF, et elle seule. Un ISBN que personne
     replis_autorites: set[str] = set()
 
     for verdict in verdicts:
@@ -374,8 +358,7 @@ def render(
                         f"  {GREEN}ok{RESET}      {head} {DIM}({verdict.identity.isbn}){RESET}"
                     )
             else:
-                # Le repli reste visible même en mode discret : un `ok` ici ferait
-                # passer une absence de confirmation pour une confirmation.
+                # Même en mode discret : un `ok` ferait passer l'absence de
                 lines.append(
                     f"  {YELLOW}REPLI{RESET}    {head} {DIM}({verdict.identity.isbn}) "
                     f"— {libelle_autorite(verdict.verdict.autorite)} a répondu, pas la BNF{RESET}"
@@ -403,8 +386,7 @@ def render(
             f"{YELLOW}{unverified} alerte(s) non vérifiées "
             f"(réseau ou autorité indisponible).{RESET}"
         )
-    # `repls` ne suffit pas à characterizes : un verdict sans autorité n'y est pas
-    # compté, et il n'est pas davantage une confirmation.
+    # Le compte des replis ne suffit pas : un verdict sans autorité n'y est pas
     if not anomalies and not unverified and all(v.confirmee_par_la_bnf for v in verdicts):
         lines.append(f"{GREEN}{len(verdicts)} alerte(s) conforme(s) aux notices.{RESET}")
     return "\n".join(lines)
@@ -510,9 +492,7 @@ async def run(args: argparse.Namespace) -> int:
         print(f"{RED}Lecture des alertes impossible : {exc}{RESET}", file=sys.stderr)
         return EXIT_ERROR
 
-    # L'instant où la population a été lue : c'est elle que le rapport décrit, et non
-    # l'heure de fin, qui dépend de la lenteur des autorités. Prise ici, il vaut aussi
-    # pour une population vide — un rapport muet doit rester daté, lui aussi.
+    # Instant où la population a été lue, pas l'heure de fin : c'est elle que le
     population_lue_le = datetime.now(UTC)
 
     if not identities:
@@ -526,9 +506,7 @@ async def run(args: argparse.Namespace) -> int:
     service = BookMetadataService()
     try:
         if not await bnf_joignable(get_shared_http_client()):
-            # Rien n'a pu être vérifié : l'audit n'a pas eu lieu. Aucune alerte n'est
-            # signalée, et le code 2 dit que le rapport est vide parce qu'il n'a pas
-            # été produit, pas parce qu'il n'y avait rien à trouver.
+            # Audit non effectué : code 2, le rapport est vide faute d'avoir été
             print(f"{RED}La BNF ne répond pas : aucune alerte n'a pu être vérifiée.{RESET}")
             return EXIT_ERROR
         verdicts = await audit(identities, service.consult_authorities)

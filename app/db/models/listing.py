@@ -41,7 +41,7 @@ class Listing(Base, UUIDPrimaryKeyMixin):
     seller_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     seller_rating: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True)
 
-    # Photos stockées sous forme de liste d'URLs
+    # Liste d'URLs
     photos: Mapped[list[str]] = mapped_column(
         JSON().with_variant(JSONB, "postgresql"),
         default=list,
@@ -62,7 +62,6 @@ class Listing(Base, UUIDPrimaryKeyMixin):
         nullable=False,
     )
 
-    # Relations
     matches: Mapped[list["ListingMatch"]] = relationship(
         "ListingMatch",
         back_populates="listing",

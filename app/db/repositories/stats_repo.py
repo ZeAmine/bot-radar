@@ -14,8 +14,8 @@ from app.db.models.listing import Listing
 from app.db.models.listing_match import ListingMatch
 from app.utils.percentile import interpolated_percentile
 
-# Taille de l'échantillon servant au calcul des percentiles de latence. Borné pour que
-# la requête reste peu coûteuse quel que soit le volume de notifications conservé.
+# Échantillon des percentiles de latence, borné pour garder la requête peu coûteuse
+# quel que soit le volume de notifications conservé.
 LATENCY_SAMPLE_SIZE = 500
 
 
@@ -41,7 +41,6 @@ class StatsRepository:
         now = datetime.now(UTC)
         threshold = now - timedelta(days=days)
 
-        # 1. Nombre d'alertes actives au total et par catégorie
         stmt_active_alerts = select(func.count(Alert.id)).where(
             Alert.status == AlertStatus.ACTIVE,
             Alert.deleted_at.is_(None),
@@ -54,7 +53,6 @@ class StatsRepository:
             for r in cat_alerts_rows
         ]
 
-        # 2. Annonces reçues
         stmt_received_listings = select(func.count(Listing.id)).where(
             Listing.received_at >= threshold
         )
@@ -62,20 +60,17 @@ class StatsRepository:
             await self.session.execute(stmt_received_listings)
         ).scalar_one() or 0
 
-        # 3. Annonces correspondant à une alerte (matches)
         stmt_matches = select(func.count(ListingMatch.id)).where(
             ListingMatch.created_at >= threshold
         )
         matches_count = (await self.session.execute(stmt_matches)).scalar_one() or 0
 
-        # 4. Alertes Telegram envoyées
         stmt_notified = select(func.count(ListingMatch.id)).where(
             ListingMatch.created_at >= threshold,
             ListingMatch.notified_at.is_not(None),
         )
         notified_count = (await self.session.execute(stmt_notified)).scalar_one() or 0
 
-        # 5. Catégorie la plus active
         stmt_top_category = (
             select(Listing.category_slug, func.count(Listing.id).label("cnt"))
             .where(Listing.received_at >= threshold)
@@ -86,7 +81,6 @@ class StatsRepository:
         top_cat_row = (await self.session.execute(stmt_top_category)).first()
         top_category = top_cat_row[0] if top_cat_row else "Aucune"
 
-        # 6. Alertes les plus déclenchées
         stmt_top_alerts = (
             select(Alert.name, func.count(ListingMatch.id).label("cnt"), Category.emoji)
             .join(ListingMatch, Alert.id == ListingMatch.alert_id)
@@ -102,7 +96,6 @@ class StatsRepository:
             for row in top_alerts_rows
         ]
 
-        # 7 & 8. Comparaisons BD disponibles et indisponibles
         stmt_bd_available = select(func.count(BookMarketCache.id)).where(
             BookMarketCache.comparison_status == ComparisonStatus.AVAILABLE
         )
@@ -152,12 +145,12 @@ class StatsRepository:
         rows = (await self.session.execute(stmt)).all()
 
         def to_seconds(delta: Any) -> float:
-            # SQLite peut renvoyer l'écart déjà en secondes (float) là où PostgreSQL
-            # renvoie un intervalle : les deux sont acceptés, aucun n'est supposé.
+            # SQLite renvoie l'écart en secondes (float), PostgreSQL un intervalle :
+            # les deux sont acceptés, aucun n'est supposé.
             return float(delta.total_seconds()) if hasattr(delta, "total_seconds") else float(delta)
 
-        # Un écart négatif n'est pas une latence : il signale une horloge incohérente
-        # ou une ligne importée. Le conserver ferait lire un p50 qui n'a aucun sens.
+        # Un écart négatif (horloge incohérente, ligne importée) fausserait le p50 :
+        # il est exclu.
         seconds = sorted(
             to_seconds(notified_at - received_at)
             for notified_at, received_at in rows

@@ -70,9 +70,8 @@ APPROVAL_LABEL = (
     "Autoriser l'analyse et la préparation d'un correctif — sans merge ni déploiement"
 )
 
-# États qu'une reprise F03-B doit faire progresser. `notified` et `abandoned` sont
-# terminaux. `unknown` n'autorise aucun nouvel envoi, mais un `unknown` porteur d'un
-# reçu exploitable reste actionnable pour sa finalisation (marquage SQL).
+# États qu'une reprise F03-B doit faire progresser ; `notified` et `abandoned` sont
+# terminaux, mais un `unknown` porteur d'un reçu exploitable reste finalisable.
 ACTIONABLE_STATES = (
     NotificationState.READY.value,
     NotificationState.DEFERRED.value,

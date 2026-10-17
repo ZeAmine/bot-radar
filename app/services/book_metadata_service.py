@@ -44,34 +44,19 @@ logger = logging.getLogger("radar.book_metadata")
 
 STANDARD_BD_EXCLUDES = ["roman", "poche", "anglais", "english", "dvd"]
 
-# Similarité minimale entre le titre demandé et la notice BNF pour valider une correspondance.
 TITLE_SIMILARITY_MIN = 0.75
-# Similarité minimale entre deux titres pour les considérer comme deux éditions de la même œuvre.
 SAME_WORK_TITLE_SIMILARITY_MIN = 0.9
-# Nombre maximum d'éditions alternatives remontées à l'utilisateur.
 MAX_ALTERNATIVE_EDITIONS = 3
-# Nombre maximum de tomes rattachés à une série suivie par son nom. Un plafond
-# protège le catalogue des notices voisines ; à 6, une série normale de BD en
-# perdait (Blacksad compte 7 tomes). 12 couvre les séries réelles sans ouvrir la
-# porte au bruit : le préfixe de titre et la cohérence d'auteur restent le filtre.
 MAX_SERIES_BOOKS = 12
 
-# Préfixes ISBN des éditions francophones (règle GF pour la langue française).
 FRENCH_ISBN_PREFIXES = ("9782", "979")
 
-# Identifiants des autorités, tels que `BookMetadata.source` les déclare. Les possède
-# le service qui les interroge : un appelant qui les recopierait finirait par annoncer
-# « ni la BNF ni OpenLibrary » le jour où un troisième repli entre en scène — ce qui est
-# arrivé (ADR-033).
 AUTORITE_BNF = "bnf"
 AUTORITE_OPENLIBRARY = "openlibrary"
 AUTORITE_GOOGLE_BOOKS = "google_books"
 
 _TITLE_QUERY_ALLOWED_CHARS = r"[^a-zA-Z0-9\sàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ-]"
 
-# Concordance entre l'indice d'auteur saisi et la notice retenue : sans indice, l'indice
-# ne tranche rien (« none ») ; il désigne la notice (« matched ») ; il la contredit
-# (« conflicts ») et la notice n'est alors pas l'œuvre demandée.
 AuthorHintMatch = Literal["none", "matched", "conflicts"]
 
 
@@ -90,10 +75,6 @@ class BookMetadata:
     source: str = AUTORITE_BNF
     publication_year: int | None = None
     format_detail: str | None = None
-    # Titre de la notice portant son numéro de tome, tel que la détection de série le
-    # lit (« … Tome 2 »). `None` quand la notice n'en porte aucun. C'est un titre de
-    # conservé pour détecter les séries et vérifier le volume demandé ; la
-    # similarité de l’œuvre reste calculée sur `title`, le titre de base.
     volume_title: str | None = None
     volume_number: int | None = None
     language: str | None = None
@@ -233,8 +214,6 @@ class BookResolution:
             return True
         if not self.other_works:
             return False
-        # Un indice d'auteur qui désigne la notice retenue tranche l'homonymie : les
-        # autres notices ne sont plus des candidates, elles ne sont que des homonymes.
         return self.author_hint_match != "matched"
 
     def work_choices(self) -> list[WorkAlternative]:
@@ -295,8 +274,6 @@ class _OpenLibraryWork:
     edition_isbns: list[str] = field(default_factory=list)
 
 
-# Les quatre issues d'une recherche d'ISBN, disjointes et exhaustives. `CONTRADICTION`
-# se distingue d'un silence : c'est une preuve, pas une absence.
 IsbnOutcome = Literal["confirme", "contradiction", "inconnu", "silence"]
 
 _A_TRONCHE: tuple[IsbnOutcome, ...] = ("confirme", "contradiction")
@@ -357,10 +334,6 @@ class IsbnVerdict:
         return self.notice.source if self.a_tranche and self.notice is not None else None
 
 
-# Types de recherche distingués par les tentatives : `title` est la requête
-# `bib.title`, `title_anywhere` son élargissement, `free` le repli libre Google
-# (sans opérateur), `isbn` toute recherche par code. Un repli libre n'existe
-# que pour Google, jamais pour un ISBN seul.
 BibliographicSearchType = Literal["isbn", "title", "title_anywhere", "free"]
 
 
@@ -496,9 +469,6 @@ def _attempt(
 OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
 GOOGLE_BOOKS_SOURCE_NOTE = "Source Google Books (repli BNF)"
 
-# Provenance par autorité secondaire. Une table plutôt qu'un cas particulier : la
-# troisième source a montré qu'un `if` unique se contentait de taire la suivante, et
-# une notice de repli affichée sans sa provenance se lit comme une confirmation BNF.
 PROVENANCE_NOTES: dict[str, str] = {
     AUTORITE_OPENLIBRARY: OPENLIBRARY_SOURCE_NOTE,
     AUTORITE_GOOGLE_BOOKS: GOOGLE_BOOKS_SOURCE_NOTE,
@@ -546,8 +516,6 @@ def title_similarity(first: str | None, second: str | None) -> float:
     if norm_a == norm_b:
         return 1.0
     ratio = difflib.SequenceMatcher(None, norm_a, norm_b).ratio()
-    # Un sous-titre ou un suffixe d'auteur côté BNF ne doit pas faire tomber la similarité,
-    # mais seulement s'il reste marginal par rapport au titre (sinon c'est un autre ouvrage).
     shorter, longer = sorted((norm_a, norm_b), key=len)
     if shorter in longer and len(shorter) / len(longer) >= 0.75:
         ratio = max(ratio, SAME_WORK_TITLE_SIMILARITY_MIN)
@@ -617,9 +585,6 @@ def clean_title_query(title: str) -> str:
     return cleaned or title
 
 
-# La liste blanche latine des titres mutile un auteur : « Juan Díaz Canales »
-# devient « Juan D az Canales », et le SRU ne rend plus rien. Seuls les
-# caractères qui cassent la syntaxe CQL sont retirés, jamais une lettre.
 _CQL_FORBIDDEN_CHARS = re.compile(r'["\r\n\t]+')
 _CQL_SPACES = re.compile(r"\s+")
 
@@ -697,7 +662,6 @@ def parse_query_title_and_author(query: str) -> tuple[str, str | None]:
     """
     text = query.strip()
 
-    # Découpage explicite par "par" ou "by"
     parts = re.split(r"\s+(?:par|by)\s+", text, flags=re.IGNORECASE)
     if len(parts) == 2 and parts[0].strip() and parts[1].strip():
         return parts[0].strip(), _clean_author_candidate(parts[1])
@@ -742,10 +706,6 @@ def clean_bnf_title(raw_title: str) -> str:
     return t
 
 
-# Marqueur explicite de tome, cherché **en fin** de sous-titre (« 150 recettes et
-# techniques. Tome 1 »). Le `\b` devant la lettre évite de confondre le « t » d'un mot
-# avec un marqueur, et un simple nombre en fin de sous-titre (« … 2022 ») n'en est pas
-# un : seule une forme nommée décrit un tome.
 _TOME_MARKER = re.compile(
     r"\b(?:tomes?|t|vols?|volumes?|livres?|books?|parties?|parts?)\s*\d{1,4}\b\s*$",
     re.IGNORECASE,
@@ -771,8 +731,6 @@ def clean_bnf_series_title(raw_title: str) -> str:
     if " / " in without_author:
         without_author = without_author.split(" / ")[0].strip()
     prefix, separator, subtitle = without_author.partition(" : ")
-    # Base trop courte pour nommer l'œuvre : `clean_bnf_title` a gardé le titre entier,
-    # il n'y a rien à ré-appender sans le dupliquer.
     if not separator or len(prefix.strip()) < 3:
         return base
     marker = _TOME_MARKER.search(subtitle.strip())
@@ -822,8 +780,6 @@ def generate_recommended_keywords(
     if norm_title:
         includes.append(norm_title)
 
-        # La forme sans article est une **alternative** du même titre, pas un critère de
-        # plus : elle remplace la forme complète, et seulement si elle reste distincte.
         for article in ["la ", "le ", "les ", "l "]:
             if norm_title.startswith(article):
                 without_article = norm_title[len(article):].strip()
@@ -831,7 +787,6 @@ def generate_recommended_keywords(
                     includes = [without_article]
                 break
 
-    # Variantes automatiques (ex: "deathbringer" -> "death bringer")
     variants: list[str] = []
     compound_words = {
         "deathbringer": "death bringer",
@@ -842,10 +797,8 @@ def generate_recommended_keywords(
         if comp in norm_title and var not in variants and var not in includes:
             variants.append(var)
 
-    # Exclusions standards
     excludes = list(STANDARD_BD_EXCLUDES)
 
-    # Exclusions spécifiques selon le titre
     if "deathbringer" in norm_title:
         excludes.extend(["figurine", "warhammer"])
     if "grimr" in norm_title:
@@ -879,18 +832,13 @@ class BookMetadataService:
         if not clean_q:
             return None
 
-        # 1. Vérification si la saisie est directement un ISBN
         raw_digits = re.sub(r"[^0-9X]", "", clean_q.upper())
         if len(raw_digits) in (10, 13) and (raw_digits.isdigit() or raw_digits.endswith("X")):
             return await self.lookup_by_isbn(raw_digits)
 
-        # 2. Vérification si la saisie est une URL Vinted
         if "vinted." in clean_q.lower():
             return await self._lookup_from_vinted_url(clean_q)
 
-        # 3. Recherche par Titre (+ Auteur éventuel). `resolve_input` garde son
-        # retour historique (la notice) : le verdict est lu par les appelants qui
-        # savent quoi en faire, pas par les écrans de saisie.
         return (await self.lookup_by_title_and_author(clean_q)).notice
 
     async def resolve_input(self, query: str) -> BookResolution | None:
@@ -949,8 +897,6 @@ class BookMetadataService:
         """
         clean_isbn = normalize_isbn(isbn)
         if not clean_isbn or not is_valid_isbn(clean_isbn):
-            # Un code mal formé n'a été soumis à personne : le dire « inconnu »
-            # accuserait une autorité de l'ignorer.
             return BibliographicReport(
                 kind="isbn", verdict=IsbnVerdict(outcome="inconnu")
             )
@@ -988,9 +934,6 @@ class BookMetadataService:
                 attempts=tuple(attempts),
             )
 
-        # Troisième autorité, quand elle est configurée : un livre publié il y a deux
-        # semaines n'est dans aucun catalogue national (ADR-028), et c'est précisément
-        # le cas que ce repli sert. Elle n'est nommée « consultée » que si elle l'a été.
         google_client = self._google_books_client()
         if google_client.is_configured:
             consulted = (*consulted, AUTORITE_GOOGLE_BOOKS)
@@ -1010,7 +953,6 @@ class BookMetadataService:
                     attempts=tuple(attempts),
                 )
 
-        # Aucune autorité n'a rien nommé : sans `panne`, ce serait un verdict.
         return BibliographicReport(
             kind="isbn",
             verdict=IsbnVerdict(
@@ -1048,8 +990,6 @@ class BookMetadataService:
         fait ici, une fois pour tous.
         """
         verdict = await self.consult_authorities(isbn13)
-        # Sans titre attendu, il n'y a rien à quoi comparer la notice : l'ISBN est
-        # alors retenu pour ce qu'il est, sans contradiction à invoquer.
         if not expected_title or not verdict.confirme or verdict.notice is None:
             return verdict
 
@@ -1098,8 +1038,6 @@ class BookMetadataService:
 
         attempts: list[ProviderAttempt] = []
         clean_title_q = clean_title_query(title)
-        # Sans l'auteur, la fenêtre de dix notices se remplit d'homonymes : « Le
-        # Voyage » annonce 23 823 notices et n'en rend aucune qui soit l'œuvre.
         author_q = clean_author_query(author_hint) if author_hint else ""
         if author_q:
             bnf_result, _panne = await self._bnf_records_result(
@@ -1108,8 +1046,6 @@ class BookMetadataService:
                 title_hint=clean_title_q,
             )
             attempts.append(_attempt(AUTORITE_BNF, "title", bnf_result))
-            # Repli strict : seule une conjonction réussie et vide est relancée.
-            # Une panne ne déclenche rien, elle ne prouve ni présence ni absence.
             if bnf_result.status == ProviderQueryStatus.SUCCESS and not bnf_result.items:
                 bnf_result, _panne = await self._bnf_records_result(
                     f'bib.title all "{clean_title_q}"',
@@ -1157,8 +1093,6 @@ class BookMetadataService:
                     )
                 )
 
-            # Rien d'exploitable, ou seulement d'autres auteurs : les deux replis dans
-            # l'ordre. Avec des homonymes BNF, le repli doit nommer l'auteur demandé.
             ol_resolution, ol_attempt = await self._resolve_via_openlibrary(
                 title, author_hint
             )
@@ -1174,8 +1108,6 @@ class BookMetadataService:
                     fallback_resolution = google_resolution
 
             if fallback_resolution is not None:
-                # Les homonymes BNF restent des œuvres distinctes, jamais des éditions
-                # du repli. Leur présence ne contredit pas un auteur explicitement nommé.
                 homonyms = list(fallback_resolution.other_works)
                 seen = {meta.isbn13 for meta in homonyms}
                 for candidate in candidates:
@@ -1199,8 +1131,6 @@ class BookMetadataService:
                 )
             if not candidates:
                 return BibliographicReport(kind="title", attempts=tuple(attempts))
-            # Aucun repli ne nomme l'auteur voulu : les homonymes BNF sont conservés
-            # avec le bilan des tentatives, sans ratifier l'un d'eux en silence.
 
         candidates = self._prefer_author_hint(candidates, author_hint)
         best = self._attach_recommendations(candidates[0])
@@ -1219,9 +1149,6 @@ class BookMetadataService:
                 alternatives=alternatives,
                 other_works=other_works,
                 author_hint_match=self._author_hint_match(best, author_hint),
-                # La preuve d'une série est portée par le titre qui garde son numéro de
-                # tome : la notice retenue ne l'a pas toujours, le sous-titre peut le
-                # cacher.
                 notice_titles=tuple(
                     dict.fromkeys(
                         record.volume_title or record.title for record in candidates
@@ -1283,8 +1210,6 @@ class BookMetadataService:
             or requested_volume(reference.title) is not None
         ):
             return False
-        # Sans auteur connu des deux côtés, rien ne prouve qu'il s'agit d'un autre
-        # ouvrage : la notice reste une édition possible.
         return not BookMetadataService._is_same_work(candidate, reference)
 
     @staticmethod
@@ -1323,7 +1248,6 @@ class BookMetadataService:
 
         attempts: list[ProviderAttempt] = []
 
-        # Requête BNF avec le titre
         cql = f'bib.title all "{clean_title_q}"'
         result, _panne = await self._bnf_records_result(
             cql, author_hint=author_cand, title_hint=clean_title_q
@@ -1332,7 +1256,6 @@ class BookMetadataService:
         records = list(result.items)
 
         if not records and author_cand:
-            # Essai plus large si pas de résultat
             cql_broad = f'bib.anywhere all "{clean_title_q}"'
             broad, _panne_broad = await self._bnf_records_result(
                 cql_broad, author_hint=author_cand, title_hint=clean_title_q
@@ -1382,8 +1305,6 @@ class BookMetadataService:
         """
         wanted = normalize_text(series_title)
         if not wanted:
-            # Titre vide : aucune autorité n'a été interrogée, et le verdict ne
-            # pourra jamais dire « personne ne le connaît » — personne n'a cherché.
             return CatalogueVerdict()
         clean_title = clean_title_query(series_title)
         attempts: list[ProviderAttempt] = []
@@ -1438,9 +1359,6 @@ class BookMetadataService:
                 limit=MAX_SERIES_BOOKS if for_creation else limit - len(selected),
                 include_unidentified=for_creation,
             )
-            # Le repli nourrit le verdict comme la voie BNF : sans sa tentative, une
-            # série vide se lirait « personne ne la connaît » alors qu'OpenLibrary
-            # s'est peut-être tue — et un silence ne prouve rien.
             if ol_result is not None:
                 ol_limited = ol_result.error_code == "series_limit"
                 attempts.append(_attempt(AUTORITE_OPENLIBRARY, "title", ol_result))
@@ -1587,7 +1505,6 @@ class BookMetadataService:
         """Titre, numéro et langue de l'édition exacte ; les langues d'œuvre sont ignorées."""
         fallback = replace(meta, language=None)
         if require_volume:
-            # Un numéro sur l'œuvre agrégée ne confirme pas l'édition de cet ISBN.
             fallback.volume_number = None
         if not meta.isbn13:
             return fallback
@@ -1713,12 +1630,7 @@ class BookMetadataService:
                 f"statut HTTP {resp.status_code}",
             )
 
-        # Le `XMLParser` de la C de CPython ne prend que `target` et `encoding` :
-        # `resolve_entities` comme `forbid_entities` y lèvent un TypeError, qui
-        # transformait chaque réponse de la BNF en « autorité muette » — 11 tests
-        # rouges et `mypy app` en erreur. Ce parseur refuse déjà les entités
-        # externes (`undefined entity`) ; ce qui reste possible est la déclaration
-        # d'entités internes, alors un document qui en déclare une n'est pas lu.
+        # `XMLParser` (C) n'accepte que `target` et `encoding` : les options
         try:
             if _declares_doctype(resp.content):
                 logger.warning("Réponse SRU BNF écartée : elle déclare une DOCTYPE")
@@ -1752,10 +1664,6 @@ class BookMetadataService:
                 if not titles:
                     continue
 
-                # Une notice sans identifiant exploitable est écartée : mieux vaut
-                # rien rendre qu'un rattachement douteux. Ce qui compte est que
-                # l'identifiant soit *lu*, pas qu'il soit libellé « ISBN » : une
-                # notice ne portant qu'un EAN-13 est aussi une notice de livre.
                 isbn13 = next(
                     (found for found in map(isbn_from_identifier, identifiers) if found),
                     None,
@@ -1766,11 +1674,7 @@ class BookMetadataService:
                 raw_identity = re.split(r"\s*/\s*", titles[0], maxsplit=1)[0]
                 main_title = clean_bnf_title(titles[0])
                 series_title = clean_bnf_series_title(titles[0])
-                # Le titre de secours n'est conservé que s'il apprend quelque chose : un
-                # marqueur de tome que le titre de base n'a plus.
                 volume_title = series_title if series_title != main_title else None
-                # Le sous-titre complet peut nommer un lot ou porter le numéro au milieu.
-                # Le titre épuré seul ne doit ni fabriquer ni effacer cette preuve.
                 if is_collection(raw_identity):
                     volume_title = raw_identity
                 number = notice_volume(raw_identity)
@@ -1779,13 +1683,10 @@ class BookMetadataService:
                 publication_year = _parse_year(dates[0]) if dates else None
                 format_detail = formats[0].strip() if formats else None
 
-                # Similarité du titre : critère dominant, une notice portant sur un autre
-                # ouvrage ne doit jamais gagner sur la bonne œuvre demandée.
                 score = 1.0
                 if title_hint:
                     score += 3.0 * title_similarity(main_title, title_hint)
 
-                # Calcul d'un score de similarité d'auteur si un indice d'auteur est donné
                 if author_hint and creators:
                     hint_norm = normalize_text(author_hint)
                     creators_norm = " ".join(normalize_text(c) for c in creators)
@@ -1795,12 +1696,9 @@ class BookMetadataService:
                         if word in creators_norm:
                             ratio += 0.4
                     score += ratio
-                    # Un indice d'auteur totalement absent de la notice déclasse le résultat :
-                    # plusieurs ouvrages portent le même titre, pas le même auteur.
                     if hint_words and not any(word in creators_norm for word in hint_words):
                         score -= 0.5
 
-                # Bonus pour les éditions francophones (BD et éditeurs de référence)
                 if isbn13 and (isbn13.startswith("9782") or isbn13.startswith("2")):
                     score += 0.5
                 if pub_name:
@@ -1813,8 +1711,6 @@ class BookMetadataService:
                     if any(fp in norm_pub for fp in fr_publishers):
                         score += 0.6
 
-                # Une notice datée est une fiche complète ; une notice sans date est
-                # souvent un doublon d'édition : elle sert de repli, pas de référence.
                 if publication_year:
                     score += 0.3
 
@@ -1918,8 +1814,6 @@ class BookMetadataService:
             if requested_volume(title) is None
             and isbn != best.isbn13 and isbn.startswith(FRENCH_ISBN_PREFIXES)
         ][:MAX_ALTERNATIVE_EDITIONS]
-        # Chaque document OpenLibrary est une œuvre : deux documents de même titre et
-        # d'auteurs différents sont des homonymes, pas des éditions.
         other_works = [
             work.meta
             for work in candidates[1 : 1 + MAX_ALTERNATIVE_EDITIONS]
@@ -1945,8 +1839,6 @@ class BookMetadataService:
         """
         return GoogleBooksClient(
             api_key=settings.GOOGLE_BOOKS_API_KEY.get_secret_value(),
-            # Le client du service, pas un second : les tests injectent le leur, et un
-            # service qui se servirait du client partagé ignorerait l'injection.
             http_client=self.http_client,
         )
 
@@ -1990,9 +1882,6 @@ class BookMetadataService:
         if not candidates:
             return None, tuple(attempts)
 
-        # Google classe par pertinence, pas par titre : c'est la similarité qui décide
-        # ici, comme partout ailleurs, pour qu'une notice voisine ne passe pas devant
-        # l'œuvre demandée.
         candidates.sort(key=lambda meta: title_similarity(meta.title, title), reverse=True)
         candidates = self._prefer_author_hint(candidates, author_hint)
         best = candidates[0]
@@ -2086,7 +1975,6 @@ class BookMetadataService:
                 if same_author(work.meta.author, author_hint):
                     score += 1.0
                 else:
-                    # Un indice d'auteur contredit par la notice doit déclasser le résultat.
                     score -= 0.5
             scored.append((score, work))
 

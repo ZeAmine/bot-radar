@@ -2,10 +2,9 @@
 
 from app.bot.labels import format_price_line
 
-# Frais standards constatés sur Vinted France
-DEFAULT_PROTECTION_FIXED_CENTS: int = 70  # 0,70 € fixe
-DEFAULT_PROTECTION_RATE: float = 0.05  # 5% du prix de l'article
-DEFAULT_SHIPPING_CENTS: int = 288  # 2,88 € en point relais standard (Mondial Relay / Shop2Shop)
+DEFAULT_PROTECTION_FIXED_CENTS: int = 70
+DEFAULT_PROTECTION_RATE: float = 0.05
+DEFAULT_SHIPPING_CENTS: int = 288  # Point relais standard (Mondial Relay / Shop2Shop)
 
 
 def calculate_buyer_protection_cents(item_price_cents: int) -> int:

@@ -38,9 +38,8 @@ logger = logging.getLogger("radar.google_books")
 
 GOOGLE_BOOKS_VOLUMES_URL = "https://www.googleapis.com/books/v1/volumes"
 
-# Cinq volumes suffisent : la source ne se substitue à personne, elle rend ce que
-# les deux autorités n'ont pas su dire. Au-delà, on paie une charge utile plus
-# grosse pour des notices que le filtre de similarité écartera de toute façon.
+# Cinq volumes suffisent : la source ne se substitue à personne et le filtre
+# de similarité écarte les notices en trop.
 MAX_RESULTS = 5
 
 
@@ -245,8 +244,8 @@ class GoogleBooksClient:
             and items is None
             and payload.get("totalItems", 0) == 0
         ):
-            # `{"totalItems": 0}` sans `items` est un succès sans résultat, pas
-            # une structure inattendue : Google omet la clé quand il n'a rien.
+            # `{"totalItems": 0}` sans `items` est un succès vide : Google omet
+            # la clé quand il n'a aucun résultat.
             return ProviderQueryResult(status=ProviderQueryStatus.SUCCESS)
         logger.warning("Google Books : structure de réponse inattendue")
         return ProviderQueryResult(

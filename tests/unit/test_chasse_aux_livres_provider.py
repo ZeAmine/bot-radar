@@ -174,8 +174,7 @@ async def test_chasse_aux_livres_network_error():
         offers = await provider.get_offers(isbn13=None, title="Rip")
 
     assert len(offers) == 0
-    # La politique de retry est vérifiée, pas subi : deux pauses de 1,5 s
-    # entre les trois tentatives. Sans l'injection, ce test coûtait 3 s.
+    # Retry vérifié sans attente réelle : deux pauses de 1,5 s, une par échec.
     assert slept == [1.5, 1.5]
 
 
@@ -216,19 +215,12 @@ async def test_chasse_aux_livres_title_mismatch_rejected():
     provider, slept = _recording_provider()
 
     resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
-    # MOCK_REST_JSON renvoie 'Rip Tome 1'
     resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
     resp_prod = httpx.Response(200, text=MOCK_PROD_HTML)
     resp_lookup = httpx.Response(200, json=MOCK_LOOKUP_JSON)
 
-    # `get_offers` cherche d'abord par ISBN, puis se replie sur le titre, et
-    # chaque recherche va jusqu'à la fiche produit quand le titre est cohérent.
-    # N'en fournir que deux faisait épuiser le `side_effect` : l'exception était
-    # avalée par la boucle de retry, `get_offers` renvoyait `[]`, et le test
-    # passait pour la mauvaise raison. Vérifié : en neutralisant
-    # `is_title_coherent`, la règle morte laissait passer une offre « Rip Tome 1 »
-    # pour « Mutafukaz Loba Loca » — avec les huit réponses, `len(offers) == 0`
-    # la détecte.
+    # Deux passes (ISBN, titre) × quatre réponses : un `side_effect` trop court
+    # serait avalé par le retry et ferait passer le test pour la mauvaise raison.
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
         mock_get.side_effect = [
             resp_search,
@@ -241,7 +233,6 @@ async def test_chasse_aux_livres_title_mismatch_rejected():
             resp_lookup,
         ]
 
-        # Recherche pour "Mutafukaz Loba Loca" avec réponse "Rip Tome 1"
         offers = await provider.get_offers(isbn13="9791033511908", title="Mutafukaz Loba Loca")
 
     assert len(offers) == 0
@@ -262,8 +253,7 @@ async def test_isbn_exact_prime_sur_un_titre_incoherent():
     provider, slept = _recording_provider()
 
     resp_search = httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
-    # MOCK_REST_JSON affiche l'ISBN cherché (9791095670568) mais un titre
-    # sans rapport avec l'ouvrage demandé.
+    # MOCK_REST_JSON affiche l'ISBN cherché mais un titre sans rapport.
     resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
     resp_prod = httpx.Response(200, text=MOCK_PROD_HTML)
     resp_lookup = httpx.Response(200, json=MOCK_LOOKUP_JSON)
@@ -296,9 +286,8 @@ async def test_titre_incoherent_rejette_sans_preuve_isbn():
     resp_rest = httpx.Response(200, json=MOCK_REST_JSON)
 
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        # ISBN recherché valide mais différent de celui affiché (…568). Le veto
-        # tombe avant la fiche produit : aucune réponse produit/lookup n'est
-        # consommée, en fournir masquerait un flux devenu faux.
+        # ISBN recherché valide mais différent de l'affiché : le veto tombe avant
+        # la fiche produit, donc aucune réponse produit/lookup n'est consommée.
         mock_get.side_effect = [resp_search, resp_rest, resp_search, resp_rest]
 
         offers = await provider.get_offers(
@@ -306,8 +295,7 @@ async def test_titre_incoherent_rejette_sans_preuve_isbn():
         )
 
     assert offers == []
-    # Recherche ISBN puis repli titre : les deux sont allées jusqu'au veto,
-    # aucune n'a été avortée par une réponse manquante.
+    # Recherche ISBN puis repli titre : les deux atteignent le veto, sans réponse manquante.
     assert _search_call_count(mock_get) == 2
     assert mock_get.call_count == 4
     assert slept == []
@@ -330,7 +318,6 @@ async def test_repli_par_titre_accepte_sur_preuve_isbn():
     resp_lookup = httpx.Response(200, json=MOCK_LOOKUP_JSON)
 
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        # ISBN : page de recherche sans résultat. Titre : résultat complet.
         mock_get.side_effect = [
             resp_search,
             resp_rest_empty,
@@ -375,8 +362,7 @@ async def test_chasse_aux_livres_strict_used_filtering():
     resp_lookup = httpx.Response(200, json=mock_lookup_only_new)
 
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        # Deux fois quatre réponses : la recherche par ISBN puis le repli par
-        # titre doivent tous deux aboutir, sans être avalés par le retry.
+        # Deux passes × quatre réponses : elles doivent aboutir sans être avalées par le retry.
         mock_get.side_effect = [
             resp_search,
             resp_rest,
@@ -432,7 +418,6 @@ async def test_chasse_aux_livres_excludes_amazon_de():
         offers = await provider.get_offers(isbn13="9791095670568", title="Rip Tome 1")
         assert len(offers) == 1
         offer = offers[0]
-        # Doit choisir Rakuten (15,00 €) et PAS Amazon (De) (12,00 €)
         assert offer.delivered_price_cents == 1500
         assert "Rakuten" in offer.item_condition
         assert "Amazon (De)" not in offer.item_condition
@@ -490,7 +475,6 @@ def test_is_title_coherent_rejects_unrelated_work_and_other_tome():
     """Un seul mot commun ne suffit plus à valider un titre."""
     is_coherent = ChasseAuxLivresProvider.is_title_coherent
 
-    # Correspondances legitimes
     assert is_coherent("Rip Tome 1", "Rip Tome 1") is True
     assert is_coherent("Blacksad", "Blacksad Tome 5 Amarillo") is True
     assert (
@@ -498,7 +482,6 @@ def test_is_title_coherent_rejects_unrelated_work_and_other_tome():
         is True
     )
 
-    # Rejets
     assert is_coherent("Mutafukaz Loba Loca", "Rip Tome 1") is False
     assert is_coherent("Blacksad Tome 1", "Blacksad Tome 2") is False
     assert is_coherent("Le prophète", "Iznogoud") is False

@@ -416,7 +416,7 @@ def result_from_verdict_report(
     assert verdict is not None
     base = result_from_isbn_verdict(verdict, expected_title)
     # Sans tentative dans le rapport (adaptateur sans observabilité), la liste du
-    # verdict fait foi : la remplacer par un vide inventerait « personne consulté ».
+    # verdict fait foi : un vide inventerait « personne consulté ».
     consulted = consulted_authorities(report.attempts) or verdict.consulted
     failed = failed_authorities(report.attempts)
     if (
@@ -456,8 +456,8 @@ def metadata_from_result(result: BookSearchResult) -> BookMetadata | None:
         publisher=result.confirmed.publisher,
         isbn13=result.reference.isbn13 if result.reference else result.confirmed.isbn13,
         publication_year=result.confirmed.publication_year,
-        # La mise en forme appartient à l'édition (elle change d'une édition à l'autre) :
-        # elle vit sur la référence, pas sur l'œuvre.
+        # La mise en forme appartient à l'édition, pas à l'œuvre : elle vit
+        # sur la référence.
         format_detail=result.reference.format_detail if result.reference else None,
         source=result.confirmed.provenance or AUTORITE_BNF,
         volume_number=result.confirmed.volume_number,

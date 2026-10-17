@@ -8,7 +8,7 @@ from app.services.tome_extractor import TomeExtractor
 @pytest.mark.parametrize(
     ("title", "series_key", "expected_tome"),
     [
-        # Chiffres arabes et préfixes variés
+
         ("BD RIP Tome 2", "RIP", 2),
         ("RIP T3", "RIP", 3),
         ("RIP t.3", "RIP", 3),
@@ -17,12 +17,12 @@ from app.services.tome_extractor import TomeExtractor
         ("L'odyssée d'Hakim livre 3", "L'odyssée d'Hakim", 3),
         ("RIP #5", "RIP", 5),
         ("RIP # 5", "RIP", 5),
-        # Chiffres romains
+
         ("RIP Tome IV", "RIP", 4),
         ("Blacksad Tome II", "Blacksad", 2),
         ("Blast Tome VI", "Blast", 6),
         ("Série Tome X", None, 10),
-        # Suffixe direct (nombre seul à la fin)
+
         ("RIP 2", "RIP", 2),
         ("Blacksad 3", "Blacksad", 3),
     ],
@@ -39,23 +39,23 @@ def test_tome_extractor_single_tome_matrix(
 @pytest.mark.parametrize(
     ("title", "series_key", "expected_is_lot", "expected_lot_tomes", "expected_count"),
     [
-        # Séquences avec points (ex: 1.2.3)
+
         ("Le château des animaux,  1.2.3", "Le château des animaux", True, [1, 2, 3], 3),
         ("Série BD 1. 2. 3", None, True, [1, 2, 3], 3),
         ("Manga 1.2.3.4", None, True, [1, 2, 3, 4], 4),
-        # Séquences avec virgules
+
         ("Le château des animaux 1, 2, 3", "Le château des animaux", True, [1, 2, 3], 3),
         ("Comics tomes 1, 2, 4", None, True, [1, 2, 4], 3),  # Lot non-consécutif
-        # Séquences avec tirets multiples
+
         ("Le château des animaux 1-2-3", "Le château des animaux", True, [1, 2, 3], 3),
         ("Tintin 4-5-6", None, True, [4, 5, 6], 3),
-        # Séquences avec slashs ou plus
+
         ("Le château des animaux 1/2/3", "Le château des animaux", True, [1, 2, 3], 3),
         ("BD 1+2+3", None, True, [1, 2, 3], 3),
         ("Spirou 1 & 2", None, True, [1, 2], 2),
         ("Largo Winch 1 et 2", None, True, [1, 2], 2),
         ("Thorgal t1-2-3", None, True, [1, 2, 3], 3),
-        # Plages de tomes avec mots de liaison
+
         ("Le château des animaux 1 à 3", "Le château des animaux", True, [1, 2, 3], 3),
         ("Le château des animaux 1-3", "Le château des animaux", True, [1, 2, 3], 3),
         ("Lot BD RIP tomes 1 à 4", "RIP", True, [1, 2, 3, 4], 4),

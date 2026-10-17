@@ -596,9 +596,7 @@ def test_un_job_metier_est_refuse_meme_sous_un_node_autorise():
     assert '"service_denied": 0' in sortie, sortie
 
 
-# Une fermeture autorisée porte le nom et le module attendus, mais appelle des noms du
-# module `app.tasks.scheduler` au moment de l'exécution : c'est ce que le contrôle
-# supplémentaire doit constater.
+# Une fermeture autorisée appelle des noms de `app.tasks.scheduler` à l'exécution.
 _WRAPPER_AUTORISE = (
     "import asyncio, json, os, sys\n"
     "sys.path.insert(0, os.getcwd())\n"

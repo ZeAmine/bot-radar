@@ -79,49 +79,20 @@ from app.utils.isbn import extract_clean_isbn
 
 logger = logging.getLogger(__name__)
 
-# Titre unique de la carte de récap. La carte est le rendu unique de
-# `build_creation_recap` : tous les chemins qui y aboutissent doivent se reconnaître
-# à la même fiche. Les en-têtes de parcours (« Alerte configurée en langage naturel »,
-# « Variantes & exclusions IA », « Modification enregistrée ») avaient disparu parce
-# qu'ils en multipliaient cinq pour un seul brouillon. Ce titre les remplace sans les
-# réintroduire : il ne dépend ni du chemin ni du geste, donc deux rendus de la même
-# fiche restent identiques.
 RECAP_TITLE = "➕ <b>Créer une alerte</b>"
 
-# Titre de la confirmation : la carte est la même, relue après l'enregistrement. Seul
-# l'en-tête change — c'est ce que l'écran annonce —, et il est écrit ici pour qu'aucun
-# des deux rendus n'en invente un second.
 ALERT_CREATED_TITLE = "✅ <b>Alerte créée</b>"
 
-# Pied du récap : une consigne, donc en italique (charte, règle 2). Il vit à côté du
-# titre parce que `creation_card` le pose sur les deux écrans ; la confirmation a le
-# sien, et les deux arrivent par le même paramètre, donc aucun ne peut l'oublier.
 RECAP_FOOTER = "<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"
 
-# Indication d'une série : ce que l'alerte surveille, non une information du livre.
-# C'est une phrase, pas une donnée de fiche : elle rend la disparition de l'identifiant
-# intelligible (« l'ISBN est omis, et voici pourquoi »), donc elle vit **hors** de la
-# liste des informations — sous le titre de la carte, en italique et isolée par une
-# ligne vide (charte, règle 3). Une seule phrase, sans énumérer les tomes repérés : la
-# liste des notices rendues par l'autorité n'est pas une information d'alerte, et un
-# pavé de tomes ne se lit pas. Elle se dérive de `is_series`, jamais d'une donnée
-# portée par le brouillon.
 SERIES_INDICATION = "Série multi-tomes (veille sur tous les tomes)"
 
-# Avertissement d'un ouvrage que personne n'a identifié : la carte ne peut alors
-# montrer ni auteur, ni éditeur, ni ISBN, et le taire faisait passer une fiche vide
-# pour une fiche oubliée. Il n'énumère aucune autorité (« ni la BNF ni OpenLibrary »)
-# parce que cette liste change : c'est la troisième source (ADR-033) qui l'a montré.
 UNIDENTIFIED_WORK_NOTE = (
     "⚠️ Ouvrage non identifié : aucune source ne catalogue ce titre. "
     "Vérifie l'orthographe, ou saisis l'ISBN."
 )
 
 
-# Pied de l'écran « prix maximum » : la carte montre ce qui est déjà posé — l'identité
-# de l'œuvre et les critères de veille — et la seule chose qui manque est le montant.
-# C'est une consigne, donc en italique (charte, règle 2), et elle est écrite une fois
-# pour les deux chemins qui demandent ce prix.
 PRICE_PROMPT_FOOTER = (
     "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
 )
@@ -183,7 +154,6 @@ def extract_inline_price_and_clean_query(query_str: str) -> tuple[str, int | Non
     has_currency = "€" in last_token or "eur" in last_token.lower()
     has_decimal = "." in last_token or "," in last_token
 
-    # Pour un entier pur, n'interpréter comme prix que si >= 15 (exclut tome 1-10, Pi 4, PS 5...)
     is_plausible_price = False
     if has_currency or has_decimal:
         is_plausible_price = True
@@ -240,8 +210,6 @@ def keyword_note(
     consigne qui ne mène nulle part.
     """
     if not outcome.answered:
-        # La relance a déjà eu lieu : ce n'est plus de la lenteur mais un échec. Quand un
-        # bouton de relance est sous la carte, c'est lui qu'on nomme, pas « Modifier ».
         head = (
             "⚠️ L'IA n'a pas répondu après une relance : aucune variante ni exclusion "
             "n'a été ajoutée."
@@ -249,9 +217,6 @@ def keyword_note(
         if retry_label:
             return f"{head} Appuie sur « {retry_label} » pour réessayer."
         return f"{head} Réessaie plus tard."
-    # ⚠️ et non 🔎 : ce n'est pas une observation en passant mais un manque, et la carte
-    # le place en tête avec les autres avertissements. Le repérage d'un ouvrage
-    # (« … identifié ») garde sa loupe : lui ne signale rien.
     if outcome.is_empty:
         return (
             "⚠️ L'IA n'a trouvé aucune variante ni exclusion pertinente : "
@@ -296,10 +261,6 @@ def creation_card(
     d'un trait, et le blanc qui séparait l'auteur du prix ne servait qu'à faire
     croire à deux blocs.
     """
-    # Le nom que l'alerte portera réellement : `save_alert` retombe sur « Alerte » quand
-    # le brouillon n'en porte aucun, et la carte doit annoncer ce nom-là. Le défaut de
-    # `dict.get` ne couvre que la clé absente — un nom vide ou nul passait au rendu tel
-    # quel, et `html.escape` levait dessus.
     title = data.get("name") or "Alerte"
     author = data.get("author")
     publisher = data.get("publisher")
@@ -311,12 +272,7 @@ def creation_card(
     exclude_keywords = data.get("exclude_keywords", [])
     variants = data.get("variants")
     keyword_note = data.get("keyword_note")
-    # Aucune source n'a identifié cet ouvrage : la carte doit le dire **en tête**, et
-    # montrer les trous de la fiche plutôt que de les laisser disparaître. Une donnée
-    # absente est une information (ADR-028).
     book_unidentified = bool(data.get("book_unidentified"))
-    # Une alerte hors livres — un objet, un jeu — n'a pas d'identifiant à trouver : sa
-    # catégorie le dit, et elle vient du brouillon comme le reste.
     expects_isbn = (
         data.get("category_slug", CategorySlug.BD_COMICS.value)
         == CategorySlug.BD_COMICS.value
@@ -328,23 +284,12 @@ def creation_card(
     )
 
     lines: list[str] = [header, ""]
-    # L'indication de série ouvre la carte, isolée par une ligne vide : elle dit ce que
-    # l'alerte surveille, et pourquoi elle n'a pas d'identifiant à montrer. Sa place
-    # n'est pas dans la liste — elle ne décrit ni le titre, ni l'auteur, ni l'éditeur.
     if is_series:
         lines.extend(series_indication_block())
-    # Toutes les notes forment **un seul bloc**, séparé de la liste par une ligne vide.
-    # Elles étaient deux blocs — l'identité en haut, le moteur tout en bas — et l'esprit
-    # devait faire l'aller-retour pour savoir ce qui manquait : côte à côte, les deux
-    # avertissements se lisent d'un coup. L'ordre va du plus structurant au plus
-    # accessoire : l'ouvrage non identifié d'abord, puis ce que l'autorité en dit, puis
-    # le verdict du moteur sur les mots-clés.
     notes: list[str] = []
     if book_unidentified:
         notes.append(UNIDENTIFIED_WORK_NOTE)
     if isbn_note:
-        # `isbn_note` porte des données de notice, donc échappé ; les deux autres sont
-        # des libellés internes, rendus tels quels.
         notes.append(html.escape(isbn_note))
     if keyword_note:
         notes.append(keyword_note)
@@ -352,30 +297,18 @@ def creation_card(
         lines.extend(f"<i>{note}</i>" for note in notes)
         lines.append("")
 
-    # La ligne ISBN est toujours là, même vide. Son absence se confondait avec un
-    # oubli, alors qu'elle porte l'information : « cet ouvrage n'a pas d'identifiant »
-    # est justement ce qu'il faut lire avant de valider une alerte. Deux exceptions :
-    # une alerte qui ne peut pas avoir d'identifiant — un objet, un jeu — n'a pas de
-    # sujet à traiter, et une série a déjà dit, plus haut, que l'omission est un choix :
-    # `non utilisé — série multi-tomes` répétait la même phrase deux fois.
     if not is_series:
         if isbn:
             lines.append(f"<b>{FIELD_ISBN} :</b> <code>{html.escape(isbn)}</code>")
         elif isbn_note:
             lines.append(f"<b>{FIELD_ISBN} :</b> À confirmer")
         elif expects_isbn:
-            # Plus d'autorité nommée : la BNF n'est plus la seule à avoir été
-            # interrogée. Le *pourquoi* et le *quoi faire* vivent dans l'avertissement
-            # de tête, la ligne dit seulement que le champ est vide.
             lines.append(f"<b>{FIELD_ISBN} :</b> introuvable")
 
     volume_issue = creation_volume_issue(data)
     if volume_issue:
         lines.extend([f"<i>{html.escape(volume_issue)}</i>", ""])
     lines.append(f"<b>{FIELD_TITLE} :</b> {html.escape(title)}")
-    # Un auteur ou un éditeur manquant s'affiche « Non renseigné » quand aucune source
-    # n'a identifié l'ouvrage : la ligne disparaissait, et son absence se lisait comme
-    # un oubli de la carte plutôt que comme une information sur l'ouvrage.
     if expects_isbn:
         language = str(data.get("language") or "")
         language_label = {"en": "Anglais", "fr": "Français", "de": "Allemand",
@@ -395,9 +328,6 @@ def creation_card(
             lines.append(f"<b>{FIELD_AUTHOR} :</b> {html.escape(author)}")
         if publisher:
             lines.append(f"<b>{FIELD_PUBLISHER} :</b> {html.escape(publisher)}")
-    # L'édition surveillée complète l'identité du livre : elle se lit juste après
-    # l'éditeur, avec lequel l'utilisateur la recoupe, et avant que la carte ne passe
-    # aux critères de veille. Elle n'apparaît que quand il y a un choix à faire.
     lines.extend(format_edition_line(edition_alternatives, isbn))
 
     lines.append(f"<b>{FIELD_MAX_PRICE} :</b> {price_str}")
@@ -408,18 +338,11 @@ def creation_card(
     if exclude_keywords:
         lines.append(f"<b>{FIELD_EXCLUDE_KEYWORDS} :</b> {_join_escaped(exclude_keywords)}")
 
-    # Ce qui n'appartient qu'à un écran arrive par `extra_lines` — le bloc de cote de
-    # la confirmation — juste avant le pied : c'est ce que la carte vient de produire,
-    # pas un critère de veille, donc cela ferme la liste des informations.
     if is_series:
         lines.extend(["", *render_series_volumes(data)])
     if extra_lines:
         lines.extend(["", *extra_lines])
 
-    # Le pied nomme ce que l'écran attend : le récap se relit avant de valider, la
-    # confirmation annonce ce qui va suivre. Les deux arrivent par le même paramètre,
-    # donc la carte ne peut pas en oublier un. C'est une consigne, donc en italique
-    # (charte, règle 2).
     lines.extend(["", footer])
     return "\n".join(lines)
 
@@ -463,7 +386,6 @@ def refresh_creation_series(
     for book in books:
         meta = BookMetadata(title=book.title, language=None, source="")
         if meta.volume_number and meta.volume_number not in known_numbers:
-            # Un lien du catalogue n'atteste pas sa vérification BNF actuelle.
             candidates.append(SeriesVolume(meta.volume_number, meta))
     selected = select_series_volumes(candidates, publisher=data.get("series_reference_publisher"))
     data["series_volumes"] = [v.stored() for v in selected]
@@ -524,8 +446,6 @@ def build_edition_choices(resolution: Any) -> list[dict[str, Any]]:
     return [edition.model_dump() for edition in resolution.editions()]
 
 
-# Formules d'édition qui ne distinguent rien par elles-mêmes : les retirer donne
-# « Beauvi… » là où la notice écrit « les Éditions de Beauvi… ».
 _PUBLISHER_NOISE = (
     "les éditions de ",
     "les éditions ",
@@ -541,8 +461,6 @@ _PUBLISHER_NOISE = (
     "de ",
     "d'",
 )
-# Un bouton Telegram tient ~30 caractères utiles ; au-delà il se fait tronquer
-# n'importe où. On coupe nous-mêmes, sur un espace, jamais au milieu d'un mot.
 _PUBLISHER_LABEL_MAX = 20
 
 
@@ -908,8 +826,6 @@ def draft_updates_from_search(
     confirmed = result.confirmed
     is_found = result.status == BookSearchStatus.FOUND and confirmed is not None
     is_ambiguous = result.status == BookSearchStatus.AMBIGUOUS
-    # Une série l'emporte sur l'identité : l'alerte surveille l'œuvre entière, pas le
-    # tome que la notice a pu nommer. Elle porte donc le titre demandé, et pas d'ISBN.
     is_series = result.is_series
 
     if is_series:
@@ -997,7 +913,6 @@ def draft_updates_from_search(
             "identity_unconfirmed": True,
         }
 
-    # not_found / unavailable / partial : alerte textuelle, jamais d'ISBN
     name = query_title
     includes, excludes, variants = generate_recommended_keywords(name, None)
     if result.status == BookSearchStatus.PARTIAL:
@@ -1053,9 +968,6 @@ async def _resolve_edition_choices(
         logger.debug("Éditions concurrentes indisponibles pour « %s » : %s", title, exc)
         return []
     if result.status != BookSearchStatus.FOUND:
-        # Un titre homonyme n'a pas d'éditions : celles du roman porteraient l'ISBN
-        # d'un autre ouvrage dans le clavier de création. Une identité non confirmée
-        # (repli ou notice sans ISBN) n'en propose pas davantage.
         return []
     return [_edition_choice_to_dict(edition) for edition in result.editions]
 
@@ -1072,10 +984,6 @@ class IsbnRealignment:
     conflict: str | None = None
 
 
-# Ce que l'ISBN précédent avait rapporté sur l'ouvrage, et que le nouveau contredit.
-# Les variantes et les exclusions ont été raisonnées sur cette fiche-là : les garder
-# ferait matcher l'alerte sur le mauvais livre, puisqu'une variante suffit à contourner
-# la contrainte d'inclusion.
 KEYWORDS_FROM_PREVIOUS_WORK: dict[str, Any] = {
     "variants": [],
     "exclude_keywords": [],
@@ -1083,11 +991,6 @@ KEYWORDS_FROM_PREVIOUS_WORK: dict[str, Any] = {
     "keywords_finalized": False,
     "book_context": None,
     "work_choices": [],
-    # Dès qu'un ISBN — même non confirmé — nomme l'ouvrage, ou qu'une œuvre homonyme
-    # est désignée, le brouillon n'est plus celui d'un titre que personne ne connaît :
-    # l'avertissement d'ouvrage non identifié n'a plus d'objet, et la note d'identité
-    # qui l'accompagne porte la nuance de confirmation. Laisser le drapeau en place
-    # ferait dire deux fois la même chose à la carte.
     "book_unidentified": False,
     "identity_unconfirmed": False,
 }
@@ -1154,9 +1057,6 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str, *, replace_ide
     if number:
         title = volume_title(title, number)
 
-    # Consomme le contrat partagé, avec contrôle du titre : une panne BNF ne peut pas
-    # faire passer un repli pour une confirmation (T9), et une contradiction reste un
-    # refus motivé. Aucune décision d'autorité n'est réécrite ici.
     try:
         result: BookSearchResult | None = await BookSearchUseCase().search_by_isbn(
             isbn.strip(), expected_title=(None if replace_identity or draft.get("book_unidentified")
@@ -1187,8 +1087,6 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str, *, replace_ide
         canonical_title = volume_title(meta.title, number) if number else meta.title
         return IsbnRealignment(
             updates={
-                # Le spread vient d'abord : il vide la fiche de l'ouvrage précédent, et
-                # les clés écrites ensuite sont celles de la notice qui atteste l'ISBN.
                 **KEYWORDS_FROM_PREVIOUS_WORK,
                 "isbn": isbn,
                 "is_series": False,
@@ -1230,8 +1128,6 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str, *, replace_ide
         BookSearchStatus.UNAVAILABLE,
         BookSearchStatus.PARTIAL,
     ):
-        # Le motif ne va pas au brouillon — il est technique ; l'utilisateur, lui, doit
-        # savoir qu'une nouvelle tentative a du sens, et qu'aucune autorité n'a tranché.
         logger.warning(
             "Vérification bibliographique incomplète : %s", result.unavailable
         )
@@ -1300,7 +1196,6 @@ async def render_existing_alert_response(
         else ""
     )
 
-    # Cas 1 : Un nouveau prix différent du prix actuel a été spécifié
     if new_price_cents is not None and new_price_cents != existing.max_item_price_cents:
         new_price_str = format_price_cents(new_price_cents)
         updates: dict[str, Any] = {"existing_alert_id": str(existing.id),
@@ -1333,7 +1228,6 @@ async def render_existing_alert_response(
             ]
         )
     else:
-        # Cas 2 : Pas de prix spécifié ou prix identique
         updates = {"existing_alert_id": str(existing.id)}
         agreement = "e" if item_label.startswith("Cette") else ""
         warn_text = (
@@ -1411,7 +1305,6 @@ async def process_bd_query_lookup(
     if not target_msg:
         return
 
-    # Vérifier si un prix inline était fourni en fin de saisie (ex: "titre 50" ou "978... 25")
     clean_query, inline_price_cents = extract_inline_price_and_clean_query(query_str)
 
     token = await _begin_bibliographic_search(
@@ -1421,7 +1314,6 @@ async def process_bd_query_lookup(
     if token is None:
         return
 
-    # GARDE ANTI-DOUBLON LOCAL IMMÉDIAT (zéro appel BNF si déjà surveillé en base)
     if db_user:
         alert_repo = _get_alert_repo(db_session)
         isbn_candidate = extract_clean_isbn(clean_query)
@@ -1440,8 +1332,6 @@ async def process_bd_query_lookup(
 
     status_msg = await target_msg.answer("🔍 Recherche automatique de l'œuvre...")
 
-    # Détection de la forme de la saisie (ISBN ou titre) — même règle que
-    # l'ancien `resolve_input`, mais sans seconde logique de résolution.
     raw_digits = re.sub(r"[^0-9X]", "", clean_query.upper())
     is_isbn_form = bool(extract_clean_isbn(clean_query)) or len(raw_digits) in (10, 13) and (
         raw_digits.isdigit() or raw_digits.endswith("X")
@@ -1458,22 +1348,13 @@ async def process_bd_query_lookup(
                 query_title, author_hint, include_series_catalogue=True,
             )
     except InvalidIsbnError:
-        # ISBN mal formé : la carte « non identifiée » actuelle, sans appel réseau
         result = None
 
     if not await _search_still_current(state, token):
-        # Une saisie plus récente a pris la main : ce brouillon n'a plus à s'écrire.
         logger.info("Recherche bibliographique « %s » périmée : écran inchangé.", clean_query)
         return
 
     if result is None or result.status == BookSearchStatus.NOT_FOUND:
-        # Aucune source ne connaît ce titre — un livre sorti la semaine dernière n'est
-        # dans aucun catalogue. Le cul-de-sac « aucune œuvre trouvée » obligeait à
-        # deviner un titre que les autorités connaissent, c'est-à-dire à renoncer alors
-        # que l'utilisateur, lui, sait ce qu'il cherche. La carte reste donc le chemin
-        # unique : elle ouvre sur l'avertissement, montre les trous de la fiche, et
-        # laisse créer l'alerte sur le titre saisi — l'ISBN reste saisissable par
-        # « Modifier », et une correction ultérieure réaligne toute la fiche.
         query_title = parse_query_title_and_author(clean_query)[0]
         category_repo = _get_category_repo(db_session)
         category = await category_repo.get_by_slug(CategorySlug.BD_COMICS.value)
@@ -1495,8 +1376,6 @@ async def process_bd_query_lookup(
         await status_msg.edit_text(creation_card(draft, footer=PRICE_PROMPT_FOOTER))
         return
 
-    # GARDE ANTI-DOUBLON APRÈS RÉSOLUTION. Une série n'a pas d'ISBN : c'est le
-    # titre qui la dédouble, sinon deux volumes seraient deux alertes.
     if db_user and result.status != BookSearchStatus.AMBIGUOUS:
         alert_repo = _get_alert_repo(db_session)
         existing = await alert_repo.find_existing(
@@ -1521,7 +1400,6 @@ async def process_bd_query_lookup(
             )
             return
 
-    # Catégorie BD & Comics par défaut
     category_repo = _get_category_repo(db_session)
     category = await category_repo.get_by_slug(CategorySlug.BD_COMICS.value)
     query_title = parse_query_title_and_author(clean_query)[0]
@@ -1531,7 +1409,6 @@ async def process_bd_query_lookup(
         category_id=str(category.id) if category else "",
     )
     await populate_creation_prices(updates, _get_creation_book_repo(db_session))
-    # Le BookContext n'est alimenté que par une identité confirmée
     if result.status == BookSearchStatus.FOUND and result.confirmed:
         meta = metadata_from_result(result)
         if meta is not None:
@@ -1546,12 +1423,6 @@ async def process_bd_query_lookup(
         await status_msg.edit_text(recap_text, reply_markup=keyboard)
         return
 
-    # Demander le prix max : la même carte que le récap, dont le montant est la seule
-    # pièce manquante. L'écran ne construit plus ses lignes d'identité à la main — ni
-    # le titre, ni l'auteur, ni l'éditeur, ni l'ISBN, ni les critères : il lit le
-    # brouillon qu'il vient d'écrire, donc ce qu'il montre est ce qu'il créera. Les
-    # libellés viennent de `labels`, et un état absent se dit « Non renseigné » plutôt
-    # que « Non trouvé » : le prix n'est pas encore demandé, il n'est pas introuvable.
     await status_msg.edit_text(creation_card(draft, footer=PRICE_PROMPT_FOOTER))
 
 
@@ -1570,8 +1441,6 @@ async def process_tech_or_clothes_query(
     if not target_msg:
         return
 
-    # Une saisie hors livres rebat les cartes du brouillon : toute recherche
-    # bibliographique encore en vol devient périmée.
     token = await _begin_bibliographic_search(
         state, expected_creation_token=expected_creation_token,
         expected_search_token=expected_search_token,
@@ -1579,12 +1448,10 @@ async def process_tech_or_clothes_query(
     if token is None:
         return
 
-    # Vérifier si un prix inline était fourni en fin de saisie (ex: "pi 4 50€" ou "titre 50")
     clean_query, inline_price_cents = extract_inline_price_and_clean_query(query_str)
 
     cat_slug_enum = CategorySlug(category_slug)
 
-    # Garde anti-doublon : Vérifier si ce produit est déjà surveillé
     if db_user:
         alert_repo = _get_alert_repo(db_session)
         existing = await alert_repo.find_existing(db_user.id, title=clean_query)
@@ -1598,16 +1465,13 @@ async def process_tech_or_clothes_query(
             )
             return
 
-    # Catégorie en base
     category_repo = _get_category_repo(db_session)
     category = await category_repo.get_by_slug(category_slug)
     cat_id_str = str(category.id) if category else ""
 
-    # Découpage des mots-clés inclus (conserve les mots > 1 char ou les chiffres de versions)
     tokens = [w.strip() for w in clean_query.split() if len(w.strip()) > 1 or w.strip().isdigit()]
     includes = tokens if tokens else [clean_query]
 
-    # Exclusions et conditions adaptées par catégorie
     if cat_slug_enum == CategorySlug.TECH:
         default_excludes = list(DEFAULT_TECH_EXCLUSIONS)
         default_conditions = list(DEFAULT_TECH_CONDITIONS)
@@ -1646,9 +1510,6 @@ async def process_tech_or_clothes_query(
             await target_msg.answer(recap_text, reply_markup=keyboard)
         return
 
-    # Demander le prix max : la même carte que le récap, écrite à partir du brouillon
-    # qu'on vient de poser. Le bandeau `🎯 … (Tech)` disparaît comme sur la confirmation
-    # (ADR-032) : l'écran annonce la fiche, pas le chemin qui y mène.
     prompt = creation_card(draft, footer=PRICE_PROMPT_FOOTER)
     if isinstance(event, CallbackQuery) and event.message and hasattr(event.message, "edit_text"):
         await event.message.edit_text(prompt)

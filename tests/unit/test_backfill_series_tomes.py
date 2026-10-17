@@ -44,8 +44,7 @@ from app.services.book_metadata_service import BookMetadata, CatalogueVerdict  #
 from tests.database import sqlite_only_database  # noqa: E402
 from tests.fakes_catalogue import BNF_RECORD_TEMPLATE, FakeCatalogueClient  # noqa: E402
 
-# Un instant figé : un rapport doit dire quand il a été produit, et un test ne
-# peut pas dépendre de l'heure à laquelle il tourne.
+# Instant figé : le rapport date sa production, un test ne dépend pas de l'heure.
 INSTANT = datetime(2026, 10, 4, 22, 11, 9, tzinfo=UTC)
 
 TOME_1 = "9782369903086"
@@ -199,9 +198,8 @@ async def test_dry_run_on_a_temporary_database_renders_a_readable_report(
     async with sqlite_only_database() as fresh:
         await _seed_alerts(fresh.session)
         fake_service = MagicMock()
-        # Un double fidèle : le service rend un **verdict**, pas une liste nue. Rendre
-        # une liste ici ferait passer `discover_tomes` sans jamais l'exercer, et le
-        # mode rapport casserait en production dès que le verdict arriverait (ADR-041).
+        # Un double fidèle : le service rend un verdict, pas une liste nue (ADR-041).
+        # Une liste passerait sans exercer `discover_tomes` et casserait le rapport.
         fake_service.lookup_series_notices = AsyncMock(
             return_value=CatalogueVerdict(
                 consulted=("bnf",),
@@ -306,14 +304,8 @@ async def test_run_empty_population_succeeds(json_flag: bool, capsys) -> None:
     assert ("0 alerte(s) BD active(s) sans ISBN" in out) is not json_flag
 
 
-# ------------------------------------------- le chemin d'écriture, pour de vrai
-#
-# Les tests ci-dessus injectent `link` : ils disent ce que le script décide, pas ce
-# qu'il écrit. Ceux-ci exécutent la passe d'écriture entière — `link_books_from_bnf`
-# comprise — en servant les autorités à leur frontière HTTP et les marchands par le
-# registre du point de cotation unique. C'est le seul endroit qui vérifie de bout en
-# bout ce qu'un utilisateur voit : des tomes liés avec leur ISBN-13, des cotes
-# écrites, et un total de série qui vaut la somme de ces cotes.
+# Chemin d'écriture complet, pour de vrai : seuls ces tests exécutent la passe entière,
+# autorités servies à leur frontière HTTP, marchands par le point de cotation unique.
 
 
 def _ean13(body: str) -> str:
@@ -324,8 +316,7 @@ def _ean13(body: str) -> str:
     return body + str((10 - total % 10) % 10)
 
 
-# Trois tomes connus de la BNF, deux que seul OpenLibrary rend : le repli d'ADR-040
-# passe donc par le même chemin que la source primaire.
+# Trois tomes BNF, deux que seul OpenLibrary rend : le repli d'ADR-040 suit le même chemin.
 BNF_ISBNS = [_ean13(f"978220500{number:03d}") for number in range(1, 4)]
 OPENLIBRARY_ISBNS = [_ean13(f"978287100{number:03d}") for number in range(4, 6)]
 MARKET_CENTS = {
@@ -468,9 +459,8 @@ async def test_a_write_pass_links_and_prices_every_tome_of_the_series() -> None:
     assert written["series_total_cents"] == sum(MARKET_CENTS.values())
     # Le repli a réellement servi : sans lui, deux tomes manqueraient.
     assert fake_http.openlibrary_queries
-    # Une interrogation marchande par tome lié — pas une de plus, pas une de moins —
-    # et le titre l'a accompagné : c'est ce repli par titre qui rend une cote
-    # possible même quand l'ISBN seul ne suffit pas.
+    # Une interrogation marchande par tome lié, pas une de plus : le titre l'a accompagnée.
+    # Ce repli par titre rend une cote possible même quand l'ISBN seul ne suffit pas.
     assert sorted(call for call in _FakeRegistry.calls if call) == EXPECTED_ISBNS
     assert _FakeRegistry.last_context[0].startswith("Blacksad Tome")
 

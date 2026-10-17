@@ -1272,8 +1272,7 @@ async def _verify_creation_case(journey: Any, monkeypatch: Any, scenario: str) -
         from app.api.routes.telegram import handle_telegram_webhook
         from app.core.config import settings
 
-        # Comme les annulations de pause : endpoint réel sans adaptation BaseHTTPMiddleware,
-        # qui convertit une CancelledError injectée en « No response returned ».
+        # Endpoint réel sans BaseHTTPMiddleware, qui renvoie « No response returned ».
         with pytest.raises(asyncio.CancelledError):
             await handle_telegram_webhook(
                 settings.TELEGRAM_WEBHOOK_SECRET.get_secret_value(), payload,

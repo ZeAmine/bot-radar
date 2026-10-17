@@ -86,7 +86,7 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
         await start_add_alert(message, state, db_session, db_user)
         await drain(repos["tasks"])
 
-        # 1. L'ISBN du modèle est refusé : la BNF le rattache à un autre ouvrage.
+        # L'ISBN du modèle est refusé : la BNF le rattache à un autre ouvrage.
         bnf.confirm_isbn_for_title.assert_not_awaited()
 
         recap = recap_text(loading_message)
@@ -106,7 +106,6 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
             "2️⃣ çà et là",
         ]
 
-        # 2. L'utilisateur choisit l'autre édition avant de valider.
         switch_message = MagicMock(spec=Message)
         switch_message.edit_text = AsyncMock()
         switch_callback = MagicMock()
@@ -132,7 +131,7 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
             if button.callback_data.startswith("al_create_edition")
         ] == ["1️⃣ Çà et là - 2022", "2️⃣ çà et là"]
 
-        # 3. Création : l'ISBN choisi pilote l'URL Vinted, le livre et la cote.
+        # Création : l'ISBN choisi pilote l'URL Vinted, le livre et la cote.
         confirm_callback, confirm_message = confirm_press()
 
         await save_alert(confirm_callback, state, db_user, db_session)
@@ -142,7 +141,7 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
         assert "search_text=9782369904151" in create_kwargs["vinted_search_url"]
         assert repos["book_repo"].create.call_args.kwargs["isbn13"] == "9782369904151"
 
-        # 4. La création attend la cote du livre avant d'activer la surveillance.
+        # La création attend la cote du livre avant d'activer la surveillance.
         repos["price_now"].assert_awaited_once_with(
             repos["book_repo"].create.return_value.id,
             reason="alert_created",
@@ -150,8 +149,7 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
 
         confirmation = confirm_message.edit_text.call_args[0][0]
         assert "<b>ISBN :</b> <code>9782369904151</code>" in confirmation
-        # L'édition qu'il vient de choisir se relit dans la confirmation, à la place du
-        # récap où elle la montrait : c'est la même carte, donc la même ligne.
+        # L'édition choisie se relit dans la confirmation : même carte, donc même ligne.
         assert "<b>Édition :</b> Editions çà et là · 224 p. · 19 cm" in confirmation
         # La collecte simulée a échoué : la confirmation ne promet aucune attente.
         assert "<i>⚠️ Cote indisponible</i>" in confirmation
@@ -198,17 +196,15 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
             await start_add_alert(message, state, db_session, db_user)
             await drain(repos["tasks"])
 
-            # 1. Sans confirmation BNF, l'alerte part en surveillance par titre.
+            # Sans confirmation BNF, l'alerte part en surveillance par titre.
             recap = recap_text(loading_message)
             assert "<b>ISBN :</b> introuvable" in recap
             assert "Ouvrage non identifié" in recap
             assert not edition_buttons(loading_message)
 
-            # 2. L'utilisateur corrige via le menu de modification.
             await open_isbn_edit_field(state)
 
-            # 3. Saisie du bon ISBN : toute la fiche d'identité est réécrite par la
-            #    notice qui l'atteste, et la liste d'éditions est réalignée.
+            # Saisie du bon ISBN : fiche réécrite par la notice, éditions réalignées.
             typed_message = incoming_message("9782369903086")
             await process_creation_edit_input(typed_message, state)
 
@@ -229,13 +225,12 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
             # La note de provenance de l'ancien ISBN ne survit pas à la correction.
             assert "surveillance par titre" not in typed_answer
 
-            # 4. Les mots-clés de l'ancien ouvrage sont recalculés : le récap repart
-            #    sans eux, la recherche repart seule en arrière-plan.
+            # Mots-clés recalculés : récap sans les anciens, recherche relancée en arrière-plan.
             await drain(repos["tasks"])
             recap_answer = typed_message.answer.call_args[0][0]
             assert "<b>Mots-clés inclus :</b> couleur des choses" in recap_answer
 
-            # 5. Création sur l'ISBN saisi, avec l'URL Vinted par ISBN.
+            # Création sur l'ISBN saisi, avec l'URL Vinted par ISBN.
             confirm_callback, confirm_message = confirm_press()
 
             await save_alert(confirm_callback, state, db_user, db_session)

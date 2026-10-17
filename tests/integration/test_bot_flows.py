@@ -55,9 +55,6 @@ CHAT_ID = 4242
 TG_USER_ID = 4242
 
 
-# --------------------------------------------------------------------------- outillage
-
-
 @pytest.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Base réelle (PostgreSQL en CI, SQLite sinon), catégories amorcées."""
@@ -147,17 +144,11 @@ async def driver(monkeypatch, db_session) -> AsyncGenerator[tuple[Bot, Dispatche
     )
     monkeypatch.setattr(market_panel, "price_book_now", AsyncMock(return_value=None))
 
-    # Les routeurs de l'application sont rattachés une fois pour toutes à la chaîne
-    # du dispatcher de production, et aiogram refuse un second parent (le setter
-    # n'accepte pas non plus `None`). On rebranche donc les deux routeurs utiles sur
-    # une chaîne fraîche en remettant leur parent à zéro.
     for module_router in (alerts.router, callbacks.router):
         module_router._parent_router = None
 
     storage = MemoryStorage()
     dispatcher = Dispatcher(storage=storage)
-    # Le filet global de la production : sans lui, un callback qu'aucun handler ne
-    # filtre resterait sans réponse.
     dispatcher.update.outer_middleware(UnconsumedCallbackMiddleware())
     dispatcher.include_router(alerts.router)
     dispatcher.include_router(callbacks.router)
@@ -166,9 +157,6 @@ async def driver(monkeypatch, db_session) -> AsyncGenerator[tuple[Bot, Dispatche
     views = list(market_panel._panels.values())
     for view in views:
         market_panel.close_panel(view.message)
-    # Attendre la fermeture de la session de relecture avant que la base de la
-    # fixture suivante ne soit effacée : annuler sans attendre gardait un verrou
-    # PostgreSQL ouvert pendant le DROP TABLE de la passe suivante.
     import asyncio
 
     await asyncio.gather(*(view.task for view in views if view.task), return_exceptions=True)
@@ -401,9 +389,6 @@ def _bnf_stub(resolution: BookResolution | None) -> MagicMock:
     return service
 
 
-# --------------------------------------------------------------------------- flux (a)
-
-
 @pytest.mark.asyncio
 async def test_edition_then_create_renders_the_confirmation(driver, db_session):
     """Choisir une édition puis « Créer l'alerte » confirme, sur une vraie base.
@@ -418,11 +403,7 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
 
     with (
         patch("app.bot.handlers.alerts_helpers.BookSearchUseCase", return_value=bnf),
-        # Le clic sur une édition revalide son ISBN depuis le Lot 4 : ce chemin vit dans
-        # `alerts_create_confirm` et doit recevoir le même double, sinon le test dépend
-        # d'un vrai appel à la BNF.
         patch("app.bot.handlers.alerts_create_confirm.BookSearchUseCase", return_value=bnf),
-        # La création attend sa cote : le test remplace la frontière des marchands.
         patch(
             "app.use_cases.prepare_bd_alert.price_book_now",
             new_callable=AsyncMock,
@@ -462,10 +443,6 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
 
     assert await _state_of(bot, dispatcher) is None
 
-    # Double appui : le bouton « Créer l'alerte » est encore là une seconde. L'état
-    # étant vidé, aucun handler ne le prenait en charge et Telegram faisait tourner
-    # le bouton sans fin. Le second appui doit acquitter, sans effacer la confirmation
-    # ni créer une deuxième alerte.
     bot.session.call_args_list.clear()
     await _feed(
         bot,
@@ -478,8 +455,7 @@ async def test_edition_then_create_renders_the_confirmation(driver, db_session):
         method for method in _api_methods(bot) if type(method).__name__ == "AnswerCallbackQuery"
     ]
     assert acknowledgements, "un appui périmé n'a pas été acquitté : le bouton tourne sans fin"
-    # Le flux de création explique lui-même pourquoi le bouton est périmé ; le filet
-    # global ne sert que là où personne ne parle.
+    # Ici le flux explique lui-même le bouton périmé ; le filet global ne parle qu'ailleurs.
     assert acknowledgements[0].text == DRAFT_GONE_MESSAGE
     rerendered = [
         method
@@ -571,9 +547,6 @@ async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_c
     assert PENDING_COTE_LINE not in confirmation[-1]
 
 
-# --------------------------------------------------------------------------- flux (b)
-
-
 @pytest.mark.asyncio
 async def test_cancel_at_the_title_step_aborts_without_looking_a_book_up(driver, db_session):
     """« /cancel » annule : il ne doit déclencher aucune recherche d'ouvrage."""
@@ -586,7 +559,7 @@ async def test_cancel_at_the_title_step_aborts_without_looking_a_book_up(driver,
         category_data = _buttons_matching(bot, "add_cat:")[0]
         await _feed(bot, dispatcher, _callback_update(category_data, update_id=2), db_session, user)
 
-        # L'utilisateur est bien au prompt de titre : c'est là que le bug vivait.
+        # C'est au prompt de titre que l'annulation est exercée.
         assert "Entre le titre de l'œuvre" in _texts(bot)[-1]
 
         await _feed(bot, dispatcher, _message_update("/cancel", 3), db_session, user)
@@ -596,9 +569,6 @@ async def test_cancel_at_the_title_step_aborts_without_looking_a_book_up(driver,
     assert "❌ Opération annulée avec succès." in _texts(bot)
     assert await _state_of(bot, dispatcher) is None
     assert (await db_session.execute(select(Alert))).scalar_one_or_none() is None
-
-
-# --------------------------------------------------------------------------- flux (c)
 
 
 async def _seed_series(session: AsyncSession) -> tuple[User, Listing, list[Book]]:
@@ -680,7 +650,6 @@ async def test_tome_buttons_allow_switching_without_a_global_series_button(drive
     user, listing, books = await _seed_series(db_session)
 
     # Une série déjà cotée ne rappelle pas les marchands, mais si la résolution
-    # descendait jusqu'à la cotation, aucun test ne doit partir sur le réseau.
     with patch(
         "app.use_cases.view_market_details.price_book_now",
         new=AsyncMock(return_value=None),
@@ -716,9 +685,6 @@ async def test_tome_buttons_allow_switching_without_a_global_series_button(drive
             user,
         )
     assert "Tome 1" in _texts(bot)[-1]
-
-
-# --------------------------------------------------------------------------- E4 : total de série
 
 
 async def test_edit_market_refresh_keeps_the_selected_tome(driver, db_session, monkeypatch):
@@ -983,9 +949,6 @@ async def test_single_book_alert_has_no_series_total(db_session):
     assert alert.series_total_cents is None
 
 
-# --------------------------------------------------------------------------- filet global
-
-
 @pytest.mark.asyncio
 async def test_a_callback_no_handler_wants_stops_spinning(driver, db_session):
     """Un bouton qu'aucun handler ne prend en charge cesse tout de même de tourner."""
@@ -1025,9 +988,6 @@ async def test_a_handled_callback_is_answered_exactly_once(driver, db_session):
         method for method in _api_methods(bot) if type(method).__name__ == "AnswerCallbackQuery"
     ]
     assert len(answers) == 1, "le filet a répondu en plus du handler"
-
-
-# --------------------------------------------------- verdict de catalogue (ADR-041)
 
 
 @pytest.mark.asyncio
@@ -1107,20 +1067,18 @@ async def test_the_catalogue_verdict_crosses_a_real_database() -> None:
             session.expire_all()
             return await session.get(Alert, alert_id)
 
-        # 1. Toutes les autorités ont répondu, aucune ne connaît l'ouvrage : la
-        #    recherche a une réponse, et l'alerte la porte — datée.
+        # Toutes les autorités ont répondu, aucune ne connaît l'ouvrage : la
         await _search(CatalogueVerdict(consulted=("bnf", "openlibrary")))
         exhausted = await _reloaded()
         assert is_uncatalogued(exhausted) is True
         assert isinstance(exhausted.book_search_exhausted_at, datetime)
 
-        # 2. Une autorité s'est tue : rien n'est établi, donc rien n'est écrit —
-        #    et le verdict précédent n'est pas effacé non plus.
+        # Une autorité s'est tue : rien n'est établi, rien n'est écrit — et le
         await _search(CatalogueVerdict(consulted=("bnf",), unavailable=("bnf",)))
         silent = await _reloaded()
         assert is_uncatalogued(silent) is True, "un silence n'efface pas ce qu'on savait"
 
-        # 3. Une notice est arrivée : l'ouvrage est catalogué, le verdict s'efface.
+        # Une notice est arrivée : l'ouvrage est catalogué, le verdict s'efface.
         await _search(CatalogueVerdict(consulted=("bnf",), notices=(notice,)))
         found = await _reloaded()
         assert is_uncatalogued(found) is False
