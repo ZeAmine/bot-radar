@@ -16,6 +16,70 @@ from app.tasks.vinted_poller import get_poller_status, is_night_time
 router = Router(name="status_router")
 
 
+def _format_span(seconds: float) -> str:
+    total = int(seconds)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours} h {minutes:02d}"
+    if minutes:
+        return f"{minutes} min {secs:02d}s" if secs else f"{minutes} min"
+    return f"{secs} s"
+
+
+def _availability_line(poller_data: dict[str, Any] | None) -> str:
+    availability = (poller_data or {}).get("availability") or {}
+    window_s = availability.get("window_s")
+    if isinstance(window_s, bool) or not isinstance(window_s, (int, float)) or window_s <= 0:
+        return ""
+    scanned = availability.get("scanned_s")
+    scanned_s = (
+        float(scanned)
+        if isinstance(scanned, (int, float)) and not isinstance(scanned, bool)
+        else 0.0
+    )
+    share = round(100 * scanned_s / float(window_s))
+    line = f"<b>Disponibilité scan :</b> {share} % ({_format_span(float(window_s))})"
+    details = []
+    for key, label in (
+        ("blocked_s", "bloqué"),
+        ("night_s", "nuit"),
+        ("network_error_s", "réseau"),
+        ("unexpected_error_s", "erreurs"),
+    ):
+        value = availability.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 1:
+            continue
+        details.append(f"{label} {_format_span(float(value))}")
+    if details:
+        line += " · " + " · ".join(details)
+    return line
+
+
+def _searches_line(poller_data: dict[str, Any] | None) -> str:
+    stats = (poller_data or {}).get("search_stats") or {}
+    count = stats.get("count")
+    worst = stats.get("worst_age_s")
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        return ""
+    if isinstance(worst, bool) or not isinstance(worst, (int, float)) or worst < 0:
+        return ""
+    return f"<b>Recherches perso :</b> {count} · plus ancien scan {_format_span(float(worst))}"
+
+
+def _requests_line(poller_data: dict[str, Any] | None) -> str:
+    counts = (poller_data or {}).get("requests_60s") or {}
+    parts = []
+    for key, label in (("api", "API"), ("html", "HTML"), ("mint", "mint")):
+        value = counts.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        parts.append(f"{label} {int(value)}")
+    if not parts:
+        return ""
+    return "<b>Requêtes Vinted (60 s) :</b> " + " · ".join(parts)
+
+
 @router.message(Command("status"))
 async def handle_status(message: Message, db_session: Any) -> None:
     """Affiche l'état opérationnel en direct de BotRadar."""
@@ -39,7 +103,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
         cooldown_until = poller_data.get("cooldown_until") or 0
         rem_sec = max(0, int(cooldown_until - now.timestamp()))
         consecutive = poller_data.get("consecutive_blocks", 1)
-        reason = poller_data.get("reason", "Blocage Cloudflare (403)")
+        reason = poller_data.get("reason", "Blocage Vinted (403)")
         resume_time = poller_data.get("resume_time") or (
             datetime.fromtimestamp(cooldown_until, tz).strftime("%H:%M") if cooldown_until else ""
         )
@@ -89,6 +153,18 @@ async def handle_status(message: Message, db_session: Any) -> None:
     else:
         cadence_line = "<b>Cadence de scrutation :</b> Indisponible"
 
+    scan_lines = [latency_line, cadence_line]
+    scan_lines.extend(
+        line
+        for line in (
+            _availability_line(poller_data),
+            _searches_line(poller_data),
+            _requests_line(poller_data),
+        )
+        if line
+    )
+    scan_detail = "\n".join(scan_lines)
+
     cat_counts = await StatsRepository(db_session).count_active_alerts_by_category()
 
     total_active = sum(row[3] for row in cat_counts)
@@ -122,8 +198,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
         f"<b>Moteur IA</b> (sonde) : {ai_status}\n"
         f"<b>Plage de veille :</b> {night_hours_info}\n\n"
         "<b>Latence</b>\n"
-        f"{latency_line}\n"
-        f"{cadence_line}\n\n"
+        f"{scan_detail}\n\n"
         f"<b>Alertes actives ({total_active}) :</b>\n"
         f"{cat_summary}\n\n"
         "Utilise /list pour le détail ou /add pour en créer une."
