@@ -184,7 +184,7 @@ def _draft_matches(current: dict[str, Any], snapshot: dict[str, Any]) -> bool:
         return False
     return all(
         current.get(key) == snapshot.get(key)
-        for key in ("name", "category_slug", "isbn", "author", "creation_token")
+        for key in ("name", "category_slug", "isbn", "author", "creation_token", "draft_revision")
     )
 
 
@@ -242,39 +242,42 @@ async def _search_keywords_in_background(
         context=book_context,
     )
 
-    if not _draft_matches(await state.get_data(), snapshot):
-        logger.info("Brouillon modifié pendant la recherche IA de « %s » : récap non publié.", name)
-        return
+    async with draft_guard(state):
+        current = await state.get_data()
+        if not _draft_matches(current, snapshot):
+            logger.info("Brouillon modifié pendant la recherche IA : %s", name)
+            return
 
-    # La recherche n'est « définitive » que si le moteur a répondu. Sinon le bouton
-    # « Variantes & Exclusions IA » reste sous la carte, et un seul appui
-    # relance : un échec ne doit pas se payer d'un détour par « Modifier ».
-    finalized = outcome.answered
+        # La recherche n'est « définitive » que si le moteur a répondu. Sinon le bouton
+        # « Variantes & Exclusions IA » reste sous la carte, et un seul appui
+        # relance : un échec ne doit pas se payer d'un détour par « Modifier ».
+        finalized = outcome.answered
 
-    # Les variantes du brouillon sont **remplacées** ici, alors que les exclusions sont
-    # fusionnées — asymétrie assumée : le récap n'est publié que par cette tâche, donc
-    # l'utilisateur n'a pas pu saisir de variante entre-temps, et le brouillon est vide ou
-    # vient d'être remis à zéro par un changement d'ouvrage. Les deux gestes convergeraient
-    # dès que l'écran deviendrait éditable avant le retour du moteur.
-    updated = {
-        **snapshot,
-        "variants": _variants_for_category(
-            outcome.variants, name, snapshot.get("include_keywords")
-        ),
-        "exclude_keywords": sanitize_exclusions(
-            _merge_keywords(snapshot.get("exclude_keywords"), outcome.exclusions), name
-        ),
-        # La note et l'état de la recherche voyagent avec le brouillon : changer
-        # d'édition ou de prix plus tard ne doit pas les perdre au re-rendu.
-        "keyword_note": keyword_note(outcome),
-        "keywords_finalized": finalized,
-    }
-    await state.update_data(
-        variants=updated["variants"],
-        exclude_keywords=updated["exclude_keywords"],
-        keyword_note=updated["keyword_note"],
-        keywords_finalized=finalized,
-    )
+        # Les variantes du brouillon sont **remplacées** ici, alors que les exclusions sont
+        # fusionnées — asymétrie assumée : le récap n'est publié que par cette tâche, donc
+        # l'utilisateur n'a pas pu saisir de variante entre-temps, et le brouillon est vide ou
+        # vient d'être remis à zéro par un changement d'ouvrage. Les deux gestes convergeraient
+        # dès que l'écran deviendrait éditable avant le retour du moteur.
+        updated = {
+            **current,
+            "variants": _variants_for_category(
+                outcome.variants, name, current.get("include_keywords")
+            ),
+            "exclude_keywords": sanitize_exclusions(
+                _merge_keywords(current.get("exclude_keywords"), outcome.exclusions), name,
+                author=current.get("author"), publisher=current.get("publisher")
+            ),
+            # La note et l'état de la recherche voyagent avec le brouillon : changer
+            # d'édition ou de prix plus tard ne doit pas les perdre au re-rendu.
+            "keyword_note": keyword_note(outcome),
+            "keywords_finalized": finalized,
+        }
+        await state.update_data(
+            variants=updated["variants"],
+            exclude_keywords=updated["exclude_keywords"],
+            keyword_note=updated["keyword_note"],
+            keywords_finalized=finalized,
+        )
 
     recap, keyboard = build_creation_recap(updated)
     await _finalize_loading_message(loading_msg, event, recap, keyboard)
@@ -306,7 +309,7 @@ async def start_add_alert(
     token = uuid.uuid4().hex[:12]
     async with draft_guard(state):
         await state.clear()
-        await state.update_data(creation_token=token)
+        await state.update_data(creation_token=token, draft_revision=0)
 
     inline_query: str | None = None
     if isinstance(event, Message):
@@ -331,8 +334,16 @@ async def start_add_alert(
                 state,
                 existing,
                 new_price_cents=inline_price_cents,
+                expected_creation_token=token,
             )
             return
+
+    if inline_query and extract_clean_isbn(extract_inline_price_and_clean_query(inline_query)[0]):
+        await process_bd_query_lookup(
+            event, state, inline_query, db_session, db_user=db_user,
+            expected_creation_token=token,
+        )
+        return
 
     if inline_query and natural_add_module.is_enabled:
         # Feedback visuel immédiat : indicateur de frappe + message d'attente
@@ -355,6 +366,8 @@ async def start_add_alert(
         # Parsing en langage naturel par le moteur IA configuré
         parsed = await natural_add_module.parse_prompt(inline_query)
         if parsed:
+            if (await state.get_data()).get("creation_token") != token:
+                return
             # Étape 2 : Post-vérification après identification de l'œuvre
             if db_user and db_session:
                 alert_repo = _get_alert_repo(db_session)
@@ -370,12 +383,16 @@ async def start_add_alert(
                         state,
                         existing,
                         new_price_cents=parsed.max_price_cents,
+                        expected_creation_token=token,
                         target_msg=loading_msg,
                     )
                     return
 
             state_data = {
                 "creation_token": token,
+                "original_input": inline_query,
+                "search_queries": parsed.search_queries,
+                "draft_revision": 0,
                 "name": parsed.name,
                 "category_slug": parsed.category_slug,
                 "isbn": parsed.isbn13,
@@ -407,8 +424,11 @@ async def start_add_alert(
             if parsed.bibliographic_identity:
                 state_data.update(parsed.bibliographic_identity)
             await populate_creation_prices(state_data, _get_book_repo(db_session))
-            await state.update_data(data=state_data)
-            await state.set_state(AlertCreationState.confirm_creation)
+            async with draft_guard(state):
+                if (await state.get_data()).get("creation_token") != token:
+                    return
+                await state.update_data(data=state_data)
+                await state.set_state(AlertCreationState.confirm_creation)
 
             # Jalon : l'ouvrage est identifié et la suite part en arrière-plan. Ce
             # message est un simple statut — il ne doit surtout pas attendre la
@@ -455,19 +475,27 @@ async def start_add_alert(
             return
 
         # Fallback si l'IA n'a pas pu structurer la demande : sélection de catégorie
-        await state.update_data(inline_query=inline_query)
+        async with draft_guard(state):
+            if (await state.get_data()).get("creation_token") != token:
+                return
+            await state.update_data(inline_query=inline_query)
+            await state.set_state(AlertCreationState.waiting_for_category)
         prompt_text = (
             f"➕ <b>Créer une alerte</b>\n\n"
             f"<b>Article :</b> « {html.escape(inline_query)} »\n"
             "<i>Choisis la catégorie de ce produit.</i>"
         )
-        await state.set_state(AlertCreationState.waiting_for_category)
         keyboard = bind_creation_keyboard(get_category_selection_keyboard(), token)
         await _finalize_loading_message(loading_msg, event, prompt_text, keyboard)
         return
 
+    async with draft_guard(state):
+        if (await state.get_data()).get("creation_token") != token:
+            return
+        if inline_query:
+            await state.update_data(inline_query=inline_query)
+        await state.set_state(AlertCreationState.waiting_for_category)
     if inline_query:
-        await state.update_data(inline_query=inline_query)
         prompt_text = (
             f"➕ <b>Créer une alerte</b>\n\n"
             f"<b>Article :</b> « {html.escape(inline_query)} »\n"
@@ -479,7 +507,6 @@ async def start_add_alert(
             "<i>Choisis la catégorie du produit à surveiller.</i>"
         )
 
-    await state.set_state(AlertCreationState.waiting_for_category)
     keyboard = bind_creation_keyboard(get_category_selection_keyboard(), token)
 
     if isinstance(event, CallbackQuery):
@@ -496,33 +523,55 @@ async def handle_category_selected(
     state: FSMContext,
     db_session: Any,
     db_user: User,
+    creation_callback_data: str | None = None,
 ) -> None:
     """Traite la sélection de catégorie et oriente vers le flux adapté."""
+    interaction = (creation_callback_data if creation_callback_data is not None
+                   else callback.data or "")
+    async with draft_guard(state):
+        initial = await state.get_data()
+        generation = initial.get("search_token")
+        applicable = (
+            creation_callback_matches(interaction, initial)
+            and await state.get_state() == AlertCreationState.waiting_for_category.state
+        )
     await callback.answer()
-    category_slug = callback.data.split(":")[1]  # type: ignore
+    if not applicable:
+        return
+    category_slug = interaction.partition("@")[0].split(":")[1]
 
     # Changer de catégorie rebat les cartes : une recherche bibliographique encore en
     # vol n'a plus à écrire dans le nouveau brouillon.
-    await _bump_search_token(state)
-
-    data = await state.get_data()
-    inline_query = data.get("inline_query")
+    async with draft_guard(state):
+        data = await state.get_data()
+        if (
+            not creation_callback_matches(interaction, data)
+            or data.get("search_token") != generation
+            or await state.get_state() != AlertCreationState.waiting_for_category.state
+        ):
+            return
+        search_token = await _bump_search_token(state)
+        inline_query = data.get("inline_query")
+        if not inline_query:
+            await state.update_data(category_slug=category_slug)
+            await state.set_state(AlertCreationState.waiting_for_query)
 
     if inline_query:
         if category_slug == CategorySlug.BD_COMICS.value:
             await process_bd_query_lookup(
-                callback, state, inline_query, db_session, db_user=db_user
+                callback, state, inline_query, db_session, db_user=db_user,
+                expected_creation_token=data.get("creation_token"),
+                expected_search_token=search_token,
             )
         else:
             await process_tech_or_clothes_query(
-                callback, state, inline_query, category_slug, db_session, db_user=db_user
+                callback, state, inline_query, category_slug, db_session, db_user=db_user,
+                expected_creation_token=data.get("creation_token"),
+                expected_search_token=search_token,
             )
         return
 
     # Pas d'inline_query, demander la saisie du produit / titre selon la catégorie
-    await state.update_data(category_slug=category_slug)
-    await state.set_state(AlertCreationState.waiting_for_query)
-
     if category_slug == CategorySlug.BD_COMICS.value:
         prompt = (
             "📚 <b>Alerte Livres & BD</b>\n\n"
@@ -575,10 +624,14 @@ async def handle_query_input(
     category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
 
     if category_slug == CategorySlug.BD_COMICS.value:
-        await process_bd_query_lookup(message, state, query, db_session, db_user=db_user)
+        await process_bd_query_lookup(
+            message, state, query, db_session, db_user=db_user,
+            expected_creation_token=data.get("creation_token"),
+        )
     else:
         await process_tech_or_clothes_query(
-            message, state, query, category_slug, db_session, db_user=db_user
+            message, state, query, category_slug, db_session, db_user=db_user,
+            expected_creation_token=data.get("creation_token"),
         )
 
 
@@ -694,32 +747,36 @@ async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) 
     outcome = await keyword_variants_module.generate_variants_and_exclusions(
         name, category_slug=category_slug, context=book_context
     )
-    if data.get("creation_token") and not _draft_matches(await state.get_data(), data):
-        return
+    async with draft_guard(state):
+        current = await state.get_data()
+        if not _draft_matches(current, data):
+            return
+        data = current
 
-    # « Rien de pertinent » et « personne n'a répondu » sont deux réponses : la note
-    # les dit, et le brouillon la conserve pour les rendus suivants. Un échec laisse
-    # le bouton de relance en place, donc rien n'est marqué comme définitif.
-    finalized = outcome.answered
-    updated_draft = {
-        **data,
-        "variants": _variants_for_category(
-            _merge_keywords(data.get("variants"), outcome.variants),
-            name,
-            data.get("include_keywords"),
-        ),
-        "exclude_keywords": sanitize_exclusions(
-            _merge_keywords(data.get("exclude_keywords"), outcome.exclusions), name
-        ),
-        "keyword_note": keyword_note(outcome),
-        "keywords_finalized": finalized,
-    }
-    await state.update_data(
-        variants=updated_draft["variants"],
-        exclude_keywords=updated_draft["exclude_keywords"],
-        keyword_note=updated_draft["keyword_note"],
-        keywords_finalized=finalized,
-    )
+        # « Rien de pertinent » et « personne n'a répondu » sont deux réponses : la note
+        # les dit, et le brouillon la conserve pour les rendus suivants. Un échec laisse
+        # le bouton de relance en place, donc rien n'est marqué comme définitif.
+        finalized = outcome.answered
+        updated_draft = {
+            **data,
+            "variants": _variants_for_category(
+                _merge_keywords(data.get("variants"), outcome.variants),
+                name,
+                data.get("include_keywords"),
+            ),
+            "exclude_keywords": sanitize_exclusions(
+                _merge_keywords(data.get("exclude_keywords"), outcome.exclusions), name,
+                author=data.get("author"), publisher=data.get("publisher")
+            ),
+            "keyword_note": keyword_note(outcome),
+            "keywords_finalized": finalized,
+        }
+        await state.update_data(
+            variants=updated_draft["variants"],
+            exclude_keywords=updated_draft["exclude_keywords"],
+            keyword_note=updated_draft["keyword_note"],
+            keywords_finalized=finalized,
+        )
 
     recap, keyboard = build_creation_recap(updated_draft)
     if callback.message and hasattr(callback.message, "edit_text"):
@@ -778,7 +835,8 @@ async def _save_alert(
     includes = data.get("include_keywords", [])
     # Dernier point de passage avant la base : une liste brute du moteur ne peut pas
     # être stockée, même si un chemin amont a laissé passer une énumération.
-    excludes = sanitize_exclusions(data.get("exclude_keywords", []), name)
+    excludes = sanitize_exclusions(data.get("exclude_keywords", []), name,
+                                   author=author, publisher=publisher)
     variants = _variants_for_category(data.get("variants", []), name, includes)
     max_price = data.get("max_item_price_cents")
     conditions = data.get("selected_conditions") or (
@@ -903,6 +961,8 @@ async def _save_alert(
         alert.status = AlertStatus.PAUSED
         alert.preparation = PreparationRequest(
             author_hint=author,
+            bibliographic_mode=("series" if data.get("is_series") is True
+                                else "one_shot" if data.get("is_series") is False else None),
             series_reference_publisher=data.get("series_reference_publisher"),
             series_volumes=[{k: v for k, v in row.items() if k != "price_lines"}
                             for row in data.get("series_volumes") or []],

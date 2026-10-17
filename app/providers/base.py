@@ -2,9 +2,14 @@
 
 import uuid
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Protocol
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from math import isfinite
+from typing import Any, Literal, Protocol
+
+import httpx
 
 from app.core.constants import MatchConfidence
 from app.utils.isbn import is_valid_isbn, normalize_isbn
@@ -31,6 +36,50 @@ class MarketOffer:
     observation_id: uuid.UUID | None = None
 
 
+@dataclass(frozen=True)
+class CollectionAttempt:
+    provider: str
+    operation: str = "current"
+    status: Literal["success", "failed", "skipped"] = "success"
+    reason: str | None = None
+    http_status: int | None = None
+    retry_after_seconds: float | None = None
+    duration_seconds: float = 0.0
+
+
+def failed_offers(
+    provider: str, *, operation: str = "current", response: httpx.Response | None = None,
+    error: Exception | None = None, reason: str | None = None,
+) -> "MarketOffers":
+    status = response.status_code if response is not None else None
+    if response is None and isinstance(error, httpx.HTTPStatusError):
+        response = error.response
+        status = response.status_code
+    if reason is None:
+        reason = (
+            "rate_limited" if status == 429 else "http_status" if status is not None
+            else "timeout" if isinstance(error, (TimeoutError, httpx.TimeoutException))
+            else "connection" if isinstance(error, httpx.RequestError)
+            else "invalid_response" if isinstance(error, (ValueError, TypeError, KeyError))
+            else "internal_error"
+        )
+    retry_after = None
+    if response is not None:
+        raw_retry = response.headers.get("Retry-After")
+        if raw_retry:
+            try:
+                retry_after = float(raw_retry)
+            except ValueError:
+                with suppress(ValueError, TypeError, OverflowError):
+                    retry_at = parsedate_to_datetime(raw_retry)
+                    retry_after = (retry_at - datetime.now(UTC)).total_seconds()
+            if retry_after is not None:
+                retry_after = max(0.0, retry_after) if isfinite(retry_after) else None
+    return MarketOffers(failed_providers=(provider,), attempts=(CollectionAttempt(
+        provider, operation, "failed", reason, status, retry_after,
+    ),))
+
+
 class MarketOffers(list[MarketOffer]):
     """Offres collectées et sources en échec ; une liste vide n'est pas un diagnostic."""
 
@@ -40,8 +89,10 @@ class MarketOffers(list[MarketOffer]):
         *,
         failed_providers: tuple[str, ...] = (),
         historical_checked: bool = False,
+        attempts: tuple[CollectionAttempt, ...] = (),
     ) -> None:
         super().__init__(offers)
+        self.attempts = attempts
         self.failed_providers = failed_providers
         self.historical_checked = historical_checked
 

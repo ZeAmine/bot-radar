@@ -477,7 +477,7 @@ async def send_listing_alert(
 async def notify_admins(
     text: str,
     bot: Bot | None = None,
-) -> None:
+) -> bool:
     """Diffuse un message d'état système à tous les utilisateurs Telegram autorisés.
 
     Le client par défaut est l'instance partagée du bot : en créer un à chaque
@@ -486,7 +486,7 @@ async def notify_admins(
     """
     allowed_ids = settings.TELEGRAM_ALLOWED_USER_IDS
     if not allowed_ids:
-        return
+        return False
 
     target_bot = bot
     if target_bot is None:
@@ -494,6 +494,7 @@ async def notify_admins(
 
         target_bot = default_bot
 
+    delivered = True
     for user_id in allowed_ids:
         try:
             await target_bot.send_message(
@@ -502,8 +503,10 @@ async def notify_admins(
                 parse_mode="HTML",
             )
         except Exception as exc:
+            delivered = False
             logger.warning(
                 "Impossible d'envoyer la notification système à l'utilisateur %s: %s",
                 user_id,
                 exc,
             )
+    return delivered

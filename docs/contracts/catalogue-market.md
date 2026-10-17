@@ -95,7 +95,9 @@ une collecte réelle ; les procédures de session et leurs permissions restent d
 
 ## Minimum unique et fraîcheur — ADR-050
 
-Le panneau affiche un seul « Minimum sur 1 an ». Les données des anciens agrégats
+Le panneau affiche un seul « Prix bas constaté », accompagné de la période et du
+nombre de relevés conservés. La fenêtre de calcul de 365 jours ne prouve pas une
+année complète de couverture du marché. Les données des anciens agrégats
 restent conservées, sans ligne « Ancien minimum (informatif) ». Un point historique
 fournisseur exige montant livré, date et provenance ; il est persisté séparément
 des offres disponibles et intégré aux observations admissibles des 365 derniers jours.
@@ -109,3 +111,43 @@ sans résultat exploitable conserve les dernières offres avec avertissement ; e
 ne renouvelle pas leur fraîcheur. Les avertissements de retard couvrent les livres
 surveillés, indépendamment de la présence d'un ancien agrégat. Le renouvellement
 Chasse valide/injecte un jeton et ne collecte pas toutes les alertes.
+
+## Diagnostic et bilans de rafraîchissement
+
+Le bilan automatique est consolidé par occurrence de passe complète, y compris
+si la sélection est vide ou interrompue. Les listes détaillées de fraîcheur
+restent des diagnostics ; elles ne sont plus envoyées séparément dans ce flux.
+Les compteurs distinguent traitement, offre actualisée, absence normale d'offre,
+dégradation fournisseur, exception, caches réutilisés, tentatives non effectuées et livres non parcourus.
+Un incident historique ne transforme pas une collecte courante réussie en panne.
+La carte indique des données partiellement actualisées sans attribuer une panne
+globale à un fournisseur dont la collecte courante a répondu.
+
+Quand toutes les sources sont ignorées, le cache porte `skipped` : aucune
+collecte courante ni absence d’offre n’est attestée. Les prix, offres et dates
+antérieurs sont conservés, y compris lorsqu’ils ne sont plus comparables.
+Cet état ne permet pas le raccourci de réutilisation d’un cache valide à la création.
+
+Les tentatives fournisseur portent opération, catégorie contrôlée, statut HTTP et
+durée. Une réponse invalide ne vaut pas recherche vide. Le silence des snapshots
+ne suffit pas à établir une panne. Un timeout global porte un diagnostic de
+collecte, sans désigner tous les sites comme défaillants.
+
+Les passages incrémentaux signalent les nouveaux incidents, les aggravations et
+les rétablissements observés. L'absence de sollicitation ne rétablit pas une source.
+La dernière observation est distincte de l'état effectivement notifié : une
+amélioration partielle silencieuse actualise la référence ; le retour à une panne
+totale peut donc produire une aggravation. Les changements non remis restent en
+attente de notification. Observations, état notifié et changements en attente sont
+persistés dans la même clé Redis ; l'ancien format d'incidents reste lisible.
+Si l'incident n'a jamais pu être remis et qu'un rétablissement est réellement
+observé, une synthèse des deux événements reste à remettre. Elle indique que
+l'incident est passé ; elle ne présente pas cette panne comme actuelle. Un échec
+de remise conserve cette synthèse, y compris si les passes suivantes n'interrogent
+pas la source. Une nouvelle panne avant remise conserve la synthèse précédente et
+signale séparément le nouvel incident en cours. La remise confirmée retire les
+changements en attente ; elle ne garantit pas une livraison exactement une fois.
+L'état utilise Redis avec repli local dans l'unique processus ; le repli ne survit
+pas au redémarrage. Le dédoublonnage de bilan conserve sa fenêtre d'une heure.
+Un échec ou une annulation d'envoi libère le créneau ; une remise Telegram ambiguë
+ou partielle ne permet pas de garantir exactement un message par destinataire.

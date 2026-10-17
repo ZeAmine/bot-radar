@@ -30,7 +30,7 @@ from app.use_cases.book_search import (
     creation_bibliographic_identity,
     metadata_from_result,
 )
-from app.utils.isbn import extract_clean_isbn, is_valid_isbn, normalize_isbn
+from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ def _works_of(result: BookSearchResult) -> list[WorkAlternative]:
             publisher=work.publisher,
             publication_year=work.publication_year,
         )
-        for work in result.works
+        for work in result.works[:3]
         if work.isbn13
     ]
 
@@ -243,17 +243,17 @@ class NaturalAddModule(BaseAIModule):
             author_hint = author or parse_query_title_and_author(typed_query)[1]
             if author_hint and normalize_text(author_hint) == normalize_text(clean_name):
                 author_hint = None
+            search_title = clean_name
             resolved = await self._resolve_isbn(
                 title=clean_name,
                 category=category,
                 is_series=is_series,
                 author_hint=author_hint,
-                candidates=(
-                    extract_clean_isbn(user_text),
-                    self._sanitize_ai_isbn(payload.isbn13),
-                ),
+                typed_isbn=extract_clean_isbn(user_text),
             )
             if resolved.book:
+                clean_name = (volume_title(resolved.book.title, number)
+                              if number else resolved.book.title)
                 # La BNF fait autorité sur l'auteur et l'éditeur dès qu'elle a
                 # répondu : sa notice remplace ce que le moteur a supposé.
                 author = resolved.book.author or author
@@ -278,6 +278,8 @@ class NaturalAddModule(BaseAIModule):
                 clean_includes, _, _ = generate_recommended_keywords(clean_name)
 
             return NaturalAddResult(
+                original_input=user_text,
+                search_queries=list(dict.fromkeys([typed_query, search_title])),
                 bibliographic_identity=(creation_bibliographic_identity(resolved.search_result)
                                         if resolved.search_result else (
                                             {"author": None, "publisher": None, "language": None,
@@ -310,31 +312,17 @@ class NaturalAddModule(BaseAIModule):
             logger.warning("Erreur lors de la construction de NaturalAddResult: %s", exc)
             return None
 
-    @staticmethod
-    def _sanitize_ai_isbn(raw_isbn: str | None) -> str | None:
-        """Garde la proposition du modèle seulement si elle est un ISBN bien formé."""
-        if not raw_isbn:
-            return None
-        candidate = normalize_isbn(str(raw_isbn))
-        if candidate and not is_valid_isbn(candidate):
-            logger.info("Proposition ISBN du modèle ignorée (clé de contrôle invalide) : %s",
-                        candidate)
-            return None
-        return candidate
-
     async def _resolve_isbn(
         self,
         title: str,
         category: str,
         is_series: bool,
         author_hint: str | None,
-        candidates: tuple[str | None, ...],
+        typed_isbn: str | None,
     ) -> _ResolvedWork:
         """Détermine l'ISBN d'une alerte, la notice qui l'atteste et les œuvres homonymes.
 
-        Ordre de priorité : ISBN saisi explicitement par l'utilisateur, puis ISBN
-        proposé par le modèle, puis ISBN de la meilleure notice BNF du titre. Chaque
-        candidat doit être confirmé par une notice BNF portant réellement sur l'œuvre.
+        Un ISBN saisi et les notices de titre sont confirmés par les autorités.
 
         Un titre homonyme (« Les Enfants perdus », roman de 1989 et BD de 2025) ne
         rattache rien : ni ISBN, ni auteur, ni éditeur. Renvoyer la fiche du roman
@@ -347,11 +335,8 @@ class NaturalAddModule(BaseAIModule):
         if category != CategorySlug.BD_COMICS.value or not title:
             return _ResolvedWork()
 
-        typed_isbn, ai_isbn = candidates
         # Une suggestion de série du moteur ne confirme jamais l'identité.
         is_series = is_series and not typed_isbn
-        if is_series:
-            ai_isbn = None
         use_case = BookSearchUseCase()
 
         result = None
@@ -366,16 +351,15 @@ class NaturalAddModule(BaseAIModule):
         work_choices = _works_of(result) if ambiguous and result else []
         confirmed = metadata_from_result(result) if result else None
 
-        for candidate in (typed_isbn, ai_isbn):
-            if not candidate or (confirmed is not None and confirmed.isbn13 == candidate):
-                continue
+        if typed_isbn and (confirmed is None or confirmed.isbn13 != typed_isbn):
+            candidate = typed_isbn
             try:
                 isbn_result = await use_case.search_by_isbn(candidate, title)
             except Exception as exc:
                 logger.warning("Vérification BNF impossible pour l'ISBN %s : %s", candidate, exc)
-                continue
-            verified = metadata_from_result(isbn_result)
-            if verified is not None:
+                isbn_result = None
+            verified = metadata_from_result(isbn_result) if isbn_result else None
+            if verified is not None and isbn_result is not None:
                 # Les éditions concurrentes ne valent que si le titre désigne une œuvre
                 # unique : sinon elles décrivent l'homonyme retenu par le score, pas
                 # l'ouvrage que l'ISBN vient d'identifier.
@@ -428,13 +412,6 @@ class NaturalAddModule(BaseAIModule):
                 search_result=result,
                 isbn_note=(
                     f"ISBN saisi non confirmé par la BNF : surveillance par titre sur « {title} »"
-                )
-            )
-        if ai_isbn:
-            return _ResolvedWork(
-                search_result=result,
-                isbn_note=(
-                    f"Aucun ISBN confirmé par la BNF pour « {title} » : surveillance par titre"
                 )
             )
         # Ni notice, ni ISBN d'aucune sorte : l'ouvrage n'est pas identifié, et c'est

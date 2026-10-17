@@ -31,6 +31,170 @@ class DraftState(_DraftState):
         self.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
 
 
+@pytest.mark.parametrize("recover", [False, True])
+async def test_skipped_one_shot_is_linked_and_priced_from_its_durable_request(
+    preparation, monkeypatch, recover,
+):
+    from app.bot.handlers.alerts_create_confirm import process_creation_edit_input
+    from app.core.constants import ProviderQueryStatus
+    from app.db.repositories.book_repo import BookRepository
+    from app.providers.base import CollectionAttempt, MarketOffer
+    from app.providers.google_books import ProviderQueryResult
+    from app.services.book_metadata_service import BookMetadataService
+    from tests.screens import incoming_message
+
+    p = preparation
+    meta = BookMetadata(
+        title="Jours de sable", author="Aimée de Jongh", publisher="Dargaud Benelux",
+        isbn13="9782505082545",
+    )
+    monkeypatch.setattr(BookMetadataService, "_bnf_records_result", AsyncMock(return_value=(
+        ProviderQueryResult(status=ProviderQueryStatus.SUCCESS, items=[meta]), None,
+    )))
+    p.prices.return_value = MarketOffers([
+        MarketOffer("synthetic", 2059, 0, 2059, "https://example.invalid/offer"),
+    ], attempts=(CollectionAttempt("synthetic"),))
+    state = DraftState()
+    state.data = {
+        "name": meta.title, "isbn": meta.isbn13, "author": meta.author,
+        "is_series": False, "category_slug": "bd_comics",
+        "include_keywords": ["jours de sable"], "current_edit_field": "isbn",
+        "max_item_price_cents": 3000,
+    }
+    with patch("app.bot.handlers.alerts_create_confirm.relaunch_keyword_search"):
+        await process_creation_edit_input(incoming_message("/skip"), state)
+    assert state.data["isbn"] is None
+    callback, _ = confirm_press()
+    saved_requests = []
+
+    async def prepare(alert_id, **options):
+        persisted = await p.read(alert_id)
+        assert persisted.status == AlertStatus.PAUSED
+        saved_requests.append(persisted.preparation)
+        if recover:
+            raise asyncio.CancelledError
+        return await p.module.prepare_bd_alert(alert_id, **options)
+
+    monkeypatch.setattr("app.bot.handlers.alerts_create.prepare_bd_alert", prepare)
+    async with p.db.maker() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        if recover:
+            with pytest.raises(asyncio.CancelledError):
+                await save_alert(callback, state, user, session)
+        else:
+            await save_alert(callback, state, user, session)
+    assert not state.data
+    if recover:
+        monkeypatch.setattr(p.module, "preparation_runner", p.module.PreparationRunner())
+        await p.module.recover_bd_preparations()
+    async with p.db.maker() as session:
+        alert = (await session.execute(select(Alert))).scalar_one()
+        books = await BookRepository(session).get_all_books_for_alert(alert.id)
+        assert [book.isbn13 for book in books] == ["9782505082545"]
+        assert books[0].market_cache.lowest_delivered_price_cents == 2059
+        assert books[0].market_cache.collection_status == "complete"
+        assert alert.status == AlertStatus.ACTIVE
+        assert alert.preparation is None
+    assert saved_requests[0]["bibliographic_mode"] == "one_shot"
+    p.lookup.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["one_shot", "series", None, "missing"])
+async def test_durable_mode_survives_restart_and_selects_the_same_catalogue_path(
+    preparation, monkeypatch, mode,
+):
+    from app.db.repositories.alert_repo import AlertRepository
+    from app.db.repositories.book_repo import BookRepository
+    from app.services.book_metadata_service import BookMetadataService
+
+    p = preparation
+    alert_id = await p.create()
+    expected_isbn = "9782505082545" if mode == "one_shot" else "9782369904151"
+    notice = BookMetadata(
+        title="Jours de sable" if mode == "one_shot" else "Série synthétique Tome 1",
+        isbn13=expected_isbn,
+    )
+    verdict = CatalogueVerdict(consulted=("bnf",), notices=(notice,))
+    single = AsyncMock(return_value=verdict)
+    monkeypatch.setattr(BookMetadataService, "lookup_by_title_and_author", single)
+    p.lookup.return_value = verdict
+    async with p.db.maker() as session:
+        repo = AlertRepository(session)
+        alert = await repo.get_by_id(alert_id)
+        request = dict(alert.preparation)
+        if mode == "missing":
+            request.pop("bibliographic_mode", None)
+        else:
+            request["bibliographic_mode"] = mode
+        alert.preparation = request
+        old_token = request["token"]
+        await session.commit()
+        await repo.set_status(alert, AlertStatus.PAUSED)
+        await repo.set_status(alert, AlertStatus.ACTIVE)
+        await session.commit()
+    persisted = (await p.read(alert_id)).preparation
+    assert persisted["token"] != old_token
+    assert persisted["bibliographic_mode"] == (None if mode == "missing" else mode)
+    monkeypatch.setattr(p.module, "preparation_runner", p.module.PreparationRunner())
+    await p.module.recover_bd_preparations()
+    async with p.db.maker() as session:
+        books = await BookRepository(session).get_all_books_for_alert(alert_id)
+        assert [book.isbn13 for book in books] == [expected_isbn]
+        assert books[0].market_cache.collection_status == "empty"
+    assert (await p.read(alert_id)).status == AlertStatus.ACTIVE
+    assert single.await_count == (1 if mode == "one_shot" else 0)
+    assert p.lookup.await_count == (0 if mode == "one_shot" else 1)
+
+
+async def test_old_one_shot_preparation_cannot_link_or_activate_a_replacement(
+    preparation, monkeypatch,
+):
+    from app.db.repositories.alert_repo import AlertRepository
+    from app.db.repositories.book_repo import BookRepository
+    from app.services.book_metadata_service import BookMetadataService
+
+    p = preparation
+    alert_id = await p.create(name="Ancien one-shot")
+    async with p.db.maker() as session:
+        alert = await session.get(Alert, alert_id)
+        alert.preparation = PreparationRequest(bibliographic_mode="one_shot").stored()
+        old_token = alert.preparation["token"]
+        await session.commit()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def lookup(_service, _query):
+        entered.set()
+        await release.wait()
+        return CatalogueVerdict(notices=(BookMetadata(
+            title="Ancien one-shot", isbn13="9782505082545",
+        ),), consulted=("bnf",))
+
+    monkeypatch.setattr(BookMetadataService, "lookup_by_title_and_author", lookup)
+    async with asyncio.timeout(3):
+        task = asyncio.create_task(p.module.preparation_runner._run(alert_id))
+        await entered.wait()
+        try:
+            async with p.db.maker() as session:
+                repo = AlertRepository(session)
+                alert = await repo.get_by_id(alert_id)
+                await repo.lock_for_edit(alert)
+                alert.name = "Nouvelle œuvre"
+                await repo.invalidate_preparation(alert, author_hint=None)
+                await session.commit()
+        finally:
+            release.set()
+        outcome = await task
+    assert outcome.status == "superseded"
+    current = await p.read(alert_id)
+    assert current.name == "Nouvelle œuvre"
+    assert current.status == AlertStatus.PAUSED
+    assert current.preparation["token"] != old_token
+    assert current.preparation["bibliographic_mode"] == "one_shot"
+    async with p.db.maker() as session:
+        assert not await BookRepository(session).get_all_books_for_alert(alert_id)
+    p.prices.assert_not_awaited()
+
+
 @pytest.mark.parametrize("isbn", [None, "9782369904151"])
 async def test_first_commit_contains_a_resumable_request_before_fsm_clear(isbn):
     """Sans marqueur, l'interruption après commit est indiscernable d'une pause volontaire."""
@@ -760,3 +924,26 @@ async def test_textual_edit_during_pricing_removes_links_of_the_previous_work(pr
     assert await task
     async with p.db.maker() as session:
         assert (await session.execute(select(AlertBook))).scalars().all() == []
+
+
+async def test_initial_preparation_deadline_blocks_without_activating(preparation, monkeypatch):
+    original_timeout = asyncio.timeout
+    scopes = []
+
+    def timeout(seconds):
+        scope = original_timeout(None)
+        scopes.append((seconds, scope))
+        return scope
+
+    async def delayed_lookup(*_args, **_kwargs):
+        scopes[0][1].reschedule(asyncio.get_running_loop().time())
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(preparation.module.asyncio, "timeout", timeout)
+    preparation.lookup.side_effect = delayed_lookup
+    alert_id = await preparation.create()
+    assert not await preparation.module.prepare_bd_alert(alert_id)
+    assert scopes[0][0] == 45.0
+    current = await preparation.read(alert_id)
+    assert current.status == AlertStatus.PAUSED
+    assert current.preparation["state"] == "blocked"

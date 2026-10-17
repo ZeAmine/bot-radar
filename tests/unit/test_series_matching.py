@@ -572,6 +572,8 @@ async def test_handle_view_market_details_success():
         patch("app.use_cases.view_market_details.ListingRepository") as mock_l_cls,
         patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
         patch("app.use_cases.view_market_details.MarketPriceRepository") as mock_m_cls,
+        patch("app.bot.handlers.market_panel._panels", {}),
+        patch("app.bot.handlers.market_panel._refresh_panel", AsyncMock()) as mock_refresh,
     ):
         mock_l = MagicMock()
         mock_l.get_by_id = AsyncMock(return_value=mock_listing)
@@ -589,6 +591,8 @@ async def test_handle_view_market_details_success():
         mock_m_cls.return_value = mock_m
 
         await handle_view_market_details(mock_callback, mock_session)
+        await mock_refresh.call_args.args[0].task
+        mock_refresh.assert_awaited_once()
 
         mock_msg.reply.assert_called_once()
         text = mock_msg.reply.call_args[1]["text"]
@@ -635,6 +639,8 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
         patch("app.use_cases.view_market_details.ListingRepository") as mock_l_cls,
         patch("app.use_cases.view_market_details.BookRepository") as mock_b_cls,
         patch("app.use_cases.view_market_details.MarketPriceRepository") as mock_m_cls,
+        patch("app.bot.handlers.market_panel._panels", {}),
+        patch("app.bot.handlers.market_panel._refresh_panel", AsyncMock()) as mock_refresh,
     ):
         mock_l = MagicMock()
         mock_l.get_by_id = AsyncMock(return_value=mock_listing)
@@ -653,6 +659,8 @@ async def test_handle_view_market_details_series_buttons_fit_telegram_limit():
         mock_m_cls.return_value = mock_m
 
         await handle_view_market_details(mock_callback, mock_session)
+        await mock_refresh.call_args.args[0].task
+        mock_refresh.assert_awaited_once()
 
     mock_msg.reply.assert_called_once()
     keyboard = mock_msg.reply.call_args[1]["reply_markup"]
@@ -1234,5 +1242,5 @@ def test_legacy_minimum_without_observation_never_becomes_annual_reference(date_
     panel = MarketPriceService.format_market_details_card(listing, book, [], None)
     assert "Ancien minimum" not in panel
     assert "1,00 €" not in panel
-    assert "Minimum sur 1 an" not in panel
+    assert "Prix bas constaté" not in panel
     assert (book.market_cache.checked_at, book.market_cache.historical_low_at) == before

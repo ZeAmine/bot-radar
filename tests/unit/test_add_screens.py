@@ -238,7 +238,7 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
 
     # 2. L'utilisateur choisit « Livres » : le bot demande le titre.
     choix = MagicMock()
-    choix.data = "add_cat:bd_comics"
+    choix.data = f"add_cat:bd_comics@{(await state.get_data())['creation_token']}"
     choix.message = MagicMock()
     choix.message.edit_text = AsyncMock()
     choix.answer = AsyncMock()

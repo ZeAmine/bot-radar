@@ -10,6 +10,7 @@ from typing import Any
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from app.bot.creation_drafts import draft_guard
 from app.bot.formatter import alert_status_text, format_cents_to_euros
 from app.bot.handlers._alerts_router import bind_creation_keyboard
 from app.bot.keyboards.alerts import edition_ordinal, get_alert_confirmation_keyboard
@@ -59,6 +60,7 @@ from app.services.book_metadata_service import (
     AUTORITE_OPENLIBRARY,
     TITLE_SIMILARITY_MIN,
     CatalogueVerdict,
+    authors_conflict,
     format_edition_fragments,
     generate_recommended_keywords,
     parse_query_title_and_author,
@@ -193,7 +195,7 @@ def extract_inline_price_and_clean_query(query_str: str) -> tuple[str, int | Non
     if is_plausible_price:
         try:
             price_cents = parse_price_to_cents(last_token)
-            remaining_query = " ".join(parts[:-1]).strip()
+            remaining_query = " ".join(parts[:-1]).strip().rstrip(",; ")
             if remaining_query:
                 return remaining_query, price_cents
         except AlertServiceError:
@@ -809,7 +811,10 @@ def format_alerts_list_text(
     return "\n".join(lines)
 
 
-async def _begin_bibliographic_search(state: FSMContext) -> int:
+async def _begin_bibliographic_search(
+    state: FSMContext, *, expected_creation_token: str | None = None,
+    expected_search_token: int | None = None,
+) -> int | None:
     """Réserve un jeton d'ordre pour une recherche bibliographique inline.
 
     Deux saisies rapprochées lancent deux recherches concurrentes : sans jeton, la
@@ -817,7 +822,16 @@ async def _begin_bibliographic_search(state: FSMContext) -> int:
     l'œuvre de la première alors que l'utilisateur a déjà tapé la seconde. Le jeton
     est monotone, donc seul le dernier écrivain est légitime.
     """
-    return await _bump_search_token(state)
+    async with draft_guard(state):
+        current = await state.get_data()
+        if expected_creation_token is not None and (
+            current.get("creation_token") != expected_creation_token
+        ):
+            return None
+        if (expected_search_token is not None
+                and current.get("search_token") != expected_search_token):
+            return None
+        return await _bump_search_token(state)
 
 
 async def _bump_search_token(state: FSMContext) -> int:
@@ -828,7 +842,7 @@ async def _bump_search_token(state: FSMContext) -> int:
     tardive ne s'écrive pas dans un écran qui ne l'attend plus.
     """
     current = await state.get_data()
-    token = int(current.get("search_token") or 0) + 1
+    token = max(int(current.get("search_token") or 0) + 1, uuid.uuid4().int)
     await state.update_data(search_token=token)
     return token
 
@@ -1114,7 +1128,8 @@ def _isbn_verification_note(result: BookSearchResult | None) -> str:
     return note
 
 
-async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealignment:
+async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str, *, replace_identity: bool = False,
+) -> IsbnRealignment:
     """Réécrit l'identité d'un brouillon à partir d'un ISBN saisi par l'utilisateur.
 
     Changer d'ISBN, c'est changer d'ouvrage : l'auteur, l'éditeur, la fiche IA et les
@@ -1144,7 +1159,9 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
     # refus motivé. Aucune décision d'autorité n'est réécrite ici.
     try:
         result: BookSearchResult | None = await BookSearchUseCase().search_by_isbn(
-            isbn.strip(), expected_title=title or None
+            isbn.strip(), expected_title=(None if replace_identity or draft.get("book_unidentified")
+                or draft.get("identity_unconfirmed") or title.startswith("Livre ISBN ")
+                else title or None)
         )
     except InvalidIsbnError:
         return IsbnRealignment(
@@ -1157,6 +1174,17 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
     if result is not None and result.status == BookSearchStatus.FOUND:
         meta = metadata_from_result(result)
         assert meta is not None
+        if (not replace_identity and not draft.get("book_unidentified")
+                and not draft.get("identity_unconfirmed")
+                and (draft.get("isbn") or draft.get("book_context"))
+                and authors_conflict(draft.get("author"), meta.author)):
+            return IsbnRealignment(conflict=(
+                f"Cet ISBN correspond à « {meta.title} » de {meta.author}, "
+                f"pas à l’auteur de la fiche courante."
+            ))
+        if replace_identity:
+            number = meta.volume_number or requested_volume(meta.title)
+        canonical_title = volume_title(meta.title, number) if number else meta.title
         return IsbnRealignment(
             updates={
                 # Le spread vient d'abord : il vide la fiche de l'ouvrage précédent, et
@@ -1175,9 +1203,12 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str) -> IsbnRealign
                 "series_total": None,
                 "series_truncated": False,
                 "series_inconsistent": False,
-                "name": volume_title(title, number) if number else title,
+                "name": canonical_title,
+                "include_keywords": generate_recommended_keywords(canonical_title)[0],
                 "requested_volume": number,
-                "edition_alternatives": await _resolve_edition_choices(title, meta.author),
+                "edition_alternatives": await _resolve_edition_choices(
+                    canonical_title, meta.author,
+                ),
                 "book_context": book_context_from(meta).model_dump(),
             }
         )
@@ -1234,6 +1265,8 @@ async def render_existing_alert_response(
     *,
     new_price_cents: int | None = None,
     target_msg: Any = None,
+    expected_creation_token: str | None = None,
+    expected_search_token: int | None = None,
 ) -> None:
     """Affiche une alerte déjà surveillée et propose de mettre à jour son prix ou d'annuler.
 
@@ -1270,10 +1303,8 @@ async def render_existing_alert_response(
     # Cas 1 : Un nouveau prix différent du prix actuel a été spécifié
     if new_price_cents is not None and new_price_cents != existing.max_item_price_cents:
         new_price_str = format_price_cents(new_price_cents)
-        await state.update_data(
-            existing_alert_id=str(existing.id),
-            new_max_price_cents=new_price_cents,
-        )
+        updates: dict[str, Any] = {"existing_alert_id": str(existing.id),
+                   "new_max_price_cents": new_price_cents}
         agreement = "e" if item_label.startswith("Cette") else ""
         warn_text = (
             f"⚠️ <b>{TITLE_ALERT_EXISTS[2:].strip()}</b>\n\n"
@@ -1303,8 +1334,7 @@ async def render_existing_alert_response(
         )
     else:
         # Cas 2 : Pas de prix spécifié ou prix identique
-        await state.update_data(existing_alert_id=str(existing.id))
-        await state.set_state(AlertCreationState.waiting_for_max_price)
+        updates = {"existing_alert_id": str(existing.id)}
         agreement = "e" if item_label.startswith("Cette") else ""
         warn_text = (
             f"⚠️ <b>{TITLE_ALERT_EXISTS[2:].strip()}</b>\n\n"
@@ -1327,7 +1357,18 @@ async def render_existing_alert_response(
             ]
         )
 
-    keyboard = bind_creation_keyboard(keyboard, (await state.get_data()).get("creation_token"))
+    async with draft_guard(state):
+        current = await state.get_data()
+        if (expected_creation_token is not None
+                and current.get("creation_token") != expected_creation_token):
+            return
+        if (expected_search_token is not None
+                and current.get("search_token") != expected_search_token):
+            return
+        await state.update_data(**updates)
+        if "new_max_price_cents" not in updates:
+            await state.set_state(AlertCreationState.waiting_for_max_price)
+    keyboard = bind_creation_keyboard(keyboard, current.get("creation_token"))
     edit_msg: Any = target_msg
     if edit_msg is None and isinstance(event, CallbackQuery) and event.message:
         edit_msg = event.message
@@ -1342,12 +1383,28 @@ async def render_existing_alert_response(
         await event.answer(warn_text, reply_markup=keyboard)
 
 
+async def _apply_search_draft(
+    state: FSMContext, token: int, updates: dict[str, Any], price: int | None,
+) -> dict[str, Any] | None:
+    async with draft_guard(state):
+        if not await _search_still_current(state, token):
+            return None
+        if price is not None:
+            updates["max_item_price_cents"] = price
+        await state.update_data(**updates)
+        await state.set_state(AlertCreationState.confirm_creation if price is not None
+                              else AlertCreationState.waiting_for_max_price)
+        return await state.get_data()
+
+
 async def process_bd_query_lookup(
     event: Message | CallbackQuery,
     state: FSMContext,
     query_str: str,
     db_session: Any,
     db_user: User | None = None,
+    expected_creation_token: str | None = None,
+    expected_search_token: int | None = None,
 ) -> None:
     """Recherche l'œuvre via BookMetadataService et propose la configuration automatique."""
     target_msg = event if isinstance(event, Message) else event.message
@@ -1356,6 +1413,13 @@ async def process_bd_query_lookup(
 
     # Vérifier si un prix inline était fourni en fin de saisie (ex: "titre 50" ou "978... 25")
     clean_query, inline_price_cents = extract_inline_price_and_clean_query(query_str)
+
+    token = await _begin_bibliographic_search(
+        state, expected_creation_token=expected_creation_token,
+        expected_search_token=expected_search_token,
+    )
+    if token is None:
+        return
 
     # GARDE ANTI-DOUBLON LOCAL IMMÉDIAT (zéro appel BNF si déjà surveillé en base)
     if db_user:
@@ -1370,24 +1434,24 @@ async def process_bd_query_lookup(
                 state,
                 existing,
                 new_price_cents=inline_price_cents,
+                expected_search_token=token,
             )
             return
 
     status_msg = await target_msg.answer("🔍 Recherche automatique de l'œuvre...")
 
-    # Jeton d'ordre : une saisie plus récente invalide cette réponse si elle arrive après.
-    token = await _begin_bibliographic_search(state)
-
     # Détection de la forme de la saisie (ISBN ou titre) — même règle que
     # l'ancien `resolve_input`, mais sans seconde logique de résolution.
     raw_digits = re.sub(r"[^0-9X]", "", clean_query.upper())
-    is_isbn_form = len(raw_digits) in (10, 13) and (
+    is_isbn_form = bool(extract_clean_isbn(clean_query)) or len(raw_digits) in (10, 13) and (
         raw_digits.isdigit() or raw_digits.endswith("X")
     )
 
     try:
         if is_isbn_form:
-            result = await BookSearchUseCase().search_by_isbn(clean_query)
+            result = await BookSearchUseCase().search_by_isbn(
+                extract_clean_isbn(clean_query) or clean_query,
+            )
         else:
             query_title, author_hint = parse_query_title_and_author(clean_query)
             result = await BookSearchUseCase().search_by_title(
@@ -1418,19 +1482,17 @@ async def process_bd_query_lookup(
             query_title=query_title,
             category_id=str(category.id) if category else "",
         )
-        await state.update_data(**updates)
+        updates.update(original_input=query_str, search_queries=[clean_query])
+        draft = await _apply_search_draft(state, token, updates, inline_price_cents)
+        if draft is None:
+            return
 
         if inline_price_cents is not None:
-            await state.update_data(max_item_price_cents=inline_price_cents)
-            await state.set_state(AlertCreationState.confirm_creation)
-            recap_text, keyboard = build_creation_recap(await state.get_data())
+            recap_text, keyboard = build_creation_recap(draft)
             await status_msg.edit_text(recap_text, reply_markup=keyboard)
             return
 
-        await state.set_state(AlertCreationState.waiting_for_max_price)
-        await status_msg.edit_text(
-            creation_card(await state.get_data(), footer=PRICE_PROMPT_FOOTER)
-        )
+        await status_msg.edit_text(creation_card(draft, footer=PRICE_PROMPT_FOOTER))
         return
 
     # GARDE ANTI-DOUBLON APRÈS RÉSOLUTION. Une série n'a pas d'ISBN : c'est le
@@ -1454,6 +1516,7 @@ async def process_bd_query_lookup(
                 state,
                 existing,
                 new_price_cents=inline_price_cents,
+                expected_search_token=token,
                 target_msg=status_msg,
             )
             return
@@ -1473,12 +1536,12 @@ async def process_bd_query_lookup(
         meta = metadata_from_result(result)
         if meta is not None:
             updates["book_context"] = book_context_from(meta).model_dump()
-    await state.update_data(**updates)
+    updates.update(original_input=query_str, search_queries=[clean_query])
+    draft = await _apply_search_draft(state, token, updates, inline_price_cents)
+    if draft is None:
+        return
 
     if inline_price_cents is not None:
-        await state.update_data(max_item_price_cents=inline_price_cents)
-        await state.set_state(AlertCreationState.confirm_creation)
-        draft = await state.get_data()
         recap_text, keyboard = build_creation_recap(draft)
         await status_msg.edit_text(recap_text, reply_markup=keyboard)
         return
@@ -1489,8 +1552,6 @@ async def process_bd_query_lookup(
     # brouillon qu'il vient d'écrire, donc ce qu'il montre est ce qu'il créera. Les
     # libellés viennent de `labels`, et un état absent se dit « Non renseigné » plutôt
     # que « Non trouvé » : le prix n'est pas encore demandé, il n'est pas introuvable.
-    await state.set_state(AlertCreationState.waiting_for_max_price)
-    draft = await state.get_data()
     await status_msg.edit_text(creation_card(draft, footer=PRICE_PROMPT_FOOTER))
 
 
@@ -1501,6 +1562,8 @@ async def process_tech_or_clothes_query(
     category_slug: str,
     db_session: Any,
     db_user: User | None = None,
+    expected_creation_token: str | None = None,
+    expected_search_token: int | None = None,
 ) -> None:
     """Traite la recherche pour un produit high-tech ou vêtement sans passer par la BNF."""
     target_msg = event.message if isinstance(event, CallbackQuery) else event
@@ -1509,7 +1572,12 @@ async def process_tech_or_clothes_query(
 
     # Une saisie hors livres rebat les cartes du brouillon : toute recherche
     # bibliographique encore en vol devient périmée.
-    await _bump_search_token(state)
+    token = await _begin_bibliographic_search(
+        state, expected_creation_token=expected_creation_token,
+        expected_search_token=expected_search_token,
+    )
+    if token is None:
+        return
 
     # Vérifier si un prix inline était fourni en fin de saisie (ex: "pi 4 50€" ou "titre 50")
     clean_query, inline_price_cents = extract_inline_price_and_clean_query(query_str)
@@ -1526,6 +1594,7 @@ async def process_tech_or_clothes_query(
                 state,
                 existing,
                 new_price_cents=inline_price_cents,
+                expected_search_token=token,
             )
             return
 
@@ -1549,23 +1618,23 @@ async def process_tech_or_clothes_query(
         default_excludes = list(DEFAULT_CLOTHES_EXCLUSIONS)
         default_conditions = list(DEFAULT_CLOTHES_CONDITIONS)
 
-    await state.update_data(
-        category_id=cat_id_str,
-        category_slug=category_slug,
-        name=clean_query,
-        isbn=None,
-        author=None,
-        publisher=None,
-        include_keywords=includes,
-        exclude_keywords=default_excludes,
-        variants=[],
-        selected_conditions=default_conditions,
-    )
+    updates = {
+        "category_id": cat_id_str,
+        "category_slug": category_slug,
+        "name": clean_query,
+        "isbn": None,
+        "author": None,
+        "publisher": None,
+        "include_keywords": includes,
+        "exclude_keywords": default_excludes,
+        "variants": [],
+        "selected_conditions": default_conditions,
+    }
 
+    draft = await _apply_search_draft(state, token, updates, inline_price_cents)
+    if draft is None:
+        return
     if inline_price_cents is not None:
-        await state.update_data(max_item_price_cents=inline_price_cents)
-        await state.set_state(AlertCreationState.confirm_creation)
-        draft = await state.get_data()
         recap_text, keyboard = build_creation_recap(draft)
         if (
             isinstance(event, CallbackQuery)
@@ -1580,8 +1649,7 @@ async def process_tech_or_clothes_query(
     # Demander le prix max : la même carte que le récap, écrite à partir du brouillon
     # qu'on vient de poser. Le bandeau `🎯 … (Tech)` disparaît comme sur la confirmation
     # (ADR-032) : l'écran annonce la fiche, pas le chemin qui y mène.
-    await state.set_state(AlertCreationState.waiting_for_max_price)
-    prompt = creation_card(await state.get_data(), footer=PRICE_PROMPT_FOOTER)
+    prompt = creation_card(draft, footer=PRICE_PROMPT_FOOTER)
     if isinstance(event, CallbackQuery) and event.message and hasattr(event.message, "edit_text"):
         await event.message.edit_text(prompt)
     else:

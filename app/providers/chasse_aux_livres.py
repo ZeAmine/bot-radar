@@ -21,7 +21,13 @@ from app.domain.rules.market_offer import (
     is_merchant_excluded,
     is_very_good_or_better,
 )
-from app.providers.base import MarketOffer, MarketOffers, normalize_search_isbn
+from app.providers.base import (
+    CollectionAttempt,
+    MarketOffer,
+    MarketOffers,
+    failed_offers,
+    normalize_search_isbn,
+)
 from app.services.book_metadata_service import title_similarity
 from app.services.market_price_service import extract_tome_number_from_title
 from app.utils.text import normalize_text
@@ -218,10 +224,12 @@ class ChasseAuxLivresProvider:
         timeout_seconds: float = 10.0,
         http_client: httpx.AsyncClient | None = None,
         sleep: Sleeper = asyncio.sleep,
+        max_retries: int = 2,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.http_client = http_client
         self._sleep = sleep
+        self.max_retries = max(0, max_retries)
 
     @staticmethod
     def _significant_words(title: str) -> set[str]:
@@ -277,10 +285,12 @@ class ChasseAuxLivresProvider:
         clean_isbn = normalize_search_isbn(isbn13)
         failures: set[str] = set()
         historical_checked = False
+        attempts: list[CollectionAttempt] = []
         if clean_isbn:
             offers = await self._search_query(
                 clean_isbn, expected_title=title, expected_isbn=clean_isbn
             )
+            attempts.extend(getattr(offers, "attempts", ()))
             failures.update(getattr(offers, "failed_providers", ()))
             historical_checked |= getattr(offers, "historical_checked", False)
             if offers:
@@ -298,12 +308,13 @@ class ChasseAuxLivresProvider:
             )
             if offers:
                 return offers
+            attempts.extend(getattr(offers, "attempts", ()))
             failures.update(getattr(offers, "failed_providers", ()))
             historical_checked |= getattr(offers, "historical_checked", False)
             return MarketOffers(offers, failed_providers=tuple(sorted(failures)),
-                                historical_checked=historical_checked)
+                                historical_checked=historical_checked, attempts=tuple(attempts))
 
-        return MarketOffers(failed_providers=tuple(sorted(failures)))
+        return MarketOffers(failed_providers=tuple(sorted(failures)), attempts=tuple(attempts))
 
     async def _search_query(
         self,
@@ -316,7 +327,7 @@ class ChasseAuxLivresProvider:
         search_url = f"{self.BASE_URL}/search?query={search_encoded}&catalog=fr"
 
         client = self.http_client or get_shared_http_client()
-        max_retries = 2
+        max_retries = self.max_retries
         for attempt in range(max_retries + 1):
             try:
                 # Étape 1 : Récupérer la page de recherche avec ses cookies et son token hash
@@ -340,19 +351,20 @@ class ChasseAuxLivresProvider:
                         await self._sleep(wait_time)
                         continue
                     logger.warning("Chasse-aux-livres rate-limit persistant pour '%s'.", query)
-                    return MarketOffers(failed_providers=(self.name,))
+                    return failed_offers(self.name, response=resp1, reason="rate_limited"
+                                         if resp1.status_code == 429 else "bot_challenge")
 
                 if resp1.status_code != 200:
                     logger.debug(
                         "Chasse-aux-livres returned HTTP %d on search page", resp1.status_code
                     )
-                    return MarketOffers(failed_providers=(self.name,))
+                    return failed_offers(self.name, response=resp1)
 
                 html_page = resp1.text
                 hash_match = re.search(r'data-hash=["\']([a-zA-Z0-9_-]{16,128})["\']', html_page)
                 if not hash_match:
                     logger.debug("No search data-hash found in Chasse-aux-livres page")
-                    return []
+                    return failed_offers(self.name, reason="invalid_response")
 
                 data_hash = hash_match.group(1)
 
@@ -366,10 +378,12 @@ class ChasseAuxLivresProvider:
                     logger.debug(
                         "Chasse-aux-livres returned HTTP %d on search-results", resp2.status_code
                     )
-                    return MarketOffers(failed_providers=(self.name,))
+                    return failed_offers(self.name, response=resp2)
 
                 data = resp2.json()
-                d_html = data.get("d", "")
+                if not isinstance(data, dict) or not isinstance(data.get("d"), str):
+                    raise ValueError("Résultats de recherche invalides")
+                d_html = data["d"]
                 if not d_html:
                     return []
 
@@ -387,11 +401,11 @@ class ChasseAuxLivresProvider:
                 return []
 
             except Exception as exc:
-                if attempt < max_retries:
+                if attempt < max_retries and isinstance(exc, (httpx.RequestError, TimeoutError)):
                     await self._sleep(1.5)
                     continue
                 logger.debug("Erreur silencieuse connecteur Chasse-aux-livres: %s", exc)
-                return MarketOffers(failed_providers=(self.name,))
+                return failed_offers(self.name, error=exc)
 
         return []
 
@@ -467,14 +481,14 @@ class ChasseAuxLivresProvider:
 
             resp_prod = await client.get(product_url, headers=CHASSE_BROWSER_HEADERS)
             if resp_prod.status_code != 200:
-                return MarketOffers(failed_providers=(self.name,))
+                return failed_offers(self.name, response=resp_prod)
 
             p_html = resp_prod.text
             asin_m = re.search(r'data-asin="([^"]+)"', p_html)
             lvs_m = re.search(r'data-lvs="([^"]+)"', p_html)
             nbeng_m = re.search(r'data-nbeng="(\d+)"', p_html)
             if not (asin_m and lvs_m and nbeng_m):
-                return None
+                return failed_offers(self.name, reason="invalid_response")
 
             asin = asin_m.group(1)
             lvs = lvs_m.group(1)
@@ -488,12 +502,12 @@ class ChasseAuxLivresProvider:
             )
             resp_lookup = await client.get(lookup_url, headers=ajax_headers)
             if resp_lookup.status_code != 200:
-                return MarketOffers(failed_providers=(self.name,))
+                return failed_offers(self.name, response=resp_lookup)
 
             data = resp_lookup.json()
-            raw_offers = data.get("offers", {})
+            raw_offers = data.get("offers")
             if not isinstance(raw_offers, dict):
-                return None
+                return failed_offers(self.name, reason="invalid_response")
 
             # Si le moteur eBay (22) n'a pas encore répondu au premier appel, interroger retry=1
             if "22" not in raw_offers:
@@ -577,6 +591,7 @@ class ChasseAuxLivresProvider:
 
             # Extraction du minimum historique sur 1 an via l'API /rest/jcd de Chasse-aux-livres
             hist_low_1y_cents: int | None = None
+            history_attempt = CollectionAttempt(self.name, "history", "failed", "missing_metadata")
             historical_failed = True
             historical_points: list[MarketOffer] = []
             historical_checked = False
@@ -593,6 +608,9 @@ class ChasseAuxLivresProvider:
                     resp_jcd = await client.get(jcd_url, headers=ajax_headers, timeout=4.0)
                     if resp_jcd.status_code != 200:
                         historical_failed = True
+                        history_attempt = failed_offers(
+                            self.name, operation="history", response=resp_jcd,
+                        ).attempts[0]
                     if resp_jcd.status_code == 200 and len(resp_jcd.text) > 0:
                         jcd_data = resp_jcd.json()
                         if (not isinstance(jcd_data, dict)
@@ -600,6 +618,7 @@ class ChasseAuxLivresProvider:
                             raise ValueError("Série historique invalide")
                         historical_failed = False
                         historical_checked = True
+                        history_attempt = CollectionAttempt(self.name, "history")
                         historical_points = parse_historical_observations(jcd_data, product_url)
                         series_by_label: dict[str, float] = {}
                         for s in jcd_data.get("stats", []):
@@ -625,8 +644,14 @@ class ChasseAuxLivresProvider:
                         if hist_low_1y_cents is not None and not historical_points:
                             historical_failed = True
                             historical_checked = False
+                            history_attempt = CollectionAttempt(
+                                self.name, "history", "failed", "missing_observation_proof",
+                            )
                 except Exception as jcd_exc:
                     historical_failed = True
+                    history_attempt = failed_offers(
+                        self.name, operation="history", error=jcd_exc,
+                    ).attempts[0]
                     logger.warning("Historique Chasse-aux-livres indisponible (%s)",
                                    type(jcd_exc).__name__)
 
@@ -659,10 +684,12 @@ class ChasseAuxLivresProvider:
                             },
                         )
                     ], historical_checked=historical_checked,
-                       failed_providers=(self.name,) if historical_failed else ())
+                       failed_providers=(self.name,) if historical_failed else (),
+                       attempts=(CollectionAttempt(self.name), history_attempt))
                 return MarketOffers(historical_points,
                                     failed_providers=(self.name,) if historical_failed else (),
-                                    historical_checked=historical_checked)
+                                    historical_checked=historical_checked,
+                                    attempts=(CollectionAttempt(self.name), history_attempt))
 
             primary = best_used
             cond_str = f"{primary['condition']} ({primary['merchant']})"
@@ -693,7 +720,8 @@ class ChasseAuxLivresProvider:
                 ],
                 failed_providers=(self.name,) if historical_failed else (),
                 historical_checked=historical_checked,
+                attempts=(CollectionAttempt(self.name), history_attempt),
             )
         except Exception as exc:
             logger.debug("Échec de l'extraction détaillée Chasse-aux-livres: %s", exc)
-            return MarketOffers(failed_providers=(self.name,))
+            return failed_offers(self.name, error=exc)

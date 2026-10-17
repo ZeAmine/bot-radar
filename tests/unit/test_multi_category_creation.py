@@ -3,9 +3,10 @@
 import contextlib
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, Message
@@ -41,9 +42,10 @@ async def test_start_add_alert_shows_category_keyboard():
     message.text = "/add"
     message.answer = AsyncMock()
 
-    state = AsyncMock()
-    state.clear = AsyncMock()
-    state.set_state = AsyncMock()
+    state = FSMContext(MemoryStorage(), StorageKey(bot_id=1, chat_id=123, user_id=123))
+    state.clear = AsyncMock(wraps=state.clear)
+    state.update_data = AsyncMock(wraps=state.update_data)
+    state.set_state = AsyncMock(wraps=state.set_state)
 
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
@@ -51,7 +53,10 @@ async def test_start_add_alert_shows_category_keyboard():
     await start_add_alert(message, state, db_session, db_user)
 
     state.clear.assert_called_once()
-    state.set_state.assert_called_once_with(AlertCreationState.waiting_for_category)
+    assert state.set_state.await_args_list == [
+        call(state=None), call(AlertCreationState.waiting_for_category),
+    ]
+    assert await state.get_state() == AlertCreationState.waiting_for_category.state
     message.answer.assert_called_once()
     args, kwargs = message.answer.call_args
     assert "Choisis la catégorie" in args[0]
@@ -87,6 +92,7 @@ async def test_handle_category_selected_tech():
     state.get_data = mock_get_data
     state.update_data = mock_update_data
     state.set_state = AsyncMock()
+    state.get_state.return_value = AlertCreationState.waiting_for_category.state
 
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
@@ -120,6 +126,7 @@ async def test_handle_category_selected_gaming():
     state.get_data = mock_get_data
     state.update_data = mock_update_data
     state.set_state = AsyncMock()
+    state.get_state.return_value = AlertCreationState.waiting_for_category.state
 
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
@@ -969,10 +976,10 @@ async def test_start_add_alert_natural_add_fallback_on_parse_failure():
     loading_message.edit_text = AsyncMock()
     message.answer = AsyncMock(return_value=loading_message)
 
-    state = AsyncMock()
-    state.clear = AsyncMock()
-    state.update_data = AsyncMock()
-    state.set_state = AsyncMock()
+    state = FSMContext(MemoryStorage(), StorageKey(bot_id=1, chat_id=123, user_id=123))
+    state.clear = AsyncMock(wraps=state.clear)
+    state.update_data = AsyncMock(wraps=state.update_data)
+    state.set_state = AsyncMock(wraps=state.set_state)
 
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
@@ -996,6 +1003,7 @@ async def test_start_add_alert_natural_add_fallback_on_parse_failure():
 
     message.bot.send_chat_action.assert_awaited_once_with(chat_id=12345, action="typing")
     message.answer.assert_awaited_once()
+    assert await state.get_state() == AlertCreationState.waiting_for_category.state
     loading_message.edit_text.assert_awaited_once()
     edited_text = loading_message.edit_text.call_args[0][0]
     assert "Choisis la catégorie de ce produit" in edited_text

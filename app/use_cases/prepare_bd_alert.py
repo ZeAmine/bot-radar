@@ -123,116 +123,120 @@ class PreparationRunner:
         return "blocked"
 
     async def _run(self, alert_id: uuid.UUID) -> PreparationResult:
-        async with self.slots:
-            catalogues: list[CatalogueVerdict] = []
-            token: str | None = None
-            stage: PreparationErrorCode = "unexpected"
-            try:
-                async with AsyncSessionLocal() as session:
-                    repo = AlertRepository(session)
-                    alert = await repo.get_by_id(alert_id, refresh=True)
-                    if alert is None or alert.deleted_at is not None:
-                        return PreparationResult("stopped")
-                    request = preparation_request(alert)
-                    if request is None:
-                        return PreparationResult(
-                            "completed" if alert.status == AlertStatus.ACTIVE else "stopped"
-                        )
-                    if request.state != "pending" or not request.activation_requested:
-                        return PreparationResult("stopped")
-                    token = request.token
-                    deferred = self.deferred_blocks.get(alert_id)
-                    if deferred is not None:
-                        if deferred[0] == token:
-                            return PreparationResult("blocked")
-                        del self.deferred_blocks[alert_id]
-                    alert = await repo.lock_preparation(alert_id, token)
-                    if alert is None:
-                        return PreparationResult("superseded")
-                    request.last_attempt_at = datetime.now(UTC)
-                    alert.preparation = request.stored()
-                    name, isbn, author = alert.name, alert.isbn, request.author_hint
-                    initial_volumes = request.series_volumes
-                    reference_publisher = request.series_reference_publisher
-                    await session.commit()
+        catalogues: list[CatalogueVerdict] = []
+        token: str | None = None
+        stage: PreparationErrorCode = "unexpected"
+        try:
+            async with asyncio.timeout(45.0):
+                async with self.slots:
+                    async with AsyncSessionLocal() as session:
+                        repo = AlertRepository(session)
+                        alert = await repo.get_by_id(alert_id, refresh=True)
+                        if alert is None or alert.deleted_at is not None:
+                            return PreparationResult("stopped")
+                        request = preparation_request(alert)
+                        if request is None:
+                            return PreparationResult(
+                                "completed" if alert.status == AlertStatus.ACTIVE else "stopped"
+                            )
+                        if request.state != "pending" or not request.activation_requested:
+                            return PreparationResult("stopped")
+                        token = request.token
+                        deferred = self.deferred_blocks.get(alert_id)
+                        if deferred is not None:
+                            if deferred[0] == token:
+                                return PreparationResult("blocked")
+                            del self.deferred_blocks[alert_id]
+                        alert = await repo.lock_preparation(alert_id, token)
+                        if alert is None:
+                            return PreparationResult("superseded")
+                        request.last_attempt_at = datetime.now(UTC)
+                        alert.preparation = request.stored()
+                        name, isbn, author = alert.name, alert.isbn, request.author_hint
+                        initial_volumes = request.series_volumes
+                        reference_publisher = request.series_reference_publisher
+                        series = request.bibliographic_mode != "one_shot"
+                        await session.commit()
 
-                stage = "catalog_write"
-                if isbn:
+                    stage = "catalog_write"
+                    if isbn:
+                        async with AsyncSessionLocal() as session:
+                            repo = AlertRepository(session)
+                            current = await repo.lock_preparation(alert_id, token)
+                            if current is None:
+                                return PreparationResult("superseded")
+                            book_repo = BookRepository(session)
+                            book = await book_repo.get_by_isbn13(isbn)
+                            if book is None:
+                                book = await book_repo.create(
+                                    title=name, normalized_title=normalize_text(name), isbn13=isbn
+                                )
+                            linked = await book_repo.get_all_books_for_alert(alert_id)
+                            if not any(existing.id == book.id for existing in linked):
+                                await book_repo.link_alert_to_book(alert_id, book.id)
+                            book_id = book.id
+                            from app.services.book_market_pricing import (
+                                recalculate_invalidated_series,
+                            )
+                            await recalculate_invalidated_series(session)
+                            await session.commit()
+                        stage = "pricing_write"
+                        if await price_book_now(book_id, reason="alert_created") is None:
+                            raise PreparationError("pricing_write")
+                    else:
+                        from app.use_cases.link_bd_catalog import link_books_from_bnf
+
+                        applied = await link_books_from_bnf(
+                            name,
+                            alert_id,
+                            author=author,
+                            series=series,
+                            wait_for_prices=True,
+                            expected_preparation_token=token,
+                            catalogue_sink=catalogues,
+                            initial_volumes=initial_volumes or None,
+                            reference_publisher=reference_publisher,
+                        )
+                        if not applied:
+                            return PreparationResult("superseded")
+
+                    stage = "activation_write"
                     async with AsyncSessionLocal() as session:
                         repo = AlertRepository(session)
                         current = await repo.lock_preparation(alert_id, token)
                         if current is None:
                             return PreparationResult("superseded")
-                        book_repo = BookRepository(session)
-                        book = await book_repo.get_by_isbn13(isbn)
-                        if book is None:
-                            book = await book_repo.create(
-                                title=name, normalized_title=normalize_text(name), isbn13=isbn
-                            )
-                        linked = await book_repo.get_all_books_for_alert(alert_id)
-                        if not any(existing.id == book.id for existing in linked):
-                            await book_repo.link_alert_to_book(alert_id, book.id)
-                        book_id = book.id
-                        from app.services.book_market_pricing import recalculate_invalidated_series
-                        await recalculate_invalidated_series(session)
+                        # Relecture des caches dans cette session, pas des objets du collecteur.
+                        await BookRepository(session).get_all_books_for_alert(alert_id)
+                        current.decision_version += 1
+                        current.status = AlertStatus.ACTIVE
+                        current.preparation = None
                         await session.commit()
-                    stage = "pricing_write"
-                    if await price_book_now(book_id, reason="alert_created") is None:
-                        raise PreparationError("pricing_write")
-                else:
-                    from app.use_cases.link_bd_catalog import link_books_from_bnf
-
-                    applied = await link_books_from_bnf(
-                        name,
-                        alert_id,
-                        author=author,
-                        series=True,
-                        wait_for_prices=True,
-                        expected_preparation_token=token,
-                        catalogue_sink=catalogues,
-                        initial_volumes=initial_volumes or None,
-                        reference_publisher=reference_publisher,
+                    return PreparationResult("completed", catalogues[-1] if catalogues else None)
+        except asyncio.CancelledError:
+            # L'interruption reste pending, reprenable au prochain passage/démarrage.
+            raise
+        except Exception as exc:
+            code = exc.code if isinstance(exc, PreparationError) else stage
+            if token is not None:
+                try:
+                    outcome = await self._block(alert_id, token, code)
+                    if outcome == "superseded":
+                        return PreparationResult(outcome)
+                except Exception:
+                    self.deferred_blocks[alert_id] = (token, code)
+                    logger.error(
+                        "État blocked non persisté, version suspendue localement",
+                        extra={"alert_id": str(alert_id), "error_code": code},
+                        exc_info=True,
                     )
-                    if not applied:
-                        return PreparationResult("superseded")
-
-                stage = "activation_write"
-                async with AsyncSessionLocal() as session:
-                    repo = AlertRepository(session)
-                    current = await repo.lock_preparation(alert_id, token)
-                    if current is None:
-                        return PreparationResult("superseded")
-                    # Relecture des caches dans cette session, pas des objets du collecteur.
-                    await BookRepository(session).get_all_books_for_alert(alert_id)
-                    current.decision_version += 1
-                    current.status = AlertStatus.ACTIVE
-                    current.preparation = None
-                    await session.commit()
-                return PreparationResult("completed", catalogues[-1] if catalogues else None)
-            except asyncio.CancelledError:
-                # L'interruption reste pending, reprenable au prochain passage/démarrage.
-                raise
-            except Exception as exc:
-                code = exc.code if isinstance(exc, PreparationError) else stage
-                if token is not None:
-                    try:
-                        outcome = await self._block(alert_id, token, code)
-                        if outcome == "superseded":
-                            return PreparationResult(outcome)
-                    except Exception:
-                        self.deferred_blocks[alert_id] = (token, code)
-                        logger.error(
-                            "État blocked non persisté, version suspendue localement",
-                            extra={"alert_id": str(alert_id), "error_code": code},
-                            exc_info=True,
-                        )
-                logger.warning(
-                    "Préparation BD bloquée : %s",
-                    code,
-                    extra={"alert_id": str(alert_id), "error_code": code},
-                    exc_info=True,
-                )
-                return PreparationResult("blocked")
+            logger.warning(
+                "Préparation BD bloquée : %s",
+                code,
+                extra={"alert_id": str(alert_id), "error_code": code},
+                exc_info=True,
+            )
+            return PreparationResult("blocked")
 
 
 preparation_runner = PreparationRunner()

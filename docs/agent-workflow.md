@@ -114,6 +114,24 @@ l'application pour vérifier du texte : son lifespan configure Telegram et les j
 sans cible sélectionne unitaires et performance ; `--target` peut sélectionner
 explicitement des tests d'intégration compatibles SQLite. `make test-isolated`
 sélectionne `unit --target tests` via cette même recette, sans second dispositif.
+Les trois tests d'occurrence peuvent démarrer un scheduler asyncio natif isolé :
+un seul job `refresh_prices_07_00`, exécuteur asyncio et stockage mémoire.
+Un seul prédicat autorise une coroutine du module de test ou l'enveloppe réelle
+d'occurrence. Pour celle-ci, les opérations métier connues référencées doivent
+être substituées, en comparaison avec leur identité dans leurs modules d'origine.
+Le test vérifie les substitutions avant de retirer les autres jobs de sa seule
+instance, puis exerce l'enveloppe réelle et attend l'arrêt du scheduler.
+Le garde refuse le
+scheduler produit complet, les autres fonctions/configurations et les schedulers
+en sous-processus. HTTP, Redis et sockets restent interdits, y compris dans les
+enfants. Le refus des transports est aussi exercé dans une sonde séparée dont les
+compteurs attendus sont vérifiés, sans relâcher ceux de la suite principale.
+Pour diagnostiquer une durée en mode `unit`, `--timings /tmp/nom-neuf.jsonl`
+conserve hors capture pytest les étapes de préparation, la collecte, les débuts
+de tests et leurs rapports de phases/durées. Le fichier doit être neuf ; un chemin
+relatif reste rattaché au répertoire d'invocation. Cette option ne modifie ni la
+sélection, ni les gardes, ni les plafonds de temps ; les données peuvent être
+incomplètes si le processus est interrompu.
 Les modes `postgres`
 et `backup` créent des ressources et nécessitent un mandat distinct.
 Les contrôles de Python et de ses enfants ne sont pas une sandbox système générale.

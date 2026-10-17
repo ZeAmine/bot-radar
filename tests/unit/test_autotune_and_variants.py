@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.handlers.alerts_create import handle_create_ai_variants
@@ -56,6 +58,8 @@ async def test_handle_create_ai_variants():
     callback.message.edit_text = AsyncMock()
 
     state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
     state.get_data = AsyncMock(
         return_value={
             "name": "One Piece",
@@ -104,6 +108,8 @@ async def test_handle_create_ai_variants_reports_engine_decision_when_nothing_fo
     callback.message.edit_text = AsyncMock()
 
     state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
     state.get_data = AsyncMock(
         return_value={
             "name": "One Piece",
@@ -144,6 +150,8 @@ async def test_handle_create_ai_variants_reports_silence_when_engine_failed():
     callback.message.edit_text = AsyncMock()
 
     state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
     state.get_data = AsyncMock(
         return_value={
             "name": "One Piece",
@@ -536,6 +544,8 @@ async def test_variants_concurrency_lock():
     callback.answer = AsyncMock()
 
     state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
     state.clear = AsyncMock()
 
     _active_variant_alerts.add(str(alert_id))
@@ -774,6 +784,8 @@ async def test_handle_tune_edit():
     alert = Alert(id=alert_id, name="One Piece", user_id=db_user.id)
 
     state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
     state.set_state = AsyncMock()
     state.update_data = AsyncMock()
 
@@ -811,6 +823,8 @@ async def test_handle_tune_back_to_suggestion():
     alert = Alert(id=alert_id, name="One Piece", user_id=db_user.id)
 
     state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
     state.clear = AsyncMock()
 
     with patch(
@@ -846,6 +860,8 @@ async def test_handle_custom_exclusions_input_valid():
     alert = Alert(id=alert_id, name="One Piece", user_id=db_user.id)
 
     state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
     state.get_data = AsyncMock(return_value={"tuning_alert_id": str(alert_id)})
     state.clear = AsyncMock()
 
@@ -882,6 +898,8 @@ async def test_handle_custom_exclusions_input_cancel():
     db_session = MagicMock()
 
     state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
     state.get_data = AsyncMock(return_value={"tuning_alert_id": str(alert_id)})
     state.clear = AsyncMock()
 
@@ -908,6 +926,8 @@ async def test_handle_create_ai_variants_recovers_from_a_stalled_engine():
     callback.message.edit_text = AsyncMock()
 
     state = MagicMock(spec=FSMContext)
+    state.storage = MemoryStorage()
+    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
     state.get_data = AsyncMock(
         return_value={
             "name": "One Piece",

@@ -21,6 +21,8 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 from sqlalchemy.exc import MissingGreenlet
 
@@ -71,6 +73,8 @@ class DraftState:
     def __init__(self) -> None:
         self.data: dict = {}
         self.state = None
+        self.storage = MemoryStorage()
+        self.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
 
     async def clear(self) -> None:
         self.data = {}
@@ -81,6 +85,9 @@ class DraftState:
 
     async def set_state(self, state) -> None:
         self.state = state
+
+    async def get_state(self):
+        return getattr(self.state, "state", self.state)
 
     async def update_data(self, data: dict | None = None, **kwargs) -> None:
         self.data.update(data or {})

@@ -30,3 +30,7 @@ async def async_client():
 def isolate_notification_windows(monkeypatch):
     """La fenêtre de repli locale ne doit jamais survivre au test qui l'a ouverte."""
     monkeypatch.setattr("app.services.market_health._notification_deadlines", {})
+    monkeypatch.setattr("app.services.market_health._incident_states", {})
+    monkeypatch.setattr("app.services.market_health._incident_observations", {})
+    monkeypatch.setattr("app.services.market_health._incident_pending", {})
+    monkeypatch.setattr("app.services.market_health._incident_loaded", False)

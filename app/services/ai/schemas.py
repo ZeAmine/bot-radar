@@ -70,6 +70,8 @@ def book_context_from(meta: BookMetadata, *, is_series: bool = False) -> BookCon
 class NaturalAddResult(BaseModel):
     """Résultat du parsing en langage naturel d'une commande /add."""
 
+    original_input: str | None = None
+    search_queries: list[str] = Field(default_factory=list)
     bibliographic_identity: dict[str, Any] = Field(default_factory=dict)
     requested_volume: int | None = None
     name: str = Field(description="Nom ou titre principal de l'alerte")

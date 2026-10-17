@@ -402,7 +402,7 @@ async def test_historical_points_enter_annual_minimum_but_not_current_offers(evi
     book = await BookRepository(evidence.db.session).get_by_id(evidence.book.id)
     text = market.MarketPriceService.format_market_details_card(listing=None, book=book)
     assert "Ancien minimum" not in text
-    assert text.count("Minimum sur 1 an") == 1
+    assert text.count("Prix bas constaté") == 1
     assert "5,45" in text
 
 
@@ -420,7 +420,7 @@ def test_market_card_omits_unproven_legacy_minimum():
     )
     text = market.MarketPriceService.format_market_details_card(listing=None, book=book)
     assert "Ancien minimum" not in text
-    assert text.count("Minimum sur 1 an") == 1
+    assert text.count("Prix bas constaté") == 1
     assert "11,03" in text
 
 

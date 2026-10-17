@@ -30,6 +30,7 @@ from app.bot.handlers.alerts_helpers import (
     process_bd_query_lookup,
     realign_draft_to_isbn,
 )
+from app.bot.states.alert_creation import AlertCreationState
 from app.domain.enums import BookSearchStatus, ProviderQueryStatus
 from app.services.book_metadata_service import (
     AUTORITE_BNF,
@@ -398,6 +399,7 @@ async def test_jeton_invalide_par_changement_de_categorie() -> None:
     from app.bot.handlers.alerts_create import handle_category_selected
 
     state = _state({"inline_query": None})
+    state.get_state.return_value = AlertCreationState.waiting_for_category.state
     callback = _callback("add_cat:tech")
     callback.message.edit_text = AsyncMock()
 

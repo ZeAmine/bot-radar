@@ -24,6 +24,7 @@ class PreparationRequest(BaseModel):
     state: Literal["pending", "blocked"] = "pending"
     activation_requested: bool = True
     author_hint: str | None = None
+    bibliographic_mode: Literal["one_shot", "series"] | None = None
     series_volumes: list[dict[str, Any]] = Field(default_factory=list)
     series_reference_publisher: str | None = None
     requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -36,6 +37,7 @@ class PreparationRequest(BaseModel):
         """Invalide le travail précédent et repart sur les critères actuels."""
         return PreparationRequest(
             activation_requested=activate, author_hint=author_hint,
+            bibliographic_mode=self.bibliographic_mode,
             series_volumes=self.series_volumes if preserve_series_volumes else [],
             series_reference_publisher=(self.series_reference_publisher
                                         if preserve_series_volumes else None),
