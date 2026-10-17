@@ -85,7 +85,7 @@ lorsqu'ils sortent du mandat ; ne pas revendiquer leur absence.
 ## Scripts sensibles
 
 Sans demande explicite, ne modifier ni altérer les scripts suivants :
-`sync_vinted_session.py`, `sync_vinted_checkout_session.py`, `sync_chasse_session.py`,
+`sync_vinted_session.py`, `sync_chasse_session.py`,
 `refresh_chasse_token.py`, `refresh_chasse_cron.sh`, `local_vinted_poller.py`,
 `report_cote_sent_state.py`, `audit_alerts_identity.py`, `backfill_series_tomes.py`,
 `clean_alert_keywords.py` (tous dans `scripts/`). Cette liste conserve la protection

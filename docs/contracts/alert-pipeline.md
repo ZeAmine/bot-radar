@@ -22,7 +22,6 @@ lecture d'article supplémentaire. La description synthétique n'est pas celle d
 
 Le titre et l'ISBN validé partent ensemble à tous les fournisseurs dans la cotation
 centrale, repli par titre compris. Cette collecte sert les annonces suivantes.
-La préparation de checkout n'existe qu'au clic ultérieur ; aucune préparation à l'envoi.
 
 ## Matching et état envoyé
 

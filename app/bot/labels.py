@@ -38,7 +38,7 @@ Cinq règles de présentation, valables sur **tous** les écrans :
    constante ni le littéral n'en portent, et `test_no_button_carries_an_arrow`
    tient les deux formes. La flèche d'un **titre** (`Détection → alerte`)
    décrit un flux, pas une action : elle n'entre pas dans cette règle.
-5. **Les actions d’une annonce « Acheter », « Voir l’annonce », « Prix du marché »,
+5. **Les actions d’une annonce « Voir l’annonce », « Prix du marché »,
    « Faux positif » et « Négocier » restent sans émoji**, y compris lorsque leur
    clavier est reconstruit.
 """
@@ -117,8 +117,6 @@ BTN_PREVIOUS = "Précédent"
 BTN_NEXT = "Suivant"
 BTN_BACK = "Retour"
 BTN_VIEW_LISTING = "Voir l'annonce"
-BTN_BUY = "Acheter"
-BTN_CONTINUE_CHECKOUT = "Poursuivre sur Vinted"
 BTN_CLOSE = "Fermer"
 BTN_CANCEL = "Annuler"
 BTN_DELETE = "Supprimer"

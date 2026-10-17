@@ -2,7 +2,7 @@
 
 Statut : décisions datées ; vérifier le statut de chaque entrée.
 Périmètre : contexte et raisons de ce thème, sans procédure d’exploitation implicite.
-Contrat/code de référence : [lecture spécialisée](../vinted-checkout.md).
+Contrat/code de référence : retiré — voir [ADR-051](#adr-051).
 
 <a id="adr-012"></a>
 
@@ -18,13 +18,13 @@ Introduction Git : 2026-09-24 · Statut : **accepté**. Première déclaration :
 
 ## ADR-047 : Le bouton « Acheter » prépare un checkout à la demande, jamais un paiement
 
-Date : 2026-10-14 · Statut : **accepté**. Première déclaration : `6292e2efcf75`.
+Date : 2026-10-14 · Statut : **remplacé par ADR-051**. Première déclaration : `6292e2efcf75`.
 
 - Contexte : L’utilisateur autorise une préparation manuelle accélérée, sans achat autonome.
 - Décision et raison : Au clic seulement, vérifier propriétaire et association à une alerte non supprimée, prérequis, session dédiée, verrou anti-double-clic et cache de lien ; préparer la transaction et le checkout.
 - Conséquences : Amende ADR-007. Le paiement/relais restent manuels. Tout échec coupe la création pour la durée de sa cause (blocage/limitation 30 min, délai/réseau 15 min, autres 5 min) ; le verrou d'exécution est global et possédé par un jeton (seul son détenteur le libère), et la coupure est posée avant sa libération puis revérifiée dans le verrou. Un `400 INVALID_INPUT` ne déclenche aucun repli — son absence d'effet de bord n'est pas établie — ; seul un `404` (route absente) ouvre un repli unique vers le chemin historique, sans boucle. La session validée sur le corps n'est jamais exposée. Le fil vendeur ouvert est un effet réel ; risques contractuels assumés, aucun contournement.
-- Amendement du 16 octobre 2026 : l'ancien seuil d'échecs doux et le verrou conservé après un échec incertain ne s'appliquent plus. La concurrence reste limitée, avec une fenêtre résiduelle assumée et **sans** identifiant d'idempotence : une reprise explicite après un résultat incertain peut créer une seconde conversation. Détails et limites dans [la procédure checkout](../vinted-checkout.md).
-- Observation historique du 14 octobre, source de consolidation `6292e2e` : refus anonyme et défi DataDome classés, suspension observée ; ce ne sont pas une réussite authentifiée ni une observation actuelle. Détails dans [la procédure checkout](../vinted-checkout.md).
+- Amendement du 16 octobre 2026 : l'ancien seuil d'échecs doux et le verrou conservé après un échec incertain ne s'appliquent plus. La concurrence reste limitée, avec une fenêtre résiduelle assumée et **sans** identifiant d'idempotence : une reprise explicite après un résultat incertain peut créer une seconde conversation.
+- Observation historique du 14 octobre, source de consolidation `6292e2e` : refus anonyme et défi DataDome classés, suspension observée ; ce ne sont pas une réussite authentifiée ni une observation actuelle. Retiré par ADR-051.
 
 <a id="adr-048"></a>
 
@@ -44,5 +44,16 @@ Date : 2026-10-14 · Statut : **accepté**. Première déclaration : `6292e2efcf
 
 - Contexte : L’utilisateur retire toute méthode userscript, extension ou injection de page.
 - Décision et raison : Supprimer le parcours local assisté d’ADR-048 ; seul subsiste le callback serveur d’ADR-047, derrière son interrupteur et avec lien manuel de repli.
-- Conséquences : Remplace ADR-048. La réussite authentifiée de bout en bout reste non démontrée à la base de cette tâche. Un blocage n’autorise ni contournement ni retour à une méthode abandonnée.
-- Observation historique du 14 octobre, source de consolidation `6292e2e` : refus anonyme et défi DataDome classés, suspension observée ; ce ne sont pas une réussite authentifiée ni une observation actuelle. Détails dans [la procédure checkout](../vinted-checkout.md).
+- Conséquences : Remplace ADR-048. La réussite authentifiée de bout en bout reste non démontrée à la base de cette tâche. Un blocage n’autorise ni contournement ni retour à une méthode abandonnée. ADR-051 retire le callback serveur d’ADR-047 ; l’interdiction des userscripts, extensions et scripts injectés reste en vigueur.
+- Observation historique du 14 octobre, source de consolidation `6292e2e` : refus anonyme et défi DataDome classés, suspension observée ; ce ne sont pas une réussite authentifiée ni une observation actuelle.
+
+<a id="adr-051"></a>
+
+## ADR-051 : Le checkout Vinted automatisé est retiré
+
+Date : 2026-10-17 · Statut : **accepté**. Remplace ADR-047.
+
+- Contexte : L’utilisateur renonce à toute automatisation d’achat ; la préparation de checkout au clic est retirée du produit.
+- Décision et raison : Supprimer le bouton « Acheter » et tout le chemin serveur (provider, cas d’usage, handler, session de compte injectée, route interne, script de capture) ; l’accès à l’annonce reste manuel par « Voir l’annonce ».
+- Conséquences : ADR-047 devient caduque. ADR-048 et ADR-049 restent en vigueur et ne sont pas rouvertes : aucun userscript, aucune extension, aucun script injecté, et aucun remplacement automatisé n’est introduit. La réussite authentifiée de bout en bout d’ADR-047 n’était pas démontrée avant ce retrait ; elle ne l’est pas davantage après.
+- Observation historique bornée : les refus/DataDome du 14 octobre 2026 et l’absence de lien d’achat partageable restent consignés dans les ADR datées de ce recueil.
