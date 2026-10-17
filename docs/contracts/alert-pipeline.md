@@ -50,10 +50,16 @@ s'injectent par son paramètre typé `sender`, qui retourne `DeliveryResult`.
 
 Le [poller](../../app/tasks/vinted_poller.py) émet une ligne INFO par cycle via le
 `JSONFormatter`, avec `event="poller_cycle"` : issue (`scanned`, `night`, `blocked`,
-`network_error`, `unexpected_error`), durée, annonces traitées, micro-pause et
-requêtes Vinted émises par type (`api`, `html`, `mint`). Ces compteurs réutilisent
-les requêtes existantes ; l'observabilité n'ajoute ni appel réseau, ni configuration,
-ni changement de cadence ou de cooldown.
+`network_error`, `unexpected_error`), durée, annonces traitées et requêtes Vinted
+émises par type (`api`, `html`, `mint`). Ces compteurs réutilisent les requêtes
+existantes : l'observabilité n'ajoute aucun appel réseau. La cadence ne subit aucune
+pause aléatoire ajoutée ; chaque entrée et sortie de la veille de nuit laisse une
+ligne `event="poller_night"` (`phase="start"` avec `remaining_s`, `phase="end"` avec
+`duration_s`).
+
+Le proxy Vinted n'est utilisé que si `VINTED_PROXY_ENABLED` est vrai : une
+`VINTED_PROXY_URL` seule n'active ni le proxy des clients, ni la cadence accélérée ;
+un avertissement unique la signale au démarrage.
 
 La commande `/status` rend ces champs quand l'état Redis les porte :
 

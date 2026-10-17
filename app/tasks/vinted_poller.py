@@ -160,7 +160,6 @@ def _log_cycle_journal(
     duration_seconds: float,
     target_seconds: float | None,
     items: int,
-    micro_pause_seconds: float,
     requests: dict[str, int],
 ) -> None:
     """Une ligne par cycle : issue, durée, annonces et requêtes émises."""
@@ -177,7 +176,6 @@ def _log_cycle_journal(
             "duration_s": round(duration_seconds, 2),
             "target_s": target_seconds,
             "items": items,
-            "micro_pause_s": round(micro_pause_seconds, 1),
             "requests": requests,
         },
     )
@@ -601,6 +599,10 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
     seen_ids: FifoSet = await load_initial_seen_ids()
     logger.info("Vinted poller initialisé avec %d IDs en mémoire.", len(seen_ids))
 
+    if settings.VINTED_PROXY_URL and not settings.VINTED_PROXY_ENABLED:
+        logger.warning(
+            "VINTED_PROXY_URL est configurée mais VINTED_PROXY_ENABLED est faux : proxy ignoré."
+        )
     proxy_url = settings.get_vinted_proxy()
     if proxy_url:
         logger.info("Vinted poller configuré avec proxy actif.")
@@ -620,7 +622,8 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
         availability = AvailabilityLedger()
         consecutive_collection_failures = 0
         collection_failure_notified = False
-        micro_pause_count = 0
+        night_active = False
+        night_started_at = 0.0
         search_first_seen: dict[tuple[str, str], float] = {}
         search_last_success: dict[tuple[str, str], float] = {}
 
@@ -630,6 +633,18 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
             if is_night_time():
                 night_started = time.monotonic()
                 remaining = get_night_mode_remaining_seconds()
+                if not night_active:
+                    night_active = True
+                    night_started_at = night_started
+                    logger.info(
+                        "Veille de nuit : entrée de la suspension (reprise dans %.0f min).",
+                        remaining / 60.0,
+                        extra={
+                            "event": "poller_night",
+                            "phase": "start",
+                            "remaining_s": round(remaining, 1),
+                        },
+                    )
                 hours_left = int(remaining // 3600)
                 mins_left = int((remaining % 3600) // 60)
                 logger.info(
@@ -675,13 +690,25 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 availability.add("night", time.monotonic() - night_started)
                 continue
 
+            if night_active:
+                night_active = False
+                night_span = time.monotonic() - night_started_at
+                logger.info(
+                    "Veille de nuit : sortie de la suspension (%.0f min couvertes).",
+                    night_span / 60.0,
+                    extra={
+                        "event": "poller_night",
+                        "phase": "end",
+                        "duration_s": round(night_span, 1),
+                    },
+                )
+
             poll_cycle += 1
             cycle_started = time.monotonic()
             outcome = "scanned"
             count_bd = 0
             count_custom = 0
             bd_scan_ok = False
-            micro_pause_seconds = 0.0
             requests_before = vinted_request_stats.totals()
             try:
                 # 1. Surveiller le flux global Livres (capture 100% des nouveautés en continu)
@@ -760,7 +787,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     "cycle_gap_p50_s": cadence.percentile(50),
                     "cycle_gap_p90_s": cadence.percentile(90),
                     "availability": availability.snapshot(),
-                    "micro_pauses": micro_pause_count,
                     "requests_60s": vinted_request_stats.window_counts(),
                     "search_stats": search_freshness_snapshot(
                         search_first_seen, search_last_success, time.monotonic()
@@ -842,7 +868,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     blocked_until - cycle_started,
                     None,
                     0,
-                    0.0,
                     _request_delta(requests_before),
                 )
                 continue
@@ -887,20 +912,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
             jitter = random.uniform(-2.5, 3.5)
             sleep_time = max(MIN_CYCLE_GAP_SECONDS, target_interval + jitter)
 
-            # Micro-pause naturelle humaine (30-45s) tous les ~50 cycles pour briser la régularité
-            # d'un robot
-            if poll_cycle % random.randint(45, 65) == 0:
-                micro_pause = random.uniform(30.0, 45.0)
-                micro_pause_seconds = micro_pause
-                micro_pause_count += 1
-                logger.info(
-                    "🛡️ Micro-pause naturelle de %.1fs (cycle #%d, total %d)...",
-                    micro_pause,
-                    poll_cycle,
-                    micro_pause_count,
-                )
-                sleep_time += micro_pause
-
             # Le travail du cycle (collecte, ingestion, envoi Telegram) est déduit de la pause
             # au lieu de s'y ajouter : une rafale d'annonces n'allonge plus la cadence et ne
             # retarde plus la détection des annonces suivantes.
@@ -918,7 +929,6 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 cycle_ended - cycle_started,
                 target_interval,
                 count_bd + count_custom,
-                micro_pause_seconds,
                 _request_delta(requests_before),
             )
 

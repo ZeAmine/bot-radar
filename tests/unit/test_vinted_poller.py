@@ -293,7 +293,6 @@ async def test_cycle_sleep_subtracts_the_cycle_work(monkeypatch: pytest.MonkeyPa
         patch("app.tasks.vinted_poller.save_poller_status", new_callable=AsyncMock),
         patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
         patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
-        patch("app.tasks.vinted_poller.random.randint", return_value=10_000),
         patch("app.tasks.vinted_poller.remaining_cycle_sleep", side_effect=spy_remaining),
     ):
         await run_vinted_poller(stop_event)
@@ -381,8 +380,7 @@ async def test_cycle_journal_and_status_expose_observability(
         ),
         patch("app.tasks.vinted_poller.save_poller_status", side_effect=fake_save),
         patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
-        patch("app.tasks.vinted_poller.random.uniform", side_effect=[0.0, 30.0, 0.0, 30.0]),
-        patch("app.tasks.vinted_poller.random.randint", return_value=1),
+        patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
         patch("app.tasks.vinted_poller.remaining_cycle_sleep", return_value=0.0),
         caplog.at_level(logging.INFO, logger="radar.vinted_poller"),
     ):
@@ -391,13 +389,10 @@ async def test_cycle_journal_and_status_expose_observability(
     journal = [r for r in caplog.records if getattr(r, "event", None) == "poller_cycle"]
     assert len(journal) == 2
     assert all(record.outcome == "scanned" for record in journal)
-    assert all(record.micro_pause_s == 30.0 for record in journal)
     assert all(record.requests == {"api": 0, "html": 0, "mint": 0} for record in journal)
-    assert caplog.text.count("Micro-pause naturelle de 30.0s") == 2
 
     active = [status for status in statuses if status.get("status") == "active"]
     assert len(active) == 2
-    assert active[-1]["micro_pauses"] == 1
     availability = active[-1]["availability"]
     assert isinstance(availability, dict)
     assert set(availability) == {
@@ -459,7 +454,6 @@ async def test_consecutive_collection_failures_alert_once_and_recover(
         patch("app.tasks.vinted_poller.save_poller_status", side_effect=fake_save),
         patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
         patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
-        patch("app.tasks.vinted_poller.random.randint", return_value=10_000),
         patch("app.tasks.vinted_poller.remaining_cycle_sleep", return_value=0.0),
         patch("app.tasks.vinted_poller.notify_admins", new_callable=AsyncMock) as notify,
     ):
@@ -510,8 +504,6 @@ async def test_block_cycle_reports_the_origin_hint_and_keeps_observability(
             new_callable=AsyncMock,
         ),
         patch("app.tasks.vinted_poller.notify_admins", new_callable=AsyncMock) as notify,
-        patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
-        patch("app.tasks.vinted_poller.random.randint", return_value=10_000),
     ):
         await run_vinted_poller(stop_event)
         for _ in range(3):
@@ -562,7 +554,6 @@ async def test_custom_search_scan_updates_the_freshness_status(
         patch("app.tasks.vinted_poller.save_poller_status", side_effect=fake_save),
         patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
         patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
-        patch("app.tasks.vinted_poller.random.randint", return_value=10_000),
         patch("app.tasks.vinted_poller.remaining_cycle_sleep", return_value=0.0),
     ):
         await run_vinted_poller(stop_event)
@@ -573,6 +564,112 @@ async def test_custom_search_scan_updates_the_freshness_status(
     assert isinstance(search_stats, dict)
     assert search_stats["count"] == 1
     assert 0 <= search_stats["worst_age_s"] < 5
+
+
+@pytest.mark.asyncio
+async def test_night_transitions_leave_structured_journal_lines(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """L'entrée et la sortie de la veille de nuit laissent chacune une ligne dédiée."""
+    import asyncio
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
+    stop_event = asyncio.Event()
+    statuses: list[dict[str, object]] = []
+
+    async def fake_poll(*_args: object, **_kwargs: object) -> int:
+        stop_event.set()
+        return 0
+
+    async def fake_save(data: dict[str, object]) -> None:
+        statuses.append(dict(data))
+
+    with (
+        patch(
+            "app.tasks.vinted_poller.is_night_time",
+            side_effect=[True, False, False, False],
+        ),
+        patch(
+            "app.tasks.vinted_poller.get_night_mode_remaining_seconds",
+            return_value=3600.0,
+        ),
+        patch(
+            "app.tasks.vinted_poller.load_initial_seen_ids",
+            new_callable=AsyncMock,
+            return_value=FifoSet(),
+        ),
+        patch("app.tasks.vinted_poller.poll_vinted_once", side_effect=fake_poll),
+        patch(
+            "app.tasks.vinted_poller.get_active_custom_searches_cached",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch("app.tasks.vinted_poller.save_poller_status", side_effect=fake_save),
+        patch(
+            "app.tasks.vinted_poller.vinted_session_manager.clear_session",
+            new_callable=AsyncMock,
+        ),
+        patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
+        patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
+        patch("app.tasks.vinted_poller.remaining_cycle_sleep", return_value=0.0),
+        caplog.at_level(logging.INFO, logger="radar.vinted_poller"),
+    ):
+        await run_vinted_poller(stop_event)
+
+    night = [r for r in caplog.records if getattr(r, "event", None) == "poller_night"]
+    assert [record.phase for record in night] == ["start", "end"]
+    assert night[0].remaining_s == 3600.0
+    assert night[1].duration_s >= 0.0
+    assert "Veille de nuit : entrée" in caplog.text
+    assert "Veille de nuit : sortie" in caplog.text
+    assert statuses[0]["status"] == "night_mode"
+
+
+@pytest.mark.asyncio
+async def test_proxy_url_without_the_flag_is_ignored_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Une URL de proxy sans flag n'active rien et laisse un avertissement."""
+    import asyncio
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
+    monkeypatch.setattr(settings, "VINTED_PROXY_ENABLED", False)
+    monkeypatch.setattr(settings, "VINTED_PROXY_URL", "http://10.0.0.1:8888")
+    stop_event = asyncio.Event()
+
+    async def fake_poll(*_args: object, **_kwargs: object) -> int:
+        stop_event.set()
+        return 0
+
+    with (
+        patch("app.tasks.vinted_poller.is_night_time", return_value=False),
+        patch(
+            "app.tasks.vinted_poller.load_initial_seen_ids",
+            new_callable=AsyncMock,
+            return_value=FifoSet(),
+        ),
+        patch("app.tasks.vinted_poller.poll_vinted_once", side_effect=fake_poll),
+        patch(
+            "app.tasks.vinted_poller.get_active_custom_searches_cached",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch("app.tasks.vinted_poller.save_poller_status", new_callable=AsyncMock),
+        patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
+        patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
+        patch("app.tasks.vinted_poller.remaining_cycle_sleep", return_value=0.0),
+        caplog.at_level(logging.WARNING, logger="radar.vinted_poller"),
+    ):
+        await run_vinted_poller(stop_event)
+
+    assert "VINTED_PROXY_ENABLED" in caplog.text
+    assert "proxy ignoré" in caplog.text
 
 
 @pytest.fixture(autouse=True)
