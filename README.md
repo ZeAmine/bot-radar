@@ -11,10 +11,8 @@ compare les BD au marché d'occasion livré et envoie l'alerte avant les enrichi
 Utilisateur unique protégé par `TELEGRAM_ALLOWED_USER_IDS`.
 
 L'IA propose variantes, exclusions, conseils de négociation et de revente.
-Le bot ne paie jamais et ne choisit aucun relais. Le bouton « Acheter », désactivé
-par défaut, peut préparer un checkout uniquement au clic explicite ; son statut
-et les limites de validation sont dans [la procédure dédiée](docs/vinted-checkout.md).
-Le lien « Voir l'annonce » reste l'accès manuel. Aucun userscript ou extension.
+Le bot ne paie jamais et ne choisit aucun relais. Le lien « Voir l'annonce » est
+l'accès manuel à l'annonce. Aucun userscript, extension ou script injecté.
 
 ## Comprendre ou modifier le projet
 

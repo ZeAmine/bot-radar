@@ -8,7 +8,10 @@ import pytest
 
 from app.services.vinted_parsing import CATALOG_PAGE_SIZE
 from app.services.vinted_scraper import (
+    VintedBlockError,
+    VintedRequestStats,
     VintedSessionManager,
+    block_origin_hint,
     catalog_url_to_api_params,
     extract_catalog_cover_urls,
     extract_photo_url,
@@ -19,6 +22,7 @@ from app.services.vinted_scraper import (
     parse_vinted_catalog_json,
     parse_vinted_overlay_title,
     to_ingest_payload,
+    vinted_request_stats,
 )
 
 SAMPLE_HTML = """
@@ -242,9 +246,6 @@ def test_parse_vinted_catalog_json():
     assert item.condition == "Neuf sans étiquette"
     assert item.url == "https://www.vinted.fr/items/10113230090-les-legendes-marvel"
     assert item.photo_url == "https://images1.vinted.net/t/01/f800/main.webp?s=123"
-    # L'identifiant vendeur voyage avec l'annonce : le clic « Acheter » en aura
-    # besoin sans refaire d'appel catalogue.
-    assert item.seller_external_id == "72804845"
 
     # Le payload d'ingestion ne transporte que la couverture
     payload = to_ingest_payload(item)
@@ -649,11 +650,92 @@ def test_explicit_publication_date_reaches_ingestion_without_inventing_missing_d
     assert "published_at" not in to_ingest_payload(parse_vinted_catalog_json({"items": [raw]})[0])
 
 
+def test_block_origin_hint_reads_only_response_headers() -> None:
+    """L'indice d'un 403 se lit dans les en-têtes de la réponse, jamais ailleurs."""
+    cloudflare = httpx.Response(
+        403, headers={"cf-ray": "8a1b2c3d4e5f", "server": "cloudflare"}
+    )
+    datadome = httpx.Response(403, headers={"set-cookie": "datadome=abc; Path=/"})
+    unknown = httpx.Response(403, headers={"server": "nginx"})
+
+    assert block_origin_hint(cloudflare) == "cloudflare"
+    assert block_origin_hint(datadome) == "datadome"
+    assert block_origin_hint(unknown) == "indéterminé"
+
+
+@pytest.mark.asyncio
+async def test_block_error_carries_the_origin_hint() -> None:
+    """Un 403 API propage l'indice d'origine dans l'exception levée."""
+    fake_client = AsyncMock()
+    fake_client.cookies = httpx.Cookies()
+    fake_client.get.return_value = httpx.Response(
+        403,
+        headers={"cf-ray": "8a1b2c3d4e5f"},
+        request=httpx.Request("GET", "https://api.vinted.fr/svc-catalogue/items"),
+    )
+
+    with (
+        patch(
+            "app.services.vinted_scraper.vinted_session_manager.ensure_valid_session",
+            new_callable=AsyncMock,
+        ),
+        pytest.raises(VintedBlockError) as excinfo,
+    ):
+        await fetch_vinted_page("https://www.vinted.fr/catalog", fake_client)
+
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.origin_hint == "cloudflare"
+
+
+def test_request_stats_count_kinds_on_a_rolling_window() -> None:
+    """Les compteurs par type portent sur une fenêtre glissante ; les totaux cumulent."""
+    stats = VintedRequestStats()
+    stats.record("api", now=0.0)
+    stats.record("api", now=95.0)
+    stats.record("html", now=50.0)
+
+    assert stats.window_counts(now=100.0) == {"api": 1, "html": 1, "mint": 0}
+    assert stats.totals() == {"api": 2, "html": 1, "mint": 0}
+
+    stats.reset()
+    assert stats.totals() == {"api": 0, "html": 0, "mint": 0}
+    assert stats.window_counts(now=100.0) == {"api": 0, "html": 0, "mint": 0}
+
+
+@pytest.mark.asyncio
+async def test_fetch_records_request_kinds() -> None:
+    """La collecte compte ses requêtes par type, sans appel supplémentaire."""
+    vinted_request_stats.reset()
+    fake_client = AsyncMock()
+    fake_client.cookies = httpx.Cookies()
+
+    api_resp = AsyncMock()
+    api_resp.status_code = 500
+    api_resp.headers = {"content-type": "text/html"}
+
+    html_resp = AsyncMock()
+    html_resp.status_code = 200
+    html_resp.headers = {"content-type": "text/html"}
+    html_resp.text = SAMPLE_HTML
+
+    fake_client.get.side_effect = [api_resp, html_resp]
+
+    with patch(
+        "app.services.vinted_scraper.vinted_session_manager.ensure_valid_session",
+        new_callable=AsyncMock,
+    ):
+        items = await fetch_vinted_page("https://www.vinted.fr/catalog", fake_client)
+
+    assert len(items) == 2
+    assert vinted_request_stats.totals() == {"api": 1, "html": 1, "mint": 0}
+
+
 @pytest.fixture(autouse=True)
 async def isolated_baseline_storage(monkeypatch):
     """Le poller persiste ses jalons dans une base propre à chaque scénario."""
     from tests.database import sqlite_only_database
 
+    vinted_request_stats.reset()
     async with sqlite_only_database() as database:
         monkeypatch.setattr("app.tasks.vinted_poller.AsyncSessionLocal", database.maker)
         yield

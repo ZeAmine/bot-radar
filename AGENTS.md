@@ -112,8 +112,6 @@ Intégration et découverte selon le harness : [référence ciblée](docs/agent-
   d'accès sont obligatoires. Valider avant la configuration Telegram et les producteurs.
 - Conserver l'allowlist Telegram et les secrets webhook/Bearer. Deux secrets vides
   peuvent être égaux avec `compare_digest` : la validation de démarrage est indispensable.
-- Les cookies de compte checkout restent en clé Redis dédiée, séparée du scraper,
-  jamais renvoyés par une route ni loggés ; seuls noms et faits sont exposables.
 - Pour vérifier : configuration factice avant imports, `.env` et secrets-directory
   neutralisés, transports externes refusés ou doublés, sous-processus compris.
   Des tokens factices seuls ne suffisent pas. Aucun service réel sans mandat.
@@ -129,11 +127,10 @@ Intégration et découverte selon le harness : [référence ciblée](docs/agent-
 
 ## Limites sensibles et qualité
 
-- Aucun paiement, confirmation d'achat ou choix de relais automatisé. Le checkout
-  est préparé uniquement au clic explicite, si configuré, avec coupe-circuit et
-  accès manuel à l'annonce. Aucune autre interaction marketplace automatisée,
-  aucun userscript, extension ou script injecté. Aucun contournement anti-bot.
-  Ne promettre ni absence de risque contractuel ni succès authentifié non observé.
+- Aucun paiement, confirmation d'achat ou choix de relais automatisé. Aucune
+  interaction marketplace automatisée, aucun userscript, extension ou script
+  injecté. Aucun contournement anti-bot. Ne promettre ni absence de risque
+  contractuel ni succès authentifié non observé.
 - Sans demande explicite, ne pas étendre ou améliorer `vinted_scraper.py`,
   `sync_vinted_session.py`, `chasse_aux_livres.py`, les formules de prix ou de marché.
   Les exceptions de preuve ISBN et filtres communs sont dans le contrat marché.
@@ -230,7 +227,6 @@ Lire seulement les documents liés au périmètre et à ses dépendances.
 | ISBN, séries, offres, validité des références | [Catalogue et marché](docs/contracts/catalogue-market.md) |
 | Claviers, variantes, auto-tuning et IA | [Telegram et IA](docs/contracts/telegram-ai.md) |
 | Préparation durable BD, pause, édition ISBN | [Préparation](docs/bd-preparation.md), [pause](docs/pause-actions.md), [ISBN](docs/isbn-removal.md) |
-| Checkout Vinted et session de compte | [Procédure checkout](docs/vinted-checkout.md) |
 | Déploiement autorisé, interruption ou retour | [Déploiement](docs/operations/deployment.md), puis procédure BD liée |
 | Sauvegarde/restauration autorisée | [Récupération](docs/backup-recovery.md), [pause](docs/pause-actions.md) |
 | Comprendre une décision et ses remplacements | [Index ADR](docs/decisions/README.md) |

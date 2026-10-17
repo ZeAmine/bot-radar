@@ -72,17 +72,8 @@ class Settings(BaseSettings):
 
     VINTED_POLL_INTERVAL_SECONDS: int = 12
     VINTED_POLLER_ENABLED: bool = True
+    VINTED_PROXY_ENABLED: bool = False
     VINTED_PROXY_URL: str | None = None
-
-    # Bouton « Acheter » : préparation du checkout Vinted à la demande (ADR-047),
-    # désactivée par défaut. Levée, elle affiche un callback qui tente la
-    # transaction puis le panier avec une session de compte injectée ; coupée,
-    # l'action n'apparaît pas sur les alertes. Le paiement reste manuel.
-    VINTED_CHECKOUT_PREPARATION_ENABLED: bool = False
-    VINTED_CHECKOUT_TIMEOUT_SECONDS: float = 12.0
-    # Durée pendant laquelle un lien de checkout préparé est réutilisé tel quel :
-    # recliquer sur « Acheter » pour la même annonce ne recrée pas d'opération.
-    VINTED_CHECKOUT_LINK_TTL_SECONDS: int = 600
 
     # Mode Nuit (Heures Creuses pour préserver l'IP et éviter les bans Cloudflare)
     NIGHT_MODE_ENABLED: bool = True
@@ -91,11 +82,12 @@ class Settings(BaseSettings):
     NIGHT_MODE_TIMEZONE: str = "Europe/Paris"
 
     def get_vinted_proxy(self) -> str | None:
-        """Retourne l'URL d'un proxy Vinted configuré.
+        """Retourne l'URL d'un proxy Vinted actif.
 
+        `VINTED_PROXY_ENABLED` doit être vrai : une URL seule n'active rien.
         Supporte soit une URL unique, soit une liste d'URLs séparées par des virgules.
         """
-        if not self.VINTED_PROXY_URL:
+        if not self.VINTED_PROXY_ENABLED or not self.VINTED_PROXY_URL:
             return None
         proxies = [p.strip() for p in self.VINTED_PROXY_URL.split(",") if p.strip()]
         if not proxies:

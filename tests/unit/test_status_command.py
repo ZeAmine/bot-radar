@@ -110,6 +110,52 @@ async def test_handle_status_day_active():
         assert "📚 <b>Livres :</b> 5" in text
         assert "💻 <b>Électronique :</b> 3" in text
         assert "🎮 <b>Jeux Vidéo :</b> 2" in text
+        assert "Disponibilité scan" not in text
+        assert "Recherches perso" not in text
+        assert "Requêtes Vinted (60 s)" not in text
+
+
+@pytest.mark.asyncio
+async def test_handle_status_renders_scan_observability():
+    """Les champs d'observabilité du poller alimentent /status quand ils existent."""
+    message = MagicMock(spec=Message)
+    message.answer = AsyncMock()
+
+    now_ts = time.time()
+    mock_db = _two_query_db(latency_rows=[], category_rows=[])
+
+    mock_status_data = {
+        "status": "active",
+        "last_poll_at": now_ts - 15,
+        "consecutive_blocks": 0,
+        "cycle_gap_p50_s": 17.4,
+        "availability": {
+            "window_s": 86400.0,
+            "scanned_s": 60480.0,
+            "night_s": 25200.0,
+            "blocked_s": 720.0,
+            "network_error_s": 0.0,
+            "unexpected_error_s": 0.0,
+        },
+        "search_stats": {"count": 3, "worst_age_s": 42.0},
+        "requests_60s": {"api": 5, "html": 1, "mint": 0},
+    }
+
+    with (
+        patch("app.bot.handlers.status.is_night_time", return_value=False),
+        patch("app.bot.handlers.status.get_poller_status",
+              new_callable=AsyncMock, return_value=mock_status_data),
+        patch("app.bot.handlers.status.settings.VINTED_POLLER_ENABLED", True),
+    ):
+        await handle_status(message, mock_db)
+
+    text = message.answer.call_args[0][0]
+    assert (
+        "<b>Disponibilité scan :</b> 70 % (24 h 00) · bloqué 12 min · nuit 7 h 00"
+        in text
+    )
+    assert "<b>Recherches perso :</b> 3 · plus ancien scan 42 s" in text
+    assert "<b>Requêtes Vinted (60 s) :</b> API 5 · HTML 1 · mint 0" in text
 
 
 @pytest.mark.asyncio

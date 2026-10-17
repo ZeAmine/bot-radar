@@ -22,7 +22,6 @@ lecture d'article supplémentaire. La description synthétique n'est pas celle d
 
 Le titre et l'ISBN validé partent ensemble à tous les fournisseurs dans la cotation
 centrale, repli par titre compris. Cette collecte sert les annonces suivantes.
-La préparation de checkout n'existe qu'au clic ultérieur ; aucune préparation à l'envoi.
 
 ## Matching et état envoyé
 
@@ -47,6 +46,36 @@ incertaine comme non envoyée ou promettre une livraison exactement une fois.
 `ProcessListingUseCase` utilise par défaut `send_listing_alert` ; les doubles
 s'injectent par son paramètre typé `sender`, qui retourne `DeliveryResult`.
 
+## Observabilité de la scrutation
+
+Le [poller](../../app/tasks/vinted_poller.py) émet une ligne INFO par cycle via le
+`JSONFormatter`, avec `event="poller_cycle"` : issue (`scanned`, `night`, `blocked`,
+`network_error`, `unexpected_error`), durée, annonces traitées et requêtes Vinted
+émises par type (`api`, `html`, `mint`). Ces compteurs réutilisent les requêtes
+existantes : l'observabilité n'ajoute aucun appel réseau. La cadence ne subit aucune
+pause aléatoire ajoutée ; chaque entrée et sortie de la veille de nuit laisse une
+ligne `event="poller_night"` (`phase="start"` avec `remaining_s`, `phase="end"` avec
+`duration_s`).
+
+Le proxy Vinted n'est utilisé que si `VINTED_PROXY_ENABLED` est vrai : une
+`VINTED_PROXY_URL` seule n'active ni le proxy des clients, ni la cadence accélérée ;
+un avertissement unique la signale au démarrage.
+
+La commande `/status` rend ces champs quand l'état Redis les porte :
+
+- « Disponibilité scan » : part du temps couvert par les cycles passée en scrutation,
+  avec le détail bloqué / nuit / réseau / erreurs. La fenêtre affichée croît de 0 à
+  24 h depuis le démarrage ; le registre vit en mémoire et repart de zéro au
+  redémarrage du processus.
+- « Recherches perso » : âge du plus ancien dernier scan réussi ; une recherche
+  jamais scannée compte depuis sa première observation.
+- « Requêtes Vinted (60 s) » : requêtes émises sur les 60 dernières secondes.
+
+Un 403 est classé par les seuls en-têtes de la réponse — `cf-ray` ou
+`server: cloudflare`, cookie `datadome`, sinon « indéterminé » — et l'indice apparaît
+dans la raison du statut de pause. Cinq cycles consécutifs sans collecte du flux
+Livres notifient une fois ; la reprise notifie une seconde fois.
+
 ## Preuves existantes et limites
 
 | Contrat | Contrôles à sélectionner |
@@ -55,6 +84,7 @@ s'injectent par son paramètre typé `sender`, qui retourne `DeliveryResult`.
 | Matching pur | [règles](../../tests/unit/test_matching_rules.py) |
 | Envoi et enrichissement | [ingest→Telegram](../../tests/unit/test_ingest_to_telegram.py), [use case](../../tests/unit/test_ingest_use_case.py) |
 | Frontières de temps et résultat | [latence](../../tests/integration/test_alert_latency.py), [mesures](../alert-latency.md) |
+| Observabilité de la scrutation | [métriques du poller](../../tests/unit/test_vinted_poller.py), [statut](../../tests/unit/test_status_command.py), [classification et compteurs](../../tests/unit/test_vinted_scraper.py) |
 
 Ces contrôles sont des preuves seulement lorsqu'exécutés sur un arbre et une
 sélection identifiés. Les benchmarks ont des transports simulés. La source catalogue

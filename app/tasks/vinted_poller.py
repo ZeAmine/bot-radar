@@ -32,9 +32,11 @@ from app.services.vinted_parsing import CATALOG_PAGE_SIZE
 from app.services.vinted_scraper import (
     DEFAULT_GLOBAL_BD_URL,
     VintedBlockError,
+    VintedCollectionError,
     VintedRateLimitError,
     fetch_vinted_page,
     to_ingest_payload,
+    vinted_request_stats,
     vinted_session_manager,
 )
 from app.utils.percentile import interpolated_percentile
@@ -62,6 +64,10 @@ MAX_MEANINGFUL_CYCLE_GAP_S = 90.0
 # déduction du travail du cycle : une ingestion ou un envoi Telegram lent ne peut pas
 # coller deux scrutations l'une à l'autre.
 MIN_CYCLE_GAP_SECONDS = 6.0
+
+COLLECTION_FAILURE_ALERT_THRESHOLD = 5
+AVAILABILITY_CATEGORIES = ("scanned", "night", "blocked", "network_error", "unexpected_error")
+AVAILABILITY_WINDOW_SECONDS = 24 * 3600.0
 
 class CycleCadence:
     """Historique des écarts entre deux cycles de scrutation.
@@ -95,6 +101,84 @@ class CycleCadence:
         """Percentile des écarts, arrondi à 0,1 s. None si l'échantillon est vide."""
         value = interpolated_percentile(self.gaps, pct)
         return None if value is None else round(value, 1)
+
+
+class AvailabilityLedger:
+    """Secondes écoulées par catégorie de cycle, sur une fenêtre glissante bornée."""
+
+    def __init__(self, window_seconds: float = AVAILABILITY_WINDOW_SECONDS) -> None:
+        self._window_seconds = window_seconds
+        self._events: deque[tuple[float, str, float]] = deque()
+        self._seconds: dict[str, float] = dict.fromkeys(AVAILABILITY_CATEGORIES, 0.0)
+
+    def add(self, category: str, seconds: float, now: float | None = None) -> None:
+        if category not in self._seconds:
+            raise ValueError(f"catégorie de disponibilité inconnue : {category}")
+        duration = max(0.0, seconds)
+        if duration == 0.0:
+            return
+        moment = time.monotonic() if now is None else now
+        self._events.append((moment, category, duration))
+        self._seconds[category] += duration
+        self._trim(moment)
+
+    def snapshot(self, now: float | None = None) -> dict[str, float]:
+        moment = time.monotonic() if now is None else now
+        self._trim(moment)
+        snapshot = {"window_s": round(sum(self._seconds.values()), 1)}
+        for category, seconds in self._seconds.items():
+            snapshot[f"{category}_s"] = round(seconds, 1)
+        return snapshot
+
+    def _trim(self, now: float) -> None:
+        while self._events and now - self._events[0][0] > self._window_seconds:
+            _, category, duration = self._events.popleft()
+            self._seconds[category] -= duration
+
+
+def search_freshness_snapshot(
+    first_seen: dict[tuple[str, str], float],
+    last_success: dict[tuple[str, str], float],
+    now: float,
+) -> dict[str, float] | None:
+    """Âge du plus ancien dernier scan réussi parmi les recherches personnalisées."""
+    if not first_seen:
+        return None
+    worst_age = max(now - last_success.get(key, seen) for key, seen in first_seen.items())
+    return {"count": len(first_seen), "worst_age_s": round(worst_age, 1)}
+
+
+def _request_delta(before: dict[str, int]) -> dict[str, int]:
+    """Requêtes Vinted émises depuis le relevé `before`, par type."""
+    after = vinted_request_stats.totals()
+    return {kind: total - before.get(kind, 0) for kind, total in after.items()}
+
+
+def _log_cycle_journal(
+    cycle: int,
+    outcome: str,
+    duration_seconds: float,
+    target_seconds: float | None,
+    items: int,
+    requests: dict[str, int],
+) -> None:
+    """Une ligne par cycle : issue, durée, annonces et requêtes émises."""
+    logger.info(
+        "Cycle Vinted #%d terminé (%s) en %.2fs : %d annonces.",
+        cycle,
+        outcome,
+        duration_seconds,
+        items,
+        extra={
+            "event": "poller_cycle",
+            "cycle": cycle,
+            "outcome": outcome,
+            "duration_s": round(duration_seconds, 2),
+            "target_s": target_seconds,
+            "items": items,
+            "requests": requests,
+        },
+    )
 
 
 class FifoSet(set[str]):
@@ -367,12 +451,6 @@ async def _ingest_scraped_item(item: Any, category_slug: str) -> ScrapedIngestRe
         ingestion_id=uuid.uuid4(), collection_id=collection_id, discovered_at=discovered_at
     )
     payload_dict = to_ingest_payload(item, category_slug=category_slug)
-    # L'identifiant vendeur sert au clic sur « Acheter ». `to_ingest_payload`
-    # vit dans un fichier sensible que l'on n'étend pas : le champ est joint
-    # ici, une fois, depuis la donnée déjà parsée, sans aucun appel réseau.
-    seller_external_id = getattr(item, "seller_external_id", None)
-    if seller_external_id:
-        payload_dict["seller_external_id"] = str(seller_external_id)
     payload = ListingIngestPayload.model_validate(payload_dict)
     waiting_at = latency.clock()
     acquired = False
@@ -521,6 +599,10 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
     seen_ids: FifoSet = await load_initial_seen_ids()
     logger.info("Vinted poller initialisé avec %d IDs en mémoire.", len(seen_ids))
 
+    if settings.VINTED_PROXY_URL and not settings.VINTED_PROXY_ENABLED:
+        logger.warning(
+            "VINTED_PROXY_URL est configurée mais VINTED_PROXY_ENABLED est faux : proxy ignoré."
+        )
     proxy_url = settings.get_vinted_proxy()
     if proxy_url:
         logger.info("Vinted poller configuré avec proxy actif.")
@@ -537,12 +619,32 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
         # ne pèse que ~17 ms face à des cycles de plusieurs secondes. Sans mesure, une
         # cadence dégradée se lit comme une cadence normale.
         cadence = CycleCadence()
+        availability = AvailabilityLedger()
+        consecutive_collection_failures = 0
+        collection_failure_notified = False
+        night_active = False
+        night_started_at = 0.0
+        search_first_seen: dict[tuple[str, str], float] = {}
+        search_last_success: dict[tuple[str, str], float] = {}
 
         while not stop_event.is_set():
             # 0. Vérification du Mode Nuit (suspension nocturne pour préserver l'IP et éviter les
             # bans)
             if is_night_time():
+                night_started = time.monotonic()
                 remaining = get_night_mode_remaining_seconds()
+                if not night_active:
+                    night_active = True
+                    night_started_at = night_started
+                    logger.info(
+                        "Veille de nuit : entrée de la suspension (reprise dans %.0f min).",
+                        remaining / 60.0,
+                        extra={
+                            "event": "poller_night",
+                            "phase": "start",
+                            "remaining_s": round(remaining, 1),
+                        },
+                    )
                 hours_left = int(remaining // 3600)
                 mins_left = int((remaining % 3600) // 60)
                 logger.info(
@@ -561,6 +663,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     "cooldown_until": None,
                     "last_poll_at": time.time(),
                     "wake_up_hour": settings.NIGHT_MODE_END_HOUR,
+                    "availability": availability.snapshot(),
                     "message": (
                         "Mode Nuit actif (veille jusqu'à "
                         f"{settings.NIGHT_MODE_END_HOUR:02d}:00)"
@@ -582,11 +685,31 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     "haute performance."
                 )
                 consecutive_blocks = 0
+                consecutive_collection_failures = 0
                 await asyncio.sleep(random.uniform(2.0, 5.0))
+                availability.add("night", time.monotonic() - night_started)
                 continue
+
+            if night_active:
+                night_active = False
+                night_span = time.monotonic() - night_started_at
+                logger.info(
+                    "Veille de nuit : sortie de la suspension (%.0f min couvertes).",
+                    night_span / 60.0,
+                    extra={
+                        "event": "poller_night",
+                        "phase": "end",
+                        "duration_s": round(night_span, 1),
+                    },
+                )
 
             poll_cycle += 1
             cycle_started = time.monotonic()
+            outcome = "scanned"
+            count_bd = 0
+            count_custom = 0
+            bd_scan_ok = False
+            requests_before = vinted_request_stats.totals()
             try:
                 # 1. Surveiller le flux global Livres (capture 100% des nouveautés en continu)
                 count_bd = await poll_vinted_once(
@@ -596,11 +719,18 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     category_slug=CategorySlug.BD_COMICS.value,
                     cycle_index=poll_cycle,
                 )
+                bd_scan_ok = True
 
-                count_custom = 0
                 # 2. Surveiller les recherches actives hors-livres (Électronique, Vêtements, Jeux
                 # Vidéo)
                 custom_searches = await get_active_custom_searches_cached()
+                now_monotonic = time.monotonic()
+                current_search_keys = set(custom_searches)
+                for stale_key in set(search_first_seen) - current_search_keys:
+                    search_first_seen.pop(stale_key, None)
+                    search_last_success.pop(stale_key, None)
+                for new_key in current_search_keys - set(search_first_seen):
+                    search_first_seen[new_key] = now_monotonic
                 if custom_searches and not stop_event.is_set():
                     # Interroger 1 recherche personnalisée par cycle en round-robin pour préserver
                     # l'IP
@@ -613,6 +743,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                         category_slug=custom_slug,
                         cycle_index=poll_cycle,
                     )
+                    search_last_success[(custom_url, custom_slug)] = time.monotonic()
 
                 # Si une alerte de blocage avait eu lieu et qu'on réussit, réinitialiser et avertir
                 if consecutive_blocks > 0:
@@ -630,6 +761,19 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                         name="notify_vinted_recovered",
                     )
 
+                consecutive_collection_failures = 0
+                if collection_failure_notified:
+                    collection_failure_notified = False
+                    safe_create_task(
+                        notify_admins(
+                            text=(
+                                "✅ <b>BotRadar — Collecte Vinted rétablie</b>\n\n"
+                                "🟢 Les cycles de scrutation aboutissent de nouveau."
+                            )
+                        ),
+                        name="notify_vinted_collection_recovered",
+                    )
+
                 now_ts = time.time()
                 cadence.record(now_ts)
 
@@ -642,6 +786,11 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     "last_items_found": count_bd + count_custom,
                     "cycle_gap_p50_s": cadence.percentile(50),
                     "cycle_gap_p90_s": cadence.percentile(90),
+                    "availability": availability.snapshot(),
+                    "requests_60s": vinted_request_stats.window_counts(),
+                    "search_stats": search_freshness_snapshot(
+                        search_first_seen, search_last_success, time.monotonic()
+                    ),
                     "message": "Surveillance Vinted active",
                 })
 
@@ -664,7 +813,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     tz = ZoneInfo("Europe/Paris")
                 resume_time_str = datetime.fromtimestamp(cooldown_until, tz).strftime("%H:%M")
                 reason_str = (
-                    "Blocage Cloudflare (403)"
+                    f"Blocage Vinted (403, indice: {block_exc.origin_hint})"
                     if isinstance(block_exc, VintedBlockError)
                     else "Rate Limit Vinted (429)"
                 )
@@ -684,6 +833,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     "cooldown_until": cooldown_until,
                     "cooldown_seconds": cooldown,
                     "last_poll_at": time.time(),
+                    "availability": availability.snapshot(),
                     "reason": reason_str,
                     "resume_time": resume_time_str,
                     "message": f"Pause de sécurité #{consecutive_blocks} ({cooldown_mins} min)",
@@ -710,22 +860,57 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
 
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop_event.wait(), timeout=cooldown)
+                blocked_until = time.monotonic()
+                availability.add("blocked", blocked_until - cycle_started, blocked_until)
+                _log_cycle_journal(
+                    poll_cycle,
+                    "blocked",
+                    blocked_until - cycle_started,
+                    None,
+                    0,
+                    _request_delta(requests_before),
+                )
                 continue
 
+            except VintedCollectionError as exc:
+                outcome = "network_error"
+                if bd_scan_ok:
+                    logger.warning(
+                        "Collecte Vinted échouée sur une recherche personnalisée : %s",
+                        type(exc).__name__,
+                    )
+                else:
+                    consecutive_collection_failures += 1
+                    logger.warning(
+                        "Collecte Vinted échouée (%d cycles consécutifs) : %s",
+                        consecutive_collection_failures,
+                        type(exc).__name__,
+                    )
+                    if (
+                        consecutive_collection_failures == COLLECTION_FAILURE_ALERT_THRESHOLD
+                        and not collection_failure_notified
+                    ):
+                        collection_failure_notified = True
+                        safe_create_task(
+                            notify_admins(
+                                text=(
+                                    "⚠️ <b>BotRadar — Collecte Vinted dégradée</b>\n\n"
+                                    f"⚠️ {consecutive_collection_failures} cycles consécutifs "
+                                    "sans collecte du flux Livres (réseau ou API).\n"
+                                    "Le bot poursuit ses cycles sans pause anti-blocage."
+                                )
+                            ),
+                            name="notify_vinted_collection_degraded",
+                        )
+
             except Exception as exc:
+                outcome = "unexpected_error"
                 logger.error("Erreur inattendue dans la boucle du Vinted Poller: %s", exc)
 
             # Cadence adaptative (heures de pointe vs standard, VPS vs proxy résidentiel)
             target_interval = get_adaptive_poll_interval()
             jitter = random.uniform(-2.5, 3.5)
             sleep_time = max(MIN_CYCLE_GAP_SECONDS, target_interval + jitter)
-
-            # Micro-pause naturelle humaine (30-45s) tous les ~50 cycles pour briser la régularité
-            # d'un robot
-            if poll_cycle % random.randint(45, 65) == 0:
-                micro_pause = random.uniform(30.0, 45.0)
-                logger.debug("🛡️ Micro-pause naturelle de %.1fs...", micro_pause)
-                sleep_time += micro_pause
 
             # Le travail du cycle (collecte, ingestion, envoi Telegram) est déduit de la pause
             # au lieu de s'y ajouter : une rafale d'annonces n'allonge plus la cadence et ne
@@ -735,6 +920,17 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
 
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=sleep_time)
+
+            cycle_ended = time.monotonic()
+            availability.add(outcome, cycle_ended - cycle_started, cycle_ended)
+            _log_cycle_journal(
+                poll_cycle,
+                outcome,
+                cycle_ended - cycle_started,
+                target_interval,
+                count_bd + count_custom,
+                _request_delta(requests_before),
+            )
 
         await save_poller_status({
             "status": "stopped",
