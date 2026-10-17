@@ -7,8 +7,8 @@ Périmètre : une stagnation entre l'ingestion d'annonces et les notifications
 Telegram. Le script [`scripts/check_alert_chain.py`](../../scripts/check_alert_chain.py)
 compare, sur une fenêtre glissante, les annonces reçues, les correspondances
 créées, les notifications acquittées et les correspondances encore actionnables
-en retard. Un incident critique exige qu'une notification ait été réellement
-attendue.
+en retard. Un incident critique exige qu'une correspondance attende réellement un
+traitement dont le délai admissible est dépassé.
 
 ## Ce que le contrôle fait et ne fait pas
 
@@ -20,10 +20,11 @@ attendue.
   identifiants internes (`alert_id`, `match_id`, `listing_id`), des états, des
   compteurs et le SHA du commit. Ni titre, ni URL d'annonce, ni donnée personnelle.
 
-Un relevé sans incident **ne prouve pas** l'absence de bug. Ce contrôle ne couvre
-ni la collecte Vinted, ni la réception réelle côté Telegram, ni la chaîne des prix,
-ni la vivacité du scheduler, ni l'état de PostgreSQL/Redis. Il ne prouve pas non
-plus que la base est saine : il prouve qu'un symptôme précis n'a pas été observé.
+Un relevé sans incident **ne prouve pas** l'absence de bug, **ni que le matching
+est sain**, **ni qu'une notification a été reçue par Telegram**. Il signifie
+seulement qu'aucune correspondance actionnable échue n'a été observée. Ce contrôle
+ne couvre ni la collecte Vinted, ni la réception réelle côté Telegram, ni la
+chaîne des prix, ni la vivacité du scheduler, ni l'état de PostgreSQL/Redis.
 
 ## Signaux et seuils
 
@@ -34,28 +35,36 @@ plus que la base est saine : il prouve qu'un symptôme précis n'a pas été obs
 | `--max-sample` | `8` | Identifiants listés dans le message |
 | `--dedup-seconds` | `3600` | Fenêtre du dédoublonnage Redis |
 
-Déclenchement déterministe, dans cet ordre :
+Déclenchement déterministe :
 
-1. **Critique** — `matches_created > 0` et `matches_notified = 0` :
-   « correspondances créées sans aucune notification acquittée ».
-2. **Critique** — `blocked_actionable_due > 0` : « correspondances actionnables
-   en retard ».
-3. **Aucun incident** — `matches_created = 0` et `blocked_actionable_due = 0`,
-   même si des annonces ont été ingérées : « aucune correspondance créée sur la
-   fenêtre ; aucune notification attendue ».
-4. `non_terminal_due > 0` sans `blocked_actionable_due` : **aucun incident**,
-   l'information reste dans le relevé.
+1. **Critique** — `blocked_actionable_due > 0` : une correspondance attend
+   réellement un traitement, son échéance `next_attempt_at` est passée et elle est
+   plus ancienne que `--stuck-hours`. Une correspondance fraîche ou une reprise
+   prévue dans le futur n'est pas comptée.
+2. **Aucun incident** — sinon. `matches_created` et `matches_notified` restent des
+   compteurs de contexte : leur seule valeur ne déclenche jamais d'incident.
 
 Des annonces ingérées sans aucune correspondance ne déclenchent donc rien : il
 n'y avait rien à notifier. C'est un fait, pas une preuve de bonne santé.
 
 `blocked_actionable_due` compte les correspondances `notified_at IS NULL`, dans un
-état que la reprise F03-B doit progresser (`ready`, `deferred`, `sending`), dont
-`next_attempt_at` est passé et créées avant `--stuck-hours` (garde contre les
-correspondances en cours d'envoi). `notified` et `abandoned` sont terminaux.
-`non_terminal_due` compte, à titre informatif, toutes les correspondances non
-terminales dont la prochaine tentative est passée ; il ne déclenche aucun
-incident à lui seul.
+état que la reprise F03-B doit faire progresser (`ready`, `deferred`, `sending`, ou
+`unknown` avec un reçu exploitable), dont `next_attempt_at` est passée et créées
+avant `--stuck-hours` (garde contre les correspondances en cours d'envoi).
+`notified` et `abandoned` sont terminaux. `non_terminal_due` compte, à titre
+informatif, toutes les correspondances non terminales échues ; il ne déclenche
+aucun incident à lui seul.
+
+### `unknown` avec ou sans reçu (F03-B)
+
+`unknown` n'autorise **aucun nouvel envoi** : `recover_notifications` s'arrête sur
+cet état. Mais un `unknown` porteur d'un reçu exploitable (`telegram_message_id > 0`,
+`telegram_chat_id != 0`, `telegram_bot_id > 0`, `attempt_id` non nul) reste
+**actionnable pour sa finalisation** : `complete_stored_receipt` exécute le
+marquage SQL, sans renvoyer de message. Un tel reçu resté non finalisé au-delà de
+la garde d'âge est donc un vrai blocage et compte dans `blocked_actionable_due`.
+Un `unknown` **sans** reçu n'est ni renvoyé ni finalisable : il ne compte que dans
+`non_terminal_due`, sans incident.
 
 ## Exécution manuelle
 

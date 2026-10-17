@@ -11,10 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
+import check_alert_chain  # noqa: E402
 from check_alert_chain import (  # noqa: E402
     BlockedMatch,
     Snapshot,
     Verdict,
+    append_record,
     collect_snapshot,
     decide,
     evaluate,
@@ -119,12 +121,23 @@ def test_evaluate_ignores_ingestion_without_any_match():
     assert "aucune correspondance créée" in verdict.reason
 
 
-def test_evaluate_flags_created_matches_without_notification():
+def test_evaluate_ignores_fresh_unnotified_match():
     now = datetime.now(UTC)
-    verdict = evaluate(_snapshot(now=now, ingested=5, acknowledged=0, matches_created=2))
+    verdict = evaluate(
+        _snapshot(now=now, ingested=5, acknowledged=0, matches_created=1, blocked=0)
+    )
+    assert verdict.incident is False
+    assert verdict.severity == "ok"
+
+
+def test_evaluate_detects_blockage_despite_unrelated_notification():
+    now = datetime.now(UTC)
+    verdict = evaluate(
+        _snapshot(now=now, ingested=5, acknowledged=1, matches_created=2, blocked=1)
+    )
     assert verdict.incident is True
     assert verdict.severity == "critical"
-    assert verdict.reason == "correspondances créées sans aucune notification acquittée"
+    assert verdict.reason == "correspondances actionnables en retard"
 
 
 def test_evaluate_ignores_created_matches_that_were_notified():
@@ -252,9 +265,83 @@ async def test_collect_snapshot_classifies_only_actionable_blockages():
     assert snapshot.acknowledged == 1
     assert snapshot.matches_created == 9
     assert snapshot.matches_notified == 1
-    assert snapshot.blocked_actionable_due == 3
+    assert snapshot.blocked_actionable_due == 4
     assert snapshot.non_terminal_due == 6
-    assert len(snapshot.blocked_sample) == 3
+    assert len(snapshot.blocked_sample) == 4
+
+
+async def test_collect_snapshot_unknown_without_receipt_is_not_actionable():
+    now = datetime.now(UTC)
+    old = now - timedelta(hours=2)
+    async with sqlite_only_database() as database:
+        await _seed(
+            database.session,
+            now=now,
+            matches=[
+                {
+                    "state": NotificationState.UNKNOWN.value,
+                    "created_at": old,
+                    "telegram_message_id": 42,
+                    "telegram_chat_id": 1,
+                    "telegram_bot_id": 2,
+                    "attempt_id": uuid.uuid4(),
+                },
+                {"state": NotificationState.UNKNOWN.value, "created_at": old},
+            ],
+        )
+        snapshot = await collect_snapshot(
+            database.session, now=now, window_hours=2, stuck_hours=1, max_sample=10
+        )
+
+    assert snapshot.blocked_actionable_due == 1
+    assert snapshot.non_terminal_due == 2
+    assert snapshot.blocked_sample[0].notification_state == NotificationState.UNKNOWN.value
+
+
+async def test_collect_snapshot_future_retry_is_not_blocked():
+    now = datetime.now(UTC)
+    old = now - timedelta(hours=2)
+    async with sqlite_only_database() as database:
+        await _seed(
+            database.session,
+            now=now,
+            matches=[
+                {
+                    "state": NotificationState.READY.value,
+                    "created_at": old,
+                    "next_attempt_at": now + timedelta(hours=1),
+                }
+            ],
+        )
+        snapshot = await collect_snapshot(
+            database.session, now=now, window_hours=2, stuck_hours=1, max_sample=10
+        )
+
+    assert snapshot.blocked_actionable_due == 0
+    assert snapshot.non_terminal_due == 0
+
+
+async def test_collect_snapshot_fresh_match_is_not_blocked():
+    now = datetime.now(UTC)
+    async with sqlite_only_database() as database:
+        await _seed(
+            database.session,
+            now=now,
+            matches=[
+                {
+                    "state": NotificationState.READY.value,
+                    "created_at": now - timedelta(minutes=5),
+                    "next_attempt_at": None,
+                }
+            ],
+        )
+        snapshot = await collect_snapshot(
+            database.session, now=now, window_hours=2, stuck_hours=1, max_sample=10
+        )
+
+    assert snapshot.blocked_actionable_due == 0
+    assert snapshot.matches_created == 1
+    assert snapshot.matches_notified == 0
 
 
 def test_format_alert_has_no_title_url_or_secret():
@@ -283,7 +370,7 @@ def test_format_alert_has_no_title_url_or_secret():
     )
     text = format_alert(
         snapshot,
-        Verdict(True, "critical", "correspondances créées sans aucune notification acquittée"),
+        Verdict(True, "critical", "correspondances actionnables en retard"),
         alert_id="alert-123",
         commit="abc123",
         now=now,
@@ -407,3 +494,47 @@ async def test_run_check_dry_run_writes_nothing_and_sends_nothing(tmp_path, caps
     assert state_file.exists() is False
     assert sent == []
     assert "🚨" in capsys.readouterr().out
+
+
+async def test_impossible_check_does_not_close_open_alert(tmp_path, monkeypatch):
+    now = datetime.now(UTC)
+    state_file = tmp_path / "state.jsonl"
+    append_record(
+        state_file,
+        {
+            "event": "alert_chain",
+            "status": "ouvert",
+            "alert_id": "keep-me",
+            "timestamp": now.isoformat(),
+        },
+    )
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("base indisponible")
+
+    monkeypatch.setattr(check_alert_chain, "collect_snapshot", boom)
+
+    async def send(_text: str) -> None:
+        raise AssertionError("aucune notification attendue")
+
+    async def claim(_key: str, _ttl: int) -> bool:
+        return True
+
+    async with sqlite_only_database() as database:
+        with pytest.raises(RuntimeError):
+            await run_check(
+                session=database.session,
+                state_file=state_file,
+                window_hours=2.0,
+                stuck_hours=1.0,
+                max_sample=8,
+                dedup_seconds=3600,
+                commit="abc123",
+                now=now,
+                send=send,
+                claim=claim,
+            )
+
+    records = read_records(state_file)
+    assert find_open_alert(records) == "keep-me"
+    assert all(record["status"] != "vérifié" for record in records)

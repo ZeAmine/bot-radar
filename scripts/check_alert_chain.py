@@ -3,10 +3,9 @@
 
 Contrôle en **lecture seule** : ce script n'écrit jamais en base, n'appelle aucun
 moteur IA et ne corrige rien. Il observe une fenêtre glissante et ne déclare un
-incident critique que lorsqu'une notification était réellement attendue : des
-correspondances ont été créées sans qu'aucune ne soit acquittée, ou des
-correspondances actionnables restent en retard. Des annonces ingérées sans aucune
-correspondance ne déclenchent donc rien.
+incident critique que lorsqu'une correspondance attend réellement un traitement
+dont le délai admissible est dépassé. La simple création de correspondances, une
+correspondance fraîche ou une reprise prévue dans le futur ne déclenchent rien.
 
 La clôture suit le **symptôme**, pas le correctif : une alerte reste ouverte tant
 que le même détecteur la reproduit. Elle n'est marquée « vérifiée » que lorsqu'un
@@ -62,9 +61,9 @@ STATUS_OPEN = "ouvert"
 STATUS_VERIFIED = "vérifié"
 STATUS_OK = "ok"
 
-# États qu'une reprise F03-B doit faire progresser. Seuls ceux-là rendent une
-# correspondance « actionnable » : `notified` et `abandoned` sont terminaux, et
-# `unknown` n'autorise aucun nouvel envoi, donc il ne déclenche jamais à lui seul.
+# États qu'une reprise F03-B doit faire progresser. `notified` et `abandoned` sont
+# terminaux. `unknown` n'autorise aucun nouvel envoi, mais un `unknown` porteur d'un
+# reçu exploitable reste actionnable pour sa finalisation (marquage SQL).
 ACTIONABLE_STATES = (
     NotificationState.READY.value,
     NotificationState.DEFERRED.value,
@@ -118,22 +117,20 @@ class Verdict:
 def evaluate(snapshot: Snapshot) -> Verdict:
     """Qualifie un relevé sans aucun accès externe.
 
-    Un incident critique exige qu'une notification ait été attendue : soit des
-    correspondances ont été créées sans aucune notification acquittée, soit des
-    correspondances actionnables restent en retard. Des annonces ingérées sans
-    aucune correspondance ne déclenchent rien : il n'y avait rien à notifier.
+    Un incident critique exige une correspondance réellement en attente de
+    traitement, dont le délai admissible est dépassé : actionnable, échue et plus
+    ancienne que la garde d'âge. La simple création de correspondances, une
+    correspondance fraîche ou une reprise future ne déclenchent rien.
     """
-    if snapshot.matches_created > 0 and snapshot.matches_notified == 0:
-        return Verdict(
-            True, "critical", "correspondances créées sans aucune notification acquittée"
-        )
     if snapshot.blocked_actionable_due > 0:
         return Verdict(True, "critical", "correspondances actionnables en retard")
-    if snapshot.matches_created == 0 and snapshot.blocked_actionable_due == 0:
+    if snapshot.matches_created == 0:
         return Verdict(
             False, "ok", "aucune correspondance créée sur la fenêtre ; aucune notification attendue"
         )
-    return Verdict(False, "ok", "aucun symptôme détecté")
+    return Verdict(
+        False, "ok", "aucune correspondance actionnable échue ; aucun incident détecté"
+    )
 
 
 def decide(*, incident: bool, open_alert_id: str | None) -> str:
@@ -148,10 +145,17 @@ def decide(*, incident: bool, open_alert_id: str | None) -> str:
 
 
 def _blocked_filter(*, now: datetime, stuck_before: datetime) -> Any:
+    finalizable_receipt = and_(
+        ListingMatch.notification_state == NotificationState.UNKNOWN.value,
+        ListingMatch.telegram_message_id > 0,
+        ListingMatch.telegram_chat_id != 0,
+        ListingMatch.telegram_bot_id > 0,
+        ListingMatch.attempt_id.is_not(None),
+    )
     return and_(
         ListingMatch.notified_at.is_(None),
         ListingMatch.created_at < stuck_before,
-        ListingMatch.notification_state.in_(ACTIONABLE_STATES),
+        or_(ListingMatch.notification_state.in_(ACTIONABLE_STATES), finalizable_receipt),
         or_(ListingMatch.next_attempt_at.is_(None), ListingMatch.next_attempt_at <= now),
     )
 
