@@ -348,17 +348,21 @@ def test_providers_accept_custom_http_client():
 
 
 def test_settings_get_vinted_proxy():
-    """Vérifie la résolution de proxy unique ou multiple."""
+    """Vérifie la résolution de proxy, conditionnée par son activation explicite."""
     from app.core.config import Settings
 
     # Aucun proxy
-    s1 = Settings(VINTED_PROXY_URL=None)
+    s1 = Settings(VINTED_PROXY_ENABLED=False, VINTED_PROXY_URL=None)
     assert s1.get_vinted_proxy() is None
 
-    # Proxy unique
-    s2 = Settings(VINTED_PROXY_URL="http://user:pass@1.2.3.4:8080")
-    assert s2.get_vinted_proxy() == "http://user:pass@1.2.3.4:8080"
+    # URL seule : rien n'est routé tant que le flag est faux
+    s2 = Settings(VINTED_PROXY_ENABLED=False, VINTED_PROXY_URL="http://user:pass@1.2.3.4:8080")
+    assert s2.get_vinted_proxy() is None
 
-    # Pool de proxys séparés par virgules
-    s3 = Settings(VINTED_PROXY_URL="http://proxy1:80, http://proxy2:80")
-    assert s3.get_vinted_proxy() in ["http://proxy1:80", "http://proxy2:80"]
+    # Proxy unique activé
+    s3 = Settings(VINTED_PROXY_ENABLED=True, VINTED_PROXY_URL="http://user:pass@1.2.3.4:8080")
+    assert s3.get_vinted_proxy() == "http://user:pass@1.2.3.4:8080"
+
+    # Pool de proxys activé, séparés par virgules
+    s4 = Settings(VINTED_PROXY_ENABLED=True, VINTED_PROXY_URL="http://proxy1:80, http://proxy2:80")
+    assert s4.get_vinted_proxy() in ["http://proxy1:80", "http://proxy2:80"]

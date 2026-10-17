@@ -204,9 +204,19 @@ def test_get_adaptive_poll_interval():
         with patch("app.tasks.vinted_poller.is_peak_hours", return_value=True):
             assert get_adaptive_poll_interval() == 12.0
 
-    # Avec proxy résidentiel (Raspberry Pi)
+    # Une URL seule n'active rien : le flag explicite est requis.
     with (
         patch("app.tasks.vinted_poller.settings.VINTED_POLL_INTERVAL_SECONDS", 12),
+        patch("app.tasks.vinted_poller.settings.VINTED_PROXY_ENABLED", False),
+        patch("app.tasks.vinted_poller.settings.VINTED_PROXY_URL", "http://192.168.1.50:8888"),
+        patch("app.tasks.vinted_poller.is_peak_hours", return_value=True),
+    ):
+        assert get_adaptive_poll_interval() == 12.0
+
+    # Avec proxy résidentiel activé (Raspberry Pi)
+    with (
+        patch("app.tasks.vinted_poller.settings.VINTED_POLL_INTERVAL_SECONDS", 12),
+        patch("app.tasks.vinted_poller.settings.VINTED_PROXY_ENABLED", True),
         patch("app.tasks.vinted_poller.settings.VINTED_PROXY_URL", "http://192.168.1.50:8888"),
     ):
         # Proxy en heure de pointe : 8s
