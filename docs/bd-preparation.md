@@ -17,6 +17,7 @@ reclassification. Les nouvelles demandes contiennent :
 - `state` : `pending` ou `blocked` ;
 - `activation_requested` : intention indépendante du statut `PAUSED` ;
 - `author_hint` : auteur demandé utile à la recherche, jamais auteur confirmé ;
+- `bibliographic_mode` : `one_shot`, `series` ou NULL si le mode est inconnu ;
 - `requested_at`, `last_attempt_at` : dates UTC pour observation et progression ;
 - `error_code` : `catalog_write`, `pricing_write`, `activation_write` ou
   `unexpected`, jamais un texte d'exception.
@@ -28,6 +29,15 @@ son ancienne reprise directe. Changer l'ISBN ou le titre d'une veille textuelle
 invalide le travail et retire ses anciennes liaisons/verdict/total. Prix, conditions,
 mots-clés et titre d'affichage d'une alerte conservant son ISBN ne relancent pas la
 préparation. Les livres et leurs caches restent utilisables indépendamment.
+
+Le mode connu est conservé par la pause, la relance et l'invalidation du travail.
+Sans ISBN, `one_shot` utilise la recherche titre/auteur et accepte une notice sans
+numéro de volume ; `series` utilise la recherche de tomes. Après `/skip`, le mode
+du brouillon est enregistré avant sa fermeture et reste disponible à la reprise.
+Les demandes déjà persistées sans ce champ sont lues comme mode inconnu (NULL).
+Elles conservent le chemin série historique, sans être requalifiées en one-shot
+ni déclarées séries confirmées. Aucune migration ou réécriture des anciennes
+demandes n'est nécessaire : le champ reste dans le JSON existant.
 
 Les résultats et les actions utilisateur partagent des transactions courtes avec
 verrou de l'alerte et condition sur le jeton/intention/statut. Aucun réseau sous ce
@@ -43,7 +53,18 @@ quatre demandes maximum, pending et intention présente seulement. Les travaux
 en cours sont exclus ; les passes ne se chevauchent pas. Le tri par dernière
 tentative (NULL d'abord), puis création/ID, fait progresser les demandes suivantes.
 
-Une erreur technique devient blocked et attend une relance explicite. Si la DB
+Le bloc initial de préparation est borné à 45 secondes, attente de créneau comprise.
+L’écriture de l’état d’échec intervient après cette borne ; celle-ci ne garantit
+pas une durée murale totale de 45 secondes si la base tarde à répondre.
+Un cache encore valable est réutilisé. La collecte initiale peut reprendre une
+fois les seules sources en échec transitoire ; les reprises internes de
+Chasse-aux-livres sont désactivées pour ce parcours. Les délais unitaires restent
+conservés. Un `Retry-After` supérieur à trois secondes est différé ; parsing et
+configuration ne provoquent pas cette reprise.
+
+Une erreur technique, y compris le dépassement de la borne après identification
+de la demande, devient blocked et attend une relance explicite. Un délai atteint
+avant lecture de la demande conserve pending, sans activation. Si la DB
 ne peut pas enregistrer blocked, la version est suspendue localement et seule cette
 écriture est retentée, sans nouvelle collecte. Si le processus meurt avant toute
 persistance de cet échec, le prochain processus ne peut connaître cette erreur :

@@ -25,6 +25,35 @@ REFERENCE = "bfabcca7dbf4f8f6af2de058b167a93dd80816b8"
 PORT = 55514
 
 
+def _isolated_occurrence_scheduler(scheduler: Any, node: str) -> bool:
+    from inspect import iscoroutinefunction
+
+    from apscheduler.executors.asyncio import AsyncIOExecutor
+    from apscheduler.jobstores.memory import MemoryJobStore
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+    if node not in {
+        "tests/integration/test_scheduler_occurrence.py::" + name
+        for name in (
+            "test_the_real_scheduler_hands_the_intended_run_time_to_the_job",
+            "test_the_transmitted_time_is_the_triggered_run_not_the_next_one",
+            "test_a_delayed_run_is_still_identified_by_its_own_occurrence",
+        )
+    } or type(scheduler) is not AsyncIOScheduler:
+        return False
+    if any(type(executor) is not AsyncIOExecutor for executor in scheduler._executors.values()):
+        return False
+    if any(type(store) is not MemoryJobStore for store in scheduler._jobstores.values()):
+        return False
+    jobs = scheduler.get_jobs()
+    return (
+        len(jobs) == 1
+        and jobs[0].id == "refresh_prices_07_00"
+        and iscoroutinefunction(jobs[0].func)
+        and jobs[0].func.__module__.split(".")[-1] == "test_scheduler_occurrence"
+    )
+
+
 def guard(*, site: bool = False) -> dict[str, int]:
     endpoints = json.loads(os.environ.get("RADAR_FINAL_ENDPOINTS", "[]"))
     counters = {
@@ -125,6 +154,10 @@ def guard(*, site: bool = False) -> dict[str, int]:
                     job.func.__module__.endswith("test_unified_lifespan")
                     for job in scheduler.get_jobs()
                 )
+                permitted_schedulers.append(scheduler)
+                original_start(scheduler, *args, **kwargs)
+                return
+            if not site and _isolated_occurrence_scheduler(scheduler, node):
                 permitted_schedulers.append(scheduler)
                 original_start(scheduler, *args, **kwargs)
                 return
@@ -416,6 +449,22 @@ async def verify_migrations(before: dict[str, Any]) -> None:
         await engine.dispose()
 
 
+async def verify_empty_install(expected_revision: str) -> None:
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from scripts import verify_postgresql_recipe as recipe
+
+    engine = create_async_engine(recipe.URL)
+    try:
+        async with engine.connect() as connection:
+            revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == expected_revision, "Installation incomplète"
+            print("FINAL_EMPTY_INSTALL", revision, flush=True)
+    finally:
+        await engine.dispose()
+
+
 def _record_test_report(
     reports: dict[str, dict[str, str]], nodeid: str, phase: str, outcome: str
 ) -> None:
@@ -453,13 +502,32 @@ def _validate_test_reports(
     return pytest_exit_code
 
 
-def suite(mode: str, identity: str | None = None, targets: list[str] | None = None) -> int:
+def suite(
+    mode: str, identity: str | None = None, targets: list[str] | None = None,
+    timings: Path | None = None,
+) -> int:
+    started = time.monotonic()
+    if timings is not None:
+        timings = timings.resolve()
+        timings.touch(exist_ok=False)
+
+    def record_timing(event: str, **values: Any) -> None:
+        if timings is not None:
+            with timings.open("a") as stream:
+                stream.write(json.dumps({
+                    "event": event, "elapsed": time.monotonic() - started, **values,
+                }) + "\n")
+
+    record_timing("suite_start")
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))
     environment(mode)
+    record_timing("environment_ready")
     counts = guard()
+    record_timing("guard_ready")
     if mode == "postgres":
         from alembic.config import Config
+        from alembic.script import ScriptDirectory
 
         from alembic import command
         from scripts import verify_postgresql_recipe as recipe
@@ -468,13 +536,18 @@ def suite(mode: str, identity: str | None = None, targets: list[str] | None = No
         asyncio.run(recipe.verify_identity(identity))
         config = Config("alembic.ini")
         command.upgrade(config, "head")
-        print("FINAL_EMPTY_INSTALL", "0013_pause_actions", flush=True)
+        head = ScriptDirectory.from_config(config).get_current_head()
+        assert head is not None
+        asyncio.run(verify_empty_install(head))
         asyncio.run(recipe.reset_synthetic_schema())
         command.upgrade(config, "0010_alert_preparation")
         before = asyncio.run(migrations())
         for target in ("0011_notification_state", "0012_annual_observations", "0013_pause_actions"):
             command.upgrade(config, target)
         asyncio.run(verify_migrations(before))
+        populated = asyncio.run(recipe.seed_market_freshness_migration())
+        command.upgrade(config, "0014_alert_market_freshness")
+        asyncio.run(recipe.verify_market_freshness_migration(populated))
     if mode == "typecheck":
         from mypy import api
 
@@ -503,6 +576,7 @@ def suite(mode: str, identity: str | None = None, targets: list[str] | None = No
             self.reports: dict[str, dict[str, str]] = {}
 
         def pytest_runtest_setup(self, item: Any) -> None:
+            record_timing("test_start", nodeid=item.nodeid)
             print("FINAL_NODE", item.nodeid, flush=True)
             os.environ["RADAR_FINAL_NODE"] = item.nodeid
 
@@ -525,9 +599,14 @@ def suite(mode: str, identity: str | None = None, targets: list[str] | None = No
 
         def pytest_collection_finish(self, session: Any) -> None:
             self.collected = [node.nodeid for node in session.items]
+            record_timing("collection_done", collected=len(self.collected))
 
         def pytest_runtest_logreport(self, report: Any) -> None:
             _record_test_report(self.reports, report.nodeid, report.when, report.outcome)
+            record_timing(
+                "test_phase", nodeid=report.nodeid, phase=report.when,
+                outcome=report.outcome, duration=report.duration,
+            )
 
     complete_selection = not targets
     reports = Reports()
@@ -546,12 +625,14 @@ def suite(mode: str, identity: str | None = None, targets: list[str] | None = No
         targets = targets or (
             ["tests/integration"] if mode == "postgres" else ["tests/unit", "tests/performance"]
         )
+        record_timing("pytest_start")
         result = int(
             pytest.main(
                 ["-p", "pytest_asyncio.plugin", "-q", "-p", "no:cacheprovider", *targets],
                 plugins=[reports],
             )
         )
+        record_timing("pytest_done", exit_code=result)
         children = (
             [json.loads(line) for line in child_log.read_text().splitlines()]
             if child_log.exists()
@@ -594,6 +675,7 @@ def suite(mode: str, identity: str | None = None, targets: list[str] | None = No
     assert all(
         row["dotenv"] == row["network_denied"] == row["postgres_config"] == 0 for row in children
     )
+    record_timing("suite_done", exit_code=result)
     return result
 
 
@@ -604,12 +686,15 @@ def main() -> int:
     parser.add_argument("--identity")
     parser.add_argument("--attestation", type=Path)
     parser.add_argument("--target", action="append")
+    parser.add_argument("--timings", type=Path)
     args = parser.parse_args()
+    if args.timings is not None and args.mode != "unit":
+        parser.error("Les mesures de phases sont réservées au mode unit")
     if args.child:
         return (
             backup_child(args.attestation)
             if args.mode == "backup"
-            else suite(args.mode, args.identity, args.target)
+            else suite(args.mode, args.identity, args.target, args.timings)
         )
     if args.mode == "backup":
         return backup_parent()
@@ -622,6 +707,7 @@ def main() -> int:
                 args.mode,
                 "--child",
                 *[arg for target in (args.target or []) for arg in ("--target", target)],
+                *(["--timings", str(args.timings)] if args.timings is not None else []),
             ],
             env={},
             start_new_session=True,

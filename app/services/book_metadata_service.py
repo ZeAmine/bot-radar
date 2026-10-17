@@ -604,6 +604,13 @@ def same_author(first: str | None, second: str | None) -> bool:
     return bool(tokens_a & tokens_b)
 
 
+def authors_conflict(first: str | None, second: str | None) -> bool:
+    first_words = set(normalize_text(first).split())
+    second_words = set(normalize_text(second).split())
+    return bool(first_words and second_words
+                and not (first_words <= second_words or second_words <= first_words))
+
+
 def clean_title_query(title: str) -> str:
     """Normalise un titre saisi pour la requête CQL de la BNF."""
     cleaned = re.sub(_TITLE_QUERY_ALLOWED_CHARS, " ", title).strip()
@@ -682,16 +689,19 @@ def parse_query_title_and_author(query: str) -> tuple[str, str | None]:
     if len(parts) == 2 and parts[0].strip() and parts[1].strip():
         return parts[0].strip(), _clean_author_candidate(parts[1])
 
-    # Découpage par "de" (attention aux titres contenant "de", ex: "La saga de Grimr")
-    parts_de = re.split(r"\s+de\s+", text, flags=re.IGNORECASE)
-    if len(parts_de) > 1:
-        last_part = parts_de[-1].strip()
-        # Si le dernier segment ressemble à un nom d'auteur (1 à 4 mots max)
-        if 1 <= len(last_part.split()) <= 4:
-            author_candidate = _clean_author_candidate(last_part)
-            title_candidate = " de ".join(parts_de[:-1]).strip()
-            if title_candidate and author_candidate:
-                return title_candidate, author_candidate
+    for separator in re.finditer(r"\s+de\s+", text, flags=re.IGNORECASE):
+        suffix = text[separator.end():].strip()
+        prefix = text[:separator.start()].strip()
+        words = suffix.split()
+        if not prefix or not 1 <= len(words) <= 5:
+            continue
+        if text[separator.start():separator.end()].strip() == "De":
+            suffix = "De " + suffix
+        if words[0][:1].isupper() or (
+            not re.search(r"\s+de\s+", suffix, re.IGNORECASE)
+            and any(word[:1].isupper() for word in words)
+        ):
+            return prefix, _clean_author_candidate(suffix)
 
     return text, None
 
@@ -1230,9 +1240,14 @@ class BookMetadataService:
         wanted = normalize_text(requested_title)
         if not wanted:
             return False
-        if (
-            normalize_text(candidate.title) != wanted
-            or normalize_text(reference.title) != wanted
+        exact = normalize_text(reference.title) == wanted
+        if exact and normalize_text(candidate.title) != wanted:
+            return False
+        if not exact and (
+            title_similarity(candidate.title, requested_title) < TITLE_SIMILARITY_MIN
+            or title_similarity(reference.title, requested_title) < TITLE_SIMILARITY_MIN
+            or requested_volume(candidate.title) is not None
+            or requested_volume(reference.title) is not None
         ):
             return False
         # Sans auteur connu des deux côtés, rien ne prouve qu'il s'agit d'un autre

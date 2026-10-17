@@ -14,6 +14,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from apscheduler.events import EVENT_SCHEDULER_SHUTDOWN
+from apscheduler.triggers.cron import CronTrigger
 
 import app.tasks.scheduler  # noqa: F401 - nécessaire pour résoudre le module ci-dessous
 
@@ -32,30 +34,46 @@ async def _declencher_et_capturer(
     une valeur négative simule une exécution en retard.
     """
     captures: list[dict[str, Any]] = []
+    captured, stopped = asyncio.Event(), asyncio.Event()
 
     async def tache_espionne(**kwargs: Any) -> dict[str, int]:
         captures.append(kwargs)
+        captured.set()
         return {}
 
     monkeypatch.setattr(scheduler_module, "refresh_book_prices_task", tache_espionne)
 
     scheduler = scheduler_module.create_scheduler()
+    job = scheduler.get_job("refresh_prices_07_00")
+    assert job is not None
+    assert isinstance(job.trigger, CronTrigger)
+    assert job.max_instances == 1
+    assert job.coalesce is True
+    original_job = job.func
+
+    async def isolated_occurrence_job() -> dict[str, int]:
+        return await original_job()
+
+    for other in scheduler.get_jobs():
+        if other.id != job.id:
+            scheduler.remove_job(other.id)
+    job.modify(func=isolated_occurrence_job, misfire_grace_time=5)
+    scheduler.add_listener(lambda _event: stopped.set(), EVENT_SCHEDULER_SHUTDOWN)
     try:
         scheduler.start(paused=True)
-        job = scheduler.get_job("refresh_prices_07_00")
-        assert job is not None
         vise = datetime.now(UTC) + (retard or timedelta())
         job.modify(next_run_time=vise)
 
         scheduler.resume()
-        echeance = asyncio.get_running_loop().time() + timeout
-        while not captures and asyncio.get_running_loop().time() < echeance:
-            await asyncio.sleep(0.02)
+        await asyncio.wait_for(captured.wait(), timeout=timeout)
+        prochaine = job.next_run_time
     finally:
-        scheduler.shutdown(wait=False)
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+            await asyncio.wait_for(stopped.wait(), timeout=timeout)
 
     assert captures, "le scheduler n'a pas déclenché le job"
-    return {"appel": captures[0], "vise": vise}
+    return {"appel": captures[0], "vise": vise, "prochaine": prochaine}
 
 
 @pytest.mark.asyncio
@@ -92,14 +110,10 @@ async def test_the_transmitted_time_is_the_triggered_run_not_the_next_one(
     recu = resultat["appel"].get("scheduled_for")
     assert recu is not None
 
-    scheduler = scheduler_module.create_scheduler()
-    try:
-        prochaine = getattr(scheduler.get_job("refresh_prices_07_00"), "next_run_time", None)
-    finally:
-        pass
+    prochaine = resultat["prochaine"]
     # La prochaine passe du cron de 07:00 est un autre moment de la journée.
-    if prochaine is not None:
-        assert recu.astimezone(UTC) != prochaine.astimezone(UTC)
+    assert prochaine is not None
+    assert recu.astimezone(UTC) != prochaine.astimezone(UTC)
 
     ecart_a_lexecution = abs(
         (recu.astimezone(UTC) - resultat["vise"].astimezone(UTC)).total_seconds()

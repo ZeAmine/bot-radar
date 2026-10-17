@@ -76,3 +76,32 @@ Preuves : [contrat de chaque adaptateur](../../tests/unit/test_llm_contract.py),
 [charte](../../tests/unit/test_charte_copy.py),
 [matching](../../tests/unit/test_matching_rules.py).
 Ces tests synthétiques ne vérifient ni disponibilité réelle du moteur ni écran Telegram.
+
+## Création et remplacement d'identité
+
+La saisie originale et les requêtes de recherche restent distinctes du titre
+canonique confirmé. Un ISBN explicitement saisi se résout directement. Un titre
+artificiel ou un brouillon non identifié ne peut pas opposer un conflit à la notice.
+L'ISBN proposé par l'IA est ignoré ; seule une autorité confirme l'identité.
+
+Un conflit avec une identité établie exige un choix explicite, lié à la proposition
+et revalidé avant remplacement. Les critères dérivés suivent le titre canonique.
+Les résultats asynchrones vérifient le jeton et la révision avant application.
+Le récap reprend les critères courants, y compris les conditions modifiées
+pendant une recherche de variantes.
+Un choix de catégorie conserve l'identité reçue avec le callback avant son
+acquittement. Cette identité est revalidée sous `draft_guard` avant mutation ; les
+recherches déclenchées gardent leur jeton jusqu'à l'application. Leurs appels réseau
+restent hors de la garde. Une ancienne interaction ne reprend pas l'identité d'une
+nouvelle commande `/add`.
+Au sein d'un même brouillon, la phase de choix de catégorie et la génération de
+recherche sont relevées avant l'acquittement puis vérifiées sous la garde avant
+application. Un clic déjà en attente ne peut reprendre la main après un choix de
+catégorie plus récent, même si le jeton de création n'a pas changé.
+`/skip` dans le champ ISBN retire ce code et le conflit en attente, puis affiche
+le récap actualisé ; ce geste ne transforme pas un one-shot en série.
+
+L'hygiène des exclusions reçoit aussi l'autrice et l'éditeur confirmés : le contrôle
+porte sur la fusion finale des termes, avec la même correspondance par mots entiers
+que le matching. Une exclusion qui rejetterait ces mentions correctes est retirée.
+Il ne s'agit pas d'un nettoyage massif des alertes existantes.

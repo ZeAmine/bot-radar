@@ -303,6 +303,23 @@ class MarketPriceRepository:
             total = matching
         return found, total
 
+    async def collection_health_counts(self, *, stale_after: datetime) -> tuple[int, int, int]:
+        watched = select(AlertBook.book_id).join(Alert).join(Category).where(
+            Category.slug == "bd_comics", Alert.deleted_at.is_(None),
+            Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+        )
+        last = BookMarketCache.last_successful_collection_at
+        statement = select(
+            func.count().filter(last.is_(None)),
+            func.count().filter(last <= stale_after),
+            func.count().filter(or_(BookMarketCache.historical_checked_at <= stale_after,
+                                   BookMarketCache.historical_checked_at.is_(None))),
+        ).select_from(Book).outerjoin(
+            BookMarketCache, BookMarketCache.book_id == Book.id,
+        ).where(Book.id.in_(watched))
+        row = (await self.session.execute(statement)).one()
+        return int(row[0]), int(row[1]), int(row[2])
+
     async def find_stale_current_collections(
         self, *, stale_after: datetime, limit: int = 8,
     ) -> tuple[list[tuple[str, str | None, int, datetime | None]], int]:

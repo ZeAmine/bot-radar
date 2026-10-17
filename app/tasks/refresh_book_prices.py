@@ -16,6 +16,7 @@ import asyncio
 import logging
 import random
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +28,7 @@ from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.session import AsyncSessionLocal
 from app.domain.enums import AlertStatus
-from app.providers.base import MarketOffer, extract_best_historical_low
+from app.providers.base import CollectionAttempt, MarketOffer, extract_best_historical_low
 from app.providers.registry import ProviderRegistry
 from app.services.book_market_pricing import (
     BookPricingResult,
@@ -37,12 +38,9 @@ from app.services.book_market_pricing import (
     pricing_stat,
 )
 from app.services.market_health import (
-    notify_high_error_ratio,
-    notify_incomplete_refresh,
-    notify_no_prices_found,
-    notify_silent_providers,
-    notify_stale_certified_lows,
-    notify_stale_current_collections,
+    RefreshPassResult,
+    notify_refresh_result,
+    read_refresh_health,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,20 +96,24 @@ def _pass_stat(cache: BookMarketCache | None) -> str:
     return stat
 
 
-def _cote_was_written(cache: BookMarketCache | None) -> bool:
-    """Vrai quand la collecte a réellement laissé une cote utilisable en base.
+@dataclass(frozen=True)
+class BookRefreshResult:
+    verdict: str
+    refreshed: bool
+    attempts: tuple[CollectionAttempt, ...] = ()
+    empty: bool = False
+    reused: bool = False
 
-    « Traité » et « mis à jour » ne disent pas la même chose : un livre interrogé
-    dont tous les fournisseurs sont muets est traité, mais n'a rien apporté. Le
-    compteur de mises à jour ne compte donc que les collectes qui ont écrit une
-    cote **et** fait avancer la date de succès — c'est la même condition que
-    `_stamp_collection`, lue du côté qui la constate.
 
-    Un prix inchangé compte : la question n'est pas de savoir si le chiffre a
-    bougé, mais si le relevé a abouti. Un cache absent, ou resté `failed` /
-    `empty`, ne compte pas.
-    """
-    return cache is not None and cache.collection_status == "complete"
+def _book_result(
+    cache: BookMarketCache | None, result: BookPricingResult | None,
+) -> BookRefreshResult:
+    if result is None:
+        return BookRefreshResult(_pass_stat(cache), False, reused=cache is not None)
+    current = result.lowest_delivered_price_cents is not None
+    verdict = "degraded" if result.failed_providers else "available" if current else "unavailable"
+    return BookRefreshResult(verdict, current, result.attempts,
+                             not current and result.current_collection_succeeded)
 
 
 async def _price_one_book(
@@ -119,7 +121,7 @@ async def _price_one_book(
     registry: ProviderRegistry,
     session: AsyncSession | None,
     semaphore: asyncio.Semaphore,
-) -> tuple[str, bool]:
+) -> BookRefreshResult:
     """Interroge les fournisseurs pour un livre et consolide sa cote.
 
     Rend le verdict de la passe **et** le fait qu'une cote utilisable ait été écrite.
@@ -128,11 +130,13 @@ async def _price_one_book(
     """
     if session is None:
         async with semaphore:
-            cache = await price_book_now(book.id, reason="scheduled", registry=registry)
+            results: list[BookPricingResult] = []
+            cache = await price_book_now(book.id, reason="scheduled", registry=registry,
+                                         result_sink=results)
         if cache is None:
-            return "errors", False
+            return BookRefreshResult("errors", False)
         registry.failed_provider_names.update(cache.failed_provider_names or [])
-        return _pass_stat(cache), _cote_was_written(cache)
+        return _book_result(cache, results[-1] if results else None)
     async with semaphore:
         offers: list[MarketOffer] = await fetch_offers_for_book(book, registry=registry)
 
@@ -144,7 +148,7 @@ async def _price_one_book(
 
     cache = await persist_market_result(session, book.id, result)
     registry.failed_provider_names.update(cache.failed_provider_names or [])
-    return _pass_stat(cache), _cote_was_written(cache)
+    return _book_result(cache, result)
 
 
 async def _run_wave(
@@ -153,6 +157,8 @@ async def _run_wave(
     session: AsyncSession | None,
     semaphore: asyncio.Semaphore,
     stats: dict[str, int],
+    attempts: list[CollectionAttempt] | None = None,
+    occurrence: str | None = None,
 ) -> None:
     """Traite une vague de livres et ventile les résultats dans les statistiques."""
     outcomes = await asyncio.gather(
@@ -170,9 +176,22 @@ async def _run_wave(
             )
             stats["errors"] += 1
         else:
-            verdict, wrote_cote = outcome
-            stats[verdict] += 1
-            if wrote_cote:
+            stats[outcome.verdict] += 1
+            if outcome.reused:
+                stats["reused"] = stats.get("reused", 0) + 1
+            if outcome.empty:
+                stats["empty"] = stats.get("empty", 0) + 1
+            if attempts is not None:
+                attempts.extend(outcome.attempts)
+            for attempt in outcome.attempts:
+                logger.info("Tentative de passe", extra={
+                    "book_id": str(book.id), "occurrence": occurrence,
+                    "provider": attempt.provider, "operation": attempt.operation,
+                    "outcome": attempt.status, "reason": attempt.reason,
+                    "http_status": attempt.http_status,
+                    "duration_seconds": attempt.duration_seconds,
+                })
+            if outcome.refreshed:
                 stats["refreshed"] += 1
 
 
@@ -201,24 +220,6 @@ def _occurrence_token(
     moment = scheduled_for or now or datetime.now(UTC)
     slot = moment.replace(minute=moment.minute - moment.minute % 30, second=0, microsecond=0)
     return f"{job_id}@{slot.isoformat()}"
-
-
-async def _report_stale_certs(session: AsyncSession | None) -> None:
-    """Signale les cotes que plus aucun relevé ne nourrit et les sources muettes.
-
-    Le contrôle tourne dans sa propre session quand la passe en a utilisé une :
-    celle-ci peut être en fin de vie après des centaines de livres, et une alerte
-    de maintenance ne mérite pas de faire échouer le job qui vient de réussir.
-    """
-    if session is not None:
-        await notify_stale_certified_lows(session)
-        await notify_stale_current_collections(session)
-        await notify_silent_providers(session)
-        return
-    async with AsyncSessionLocal() as health_session:
-        await notify_stale_certified_lows(health_session)
-        await notify_stale_current_collections(health_session)
-        await notify_silent_providers(health_session)
 
 
 async def resolve_scheduled_catalogues(*, incremental: bool, deadline: float) -> None:
@@ -290,6 +291,8 @@ async def refresh_book_prices_task(
         # muets a bien été traité, mais n'a rien écrit. C'est ce compteur-là qui
         # répond à « le rafraîchissement a-t-il servi à quelque chose ? ».
         "refreshed": 0,
+        "empty": 0,
+        "reused": 0,
         "available": 0,
         "unavailable": 0,
         "degraded": 0,
@@ -301,84 +304,66 @@ async def refresh_book_prices_task(
     # fonctionnement prévu d'un lot qui ne tient pas dans sa fenêtre. Elle part au
     # bilan comme une information, jamais comme un avertissement.
     interrupted = False
-    if session is None:
-        await resolve_scheduled_catalogues(incremental=incremental, deadline=deadline)
-    books = await _select_books(session, incremental, batch_size)
+    report = RefreshPassResult(0, stats, incremental, occurrence, selection_known=False)
+    try:
+        if session is None:
+            await resolve_scheduled_catalogues(incremental=incremental, deadline=deadline)
+        books = await _select_books(session, incremental, batch_size)
 
-    if not books:
-        logger.debug("Aucun livre BD à rafraîchir pour cette passe.")
-        return stats
 
-    mode_label = (
-        f"incrémental ({len(books)} livres)" if incremental else f"complet ({len(books)} livres)"
-    )
-    logger.info("Début du rafraîchissement des prix BD en mode %s.", mode_label)
+        mode_label = (
+            f"incrémental ({len(books)} livres)" if incremental
+            else f"complet ({len(books)} livres)"
+        )
+        logger.info("Début du rafraîchissement des prix BD en mode %s.", mode_label)
 
-    semaphore = asyncio.Semaphore(max(1, concurrency))
-    wave_size = max(1, concurrency)
-    for wave in _iter_chunks(books, wave_size):
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            interrupted = True
-            logger.info(
-                "Plafond de durée atteint : %d/%d livres traités, le reste attend "
-                "la passe suivante.",
-                stats["processed"],
-                len(books),
-            )
-            break
-        await _run_wave(wave, registry, session, semaphore, stats)
+        report.total = len(books)
+        report.selection_known = True
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+        wave_size = max(1, concurrency)
+        for wave in _iter_chunks(books, wave_size):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                interrupted = True
+                logger.info(
+                    "Plafond de durée atteint : %d/%d livres traités, le reste attend "
+                    "la passe suivante.",
+                    stats["processed"],
+                    len(books),
+                )
+                break
+            await _run_wave(wave, registry, session, semaphore, stats, report.attempts, occurrence)
 
-        has_more = stats["processed"] < len(books)
-        if has_more:
-            # Pause anti-rate-limit une fois par vague : la pression sur les
-            # partenaires reste équivalente à un traitement séquentiel.
-            await asyncio.sleep(random.uniform(*PAUSE_RANGES[bool(incremental)]))
+            has_more = stats["processed"] < len(books)
+            if has_more:
+                # Pause anti-rate-limit une fois par vague : la pression sur les
+                # partenaires reste équivalente à un traitement séquentiel.
+                await asyncio.sleep(random.uniform(*PAUSE_RANGES[bool(incremental)]))
 
-    logger.info(
-        "Rafraîchissement BD terminé (%s) : %d traités, %d mis à jour, "
-        "%d indisponibles, %d dégradés, %d erreurs.",
-        mode_label,
-        stats["processed"],
-        stats["refreshed"],
-        stats["unavailable"],
-        stats["degraded"],
-        stats["errors"],
-    )
-
-    # Une passe peut réussir sur tous les livres sans avoir nourri une seule cote :
-    # c'est ce qui s'est produit pendant trois semaines. Le signal part ici, une
-    # fois par jour au plus, et jamais au prix du rafraîchissement.
-    await _report_stale_certs(session)
-
-    # Alertes de fin de passe : une passe incomplète, sans cote ou trop erronée
-    # ne doit pas passer sous le radar. Ces alertes ne bloquent jamais le
-    # rafraîchissement.
-    total_books = len(books)
-    await notify_incomplete_refresh(
-        stats["processed"],
-        total_books,
-        refreshed=stats["refreshed"],
-        interrupted=interrupted,
-        incremental=incremental,
-        batch_size=batch_size,
-        occurrence=occurrence,
-    )
-    await notify_no_prices_found(
-        stats["processed"],
-        total_books,
-        stats["available"],
-        incremental=incremental,
-        mode_label=mode_label,
-        errors=stats["errors"],
-        failed_providers=tuple(sorted(registry.failed_provider_names)),
-    )
-    await notify_high_error_ratio(
-        stats["processed"],
-        stats["errors"],
-        mode_label=mode_label,
-        failed_providers=tuple(sorted(registry.failed_provider_names)),
-        degraded=stats["degraded"],
-    )
+        logger.info(
+            "Rafraîchissement BD terminé (%s) : %d traités, %d mis à jour, "
+            "%d indisponibles, %d dégradés, %d erreurs.",
+            mode_label,
+            stats["processed"],
+            stats["refreshed"],
+            stats["unavailable"],
+            stats["degraded"],
+            stats["errors"],
+        )
+    except (Exception, asyncio.CancelledError):
+        report.technical_interruption = True
+        logger.exception("Passe de rafraîchissement interrompue", extra={"occurrence": occurrence})
+        raise
+    finally:
+        report.interrupted = interrupted
+        try:
+            if session is not None:
+                await read_refresh_health(report, session)
+            else:
+                async with AsyncSessionLocal() as health_session:
+                    await read_refresh_health(report, health_session)
+        except Exception:
+            logger.warning("Diagnostic de fin de passe indisponible", exc_info=True)
+        await notify_refresh_result(report)
 
     return stats
