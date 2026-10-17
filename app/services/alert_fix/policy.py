@@ -369,7 +369,7 @@ def successful_control(outcome: core.CommandOutcome) -> bool:
         failed == 0
         and isinstance(nodes, list)
         and bool(nodes)
-        and not _has_error_marker(outcome.stdout + "\n" + outcome.stderr)
+        and report.get("pytest_exit_code") == 0
     )
 
 

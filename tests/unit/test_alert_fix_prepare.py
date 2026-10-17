@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from app.services.alert_fix import core, prepare, runner
+from app.services.alert_fix import core, policy, prepare, runner
 from tests import alert_fix_fixtures as fixtures
 
 EXAMPLE = "app/example.py"
@@ -887,3 +887,21 @@ def test_control_command_hides_absolute_paths():
     assert rendered.count("<chemin>") == 1
     assert "[chemin]" in core.redact_text("voir /tmp/example/secret")
     assert "[chemin]" in core.redact_text("../../../../tmp/example/secret")
+
+
+def test_successful_control_accepts_error_word_in_node_name():
+    node = "tests/unit/test_x.py::test_refuses[ERROR collecting import]"
+    report = {
+        "collected": [node],
+        "failed": 0,
+        "passed": 1,
+        "pytest_exit_code": 0,
+        "nodes": [node],
+        "reports": {node: {"setup": "passed", "call": "passed", "teardown": "passed"}},
+    }
+    outcome = _outcome(
+        "test-isolated",
+        0,
+        stdout="ERROR collecting import\nFINAL_SUITE_REPORT " + json.dumps(report) + "\n",
+    )
+    assert policy.successful_control(outcome) is True
