@@ -11,8 +11,9 @@ Le gateway Caddy partagé vit hors dépôt dans `~/gateway/`, sur `web_gateway`.
 Ne pas réintroduire un Caddy local ni modifier les autres applications du gateway.
 
 Pour la livraison CAL, appliquer aussi le [pilote persistant](chasse-pilot-release.md) :
-arguments `--pilot`, manifeste, empreinte et configuration privée obligatoires ;
-sauvegarde restaurée avant migration et aucun message Telegram de déploiement.
+arguments `--pilot`, `--pilot-manifest` et `--pilot-digest` obligatoires ;
+aucun message Telegram de déploiement. Sur instruction du propriétaire, ce chantier
+se livre sans sauvegarde préalable, GPG ni restauration de contrôle.
 Le mode ordinaire ci-dessous ne constitue pas la commande autorisée du pilote.
 
 ## Préconditions et commande canonique
