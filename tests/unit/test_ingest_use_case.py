@@ -119,7 +119,8 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
     """La ligne de cote locale est transmise à l'envoi Telegram."""
     mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
 
-    market_line = "<b>Prix bas constaté (T6) :</b> 5,12 €\n<b>Écart :</b> +13,16 € ⛔️"
+    market_line = ("<b>Prix bas constaté (T6) :</b> 5,12 €\n"
+                   "<b>Écart livré estimé :</b> 13,16 € au-dessus du prix de référence ⛔️")
     with (
         patch(
             "app.use_cases.ingest_listing.comparison_line_from_loaded_books",
@@ -191,7 +192,8 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         mock_send_alert.assert_awaited_once()
         _, kwargs = mock_send_alert.call_args
         assert kwargs["market_comparison_line"] == (
-            "<b>Prix bas constaté (T6) :</b> 5,12 €\n<b>Écart :</b> +13,16 € ⛔️"
+            "<b>Prix bas constaté (T6) :</b> 5,12 €\n"
+            "<b>Écart livré estimé :</b> 13,16 € au-dessus du prix de référence ⛔️"
         )
 
         # L'enrichissement IA part dans send_listing_alert, pas dans un second use case.
@@ -274,7 +276,7 @@ async def test_bd_alert_without_price_is_priced_in_background(mock_db: AsyncMock
         ),
         patch("app.db.session.AsyncSessionLocal"),
         patch(
-            "app.use_cases.ingest_listing.schedule_book_pricing",
+            "app.services.book_market_pricing.schedule_book_pricing",
             side_effect=_schedule,
         ) as schedule,
     ):
@@ -294,10 +296,10 @@ async def test_bd_alert_without_price_is_priced_in_background(mock_db: AsyncMock
     mock_send_alert.assert_awaited_once()
     _, kwargs = mock_send_alert.call_args
     assert "Cote indisponible" in kwargs["market_comparison_line"]
-    assert "à l’envoi" in kwargs["market_comparison_line"]
+    assert "tentative" not in kwargs["market_comparison_line"]
     # L'invariant n°1 se lit dans l'ordre des appels : l'alerte d'abord, la cote ensuite.
-    assert calls == ["send", "price:alert_sent"]
-    schedule.assert_called_once_with(book.id, reason="alert_sent")
+    assert calls == ["send"]
+    schedule.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -320,6 +322,7 @@ async def test_bd_alert_whose_pass_found_nothing_is_dated_instead_of_pending(
         lowest_delivered_price_cents=None,
         comparison_status=ComparisonStatus.UNAVAILABLE,
         historical_low_1y_cents=None,
+        collection_status="empty",
         checked_at=datetime(2026, 10, 6, 9, 30, tzinfo=UTC),
     )
     mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
@@ -330,7 +333,7 @@ async def test_bd_alert_whose_pass_found_nothing_is_dated_instead_of_pending(
             new_callable=AsyncMock,
         ),
         patch("app.db.session.AsyncSessionLocal"),
-        patch("app.use_cases.ingest_listing.schedule_book_pricing") as schedule,
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
     ):
         use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, _alert, book = _bd_scenario(cache)
@@ -347,10 +350,10 @@ async def test_bd_alert_whose_pass_found_nothing_is_dated_instead_of_pending(
 
     line = mock_send_alert.call_args.kwargs["market_comparison_line"]
     assert line.startswith(NO_OFFER_LINE)
-    assert "06/10" in line
+    assert "06/10" not in line
     assert PENDING_COTE_LINE not in line
     # L'absence d'offre n'interdit pas la passe suivante : le livre reste demandé.
-    schedule.assert_called_once_with(book.id, reason="alert_sent")
+    schedule.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -376,7 +379,7 @@ async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> No
             new_callable=AsyncMock,
         ),
         patch("app.db.session.AsyncSessionLocal"),
-        patch("app.use_cases.ingest_listing.schedule_book_pricing") as schedule,
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
     ):
         use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, _alert, book = _bd_scenario(cache)
@@ -394,7 +397,7 @@ async def test_bd_alert_with_price_is_not_priced_again(mock_db: AsyncMock) -> No
     schedule.assert_not_called()
     _, kwargs = mock_send_alert.call_args
     line = kwargs["market_comparison_line"]
-    assert "<b>Prix du marché (T6) :</b> 12,00 €" in line
+    assert "<b>Dernière offre connue (T6) :</b> 12,00 €" in line
     assert "Écart" in line
     assert PENDING_COTE_LINE not in line
     assert book.market_cache is cache
@@ -424,7 +427,7 @@ async def test_series_alert_prices_every_linked_volume_after_the_send(mock_db: A
         ),
         patch("app.db.session.AsyncSessionLocal"),
         patch(
-            "app.use_cases.ingest_listing.schedule_book_pricing",
+            "app.services.book_market_pricing.schedule_book_pricing",
             side_effect=_schedule,
         ) as schedule,
     ):
@@ -447,10 +450,10 @@ async def test_series_alert_prices_every_linked_volume_after_the_send(mock_db: A
         )
         await use_case.execute(payload, raw_payload={})
 
-    assert f"price:alert_sent:{book.id}" in calls
-    assert f"price:alert_sent:{sibling.id}" in calls
-    assert calls.index("send") < calls.index(f"price:alert_sent:{sibling.id}")
-    assert schedule.call_count == 2
+    assert f"price:alert_sent:{book.id}" not in calls
+    assert f"price:alert_sent:{sibling.id}" not in calls
+    assert calls == ["send"]
+    schedule.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -475,7 +478,7 @@ async def test_series_alert_does_not_reprice_a_priced_sibling(mock_db: AsyncMock
         ),
         patch("app.db.session.AsyncSessionLocal"),
         patch(
-            "app.use_cases.ingest_listing.schedule_book_pricing",
+            "app.services.book_market_pricing.schedule_book_pricing",
             side_effect=_schedule,
         ) as schedule,
     ):
@@ -506,9 +509,9 @@ async def test_series_alert_does_not_reprice_a_priced_sibling(mock_db: AsyncMock
         )
         await use_case.execute(payload, raw_payload={})
 
-    assert f"price:alert_sent:{book.id}" in calls
+    assert f"price:alert_sent:{book.id}" not in calls
     assert f"price:alert_sent:{sibling.id}" not in calls
-    assert schedule.call_count == 1
+    schedule.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -531,17 +534,19 @@ async def test_isbn_alert_does_not_price_siblings(mock_db: AsyncMock) -> None:
         ),
         patch("app.db.session.AsyncSessionLocal"),
         patch(
-            "app.use_cases.ingest_listing.schedule_book_pricing",
+            "app.services.book_market_pricing.schedule_book_pricing",
             side_effect=_schedule,
         ) as schedule,
     ):
         use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, alert, book = _bd_scenario(None)
         # Alerte ISBN : pas de couverture de série.
-        alert.isbn = "9782205078054"
+        alert.isbn = "9782205078053"
+        book.isbn13 = alert.isbn
         sibling = MagicMock()
         sibling.id = uuid.uuid4()
         sibling.title = "Blacksad - Tome 5"
+        sibling.isbn13 = None
         sibling.market_cache = None
         alert.alert_books = [MagicMock(book=book), MagicMock(book=sibling)]
         use_case.listing_repo = mock_repo
@@ -555,9 +560,9 @@ async def test_isbn_alert_does_not_price_siblings(mock_db: AsyncMock) -> None:
         )
         await use_case.execute(payload, raw_payload={})
 
-    assert f"price:alert_sent:{book.id}" in calls
+    assert f"price:alert_sent:{book.id}" not in calls
     assert f"price:alert_sent:{sibling.id}" not in calls
-    assert schedule.call_count == 1
+    schedule.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -742,7 +747,7 @@ async def test_bd_alert_without_a_resolvable_book_announces_the_search(
         ),
         patch("app.db.session.AsyncSessionLocal"),
         patch("app.use_cases.ingest_listing.safe_create_task", side_effect=_close_task),
-        patch("app.use_cases.ingest_listing.schedule_book_pricing"),
+        patch("app.services.book_market_pricing.schedule_book_pricing"),
     ):
         use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _listing, mock_repo, alert, _book = _bd_scenario(None)
@@ -794,7 +799,7 @@ async def test_bd_alert_records_the_cote_state_it_shipped(mock_db: AsyncMock) ->
         patch("app.db.session.AsyncSessionLocal"),
         patch.object(mod, "record_sent_cote_state", new=MagicMock(side_effect=_record)),
         patch.object(mod, "safe_create_task", side_effect=_capture),
-        patch.object(mod, "schedule_book_pricing"),
+        patch("app.services.book_market_pricing.schedule_book_pricing"),
     ):
         use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _listing, mock_repo, _alert, _book = _bd_scenario(None)
@@ -857,9 +862,10 @@ async def test_catalog_resolution_prices_the_book_it_links() -> None:
             new=AsyncMock(return_value=book),
         ),
         patch.object(mod, "BookRepository") as repo_cls,
-        patch.object(mod, "has_usable_price", return_value=False),
-        patch.object(
-            mod, "schedule_book_pricing", side_effect=lambda *_a, **_k: order.append("price")
+        patch("app.services.market_price_service.has_usable_price", return_value=False),
+        patch(
+            "app.services.book_market_pricing.schedule_book_pricing",
+            side_effect=lambda *_a, **_k: order.append("price")
         ) as schedule,
     ):
         repo_cls.return_value.get_by_id = AsyncMock(return_value=MagicMock(market_cache=None))
@@ -872,9 +878,9 @@ async def test_catalog_resolution_prices_the_book_it_links() -> None:
             listing_isbn13=None,
         )
 
-    schedule.assert_called_once_with(book.id, reason="bd_resolved")
+    schedule.assert_not_called()
 
-    assert order == ["commit", "price"]
+    assert order == ["commit"]
 
 
 @pytest.mark.asyncio
@@ -894,8 +900,8 @@ async def test_catalog_resolution_leaves_an_already_priced_book_alone() -> None:
             new=AsyncMock(return_value=book),
         ),
         patch.object(mod, "BookRepository") as repo_cls,
-        patch.object(mod, "has_usable_price", return_value=True),
-        patch.object(mod, "schedule_book_pricing") as schedule,
+        patch("app.services.market_price_service.has_usable_price", return_value=True),
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
     ):
         repo_cls.return_value.get_by_id = AsyncMock(
             return_value=MagicMock(market_cache=MagicMock())
@@ -1108,7 +1114,7 @@ async def test_the_alert_of_an_uncatalogued_series_says_it(mock_db: AsyncMock) -
             new_callable=AsyncMock,
         ),
         patch("app.db.session.AsyncSessionLocal"),
-        patch("app.use_cases.ingest_listing.schedule_book_pricing"),
+        patch("app.services.book_market_pricing.schedule_book_pricing"),
     ):
         use_case = ProcessListingUseCase(db=mock_db, sender=mock_send_alert)
         _mock_listing, mock_repo, alert, _book = _bd_scenario(None)

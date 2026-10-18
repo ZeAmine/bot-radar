@@ -122,7 +122,10 @@ async def test_real_ingestion_and_market_panel_agree(journey, monkeypatch, case)
     monkeypatch.setattr(tasks, "_background_tasks", set())
     monkeypatch.setattr(tasks, "_cleanup_tasks", set())
     monkeypatch.setattr(ingestion, "record_sent_cote_state", AsyncMock())
-    monkeypatch.setattr(ingestion, "schedule_book_pricing", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+            "app.services.book_market_pricing.schedule_book_pricing",
+            lambda *_args, **_kwargs: None,
+        )
     if case == "expired":
         journey.books[1].market_cache.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     elif case == "undated":

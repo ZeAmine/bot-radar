@@ -59,8 +59,12 @@ def cached_market_price():
     from app.db.models.book_market_cache import BookMarketCache
     now = datetime.now(UTC)
     old = now - timedelta(days=30)
-    return BookMarketCache(id=uuid.uuid4(), book_id=uuid.uuid4(),
-        lowest_delivered_price_cents=1800, checked_at=now, expires_at=now+timedelta(days=1),
+    from tests.fakes_market_source import source_history_values
+
+    return BookMarketCache(**source_history_values(1650, now),
+        id=uuid.uuid4(), book_id=uuid.uuid4(),
+        lowest_delivered_price_cents=1800, checked_at=now,
+        expires_at=now+timedelta(days=1),
         comparison_status=ComparisonStatus.AVAILABLE, best_provider_name="synthetic",
         historical_low_1y_cents=1650, annual_low_cents=1650, annual_low_observed_at=old,
         annual_low_snapshot_id=uuid.uuid4(), annual_low_provider="synthetic",
@@ -201,7 +205,7 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         await save_alert(confirm_callback, state, db_user, db_session)
         confirmation = confirm_message.edit_text.call_args[0][0]
 
-        assert "<b>Dernière offre connue (informative) :</b> 18,00 €" in confirmation
+        assert "<b>Dernière offre connue :</b> 18,00 €" in confirmation
         assert "<b>Prix bas constaté :</b> 16,50 €" in confirmation
         assert "Momox" not in confirmation
         assert "chasse_aux_livres" not in confirmation

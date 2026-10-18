@@ -119,7 +119,7 @@ async def test_creation_waits_for_price_before_activating_and_confirming(
         assert alert.status == AlertStatus.ACTIVE
         assert alert.preparation is None
     assert state.data == {"name": "Nouveau brouillon"}
-    assert "<b>Prix du marché :</b> 18,00 €" in message.edit_text.call_args.args[0]
+    assert "<b>Dernière offre connue :</b> 18,00 €" in message.edit_text.call_args.args[0]
     assert "en cours de calcul" not in message.edit_text.call_args.args[0]
 
 

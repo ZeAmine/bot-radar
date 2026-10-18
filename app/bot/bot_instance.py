@@ -1,6 +1,7 @@
 """Configuration et initialisation de l'instance Bot et Dispatcher aiogram."""
 
 import logging
+from typing import Any
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -14,6 +15,7 @@ from app.bot.handlers import get_bot_router
 from app.bot.middlewares.auth import AuthMiddleware
 from app.bot.middlewares.throttling import ThrottlingMiddleware
 from app.bot.middlewares.unhandled_callbacks import UnconsumedCallbackMiddleware
+from app.core import pilot_mode
 from app.core.config import settings
 from app.core.redis import get_redis_client
 
@@ -34,10 +36,15 @@ def create_bot() -> Bot:
     raw_token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
     if not raw_token or ":" not in raw_token:
         raw_token = "123456789:AAG_dummy_token_for_ci_test_env_12345"
-    return Bot(
-        token=raw_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    instance = Bot(token=raw_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+    async def guard_telegram(make_request: Any, bot: Any, method: Any) -> Any:
+        if pilot_mode.active():
+            raise pilot_mode.PilotBlockedError("Telegram suspendu pendant le pilote")
+        return await make_request(bot, method)
+
+    instance.session.middleware(guard_telegram)
+    return instance
 
 
 def create_storage() -> BaseStorage:

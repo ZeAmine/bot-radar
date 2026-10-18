@@ -187,15 +187,20 @@ async def link_books_from_bnf(
     if wait_for_prices:
         import asyncio
 
-        for start in range(0, len(to_price), 2):
-            results = await asyncio.gather(
-                *(
-                    price_book_now(book_id, reason="bnf_link")
-                    for book_id in to_price[start : start + 2]
-                )
-            )
-            if expected_preparation_token is not None and any(result is None for result in results):
-                raise PreparationError("pricing_write")
+        try:
+            async with asyncio.timeout(20):
+                for start in range(0, len(to_price), 2):
+                    results = await asyncio.gather(
+                        *(
+                            price_book_now(book_id, reason="bnf_link")
+                            for book_id in to_price[start : start + 2]
+                        )
+                    )
+                    if (expected_preparation_token is not None
+                            and any(result is None for result in results)):
+                        raise PreparationError("pricing_write")
+        except TimeoutError:
+            logger.info("Préparation des prix bornée : alerte %s, reprise planifiée", alert_id)
     else:
         for book_id in to_price:
             schedule_book_pricing(book_id, reason="bnf_link")
@@ -243,6 +248,7 @@ async def resolve_bd_catalog_book(
                         alert_id,
                         author=author,
                         series=not alert_isbn,
+                        schedule_prices=False,
                         expected_snapshot=alert_snapshot,
                     ),
                     name=f"bnf_link_{alert_id}",

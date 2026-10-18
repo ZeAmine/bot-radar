@@ -89,7 +89,7 @@ def test_history_only_partial_result_does_not_claim_successful_empty_search():
     )
     text = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
     assert "Aucune offre d'occasion trouvée" not in text
-    assert "partielle" in text
+    assert "partielle" not in text
 
 
 @pytest.mark.asyncio
@@ -244,8 +244,8 @@ def test_partial_history_failure_does_not_claim_the_current_source_is_down():
     )
     text = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
     assert "20,59 €" in text
-    assert "Collecte partielle" in text
-    assert "certaines données n’ont pas été actualisées" in text
+    assert "Collecte partielle" not in text
+    assert "certaines données n’ont pas été actualisées" not in text
     assert "sources sont indisponibles" not in text
 
 
@@ -280,7 +280,7 @@ def test_skipped_sources_never_become_an_empty_success_or_a_current_offer(known_
     assert not cache.failed_provider_names
     assert not result.current_collection_succeeded
     text = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
-    assert "Aucune source interrogée" in text
+    assert "Aucune source interrogée" not in text
     assert "Aucune offre d'occasion trouvée" not in text
     assert "collecte échouée" not in text
     if known_price:

@@ -13,6 +13,7 @@ from app.services.book_metadata_service import (
     parse_query_title_and_author,
 )
 from app.use_cases.book_search import result_from_isbn_verdict
+from tests.fakes_market_source import source_history_values
 
 ISBN = "9782505082545"
 
@@ -189,6 +190,7 @@ async def test_creation_reuses_a_valid_cache_without_changing_observation(monkey
                 expires_at=observed + timedelta(hours=24),
                 comparison_status=ComparisonStatus.AVAILABLE,
                 lowest_delivered_price_cents=2059,
+                **source_history_values(1900, observed),
             )
         )
         await database.session.commit()
@@ -274,7 +276,7 @@ def test_creation_card_keeps_price_but_discloses_failed_collection():
     text = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
     assert "20,59 €" in text
     assert "Dernière offre connue" in text
-    assert "collecte échouée" in text
+    assert "collecte échouée" not in text
     assert "Prix bas constaté :</b> Non renseigné" in text
 
 

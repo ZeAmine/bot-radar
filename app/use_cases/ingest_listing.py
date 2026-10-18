@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.bot_instance import bot as default_bot
 from app.core import alert_latency as latency
+from app.core import pilot_mode
 from app.core.constants import CategorySlug
 from app.core.tasks import safe_create_task
 from app.db.models.alert import Alert
@@ -33,7 +34,6 @@ from app.schemas.listing import (
 )
 from app.services.book_market_pricing import (
     recalculate_invalidated_series,
-    schedule_book_pricing,
 )
 from app.services.market_health import classify_sent_cote_state, record_sent_cote_state
 from app.services.market_price_service import (
@@ -43,7 +43,6 @@ from app.services.market_price_service import (
     SEARCHING_BOOK_LINE,
     MarketPriceService,
     cote_absence_line,
-    has_usable_price,
 )
 from app.services.telegram_service import DeliveryResult, send_listing_alert, usable_receipt
 from app.use_cases.link_bd_catalog import resolve_bd_catalog_book
@@ -58,15 +57,16 @@ def comparison_line_from_loaded_books(
     listing: Listing,
     alert: Any,
 ) -> tuple[str | None, bool, Book | None]:
-    """Cote synchrone depuis les livres déjà chargés. False si le catalogue est vide.
-
-    Le livre résolu est rendu avec la ligne : c'est lui qui sera coté en arrière-plan
-    si sa cote est encore inconnue, une fois l'alerte partie.
-    """
+    """Cote synchrone depuis les livres déjà chargés. False si le catalogue est vide."""
     links = getattr(alert, "alert_books", None)
     books = []
     if isinstance(links, list):
         books = [link.book for link in links if getattr(link, "book", None) is not None]
+    expected_isbn = getattr(alert, "isbn", None)
+    if isinstance(expected_isbn, str) and expected_isbn:
+        expected = normalize_listing_isbn(expected_isbn)
+        books = [book for book in books if expected
+                 and normalize_listing_isbn(book.isbn13) == expected]
     if not books:
         return None, False, None
     book, series, tome_result = resolve_loaded_books(
@@ -118,8 +118,6 @@ async def _link_bd_catalog_background(
                            extra={"event": "listing_isbn_confirmation_failed"}, exc_info=True)
         return
 
-    book_id: uuid.UUID | None = None
-    needs_price = False
     try:
         async with AsyncSessionLocal() as session:
             repo = AlertRepository(session)
@@ -133,7 +131,7 @@ async def _link_bd_catalog_background(
                 current = await repo.lock_bibliographic_result(alert_id, snapshot)
                 if current is None:
                     return
-            book = await resolve_bd_catalog_book(
+            await resolve_bd_catalog_book(
                 session,
                 alert_id=alert_id,
                 alert_name=alert_name,
@@ -142,20 +140,12 @@ async def _link_bd_catalog_background(
                 listing_description=listing_description,
                 alert_snapshot=snapshot,
             )
-            if book is not None:
-                book_id = book.id
-                # `add_book` ne charge pas `market_cache` : relire par le dépôt.
-                loaded = await BookRepository(session).get_by_id(book.id)
-                needs_price = loaded is not None and not has_usable_price(loaded.market_cache)
             await recalculate_invalidated_series(session)
             await session.commit()
     except Exception as exc:
         logger.debug("Liaison catalogue BD différée ignorée pour %s : %s", alert_id, exc)
         return
 
-    # La cotation part après le commit, sinon sa session ne verrait pas le livre.
-    if book_id is not None and needs_price:
-        schedule_book_pricing(book_id, reason="bd_resolved")
 
 
 def _alert_has_telegram_chat(alert: Any) -> bool:
@@ -218,6 +208,8 @@ class ProcessListingUseCase:
         raw_payload: dict[str, Any],
     ) -> ListingIngestResponse:
         """Sérialise l'annonce avant toute décision et jusqu'aux commits de notification."""
+        if pilot_mode.active():
+            raise pilot_mode.PilotBlockedError("Ingestion suspendue pendant le pilote")
         timing = latency.current() or latency.AlertTiming(ingestion_id=uuid.uuid4())
         timing.entered_at = latency.clock()
         outcome = "error"
@@ -440,7 +432,6 @@ class ProcessListingUseCase:
         committed_deliveries: list[tuple[uuid.UUID, uuid.UUID, DeliveryResult]] = []
         match_items: list[ListingMatchItem] = []
         needs_retry = False
-        books_to_price: set[uuid.UUID] = set()
         catalog_tasks: list[dict[str, Any]] = []
         for index, pending in enumerate(pending_sends):
             if admission_deadline is not None:
@@ -451,8 +442,6 @@ class ProcessListingUseCase:
             alert_id = context.alert_ids[index]
             if alert_id not in context.live_alerts:
                 continue
-            if context.book_ids[index] not in context.live_books:
-                book = None
             notification_sent = False
             if _alert_has_telegram_chat(alert):
                 alert_kws = alert.include_keywords or ([alert.name] if alert.name else None)
@@ -506,8 +495,6 @@ class ProcessListingUseCase:
                         delivery, alert_id, attempt_id, context
                     ):
                         committed_deliveries.append((alert_id, attempt_id, delivery))
-                    if context.book_ids[index] not in context.live_books:
-                        book = None
                 else:
                     from app.use_cases.notification_admission import notification_row
                     current_notification = await notification_row(self.db, alert_id, listing.id)
@@ -522,8 +509,6 @@ class ProcessListingUseCase:
                         record_sent_cote_state(classify_sent_cote_state(market_line)),
                         name=f"cote_state_{alert.id}",
                     )
-                if book is not None and not has_usable_price(book.market_cache):
-                    books_to_price.add(book.id)
                 if not catalog_ready:
                     catalog_tasks.append(
                         {
@@ -546,32 +531,6 @@ class ProcessListingUseCase:
                     notification_sent=notification_sent,
                 )
             )
-
-        # Cotation après tous les envois ; chaque volume lié sans cote part aussi.
-        if listing.category_slug == CategorySlug.BD_COMICS.value:
-            for alert_id, (alert, _match_result, _line, _ready, _book) in zip(
-                context.alert_ids, pending_sends, strict=True
-            ):
-                if alert_id not in context.live_alerts:
-                    continue
-                if getattr(alert, "isbn", None):
-                    continue
-                links = getattr(alert, "alert_books", None)
-                if not isinstance(links, list):
-                    continue
-                for link in links:
-                    linked = getattr(link, "book", None)
-                    if linked is not None and not has_usable_price(linked.market_cache):
-                        books_to_price.add(linked.id)
-
-        for book_id in books_to_price:
-            if timing is None:
-                schedule_book_pricing(book_id, reason="alert_sent")
-            else:
-                with latency.timing_context(
-                    replace(timing, book_id=book_id, alert_id=None, attempt_id=None)
-                ):
-                    schedule_book_pricing(book_id, reason="alert_sent")
 
         for arguments in catalog_tasks:
             task_timing = (

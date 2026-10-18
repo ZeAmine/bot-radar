@@ -9,9 +9,8 @@ from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapsho
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.session import AsyncSessionLocal
 from app.domain.entities.alert_preparation import preparation_request
-from app.services.book_market_pricing import recalculate_invalidated_series, schedule_book_pricing
+from app.services.book_market_pricing import recalculate_invalidated_series
 from app.services.book_metadata_service import TITLE_SIMILARITY_MIN, same_author, title_similarity
-from app.services.market_price_service import has_usable_price
 from app.services.tome_extractor import TomeExtractor
 from app.use_cases.book_search import BookSearchUseCase
 from app.utils.isbn import normalize_listing_isbn
@@ -66,8 +65,6 @@ async def confirm_listing_book(
         )
         return
 
-    book_id = None
-    needs_price = False
     async with AsyncSessionLocal() as session:
         repo = AlertRepository(session)
         current = await repo.lock_bibliographic_result(alert_id, snapshot)
@@ -135,10 +132,5 @@ async def confirm_listing_book(
             return
         await book_repo.link_alert_to_book(alert_id=current.id, book_id=book.id)
         await repo.set_book_search_exhausted(current.id, None)
-        loaded = await book_repo.get_by_id(book.id)
-        book_id = book.id
-        needs_price = loaded is not None and not has_usable_price(loaded.market_cache)
         await recalculate_invalidated_series(session)
         await session.commit()
-    if book_id is not None and needs_price:
-        schedule_book_pricing(book_id, reason="seller_isbn_confirmed")

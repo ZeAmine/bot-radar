@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 import re
 import shlex
@@ -48,6 +49,7 @@ from deploy_dependencies import (  # noqa: E402
     DEPENDENT_SERVICES,
     DependencyError,
     InvarianceVerdict,
+    ServiceIdentity,
     assert_operational,
     capture_script,
     compare,
@@ -119,6 +121,12 @@ class Context:
     # bilan du déploiement nomme la référence de retour réellement disponible
     # plutôt qu'un nom supposé.
     rollback_image: str = ""
+    pilot: bool = False
+    pilot_manifest: Path | None = None
+    pilot_digest: str = ""
+    pilot_backup_config: Path | None = None
+    previous_app_id: str = ""
+    previous_image: str = ""
 
     def remote_or_default(self) -> Remote:
         if self.remote is None:
@@ -154,6 +162,28 @@ def _run_local(argv: list[str]) -> tuple[int, str]:
 
 def step_preflight(ctx: Context) -> int:
     """Contrôle l'état du VPS et l'écart de code avant de toucher quoi que ce soit."""
+    if ctx.pilot:
+        try:
+            if ctx.pilot_manifest is None or ctx.pilot_backup_config is None:
+                return 1
+            if ctx.pilot_backup_config.stat().st_mode & 0o077:
+                return 1
+            manifest = json.loads(ctx.pilot_manifest.read_text())
+            from app.utils.pilot_manifest import validate_manifest
+
+            validate_manifest(manifest, ctx.pilot_digest)
+            config = json.loads(ctx.pilot_backup_config.read_text())
+            if config["deployment_host"] != ctx.host:
+                return 1
+            code, _ = _run_local([
+                sys.executable, str(ctx.repo_root / "scripts/chasse_release_backup.py"),
+                "preflight", "--config", str(ctx.pilot_backup_config),
+            ])
+            if code:
+                return int(code)
+        except (OSError, ValueError, TypeError, KeyError):
+            print("Préconditions privées du pilote absentes ou invalides")
+            return 1
     print(f"{DIM}interroge le VPS, vérifie APP_ENV, les secrets et la migration en tête{RESET}")
     argv = [
         sys.executable,
@@ -164,6 +194,67 @@ def step_preflight(ctx: Context) -> int:
         ctx.key,
     ]
     return subprocess.run(argv).returncode
+
+
+def step_pilot_backup(ctx: Context) -> int:
+    if not ctx.pilot:
+        return 0
+    if ctx.pilot_backup_config is None or not ctx.previous_app_id or not ctx.previous_image:
+        return 1
+    try:
+        config = json.loads(ctx.pilot_backup_config.read_text())
+        source = config["source"]
+        if (config["deployment_host"] != ctx.host
+                or source["app_container"] != ctx.previous_app_id
+                or source["app_image"] != ctx.previous_image):
+            return 1
+        if ctx.dependencies_before is None:
+            return 1
+        postgres = ctx.dependencies_before.get("postgres")
+        if (not isinstance(postgres, ServiceIdentity)
+                or source["postgres_container"] != postgres.container_id):
+            return 1
+        code, _ = _run_local([
+            sys.executable, str(ctx.repo_root / "scripts/chasse_release_backup.py"),
+            "deployment-backup", "--config", str(ctx.pilot_backup_config),
+        ])
+        if code:
+            return int(code)
+        from scripts.chasse_release_backup import verify_archive
+
+        archive = verify_archive(Path(config["output"]))
+        receipt = json.loads((Path(config["output"])/"RESTORE_CHECK.json").read_text())
+        if (receipt.get("restore_verified") is not True
+                or receipt["app_container"] != ctx.previous_app_id
+                or receipt["app_image"] != ctx.previous_image
+                or receipt["cipher_sha256"] != archive["cipher_sha256"]
+                or receipt["schema"] != archive["schema"]):
+            return 1
+        return 0
+    except (OSError, KeyError, TypeError, ValueError):
+        return 1
+
+
+def step_pilot_activate(ctx: Context) -> int:
+    if not ctx.pilot:
+        return 0
+    if ctx.pilot_manifest is None:
+        return 1
+    state = "/var/lib/botradar/chasse-pilot/state.json"
+    data = base64.b64encode(ctx.pilot_manifest.read_bytes()).decode("ascii")
+    script = (
+        f"set -eu\ncd {ctx.remote_dir}\n"
+        "docker compose run --rm -T --no-deps --pull never --entrypoint python app -c "
+        + shlex.quote(
+            "import base64,json; from pathlib import Path; "
+            "from app.core.config import settings; from app.core import pilot_mode; "
+            f"assert settings.CHASSE_PILOT_STATE_PATH == {state!r}; "
+            f"pilot_mode.enable(Path({state!r}),json.loads(base64.b64decode({data!r})),"
+            f"{ctx.pilot_digest!r}); print('Pilote persistant vérifié')"
+        ) + "\n"
+    )
+    code, _, _ = ctx.remote_or_default().run(script)
+    return int(code)
 
 
 def step_sync(ctx: Context) -> int:
@@ -178,7 +269,7 @@ def step_sync(ctx: Context) -> int:
     code, output = _run_local(rsync_argv(ctx))
     if output:
         print(f"{DIM}{output}{RESET}")
-    return code
+    return int(code)
 
 
 def step_stop(ctx: Context) -> int:
@@ -238,6 +329,8 @@ echo "image de retour conservée : $tag ($image_id)"
 # Le tag seul, sur sa propre ligne : il ne contient ni espace ni parenthèse, et
 # l'appelant le relit sans avoir à découper un message d'affichage.
 echo "RADAR_ROLLBACK_TAG=$tag"
+echo "RADAR_PREVIOUS_APP_ID=$cid"
+echo "RADAR_PREVIOUS_IMAGE=$image_id"
 echo "$tag" > .rollback-image
 docker compose stop app
 running=$(docker inspect --format '{{{{.State.Running}}}}' "$cid")
@@ -251,7 +344,11 @@ echo "arrêt app confirmé avant synchronisation"
     for ligne in out.splitlines():
         if ligne.startswith("RADAR_ROLLBACK_TAG="):
             ctx.rollback_image = ligne.split("=", 1)[1].strip()
-    return code
+        elif ligne.startswith("RADAR_PREVIOUS_APP_ID="):
+            ctx.previous_app_id = ligne.split("=", 1)[1].strip()
+        elif ligne.startswith("RADAR_PREVIOUS_IMAGE="):
+            ctx.previous_image = ligne.split("=", 1)[1].strip()
+    return int(code)
 
 
 def step_rebuild(ctx: Context) -> int:
@@ -275,7 +372,7 @@ echo "tag de retour toujours présent après le build : $tag"
     print(f"{DIM}{out.strip()}{RESET}")
     if err.strip():
         print(f"{DIM}{err.strip()}{RESET}")
-    return code
+    return int(code)
 
 
 def step_migrate(ctx: Context) -> int:
@@ -295,7 +392,7 @@ docker compose run --rm --no-deps --pull never -T --entrypoint alembic app curre
     print(f"{DIM}{out.strip()}{RESET}")
     if err.strip():
         print(f"{DIM}{err.strip()}{RESET}")
-    return code
+    return int(code)
 
 
 def step_start(ctx: Context) -> int:
@@ -357,7 +454,7 @@ echo "conteneur cible sain après migration"
         )
         return 1
     print(f"{GREEN}dépendances inchangées ({', '.join(DEPENDENT_SERVICES)}){RESET}")
-    return code
+    return int(code)
 
 
 def _verify_dependencies_unchanged(ctx: Context) -> InvarianceVerdict:
@@ -468,8 +565,16 @@ def get_deployed_commits(ctx: Context) -> tuple[str, list[str]]:
 
 def step_notify(ctx: Context) -> int:
     """Envoie la notification de mise en ligne sur Telegram et met à jour le commit de référence."""
-    print(f"{DIM}envoie la notification de mise en ligne sur Telegram{RESET}")
+    if not ctx.pilot:
+        print(f"{DIM}envoie la notification de mise en ligne sur Telegram{RESET}")
     current_head, commits = get_deployed_commits(ctx)
+    if ctx.pilot:
+        if not re.fullmatch("[a-f0-9]{40}", current_head):
+            return 1
+        code, _, _ = ctx.remote_or_default().run(
+            f"set -eu\ncd {ctx.remote_dir}\necho {shlex.quote(current_head)} > .deployed_commit\n"
+        )
+        return int(code)
     message = format_deploy_notification(commits)
 
     if ctx.dry_run:
@@ -498,8 +603,10 @@ def step_notify(ctx: Context) -> int:
 STEPS: tuple[tuple[str, Callable[[Context], int]], ...] = (
     ("Pré-vol", step_preflight),
     ("Arrêt confirmé de l'app", step_stop),
+    ("Sauvegarde pilote vérifiée", step_pilot_backup),
     ("Synchronisation", step_sync),
     ("Reconstruction de l'image", step_rebuild),
+    ("Activation du pilote", step_pilot_activate),
     ("Migration", step_migrate),
     ("Démarrage et santé", step_start),
     ("Vérification", step_verify),
@@ -525,7 +632,7 @@ def run_steps(steps: tuple[tuple[str, Callable[[Context], int]], ...], ctx: Cont
                 f"\n{RED}Déploiement arrêté à l'étape {index} ({label}), "
                 f"code {code}. Les étapes suivantes n'ont pas été tentées.{RESET}"
             )
-            return code
+            return int(code)
     return 0
 
 
@@ -541,14 +648,21 @@ def main() -> int:
         action="store_true",
         help="affiche l'ordre des étapes sans rien exécuter",
     )
+    parser.add_argument("--pilot", action="store_true")
+    parser.add_argument("--pilot-manifest", type=Path)
+    parser.add_argument("--pilot-digest", default="")
+    parser.add_argument("--pilot-backup-config", type=Path)
     args = parser.parse_args()
+    if args.pilot and not all((args.pilot_manifest, args.pilot_digest, args.pilot_backup_config)):
+        parser.error("Le pilote exige manifeste, empreinte et configuration de sauvegarde")
 
     ctx = Context(
         host=args.host,
         key=args.key,
         remote_dir=args.remote_dir,
         repo_root=repo_root(),
-        dry_run=args.dry_run,
+        dry_run=args.dry_run, pilot=args.pilot, pilot_manifest=args.pilot_manifest,
+        pilot_digest=args.pilot_digest, pilot_backup_config=args.pilot_backup_config,
     )
 
     print(f"{BOLD}Déploiement de BotRadar{RESET}  {DIM}→ {ctx.host}:{ctx.remote_dir}{RESET}")
@@ -557,7 +671,7 @@ def main() -> int:
 
     code = run_steps(STEPS, ctx)
     if code != 0:
-        return code
+        return int(code)
     if ctx.dry_run:
         print(f"\n{GREEN}Ordre des étapes vérifié, rien n'a été exécuté.{RESET}")
         return 0

@@ -53,7 +53,8 @@ def test_telegram_caption_bd_without_market_price():
 
 def test_telegram_caption_bd_with_market_price_and_keywords():
     listing = create_sample_listing(category_slug=CategorySlug.BD_COMICS.value)
-    comparison = "<b>Prix du marché :</b> 22,00 € livré\n<b>Écart :</b> -8,31 € ✅"
+    comparison = ("<b>Dernière offre connue :</b> 22,00 € livré\n"
+                  "<b>Écart livré estimé :</b> 8,31 € en dessous du prix de référence ✅")
     caption = build_listing_caption(
         listing,
         market_comparison_line=comparison,
@@ -63,8 +64,8 @@ def test_telegram_caption_bd_with_market_price_and_keywords():
     assert "🆕 <b>Blacksad — Intégrale</b>" in caption
     assert "<b>État :</b> TBE" in caption
     assert "<b>Prix :</b> 9,00 € (13,69 € TTC)" in caption
-    assert "<b>Prix du marché :</b> 22,00 € livré" in caption
-    assert "<b>Écart :</b> -8,31 € ✅" in caption
+    assert "<b>Dernière offre connue :</b> 22,00 € livré" in caption
+    assert "<b>Écart livré estimé :</b> 8,31 € en dessous du prix de référence ✅" in caption
     assert "<b>Mots-clés :</b> blacksad, intégrale" in caption
 
 

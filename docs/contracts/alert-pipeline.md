@@ -16,8 +16,9 @@ lecture d'article supplémentaire. La description synthétique n'est pas celle d
    La lecture groupée `match_notification_state` par annonce reste distincte du calcul.
 3. Résoudre les livres déjà chargés et lire la cote en cache, sans attente HTTP.
 4. Envoyer Telegram avec un bloc de cote ou une ligne décrivant son absence.
-5. Après les envois, lancer via `safe_create_task` la liaison bibliographique et la
-   cotation manquante dans leurs sessions propres. L'IA est lancée depuis
+5. Après les envois, lancer via `safe_create_task` la liaison bibliographique dans
+   sa session propre. La réception ne déclenche aucune collecte de prix : les
+   livres liés rejoignent les lots du scheduler. L'IA est lancée depuis
    `telegram_service.py` avec le vrai identifiant du message accepté.
 
 Le titre et l'ISBN validé partent ensemble à tous les fournisseurs dans la cotation
@@ -101,3 +102,9 @@ pause et reprise ne réinitialisent pas le jalon. Une publication explicite avan
 création est rejetée. Sans publication, le premier scan est la frontière : des
 nouveautés avant ce scan peuvent manquer, et l'âge réel d'une ancienne annonce
 découverte ultérieurement reste inconnu. Aucune date n'est déduite des identifiants.
+
+
+Pendant le [pilote CAL](../operations/chasse-pilot-release.md), l’ingestion et le
+webhook sont fermés avant matching ou écriture, le poller est arrêté et tous les
+envois Telegram sont bloqués. Ce gel persiste après redémarrage jusqu’à une sortie
+explicitement autorisée ; il ne modifie pas les statuts utilisateur des alertes.

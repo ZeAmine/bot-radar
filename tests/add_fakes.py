@@ -227,7 +227,12 @@ def fake_book_search(
 
 def cached_market_price() -> BookMarketCache:
     """Cote déjà en base pour un ouvrage du catalogue : prix du jour et plus bas 1 an."""
+    from datetime import UTC, datetime
+
+    from tests.fakes_market_source import source_history_values
+
     return BookMarketCache(
+        **source_history_values(1650, datetime.now(UTC)),
         id=uuid.uuid4(),
         book_id=uuid.uuid4(),
         lowest_delivered_price_cents=1800,

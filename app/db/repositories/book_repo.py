@@ -4,10 +4,9 @@ import re
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from math import ceil
 from typing import cast
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -113,6 +112,30 @@ class BookRepository:
         await self.session.flush()
         return book
 
+    async def relink_isbn_alias(
+        self, alias_id: uuid.UUID, canonical_id: uuid.UUID, *, isbn13: str,
+        alert_ids: set[uuid.UUID],
+    ) -> list[uuid.UUID]:
+        from app.utils.isbn import normalize_listing_isbn
+
+        alias = await self.session.get(Book, alias_id)
+        canonical = await self.session.get(Book, canonical_id)
+        if (alias is None or canonical is None or alias_id == canonical_id
+                or canonical.isbn13 != isbn13 or normalize_listing_isbn(alias.isbn13) != isbn13):
+            raise ValueError("Équivalence ISBN non vérifiée")
+        linked = list((await self.session.scalars(select(AlertBook.alert_id).join(Alert).where(
+            AlertBook.book_id == alias_id, AlertBook.alert_id.in_(alert_ids),
+            Alert.deleted_at.is_(None), Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+        ).order_by(AlertBook.alert_id))).all())
+        for alert_id in linked:
+            await self._lock_membership(alert_id)
+            await self.link_alert_to_book(alert_id, canonical_id)
+            await self.session.execute(delete(AlertBook).where(
+                AlertBook.alert_id == alert_id, AlertBook.book_id == alias_id,
+            ))
+            await self._invalidate_series_total(alert_id)
+        return linked
+
     async def clear_alert_books(self, alert_id: uuid.UUID) -> None:
         """Retire toutes les liaisons livre d'une alerte avant d'en poser une nouvelle."""
         await self._lock_membership(alert_id)
@@ -144,7 +167,7 @@ class BookRepository:
 
     async def ensure_confirmed_book(
         self, *, isbn13: str, title: str, author: str | None, publisher: str | None,
-        publication_year: int | None, format_book: str | None,
+        publication_year: int | None, format_book: str | None, language: str = "fr",
     ) -> Book:
         """Insère une notice confirmée sans écraser une fiche concurrente ou préexistante."""
         insert = (
@@ -153,6 +176,7 @@ class BookRepository:
         await self.session.execute(insert(Book).values(
             isbn13=isbn13, title=title, normalized_title=normalize_text(title), author=author,
             publisher=publisher, publication_year=publication_year, format=format_book,
+            language=language,
         ).on_conflict_do_nothing(index_elements=["isbn13"]))
         book = await self.get_by_isbn13(isbn13)
         if book is None:
@@ -202,59 +226,66 @@ class BookRepository:
         await self._refresh_annual(books)
         return books
 
-    async def get_books_needing_price_refresh(self, limit: int = 8) -> list[Book]:
-        """Charge un lot prioritaire de livres BD dont le cache est expiré, absent ou ancien.
-        Évite tout pic de charge en étalant les rafraîchissements en tâche de fond.
-        """
-        now = datetime.now(UTC)
-        rest_cutoff = now - timedelta(hours=FAILED_COLLECTION_REST_HOURS)
-        # ``IS NULL`` est explicite : un NOT sur une comparaison fausse en SQL
-        # vaut NULL, et la clause WHERE écarterait alors les livres sans cache.
-        not_in_rest = or_(
-            BookMarketCache.collection_status.is_(None),
-            BookMarketCache.collection_status.not_in(["failed", "partial"]),
-            BookMarketCache.last_attempt_at.is_(None),
-            BookMarketCache.last_attempt_at <= rest_cutoff,
-        )
-        watched = select(AlertBook.book_id).join(Alert).join(Category).where(
-            Category.slug == "bd_comics", Alert.deleted_at.is_(None),
-            Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
-        )
-        population = await self.session.scalar(
-            select(func.count()).select_from(Book).where(Book.id.in_(watched))
-        )
-        # 12 lots couvrent six heures : même les reprises en échec ont assez de places.
-        limit = max(limit, ceil((population or 0) / 12))
-        successful = BookMarketCache.last_successful_collection_at
-        subq = (
-            select(Book.id)
-            .join(AlertBook, Book.id == AlertBook.book_id)
-            .join(Alert, AlertBook.alert_id == Alert.id)
-            .join(Category, Alert.category_id == Category.id)
-            .outerjoin(BookMarketCache, Book.id == BookMarketCache.book_id)
-            .where(
-                Category.slug == "bd_comics",
-                Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
-                Alert.deleted_at.is_(None),
-                or_(successful.is_(None), successful <= now - timedelta(hours=24),
-                    BookMarketCache.collection_status.in_(["failed", "partial"])),
-                not_in_rest,
+    async def plan_price_refreshes(self, *, now: datetime | None = None,
+                                  capacity: int = 8,
+                                  book_ids: set[uuid.UUID] | None = None) -> None:
+        from app.services.market_refresh_policy import aware, component_due
+
+        moment = now or datetime.now(UTC)
+        books = await self.get_books_for_active_bd_alerts()
+        occupied: dict[datetime, int] = {}
+        pending: list[Book] = []
+        overdue = 0
+        for book in sorted(books, key=lambda item: (
+            aware(item.market_cache.next_refresh_at)
+            if item.market_cache and item.market_cache.next_refresh_at else moment,
+        )):
+            cache = book.market_cache
+            if cache is not None and cache.next_refresh_at is not None:
+                slot = aware(cache.next_refresh_at)
+                if slot <= moment and book_ids is None:
+                    overdue += 1
+                    if overdue > capacity:
+                        cache.next_refresh_at = None
+                        pending.append(book)
+                        continue
+                occupied[slot] = occupied.get(slot, 0) + 1
+            elif book_ids is None or book.id in book_ids:
+                pending.append(book)
+        for book in pending:
+            cache = book.market_cache
+            if cache is None:
+                cache = BookMarketCache(book_id=book.id)
+                self.session.add(cache)
+                book.market_cache = cache
+            due = max(moment, min(component_due(cache, component, moment)
+                                  for component in ("current", "history")))
+            slot = due.replace(second=0, microsecond=0)
+            slot = slot.replace(minute=15 if slot.minute < 15 else 45) if slot.minute < 45 else (
+                slot.replace(minute=15) + timedelta(hours=1)
             )
-            .group_by(Book.id, BookMarketCache.last_attempt_at, BookMarketCache.checked_at)
-            .order_by(BookMarketCache.last_attempt_at.asc().nulls_first(),
-                      BookMarketCache.checked_at.asc().nulls_first(), Book.id)
-            .limit(limit)
-        )
-        book_ids = list((await self.session.execute(subq)).scalars().all())
-        if not book_ids:
-            return []
-        stmt = select(Book).options(selectinload(Book.market_cache)).where(Book.id.in_(book_ids))
-        result = await self.session.execute(stmt)
-        books = list(result.scalars().all())
-        priority = {book_id: index for index, book_id in enumerate(book_ids)}
-        books.sort(key=lambda book: priority[book.id])
-        await self._refresh_annual(books)
-        return books
+            if slot < due:
+                slot += timedelta(minutes=30)
+            while occupied.get(slot, 0) >= capacity:
+                slot += timedelta(minutes=30)
+            cache.next_refresh_at = slot
+            occupied[slot] = occupied.get(slot, 0) + 1
+        await self.session.flush()
+
+    async def get_books_needing_price_refresh(self, limit: int = 8, *,
+                                            now: datetime | None = None) -> list[Book]:
+        now = now or datetime.now(UTC)
+        books = await self.get_books_for_active_bd_alerts()
+        eligible = [book for book in books if book.market_cache is not None
+                    and book.market_cache.next_refresh_at is not None
+                    and (book.market_cache.next_refresh_at.replace(tzinfo=UTC)
+                         if book.market_cache.next_refresh_at.tzinfo is None
+                         else book.market_cache.next_refresh_at) <= now]
+        eligible.sort(key=lambda book: (
+            book.market_cache.next_refresh_at if book.market_cache is not None else now,
+            str(book.id),
+        ))
+        return eligible[:limit]
 
     async def get_book_for_alert(self, alert_id: uuid.UUID) -> Book | None:
         """Récupère le livre associé à une alerte avec son cache de marché préchargé."""
@@ -415,20 +446,27 @@ def resolve_loaded_books(
 
     if tome_res.tome_number is not None:
         t_num = tome_res.tome_number
-        for b in books:
-            b_tome = TomeExtractor.extract(b.title, series_key=alert_name)
-            if b_tome.tome_number == t_num:
-                return b, books, tome_res
+        matches = [b for b in books if TomeExtractor.extract(
+            b.title, series_key=alert_name,
+        ).tome_number == t_num]
+        if len(matches) == 1:
+            return matches[0], books, tome_res
+        if len(matches) > 1:
+            return None, books, tome_res
 
-        for b in books:
-            if re.search(rf"\b(?:tome|t|vol|livre)\s*\.?\s*{t_num}\b", b.title, re.IGNORECASE):
-                return b, books, tome_res
+        matches = [b for b in books if re.search(
+            rf"\b(?:tome|t|vol|volume|livre)\s*\.?\s*{t_num}\b", b.title, re.IGNORECASE,
+        )]
+        if len(matches) == 1:
+            return matches[0], books, tome_res
+        if len(matches) > 1:
+            return None, books, tome_res
 
         if tome_res.matched_subtitle:
             sub = tome_res.matched_subtitle.lower()
-            for b in books:
-                if sub in b.title.lower():
-                    return b, books, tome_res
+            matches = [b for b in books if sub in b.title.lower()]
+            if len(matches) == 1:
+                return matches[0], books, tome_res
 
         return None, books, tome_res
 

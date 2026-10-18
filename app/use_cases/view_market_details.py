@@ -67,7 +67,7 @@ class ViewMarketDetailsUseCase:
         self,
         listing_id: uuid.UUID,
         *,
-        refresh: bool = True,
+        refresh: bool = False,
     ) -> MarketPanelData | None:
         """Données du panneau, ou ``None`` si l'annonce n'existe pas.
 
@@ -137,7 +137,7 @@ class ViewMarketDetailsUseCase:
             not target_book
             and books_in_series
             and len(books_in_series) == 1
-            and not (tome_result and tome_result.is_lot)
+            and not (tome_result and (tome_result.is_lot or tome_result.tome_number is not None))
         ):
             target_book = books_in_series[0]
 
@@ -169,7 +169,7 @@ class ViewMarketDetailsUseCase:
         books.sort(key=lambda b: (extract_tome_number_from_title(b.title) or 999, b.title))
         book = books[0] if books else None
         if alert.isbn:
-            book = await self.book_repo.get_book_for_alert(alert.id)
+            book = next((candidate for candidate in books if candidate.isbn13 == alert.isbn), None)
             books = [book] if book else []
         snapshot = await self.market_repo.get_latest_snapshot(book.id) if book else None
         return MarketPanelData(
@@ -195,20 +195,45 @@ class ViewMarketDetailsUseCase:
             return
         snapshot = BibliographicSnapshot.capture(alert)
         books = await self.book_repo.get_all_books_for_alert(alert.id)
-        if books and (alert.isbn or (not force_catalogue and all(
-            extract_tome_number_from_title(b.title) for b in books
-        ))):
+        if books and ((alert.isbn and len(books) == 1 and books[0].isbn13 == alert.isbn)
+                      or (not alert.isbn and not force_catalogue and all(
+                          extract_tome_number_from_title(b.title) for b in books
+                      ))):
             return
         if alert.isbn:
             book, _ = await BookCatalogService(self.db).identify_book(
                 isbn13=alert.isbn,
                 title=alert.name,
             )
-            if book and book.isbn13 == alert.isbn:
+            notice = None
+            reference = None
+            if book is None or book.isbn13 != alert.isbn:
+                from app.core.constants import BookSearchStatus
+                from app.use_cases.book_search import BookSearchUseCase
+
+                result = await BookSearchUseCase().search_by_isbn(
+                    alert.isbn, expected_title=alert.name,
+                )
+                if result.status == BookSearchStatus.FOUND and result.confirmed is not None:
+                    notice = result.confirmed
+                    reference = result.reference
+                book = None
+            if (book and book.isbn13 == alert.isbn) or (notice and notice.isbn13 == alert.isbn):
                 if await AlertRepository(self.db).lock_bibliographic_result(
                     alert.id, snapshot
                 ) is None:
                     return
+                if book is None and notice is not None:
+                    book = await self.book_repo.ensure_confirmed_book(
+                        isbn13=alert.isbn, title=notice.title, author=notice.author,
+                        publisher=notice.publisher, publication_year=notice.publication_year,
+                        format_book=reference.format_detail if reference else None,
+                        language=notice.language or "und",
+                    )
+                if book is None:
+                    return
+                if any(linked.id != book.id for linked in books):
+                    await self.book_repo.clear_alert_books(alert.id)
                 await self.book_repo.link_alert_to_book(alert.id, book.id)
                 from app.services.book_market_pricing import recalculate_invalidated_series
                 await recalculate_invalidated_series(self.db)
@@ -234,13 +259,16 @@ class ViewMarketDetailsUseCase:
             return None, None, None
         if alert.isbn:
             book = await self.book_repo.get_book_for_alert(alert.id)
+            if book is not None and book.isbn13 != alert.isbn:
+                book = None
             selected, books, tome_result = resolve_loaded_books(
                 alert_name=alert.name,
                 listing_title=listing.title,
                 listing_description=listing.description,
                 books=[book] if book else [],
             )
-            return selected or (book if not tome_result.is_lot else None), books, tome_result
+            fallback = book if not tome_result.is_lot and tome_result.tome_number is None else None
+            return selected or fallback, books, tome_result
 
         book, series, tome_result = await self.book_repo.resolve_book_for_listing(
             alert_id=alert.id,

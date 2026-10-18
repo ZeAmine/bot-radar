@@ -426,7 +426,7 @@ def render_series_volumes(data: dict[str, Any]) -> list[str]:
             lines.append(f"<b>Langue :</b> {html.escape(language)}")
         lines.extend(row.get("price_lines") or [
             "<i>⚠️ Cote indisponible</i>",
-            "<b>Prix du marché :</b> Non renseigné",
+            "<b>Dernière offre connue :</b> Non renseigné",
             "<b>Prix bas constaté :</b> Non renseigné",
         ])
     if data.get("series_inconsistent"):

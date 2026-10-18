@@ -380,6 +380,7 @@ class _FakeRegistry:
         return [
             MarketOffer(
                 provider_name="Librairie Test",
+                observed_at=datetime.now(UTC),
                 item_price_cents=price,
                 shipping_price_cents=0,
                 delivered_price_cents=price,

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from time import monotonic
 
 from aiogram.exceptions import TelegramBadRequest
@@ -12,17 +12,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.bot.labels import BTN_CLOSE
 from app.core.constants import AlertStatus
-from app.core.tasks import safe_create_task
-from app.db.models.alert import Alert
 from app.db.models.book import Book
-from app.db.repositories.alert_repo import AlertRepository
-from app.db.repositories.book_repo import BookRepository
-from app.db.session import AsyncSessionLocal
-from app.services.book_market_pricing import first_collection_is_due, schedule_book_pricing
-from app.services.market_health import next_full_pass_at
 from app.services.market_price_service import MarketPriceService, extract_tome_number_from_title
-from app.services.tome_extractor import TomeExtractor
-from app.use_cases.view_market_details import MarketPanelData, ViewMarketDetailsUseCase
+from app.use_cases.view_market_details import MarketPanelData
 
 logger = logging.getLogger(__name__)
 
@@ -79,140 +71,12 @@ def _next_check_for(view: PanelView, selected: Book | None) -> datetime | None:
         return None
     if getattr(alert, "deleted_at", None) is not None:
         return None
-    return next_full_pass_at()
-
-
-def _request_first_collection(view: PanelView, book: Book | None) -> None:
-    """Demande la première cotation d'un livre qui n'en a jamais reçu.
-
-    Le prédicat écarte une cote exploitable, une collecte réussie sans offre et une
-    tentative récente. `schedule_book_pricing` conserve ses propres gardes : une
-    collecte déjà en vol pour ce livre n'est pas doublée.
-    """
-    if book is None:
-        return
-    alert = view.panel.alert
-    if alert is not None and (
-        alert.status not in {AlertStatus.ACTIVE, AlertStatus.PAUSED}
-        or getattr(alert, "deleted_at", None) is not None
-    ):
-        return
-    if not first_collection_is_due(book):
-        return
-    schedule_book_pricing(book.id, reason="market_panel")
-
-
-def _catalogue_attempt_is_recent(alert: Alert | None) -> bool:
-    if alert is None:
-        return False
-    attempted = alert.catalogue_refresh_attempted_at
-    if attempted is None:
-        return False
-    aware = attempted if attempted.tzinfo else attempted.replace(tzinfo=UTC)
-    return datetime.now(UTC) - aware < timedelta(hours=24)
-
-
-def _catalogue_resolution_is_needed(panel: MarketPanelData) -> bool:
-    """Le panneau manque-t-il d'un livre ou d'un tome que le catalogue peut fournir ?
-
-    La résolution est la même que celle du planificateur, mais déclenchée depuis le
-    panneau lorsqu'aucune première cotation n'est possible sans elle. Elle reste
-    limitée aux alertes actives ou en pause, et à une tentative par période de 24 h.
-    """
-    alert = panel.alert
-    if alert is None:
-        return False
-    if alert.status not in {AlertStatus.ACTIVE, AlertStatus.PAUSED}:
-        return False
-    if getattr(alert, "deleted_at", None) is not None:
-        return False
-    books = panel.books_in_series or ([panel.book] if panel.book else [])
-    if not books:
-        return True
-    if alert.isbn:
-        return False
-    if panel.book is None:
-        return True
-    if panel.tome_result and panel.tome_result.tome_number is not None:
-        wanted = panel.tome_result.tome_number
-        return not any(
-            extract_tome_number_from_title(book.title) == wanted for book in books
-        )
-    return (
-        extract_tome_number_from_title(panel.book.title) is None
-        and first_collection_is_due(panel.book)
-    )
-
-
-_catalogue_in_flight: set[uuid.UUID] = set()
-
-
-def _request_catalogue_resolution(view: PanelView) -> None:
-    """Résout le catalogue manquant sans relancer une requête à chaque ouverture."""
-    panel = view.panel
-    alert = panel.alert
-    if alert is None or not _catalogue_resolution_is_needed(panel):
-        return
-    if _catalogue_attempt_is_recent(alert) or alert.id in _catalogue_in_flight:
-        return
-    _catalogue_in_flight.add(alert.id)
-    tome_number = (
-        panel.tome_result.tome_number
-        if panel.tome_result and panel.tome_result.tome_number is not None
-        else None
-    )
-    safe_create_task(
-        _resolve_catalogue_once(alert.id, tome_number),
-        name=f"market_catalogue_{alert.id}",
-    )
-
-
-async def _resolve_catalogue_once(
-    alert_id: uuid.UUID, tome_number: int | None = None
-) -> None:
-    try:
-        async with AsyncSessionLocal() as db:
-            alert = await AlertRepository(db).get_by_id(alert_id)
-            if (
-                alert is None
-                or alert.status not in {AlertStatus.ACTIVE, AlertStatus.PAUSED}
-                or alert.deleted_at is not None
-                or _catalogue_attempt_is_recent(alert)
-            ):
-                return
-            alert_name = alert.name
-            alert.catalogue_refresh_attempted_at = datetime.now(UTC)
-            await db.commit()
-            await ViewMarketDetailsUseCase(db).resolve_alert_books(
-                alert_id, force_catalogue=True
-            )
-            books = await BookRepository(db).get_all_books_for_alert(alert_id)
-            if tome_number is not None:
-                target = next(
-                    (
-                        book
-                        for book in books
-                        if TomeExtractor.extract(
-                            book.title, series_key=alert_name
-                        ).tome_number
-                        == tome_number
-                    ),
-                    None,
-                )
-            elif len(books) == 1:
-                target = books[0]
-            else:
-                target = None
-            if target is not None and first_collection_is_due(target):
-                schedule_book_pricing(target.id, reason="market_panel")
-    except Exception:
-        logger.warning(
-            "Résolution catalogue depuis le panneau impossible pour %s",
-            alert_id,
-            exc_info=True,
-        )
-    finally:
-        _catalogue_in_flight.discard(alert_id)
+    cache = selected.__dict__.get("market_cache")
+    if cache is None or cache.next_refresh_at is None:
+        return None
+    next_at = cache.next_refresh_at
+    aware = next_at if next_at.tzinfo else next_at.replace(tzinfo=UTC)
+    return aware if aware > datetime.now(UTC) else None
 
 
 def _content(view: PanelView) -> tuple[str, InlineKeyboardMarkup]:
@@ -294,8 +158,6 @@ async def open_panel(
         disable_web_page_preview=True,
     )
     _panels[_key(view.message)] = view
-    _request_first_collection(view, panel.book)
-    _request_catalogue_resolution(view)
 
 
 async def select_panel_tome(callback: CallbackQuery, book_id: uuid.UUID | None) -> bool:

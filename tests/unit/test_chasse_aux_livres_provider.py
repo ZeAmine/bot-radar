@@ -541,3 +541,76 @@ def test_history_without_delivery_proof_cannot_become_a_delivered_minimum():
         {"x": 1782864000000, "y": 5.45},
     ]}]}
     assert parse_historical_observations(data, "https://example.invalid/book") == []
+
+
+def test_source_numeric_history_is_not_replaced_by_tooltip_text():
+    from app.providers.chasse_aux_livres import parse_historical_observations
+
+    data = {'price_includes_shipping': True, 'stats': [
+        {'label': 'Très bon état +', 'statValues': [
+            {'x': '1782864000000', 'y': '9.21', 'shipping': 0,
+             't': '#[13,41 €'},
+        ]},
+    ]}
+    points = parse_historical_observations(data, 'https://example.invalid/book')
+    assert len(points) == 1
+    assert points[0].delivered_price_cents == 921
+    assert points[0].observed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_source_item_and_shipping_fields_remain_separate():
+    def response(request):
+        if request.url.path == "/search":
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        if request.url.path == "/rest/search-results":
+            return httpx.Response(200, json=MOCK_REST_JSON)
+        if request.url.path.startswith("/prix/"):
+            return httpx.Response(200, text=MOCK_PROD_HTML)
+        return httpx.Response(200, json={"offers": {"22": [{
+            "logo": {"name": "MOMOX_SHOP"}, "condition": {"_name": "USED"},
+            "subCondition": {"name": "Très bon"}, "price": {"amount": 1100},
+            "shippingCost": {"amount": 200}, "totalPrice": {"amount": 1300},
+            "affiliateUrl": "https://example.com/item",
+        }]}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        provider = ChasseAuxLivresProvider(http_client=client, max_retries=0)
+        offers = await provider.get_offers(isbn13="9791095670568", title="Rip Tome 1")
+    current = next(offer for offer in offers if offer.is_available)
+    assert current.item_price_cents == 1100
+    assert current.shipping_price_cents == 200
+    assert current.delivered_price_cents == 1300
+
+
+@pytest.mark.asyncio
+async def test_collector_exception_logs_do_not_include_request_secrets(caplog):
+    import logging
+
+    async def unavailable(request):
+        raise httpx.ReadTimeout("private-session-marker", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(unavailable)) as client:
+        provider = ChasseAuxLivresProvider(http_client=client, max_retries=0)
+        with caplog.at_level(logging.DEBUG):
+            result = await provider.get_offers(isbn13=None, title="Livre")
+    assert result.failed_providers == ("chasse_aux_livres",)
+    assert "private-session-marker" not in caplog.text
+    assert "ReadTimeout" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "body"), [(429, ""), (200, "Vérification robot")])
+async def test_source_restriction_stops_without_retries_or_title_fallback(status, body):
+    calls = []
+
+    async def limited(request):
+        calls.append(request.url.path)
+        return httpx.Response(status, text=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(limited)) as client:
+        provider = ChasseAuxLivresProvider(http_client=client)
+        result = await provider.get_offers(isbn13="9782756079332", title="Jean Doux")
+    assert calls == ["/search"]
+    assert result.failed_providers == ("chasse_aux_livres",)
+    assert result.attempts[0].reason in {"rate_limited", "bot_challenge"}

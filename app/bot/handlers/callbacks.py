@@ -128,6 +128,10 @@ def _tome_selection_rows(
     ):
         number = extract_tome_number_from_title(book.title)
         btn_text = f"T{number}" if number else clean_tome_display_title(book.title)[:20]
+        duplicates = sum(extract_tome_number_from_title(candidate.title) == number
+                         for candidate in books)
+        if duplicates > 1 and book.isbn13:
+            btn_text += f" · {book.isbn13[-6:]}"
         current_row.append(
             InlineKeyboardButton(
                 text=btn_text,

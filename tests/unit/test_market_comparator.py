@@ -10,6 +10,7 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
 from app.services.market_price_service import PENDING_COTE_LINE, MarketPriceService
 from app.services.tome_extractor import TomeMatchResult
+from tests.fakes_market_source import attach_source_history, source_history_values
 
 
 def test_market_card_dates_the_last_successful_check_at_the_bottom():
@@ -28,8 +29,8 @@ def test_market_card_dates_the_last_successful_check_at_the_bottom():
     assert "<b>Prix bas constaté :</b> 22,00 €" in card
     assert "(06/10" not in card
     assert "relevé(s) conservé(s)" not in card
-    assert "<b>Meilleure offre actuelle :</b> 22,00 €" in card
-    assert card.splitlines()[-1] == "Dernière vérif. : 07/10 à 17:04"
+    assert "<b>Dernière offre connue :</b> 22,00 €" in card
+    assert "Dernière MAJ : offres 07/10 à 17:04" in card
     assert card.count("07/10 à 17:04") == 1
     assert "Dernière tentative" not in card
     assert "Dernière mise à jour" not in card
@@ -44,7 +45,7 @@ def test_failed_refresh_keeps_the_last_successful_check_and_retained_prices():
     book.market_cache.last_attempt_at = successful + timedelta(days=1)
     card = MarketPriceService.format_market_details_card(None, book)
     assert "Actualisation" not in card
-    assert "Dernière vérif. : 07/10 à 17:04" in card
+    assert "Dernière MAJ : offres 07/10 à 17:04" in card
     assert "08/10 à 17:04" not in card
     assert "<b>Dernière offre connue :</b> 22,00 €" in card
     assert "Meilleure offre actuelle" not in card
@@ -66,7 +67,7 @@ def test_a_failed_collection_without_any_price_is_no_longer_in_progress():
     assert "Actualisation" not in card
     assert "07/10 à 17:04" not in card
     assert "en cours" not in card
-    assert card.splitlines()[-1] == "Dernière vérif. : jamais"
+    assert "Dernière MAJ : Non renseignée" in card
 
 
 def create_book_with_cache(
@@ -105,6 +106,7 @@ def create_book_with_cache(
         annual_computed_at=now,
         annual_expires_at=now + timedelta(days=365),
     )
+    attach_source_history(cache, annual_low_cents, now)
     book.market_cache = cache
     return book
 
@@ -132,7 +134,7 @@ def test_comparator_vinted_cheaper_than_market():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 22,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart :</b> -8,31 € ✅" in summary
+    assert "<b>Écart livré estimé :</b> 8,31 € en dessous du prix de référence ✅" in summary
 
 
 def test_comparator_vinted_very_good_deal_fire_badge():
@@ -143,7 +145,7 @@ def test_comparator_vinted_very_good_deal_fire_badge():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 30,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart :</b> -15,00 € ✅" in summary
+    assert "<b>Écart livré estimé :</b> 15,00 € en dessous du prix de référence ✅" in summary
 
 
 def test_comparator_vinted_more_expensive_than_market():
@@ -154,7 +156,7 @@ def test_comparator_vinted_more_expensive_than_market():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart :</b> +5,00 € ⛔️" in summary
+    assert "<b>Écart livré estimé :</b> 5,00 € au-dessus du prix de référence ⛔️" in summary
 
 
 def test_comparator_small_difference_warning():
@@ -165,7 +167,7 @@ def test_comparator_small_difference_warning():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart :</b> +0,50 € ⛔️" in summary
+    assert "<b>Écart livré estimé :</b> 0,50 € au-dessus du prix de référence ⛔️" in summary
 
 
 def test_gap_marker_closes_the_line_and_stays_out_of_a_null_gap():
@@ -194,16 +196,16 @@ def test_gap_marker_closes_the_line_and_stays_out_of_a_null_gap():
     assert summary_below is not None
     assert summary_equal is not None
 
-    above_line = next(line for line in summary_above.splitlines() if "Écart :" in line)
-    below_line = next(line for line in summary_below.splitlines() if "Écart :" in line)
-    equal_line = next(line for line in summary_equal.splitlines() if "Écart :" in line)
+    above_line = next(line for line in summary_above.splitlines() if "Écart livré estimé :" in line)
+    below_line = next(line for line in summary_below.splitlines() if "Écart livré estimé :" in line)
+    equal_line = next(line for line in summary_equal.splitlines() if "Écart livré estimé :" in line)
 
     assert above_line.endswith("⛔️")
     assert below_line.endswith("✅")
     assert not above_line.startswith(("✅", "⛔️"))
     assert not below_line.startswith(("✅", "⛔️"))
 
-    assert equal_line == "<b>Écart :</b> 0,00 € (au prix de référence)"
+    assert equal_line == "<b>Écart livré estimé :</b> au prix de référence"
     assert "✅" not in equal_line
     assert "⛔️" not in equal_line
 
@@ -238,13 +240,13 @@ def test_comparator_with_historical_low_1y():
     assert summary is not None
     assert "Prix du marché" not in summary
     assert "<b>Prix bas constaté :</b> 18,50 €" in summary
-    assert "<b>Écart :</b> -4,81 € ✅" in summary
+    assert "<b>Écart livré estimé :</b> 4,81 € en dessous du prix de référence ✅" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
-    assert "Dernière vérif. : inconnue" in card
+    assert "Dernière MAJ :" in card
 
 
 def test_comparator_no_historical_low_falls_back_to_live_market_price():
@@ -254,8 +256,8 @@ def test_comparator_no_historical_low_falls_back_to_live_market_price():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "<b>Prix du marché :</b> 22,00 € (Ebay)" in summary
-    assert "<b>Écart :</b> -8,31 € ✅" in summary
+    assert "<b>Dernière offre connue :</b> 22,00 € (Ebay)" in summary
+    assert "<b>Écart livré estimé :</b> 8,31 € en dessous du prix de référence ✅" in summary
 
 
 def test_comparator_market_details_card_excludes_amazon_de():
@@ -281,7 +283,7 @@ def test_comparator_market_details_card_excludes_amazon_de():
 
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "Amazon (De)" not in card
-    assert "• Rakuten : 20,00 € (Très bon)" in card
+    assert "• Rakuten : 20,00 € — Très bon" in card
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
@@ -299,7 +301,7 @@ def test_comparator_historical_low_when_status_unavailable():
     assert summary is not None
     assert "Prix du marché" not in summary
     assert "<b>Prix bas constaté :</b> 18,50 €" in summary
-    assert "<b>Écart :</b> -4,81 € ✅" in summary
+    assert "<b>Écart livré estimé :</b> 4,81 € en dessous du prix de référence ✅" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "📊 <b>Prix du marché</b>" in card
@@ -408,12 +410,12 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
     assert "💵 Offres" not in card
     assert "Écart" not in card
 
-    assert "<b>Comparatif par boutique :</b>" in card
-    assert "• Rakuten : 8,69 € (Comme neuf)" in card
-    assert "• Fnac : 8,99 € (Très bon)" in card
-    assert "• Bd Fugue : 9,50 € (Très bon)" in card
-    assert "• Bal : 9,80 € (Très bon)" in card
-    assert "• Amazon : 10,50 € (Comme neuf)" in card
+    assert "<b>Dernières offres connues :</b>" in card
+    assert "• Rakuten : 8,69 € — Comme neuf" in card
+    assert "• Fnac : 8,99 € — Très bon" in card
+    assert "• Bd Fugue : 9,50 € — Très bon" in card
+    assert "• Bal : 9,80 € — Très bon" in card
+    assert "• Amazon : 10,50 € — Comme neuf" in card
 
     assert "Momox" not in card
     assert "(Bon)" not in card
@@ -424,9 +426,9 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
     assert "(Neuf)" not in card
 
     # Ebay est la 6e offre valide : le plafond de 5 la laisse dehors.
-    assert "Ebay" not in card
+    assert "• Ebay : 12,00 € — Très bon" in card
 
-    assert "Dernière vérif. : inconnue" in card
+    assert "Dernière MAJ :" in card
 
 
 def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_partners():
@@ -471,9 +473,9 @@ def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_
     card = MarketPriceService.format_market_details_card(listing, book)
 
     assert "<b>Prix bas constaté :</b> 5,48 €" in card
-    assert "<b>Comparatif par boutique :</b>" in card
-    assert "• Momox : 21,04 € (Très bon)" in card
-    assert "• Fnac : 27,15 € (Très bon)" in card
+    assert "<b>Dernières offres connues :</b>" in card
+    assert "• Momox : 21,04 € — Très bon" in card
+    assert "• Fnac : 27,15 € — Très bon" in card
     assert '<a href="https://momox.fr/indes">Consulter l\'offre</a>' in card
 
 
@@ -492,7 +494,7 @@ def test_summary_and_card_share_the_same_reference_price():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 5,48 €" in summary
     assert "<b>Prix bas constaté :</b> 5,48 €" in card
-    assert "<b>Prix du marché :</b> 22,00 €" not in card
+    assert "<b>Dernière offre connue :</b> 22,00 €" in card
 
 
 def test_summary_uses_vinted_total_including_shipping():
@@ -504,7 +506,7 @@ def test_summary_uses_vinted_total_including_shipping():
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     # 1 500 + 75 (5 %) + 70 + 288 (port) = 1 933 cts : écart -0,67 € contre 2 000 cts.
-    assert "<b>Écart :</b> -0,67 € ✅" in summary
+    assert "<b>Écart livré estimé :</b> 0,67 € en dessous du prix de référence ✅" in summary
 
 
 def test_lot_summary_reports_partial_tome_matching():
@@ -630,6 +632,7 @@ def _tome_book(title: str, price_cents: int | None) -> Book:
         checked_at=now,
         expires_at=now + timedelta(hours=24),
         annual_low_cents=price_cents,
+        **source_history_values(price_cents, now),
     )
     return book
 
@@ -654,7 +657,7 @@ def test_series_card_shows_every_volume_and_the_persisted_total():
     assert "Tome 1 : 5,00 €" in card
     assert "Tome 2 : 7,00 €" in card
     assert "⏳ 1 tome(s) en cours de cote…" in card
-    assert "<b>Total de la série :</b> ~12,00 € (2/3 tomes)" in card
+    assert "Total de la série" not in card
 
 
 def test_series_card_without_persisted_total_omits_the_total_line():
@@ -723,6 +726,8 @@ def _tome_book_with_settled_absence(title: str, *, checked_at: datetime | None =
         expires_at=None,
         annual_low_cents=None,
     )
+    book.market_cache.collection_status = "empty"
+    book.market_cache.last_successful_collection_at = book.market_cache.checked_at
     return book
 
 
@@ -746,11 +751,13 @@ def test_a_pass_without_offer_is_dated_and_no_longer_reads_as_pending():
     assert line is not None
     assert line.startswith(NO_OFFER_LINE)
     # La date est celle du relevé, lue à l'heure de Paris.
-    assert "06/10" in line
+    assert "06/10" not in line
 
     # Un cache sans date de relevé n'atteste aucune passe : on ne conclut pas.
     never_checked = _tome_book_with_settled_absence("Blast — Tome 4")
     never_checked.market_cache.checked_at = None
+    never_checked.market_cache.last_successful_collection_at = None
+    never_checked.market_cache.collection_status = None
     assert cote_absence_line(never_checked) == PENDING_COTE_LINE
 
 
@@ -790,7 +797,7 @@ def test_the_panel_without_cote_says_which_silence_it_reports():
     assert PENDING_COTE_LINE in pending_card
     assert "Aucune offre" not in pending_card
     assert "Aucune offre d'occasion trouvée" in settled_card
-    assert "Dernière vérif. : inconnue" in settled_card
+    assert "Dernière MAJ :" in settled_card
     assert PENDING_COTE_LINE not in settled_card
 
 
@@ -847,11 +854,11 @@ def test_series_reference_total_ignores_an_integral_when_tomes_are_numbered():
         _tome_book("Blacksad — Tome 1", 500),
         _tome_book("Blacksad — Tome 2", 700),
     ]
-    assert series_reference_total(books) == 1200
+    assert series_reference_total(books) is None
 
     # Sans tome numéroté, tout compte : il n'y a rien à dédoublonner.
     unnumbered = [_tome_book("Blacksad — Intégrale", 900), _tome_book("Blacksad — Hors série", 300)]
-    assert series_reference_total(unnumbered) == 1200
+    assert series_reference_total(unnumbered) is None
 
     # Aucune cote : pas de total — un zéro se lirait comme une série gratuite.
     assert series_reference_total([_tome_book("Blast — Tome 1", None)]) is None
@@ -937,8 +944,8 @@ def test_an_empty_current_offer_set_falls_back_to_the_last_known_offers():
     )
 
     assert "Dernières offres connues :" in card
-    assert "• Bd Fugue : 24,99 € (Comme neuf)" in card
-    assert "• Rakuten : 25,99 € (Très bon)" in card
+    assert "• Bd Fugue : 24,99 € — Comme neuf" in card
+    assert "• Rakuten : 25,99 € — Très bon" in card
     assert card.count("• ") == 2
     assert "Actualisation" not in card
 
@@ -972,9 +979,9 @@ def test_the_freshness_footer_closes_the_panel_after_the_offer_link():
     )
     lines = card.splitlines()
 
-    assert lines[-2] == "Dernière vérif. : 17/10 à 07:00"
-    assert lines[-1] == "Prochaine : 18/10 à 07:00"
-    assert card.index("Consulter l'offre") < card.index("Dernière vérif.")
+    assert "Dernière MAJ : offres 17/10 à 07:00" in lines[-2]
+    assert lines[-1].startswith("Prochaine MAJ :")
+    assert card.index("Consulter l'offre") < card.index("Dernière MAJ")
     assert "Actualisation" not in card
 
 
@@ -987,7 +994,7 @@ def test_the_freshness_footer_distinguishes_never_from_unknown():
     )
     never.market_cache = BookMarketCache(id=uuid.uuid4(), book_id=never.id)
     never_card = MarketPriceService.format_market_details_card(None, never)
-    assert never_card.splitlines()[-1] == "Dernière vérif. : jamais"
+    assert "Dernière MAJ : Non renseignée" in never_card
 
     unknown = Book(
         id=uuid.uuid4(),
@@ -1001,7 +1008,7 @@ def test_the_freshness_footer_distinguishes_never_from_unknown():
         historical_low_1y_cents=1200,
     )
     unknown_card = MarketPriceService.format_market_details_card(None, unknown)
-    assert unknown_card.splitlines()[-1] == "Dernière vérif. : inconnue"
+    assert "Dernière MAJ : Non renseignée" in unknown_card
 
     settled_without_date = Book(
         id=uuid.uuid4(),
@@ -1014,7 +1021,7 @@ def test_the_freshness_footer_distinguishes_never_from_unknown():
         collection_status="complete",
     )
     settled_card = MarketPriceService.format_market_details_card(None, settled_without_date)
-    assert settled_card.splitlines()[-1] == "Dernière vérif. : inconnue"
+    assert "Dernière MAJ : Non renseignée" in settled_card
 
 
 def test_the_freshness_footer_shows_the_year_when_it_is_ambiguous():
@@ -1030,8 +1037,8 @@ def test_the_freshness_footer_shows_the_year_when_it_is_ambiguous():
 
     card = MarketPriceService.format_market_details_card(None, book)
 
-    assert f"Dernière vérif. : 31/12/{previous_year} à 07:00" in card
-    assert "Prochaine" not in card
+    assert f"offres 31/12/{previous_year} à 07:00" in card
+    assert "Prochaine MAJ : en attente de programmation" in card
 
 
 def test_next_full_pass_ignores_incremental_jobs(monkeypatch):
@@ -1055,7 +1062,7 @@ def test_next_full_pass_ignores_incremental_jobs(monkeypatch):
     assert market_health.next_full_pass_at() == full.next_run_time
 
 
-def test_next_check_is_only_announced_for_a_book_in_an_active_alert(monkeypatch):
+def test_next_check_is_only_announced_for_a_book_in_an_active_alert():
     """Une tâche globale ne suffit pas : le livre doit entrer dans son périmètre."""
     from types import SimpleNamespace
 
@@ -1063,8 +1070,8 @@ def test_next_check_is_only_announced_for_a_book_in_an_active_alert(monkeypatch)
     from app.core.constants import AlertStatus
 
     when = datetime.now(UTC) + timedelta(hours=8)
-    monkeypatch.setattr(market_panel, "next_full_pass_at", lambda: when)
     book = create_book_with_cache()
+    book.market_cache.next_refresh_at = when
 
     def view_with(status, deleted_at=None):
         panel = SimpleNamespace(

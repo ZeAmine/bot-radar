@@ -9,6 +9,7 @@ from time import monotonic
 
 import httpx
 
+from app.core import pilot_mode
 from app.domain.rules.market_offer import is_comparable_secondhand_offer
 from app.providers.base import (
     BookMarketProvider,
@@ -17,6 +18,7 @@ from app.providers.base import (
     MarketOffers,
     failed_offers,
     normalize_search_isbn,
+    requested_components,
 )
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 from app.providers.ebay_browse import EbayBrowseProvider
@@ -67,6 +69,11 @@ class ProviderRegistry:
         edition: str | None = None,
     ) -> list[MarketOffer]:
         """Interroge un unique fournisseur sous protection de sémaphore et timeout."""
+        if "current" not in requested_components.get() and not isinstance(
+            provider, ChasseAuxLivresProvider,
+        ):
+            return MarketOffers()
+        pilot_mode.require_source(isbn13)
         async with self._semaphore:
             started = monotonic()
             try:
@@ -77,7 +84,8 @@ class ProviderRegistry:
                         author=author,
                         edition=edition,
                     ),
-                    timeout=PROVIDER_TIMEOUT_SECONDS,
+                    timeout=(18.0 if isinstance(provider, ChasseAuxLivresProvider)
+                             else PROVIDER_TIMEOUT_SECONDS),
                 )
                 observed_at = datetime.now(UTC)
                 for offer in offers or []:
@@ -97,7 +105,10 @@ class ProviderRegistry:
                                    for a in attempts),
                 )
             except Exception as exc:
-                failed = failed_offers(provider.name, error=exc)
+                failed = failed_offers(
+                    provider.name, error=exc,
+                    operation="current" if "current" in requested_components.get() else "history",
+                )
                 failed.attempts = tuple(replace(a, duration_seconds=monotonic() - started)
                                         for a in failed.attempts)
                 return failed

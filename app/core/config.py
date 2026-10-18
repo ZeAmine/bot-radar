@@ -48,12 +48,15 @@ class Settings(BaseSettings):
 
     # Session utilisateur Chasse-aux-livres (historique 1 an, API /rest/jcd)
     CHASSE_AUX_LIVRES_DUIH: str | None = None
+    CHASSE_ACCOUNT_EMAIL: SecretStr = SecretStr("")
+    CHASSE_ACCOUNT_PASSWORD: SecretStr = SecretStr("")
 
     # Troisième source d'identification (ADR-033), optionnelle : vide, elle n'est ni
     # interrogée ni annoncée, et l'app démarre sans.
     GOOGLE_BOOKS_API_KEY: SecretStr = SecretStr("")
 
     PRICE_REFRESH_TIMES: str = "07:00,19:00"
+    CHASSE_PILOT_STATE_PATH: str = ""
 
     RADAR_API_URL: str = "http://127.0.0.1:8000"
     BOTRADAR_API_URL: str | None = None

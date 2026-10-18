@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,33 @@ class MarketPriceRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def active_alert_ids_for_book(self, book_id: uuid.UUID) -> list[uuid.UUID]:
+        return list((await self.session.scalars(select(Alert.id).join(AlertBook).where(
+            AlertBook.book_id == book_id, Alert.deleted_at.is_(None),
+            Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+        ))).all())
+
+    async def market_backfill_rows(self) -> list[dict[str, Any]]:
+        from sqlalchemy import inspect
+
+        connection = await self.session.connection()
+        names = await connection.run_sync(lambda sync: {
+            column["name"] for column in inspect(sync).get_columns("book_market_cache")
+        })
+        cache_fields = ["last_successful_collection_at", "historical_checked_at",
+                        "source_history", "refresh_state", "last_attempt_at", "collection_status"]
+        columns = [getattr(BookMarketCache, name).label("cache_" + name)
+                   for name in cache_fields if name in names]
+        statement = select(
+            Alert.id.label("alert_id"), Alert.name.label("alert_name"),
+            Alert.isbn.label("alert_isbn"), Book.id.label("book_id"), Book.isbn13,
+            Book.title, Book.language, Book.edition, *columns,
+        ).select_from(Alert).join(Category).outerjoin(AlertBook).outerjoin(Book).outerjoin(
+            BookMarketCache, BookMarketCache.book_id == Book.id,
+        ).where(Category.slug == "bd_comics", Alert.deleted_at.is_(None),
+                Alert.status.in_(["ACTIVE", "PAUSED"])).order_by(Alert.id, Book.id)
+        return [dict(row) for row in (await self.session.execute(statement)).mappings()]
 
     async def save_snapshot(
         self,

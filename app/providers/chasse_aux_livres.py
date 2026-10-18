@@ -8,14 +8,14 @@ import urllib.parse
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
 
-from app.core.config import settings
+from app.core import pilot_mode
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
-from app.core.redis import get_redis_client
 from app.domain.rules.market_offer import (
     is_brand_new_partner,
     is_merchant_excluded,
@@ -27,9 +27,12 @@ from app.providers.base import (
     MarketOffers,
     failed_offers,
     normalize_search_isbn,
+    requested_components,
 )
+from app.providers.chasse_session import chasse_session
 from app.services.book_metadata_service import title_similarity
 from app.services.market_price_service import extract_tome_number_from_title
+from app.utils.isbn import isbn_from_identifier
 from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.providers.chasse_aux_livres")
@@ -68,25 +71,8 @@ _HISTORICAL_LOW_LABELS = (
 
 
 async def resolve_session_token() -> str:
-    """Jeton anti-bot de session, sans jamais le loguer.
-
-    L'environnement passe devant : c'est le réglage d'une installation qui veut
-    figer sa valeur. Sinon le jeton vient de Redis, injecté par
-    `scripts/sync_chasse_session.py` depuis un navigateur — le site le délivre à une
-    session qui a passé son défi JavaScript, et une requête HTTP seule ne l'obtient
-    pas. Un Redis muet ramène à une série 1 an absente, jamais à une exception.
-    """
-    configured = (settings.CHASSE_AUX_LIVRES_DUIH or "").strip()
-    if configured:
-        return configured
-    try:
-        stored = await get_redis_client().get(REDIS_SESSION_KEY)
-    except Exception as exc:  # pragma: no cover - Redis indisponible
-        logger.debug("Jeton de session Chasse-aux-livres illisible : %s", exc)
-        return ""
-    if isinstance(stored, bytes):  # pragma: no cover - client sans decode_responses
-        stored = stored.decode("utf-8", errors="ignore")
-    return (stored or "").strip()
+    """Retourne le jeton effectif du gestionnaire de session partagé."""
+    return await chasse_session.token()
 
 
 def select_historical_low_cents(series_by_label: dict[str, float]) -> int | None:
@@ -136,8 +122,9 @@ def parse_historical_observations(
                 continue
             raw_date = value.get("x")
             try:
-                if isinstance(raw_date, (int, float)) and not isinstance(raw_date, bool):
-                    at = datetime.fromtimestamp(raw_date / 1000, UTC)
+                if (isinstance(raw_date, (int, float)) and not isinstance(raw_date, bool)
+                        or isinstance(raw_date, str) and raw_date.isdigit()):
+                    at = datetime.fromtimestamp(float(raw_date) / 1000, UTC)
                 elif isinstance(raw_date, str):
                     at = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
                     if at.tzinfo is None:
@@ -145,18 +132,16 @@ def parse_historical_observations(
                     at = at.astimezone(UTC)
                 else:
                     continue
-                tooltip = re.search(r"#\[([0-9]+)[,.]([0-9]{2})\s*€", str(value.get("t", "")))
                 if delivered is not None:
                     if not isinstance(delivered, int) or isinstance(delivered, bool):
                         continue
                     cents = delivered
                 else:
-                    if isinstance(value.get("y"), bool) and not tooltip:
+                    if isinstance(value.get("y"), bool):
                         continue
-                    amount = (float(f"{tooltip[1]}.{tooltip[2]}") if tooltip
-                              else float(value["y"]))
+                    amount = Decimal(str(value["y"]))
                     cents = round(amount * 100)
-            except (KeyError, ValueError, TypeError, OverflowError, OSError):
+            except (KeyError, ValueError, TypeError, OverflowError, OSError, InvalidOperation):
                 continue
             if cents <= 0 or not now - timedelta(days=365) < at <= now:
                 continue
@@ -272,6 +257,7 @@ class ChasseAuxLivresProvider:
         edition: str | None = None,
     ) -> list[MarketOffer]:
         """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
+        pilot_mode.require_source(isbn13)
         _ = edition
         # ISBN utilisé seulement s'il passe sa clé de contrôle.
         clean_isbn = normalize_search_isbn(isbn13)
@@ -285,7 +271,10 @@ class ChasseAuxLivresProvider:
             attempts.extend(getattr(offers, "attempts", ()))
             failures.update(getattr(offers, "failed_providers", ()))
             historical_checked |= getattr(offers, "historical_checked", False)
-            if offers:
+            if offers or getattr(offers, "historical_checked", False):
+                return offers
+            if any(attempt.reason in {"rate_limited", "bot_challenge"}
+                   for attempt in getattr(offers, "attempts", ())):
                 return offers
 
         # Repli par titre (+ auteur) ; l'ISBN attendu prouve l'identité (ADR-035).
@@ -296,7 +285,7 @@ class ChasseAuxLivresProvider:
             offers = await self._search_query(
                 t_query, expected_title=title, expected_isbn=clean_isbn
             )
-            if offers:
+            if offers or getattr(offers, "historical_checked", False):
                 return offers
             attempts.extend(getattr(offers, "attempts", ()))
             failures.update(getattr(offers, "failed_providers", ()))
@@ -327,19 +316,7 @@ class ChasseAuxLivresProvider:
                     follow_redirects=True,
                 )
                 if resp1.status_code == 429 or "Vérification robot" in resp1.text:
-                    if attempt < max_retries:
-                        wait_time = 2.0 * (attempt + 1)
-                        logger.warning(
-                            "Chasse-aux-livres anti-bot/rate-limit pour '%s' "
-                            "(tentative %d/%d). Pause %.1fs...",
-                            query,
-                            attempt + 1,
-                            max_retries + 1,
-                            wait_time,
-                        )
-                        await self._sleep(wait_time)
-                        continue
-                    logger.warning("Chasse-aux-livres rate-limit persistant pour '%s'.", query)
+                    logger.warning("Chasse-aux-livres accès limité pour %s.", query)
                     return failed_offers(self.name, response=resp1, reason="rate_limited"
                                          if resp1.status_code == 429 else "bot_challenge")
 
@@ -391,7 +368,7 @@ class ChasseAuxLivresProvider:
                 if attempt < max_retries and isinstance(exc, (httpx.RequestError, TimeoutError)):
                     await self._sleep(1.5)
                     continue
-                logger.debug("Erreur silencieuse connecteur Chasse-aux-livres: %s", exc)
+                logger.debug("Erreur connecteur Chasse-aux-livres: %s", type(exc).__name__)
                 return failed_offers(self.name, error=exc)
 
         return []
@@ -407,26 +384,35 @@ class ChasseAuxLivresProvider:
         """Tente une extraction détaillée des offres par boutique
         (eBay, Momox, Rakuten, Fnac, etc.)."""
         try:
-            url_match = re.search(r'href=["\'](/prix/[^"\']+)["\']', d_html)
-            if not url_match:
-                return None
-            product_path = url_match.group(1)
+            candidates = re.findall(r'href=["\'](/prix/[^"\']+)["\']', d_html)
+            candidates = list(dict.fromkeys(html.unescape(path) for path in candidates))
+            selected_path = None
+            selected_isbn = None
+            for path in candidates:
+                path_codes = re.findall(r"(?<!\d)(?:97[89]\d{10}|\d{9}[\dX])(?!\d)", path)
+                codes = [isbn_from_identifier(code) for code in path_codes]
+                exact = isbn_from_identifier(expected_isbn) if expected_isbn else None
+                if exact and exact in codes:
+                    selected_path, selected_isbn = path, exact
+                    break
+                if selected_path is None and not expected_isbn:
+                    slug = path.split("/")[-1].replace("-", " ")
+                    if self.is_title_coherent(expected_title, slug):
+                        selected_path = path
+                        selected_isbn = next((code for code in codes if code), None)
+            if selected_path is None:
+                return failed_offers(self.name, reason="identity_mismatch") if candidates else None
+            product_path = selected_path
             product_url = f"{self.BASE_URL}{product_path}"
-
-            isbn_match = re.search(r"ISBN&nbsp;:\s*(\d{10,13})", d_html)
-            found_isbn = normalize_search_isbn(isbn_match.group(1)) if isbn_match else None
-            title_match = re.search(
-                r'class=["\']title["\'][^>]*>\s*<a[^>]*>([^<]+)</a>', d_html, re.DOTALL
-            )
-            if not title_match:
-                title_match = re.search(
-                    r'<a[^>]+href=["\']/prix/[^"\']+["\'][^>]+title=["\']([^"\']+)["\']', d_html
-                )
-
-            found_title = html.unescape(title_match.group(1).strip()) if title_match else None
-            slug_m = re.search(r"/prix/[^/]+/([^/]+)", product_path)
+            found_isbn = selected_isbn
+            slug_m = re.search(r"/prix/[^/]+/([^/?]+)", product_path)
             slug_title = slug_m.group(1).replace("-", " ") if slug_m else ""
-
+            title_match = re.search(
+                r'<a[^>]+href=["\']' + re.escape(product_path)
+                + r'["\'][^>]*>(.*?)</a>', d_html, re.DOTALL,
+            )
+            found_title = (html.unescape(re.sub(r"<[^>]*>", "", title_match[1]).strip())
+                           if title_match else "")
             if not found_title or found_title.isdigit():
                 found_title = slug_title or query
 
@@ -436,6 +422,14 @@ class ChasseAuxLivresProvider:
             title_coherent = self.is_title_coherent(expected_title, found_title) or (
                 bool(slug_title) and self.is_title_coherent(expected_title, slug_title)
             )
+            if expected_isbn and found_isbn and not isbn_proven:
+                return failed_offers(self.name, reason="identity_mismatch")
+            expected_volume = re.search(r"\b(?:vol(?:ume)?|tome|t)\.?\s*(\d+)\b",
+                                        expected_title or "", re.I)
+            found_volume = re.search(r"\b(?:vol(?:ume)?|tome|t)\.?\s*(\d+)\b",
+                                     found_title or slug_title, re.I)
+            if expected_volume and found_volume and expected_volume[1] != found_volume[1]:
+                return failed_offers(self.name, reason="volume_mismatch")
             is_coherent = isbn_proven or title_coherent
             if expected_title and not is_coherent:
                 logger.warning(
@@ -456,7 +450,7 @@ class ChasseAuxLivresProvider:
                     found_title,
                 )
 
-            resp_prod = await client.get(product_url, headers=CHASSE_BROWSER_HEADERS)
+            resp_prod = await client.get(product_url, headers=CHASSE_BROWSER_HEADERS, timeout=4)
             if resp_prod.status_code != 200:
                 return failed_offers(self.name, response=resp_prod)
 
@@ -468,6 +462,10 @@ class ChasseAuxLivresProvider:
                 return failed_offers(self.name, reason="invalid_response")
 
             asin = asin_m.group(1)
+            product_isbn = isbn_from_identifier(asin)
+            if (expected_isbn and product_isbn
+                    and product_isbn != isbn_from_identifier(expected_isbn)):
+                return failed_offers(self.name, reason="identity_mismatch")
             lvs = lvs_m.group(1)
             nbeng = int(nbeng_m.group(1))
             engines = "_".join(str(i) for i in range(min(nbeng, 32)))
@@ -477,33 +475,45 @@ class ChasseAuxLivresProvider:
                 f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
                 f"&retry=0&duih=&lvs={lvs}&ui=&engines={engines}&f=false"
             )
-            resp_lookup = await client.get(lookup_url, headers=ajax_headers)
-            if resp_lookup.status_code != 200:
-                return failed_offers(self.name, response=resp_lookup)
+            current_attempt = CollectionAttempt(
+                self.name, "current", "success" if "current" in requested_components.get()
+                else "skipped",
+            )
+            try:
+                if "current" in requested_components.get():
+                    resp_lookup = await client.get(lookup_url, headers=ajax_headers, timeout=4)
+                    if resp_lookup.status_code != 200:
+                        resp_lookup.raise_for_status()
+                    data = resp_lookup.json()
+                else:
+                    data = {"offers": {"22": []}}
+                raw_offers = data.get("offers")
+                if not isinstance(raw_offers, dict):
+                    raise ValueError("Offres courantes invalides")
 
-            data = resp_lookup.json()
-            raw_offers = data.get("offers")
-            if not isinstance(raw_offers, dict):
-                return failed_offers(self.name, reason="invalid_response")
+                if "22" not in raw_offers:
+                    retry_url = (
+                        f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
+                        f"&retry=1&duih=&lvs={lvs}&ui=&engines={engines}&f=false"
+                    )
+                    try:
+                        resp_retry = await client.get(retry_url, headers=ajax_headers, timeout=3.5)
+                        if resp_retry.status_code == 200:
+                            data_retry = resp_retry.json()
+                            offers_retry = data_retry.get("offers", {})
+                            if isinstance(offers_retry, dict):
+                                for k, v in offers_retry.items():
+                                    if k not in raw_offers:
+                                        raw_offers[k] = v
+                                    elif isinstance(v, list) and isinstance(raw_offers[k], list):
+                                        raw_offers[k].extend(v)
+                    except Exception as exc:
+                        logger.debug("Second passage lookup retry=1 ignoré : %s",
+                                     type(exc).__name__)
 
-            if "22" not in raw_offers:
-                retry_url = (
-                    f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
-                    f"&retry=1&duih=&lvs={lvs}&ui=&engines={engines}&f=false"
-                )
-                try:
-                    resp_retry = await client.get(retry_url, headers=ajax_headers, timeout=3.5)
-                    if resp_retry.status_code == 200:
-                        data_retry = resp_retry.json()
-                        offers_retry = data_retry.get("offers", {})
-                        if isinstance(offers_retry, dict):
-                            for k, v in offers_retry.items():
-                                if k not in raw_offers:
-                                    raw_offers[k] = v
-                                elif isinstance(v, list) and isinstance(raw_offers[k], list):
-                                    raw_offers[k].extend(v)
-                except Exception as exc:
-                    logger.debug("Second passage lookup retry=1 ignoré : %s", exc)
+            except (httpx.HTTPError, ValueError, TypeError) as exc:
+                current_attempt = failed_offers(self.name, error=exc).attempts[0]
+                raw_offers = {"22": []}
 
             partners: dict[str, dict[str, Any]] = {}
             best_used: dict[str, Any] | None = None
@@ -546,7 +556,16 @@ class ChasseAuxLivresProvider:
                     if not is_very_good_or_better(sub_cond):
                         continue
 
+                    item_cents = off.get("price", {}).get("amount")
+                    shipping_cents = off.get("shippingCost", {}).get("amount")
+                    if not (isinstance(item_cents, int) and not isinstance(item_cents, bool)
+                            and item_cents > 0 and isinstance(shipping_cents, int)
+                            and not isinstance(shipping_cents, bool) and shipping_cents >= 0
+                            and item_cents + shipping_cents == tot):
+                        item_cents, shipping_cents = None, None
                     entry = {
+                        "item_price_cents": item_cents,
+                        "shipping_price_cents": shipping_cents,
                         "merchant": merchant_clean,
                         "is_used": True,
                         "condition": sub_cond,
@@ -570,17 +589,26 @@ class ChasseAuxLivresProvider:
             historical_points: list[MarketOffer] = []
             historical_checked = False
             didh_m = re.search(r'data-didh=["\']([a-f0-9]+)["\']', p_html)
-            if didh_m:
+            if didh_m and "history" in requested_components.get():
                 didh = didh_m.group(1)
                 duih_val = await resolve_session_token()
                 ui_val = duih_val.split(".")[0] if "." in duih_val else duih_val
-                jcd_url = (
-                    f"{self.BASE_URL}/rest/jcd?id={asin}&all=true&days=365"
-                    f"&ui={ui_val}&duih={duih_val}&didh={didh}"
-                )
+                history_params = {
+                    "id": asin, "all": "true", "days": "365",
+                    "ui": ui_val, "duih": duih_val, "didh": didh,
+                }
                 try:
-                    resp_jcd = await client.get(jcd_url, headers=ajax_headers, timeout=4.0)
-                    if resp_jcd.status_code != 200:
+                    async with asyncio.timeout(10):
+                        resp_jcd = await chasse_session.get_history(
+                            client, product_url, history_params, ajax_headers,
+                        )
+                    if resp_jcd.extensions.get("chasse_auth_failed"):
+                        history_attempt = CollectionAttempt(
+                            self.name, "history", "failed", "session_unavailable",
+                            None if resp_jcd.extensions.get("request_skipped")
+                            else resp_jcd.status_code,
+                        )
+                    elif resp_jcd.status_code != 200:
                         historical_failed = True
                         history_attempt = failed_offers(
                             self.name, operation="history", response=resp_jcd,
@@ -593,34 +621,15 @@ class ChasseAuxLivresProvider:
                         historical_failed = False
                         historical_checked = True
                         history_attempt = CollectionAttempt(self.name, "history")
+                        jcd_data["price_includes_shipping"] = True
                         historical_points = parse_historical_observations(jcd_data, product_url)
-                        series_by_label: dict[str, float] = {}
-                        for s in jcd_data.get("stats", []):
-                            label = s.get("label")
-                            if label:
-                                pts: list[float] = []
-                                for v in s.get("statValues", []):
-                                    try:
-                                        t_str = str(v.get("t", ""))
-                                        t_m = re.search(r"#\[([0-9]+)[,\.]([0-9]{2})\s*€", t_str)
-                                        if t_m:
-                                            eur = float(f"{t_m.group(1)}.{t_m.group(2)}")
-                                        else:
-                                            eur = float(v.get("y", 0))
-                                        if eur > 0:
-                                            pts.append(eur)
-                                    except Exception:
-                                        pass
-                                if pts:
-                                    series_by_label[label] = min(pts)
-
-                        hist_low_1y_cents = select_historical_low_cents(series_by_label)
-                        if hist_low_1y_cents is not None and not historical_points:
-                            historical_failed = True
-                            historical_checked = False
-                            history_attempt = CollectionAttempt(
-                                self.name, "history", "failed", "missing_observation_proof",
-                            )
+                        source_points = [point for point in historical_points
+                                         if point.item_condition == "Très bon état +"]
+                        hist_low_1y_cents = select_historical_low_cents({
+                            "Très bon état +": min(
+                                point.delivered_price_cents for point in source_points
+                            ) / 100,
+                        }) if source_points else None
                 except Exception as jcd_exc:
                     historical_failed = True
                     history_attempt = failed_offers(
@@ -629,6 +638,10 @@ class ChasseAuxLivresProvider:
                     logger.warning("Historique Chasse-aux-livres indisponible (%s)",
                                    type(jcd_exc).__name__)
 
+            if "history" not in requested_components.get():
+                historical_failed = False
+                history_attempt = CollectionAttempt(self.name, "history", "skipped")
+            current_failed = current_attempt.status == "failed"
             if historical_failed:
                 logger.warning("Historique Chasse-aux-livres non reçu : réponse vide, "
                                "invalide ou refusée")
@@ -657,12 +670,14 @@ class ChasseAuxLivresProvider:
                             },
                         )
                     ], historical_checked=historical_checked,
-                       failed_providers=(self.name,) if historical_failed else (),
-                       attempts=(CollectionAttempt(self.name), history_attempt))
+                       failed_providers=(self.name,) if historical_failed or current_failed else (),
+                       attempts=(current_attempt, history_attempt))
                 return MarketOffers(historical_points,
-                                    failed_providers=(self.name,) if historical_failed else (),
+                                    failed_providers=(
+                                        (self.name,) if historical_failed or current_failed else ()
+                                    ),
                                     historical_checked=historical_checked,
-                                    attempts=(CollectionAttempt(self.name), history_attempt))
+                                    attempts=(current_attempt, history_attempt))
 
             primary = best_used
             cond_str = f"{primary['condition']} ({primary['merchant']})"
@@ -671,8 +686,8 @@ class ChasseAuxLivresProvider:
                 [*historical_points,
                     MarketOffer(
                         provider_name=self.name,
-                        item_price_cents=primary["total_cents"],
-                        shipping_price_cents=None,
+                        item_price_cents=primary["item_price_cents"] or primary["total_cents"],
+                        shipping_price_cents=primary["shipping_price_cents"],
                         delivered_price_cents=primary["total_cents"],
                         price_includes_shipping=True,
                         source_url=primary["url"],
@@ -691,10 +706,11 @@ class ChasseAuxLivresProvider:
                         },
                     )
                 ],
-                failed_providers=(self.name,) if historical_failed else (),
+                failed_providers=((self.name,) if historical_failed or current_failed else ()),
                 historical_checked=historical_checked,
-                attempts=(CollectionAttempt(self.name), history_attempt),
+                attempts=(current_attempt, history_attempt),
             )
         except Exception as exc:
-            logger.debug("Échec de l'extraction détaillée Chasse-aux-livres: %s", exc)
+            logger.debug("Échec de l'extraction détaillée Chasse-aux-livres: %s",
+                         type(exc).__name__)
             return failed_offers(self.name, error=exc)

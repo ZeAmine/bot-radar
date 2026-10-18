@@ -347,9 +347,10 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
     )
     # L'ordre est la preuve : alerte partie, use case rendu, puis catalogue cherché.
     assert order[:3] == ["envoi", "retour", "bnf"], order
-    # Découverte de série relancée : six tomes liés cotés après la liaison, motif « bnf_link ».
-    assert len(priced) == SERIES_NOTICES, priced
-    assert {reason for _book_id, reason in priced} == {"bnf_link"}, priced
+    assert priced == []
+    async with session_maker() as reader:
+        linked = list((await reader.scalars(select(AlertBook))).all())
+        assert len(linked) == SERIES_NOTICES
 
 
 def _mark_sent(events: list[str]):
