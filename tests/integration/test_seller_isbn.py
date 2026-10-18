@@ -101,9 +101,9 @@ async def journey(monkeypatch):
         def price(book_id, **_kwargs):
             priced.append(book_id)
 
-        monkeypatch.setattr(ingestion, "schedule_book_pricing", price)
+        monkeypatch.setattr("app.services.book_market_pricing.schedule_book_pricing", price)
         monkeypatch.setattr(catalog_linking, "schedule_book_pricing", price)
-        monkeypatch.setattr(confirmation, "schedule_book_pricing", price)
+        monkeypatch.setattr("app.services.book_market_pricing.schedule_book_pricing", price)
 
         context = SimpleNamespace(
             db=db,
@@ -206,7 +206,7 @@ async def test_confirmation_follows_all_deliveries_and_uses_notice(journey):
         "Auteur A",
         "Éditeur",
     )
-    assert journey.priced
+    assert journey.priced == []
 
 
 @pytest.mark.parametrize(

@@ -64,7 +64,7 @@ def test_local_alembic_head_matches_the_repository():
     """La tête est déduite des fichiers, sans base : elle doit être la vraie."""
     head = pf.local_alembic_head()
 
-    assert head == "0014_alert_market_freshness"
+    assert head == "0015_chasse_weekly_prices"
     from alembic.config import Config
     from alembic.script import ScriptDirectory
     assert ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini"))).get_heads() == [head]

@@ -3,6 +3,7 @@
 import uuid
 from collections.abc import Iterable
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -12,7 +13,11 @@ from typing import Any, Literal, Protocol
 import httpx
 
 from app.core.constants import MatchConfidence
-from app.utils.isbn import is_valid_isbn, normalize_isbn
+from app.utils.isbn import is_valid_isbn, isbn_from_identifier, normalize_isbn
+
+requested_components: ContextVar[frozenset[str]] = ContextVar(
+    "market_components", default=frozenset({"current", "history"}),
+)
 
 
 @dataclass
@@ -107,7 +112,7 @@ def normalize_search_isbn(raw_isbn: str | None) -> str | None:
     """
     candidate = normalize_isbn(raw_isbn)
     if candidate and is_valid_isbn(candidate):
-        return candidate
+        return isbn_from_identifier(candidate)
     return None
 
 

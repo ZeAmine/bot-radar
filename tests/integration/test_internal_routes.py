@@ -95,7 +95,12 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     client.set = AsyncMock(side_effect=lambda key, value, **_: store.update({key: value}) or True)
     client.get = AsyncMock(side_effect=lambda key: store.get(key))
     monkeypatch.setattr("app.api.routes.internal.get_redis_client", lambda: client)
-    monkeypatch.setattr("app.providers.chasse_aux_livres.get_redis_client", lambda: client)
+    monkeypatch.setattr("app.providers.chasse_session.get_redis_client", lambda: client)
+    from app.providers.chasse_session import ChasseSessionManager
+
+    manager = ChasseSessionManager(store=client)
+    monkeypatch.setattr("app.providers.chasse_aux_livres.chasse_session", manager)
+    monkeypatch.setattr("app.api.routes.internal.chasse_session", manager)
     return store
 
 
@@ -123,7 +128,9 @@ async def test_chasse_session_never_echoes_the_token(
     assert status.json()["token_length"] > 0
     assert status.json()["source"] == "redis"
     # Le round-trip est réel : c'est ce que relira le provider à la passe suivante.
-    assert list(fake_redis.values()) == ["jeton-ultra-secret-0123456789"]
+    assert fake_redis["radar:chasse:duih"] == "jeton-ultra-secret-0123456789"
+    from app.api.routes.internal import chasse_session
+    assert await chasse_session.token() == "jeton-ultra-secret-0123456789"
 
 
 @pytest.mark.asyncio

@@ -66,4 +66,8 @@ class BookMarketCache(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     failed_provider_names: Mapped[list[str] | None] = mapped_column(JSON)
     current_offers: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
 
+    source_history: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    refresh_state: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    next_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
     book: Mapped["Book"] = relationship("Book", back_populates="market_cache")

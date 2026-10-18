@@ -15,6 +15,7 @@ from app.services.market_price_service import (
     extract_tome_number_from_title,
 )
 from app.services.tome_extractor import TomeExtractor, TomeMatchResult
+from tests.fakes_market_source import attach_source_history
 
 
 def _create_mock_book(
@@ -62,6 +63,7 @@ def _create_mock_book(
         annual_expires_at=observed_at + timedelta(days=365),
         expires_at=at + timedelta(hours=24),
     )
+    attach_source_history(cache, observed_price, at)
     book.market_cache = cache
     return book
 
@@ -89,7 +91,7 @@ def test_series_matching_specific_tome_summary():
     assert summary is not None
     assert "<b>Prix bas constaté (T2) :</b> 18,50 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart :</b> -6,50 € ✅" in summary
+    assert "<b>Écart livré estimé :</b> 6,50 € en dessous du prix de référence ✅" in summary
 
 
 @pytest.mark.parametrize(
@@ -227,7 +229,7 @@ def test_series_matching_lot_summary():
     assert summary is not None
     assert "<b>Prix bas constaté (Lot) :</b> ~54,50 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart :</b> -29,50 € ✅" in summary
+    assert "<b>Écart livré estimé :</b> 29,50 € en dessous du prix de référence ✅" in summary
 
 
 def test_series_matching_generic_range_summary():
@@ -338,7 +340,7 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     assert summary is not None
     assert "Prix du marché" not in summary
     assert "<b>Prix bas constaté (Lot) :</b> ~42,30 €" in summary
-    assert "<b>Écart :</b> -5,12 € ✅" in summary
+    assert "<b>Écart livré estimé :</b> 5,12 € en dessous du prix de référence ✅" in summary
 
 
 @pytest.mark.parametrize(
@@ -388,7 +390,9 @@ def test_series_matching_lot_variations_matrix(
     )
     assert summary is not None
     assert expected_label in summary
-    assert f"<b>Écart :</b> {expected_diff} {expected_icon}" in summary
+    direction = "en dessous" if expected_diff.startswith("-") else "au-dessus"
+    assert (f"<b>Écart livré estimé :</b> {expected_diff[1:]} {direction} "
+            f"du prix de référence {expected_icon}") in summary
 
 
 def test_series_matching_blacksad_generic():
@@ -692,7 +696,7 @@ async def test_handle_view_market_details_success():
         text = mock_msg.reply.call_args[1]["text"]
         assert "📊 <b>Prix du marché</b>" in text
         assert "5,48 €" in text
-        assert "Dernière vérif. : inconnue" in text
+        assert "Dernière MAJ :" in text
         assert "Actualisation" not in text
         mock_callback.answer.assert_called_once()
 
@@ -812,6 +816,7 @@ def test_series_card_distingue_une_absence_constatee_d_une_cote_en_cours():
     settled.market_cache = BookMarketCache(
         id=uuid.uuid4(),
         book_id=settled.id,
+        collection_status="empty",
         comparison_status=ComparisonStatus.UNAVAILABLE,
         checked_at=datetime(2026, 10, 6, 9, 30, tzinfo=UTC),
     )
@@ -987,7 +992,7 @@ def test_market_details_card_series_tomes_formatting():
     assert "• Tome 1 : 4,70 €" in card
     assert "• Tome 2 : 5,26 €" in card
     assert "• Tome 4 : 6,70 €" in card
-    assert "• <b>Tome 5 : 3,19 €</b>" in card
+    assert "• <b>Tome 5 : 3,19 € — Dernière MAJ :" in card
     assert "• Tome 6 : 5,12 €" in card
     assert "• Tome 7 : 10,49 €" in card
 
@@ -1155,7 +1160,7 @@ def test_counted_lot_resolves_to_the_whole_series_and_prices_it():
         "(Lot de 4 tomes, composition déduite) :</b> ~40,77 €"
         in summary
     )
-    assert "<b>Écart :</b> +15,31 € ⛔️" in summary
+    assert "<b>Écart livré estimé :</b> 15,31 € au-dessus du prix de référence ⛔️" in summary
 
 
 def test_counted_lot_is_refused_when_the_series_is_longer():
@@ -1298,7 +1303,7 @@ def test_a_missing_cache_is_not_presented_as_an_ongoing_calculation():
     assert resolved is book
     assert line is not None
     assert "Cote indisponible" in line
-    assert "à l’envoi" in line
+    assert "tentative" not in line
     assert "calcul" not in line
 
 
@@ -1321,7 +1326,7 @@ def test_legacy_minimum_without_observation_never_becomes_annual_reference(date_
     panel = MarketPriceService.format_market_details_card(listing, book, [], None)
     assert "Ancien minimum" not in panel
     assert "1,00 €" not in panel
-    assert "Prix bas constaté" not in panel
+    assert "Prix bas constaté :</b> Non renseigné" in panel
     assert (book.market_cache.checked_at, book.market_cache.historical_low_at) == before
 
 

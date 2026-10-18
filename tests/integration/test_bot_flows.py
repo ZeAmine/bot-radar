@@ -49,6 +49,7 @@ from app.db.models.user import User
 from app.services.book_metadata_service import BookMetadata, BookResolution
 from app.use_cases import prepare_bd_alert as preparation
 from tests.database import postgres_replayed_database
+from tests.fakes_market_source import source_history_values
 
 BOT_TOKEN = "123456789:AAG_ci_test_dummy_token_abc123"
 CHAT_ID = 4242
@@ -496,6 +497,8 @@ async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_c
             lowest_delivered_price_cents=None,
             comparison_status=ComparisonStatus.UNAVAILABLE,
             historical_low_1y_cents=None,
+            collection_status="empty",
+            last_successful_collection_at=datetime(2026, 10, 6, 9, 30, tzinfo=UTC),
             checked_at=datetime(2026, 10, 6, 9, 30, tzinfo=UTC),
         )
     )
@@ -532,7 +535,7 @@ async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_c
     assert confirmation, "la confirmation de création n'a jamais été rendue"
     assert NO_OFFER_LINE in confirmation[-1]
     # La date est celle du relevé, lue heure de Paris.
-    assert "06/10" in confirmation[-1]
+    assert "06/10" not in confirmation[-1]
     assert PENDING_COTE_LINE not in confirmation[-1]
 
 
@@ -598,6 +601,7 @@ async def _seed_series(session: AsyncSession) -> tuple[User, Listing, list[Book]
                 id=uuid.uuid4(),
                 book_id=book.id,
                 lowest_delivered_price_cents=price,
+                **source_history_values(price, datetime.now(UTC)),
                 comparison_status=ComparisonStatus.AVAILABLE,
                 historical_low_1y_cents=price,
                 checked_at=datetime.now(UTC),
@@ -686,7 +690,7 @@ async def test_market_panel_reads_the_cache_and_keeps_the_selected_tome(driver, 
         message_id = bot.last_message_id
         first = _texts(bot)[-1]
         assert "Actualisation" not in first
-        assert "Dernière vérif. : inconnue" in first
+        assert "Dernière MAJ :" in first
         assert "5,09 €" in first
         fetch.assert_not_awaited()
 
@@ -701,7 +705,7 @@ async def test_market_panel_reads_the_cache_and_keeps_the_selected_tome(driver, 
         selected = _texts(bot)[-1]
         assert "<b>Blacksad — Tome 2</b>" in selected
         assert "8,99 €" in selected
-        assert "Dernière vérif. : inconnue" in selected
+        assert "Dernière MAJ :" in selected
         fetch.assert_not_awaited()
 
     await _feed(
@@ -815,7 +819,7 @@ async def test_price_write_recomputes_the_series_total(db_session):
     )
     await db_session.commit()
     await db_session.refresh(alert)
-    assert alert.series_total_cents == 300
+    assert alert.series_total_cents is None
 
     # Second volume coté : le total s'étend à la série connue.
     await persist_market_result(
@@ -845,7 +849,7 @@ async def test_price_write_recomputes_the_series_total(db_session):
     )
     await db_session.commit()
     await db_session.refresh(alert)
-    assert alert.series_total_cents == 750
+    assert alert.series_total_cents == 1200
 
 
 @pytest.mark.asyncio

@@ -106,7 +106,10 @@ async def journey(monkeypatch):
             "_lookup_isbn_notice",
             AsyncMock(return_value=BookMetadata(title="Cible BD", isbn13=NEW)),
         )
-        monkeypatch.setattr(ingestion, "schedule_book_pricing", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            "app.services.book_market_pricing.schedule_book_pricing",
+            lambda *_args, **_kwargs: None,
+        )
         monkeypatch.setattr(
             catalog_linking, "schedule_book_pricing", lambda *_args, **_kwargs: None
         )

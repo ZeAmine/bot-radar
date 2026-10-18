@@ -115,8 +115,9 @@ EXPECTED_CAPTION_BD = "\n".join(
         "<b>Prix :</b> 9,00 € (13,03 € TTC)",
         "<b>État :</b> TBE",
         "",
-        "<b>Prix du marché :</b> 20,00 € (Momox)",
-        "<b>Écart :</b> -6,97 € ✅",
+        "<b>Dernière offre connue :</b> 20,00 € (Momox)",
+        "<b>Écart livré estimé :</b> 6,97 € en dessous du prix de référence ✅",
+        "<i>Référence livrée ; estimation Vinted avec livraison et protection.</i>",
         "",
         "<b>Mots-clés :</b> blacksad",
     ]
@@ -363,7 +364,7 @@ async def test_losing_the_historical_reference_does_not_reject_a_matching_listin
     monkeypatch.setattr(settings, "AI_ENABLED", False)
     # Le repli de fond est observé sans démarrer de collecte extérieure.
     pricing = MagicMock()
-    monkeypatch.setattr("app.use_cases.ingest_listing.schedule_book_pricing", pricing)
+    monkeypatch.setattr("app.services.book_market_pricing.schedule_book_pricing", pricing)
     alert = await _seed_alert(
         ingestion_db, category=Category(slug="bd_comics", label="BD", emoji="B", is_active=True),
         alert_name="Blacksad", include_keywords=["blacksad"],

@@ -10,6 +10,7 @@ from app.domain.enums import ProviderQueryStatus
 from app.providers.google_books import ProviderQueryResult
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
 from app.use_cases.book_search import result_from_resolution
+from tests.fakes_market_source import source_history_values
 
 CODES = ('9782369904151', '9782369903086', '9782205051407', '9781444977387')
 
@@ -58,7 +59,8 @@ def test_recap_four_rows_one_vocabulary_and_explicit_missing_prices():
     rows = [
         {'number': n, 'title': f'Birdking Livre {n}', 'isbn13': CODES[n-1],
          'language': 'fr', 'source': 'bnf', 'confirmed': True,
-         'price_lines': ['<b>Prix du marché :</b> 18,00 €', '<b>Prix bas constaté :</b> 16,50 €']}
+         'price_lines': ['<b>Dernière offre connue :</b> 18,00 €',
+                         '<b>Prix bas constaté :</b> 16,50 €']}
         for n in (1, 2, 3)
     ] + [{'number': 4, 'title': 'Birdking Livre 4', 'isbn13': None, 'confirmed': False}]
     text = creation_card({'name': 'Birdking', 'is_series': True, 'series_volumes': rows})
@@ -175,7 +177,7 @@ async def test_summary_has_two_explicit_price_fields_when_no_cache():
     from app.services.market_price_service import MarketPriceService
 
     summary = MarketPriceService.get_comparison_summary(None, None, for_creation=True)
-    assert '<b>Prix du marché :</b> Non renseigné' in summary
+    assert '<b>Dernière offre connue :</b> Non renseigné' in summary
     assert '<b>Prix bas constaté :</b> Non renseigné' in summary
     assert 'Cote indisponible' in summary
 
@@ -272,6 +274,7 @@ async def test_birdking_creation_confirms_four_rows_from_prepared_local_caches(
                     checked_at=now, expires_at=now+timedelta(days=1),
                     comparison_status=ComparisonStatus.AVAILABLE,
                     annual_low_cents=n*1000+650, annual_low_observed_at=old,
+                    **source_history_values(n*1000+650, now),
                     annual_low_snapshot_id=uuid.uuid4(), annual_low_provider='synthetic',
                     annual_first_at=old, annual_last_at=now, annual_count=2,
                     annual_computed_at=now, annual_expires_at=old+timedelta(days=365),
@@ -398,13 +401,14 @@ def test_creation_summary_dates_no_offer_without_promising_a_pending_price():
     book = Book(title='Birdking Livre 4', normalized_title='birdking livre 4')
     book.market_cache = BookMarketCache(
         comparison_status=ComparisonStatus.UNAVAILABLE,
+        collection_status="empty",
         checked_at=datetime(2026, 10, 13, 10, 30, tzinfo=UTC),
     )
     summary = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
     assert "Aucune offre d'occasion trouvée" in summary
-    assert '13/10' in summary
+    assert '13/10' not in summary
     assert 'en cours' not in summary
-    assert '<b>Prix du marché :</b> Non renseigné' in summary
+    assert '<b>Dernière offre connue :</b> Non renseigné' in summary
     assert '<b>Prix bas constaté :</b> Non renseigné' in summary
 
 

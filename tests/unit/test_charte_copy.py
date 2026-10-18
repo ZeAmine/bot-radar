@@ -356,8 +356,12 @@ def cached_market_price():
     from app.db.models.book_market_cache import BookMarketCache
     now = datetime.now(UTC)
     old = now - timedelta(days=30)
-    return BookMarketCache(id=uuid.uuid4(), book_id=uuid.uuid4(),
-        lowest_delivered_price_cents=1800, checked_at=now, expires_at=now+timedelta(days=1),
+    from tests.fakes_market_source import source_history_values
+
+    return BookMarketCache(**source_history_values(1650, now),
+        id=uuid.uuid4(), book_id=uuid.uuid4(),
+        lowest_delivered_price_cents=1800, checked_at=now,
+        expires_at=now+timedelta(days=1),
         comparison_status=ComparisonStatus.AVAILABLE, best_provider_name="synthetic",
         historical_low_1y_cents=1650, annual_low_cents=1650, annual_low_observed_at=old,
         annual_low_snapshot_id=uuid.uuid4(), annual_low_provider="synthetic",
@@ -836,13 +840,13 @@ async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
     assert recap_lines[0] == RECAP_TITLE
     assert confirm_lines[0] == "✅ <b>Alerte créée</b>"
     # Le corps, ligne de champ par ligne de champ : le meme, dans le meme ordre.
-    price_fields = ("<b>Prix du marché :", "<b>Prix bas constaté :")
+    price_fields = ("<b>Dernière offre connue :", "<b>Prix bas constaté :")
     assert [line for line in recap_lines
             if line.startswith("<b>") and not line.startswith(price_fields)] == [
         line for line in confirm_lines
         if line.startswith("<b>") and not line.startswith(price_fields)
     ]
-    assert "<b>Prix du marché :</b> Non renseigné" in confirmation
+    assert "<b>Dernière offre connue :</b> Non renseigné" in confirmation
     assert "<b>Prix bas constaté :</b> Non renseigné" in confirmation
     # Le bloc de cote n'appartient qu'à la confirmation : relevé produit, pas critère de veille.
     assert PENDING_COTE_LINE not in recap

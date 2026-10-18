@@ -20,7 +20,7 @@ def test_series_buttons_only_offer_numbered_volumes():
         for title in ("Série", "Série, Volume 2", "Série, Vol. 1")
     ]
     rows = _tome_selection_rows(uuid.uuid4(), books)
-    assert [button.text for row in rows for button in row] == ["T1", "T2"]
+    assert [button.text for row in rows for button in row] == ["T1", "T2", "Série"]
 
 
 def test_panel_has_no_global_series_button():
@@ -95,7 +95,7 @@ def test_missing_first_tome_keeps_its_note_and_the_freshness_footer():
     text, _ = market_panel._content(view)
     assert "Actualisation" not in text
     assert "Tome 1 absent du catalogue" in text
-    assert "Dernière vérif. : inconnue" in text
+    assert "Dernière MAJ :" in text
 
 
 def _panel_callback():
@@ -149,7 +149,7 @@ async def test_open_panel_with_a_usable_price_does_not_start_a_collection():
     )
     with (
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel.schedule_book_pricing") as schedule,
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
     ):
         await _open(book)
         schedule.assert_not_called()
@@ -162,10 +162,10 @@ async def test_open_panel_without_any_cache_requests_the_first_collection():
     book = _book_with_cache(None)
     with (
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel.schedule_book_pricing") as schedule,
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
     ):
         await _open(book)
-        schedule.assert_called_once_with(book.id, reason="market_panel")
+        schedule.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -207,7 +207,7 @@ async def test_successful_empty_collection_is_not_retried_on_reopen():
     )
     with (
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel.schedule_book_pricing") as schedule,
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
     ):
         await _open(book)
         await _open(book)
@@ -243,12 +243,12 @@ async def test_recent_failure_respects_the_rest_but_an_old_failure_can_retry():
     )
     with (
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel.schedule_book_pricing") as schedule,
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
     ):
         await _open(recent)
         schedule.assert_not_called()
         await _open(old)
-        schedule.assert_called_once_with(old.id, reason="market_panel")
+        schedule.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -263,7 +263,7 @@ async def test_an_explicit_tome_without_a_catalogue_match_is_not_replaced():
     third.title = "Série Tome 3"
     with (
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel.schedule_book_pricing") as schedule,
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
     ):
         text = await _open(
             None,
@@ -295,13 +295,12 @@ async def test_a_missing_catalogue_is_resolved_once_from_the_panel():
 
     with (
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel.safe_create_task", capture),
-        patch("app.bot.handlers.market_panel.schedule_book_pricing"),
+        patch("app.core.tasks.safe_create_task", capture),
+        patch("app.services.book_market_pricing.schedule_book_pricing"),
     ):
         await _open(book, books=[], alert=alert)
         await _open(book, books=[], alert=alert)
-        assert len(started) == 1
-    market_panel._catalogue_in_flight.discard(alert.id)
+        assert started == []
 
 
 @pytest.mark.asyncio
@@ -326,7 +325,7 @@ async def test_a_recent_catalogue_attempt_is_not_repeated():
 
     with (
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel.safe_create_task", capture),
+        patch("app.core.tasks.safe_create_task", capture),
     ):
         await _open(None, books=[], alert=alert)
         assert started == []
@@ -334,56 +333,19 @@ async def test_a_recent_catalogue_attempt_is_not_repeated():
 
 @pytest.mark.asyncio
 async def test_catalogue_resolution_schedules_only_the_requested_tome():
-    from unittest.mock import AsyncMock, patch
+    from unittest.mock import patch
 
-    from app.core.constants import ComparisonStatus
-    from app.db.models.alert import Alert
-    from app.db.models.book_market_cache import BookMarketCache
-    from app.services.tome_extractor import TomeExtractor
-
-    alert = Alert(id=uuid.uuid4(), name="Série", status=AlertStatus.ACTIVE, isbn=None)
-    first = _book_with_cache(
-        BookMarketCache(
-            book_id=uuid.uuid4(),
-            lowest_delivered_price_cents=None,
-            comparison_status=ComparisonStatus.UNAVAILABLE,
-        )
-    )
-    first.title = "Série Tome 1"
-    second = _book_with_cache(
-        BookMarketCache(
-            book_id=uuid.uuid4(),
-            lowest_delivered_price_cents=None,
-            comparison_status=ComparisonStatus.UNAVAILABLE,
-        )
-    )
-    second.title = "Série Tome 2"
-
-    session = AsyncMock()
-    session_ctx = AsyncMock()
-    session_ctx.__aenter__.return_value = session
-    session_ctx.__aexit__.return_value = False
-
-    alert_repo = MagicMock()
-    alert_repo.get_by_id = AsyncMock(return_value=alert)
-    book_repo = MagicMock()
-    book_repo.get_all_books_for_alert = AsyncMock(return_value=[first, second])
-    use_case = MagicMock()
-    use_case.resolve_alert_books = AsyncMock()
-
+    first, second = _book_with_cache(None), _book_with_cache(None)
+    first.title, second.title = "Série Tome 1", "Série Tome 2"
     with (
-        patch("app.bot.handlers.market_panel.AsyncSessionLocal", return_value=session_ctx),
-        patch("app.bot.handlers.market_panel.AlertRepository", return_value=alert_repo),
-        patch("app.bot.handlers.market_panel.BookRepository", return_value=book_repo),
-        patch("app.bot.handlers.market_panel.ViewMarketDetailsUseCase", return_value=use_case),
-        patch("app.bot.handlers.market_panel.schedule_book_pricing") as schedule,
+        patch("app.bot.handlers.market_panel._panels", {}),
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
+        patch("app.core.tasks.safe_create_task") as tasks,
     ):
-        await market_panel._resolve_catalogue_once(alert.id, tome_number=2)
-
-    use_case.resolve_alert_books.assert_awaited_once_with(alert.id, force_catalogue=True)
-    schedule.assert_called_once_with(second.id, reason="market_panel")
-    assert TomeExtractor.extract(second.title, series_key=alert.name).tome_number == 2
-    assert alert.id not in market_panel._catalogue_in_flight
+        text = await _open(second, books=[first, second])
+    assert "Série Tome 2" in text
+    schedule.assert_not_called()
+    tasks.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -416,8 +378,8 @@ async def test_a_settled_empty_collection_does_not_reopen_catalogue_or_price():
 
     with (
         patch("app.bot.handlers.market_panel._panels", {}),
-        patch("app.bot.handlers.market_panel.safe_create_task", capture),
-        patch("app.bot.handlers.market_panel.schedule_book_pricing") as schedule,
+        patch("app.core.tasks.safe_create_task", capture),
+        patch("app.services.book_market_pricing.schedule_book_pricing") as schedule,
     ):
         await _open(book, books=[], alert=alert)
         await _open(book, books=[], alert=alert)

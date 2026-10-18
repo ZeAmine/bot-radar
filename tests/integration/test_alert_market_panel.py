@@ -102,4 +102,4 @@ async def test_creation_reloads_a_cache_written_in_another_session(monkeypatch):
 
         created = (await session.execute(select(Alert))).scalar_one()
         assert created.status == AlertStatus.ACTIVE
-        assert "<b>Prix du marché :</b> 15,00 €" in message.edit_text.call_args.args[0]
+        assert "<b>Dernière offre connue :</b> 15,00 €" in message.edit_text.call_args.args[0]

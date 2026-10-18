@@ -9,6 +9,7 @@ from apscheduler.events import EVENT_JOB_SUBMITTED, JobSubmissionEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from app.core import pilot_mode
 from app.core.config import settings
 from app.tasks.cleanup import cleanup_old_data_task
 from app.tasks.proactive_autotune import run_proactive_autotune_scan
@@ -100,8 +101,6 @@ def create_scheduler() -> AsyncIOScheduler:
                 "Format d'horaire invalide pour PRICE_REFRESH_TIMES '%s': %s", time_str, exc
             )
 
-    # Lot glissant : minimum de 8, ajusté à la population par le repository ;
-    # cible de réussite à 24 h, source indisponible signalée après 48 h.
     scheduler.add_job(
         refresh_job("refresh_prices_incremental", incremental=True, batch_size=8),
         trigger=CronTrigger(minute="15,45", timezone="Europe/Paris"),
@@ -112,7 +111,7 @@ def create_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
-    logger.info("Job planifié : rafraîchissement glissant BD toutes les 30 min (lots adaptés).")
+    logger.info("Job planifié : rafraîchissement BD toutes les 30 min, huit livres au plus.")
 
     scheduler.add_job(
         cleanup_old_data_task,
@@ -136,6 +135,16 @@ def create_scheduler() -> AsyncIOScheduler:
     )
     logger.info("Job planifié : Auto-Tuning proactif à 10h, 14h, 18h et 22h Europe/Paris.")
 
+    if pilot_mode.active():
+        for job in scheduler.get_jobs():
+            operation = job.func
+
+            async def gated_operation(operation: Any = operation, **kwargs: Any) -> Any:
+                if pilot_mode.active():
+                    return None
+                return await operation(**kwargs)
+
+            job.modify(func=gated_operation)
     return scheduler
 
 

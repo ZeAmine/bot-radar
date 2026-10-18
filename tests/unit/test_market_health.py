@@ -166,7 +166,7 @@ async def test_a_silent_provider_is_reported_once_per_window():
         mp.setattr(
             market_health.MarketPriceRepository,
             "find_silent_providers",
-            AsyncMock(return_value=[("momox", now - timedelta(hours=50))]),
+            AsyncMock(return_value=[("momox", now - timedelta(hours=200))]),
         )
         sent: list[str] = []
 
@@ -185,8 +185,8 @@ async def test_a_silent_provider_is_reported_once_per_window():
     assert second == 0
     assert len(sent) == 1
     assert "momox" in sent[0]
-    assert "48 h" in sent[0]
-    assert "50 h" in sent[0]
+    assert "192 h" in sent[0]
+    assert "200 h" in sent[0]
 
 
 @pytest.mark.asyncio

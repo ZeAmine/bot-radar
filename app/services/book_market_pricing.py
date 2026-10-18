@@ -1,38 +1,23 @@
-"""Cotation d'un livre : un seul chemin des fournisseurs vers le cache local.
-
-Quatre appelants ont besoin d'une cote — la création d'une alerte, l'édition d'un
-ISBN, le bouton « 📊 Prix du marché » et le chemin d'alerte quand elle part sans
-prix. Chacun avait sa copie, et elles ne faisaient pas la même chose : la
-création n'interrogeait qu'un agrégateur par ISBN, sans repli par titre ni
-marchands directs, et lisait l'historique 1 an sur la seule meilleure offre, ce
-qui le faisait disparaître dès qu'un autre marchand proposait moins cher. Un
-livre laissé sans cote n'est jamais rattrapé ensuite : le job glissant ne traite
-que les livres déjà liés à une alerte.
-
-Deux formes d'appel, une seule implémentation :
-
-- `price_book_now` : le résultat est attendu, pour un écran qui doit l'afficher ;
-- `schedule_book_pricing` : en arrière-plan, pour tout ce qui ne doit jamais
-  retarder l'envoi d'une alerte (invariant n°1).
-"""
+"""Cotation partagée et persistance des prix par composante."""
 
 import asyncio
 import logging
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import alert_latency
+from app.core import alert_latency, pilot_mode
 from app.core.alert_latency import observe_background
 from app.core.constants import ComparisonStatus, MatchConfidence
 from app.core.tasks import safe_create_task
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
-from app.db.repositories.book_repo import FAILED_COLLECTION_REST_HOURS, BookRepository
+from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.db.session import AsyncSessionLocal
 from app.domain.rules.market_offer import is_comparable_secondhand_offer
@@ -42,9 +27,16 @@ from app.providers.base import (
     MarketOffers,
     extract_best_historical_low,
     normalize_search_isbn,
+    requested_components,
 )
 from app.providers.registry import ProviderRegistry
-from app.services.market_price_service import has_usable_price, series_reference_total
+from app.services.market_price_service import series_reference_total
+from app.services.market_refresh_policy import (
+    collection_due,
+    component_due,
+    record_component,
+    reservation_lock,
+)
 from app.utils.price import format_cents
 
 logger = logging.getLogger(__name__)
@@ -52,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Durée maximale d'interrogation d'un livre, tous fournisseurs compris.
 BOOK_FETCH_TIMEOUT_SECONDS = 20.0
 # Durée de validité du cache selon la qualité de la donnée collectée.
-CACHE_HOURS_WITH_PRICE = 24
+CACHE_HOURS_WITH_PRICE = 168
 CACHE_HOURS_WITHOUT_PRICE = 6
 
 # Livres dont la cotation est déjà en vol : un seul passage à la fois par livre.
@@ -88,8 +80,6 @@ class BookPricingResult:
 
     @property
     def current_collection_succeeded(self) -> bool:
-        if self.lowest_delivered_price_cents is not None:
-            return True
         current = [a for a in self.attempts if a.operation == "current" and a.status != "skipped"]
         if self.attempts:
             return bool(current) and all(a.status == "success" for a in current)
@@ -176,37 +166,6 @@ def pricing_stat(cache: BookMarketCache | None) -> str:
     return "unavailable"
 
 
-def first_collection_is_due(book: Book) -> bool:
-    """Une première cotation manque-t-elle encore pour ce livre ?
-
-    Le panneau ne relance pas une collecte quand une cote exploitable, une collecte
-    réussie sans offre ou une tentative récente existe déjà. Le délai de repos des
-    échecs est celui du lot glissant, pour ne pas contourner sa protection.
-    """
-    if "market_cache" not in book.__dict__:
-        return False
-    cache = book.__dict__.get("market_cache")
-    if not isinstance(cache, BookMarketCache):
-        return cache is None
-    if has_usable_price(cache):
-        return False
-    if cache.last_successful_collection_at is not None:
-        return False
-    if cache.checked_at is not None:
-        return False
-    if cache.collection_status in {"empty", "complete"}:
-        return False
-    if cache.last_attempt_at is not None:
-        attempted = (
-            cache.last_attempt_at
-            if cache.last_attempt_at.tzinfo
-            else cache.last_attempt_at.replace(tzinfo=UTC)
-        )
-        if datetime.now(UTC) - attempted < timedelta(hours=FAILED_COLLECTION_REST_HOURS):
-            return False
-    return True
-
-
 async def fetch_offers_for_book(
     book: Book,
     registry: ProviderRegistry | None = None,
@@ -221,6 +180,11 @@ async def fetch_offers_for_book(
     """
     active_registry = registry or (ProviderRegistry(single_attempt=True)
                                    if retry_transient else ProviderRegistry())
+    now = datetime.now(UTC)
+    cache = book.__dict__.get("market_cache")
+    components = frozenset(component for component in ("current", "history")
+                           if component_due(cache, component, now) <= now)
+    token = requested_components.set(components)
     try:
         offers = await asyncio.wait_for(
             active_registry.fetch_all_offers(
@@ -252,6 +216,7 @@ async def fetch_offers_for_book(
                         "operation": attempt.operation, "reason": attempt.reason,
                         "http_status": attempt.http_status,
                     })
+                retry_scope = requested_components.set(frozenset({"current"}))
                 try:
                     retried = await asyncio.wait_for(retry_registry.fetch_all_offers(
                         isbn13=normalize_search_isbn(book.isbn13), title=book.title,
@@ -265,13 +230,24 @@ async def fetch_offers_for_book(
                                            "reprise marché", status="failed", reason="timeout",
                                        ),),
                     )
+                finally:
+                    requested_components.reset(retry_scope)
+                retained_attempts = tuple(a for a in getattr(offers, "attempts", ())
+                                          if a.provider not in names or a.operation != "current")
+                retried_attempts = tuple(
+                    a for a in retried.attempts
+                    if not (a.operation == "history" and a.status == "skipped")
+                )
+                retained_failures = {
+                    a.provider for a in retained_attempts if a.status == "failed"
+                }
                 offers = MarketOffers(
-                    [o for o in offers if o.provider_name not in names] + list(retried),
+                    [o for o in offers if o.provider_name not in names or o.is_historical]
+                    + list(retried),
                     failed_providers=tuple(sorted(
                         (set(getattr(offers, "failed_providers", ())) - names)
-                        | set(retried.failed_providers))),
-                    attempts=tuple(a for a in getattr(offers, "attempts", ())
-                                   if a.provider not in names) + retried.attempts,
+                        | set(retried.failed_providers) | retained_failures)),
+                    attempts=retained_attempts + retried_attempts,
                     historical_checked=getattr(offers, "historical_checked", False)
                     or retried.historical_checked,
                 )
@@ -294,6 +270,8 @@ async def fetch_offers_for_book(
         return MarketOffers(failed_providers=("collecte marché",), attempts=(
             CollectionAttempt("collecte marché", status="failed", reason="timeout"),
         ))
+    finally:
+        requested_components.reset(token)
 
 
 async def _refresh_series_totals(session: AsyncSession, book_id: uuid.UUID) -> None:
@@ -396,8 +374,35 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
     cache.last_attempt_at = result.collected_at
     if result.current_collection_succeeded:
         cache.last_successful_collection_at = result.collected_at
+    current_requested = not result.attempts or any(
+        a.operation == "current" and a.status != "skipped" for a in result.attempts
+    )
+    history_requested = not any(a.operation == "history" for a in result.attempts) or any(
+        a.operation == "history" and a.status != "skipped" for a in result.attempts
+    )
+    if current_requested:
+        record_component(cache, "current", succeeded=result.current_collection_succeeded,
+                         now=result.collected_at)
     if result.historical_checked:
         cache.historical_checked_at = result.collected_at
+        points = [offer for offer in result.offers
+                  if offer.provider_name == "chasse_aux_livres" and offer.is_historical
+                  and offer.item_condition == "Très bon état +" and offer.observed_at
+                  and offer.price_includes_shipping and offer.delivered_price_cents > 0]
+        if points:
+            lowest = min(points, key=lambda offer: offer.delivered_price_cents)
+            cache.historical_low_1y_cents = lowest.delivered_price_cents
+            cache.historical_low_at = lowest.observed_at
+            cache.source_history = {
+                "price_cents": lowest.delivered_price_cents,
+                "observed_at": lowest.observed_at.isoformat() if lowest.observed_at else None,
+                "collected_at": result.collected_at.isoformat(),
+                "source_url": lowest.source_url, "condition": "Très bon état +",
+                "days": 365, "shipping_included": True,
+            }
+    if history_requested:
+        record_component(cache, "history", succeeded=result.historical_checked,
+                         now=result.collected_at)
     cache.failed_provider_names = list(result.failed_providers)
     retained_offers = cache.current_offers
     cache.current_offers = [
@@ -412,9 +417,23 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
         and not offer.is_historical
         and (offer.shipping_price_cents is not None or offer.price_includes_shipping)
     ]
-    if (result.lowest_delivered_price_cents is None
-            and not result.current_collection_succeeded):
-        cache.current_offers = retained_offers
+    if not result.current_collection_succeeded:
+        new_offers = cache.current_offers or []
+        replaced = {str(offer.get("provider_name")) for offer in new_offers}
+        cache.current_offers = [offer for offer in retained_offers or []
+                                if str(offer.get("provider_name")) not in replaced] + new_offers
+        merged = []
+        required = {"provider_name", "item_price_cents", "shipping_price_cents",
+                    "delivered_price_cents", "source_url"}
+        for serialized in cache.current_offers:
+            if required <= serialized.keys():
+                merged.append(MarketOffer(**cast(dict[str, Any], serialized)))
+        best = ProviderRegistry.select_best_offer(merged)
+        if best is not None:
+            cache.lowest_delivered_price_cents = best.delivered_price_cents
+            merchant = (best.raw_payload or {}).get("best_merchant")
+            cache.best_provider_name = merchant if isinstance(merchant, str) else best.provider_name
+            cache.best_source_url = best.source_url
     cache.collection_status = (
         "skipped"
         if result.attempts and all(a.status == "skipped" for a in result.attempts)
@@ -471,7 +490,7 @@ async def price_book_now(
     registry: ProviderRegistry | None = None,
     result_sink: list[BookPricingResult] | None = None,
 ) -> BookMarketCache | None:
-    """Partage une collecte déjà en vol entre le scheduler et les panneaux."""
+    """Partage une collecte déjà en vol pour le même livre."""
     task = _pricing_tasks.get(book_id)
     if task is None:
         results: list[BookPricingResult] = []
@@ -514,26 +533,33 @@ async def _price_book_once(
             if book is None:
                 logger.warning("Cotation ignorée : livre ID %s introuvable (%s).", book_id, reason)
                 return None
+            if pilot_mode.active():
+                if reason != "backfill":
+                    raise pilot_mode.PilotBlockedError("Collecte automatique suspendue")
+                pilot_mode.require_isbn(book.isbn13)
             cache = await MarketPriceRepository(session).get_cache_by_book_id(book_id)
-            if (reason == "alert_created" and cache is not None
-                    and cache.collection_status in {"complete", "empty"}
-                    and cache.expires_at is not None):
-                expires = cache.expires_at
-                if expires.tzinfo is None:
-                    expires = expires.replace(tzinfo=UTC)
-                if expires > datetime.now(UTC):
-                    return cache
+            if pilot_mode.was_attempted(book.isbn13):
+                return cache
+            if cache is not None and not collection_due(cache, datetime.now(UTC)):
+                return cache
             if cache is None:
                 cache = BookMarketCache(book_id=book_id)
                 session.add(cache)
-            attempted_at = datetime.now(UTC)
-            cache.last_attempt_at = attempted_at
-            # L'essai est validé avant la collecte : il reste acquis si elle échoue.
-            await session.commit()
-            cache = await price_book(session, book, registry=registry, result_sink=result_sink,
-                                     retry_transient=reason == "alert_created")
-            await session.commit()
-            return cache
+            with pilot_mode.collection_scope(book.isbn13):
+                attempted_at = datetime.now(UTC)
+                cache.last_attempt_at = attempted_at
+                # L'essai est validé avant la collecte : il reste acquis si elle échoue.
+                await session.commit()
+                cache = await price_book(session, book, registry=registry, result_sink=result_sink,
+                                         retry_transient=reason == "alert_created")
+                async with reservation_lock():
+                    await BookRepository(session).plan_price_refreshes(book_ids={book_id})
+                    await session.commit()
+                failures = [attempt.reason or "unclassified"
+                            for result in result_sink or [] for attempt in result.attempts
+                            if attempt.status == "failed" and attempt.reason != "identity_mismatch"]
+                pilot_mode.finish_collection(cache.collection_status or "unknown", failures)
+                return cache
     except Exception as exc:
         logger.warning(
             "Cotation du livre ID %s impossible (%s), erreur=%s",
@@ -548,7 +574,7 @@ async def _price_book_once(
                             BookMarketCache.book_id == book_id,
                             BookMarketCache.last_attempt_at == attempted_at,
                         )
-                        .values(collection_status="failed")
+                        .values(collection_status="failed", next_refresh_at=None)
                     )
                     await recovery.commit()
             except Exception as persistence_error:
@@ -565,6 +591,8 @@ def schedule_book_pricing(book_id: uuid.UUID, *, reason: str) -> None:
     Plusieurs annonces de la même BD peuvent tomber dans la même seconde ; sans
     ce garde-fou, chacune déclencherait sa propre salve chez les marchands.
     """
+    if pilot_mode.active():
+        return
     with _pricing_lock:
         if book_id in _pricing_in_flight:
             logger.debug("Cotation déjà en vol pour le livre ID %s (%s).", book_id, reason)

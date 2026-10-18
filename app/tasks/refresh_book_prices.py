@@ -1,16 +1,4 @@
-"""Tâche planifiée de rafraîchissement des prix de marché des BD et comics.
-
-Le job passe par le service de cotation commun : interroger tous les
-fournisseurs, consolider le prix livré le plus bas et le prix le plus bas
-constaté sur 1 an, puis écrire le cache local. La création d'une alerte et le
-bouton « 📊 Prix du marché » passent par exactement la même consolidation —
-cette tâche n'en est qu'un client parmi d'autres.
-
-Une passe se déroule par **vagues concurrentes bornées** : la pression sur les
-partenaires reste identique (une pause anti-rate-limit par vague), mais un livre
-lent ne bloque plus toute la file. Chaque livre dispose en plus de sa propre
-session : un échec réseau ne contamine jamais le cache des autres.
-"""
+"""Rafraîchissement progressif des composantes de prix éligibles."""
 
 import asyncio
 import logging
@@ -21,6 +9,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import pilot_mode
 from app.db.models.alert import Alert
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
@@ -42,11 +31,12 @@ from app.services.market_health import (
     notify_refresh_result,
     read_refresh_health,
 )
+from app.services.market_refresh_policy import reservation_lock
 
 logger = logging.getLogger(__name__)
 
 # Nombre de livres interrogés simultanément.
-BOOK_FETCH_CONCURRENCY = 4
+BOOK_FETCH_CONCURRENCY = 2
 # Durée maximale d'une passe : au-delà, les livres restants attendront la suivante.
 MAX_PASS_DURATION_SECONDS = 900.0
 DEFAULT_BATCH_SIZE = 8
@@ -71,11 +61,14 @@ async def _select_books(
 ) -> list[Book]:
     """Liste les livres à rafraîchir, en session dédiée en production."""
 
+    _ = incremental
+
     async def _read(read_session: AsyncSession) -> list[Book]:
         book_repo = BookRepository(read_session)
-        if incremental:
-            return await book_repo.get_books_needing_price_refresh(limit=batch_size)
-        return await book_repo.get_books_for_active_bd_alerts()
+        async with reservation_lock():
+            await book_repo.plan_price_refreshes(capacity=batch_size)
+            await read_session.commit()
+        return await book_repo.get_books_needing_price_refresh(limit=batch_size)
 
     if session is not None:
         return await _read(session)
@@ -250,7 +243,39 @@ async def resolve_scheduled_catalogues(*, incremental: bool, deadline: float) ->
                            alert_id, type(exc).__name__)
 
 
+_pass_loop: asyncio.AbstractEventLoop | None = None
+_pass_lock: asyncio.Lock | None = None
+
+
 async def refresh_book_prices_task(
+    registry: ProviderRegistry | None = None,
+    session: AsyncSession | None = None,
+    incremental: bool = False,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    concurrency: int = BOOK_FETCH_CONCURRENCY,
+    max_duration_seconds: float = MAX_PASS_DURATION_SECONDS,
+    job_id: str | None = None,
+    scheduled_for: datetime | None = None,
+) -> dict[str, int]:
+    if pilot_mode.active():
+        return dict.fromkeys(("processed", "refreshed", "empty", "reused", "available",
+                              "unavailable", "degraded", "errors"), 0)
+    global _pass_loop, _pass_lock
+    loop = asyncio.get_running_loop()
+    if _pass_lock is None or _pass_loop is not loop:
+        _pass_loop, _pass_lock = loop, asyncio.Lock()
+    if _pass_lock.locked():
+        return dict.fromkeys(("processed", "refreshed", "empty", "reused", "available",
+                              "unavailable", "degraded", "errors"), 0)
+    async with _pass_lock:
+        return await _refresh_book_prices_pass(
+            registry=registry, session=session, incremental=incremental,
+            batch_size=batch_size, concurrency=concurrency,
+            max_duration_seconds=max_duration_seconds, job_id=job_id, scheduled_for=scheduled_for,
+        )
+
+
+async def _refresh_book_prices_pass(
     registry: ProviderRegistry | None = None,
     session: AsyncSession | None = None,
     incremental: bool = False,
@@ -281,6 +306,9 @@ async def refresh_book_prices_task(
                        l'occurrence de 19:00.
     """
     if registry is None:
+        if session is None:
+            from app.providers.chasse_session import chasse_session
+            await chasse_session.maintain()
         registry = ProviderRegistry()
 
     occurrence = _occurrence_token(job_id, scheduled_for=scheduled_for) if job_id else None
@@ -364,4 +392,5 @@ async def refresh_book_prices_task(
             logger.warning("Diagnostic de fin de passe indisponible", exc_info=True)
         await notify_refresh_result(report)
 
+    await _select_books(session, incremental, batch_size)
     return stats

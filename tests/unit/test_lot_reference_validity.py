@@ -180,5 +180,5 @@ def test_attempt_without_observation_does_not_date_a_price():
     single = book(1)
     single.market_cache.checked_at = None
     text = market.MarketPriceService.format_market_details_card(None, single)
-    assert "Dernière vérif. : inconnue" in text
+    assert "Dernière MAJ :" in text
     assert "Actualisation" not in text

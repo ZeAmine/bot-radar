@@ -17,6 +17,7 @@ from app.services import market_price_service as market
 from app.services.book_market_pricing import BookPricingResult, persist_market_result
 from app.services.market_price_service import admissible_reference_price
 from tests.database import postgres_replayed_database
+from tests.fakes_market_source import source_history_values
 
 
 def test_unproven_legacy_minimum_never_overrides_a_current_offer():
@@ -95,7 +96,7 @@ async def test_window_boundary_microseconds(evidence, offset, accepted):
         cache = (await reader.scalars(select(BookMarketCache))).one()
         assert cache.annual_count == int(accepted)
         assert cache.historical_low_1y_cents == 1
-        assert admissible_reference_price(cache) == ((1000, True) if accepted else (5000, False))
+        assert admissible_reference_price(cache) == (5000, False)
 
 
 async def test_minimum_expires_without_collection_and_ties_are_deterministic(evidence):
@@ -168,7 +169,7 @@ async def test_retry_and_rollback_never_redate_or_duplicate_observation(evidence
         assert len(rows) == 1
         assert cache.annual_count == 1
         assert _utc(cache.checked_at) == value.observed_at
-        assert _utc(cache.expires_at) == value.observed_at + timedelta(hours=24)
+        assert _utc(cache.expires_at) == value.observed_at + timedelta(days=7)
 
 
 async def test_legacy_snapshot_keeps_its_original_timestamp(evidence):
@@ -215,7 +216,8 @@ async def test_window_uses_elapsed_days_not_calendar_year(evidence, now):
     )
     await e.repo.save_snapshot(e.book.id, offer(at, 900))
     await e.repo.refresh_annual_references([e.book.id], now=now, force=True)
-    assert admissible_reference_price(e.cache) == (900, True)
+    assert admissible_reference_price(e.cache) == (None, False)
+    assert e.cache.annual_low_cents == 900
     assert _utc(e.cache.annual_low_observed_at) == at.astimezone(UTC)
 
 
@@ -266,7 +268,8 @@ async def test_read_recalculates_locally_without_writing_or_redating(evidence):
     e.clock.now += timedelta(seconds=1)
     async with e.db.maker() as reader:
         book = await BookRepository(reader).get_by_id(e.book.id)
-        assert admissible_reference_price(book.market_cache) == (200, True)
+        assert admissible_reference_price(book.market_cache) == (5000, False)
+        assert book.market_cache.annual_low_cents == 200
         assert _utc(book.market_cache.checked_at) == old_checked
         assert not reader.dirty
     async with e.db.maker() as reader:
@@ -347,6 +350,7 @@ def test_mixed_lot_labels_are_shared_by_summary_and_panel():
     books = [Book(title=f"Preuve Tome {n}") for n in (1, 2)]
     books[0].market_cache = BookMarketCache(
         annual_low_cents=100,
+        **source_history_values(100, now),
         annual_low_provider="synthetic",
         annual_low_snapshot_id=uuid.uuid4(),
         annual_low_observed_at=now,
@@ -380,8 +384,7 @@ def test_an_expired_known_offer_is_not_announced_as_an_empty_collection():
         checked_at=now-timedelta(days=30), expires_at=now-timedelta(days=29),
         comparison_status=ComparisonStatus.AVAILABLE)
     line = market.cote_absence_line(book)
-    assert 'expiré' in line
-    assert 'Aucune offre' not in line
+    assert line is None
     assert not market.has_usable_price(book.market_cache)
 
 
@@ -397,13 +400,13 @@ async def test_historical_points_enter_annual_minimum_but_not_current_offers(evi
     assert len(cache.current_offers) == 1
     latest = await evidence.repo.get_latest_snapshot(evidence.book.id)
     assert latest.delivered_price_cents == 1103
-    assert admissible_reference_price(cache) == (545, True)
+    assert admissible_reference_price(cache) == (1103, False)
     from app.db.repositories.book_repo import BookRepository
     book = await BookRepository(evidence.db.session).get_by_id(evidence.book.id)
     text = market.MarketPriceService.format_market_details_card(listing=None, book=book)
     assert "Ancien minimum" not in text
-    assert text.count("Prix bas constaté") == 1
-    assert "5,45" in text
+    assert "Prix bas constaté :</b> Non renseigné" in text
+    assert "11,03" in text
 
 
 def test_market_card_omits_unproven_legacy_minimum():
@@ -420,8 +423,8 @@ def test_market_card_omits_unproven_legacy_minimum():
     )
     text = market.MarketPriceService.format_market_details_card(listing=None, book=book)
     assert "Ancien minimum" not in text
-    assert text.count("Prix bas constaté") == 1
-    assert "11,03" in text
+    assert "Prix bas constaté :</b> Non renseigné" in text
+    assert "11,54" in text
 
 
 async def test_history_only_with_failed_offers_does_not_fake_current_freshness(evidence):

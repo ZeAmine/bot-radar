@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "0014_alert_market_freshness"
+SCHEMA = "0015_chasse_weekly_prices"
 FORMAT = 1
 
 

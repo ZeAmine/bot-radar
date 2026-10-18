@@ -8,7 +8,7 @@ Les montants livrés et règles d'arrondi du comparateur sont inchangés.
 import html
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -29,13 +29,10 @@ from app.utils.price import format_cents
 if TYPE_CHECKING:
     from app.services.tome_extractor import TomeMatchResult
 
-# Maximum de boutiques dans le panneau détaillé.
-MAX_PARTNERS_SHOWN = 5
-
 # Livre identifié, cote à venir : ne pas laisser croire à une absence de prix.
 PENDING_COTE_LINE = "Cote d'occasion en cours de calcul…"
 COTE_UNAVAILABLE_LINE = "⚠️ Cote indisponible"
-COTE_NOT_READY_LINE = f"{COTE_UNAVAILABLE_LINE} (aucun relevé enregistré à l’envoi)."
+COTE_NOT_READY_LINE = COTE_UNAVAILABLE_LINE + "."
 LOT_UNRESOLVED_LINE = "⚠️ Composition du lot non identifiée : comparaison indisponible."
 
 # Aucun livre identifié : la résolution tourne en arrière-plan ; l'alerte se lit sans prix.
@@ -141,27 +138,13 @@ def reference_price(cache: BookMarketCache | None) -> tuple[int | None, bool]:
     if cache is None:
         return None, False
     now = datetime.now(UTC)
-    annual = _positive(cache.annual_low_cents)
-    dates = (
-        cache.annual_computed_at,
-        cache.annual_expires_at,
-        cache.annual_low_observed_at,
-        cache.annual_first_at,
-        cache.annual_last_at,
-    )
-
-    if annual is not None and all(value is not None for value in dates):
-        computed, expiry, observed, first, last = [_aware_checked_at(value) for value in dates]
-
-        if (
-            computed <= now < expiry
-            and now - timedelta(days=365) < first <= observed <= last <= now
-            and isinstance(cache.annual_count, int)
-            and cache.annual_count > 0
-            and cache.annual_low_snapshot_id is not None
-            and cache.annual_low_provider
-        ):
-            return annual, True
+    source = cache.source_history
+    if (isinstance(source, dict) and source.get("condition") == "Très bon état +"
+            and source.get("days") == 365 and source.get("shipping_included") is True
+            and cache.historical_checked_at is not None):
+        price = source.get("price_cents")
+        if isinstance(price, int) and not isinstance(price, bool) and price > 0:
+            return price, True
     current = _positive(cache.lowest_delivered_price_cents)
 
     if (
@@ -215,7 +198,7 @@ def _reference_reason(book: Book) -> str | None:
             return "prix courant expiré"
 
     if cache is not None and cache.historical_low_1y_cents is not None:
-        return "ancien minimum non vérifiable sur 365 jours"
+        return "prix de référence indisponible"
     return "cote indisponible"
 
 
@@ -321,23 +304,13 @@ def cote_absence_line(book: Book | None) -> str | None:
         return None
     cache = _loaded_market_cache(book)
 
-    if (cache is not None and not has_usable_price(cache)
-            and (_positive(cache.lowest_delivered_price_cents) is not None
-                 or cache.historical_low_1y_cents is not None
-                 or cache.annual_low_cents is not None)):
-        reason = _reference_reason(book) or "cote indisponible"
-        return f"{COTE_UNAVAILABLE_LINE} ({reason})."
-
-    if cache is not None and cache.collection_status == "skipped":
-        return f"{COTE_UNAVAILABLE_LINE} (Aucune source interrogée)."
-
-    if cache is not None and cache.collection_status == "failed":
-        date = _format_checked_at(cache.last_attempt_at)
-        return f"{COTE_UNAVAILABLE_LINE} (tentative du {date})."
-
-    if cache is None or cache.checked_at is None:
+    if cache is not None and (cache.lowest_delivered_price_cents or reference_price(cache)[0]):
+        return None
+    if cache is not None and cache.collection_status == "empty":
+        return NO_OFFER_LINE + "."
+    if cache is None or (cache.checked_at is None and cache.collection_status is None):
         return PENDING_COTE_LINE
-    return f"{NO_OFFER_LINE} (relevé du {_format_checked_at(cache.checked_at)})."
+    return COTE_UNAVAILABLE_LINE + "."
 
 
 def _current_collection_is_empty(cache: BookMarketCache) -> bool:
@@ -366,11 +339,7 @@ def format_cote_lines(book: Book | None) -> list[str]:
     market_cents = _positive(cache.lowest_delivered_price_cents)
 
     if market_cents is not None:
-        label = ("Prix du marché" if reference_price(cache) == (market_cents, False)
-                 and cache.collection_status not in {"failed", "skipped"}
-                 and not _current_collection_is_empty(cache)
-                 else "Dernière offre connue (informative)")
-        lines.append(f"<b>{label} :</b> {format_cents(market_cents)}")
+        lines.append(f"<b>Dernière offre connue :</b> {format_cents(market_cents)}")
     historical_cents, historical = reference_price(cache)
 
     if historical and historical_cents is not None:
@@ -384,15 +353,6 @@ def _aware_checked_at(moment: datetime | None) -> datetime:
     if moment is None:
         return datetime.min.replace(tzinfo=UTC)
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
-
-
-def _format_checked_at(moment: datetime | None) -> str:
-    """Horodatage local lisible, utilisé comme pied de panneau."""
-
-    if moment is None:
-        return "Non renseignée"
-    aware = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
-    return aware.astimezone(_PARIS_TZ).strftime("%d/%m à %H:%M")
 
 
 def _format_verification_at(moment: datetime) -> str:
@@ -437,15 +397,17 @@ def _format_gap(total_cents: int, reference_cents: int) -> str:
     À l'écart nul, aucun emoji : « au prix de référence » porte déjà le sens,
     et un marqueur vert devant un écart nul se lit comme une approbation.
     """
+    basis = "\n<i>Référence livrée ; estimation Vinted avec livraison et protection.</i>"
     diff_cents = total_cents - reference_cents
     diff_euros = format_cents(abs(diff_cents))
 
     if diff_cents < 0:
-        return f"<b>Écart :</b> -{diff_euros} ✅"
+        return (f"<b>Écart livré estimé :</b> {diff_euros} en dessous du prix de référence ✅"
+                + basis)
 
     if diff_cents > 0:
-        return f"<b>Écart :</b> +{diff_euros} ⛔️"
-    return "<b>Écart :</b> 0,00 € (au prix de référence)"
+        return f"<b>Écart livré estimé :</b> {diff_euros} au-dessus du prix de référence ⛔️" + basis
+    return "<b>Écart livré estimé :</b> au prix de référence" + basis
 
 
 def _match_lot_books(books: list[Book], lot_tomes: list[int]) -> list[Book]:
@@ -459,14 +421,8 @@ def _match_lot_books(books: list[Book], lot_tomes: list[int]) -> list[Book]:
 
 
 def listable_series_books(books: list[Book]) -> list[Book]:
-    """Tomes qui figurent réellement dans le déroulé d'une série.
-
-    Dès qu'un tome porte un numéro, une fiche sans numéro (intégrale, hors-série)
-    double la série entière : elle disparaît du déroulé — et du total, qui doit
-    sommer exactement ce que l'écran montre.
-    """
-    numbered = [b for b in books if extract_tome_number_from_title(b.title) is not None]
-    return numbered if numbered else list(books)
+    """Livres liés présentés sans omission."""
+    return list(books)
 
 
 def series_reference_total(books: list[Book]) -> int | None:
@@ -481,7 +437,8 @@ def series_reference_total(books: list[Book]) -> int | None:
     numbers = [extract_tome_number_from_title(book.title) for book in listed]
     numbered = [number for number in numbers if number is not None]
 
-    if len(numbered) != len(set(numbered)):
+    if (len(numbered) != len(set(numbered))
+            or (len(listed) > 1 and len(numbered) != len(listed))):
         return None
     known = [
         price_cents
@@ -489,7 +446,7 @@ def series_reference_total(books: list[Book]) -> int | None:
 
         if (price_cents := admissible_reference_price(_loaded_market_cache(book))[0]) is not None
     ]
-    return sum(known) if known else None
+    return sum(known) if known and len(known) == len(listed) else None
 
 
 def _unpriced_tome_lines(books: list[Book]) -> str | None:
@@ -688,36 +645,17 @@ class MarketPriceService:
 
         if for_creation:
             lines = format_cote_lines(book)
-            has_known_price = bool(lines)
-
             if not lines:
                 absence = cote_absence_line(book)
-                lines = [absence if absence and "en cours" not in absence
-                         else "<i>⚠️ Cote indisponible</i>"]
-            cache = book.market_cache if book is not None else None
-
-            if cache is not None and cache.collection_status == "skipped":
-
-                if not any("Aucune source interrogée" in line for line in lines):
-                    lines.append("Aucune source interrogée ; derniers relevés conservés."
-
-                                 if has_known_price else "Aucune source interrogée.")
-            elif cache is not None and cache.collection_status == "failed":
-                retained = " ; prix conservés" if has_known_price else ""
-                lines.append(f"⚠️ Dernière collecte échouée{retained}. "
-                             f"Tentative du {_format_checked_at(cache.last_attempt_at)}.")
-            elif cache is not None and cache.collection_status == "partial":
-                lines.append("⚠️ Collecte partielle ; certaines données n’ont pas été actualisées.")
-
+                lines.append(absence if absence and absence.startswith(NO_OFFER_LINE)
+                             else "<i>⚠️ Cote indisponible</i>")
+            cache = _loaded_market_cache(book) if book else None
             if (cache is not None and _current_collection_is_empty(cache)
-                  and not any(is_no_offer_line(line) for line in lines)):
-                date = _format_checked_at(cache.last_successful_collection_at)
-                lines.append(f"{NO_OFFER_LINE} (collecte du {date}).")
-
-            if cache is None or _positive(cache.lowest_delivered_price_cents) is None:
-                lines.append("<b>Prix du marché :</b> Non renseigné")
-
-            if cache is None or not reference_price(cache)[1]:
+                    and not any(NO_OFFER_LINE in line for line in lines)):
+                lines.append(NO_OFFER_LINE + ".")
+            if not any("Dernière offre connue" in line for line in lines):
+                lines.append("<b>Dernière offre connue :</b> Non renseigné")
+            if not any("Prix bas constaté" in line for line in lines):
                 lines.append("<b>Prix bas constaté :</b> Non renseigné")
             return "\n".join(lines)
 
@@ -831,7 +769,7 @@ class MarketPriceService:
         provider = (cache.best_provider_name or "").replace("_", " ").title()
         provider_suffix = f" ({provider})" if provider else ""
         price = format_cents(_positive(cache.lowest_delivered_price_cents) or 0)
-        return f"<b>Prix du marché{tome_suffix} :</b> {price}{provider_suffix}"
+        return f"<b>Dernière offre connue{tome_suffix} :</b> {price}{provider_suffix}"
 
     @staticmethod
     def _lot_summary(
@@ -899,7 +837,9 @@ class MarketPriceService:
             series_total_cents = None
 
 
-        if not book and len(books_in_series) == 1 and not (tome_result and tome_result.is_lot):
+        if (not book and len(books_in_series) == 1
+                and not (tome_result and (
+                    tome_result.is_lot or tome_result.tome_number is not None))):
             book = books_in_series[0]
 
 
@@ -955,13 +895,23 @@ class MarketPriceService:
             if price_cents is None and is_current:
                 price_cents = fallback_price
 
-            if price_cents is None:
-                continue
-            entry = f"• {clean_tome_display_title(book.title)} : {format_cents(price_cents)}"
-            reason = _reference_reason(book)
-
-            if reason:
-                entry += f" ({reason})"
+            historical = reference_price(book.market_cache)[1]
+            price = (format_cents(price_cents) if price_cents is not None and historical
+                     else "Non renseigné")
+            title = html.escape(clean_tome_display_title(book.title))
+            number = extract_tome_number_from_title(book.title)
+            duplicates = sum(extract_tome_number_from_title(candidate.title) == number
+                             for candidate in books)
+            if duplicates > 1 and book.isbn13:
+                title += f" — {html.escape(book.isbn13)}"
+            entry = f"• {title} : {price}"
+            source = book.market_cache.source_history if book.market_cache else None
+            if historical and isinstance(source, dict):
+                collected = source.get("collected_at")
+                if isinstance(collected, str):
+                    entry += " — Dernière MAJ : " + _format_verification_at(
+                        datetime.fromisoformat(collected),
+                    )
             lines.append(f"• <b>{entry[2:]}</b>" if is_current else entry)
         return lines
 
@@ -1063,54 +1013,32 @@ class MarketPriceService:
             lines.append(
                 f"{CATEGORY_EMOJIS[CategorySlug.BD_COMICS]} <b>{html.escape(book.title)}</b>"
             )
+        if book is not None and book.isbn13:
+            lines.append(f"<b>ISBN :</b> {html.escape(book.isbn13)}")
         current_price = _positive(cache.lowest_delivered_price_cents)
 
-        if current_price:
-            label = (
-                "Dernière offre connue"
-
-                if cache.collection_status in {"failed", "skipped"}
-                or _current_collection_is_empty(cache)
-                or MarketPriceService._is_expired(cache)
-                else "Meilleure offre actuelle"
-            )
-            lines.append(f"<b>{label} :</b> {format_cents(current_price)}")
-            reason = _reference_reason(book) if book else None
-
-            if reason:
-                lines.append(f"⚠️ {reason.capitalize()} : comparaison indisponible.")
+        lines.append("<b>Dernière offre connue :</b> " + (
+            format_cents(current_price) if current_price else "Non renseigné"
+        ))
 
 
         if is_historical and reference_cents is not None:
             lines.append(
                 f"<b>Prix bas constaté :</b> {format_cents(reference_cents)}"
             )
+        else:
+            lines.append("<b>Prix bas constaté :</b> Non renseigné")
 
 
         if partners:
-
-            if is_historical:
-                lines.append(
-                    "\n<b>Dernières offres connues :</b>"
-
-                    if cache.collection_status in {"failed", "skipped"}
-                    or MarketPriceService._is_expired(cache)
-                    else "\n<b>Comparatif par boutique :</b>"
-                )
-            else:
-                lines.append("<b>Dernières offres connues :</b>"
-
-                             if cache.collection_status in {"failed", "skipped"}
-                             or MarketPriceService._is_expired(cache)
-                             else "<b>Comparatif par boutique :</b>")
+            lines.append("\n<b>Dernières offres connues :</b>")
             for merchant, data in sorted(
                 partners.items(), key=lambda item: _positive(item[1].get("total_cents")) or 0
-            )[:MAX_PARTNERS_SHOWN]:
+            ):
                 total_cents = _positive(data.get("total_cents")) or 0
                 condition = normalize_secondhand_condition(data.get("condition"))
-                lines.append(f"• {merchant} : {format_cents(total_cents)} ({condition})")
-        elif not is_historical and cache.collection_status != "skipped":
-            lines.append("(Aucune offre d'occasion comparable en stock chez nos partenaires.)")
+                label = html.escape(merchant)
+                lines.append(f"• {label} : {format_cents(total_cents)} — {html.escape(condition)}")
 
 
         if len(books_in_series) > 1:
@@ -1161,37 +1089,32 @@ class MarketPriceService:
         date de succès exploitable dit « inconnue » : la date du dernier changement
         de prix ou d'une tentative échouée ne la remplace pas.
         """
+        _ = next_check_at
         if book is None:
             return ""
-        loaded = _loaded_market_cache(book)
-        if loaded is None:
-            if "market_cache" not in book.__dict__:
-                return ""
-            last = "jamais"
+        cache = _loaded_market_cache(book)
+        lines: list[str] = []
+        current = cache.last_successful_collection_at if cache is not None else None
+        history = None
+        if cache is not None and isinstance(cache.source_history, dict):
+            collected = cache.source_history.get("collected_at")
+            if isinstance(collected, str):
+                history = datetime.fromisoformat(collected)
+        if current is not None and history is not None and current == history:
+            lines.append(f"Dernière MAJ : {_format_verification_at(current)}")
         else:
-            last = MarketPriceService._last_verification(loaded)
-
-        lines = [f"Dernière vérif. : {last}"]
-        if next_check_at is not None:
-            lines.append(f"Prochaine : {_format_verification_at(next_check_at)}")
+            values = []
+            if current is not None:
+                values.append(f"offres {_format_verification_at(current)}")
+            if history is not None:
+                values.append(f"historique {_format_verification_at(history)}")
+            lines.append("Dernière MAJ : " + (" ; ".join(values) or "Non renseignée"))
+        scheduled = cache.next_refresh_at if cache is not None else None
+        if scheduled is not None and _aware_checked_at(scheduled) > datetime.now(UTC):
+            lines.append(f"Prochaine MAJ : {_format_verification_at(scheduled)}")
+        else:
+            lines.append("Prochaine MAJ : en attente de programmation")
         return "\n".join(lines)
-
-    @staticmethod
-    def _last_verification(cache: BookMarketCache) -> str:
-        """Date de la dernière collecte réussie, ou son absence qualifiée."""
-        if cache.last_successful_collection_at is not None:
-            return _format_verification_at(cache.last_successful_collection_at)
-        has_legacy_evidence = any(
-            (
-                cache.checked_at is not None,
-                _positive(cache.lowest_delivered_price_cents) is not None,
-                _positive(cache.historical_low_1y_cents) is not None,
-                _positive(cache.annual_low_cents) is not None,
-                bool(cache.current_offers),
-                cache.collection_status in {"complete", "empty", "partial"},
-            )
-        )
-        return "inconnue" if has_legacy_evidence else "jamais"
 
     @staticmethod
     def _best_offer_url(cache: BookMarketCache, partners: dict[str, Any]) -> str | None:
@@ -1207,6 +1130,10 @@ class MarketPriceService:
 
         if cache.best_source_url:
             candidates.append(str(cache.best_source_url))
+        if isinstance(cache.source_history, dict):
+            url = cache.source_history.get("source_url")
+            if isinstance(url, str):
+                candidates.append(url)
 
         for url in candidates:
             is_safe, _ = is_safe_external_url(url)
@@ -1237,7 +1164,7 @@ class MarketPriceService:
         cache = _loaded_market_cache(book) if book else None
 
         if cache and cache.collection_status in ("failed", "empty", "skipped"):
-            absence = ""
+            absence = cote_absence_line(book) or "Prix temporairement indisponibles."
         else:
             absence = cote_absence_line(book) or PENDING_COTE_LINE
 
@@ -1249,4 +1176,6 @@ class MarketPriceService:
             if book
             else ""
         )
-        return f"📊 <b>Prix du marché</b>\n\n{title}{absence}"
+        return (f"📊 <b>Prix du marché</b>\n\n{title}{absence}\n"
+                "<b>Dernière offre connue :</b> Non renseigné\n"
+                "<b>Prix bas constaté :</b> Non renseigné")

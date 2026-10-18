@@ -3,7 +3,6 @@
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from math import ceil
 from typing import Any
 
 from sqlalchemy import func, select
@@ -15,6 +14,7 @@ from app.core.constants import AlertStatus
 from app.core.exceptions import EntityNotFoundError
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
+from app.db.models.book import Book
 from app.db.models.category import Category
 from app.db.models.listing_match import ListingMatch
 from app.domain.entities.alert_preparation import preparation_request
@@ -210,18 +210,15 @@ class AlertRepository:
             Category.slug == "bd_comics", Alert.deleted_at.is_(None),
             Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
             Alert.preparation["state"].as_string().is_(None),
-            (Alert.isbn.is_(None) | ~select(AlertBook.book_id).where(
-                AlertBook.alert_id == Alert.id,
+            (Alert.isbn.is_(None) | ~select(AlertBook.book_id).join(Book).where(
+                AlertBook.alert_id == Alert.id, Book.isbn13 == Alert.isbn,
             ).exists()),
             (Alert.catalogue_refresh_attempted_at.is_(None)
              | (Alert.catalogue_refresh_attempted_at <= datetime.now(UTC)-timedelta(hours=24))),
         ).order_by(Alert.catalogue_refresh_attempted_at.asc().nulls_first(),
                    Alert.created_at, Alert.id)
-        if incremental:
-            population = await self.session.scalar(
-                select(func.count()).select_from(stmt.subquery())
-            )
-            stmt = stmt.limit(max(4, ceil((population or 0) / 48)))
+        _ = incremental
+        stmt = stmt.limit(4)
         return list((await self.session.scalars(stmt)).all())
 
     async def pending_preparation_ids(self, excluded: set[uuid.UUID]) -> list[uuid.UUID]:

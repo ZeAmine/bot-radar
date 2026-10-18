@@ -34,7 +34,8 @@ résultats tardifs. Il précise les amendements F06 à ADR-044.
 
 Toute écriture passe par [book_market_pricing](../../app/services/book_market_pricing.py) :
 `price_book_now` pour un écran qui attend, `schedule_book_pricing` pour le fond.
-Création, édition, panneau et scheduler partagent ce chemin et le travail par livre.
+Création, édition et scheduler partagent ce chemin et le travail par livre.
+Le panneau et les notifications lisent les données persistées sans collecte.
 Aucun réseau sous verrou d'alerte ; relire liaisons et caches après acquisition du
 verrou avant de persister un total. Une tentative et un relevé sont des faits distincts.
 
@@ -51,14 +52,15 @@ le veto demeure ; ne pas abaisser le seuil pour compenser.
 
 ## Références et lots
 
-[market_price_service](../../app/services/market_price_service.py) choisit une
-projection annuelle documentée admissible, sinon une offre courante valide.
-La projection annuelle porte dates de calcul, expiration, première/dernière observation,
-date et snapshot du minimum, fournisseur et nombre d'observations. La lecture
-revalide la fenêtre de 365 jours ; un ancien `historical_low_1y_cents` nu ne suffit pas.
-Les [tests annuels](../../tests/integration/test_stale_certified_lows.py) et
-[tests de lot](../../tests/unit/test_lot_reference_validity.py) bornent les preuves.
-Le libellé « prix bas constaté » décrit nos relevés, pas un historique exhaustif du marché.
+[market_price_service](../../app/services/market_price_service.py) choisit le minimum
+historique Chasse aux livres prouvé : « Très bon état + », 365 jours, livraison
+incluse. La valeur numérique du graphique, sa date, sa provenance et les paramètres
+sont conservés dans `source_history`. Une projection annuelle locale et un ancien
+`historical_low_1y_cents` sans provenance ne remplacent jamais ce minimum.
+Sans ce minimum, une offre courante admissible peut servir de référence, avec son
+propre libellé ; le champ du prix bas reste non renseigné. Les observations locales
+restent disponibles pour l'audit interne. Les frais article, livraison et total sont
+conservés séparément quand la source les fournit.
 
 `lot_reference()` est commun au résumé et au panneau : composition identifiée,
 couverture complète des tomes demandés, une seule édition applicable par tome et
@@ -71,25 +73,26 @@ contient exactement ce nombre de tomes identifiables, sans éditions doubles.
 La présentation dit « composition déduite ». Une intégrale cataloguée en un ouvrage
 n'est pas automatiquement un lot à composer.
 
-Le **total de série** persistant peut être partiel, avec couverture annoncée ; il
-n'est jamais le prix du lot vendu. Une mutation réelle des liaisons invalide ce
-total transactionnellement ; l'ajout idempotent ne le fait pas. La lecture masque
-un total incompatible sans calculer une somme de remplacement. Les livres/caches
-partagés restent conservés. Le panneau affiche aussi l'état des tomes sans prix.
+Le **total de série** affiché exige une couverture complète, une seule édition par
+tome et des tomes identifiés. Les agrégats partiels persistés ne sont pas présentés
+comme le prix de la série complète. Tous les livres liés restent visibles, y compris
+les tomes sans prix et les éditions alternatives identifiées par ISBN. Une annonce
+mentionnant un tome absent ne se rabat pas sur le seul autre tome disponible.
+Une mutation réelle des liaisons invalide les totaux transactionnellement ; les
+livres, caches et observations partagés restent conservés.
 
 ## Absences et preuves
 
-À l'envoi, une ligne non chiffrée décrit l'état réel : sans relevé, échec de collecte,
-aucune offre datée, composition inconnue ou catalogue épuisé. Un message envoyé
-reste un instantané.
-Le panneau partagé relit le cache et conserve le tome sélectionné. Il ne relance
-pas de collecte lorsqu'une cote exploitable ou une collecte réussie sans offre
-existe ; sans première cote, il déclenche la cotation initiale par le mécanisme
-existant, avec la garde de collecte en vol et le repos des échecs. Une résolution
-catalogue manquante peut être demandée une fois par période de 24 h ; la première
-cotation du tome retrouvé est ensuite demandée, sans repli sur un autre tome. Le
-message ouvert n'est pas actualisé automatiquement et le panneau est invalidé après
-fermeture (ADR-042).
+À l'envoi, une ligne chiffrée ou une indication courte décrit l'état disponible.
+Les erreurs, tentatives et diagnostics détaillés restent internes. La comparaison
+explicite sa base livrée et l'estimation Vinted incluant livraison et protection.
+Le message envoyé reste un instantané.
+Le panneau partagé relit uniquement le cache et conserve le tome sélectionné.
+Ni consultation, ni réception d'annonce, ni clic ne déclenche de collecte.
+Le panneau est invalidé après fermeture ; il n'est pas réécrit automatiquement.
+La création conserve son message temporaire et attend la préparation des prix dans
+une enveloppe bornée de vingt secondes, puis affiche les valeurs obtenues. Les
+marchands sont persistés dès cette collecte sans détailler la carte de création.
 
 Contrôles existants : [offres](../../tests/unit/test_market_offer_rules.py),
 [comparateur](../../tests/unit/test_market_comparator.py),
@@ -99,32 +102,34 @@ Contrôles existants : [offres](../../tests/unit/test_market_offer_rules.py),
 SQLite ne prouve pas les verrous PostgreSQL. Aucune lecture documentaire ne prouve
 une collecte réelle ; les procédures de session et leurs permissions restent distinctes.
 
-## Minimum unique et fraîcheur — ADR-050
+## Minimum source et fraîcheur indépendante
 
-Le panneau affiche un seul « Prix bas constaté », sans date ni période de relevés.
-La fenêtre de calcul de 365 jours ne prouve pas une année complète de couverture du
-marché. Les données des anciens agrégats restent conservées en interne, sans ligne
-« Ancien minimum (informatif) » ni compteur de relevés affiché. Un point historique
-fournisseur exige montant livré, date et provenance ; il est persisté séparément
-des offres disponibles et intégré aux observations admissibles des 365 derniers jours.
-Une collecte récente ne devient jamais la date d'un prix historique. Les totaux de
-série utilisent la même projection centrale et les règles d'occasion/état/marchand.
+Le panneau affiche « Dernière offre connue », « Prix bas constaté » et « Dernières
+offres connues ». La ligne du prix bas ne porte ni parenthèse technique, ni compteur
+de relevés. Les marchands, états et liens sont associés au livre sélectionné.
 
-La tentative, la réussite des offres et la récupération des preuves historiques
-ont des dates distinctes. Le pied du panneau porte la date de la **dernière
-vérification réussie** du livre et du tome affichés : elle avance après une collecte
-réussie même si le prix ne change pas, et reste inchangée après un échec. Une
-vérification qui n'a jamais réussi s'affiche « jamais » ; un cache historique sans
-date de succès exploitable s'affiche « inconnue ». La date d'un changement de prix
-ou d'une tentative échouée ne la remplace jamais. La ligne « Prochaine » n'apparaît
-que si le planificateur confirme qu'une passe complète prend ce livre en charge.
+Les offres courantes et l'historique ont des dates de réussite distinctes. Une
+réussite partielle ne rafraîchit pas la composante en échec. Une réponse vide valide
+peut dater la vérification sans effacer le dernier prix connu ; la date de ce prix
+reste sa collecte réelle. « Dernière MAJ » distingue offres et historique si leurs
+dates diffèrent. Ni tentative, ni date de changement du prix ne remplace une collecte
+réussie. Aucun ancien cache ne reçoit une date inventée.
 
-Un minimum ancien dans sa fenêtre reste valide même si aucun nouveau relevé ne l'égale.
-Une collecte vide réussie vaut résultat ; une panne sans résultat exploitable
-conserve les dernières offres connues sans renouveler leur fraîcheur. Le panneau ne
-présente pas cette conservation comme une actualisation ni comme une panne : l'échec
-technique reste dans les logs. Le renouvellement Chasse valide/injecte un jeton et
-ne collecte pas toutes les alertes.
+Chaque composante devient éligible sept jours après sa réussite. Le scheduler
+existant réserve des créneaux persistés `next_refresh_at` aux passages de :15 et
+:45, huit livres au plus, concurrence deux. Les reprises catalogue sont bornées à
+quatre alertes par passe. Les réservations en retard excédant le lot courant sont
+reportées dans de futurs créneaux. « Prochaine MAJ » lit cette réservation, sinon
+annonce l'attente de programmation, sans date décorative. Après échec, les reprises
+sont espacées de six heures, un jour puis sept jours ; elles conservent les valeurs
+et dates de réussite. Les appels simultanés d'un même livre sont mutualisés dans
+l'unique processus ; deux passes de prix ne s'exécutent pas simultanément.
+
+La migration 0015 ajoute les champs de provenance et programmation sans créer de
+réussite historique. La [reprise progressive](../operations/chasse-weekly-prices.md)
+nécessite un inventaire puis une autorisation explicite avant écriture réelle.
+La [procédure d’accès](../operations/chasse-access.md) décrit l'authentification,
+les priorités de configuration et la maintenance intégrée sans cron supplémentaire.
 
 ## Diagnostic et bilans de rafraîchissement
 
@@ -134,8 +139,8 @@ restent des diagnostics ; elles ne sont plus envoyées séparément dans ce flux
 Les compteurs distinguent traitement, offre actualisée, absence normale d'offre,
 dégradation fournisseur, exception, caches réutilisés, tentatives non effectuées et livres non parcourus.
 Un incident historique ne transforme pas une collecte courante réussie en panne.
-La carte indique des données partiellement actualisées sans attribuer une panne
-globale à un fournisseur dont la collecte courante a répondu.
+Le diagnostic distingue les composantes partiellement actualisées sans attribuer
+une panne globale à un fournisseur dont la collecte courante a répondu.
 
 Quand toutes les sources sont ignorées, le cache porte `skipped` : aucune
 collecte courante ni absence d’offre n’est attestée. Les prix, offres et dates

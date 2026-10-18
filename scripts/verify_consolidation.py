@@ -636,6 +636,7 @@ def suite(
         populated = asyncio.run(recipe.seed_market_freshness_migration())
         command.upgrade(config, "0014_alert_market_freshness")
         asyncio.run(recipe.verify_market_freshness_migration(populated))
+        command.upgrade(config, "head")
     if mode == "typecheck":
         from mypy import api
 
@@ -648,6 +649,10 @@ def suite(
                 "scripts/exercise_backup_recovery.py",
                 "scripts/verify_pause_postgresql.py",
                 "scripts/verify_consolidation.py",
+                "scripts/chasse_pilot.py",
+                "scripts/chasse_release_backup.py",
+                "scripts/exercise_chasse_release.py",
+                "scripts/deploy.py",
             ],
         ):
             out, err, code = api.run(["--no-incremental", "--explicit-package-bases", *targets])
@@ -809,7 +814,8 @@ def main() -> int:
     return postgres_parent(args.target)
 
 
-def postgres_parent(targets: list[str] | None = None) -> int:
+def postgres_parent(targets: list[str] | None = None, *, chasse_backup: bool = False,
+                    recovery_plan: Path | None = None) -> int:
     import shutil
     import time
     import uuid
@@ -818,6 +824,11 @@ def postgres_parent(targets: list[str] | None = None) -> int:
     from scripts.backup_recovery import command
     from scripts.exercise_backup_recovery import DOCKER_SOCKET, IMAGE
 
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", PORT))
+        except OSError as exc:
+            raise RuntimeError(f"Port 127.0.0.1:{PORT} occupé ; aucun service arrêté") from exc
     docker = shutil.which("docker")
     if docker is None:
         raise RuntimeError("Docker absent")
@@ -889,20 +900,33 @@ def postgres_parent(targets: list[str] | None = None) -> int:
                 json.dumps({"id": cid, "system_id": identity, "port": PORT}),
                 flush=True,
             )
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-B",
-                    str(Path(__file__).resolve()),
-                    "postgres",
-                    "--child",
-                    "--identity",
-                    identity,
-                    *[arg for target in (targets or []) for arg in ("--target", target)],
-                ],
-                env={},
-                start_new_session=True,
-            )
+            if chasse_backup or recovery_plan is not None:
+                attestation = Path(directory) / "chasse-backup-resource.json"
+                import shutil
+
+                gpg_tool, gpgconf = shutil.which("gpg"), shutil.which("gpgconf")
+                if gpg_tool is None or gpgconf is None:
+                    raise RuntimeError("GnuPG absent")
+                attestation.write_text(json.dumps({
+                    "container": cid, "system_id": identity, "exercise": nonce,
+                    "docker": docker, "docker_socket": DOCKER_SOCKET,
+                    "docker_config": str(config), "workspace": directory,
+                    "gpg": gpg_tool, "gpgconf": gpgconf, "image": IMAGE,
+                }))
+                if recovery_plan is None:
+                    child_argv = [sys.executable, "-B",
+                                  str(ROOT / "scripts/exercise_chasse_release.py"),
+                                  "--child", str(attestation)]
+                else:
+                    child_argv = [sys.executable, "-B",
+                                  str(ROOT / "scripts/chasse_release_backup.py"),
+                                  "restore-attested", "--config", str(recovery_plan),
+                                  "--resource", str(attestation)]
+            else:
+                child_argv = [sys.executable, "-B", str(Path(__file__).resolve()), "postgres",
+                              "--child", "--identity", identity,
+                              *[arg for target in (targets or []) for arg in ("--target", target)]]
+            process = subprocess.Popen(child_argv, env={}, start_new_session=True)
             try:
                 return process.wait(timeout=240)
             except (subprocess.TimeoutExpired, KeyboardInterrupt):

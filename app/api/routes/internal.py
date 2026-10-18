@@ -6,11 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db, require_internal_token
-from app.core.config import settings
 from app.core.redis import get_redis_client
 from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.providers.chasse_aux_livres import REDIS_SESSION_KEY, resolve_session_token
+from app.providers.chasse_session import chasse_session
 from app.services.vinted_scraper import vinted_session_manager
 
 router = APIRouter(
@@ -106,12 +106,7 @@ async def get_chasse_session_status() -> dict[str, Any]:
     session absente enverrait chercher une clé qui n'existe pas.
     """
     token = await resolve_session_token()
-    if settings.CHASSE_AUX_LIVRES_DUIH:
-        source: str | None = "env"
-    elif token:
-        source = "redis"
-    else:
-        source = None
+    source = await chasse_session.source()
     return {
         "has_token": bool(token),
         "token_length": len(token),
@@ -133,6 +128,7 @@ async def update_chasse_session(payload: dict[str, str]) -> dict[str, Any]:
             detail="Le jeton ne peut pas être vide.",
         )
     await get_redis_client().set(REDIS_SESSION_KEY, token)
+    await chasse_session.install(token)
     return {"status": "success", "token_length": len(token)}
 
 

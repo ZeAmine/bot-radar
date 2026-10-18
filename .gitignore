@@ -55,3 +55,13 @@ scratch/
 
 # Artefacts de l'IDE Freebuff (identifiant de projet local)
 .freebuff/
+
+.private/
+*.dump
+*.gpg
+pilot-manifest.json
+chasse-backup-config.json
+chasse-session*.json
+RESTORE_CHECK.json
+restore-plan.json
+chasse-pilot/

@@ -72,7 +72,11 @@ async def test_a_recent_failed_collection_waits_before_the_next_incremental_pass
         )
         await session.commit()
 
-        selected = await BookRepository(session).get_books_needing_price_refresh(limit=8)
+        repo = BookRepository(session)
+        await repo.plan_price_refreshes(now=now)
+        selected = await repo.get_books_needing_price_refresh(
+            limit=8, now=now+timedelta(minutes=31),
+        )
 
     ids = {book.id for book in selected}
     assert resting.id not in ids
@@ -116,7 +120,11 @@ async def test_paused_books_are_refreshed_but_deleted_books_are_not():
         await session.commit()
         repo = BookRepository(session)
         assert {b.id for b in await repo.get_books_for_active_bd_alerts()} == {paused.id}
-        assert {b.id for b in await repo.get_books_needing_price_refresh()} == {paused.id}
+        now = datetime.now(UTC)
+        await repo.plan_price_refreshes(now=now)
+        assert {b.id for b in await repo.get_books_needing_price_refresh(
+            now=now+timedelta(minutes=31),
+        )} == {paused.id}
         assert deleted.id != paused.id
 
 
@@ -134,7 +142,11 @@ async def test_failed_retry_does_not_starve_an_older_unattempted_book():
                             expires_at=now-timedelta(days=2)),
         ])
         await session.commit()
-        selected = await BookRepository(session).get_books_needing_price_refresh(limit=1)
+        repo = BookRepository(session)
+        await repo.plan_price_refreshes(now=now, capacity=1)
+        selected = await repo.get_books_needing_price_refresh(
+            limit=1, now=now+timedelta(minutes=31),
+        )
         assert [book.id for book in selected] == [waiting.id]
 
 
@@ -161,14 +173,20 @@ async def test_larger_population_has_capacity_and_no_retry_starvation():
             ids.add((await _linked_book(session, user, category, title=f"Livre {n}")).id)
         await session.commit()
         seen = set()
-        for _ in range(12):
-            books = await BookRepository(session).get_books_needing_price_refresh(limit=8)
-            assert len(books) == 10
+        repo = BookRepository(session)
+        now = datetime.now(UTC)
+        await repo.plan_price_refreshes(now=now)
+        for batch in range(15):
+            books = await repo.get_books_needing_price_refresh(
+                limit=8, now=now+timedelta(minutes=31+30*batch),
+            )
+            assert len(books) == 8
             for book in books:
                 assert book.id not in seen
                 seen.add(book.id)
-                session.add(BookMarketCache(book_id=book.id, collection_status="failed",
-                                            last_attempt_at=datetime.now(UTC)))
+                book.market_cache.collection_status = "failed"
+                book.market_cache.last_attempt_at = now
+                book.market_cache.next_refresh_at = now+timedelta(days=7)
             await session.commit()
         assert seen == ids
 
@@ -202,7 +220,13 @@ async def test_internal_collection_error_keeps_attempt_and_allows_other_books(mo
         await _linked_book(session, user, category, title="Premier")
         await _linked_book(session, user, category, title="Second")
         await session.commit()
-        first = (await BookRepository(session).get_books_needing_price_refresh(limit=1))[0]
+        repo = BookRepository(session)
+        now = datetime.now(UTC)
+        await repo.plan_price_refreshes(now=now)
+        await session.commit()
+        first = (await repo.get_books_needing_price_refresh(
+            limit=1, now=now+timedelta(minutes=31),
+        ))[0]
         monkeypatch.setattr(pricing, "AsyncSessionLocal", database.maker)
         registry = MagicMock()
         registry.fetch_all_offers = AsyncMock(side_effect=RuntimeError("collecte interrompue"))
@@ -214,6 +238,29 @@ async def test_internal_collection_error_keeps_attempt_and_allows_other_books(mo
             assert cache.collection_status == "failed"
             assert cache.last_successful_collection_at is None
             assert cache.checked_at is None
-            following = await BookRepository(verification).get_books_needing_price_refresh(limit=1)
+            following = await BookRepository(verification).get_books_needing_price_refresh(
+                limit=1, now=now+timedelta(minutes=31),
+            )
             assert len(following) == 1
             assert following[0].id != first.id
+
+
+async def test_overdue_queue_keeps_one_batch_and_reserves_future_slots():
+    now = datetime.now(UTC)
+    async with sqlite_only_database() as database:
+        session = database.session
+        user, category = await _catalogue(session)
+        books = [await _linked_book(session, user, category, title=f"Attente {i}")
+                 for i in range(19)]
+        for book in books:
+            session.add(BookMarketCache(book_id=book.id,
+                        next_refresh_at=now-timedelta(hours=2)))
+        await session.commit()
+        repo = BookRepository(session)
+        await repo.plan_price_refreshes(now=now)
+        selected = await repo.get_books_needing_price_refresh(now=now)
+        assert len(selected) == 8
+        slots = [book.market_cache.next_refresh_at for book in books
+                 if book not in selected]
+        assert all(slot.replace(tzinfo=UTC) > now for slot in slots)
+        assert max(slots.count(slot) for slot in slots) <= 8
