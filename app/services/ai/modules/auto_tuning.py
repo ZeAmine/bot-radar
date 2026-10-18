@@ -43,10 +43,10 @@ class AutoTuningModule(BaseAIModule):
 
     async def suggest_exclusions(
         self, alert_name: str, false_positive_titles: list[str]
-    ) -> tuple[list[str], str | None]:
+    ) -> tuple[list[str], str | None] | None:
         """Propose des mots-clés d'exclusion basés sur les annonces indésirables."""
         if not self.is_enabled or not self.client.is_configured or not false_positive_titles:
-            return [], None
+            return None
 
         user_prompt = (
             f"Alerte de l'utilisateur : '{alert_name}'\n"
@@ -60,11 +60,19 @@ class AutoTuningModule(BaseAIModule):
             temperature=0.2,
         )
         if not isinstance(data, dict):
-            return [], None
+            return None
         try:
             payload = AutoTuningPayload.model_validate(data)
         except ValidationError:
-            return [], None
+            logger.warning(
+                "Réponse du moteur invalide pour les exclusions.",
+                extra={
+                    "event": "ai_validation",
+                    "ai_module": self.name,
+                    "error_category": "business_validation",
+                },
+            )
+            return None
         if not payload.suggested_exclusions:
             return [], None
 
@@ -92,28 +100,16 @@ async def build_exclusion_proposal(
     disliked_titles: list[str],
     min_dislikes: int = MIN_DISLIKES_FOR_PROPOSAL,
 ) -> ExclusionProposal | None:
-    """Construit la proposition d'exclusions, ou ``None`` s'il n'y a rien à dire.
-
-    La règle est écrite une seule fois pour le scan planifié et pour l'analyse
-    déclenchée par l'utilisateur : assez de faux positifs, un appel au moteur,
-    puis le retrait de ce que l'alerte exclut déjà. ``None`` couvre les deux issues
-    « pas assez de faux positifs » et « rien de neuf » : dans les deux cas il n'y a
-    rien à proposer, et l'appelant décide seulement du message à afficher.
-
-    Un seuil différent entre les deux appelants est un choix explicite, porté par
-    ``min_dislikes``, et non une divergence accidentelle entre deux copies.
-    """
+    """Construit les exclusions nouvelles ; ``None`` indique un seuil ou un échec."""
     if len(disliked_titles) < min_dislikes:
         return None
 
-    exclusions, explanation = await auto_tuning_module.suggest_exclusions(
-        alert_name, disliked_titles
-    )
+    suggestion = await auto_tuning_module.suggest_exclusions(alert_name, disliked_titles)
+    if suggestion is None:
+        return None
+    exclusions, explanation = suggestion
     existing = {item.lower() for item in already_excluded}
     fresh = [item for item in exclusions if item.lower() not in existing]
-    if not fresh:
-        return None
-
     return ExclusionProposal(exclusions=fresh, explanation=explanation)
 
 

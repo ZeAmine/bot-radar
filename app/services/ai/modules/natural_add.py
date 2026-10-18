@@ -289,8 +289,21 @@ class NaturalAddModule(BaseAIModule):
                     book_context_from(book, is_series=is_series) if book else None
                 ),
             )
-        except (ValidationError, Exception) as exc:
-            logger.warning("Erreur lors de la construction de NaturalAddResult: %s", exc)
+        except ValidationError:
+            logger.warning(
+                "Réponse du moteur invalide pour la création d’alerte.",
+                extra={
+                    "event": "ai_validation",
+                    "ai_module": self.name,
+                    "error_category": "business_validation",
+                },
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Erreur lors de la construction de NaturalAddResult (%s).",
+                type(exc).__name__,
+            )
             return None
 
     async def _resolve_isbn(

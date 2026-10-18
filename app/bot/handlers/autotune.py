@@ -292,10 +292,18 @@ async def process_autotune_for_alert(
         titles_bullet = "\n".join(f"• <i>{escape_html(t)}</i>" for t in disliked_titles[:5])
 
         if proposal is None:
-            # Faux positifs résolus (déjà couverts) purgés de la liste.
-            await clear_dislikes_for_alert(alert.id, db_session)
-            await db_session.commit()
+            res_text = (
+                f"{_autotune_header(alert.name)}\n\n"
+                "L'analyse n'a pas abouti. Réessaie dans un instant."
+            )
+            if isinstance(target, CallbackQuery):
+                if target.message and hasattr(target.message, "edit_text"):
+                    await target.message.edit_text(res_text, reply_markup=back_kb)
+            else:
+                await target.answer(res_text, reply_markup=back_kb)
+            return
 
+        if not proposal.exclusions:
             active_excl_str = (
                 escape_html(", ".join(alert.exclude_keywords))
                 if alert.exclude_keywords
@@ -306,8 +314,8 @@ async def process_autotune_for_alert(
                 f"{FIELD_FALSE_POSITIVES} ({len(disliked_titles)}) :\n"
                 f"{titles_bullet}\n\n"
                 f"{FIELD_EXCLUDE_KEYWORDS} : <code>{active_excl_str}</code>\n\n"
-                "Toutes les exclusions pertinentes sont déjà actives sur l'alerte.\n"
-                "Les faux positifs traités ont été retirés de la liste."
+                "L'analyse ne propose aucune nouvelle exclusion.\n"
+                "Les faux positifs restent enregistrés."
             )
             if isinstance(target, CallbackQuery):
                 if target.message and hasattr(target.message, "edit_text"):

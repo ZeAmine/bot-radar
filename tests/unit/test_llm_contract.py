@@ -9,7 +9,9 @@ n'enverrait pas les images serait refusé ici, pas en production.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -17,6 +19,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.core.config import settings
+from app.core.logging import JSONFormatter
 from app.providers.llm import base as llm_base
 from app.providers.llm.base import (
     STATUS_ACTIVE,
@@ -63,20 +66,23 @@ class FakeNetwork:
         return httpx.Response(200, json=self.answer(self.adapter_name))
 
     def get_client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=httpx.MockTransport(self.handler))
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: self.handler(request))
+        )
 
     adapter_name: str = "openai-compatible"
 
 
 @pytest.fixture
-def network(monkeypatch: pytest.MonkeyPatch) -> FakeNetwork:
+async def network(monkeypatch: pytest.MonkeyPatch):
     """Remplace le client HTTP partagé par un transport simulé, quel que soit l'appelant."""
     fake = FakeNetwork()
     # Les adaptateurs lient la fonction à l'import : c'est là qu'il faut substituer.
-    monkeypatch.setattr(llm_base, "get_shared_http_client", fake.get_client)
     monkeypatch.setattr(settings, "AI_ENABLED", True)
     monkeypatch.setattr(settings, "AI_API_KEY", SecretStr("test-key"))
-    return fake
+    async with fake.get_client() as shared:
+        monkeypatch.setattr(llm_base, "get_shared_http_client", lambda: shared)
+        yield fake
 
 
 def make_client(
@@ -291,3 +297,163 @@ def test_clean_and_parse_json_rejects_non_objects() -> None:
     assert clean_and_parse_json("pas du json") is None
     assert clean_and_parse_json("") is None
     assert clean_and_parse_json('{"a": 1}') == {"a": 1}
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize("content", [
+    "not JSON synthetic-private-marker",
+    '["synthetic-private-marker"]',
+])
+async def test_invalid_generated_json_never_logs_content(name, content, network, caplog):
+    network.text = content
+    client = make_client(network, name)
+    assert await client.generate_json("s", "u") is None
+    assert len(network.captured) == 1
+    assert "synthetic-private-marker" not in caplog.text
+    assert "synthetic-private-marker" not in "".join(
+        JSONFormatter().format(record) for record in caplog.records
+    )
+    assert any(getattr(record, "event", None) == "llm_json" for record in caplog.records)
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize(("error", "outcome"), [
+    (httpx.ReadTimeout, "timeout"),
+    (httpx.ConnectError, "transport_error"),
+    (RuntimeError, "unexpected_error"),
+])
+async def test_transport_failures_are_classified_without_retry(
+    name, error, outcome, network, caplog,
+):
+    client = make_client(network, name)
+    client.timeout = 12.0
+
+    def respond(request):
+        network.captured.append(request)
+        raise error("synthetic-private-marker")
+
+    network.handler = respond
+    with caplog.at_level(logging.INFO):
+        assert await client.complete(system_prompt="s", user_prompt="u", timeout=0.75) is None
+    assert len(network.captured) == 1
+    assert network.captured[0].extensions["timeout"] == {
+        "connect": 0.75, "read": 0.75, "write": 0.75, "pool": 0.75,
+    }
+    records = [r for r in caplog.records if getattr(r, "event", None) == "llm_request"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.outcome == outcome
+    assert record.error_type == error.__name__
+    assert record.timeout_seconds == 0.75
+    assert record.duration_ms >= 0
+    assert "synthetic-private-marker" not in JSONFormatter().format(record)
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
+async def test_http_status_has_one_attempt_and_safe_diagnostics(name, status, network, caplog):
+    network.status_code = status
+    client = make_client(network, name)
+    assert await client.generate_json("s", "u") is None
+    assert len(network.captured) == 1
+    records = [r for r in caplog.records if getattr(r, "event", None) == "llm_request"]
+    assert len(records) == 1
+    assert records[0].outcome == "http_error"
+    assert records[0].http_status == status
+    assert records[0].duration_ms >= 0
+
+
+@pytest.mark.parametrize("reason", [
+    "length", "content_filter", "insufficient_system_resource", "aborted",
+])
+async def test_openai_compatible_rejects_interrupted_generation(reason, network, caplog):
+    client = make_client(network, "openai-compatible")
+
+    def respond(request):
+        network.captured.append(request)
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": reason,
+            "message": {"content": '{"prix":12}'},
+        }]})
+
+    network.handler = respond
+    assert await client.generate_json("s", "u") is None
+    assert len(network.captured) == 1
+    assert any(getattr(r, "outcome", None) == "interrupted" for r in caplog.records)
+
+
+@pytest.mark.parametrize("reason", [None, "stop"])
+async def test_openai_compatible_accepts_normal_or_legacy_generation(reason, network):
+    client = make_client(network, "openai-compatible")
+    choice = {"message": {"content": '{"prix":12}'}}
+    if reason is not None:
+        choice["finish_reason"] = reason
+
+    def respond(request):
+        network.captured.append(request)
+        return httpx.Response(200, json={"choices": [choice]})
+
+    network.handler = respond
+    assert await client.generate_json("s", "u") == {"prix": 12}
+    assert len(network.captured) == 1
+
+
+async def test_openai_compatible_request_preserves_current_settings(network, caplog):
+    client = make_client(network, "openai-compatible")
+    client.base_url = "https://example.invalid/v1"
+    client.timeout = 3.5
+    with caplog.at_level(logging.INFO):
+        assert await client.generate_json("JSON système", "utilisateur", 0.3) == {"prix": 12}
+    assert len(network.captured) == 1
+    request = network.captured[0]
+    assert str(request.url) == "https://example.invalid/v1/chat/completions"
+    assert request.headers["authorization"] == "Bearer test-key"
+    assert json.loads(request.content) == {
+        "model": "test-model",
+        "messages": [
+            {"role": "system", "content": "JSON système"},
+            {"role": "user", "content": "utilisateur"},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.3,
+        "thinking": {"type": "disabled"},
+    }
+    assert request.extensions["timeout"]["read"] == 3.5
+    records = [r for r in caplog.records if getattr(r, "event", None) == "llm_request"]
+    assert len(records) == 1
+    assert records[0].outcome == "text_received"
+    assert records[0].duration_ms >= 0
+    assert "test-key" not in "".join(JSONFormatter().format(r) for r in caplog.records)
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize("malformed", [False, True])
+async def test_wire_shape_and_empty_content_have_distinct_outcomes(
+    name, malformed, network, caplog,
+):
+    client = make_client(network, name)
+    network.text = "   "
+    if malformed:
+        def respond(request):
+            network.captured.append(request)
+            return httpx.Response(200, json={"choices": 42, "content": 42})
+        network.handler = respond
+    assert await client.complete(system_prompt="s", user_prompt="u") is None
+    assert len(network.captured) == 1
+    expected = "invalid_envelope" if malformed else "empty_content"
+    assert any(getattr(r, "outcome", None) == expected for r in caplog.records)
+
+
+@pytest.mark.parametrize("name", ADAPTER_NAMES)
+async def test_cancellation_is_propagated_without_retry(name, network, caplog):
+    client = make_client(network, name)
+
+    def respond(request):
+        network.captured.append(request)
+        raise asyncio.CancelledError
+
+    network.handler = respond
+    with pytest.raises(asyncio.CancelledError):
+        await client.complete(system_prompt="s", user_prompt="u")
+    assert len(network.captured) == 1
+    assert not any(getattr(r, "outcome", None) == "text_received" for r in caplog.records)

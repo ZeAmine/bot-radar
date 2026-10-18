@@ -66,6 +66,8 @@ async def test_pipeline_skips_llm_when_client_unconfigured(sample_listing):
     bot = MagicMock()
     bot.send_message = AsyncMock()
     sample_listing.photos = []
+    sample_listing.category_slug = "tech"
+    assert profit_scoring_module.build_prompt_chunk(sample_listing, None) is not None
 
     with (
         patch("app.services.ai.pipeline.asyncio.sleep", new_callable=AsyncMock),
@@ -965,8 +967,7 @@ _GOOD_PAYLOAD = {
 
 
 @pytest.mark.asyncio
-async def test_keyword_variants_retries_once_after_a_timeout():
-    """Un délai dépassé est un accident : un second essai évite l'alerte amputée."""
+async def test_keyword_variants_does_not_retry_an_unanswered_call():
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
     client = FlakyLLM(None, _GOOD_PAYLOAD)
@@ -976,15 +977,13 @@ async def test_keyword_variants_retries_once_after_a_timeout():
             "La couleur des choses", category_slug="bd_comics"
         )
 
-    assert client.calls == 2
-    assert outcome.answered is True
-    assert outcome.variants == ["couleurdeschoses"]
-    assert outcome.exclusions == ["keeping two"]
+    assert client.calls == 1
+    assert outcome.answered is False
+    assert outcome.is_empty is True
 
 
 @pytest.mark.asyncio
-async def test_keyword_variants_retries_after_an_unreadable_payload():
-    """Un JSON que la validation refuse est une panne, pas une réponse : on réessaie."""
+async def test_keyword_variants_does_not_retry_an_invalid_payload():
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
     # `variants` doit être une liste : la charge utile du premier appel est irrecevable.
@@ -995,18 +994,13 @@ async def test_keyword_variants_retries_after_an_unreadable_payload():
             "La couleur des choses", category_slug="bd_comics"
         )
 
-    assert client.calls == 2
-    assert outcome.answered is True
-    assert outcome.variants == ["couleurdeschoses"]
+    assert client.calls == 1
+    assert outcome.answered is False
+    assert outcome.is_empty is True
 
 
 @pytest.mark.asyncio
-async def test_keyword_variants_gives_up_after_two_failures():
-    """Deux échecs : le verdict est « personne n'a répondu », et les essais s'arrêtent.
-
-    La troisième réponse est valide : une relance non bornée la ramasserait au lieu
-    de conclure, et le doublement du coût resterait invisible pour l’utilisateur.
-    """
+async def test_keyword_variants_stops_after_one_failure():
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
     client = FlakyLLM(None, None, _GOOD_PAYLOAD)
@@ -1016,7 +1010,7 @@ async def test_keyword_variants_gives_up_after_two_failures():
             "La couleur des choses", category_slug="bd_comics"
         )
 
-    assert client.calls == 2, "la relance doit être bornée à un essai de plus"
+    assert client.calls == 1
     assert outcome.answered is False
     assert outcome.is_empty is True
 
@@ -1106,3 +1100,48 @@ async def test_natural_add_keeps_separate_product_identity_terms():
             listing_item_price_cents=3000,
         )
         assert match.is_match is expected
+
+
+@pytest.mark.asyncio
+async def test_keyword_variants_accepts_an_empty_json_object():
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    client = FlakyLLM({})
+    with patch.object(keyword_variants_module, "client", client):
+        outcome = await keyword_variants_module.generate_variants_and_exclusions("Tintin")
+
+    assert client.calls == 1
+    assert outcome.answered is True
+    assert outcome.is_empty is True
+
+
+@pytest.mark.asyncio
+async def test_keyword_variants_validation_does_not_log_provider_values(caplog):
+    from app.services.ai.modules.keyword_variants import keyword_variants_module
+
+    client = FlakyLLM({"variants": "synthetic-private-marker"})
+    with patch.object(keyword_variants_module, "client", client):
+        outcome = await keyword_variants_module.generate_variants_and_exclusions("Tintin")
+
+    assert outcome.answered is False
+    assert "synthetic-private-marker" not in caplog.text
+    assert any(
+        getattr(record, "error_category", None) == "business_validation"
+        and getattr(record, "ai_module", None) == "keyword_variants"
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_natural_add_validation_does_not_log_provider_values(caplog):
+    client = FakeLLM(text={"name": {"synthetic-private-marker": 1}})
+    with patch.object(natural_add_module, "client", client):
+        result = await natural_add_module.parse_prompt("Tintin")
+
+    assert result is None
+    assert "synthetic-private-marker" not in caplog.text
+    assert any(
+        getattr(record, "error_category", None) == "business_validation"
+        and getattr(record, "ai_module", None) == "natural_add"
+        for record in caplog.records
+    )

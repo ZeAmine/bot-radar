@@ -85,20 +85,24 @@ class AnthropicClient(BaseLLMClient):
 
     def extract_text(self, data: Any) -> str | None:
         """Isole la concaténation des blocs de texte de la réponse."""
-        if not isinstance(data, dict):
-            return None
-        blocks = data.get("content") or []
-        if not blocks:
-            logger.warning("Réponse LLM vide ou sans contenu.")
-            return None
-        parts = [
-            block["text"]
+        blocks = data.get("content") if isinstance(data, dict) else None
+        if not isinstance(blocks, list) or any(
+            not isinstance(block, dict)
+            or (block.get("type") == "text" and not isinstance(block.get("text"), str))
             for block in blocks
-            if isinstance(block, dict) and block.get("type") == "text" and block.get("text")
-        ]
-        if not parts:
+        ):
+            logger.warning(
+                "Enveloppe LLM inexploitable.",
+                extra={"event": "llm_response", "outcome": "invalid_envelope"},
+            )
             return None
-        return "\n".join(parts).strip() or None
+        text = "\n".join(block["text"] for block in blocks if block.get("type") == "text").strip()
+        if not text:
+            logger.warning(
+                "Réponse LLM sans contenu.",
+                extra={"event": "llm_response", "outcome": "empty_content"},
+            )
+        return text or None
 
     def health_request(self) -> tuple[str, dict[str, str]]:
         return f"{self.base_url}/v1/models", {

@@ -165,37 +165,27 @@ class KeywordVariantsModule(BaseAIModule):
     async def _request_payload(
         self, title: str, user_prompt: str
     ) -> KeywordVariantsPayload | None:
-        """Interroge le moteur, puis réessaie une seule fois si l'appel échoue.
-
-        Un délai dépassé, une erreur HTTP ou un JSON illisible sont des accidents, pas
-        des réponses : sans relance, la moindre lenteur transitoire transformait une
-        alerte complète en alerte amputée, définitivement. L'essai est immédiat et
-        borné à deux — un moteur qui répond sans variante n'est pas réinterrogé, car
-        une exclusion absente est une décision et non une panne.
-        """
-        for attempt in (1, 2):
-            data = await self.client.generate_json(
-                system_prompt=OPTIMIZE_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                temperature=0.3,
+        """Interroge le moteur une seule fois et valide sa réponse."""
+        data = await self.client.generate_json(
+            system_prompt=OPTIMIZE_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=0.3,
+        )
+        if not isinstance(data, dict):
+            logger.info("Recherche de mots-clés pour « %s » : aucune réponse exploitable.", title)
+            return None
+        try:
+            return KeywordVariantsPayload.model_validate(data)
+        except ValidationError:
+            logger.warning(
+                "Réponse du moteur invalide pour la recherche de mots-clés.",
+                extra={
+                    "event": "ai_validation",
+                    "ai_module": self.name,
+                    "error_category": "business_validation",
+                },
             )
-            if not data or not isinstance(data, dict):
-                logger.info(
-                    "Recherche de mots-clés pour « %s » : essai %d sans réponse exploitable.",
-                    title,
-                    attempt,
-                )
-                continue
-            try:
-                return KeywordVariantsPayload.model_validate(data)
-            except ValidationError as exc:
-                logger.warning(
-                    "Réponse du moteur illisible pour « %s » (essai %d) : %s",
-                    title,
-                    attempt,
-                    str(exc)[:200],
-                )
-        return None
+            return None
 
     @staticmethod
     def _build_user_prompt(

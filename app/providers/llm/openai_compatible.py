@@ -82,17 +82,37 @@ class OpenAICompatibleClient(BaseLLMClient):
 
     def extract_text(self, data: Any) -> str | None:
         """Isole `choices[0].message.content`."""
-        if not isinstance(data, dict):
+        choices = data.get("choices") if isinstance(data, dict) else None
+        choice = choices[0] if isinstance(choices, list) and choices else None
+        message = choice.get("message") if isinstance(choice, dict) else None
+        if not isinstance(choice, dict) or not isinstance(message, dict):
+            logger.warning(
+                "Enveloppe LLM inexploitable.",
+                extra={"event": "llm_response", "outcome": "invalid_envelope"},
+            )
             return None
-        choices = data.get("choices") or []
-        if not choices:
-            logger.warning("Réponse LLM vide ou sans 'choices'.")
-            return None
-        message = choices[0].get("message") if isinstance(choices[0], dict) else None
-        if not isinstance(message, dict):
+        if choice.get("finish_reason") in (
+            "length", "content_filter", "insufficient_system_resource", "aborted",
+        ):
+            logger.warning(
+                "Génération LLM interrompue.",
+                extra={"event": "llm_response", "outcome": "interrupted"},
+            )
             return None
         content = message.get("content")
-        return content.strip() or None if isinstance(content, str) else None
+        if content is not None and not isinstance(content, str):
+            logger.warning(
+                "Enveloppe LLM inexploitable.",
+                extra={"event": "llm_response", "outcome": "invalid_envelope"},
+            )
+            return None
+        text = content.strip() if isinstance(content, str) else ""
+        if not text:
+            logger.warning(
+                "Réponse LLM sans contenu.",
+                extra={"event": "llm_response", "outcome": "empty_content"},
+            )
+        return text or None
 
     def health_request(self) -> tuple[str, dict[str, str]]:
         return f"{self.base_url}/models", {"Authorization": f"Bearer {self.api_key}"}

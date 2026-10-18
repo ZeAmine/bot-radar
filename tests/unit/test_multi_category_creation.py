@@ -558,7 +558,7 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
     assert "<b>Titre :</b> Asterix tome 1" in edited_text
     assert "<b>Prix maximum :</b> 10,00 €" in edited_text
     assert state.state is AlertCreationState.confirm_creation
-    assert "L'IA n'a pas répondu après une relance" in edited_text
+    assert "L'IA n'a pas répondu" in edited_text
     keyboard = loading_message.edit_text.call_args[1]["reply_markup"]
     assert any(
         button.callback_data == f"alert_create_ai_variants@{state.data['creation_token']}"

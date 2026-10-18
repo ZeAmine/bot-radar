@@ -82,7 +82,7 @@ async def check_and_trigger_proactive_autotune(
                 )
                 return False
 
-            if proposal is None:
+            if proposal is None or not proposal.exclusions:
                 return False
 
             new_exclusions = proposal.exclusions

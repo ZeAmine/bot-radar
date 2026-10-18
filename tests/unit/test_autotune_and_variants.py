@@ -41,7 +41,7 @@ from app.services.ai.modules.auto_tuning import (
     save_pending_tuning,
 )
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
-from tests.fakes_llm import FlakyLLM
+from tests.fakes_llm import FakeLLM, FlakyLLM
 
 _GEN_PATH = (
     "app.services.ai.modules.keyword_variants."
@@ -166,14 +166,14 @@ async def test_handle_create_ai_variants_reports_silence_when_engine_failed():
         await handle_create_ai_variants(callback, state)
 
     stored = state.update_data.call_args.kwargs
-    assert "L'IA n'a pas répondu après une relance" in stored["keyword_note"]
+    assert "L'IA n'a pas répondu" in stored["keyword_note"]
     # Le conseil nomme le bouton sous la carte, pas un détour par le menu de modification.
     assert "via « Modifier »" not in stored["keyword_note"]
     # Une recherche échouée n'est pas définitive : le bouton de relance reste.
     assert stored["keywords_finalized"] is False
 
     last_text = callback.message.edit_text.call_args[0][0]
-    assert "L'IA n'a pas répondu après une relance" in last_text
+    assert "L'IA n'a pas répondu" in last_text
     assert "Aucune modification" not in last_text
 
     keyboard = callback.message.edit_text.call_args[1]["reply_markup"]
@@ -341,7 +341,7 @@ async def test_build_exclusion_proposal_keeps_only_new_exclusions():
 
 
 @pytest.mark.asyncio
-async def test_build_exclusion_proposal_returns_none_without_new_exclusions():
+async def test_build_exclusion_proposal_returns_empty_proposal_without_new_exclusions():
     with patch(
         "app.services.ai.modules.auto_tuning.auto_tuning_module.suggest_exclusions",
         new_callable=AsyncMock,
@@ -350,10 +350,11 @@ async def test_build_exclusion_proposal_returns_none_without_new_exclusions():
         proposal = await build_exclusion_proposal(
             alert_name="One Piece",
             already_excluded=["Figurine"],
-            disliked_titles=["Figurine Luffy", "Poster One Piece"],
+            disliked_titles=["Figurine Luffy", "Poster One Piece", "Figurine Zoro"],
         )
 
-    assert proposal is None
+    assert proposal is not None
+    assert proposal.exclusions == []
 
 
 @pytest.mark.asyncio
@@ -596,8 +597,7 @@ async def test_process_autotune_zero_dislikes_callback():
 
 
 @pytest.mark.asyncio
-async def test_process_autotune_all_exclusions_already_active():
-    """Vérifie la purge automatique des faux positifs déjà couverts par les exclusions."""
+async def test_process_autotune_all_exclusions_already_active_preserves_dislikes():
     alert = Alert(
         id=uuid.uuid4(),
         name="Watchmen",
@@ -631,16 +631,16 @@ async def test_process_autotune_all_exclusions_already_active():
     ):
         await process_autotune_for_alert(callback, alert, mock_db)
 
-        mock_clear.assert_called_once_with(alert.id, mock_db)
-        mock_db.commit.assert_called_once()
+        mock_clear.assert_not_awaited()
+        mock_db.commit.assert_not_awaited()
 
         assert callback.message.edit_text.call_count == 2
         last_call_args = callback.message.edit_text.call_args
         last_text = last_call_args[0][0]
-        assert "Toutes les exclusions pertinentes" in last_text
+        assert "aucune nouvelle exclusion" in last_text
         assert "Figurine Watchmen Rorschach" in last_text
         assert "figurine, poster" in last_text
-        assert "retirés de la liste" in last_text
+        assert "retirés de la liste" not in last_text
         kb = last_call_args[1]["reply_markup"]
         assert kb.inline_keyboard[0][0].callback_data == "ai_tune_hub"
         assert kb.inline_keyboard[1][0].callback_data == f"al_edit:{alert.id}"
@@ -988,12 +988,7 @@ async def test_handle_custom_exclusions_input_cancel():
 
 
 @pytest.mark.asyncio
-async def test_handle_create_ai_variants_recovers_from_a_stalled_engine():
-    """Un premier appel perdu ne doit pas se voir dans le récap : le bouton fait son travail.
-
-    Le contrat observable est le clavier : le moteur a répondu au second essai, donc les
-    variantes sont affichées et le bouton de relance a disparu.
-    """
+async def test_handle_create_ai_variants_reports_one_failed_attempt():
     from app.services.ai.modules.keyword_variants import keyword_variants_module
 
     callback = MagicMock(spec=CallbackQuery)
@@ -1026,16 +1021,132 @@ async def test_handle_create_ai_variants_recovers_from_a_stalled_engine():
     with patch.object(keyword_variants_module, "client", engine):
         await handle_create_ai_variants(callback, state)
 
-    assert engine.calls == 2, "le premier appel perdu doit être relancé"
+    assert engine.calls == 1
     stored = state.update_data.call_args.kwargs
-    assert stored["keywords_finalized"] is True
-    assert "L'IA n'a pas répondu" not in (stored["keyword_note"] or "")
+    assert stored["keywords_finalized"] is False
+    assert "L'IA n'a pas répondu" in stored["keyword_note"]
 
     last_text = callback.message.edit_text.call_args[0][0]
-    assert "<b>Variantes :</b> onepiece" in last_text
+    assert "L'IA n'a pas répondu" in last_text
     keyboard = callback.message.edit_text.call_args[1]["reply_markup"]
-    assert not any(
+    assert any(
         button.callback_data == "alert_create_ai_variants"
         for row in keyboard.inline_keyboard
         for button in row
-    ), "le moteur a répondu : le bouton n'a plus rien à apporter"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [None, {"suggested_exclusions": 42}])
+async def test_autotuning_failure_is_not_an_empty_answer(response):
+    from app.services.ai.modules.auto_tuning import auto_tuning_module
+
+    client = FakeLLM(text=response)
+    with patch.object(auto_tuning_module, "client", client):
+        result = await auto_tuning_module.suggest_exclusions("Tintin", ["Figurine Tintin"])
+
+    assert result is None
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [{}, {"suggested_exclusions": []}])
+async def test_autotuning_empty_answer_remains_an_answer(response):
+    from app.services.ai.modules.auto_tuning import auto_tuning_module
+
+    client = FakeLLM(text=response)
+    with patch.object(auto_tuning_module, "client", client):
+        result = await auto_tuning_module.suggest_exclusions("Tintin", ["Figurine Tintin"])
+
+    assert result == ([], None)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_build_exclusion_proposal_preserves_engine_failure():
+    with patch(
+        "app.services.ai.modules.auto_tuning.auto_tuning_module.suggest_exclusions",
+        AsyncMock(return_value=None),
+    ):
+        proposal = await build_exclusion_proposal(
+            "Tintin", [], ["Figurine Tintin", "Poster Tintin", "T-shirt Tintin"]
+        )
+
+    assert proposal is None
+
+
+@pytest.mark.asyncio
+async def test_process_autotune_failure_preserves_dislikes_without_claiming_an_answer():
+    alert = Alert(id=uuid.uuid4(), name="Tintin", exclude_keywords=[])
+    callback = MagicMock(spec=CallbackQuery)
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+    session = MagicMock()
+    session.commit = AsyncMock()
+    with (
+        patch(
+            "app.bot.handlers.autotune.get_disliked_titles_for_alert",
+            AsyncMock(return_value=["Figurine Tintin"]),
+        ),
+        patch("app.bot.handlers.autotune.build_exclusion_proposal", AsyncMock(return_value=None)),
+        patch("app.bot.handlers.autotune.clear_dislikes_for_alert", AsyncMock()) as clear,
+        patch("app.bot.handlers.autotune.save_pending_tuning", AsyncMock()) as save,
+    ):
+        await process_autotune_for_alert(callback, alert, session)
+
+    clear.assert_not_awaited()
+    save.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    text = callback.message.edit_text.call_args.args[0]
+    assert "n'a pas abouti" in text
+    assert "Toutes les exclusions pertinentes" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suggestion", [None, ([], None), (["figurine"], "Déjà exclue")])
+async def test_proactive_autotuning_without_new_exclusions_releases_claim(suggestion):
+    from app.core.constants import AlertStatus
+    from app.tasks.proactive_autotune import check_and_trigger_proactive_autotune
+
+    alert = Alert(
+        id=uuid.uuid4(), name="Tintin", status=AlertStatus.ACTIVE,
+        exclude_keywords=["figurine"],
+    )
+    bot = AsyncMock()
+    repository = MagicMock()
+    repository.get_by_id = AsyncMock(return_value=alert)
+    with (
+        patch("app.tasks.proactive_autotune.claim_autotune_slot", AsyncMock(return_value=True)),
+        patch("app.tasks.proactive_autotune.release_autotune_claim", AsyncMock()) as release,
+        patch("app.tasks.proactive_autotune.AsyncSessionLocal"),
+        patch("app.tasks.proactive_autotune.AlertRepository", return_value=repository),
+        patch(
+            "app.tasks.proactive_autotune.get_disliked_titles_for_alert",
+            AsyncMock(return_value=["Figurine Tintin", "Poster Tintin", "T-shirt Tintin"]),
+        ),
+        patch(
+            "app.services.ai.modules.auto_tuning.auto_tuning_module.suggest_exclusions",
+            AsyncMock(return_value=suggestion),
+        ) as suggest,
+        patch("app.tasks.proactive_autotune.save_pending_tuning", AsyncMock()) as save,
+    ):
+        result = await check_and_trigger_proactive_autotune(alert.id, bot, chat_id=42)
+
+    assert result is False
+    suggest.assert_awaited_once()
+    save.assert_not_awaited()
+    bot.send_message.assert_not_awaited()
+    release.assert_awaited_once_with(alert.id)
+
+
+@pytest.mark.asyncio
+async def test_autotuning_unconfigured_engine_is_not_called():
+    from app.services.ai.modules.auto_tuning import auto_tuning_module
+
+    client = FakeLLM(enabled=False)
+    with patch.object(auto_tuning_module, "client", client):
+        result = await auto_tuning_module.suggest_exclusions("Tintin", ["Figurine Tintin"])
+
+    assert result is None
+    assert client.calls == []

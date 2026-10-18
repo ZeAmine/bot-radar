@@ -184,28 +184,47 @@ class BaseLLMClient(ABC):
             logger.debug("Appel LLM ignoré : clé API absente ou IA désactivée.")
             return None
 
+        effective_timeout = self.timeout if timeout is None else timeout
+        started = time.monotonic()
+        diagnostics: dict[str, object] = {
+            "event": "llm_request",
+            "outcome": "cancelled",
+            "timeout_seconds": effective_timeout,
+        }
         try:
             response = await get_shared_http_client().post(
                 self.chat_endpoint(),
                 json=self.build_payload(system_prompt, user_prompt, temperature, image_urls),
                 headers=self.chat_headers(),
-                timeout=self.timeout if timeout is None else timeout,
+                timeout=effective_timeout,
             )
+            diagnostics["http_status"] = response.status_code
             response.raise_for_status()
-            return self.extract_text(response.json())
-        except httpx.TimeoutException:
-            logger.warning("Timeout lors de l'appel LLM (%ss) sur %s", self.timeout, self.model)
+            text = self.extract_text(response.json())
+            diagnostics["outcome"] = "text_received" if text else "response_rejected"
+            return text
+        except httpx.TimeoutException as exc:
+            diagnostics.update(outcome="timeout", error_type=type(exc).__name__)
             return None
         except httpx.HTTPStatusError as exc:
-            logger.error(
-                "Erreur HTTP %s du moteur LLM %s",
-                exc.response.status_code,
-                self.vendor,
-            )
+            diagnostics.update(outcome="http_error", error_type=type(exc).__name__)
+            return None
+        except httpx.RequestError as exc:
+            diagnostics.update(outcome="transport_error", error_type=type(exc).__name__)
+            return None
+        except json.JSONDecodeError as exc:
+            diagnostics.update(outcome="invalid_envelope", error_type=type(exc).__name__)
             return None
         except Exception as exc:
-            logger.warning("Réponse ou appel LLM inexploitable (%s).", type(exc).__name__)
+            diagnostics.update(outcome="unexpected_error", error_type=type(exc).__name__)
             return None
+        finally:
+            diagnostics["duration_ms"] = round((time.monotonic() - started) * 1000)
+            logger.log(
+                logging.INFO if diagnostics["outcome"] == "text_received" else logging.WARNING,
+                "Requête LLM terminée.",
+                extra=diagnostics,
+            )
 
     async def generate_json(
         self,
@@ -310,10 +329,16 @@ def clean_and_parse_json(raw_text: str) -> dict[str, object] | None:
 
     try:
         parsed = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        logger.warning("Réponse LLM non décodable en JSON (%s) : %s", exc, raw_text[:200])
+    except json.JSONDecodeError:
+        logger.warning(
+            "Réponse LLM non décodable en JSON.",
+            extra={"event": "llm_json", "outcome": "invalid_json"},
+        )
         return None
     if not isinstance(parsed, dict):
-        logger.warning("La réponse LLM n'est pas un objet JSON : %s", parsed)
+        logger.warning(
+            "La réponse LLM n'est pas un objet JSON.",
+            extra={"event": "llm_json", "outcome": "non_object"},
+        )
         return None
     return parsed
