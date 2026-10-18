@@ -57,14 +57,18 @@ jobs:
 
       - name: Récupérer l'image PostgreSQL avec relance bornée
         run: |
-          image=public.ecr.aws/docker/library/postgres:16-alpine
-          for attempt in 1 2 3; do
+          primary=public.ecr.aws/docker/library/postgres:16-alpine
+          fallback=docker.io/library/postgres:16-alpine
+          attempt=0
+          for image in "$primary" "$fallback" "$fallback"; do
+            attempt=$((attempt + 1))
             if docker pull "$image"; then
+              docker tag "$image" botradar-postgres-ci:16-alpine
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
               delay=$((attempt * 5))
-              echo "Pull PostgreSQL en échec (tentative $attempt/3), relance dans ${delay}s." >&2
+              echo "Pull PostgreSQL en échec pour $image (tentative $attempt/3), relance dans ${delay}s." >&2
               sleep "$delay"
             fi
           done
@@ -73,7 +77,7 @@ jobs:
 
       - name: Démarrer PostgreSQL
         run: |
-          docker run -d --name botradar-postgres \
+          docker run --pull=never -d --name botradar-postgres \
             -e POSTGRES_USER=test \
             -e POSTGRES_PASSWORD=test \
             -e POSTGRES_DB=test \
@@ -82,7 +86,7 @@ jobs:
             --health-interval 5s \
             --health-timeout 5s \
             --health-retries 5 \
-            public.ecr.aws/docker/library/postgres:16-alpine
+            botradar-postgres-ci:16-alpine
 
       - name: Attendre PostgreSQL
         run: |
