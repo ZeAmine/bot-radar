@@ -49,7 +49,6 @@ from deploy_dependencies import (  # noqa: E402
     DEPENDENT_SERVICES,
     DependencyError,
     InvarianceVerdict,
-    ServiceIdentity,
     assert_operational,
     capture_script,
     compare,
@@ -124,9 +123,6 @@ class Context:
     pilot: bool = False
     pilot_manifest: Path | None = None
     pilot_digest: str = ""
-    pilot_backup_config: Path | None = None
-    previous_app_id: str = ""
-    previous_image: str = ""
 
     def remote_or_default(self) -> Remote:
         if self.remote is None:
@@ -164,23 +160,12 @@ def step_preflight(ctx: Context) -> int:
     """Contrôle l'état du VPS et l'écart de code avant de toucher quoi que ce soit."""
     if ctx.pilot:
         try:
-            if ctx.pilot_manifest is None or ctx.pilot_backup_config is None:
-                return 1
-            if ctx.pilot_backup_config.stat().st_mode & 0o077:
+            if ctx.pilot_manifest is None:
                 return 1
             manifest = json.loads(ctx.pilot_manifest.read_text())
             from app.utils.pilot_manifest import validate_manifest
 
             validate_manifest(manifest, ctx.pilot_digest)
-            config = json.loads(ctx.pilot_backup_config.read_text())
-            if config["deployment_host"] != ctx.host:
-                return 1
-            code, _ = _run_local([
-                sys.executable, str(ctx.repo_root / "scripts/chasse_release_backup.py"),
-                "preflight", "--config", str(ctx.pilot_backup_config),
-            ])
-            if code:
-                return int(code)
         except (OSError, ValueError, TypeError, KeyError):
             print("Préconditions privées du pilote absentes ou invalides")
             return 1
@@ -194,45 +179,6 @@ def step_preflight(ctx: Context) -> int:
         ctx.key,
     ]
     return subprocess.run(argv).returncode
-
-
-def step_pilot_backup(ctx: Context) -> int:
-    if not ctx.pilot:
-        return 0
-    if ctx.pilot_backup_config is None or not ctx.previous_app_id or not ctx.previous_image:
-        return 1
-    try:
-        config = json.loads(ctx.pilot_backup_config.read_text())
-        source = config["source"]
-        if (config["deployment_host"] != ctx.host
-                or source["app_container"] != ctx.previous_app_id
-                or source["app_image"] != ctx.previous_image):
-            return 1
-        if ctx.dependencies_before is None:
-            return 1
-        postgres = ctx.dependencies_before.get("postgres")
-        if (not isinstance(postgres, ServiceIdentity)
-                or source["postgres_container"] != postgres.container_id):
-            return 1
-        code, _ = _run_local([
-            sys.executable, str(ctx.repo_root / "scripts/chasse_release_backup.py"),
-            "deployment-backup", "--config", str(ctx.pilot_backup_config),
-        ])
-        if code:
-            return int(code)
-        from scripts.chasse_release_backup import verify_archive
-
-        archive = verify_archive(Path(config["output"]))
-        receipt = json.loads((Path(config["output"])/"RESTORE_CHECK.json").read_text())
-        if (receipt.get("restore_verified") is not True
-                or receipt["app_container"] != ctx.previous_app_id
-                or receipt["app_image"] != ctx.previous_image
-                or receipt["cipher_sha256"] != archive["cipher_sha256"]
-                or receipt["schema"] != archive["schema"]):
-            return 1
-        return 0
-    except (OSError, KeyError, TypeError, ValueError):
-        return 1
 
 
 def step_pilot_activate(ctx: Context) -> int:
@@ -329,8 +275,6 @@ echo "image de retour conservée : $tag ($image_id)"
 # Le tag seul, sur sa propre ligne : il ne contient ni espace ni parenthèse, et
 # l'appelant le relit sans avoir à découper un message d'affichage.
 echo "RADAR_ROLLBACK_TAG=$tag"
-echo "RADAR_PREVIOUS_APP_ID=$cid"
-echo "RADAR_PREVIOUS_IMAGE=$image_id"
 echo "$tag" > .rollback-image
 docker compose stop app
 running=$(docker inspect --format '{{{{.State.Running}}}}' "$cid")
@@ -344,10 +288,6 @@ echo "arrêt app confirmé avant synchronisation"
     for ligne in out.splitlines():
         if ligne.startswith("RADAR_ROLLBACK_TAG="):
             ctx.rollback_image = ligne.split("=", 1)[1].strip()
-        elif ligne.startswith("RADAR_PREVIOUS_APP_ID="):
-            ctx.previous_app_id = ligne.split("=", 1)[1].strip()
-        elif ligne.startswith("RADAR_PREVIOUS_IMAGE="):
-            ctx.previous_image = ligne.split("=", 1)[1].strip()
     return int(code)
 
 
@@ -603,7 +543,6 @@ def step_notify(ctx: Context) -> int:
 STEPS: tuple[tuple[str, Callable[[Context], int]], ...] = (
     ("Pré-vol", step_preflight),
     ("Arrêt confirmé de l'app", step_stop),
-    ("Sauvegarde pilote vérifiée", step_pilot_backup),
     ("Synchronisation", step_sync),
     ("Reconstruction de l'image", step_rebuild),
     ("Activation du pilote", step_pilot_activate),
@@ -651,10 +590,9 @@ def main() -> int:
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--pilot-manifest", type=Path)
     parser.add_argument("--pilot-digest", default="")
-    parser.add_argument("--pilot-backup-config", type=Path)
     args = parser.parse_args()
-    if args.pilot and not all((args.pilot_manifest, args.pilot_digest, args.pilot_backup_config)):
-        parser.error("Le pilote exige manifeste, empreinte et configuration de sauvegarde")
+    if args.pilot and not all((args.pilot_manifest, args.pilot_digest)):
+        parser.error("Le pilote exige un manifeste et son empreinte")
 
     ctx = Context(
         host=args.host,
@@ -662,7 +600,7 @@ def main() -> int:
         remote_dir=args.remote_dir,
         repo_root=repo_root(),
         dry_run=args.dry_run, pilot=args.pilot, pilot_manifest=args.pilot_manifest,
-        pilot_digest=args.pilot_digest, pilot_backup_config=args.pilot_backup_config,
+        pilot_digest=args.pilot_digest,
     )
 
     print(f"{BOLD}Déploiement de BotRadar{RESET}  {DIM}→ {ctx.host}:{ctx.remote_dir}{RESET}")
