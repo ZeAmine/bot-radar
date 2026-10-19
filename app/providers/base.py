@@ -45,12 +45,14 @@ class MarketOffer:
 class CollectionAttempt:
     provider: str
     operation: str = "current"
-    status: Literal["success", "failed", "skipped"] = "success"
+    status: Literal["success", "partial", "failed", "skipped"] = "success"
     reason: str | None = None
     http_status: int | None = None
     retry_after_seconds: float | None = None
     duration_seconds: float = 0.0
     stage: str | None = None
+    response_content_type: str | None = None
+    response_bytes: int | None = None
 
 
 def failed_offers(
@@ -83,6 +85,9 @@ def failed_offers(
                 retry_after = max(0.0, retry_after) if isfinite(retry_after) else None
     return MarketOffers(failed_providers=(provider,), attempts=(CollectionAttempt(
         provider, operation, "failed", reason, status, retry_after, stage=stage,
+        response_content_type=(response.headers.get("content-type")
+                               if response is not None else None),
+        response_bytes=len(response.content) if response is not None else None,
     ),))
 
 

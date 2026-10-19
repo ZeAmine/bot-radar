@@ -1,0 +1,10 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "text/plain;charset=utf-8"
+  },
+  "body": "",
+  "stage": "search_results",
+  "observed_on": "2026-10-19",
+  "anonymized": true
+}

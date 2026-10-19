@@ -148,6 +148,12 @@ limitée aux collectes concernées ; elle ne ferme ni
 l'ingestion ni Telegram. Les délais de reprise et restrictions source restent
 appliqués par les chemins de collecte et de session.
 
+Une fiche CAL déjà enregistrée est réutilisable pour le même ISBN vérifié, sans
+recherche supplémentaire ni contournement des restrictions. Un corps HTTP 200 vide
+reste un échec source avec métadonnées HTTP, distinct d'un résultat JSON valide
+sans livre. Le [diagnostic ciblé](../operations/chasse-search-results.md) distingue
+les observations réseau des tests isolés.
+
 ## Diagnostic et bilans de rafraîchissement
 
 Le bilan automatique est consolidé par occurrence de passe complète, y compris
@@ -187,3 +193,10 @@ L'état utilise Redis avec repli local dans l'unique processus ; le repli ne sur
 pas au redémarrage. Le dédoublonnage de bilan conserve sa fenêtre d'une heure.
 Un échec ou une annulation d'envoi libère le créneau ; une remise Telegram ambiguë
 ou partielle ne permet pas de garantir exactement un message par destinataire.
+
+Les réponses CAL d'offres structurées sans preuve fiable de complétude sont
+partielles, jamais une absence confirmée. La présence d'un groupe marchand, y
+compris 22, ne certifie pas la fin de la collecte. Leurs observations sont conservées
+en snapshots avec provenance et statut ; elles ne remplacent pas les dernières
+offres validées ni leur date de réussite complète. L'historique source peut réussir
+indépendamment. Le second relevé demeure borné, sans repli de recherche supplémentaire.
