@@ -66,6 +66,7 @@ class ProviderRegistry:
         title: str,
         author: str | None = None,
         edition: str | None = None,
+        source_url: str | None = None,
     ) -> list[MarketOffer]:
         """Interroge un unique fournisseur sous protection de sémaphore et timeout."""
         if "current" not in requested_components.get() and not isinstance(
@@ -75,13 +76,20 @@ class ProviderRegistry:
         async with self._semaphore:
             started = monotonic()
             try:
-                offers = await asyncio.wait_for(
-                    provider.get_offers(
+                if isinstance(provider, ChasseAuxLivresProvider) and source_url:
+                    operation = provider.get_offers(
+                        isbn13=isbn13, title=title, author=author, edition=edition,
+                        source_url=source_url,
+                    )
+                else:
+                    operation = provider.get_offers(
                         isbn13=isbn13,
                         title=title,
                         author=author,
                         edition=edition,
-                    ),
+                    )
+                offers = await asyncio.wait_for(
+                    operation,
                     timeout=(18.0 if isinstance(provider, ChasseAuxLivresProvider)
                              else PROVIDER_TIMEOUT_SECONDS),
                 )
@@ -118,6 +126,7 @@ class ProviderRegistry:
         title: str,
         author: str | None = None,
         edition: str | None = None,
+        source_url: str | None = None,
     ) -> MarketOffers:
         """Interroge l'ensemble des fournisseurs enregistrés en parallèle contrôlé.
 
@@ -133,6 +142,7 @@ class ProviderRegistry:
                 title=title,
                 author=author,
                 edition=edition,
+                source_url=source_url,
             )
             for p in self.providers
         ]

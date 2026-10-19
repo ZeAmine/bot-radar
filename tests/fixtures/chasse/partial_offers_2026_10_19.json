@@ -1,0 +1,111 @@
+{
+  "provenance": "Relevé Jean Doux du 2026-10-19 : montants, états et schéma normalisés ; groupes et liens synthétiques.",
+  "payload": {
+    "resumeMap": null,
+    "ebooks": null,
+    "reviews": null,
+    "offers": {
+      "0": [
+        {
+          "logo": {
+            "name": "LES_LIBRAIRES"
+          },
+          "condition": {
+            "_name": "NEW"
+          },
+          "subCondition": {
+            "name": "Neuf"
+          },
+          "price": {
+            "amount": 2995
+          },
+          "shippingCost": {
+            "amount": 900
+          },
+          "totalPrice": {
+            "amount": 3895
+          },
+          "affiliateUrl": "https://merchant.example/offer-0"
+        }
+      ],
+      "1": [
+        {
+          "logo": {
+            "name": "LES_LIBRAIRES"
+          },
+          "condition": {
+            "_name": "NEW"
+          },
+          "subCondition": {
+            "name": "Neuf"
+          },
+          "price": {
+            "amount": 2995
+          },
+          "shippingCost": {
+            "amount": 0
+          },
+          "totalPrice": {
+            "amount": 2995
+          },
+          "affiliateUrl": "https://merchant.example/offer-1"
+        }
+      ],
+      "2": [
+        {
+          "logo": {
+            "name": "BAL"
+          },
+          "condition": {
+            "_name": "USED"
+          },
+          "subCondition": {
+            "name": "Correct"
+          },
+          "price": {
+            "amount": 2695
+          },
+          "shippingCost": {
+            "amount": 0
+          },
+          "totalPrice": {
+            "amount": 2695
+          },
+          "affiliateUrl": "https://merchant.example/offer-2"
+        }
+      ],
+      "3": [
+        {
+          "logo": {
+            "name": "BAL"
+          },
+          "condition": {
+            "_name": "NEW"
+          },
+          "subCondition": {
+            "name": "Neuf"
+          },
+          "price": {
+            "amount": 2995
+          },
+          "shippingCost": {
+            "amount": 300
+          },
+          "totalPrice": {
+            "amount": 3295
+          },
+          "affiliateUrl": "https://merchant.example/offer-3"
+        }
+      ]
+    },
+    "offersWS": {},
+    "fromSameAuthor": null,
+    "fromSameAuthor2": null,
+    "sr": null,
+    "disclaimer": null,
+    "apt": null,
+    "lists": null,
+    "lockedList": null,
+    "currentList": null
+  }
+}

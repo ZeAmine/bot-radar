@@ -96,6 +96,12 @@ class BookPricingResult:
         Trois issues possibles : une offre d'occasion disponible, un historique
         certifié mais plus rien en stock, ou aucune donnée exploitable.
         """
+        unconfirmed_sources = {a.provider for a in getattr(offers, "attempts", ())
+                           if a.operation == "current" and a.status in {"partial", "failed"}}
+        if best_offer is not None and best_offer.provider_name in unconfirmed_sources:
+            best_offer = ProviderRegistry.select_best_offer([
+                offer for offer in offers if offer.provider_name not in unconfirmed_sources
+            ])
         if best_offer is not None:
             merchant = None
             if best_offer.raw_payload:
@@ -184,6 +190,13 @@ async def fetch_offers_for_book(
     cache = book.__dict__.get("market_cache")
     components = frozenset(component for component in ("current", "history")
                            if component_due(cache, component, now) <= now)
+    from app.providers.chasse_aux_livres import ChasseAuxLivresProvider, verified_product_url
+
+    history = cache.source_history if cache and isinstance(cache.source_history, dict) else {}
+    source_url = verified_product_url(history.get("source_url"), book.isbn13)
+    if not source_url and cache and cache.best_provider_name == "chasse_aux_livres":
+        source_url = verified_product_url(cache.best_source_url, book.isbn13)
+    source_options = {"source_url": source_url} if source_url else {}
     token = requested_components.set(components)
     try:
         offers = await asyncio.wait_for(
@@ -192,6 +205,7 @@ async def fetch_offers_for_book(
                 title=book.title,
                 author=book.author,
                 edition=book.edition,
+                **source_options,
             ),
             timeout=BOOK_FETCH_TIMEOUT_SECONDS,
         )
@@ -199,14 +213,22 @@ async def fetch_offers_for_book(
             retryable = [a for a in getattr(offers, "attempts", ())
                          if a.status == "failed" and a.operation == "current"
                          and (a.retry_after_seconds is None or a.retry_after_seconds <= 3)
-                         and (a.reason in {"timeout", "connection"}
+                         and (a.reason in {"timeout", "connection", "empty_response"}
                               or (a.http_status is not None and a.http_status >= 500)
                               or (a.http_status == 429 and a.retry_after_seconds is not None
                                   and a.retry_after_seconds <= 3))]
             names = {a.provider for a in retryable}
-            providers = [p for p in active_registry.providers if p.name in names]
+            empty_sources = {a.provider for a in retryable if a.reason == "empty_response"}
+            providers = [p for p in active_registry.providers if p.name in names and (
+                p.name not in empty_sources or not isinstance(p, ChasseAuxLivresProvider)
+                or p.max_retries == 0
+            )]
+            names = {p.name for p in providers}
+            retryable = [a for a in retryable if a.provider in names]
             if providers:
                 delay = max((a.retry_after_seconds or 0 for a in retryable), default=0)
+                if any(p.name in empty_sources for p in providers):
+                    delay = max(delay, 1.5)
                 if delay:
                     await asyncio.sleep(delay)
                 retry_registry = ProviderRegistry(providers=providers)
@@ -220,7 +242,7 @@ async def fetch_offers_for_book(
                 try:
                     retried = await asyncio.wait_for(retry_registry.fetch_all_offers(
                         isbn13=normalize_search_isbn(book.isbn13), title=book.title,
-                        author=book.author, edition=book.edition,
+                        author=book.author, edition=book.edition, **source_options,
                     ), timeout=BOOK_FETCH_TIMEOUT_SECONDS)
                 except TimeoutError:
                     retried = MarketOffers(
@@ -239,7 +261,7 @@ async def fetch_offers_for_book(
                     if not (a.operation == "history" and a.status == "skipped")
                 )
                 retained_failures = {
-                    a.provider for a in retained_attempts if a.status == "failed"
+                    a.provider for a in retained_attempts if a.status in {"partial", "failed"}
                 }
                 offers = MarketOffers(
                     [o for o in offers if o.provider_name not in names or o.is_historical]
@@ -263,7 +285,9 @@ async def fetch_offers_for_book(
                        "provider": attempt.provider, "operation": attempt.operation,
                        "outcome": attempt.status, "reason": attempt.reason,
                        "http_status": attempt.http_status,
-                       "duration_seconds": attempt.duration_seconds, "stage": attempt.stage})
+                       "duration_seconds": attempt.duration_seconds, "stage": attempt.stage,
+                       "response_content_type": attempt.response_content_type,
+                       "response_bytes": attempt.response_bytes})
         return offers
     except TimeoutError:
         logger.warning("Délai global de collecte dépassé pour %s", book.id)
@@ -405,6 +429,8 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
                          now=result.collected_at)
     cache.failed_provider_names = list(result.failed_providers)
     retained_offers = cache.current_offers
+    unconfirmed_sources = {a.provider for a in result.attempts
+                       if a.operation == "current" and a.status in {"partial", "failed"}}
     cache.current_offers = [
         {
             key: value
@@ -412,7 +438,8 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
             if key not in {"observed_at", "observation_id"}
         }
         for offer in result.offers
-        if is_comparable_secondhand_offer(offer)
+        if offer.provider_name not in unconfirmed_sources
+        and is_comparable_secondhand_offer(offer)
         and offer.is_available
         and not offer.is_historical
         and (offer.shipping_price_cents is not None or offer.price_includes_shipping)
@@ -438,7 +465,8 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
         "skipped"
         if result.attempts and all(a.status == "skipped" for a in result.attempts)
         else "partial"
-        if result.failed_providers and (result.has_data or result.current_collection_succeeded)
+        if any(a.status == "partial" for a in result.attempts)
+        or result.failed_providers and (result.has_data or result.current_collection_succeeded)
         else "failed"
         if result.failed_providers
         else "complete"
