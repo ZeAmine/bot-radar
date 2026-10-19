@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from collections.abc import Awaitable, Callable, Iterable
@@ -69,6 +70,14 @@ STATUS_OK = "ok"
 APPROVAL_LABEL = (
     "Autoriser l'analyse et la préparation d'un correctif — sans merge ni déploiement"
 )
+
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def is_attested_commit(commit: str) -> bool:
+    """Vrai si le commit est un SHA complet : seul format qu'un ticket peut exporter."""
+    return bool(_FULL_SHA.fullmatch(commit))
+
 
 # États qu'une reprise F03-B doit faire progresser ; `notified` et `abandoned` sont
 # terminaux, mais un `unknown` porteur d'un reçu exploitable reste finalisable.
@@ -286,6 +295,7 @@ def format_alert(
     alert_id: str,
     commit: str,
     now: datetime,
+    approval_available: bool = True,
 ) -> str:
     """Message Telegram : preuve, gravité et identifiants, sans titre ni URL."""
     head = "🚨" if verdict.severity == "critical" else "⚠️"
@@ -316,11 +326,22 @@ def format_alert(
         f"<b>Commit main analysé :</b> <code>{escape(commit)}</code>",
         f"<b>Alerte :</b> <code>{alert_id}</code>",
         "<i>Vérifier les journaux du conteneur radar_app puis la reprise F03-B.</i>",
-        "",
-        f"<b>{escape(APPROVAL_LABEL)}</b>",
-        "<i>Cette autorisation est seulement enregistrée : aucune correction n'est "
-        "lancée automatiquement, et le merge comme le déploiement restent manuels.</i>",
     ]
+    if approval_available:
+        lines += [
+            "",
+            f"<b>{escape(APPROVAL_LABEL)}</b>",
+            "<i>Cette autorisation est seulement enregistrée : aucune correction n'est "
+            "lancée automatiquement, et le merge comme le déploiement restent manuels.</i>",
+        ]
+    else:
+        lines += [
+            "",
+            "<b>Autorisation indisponible</b>",
+            "<i>Le SHA enregistré à l'ouverture de cet incident n'est pas un SHA "
+            "complet : aucun clavier d'approbation n'est proposé et aucun ticket ne "
+            "peut être exporté.</i>",
+        ]
     return "\n".join(lines)
 
 
@@ -358,6 +379,7 @@ def format_technical_alert(
     detail: str,
     commit: str,
     now: datetime,
+    reason: str | None = None,
 ) -> str:
     """Alerte technique distincte : un contrôle impossible n'est pas un incident.
 
@@ -365,11 +387,18 @@ def format_technical_alert(
     contrôle qui n'a pas pu s'exécuter ne prouve ni la présence ni l'absence du
     symptôme, et ne doit donc jamais être lu comme une clôture.
     """
+    if reason is None:
+        headline = [f"Le détecteur n'a pas pu s'exécuter {failures} fois de suite."]
+    else:
+        headline = [
+            escape(reason),
+            f"<b>Contrôles impossibles consécutifs :</b> {failures}",
+        ]
     return "\n".join(
         [
             "🛠 <b>Contrôle impossible (maintenance)</b>",
             "",
-            f"Le détecteur n'a pas pu s'exécuter {failures} fois de suite.",
+            *headline,
             f"<b>Dernier détail :</b> {escape(detail)}",
             "",
             "<i>Un contrôle impossible ne prouve ni la présence ni l'absence du "
@@ -559,6 +588,33 @@ async def run_check(
     current = state.find_open_incident(directory) if directory else None
     action = decide(incident=verdict.incident, open_alert_id=current.alert_id if current else None)
     alert_id = current.alert_id if current else None
+    if action == "open" and not is_attested_commit(commit):
+        logger.error(
+            "Incident non ouvert : SHA déployé non attestable",
+            extra={
+                "event": "alert_chain_check",
+                "status": "controle_impossible",
+                "commit": commit,
+            },
+        )
+        if dry_run or directory is None:
+            return EXIT_ERROR
+        return await report_technical_failure(
+            directory=directory,
+            commit=commit,
+            now=now,
+            detail=(
+                "commit déployé absent ou invalide : --commit doit porter un SHA "
+                "complet de 40 caractères hexadécimaux"
+            ),
+            reason=(
+                "Le SHA déployé ne peut pas être attesté : aucun incident n'a été "
+                "ouvert et aucune autorisation n'est proposée."
+            ),
+            send=send,
+            claim=claim,
+            dedup_seconds=dedup_seconds,
+        )
     if not dry_run and directory is not None:
         action, alert_id = state.observe_incident(
             directory=directory,
@@ -594,9 +650,18 @@ async def run_check(
     record["observation_id"] = observation_id
     message = None
     markup = None
+    approval_available = current is None or is_attested_commit(current.commit)
     if action in {"open", "continue"}:
-        message = format_alert(snapshot, verdict, alert_id=alert_id or "", commit=commit, now=now)
-        markup = approval_keyboard(alert_id or "")
+        message = format_alert(
+            snapshot,
+            verdict,
+            alert_id=alert_id or "",
+            commit=commit,
+            now=now,
+            approval_available=approval_available,
+        )
+        if approval_available:
+            markup = approval_keyboard(alert_id or "")
     elif action == "resolve":
         message = format_resolution(snapshot, alert_id=alert_id or "", commit=commit, now=now)
     if dry_run:
@@ -689,7 +754,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--stuck-hours", type=float, default=DEFAULT_STUCK_HOURS)
     parser.add_argument("--max-sample", type=int, default=DEFAULT_MAX_SAMPLE)
     parser.add_argument("--dedup-seconds", type=int, default=DEFAULT_DEDUP_SECONDS)
-    parser.add_argument("--commit", default=os.environ.get("GIT_COMMIT", "inconnu"))
+    parser.add_argument(
+        "--commit",
+        default=os.environ.get("GIT_COMMIT", "inconnu"),
+        help="SHA complet (40 hex) du code déployé ; sans lui, aucun incident n'est ouvert",
+    )
     parser.add_argument("--state-file", default=None)
     parser.add_argument("--no-state", action="store_true")
     parser.add_argument(
@@ -727,6 +796,7 @@ async def report_technical_failure(
     commit: str,
     now: datetime,
     detail: str,
+    reason: str | None = None,
     send: SendMessage = _send_via_admins,
     claim: ClaimSlot = _claim_notification_slot,
     dedup_seconds: int = DEFAULT_DEDUP_SECONDS,
@@ -745,7 +815,7 @@ async def report_technical_failure(
     if not await claim(TECHNICAL_ALERT_DEDUP_KEY, dedup_seconds):
         return EXIT_ERROR
     message = format_technical_alert(
-        failures=failures, detail=detail, commit=commit, now=now
+        failures=failures, detail=detail, commit=commit, now=now, reason=reason
     )
     delivered = await send(message, None)
     if delivered is True or delivered == "accepted":

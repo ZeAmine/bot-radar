@@ -14,8 +14,10 @@ traitement dont le délai admissible est dépassé.
 ## Ce que le contrôle fait et ne fait pas
 
 - **Fait** : lit `listings` et `listing_matches`, qualifie l'incident et envoie
-  une alerte Telegram via `notify_admins`, avec un clavier d'approbation. Écrit
-  une trace JSONL et un état durable partagé (incidents, décisions).
+  une alerte Telegram via `notify_admins`, avec un clavier d'approbation — sauf
+  lorsque le SHA déployé n'est pas attesté, auquel cas aucun incident n'est ouvert
+  et aucun clavier n'est proposé. Écrit une trace JSONL et un état durable partagé
+  (incidents, décisions).
 - **Ne fait pas** : aucune écriture en base, aucun appel IA, aucune correction,
   aucun agent de correction, aucun worktree automatique, aucune ouverture de PR,
   aucun merge, aucun déploiement, aucune modification de CI, permissions, secrets
@@ -105,6 +107,12 @@ L'image applicative ne contient pas `.git` (le rsync l'exclut) : le commit analy
 vaut donc `inconnu` par défaut dans le conteneur. Pour l'attester, passer
 `--commit <sha>` ou `-e GIT_COMMIT=<sha>` — le SHA déployé est affiché par
 `make deploy`.
+
+Un SHA attesté compte **40 caractères hexadécimaux**. Tant qu'il manque, le
+détecteur **n'ouvre aucun incident** : il produit un contrôle impossible (code
+`2`), compte l'échec dans `technical.json` et ne propose aucun clavier. Un
+incident dont le SHA n'est pas attesté ne pourrait produire aucun ticket : mieux
+vaut refuser l'incident que d'enregistrer une autorisation morte.
 
 ## Trace et statuts
 
@@ -223,6 +231,15 @@ reprise réussie. Un contrôle réussi remet le compteur à zéro et réarme l'a
 technique pour une panne ultérieure. Si l'alerte technique n'est pas délivrée,
 elle n'est **pas** marquée comme envoyée : l'opérateur n'est pas trompé.
 
+Quand l'impossibilité vient du SHA, l'alerte technique le dit explicitement : le
+SHA déployé ne peut pas être attesté, aucun incident n'a été ouvert et aucune
+autorisation n'est proposée. Elle ne prétend pas que le détecteur n'a pas pu
+s'exécuter.
+
+Un incident ouvert **avant** ce contrôle reste notifié, mais sans clavier si son
+SHA enregistré n'est pas complet : le message porte « Autorisation indisponible ».
+Seul un incident ouvert avec un SHA attesté ouvre le droit à l'approbation.
+
 ## Timer (à ne pas activer sans accord)
 
 Activation manuelle uniquement, après revue, et **jamais** par un agent : c'est
@@ -244,6 +261,7 @@ Requires=docker.service
 Type=oneshot
 User=ubuntu
 WorkingDirectory=/home/ubuntu/bot-radar
+TimeoutStartSec=300
 ExecStart=/bin/sh -c 'exec docker compose run \
   --rm --no-deps -T app python scripts/check_alert_chain.py --commit "$(cat .deployed_commit)"'
 ```
@@ -261,13 +279,20 @@ vaut `inconnu` — l'image ne contient pas `.git`.
 Description=BotRadar — contrôle de la chaîne d'alerte toutes les 15 minutes
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=15min
-Persistent=true
+OnCalendar=*:0/15
+AccuracySec=1min
 
 [Install]
 WantedBy=timers.target
 ```
+
+Le timer est calendaire : il tire à chaque quart d'heure. `Persistent` est
+volontairement absent — un redémarrage ne rejoue pas un contrôle passé, et le
+créneau suivant arrive au plus dans 15 minutes ; un rejeu pourrait produire une
+seconde notification. `AccuracySec=1min` borne le regroupement des réveils sans
+rendre l'heure de passage imprévisible. `TimeoutStartSec=300` laisse à la requête
+SQL et à l'envoi Telegram le temps de se terminer, sans recouvrement avec le
+créneau suivant.
 
 Alternative `cron` :
 
@@ -279,6 +304,34 @@ Si l'opérateur veut voir le code `1` comme un échec, ne pas ajouter
 `SuccessExitStatus` : le service restera `failed` tant que l'incident dure, ce
 qui est le comportement attendu. Le `--no-deps` évite de recréer `postgres` et
 `redis` (leçon d'invariance du déploiement).
+
+### Armement et vérification
+
+Activation manuelle, sur autorisation explicite, jamais par un agent.
+
+1. Préalables : `make deploy` terminé, `.deployed_commit` complet (40 caractères),
+   `systemctl is-active docker` actif, et le `--dry-run` ci-dessus sans erreur.
+   Si `docker.service` n'existe pas sur l'hôte, ajuster `After`/`Requires` à
+   l'unité réellement présente : ne pas laisser une dépendance supposée.
+2. Éprouver la commande exacte du service, une fois, à la main, depuis
+   `/home/ubuntu/bot-radar` :
+
+   ```sh
+   docker compose run --rm --no-deps -T app python scripts/check_alert_chain.py \
+     --commit "$(cat .deployed_commit)"
+   ```
+
+   Le relevé doit afficher le SHA complet. Un code `2` ou un commit `inconnu`
+   interdit l'activation.
+3. Installer les deux unités dans `/etc/systemd/system/`, puis
+   `sudo systemctl daemon-reload`.
+4. Activer : `sudo systemctl enable --now botradar-alert-chain.timer`.
+5. Vérifier : `systemctl list-timers botradar-alert-chain.timer`,
+   `systemctl status botradar-alert-chain.service`, puis
+   `journalctl -u botradar-alert-chain.service -n 20`. Le premier passage écrit
+   `alert-chain.jsonl` (statut `ok` ou `ouvert`) et laisse `technical.json` à zéro.
+6. Désarmer : `sudo systemctl disable --now botradar-alert-chain.timer`. La
+   suspension logique (`/maintenance_stop`) reste un levier distinct.
 
 Rappel d'exploitation : un timer actif et une suspension logique sont deux
 leviers distincts. Le premier arrête les déclenchements, le second arrête le

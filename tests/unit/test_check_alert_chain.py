@@ -34,7 +34,10 @@ from app.db.models.listing import Listing  # noqa: E402
 from app.db.models.listing_match import ListingMatch  # noqa: E402
 from app.db.models.user import User  # noqa: E402
 from app.domain.enums import NotificationState  # noqa: E402
+from app.services import alert_chain_state as state  # noqa: E402
 from tests.database import sqlite_only_database  # noqa: E402
+
+FULL_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 async def _seed(session: AsyncSession, *, now: datetime, matches: list[dict[str, object]]) -> None:
@@ -413,7 +416,7 @@ async def test_run_check_opens_then_verifies_on_reobservation(tmp_path):
         "stuck_hours": 1.0,
         "max_sample": 8,
         "dedup_seconds": 3600,
-        "commit": "abc123",
+        "commit": FULL_SHA,
         "send": send,
         "claim": claim,
     }
@@ -487,7 +490,7 @@ async def test_run_check_dry_run_writes_nothing_and_sends_nothing(tmp_path, caps
             stuck_hours=1.0,
             max_sample=8,
             dedup_seconds=3600,
-            commit="abc123",
+            commit=FULL_SHA,
             now=now,
             send=send,
             claim=claim,
@@ -542,3 +545,203 @@ async def test_impossible_check_does_not_close_open_alert(tmp_path, monkeypatch)
     records = read_records(state_file)
     assert find_open_alert(records) == "keep-me"
     assert all(record["status"] != "vérifié" for record in records)
+
+
+async def test_unattested_commit_does_not_open_incident(tmp_path):
+    """Sans SHA complet, aucun incident n'est créé : l'approbation serait morte."""
+    now = datetime.now(UTC)
+    state_file = tmp_path / "state" / "alert-chain.jsonl"
+    state_file.parent.mkdir(parents=True)
+    sent: list[tuple[str, object]] = []
+
+    async def send(text: str, markup=None) -> bool:
+        sent.append((text, markup))
+        return True
+
+    async def claim(_key: str, _ttl: int) -> bool:
+        return True
+
+    async with sqlite_only_database() as database:
+        await _seed(
+            database.session,
+            now=now,
+            matches=[
+                {
+                    "state": NotificationState.READY.value,
+                    "created_at": now - timedelta(hours=2),
+                    "next_attempt_at": now - timedelta(hours=1),
+                }
+            ],
+        )
+        code = await run_check(
+            session=database.session,
+            state_file=state_file,
+            window_hours=2.0,
+            stuck_hours=1.0,
+            max_sample=8,
+            dedup_seconds=3600,
+            commit="inconnu",
+            now=now,
+            send=send,
+            claim=claim,
+        )
+
+    assert code == 2
+    assert sent == []
+    assert state.find_open_incident(state_file.parent) is None
+    assert state.consecutive_failures(state_file.parent) == 1
+    assert state_file.exists() is False
+
+
+async def test_unattested_commit_technical_alert_is_explicit(tmp_path):
+    """Après quatre échecs, l'alerte technique nomme le SHA non attestable."""
+    now = datetime.now(UTC)
+    directory = tmp_path / "state"
+    directory.mkdir(parents=True)
+    state_file = directory / "alert-chain.jsonl"
+    sent: list[tuple[str, object]] = []
+
+    async def send(text: str, markup=None) -> bool:
+        sent.append((text, markup))
+        return True
+
+    async def claim(_key: str, _ttl: int) -> bool:
+        return True
+
+    async with sqlite_only_database() as database:
+        await _seed(
+            database.session,
+            now=now,
+            matches=[
+                {
+                    "state": NotificationState.READY.value,
+                    "created_at": now - timedelta(hours=2),
+                    "next_attempt_at": now - timedelta(hours=1),
+                }
+            ],
+        )
+        codes = [
+            await run_check(
+                session=database.session,
+                state_file=state_file,
+                window_hours=2.0,
+                stuck_hours=1.0,
+                max_sample=8,
+                dedup_seconds=3600,
+                commit="inconnu",
+                now=now,
+                send=send,
+                claim=claim,
+            )
+            for _ in range(state.TECHNICAL_FAILURE_THRESHOLD)
+        ]
+
+    assert codes == [2] * state.TECHNICAL_FAILURE_THRESHOLD
+    assert len(sent) == 1
+    text, markup = sent[0]
+    assert markup is None
+    assert "SHA déployé" in text
+    assert "ne peut pas être attesté" in text
+    assert "aucun incident" in text
+    assert state.find_open_incident(directory) is None
+
+
+async def test_existing_incident_without_attested_sha_has_no_approval_keyboard(tmp_path):
+    """Un incident ouvert sans SHA complet ne reçoit aucun clavier d'approbation."""
+    now = datetime.now(UTC)
+    directory = tmp_path / "state"
+    directory.mkdir(parents=True)
+    state_file = directory / "alert-chain.jsonl"
+    state.record_incident(
+        directory=directory,
+        alert_id="dead-approval",
+        commit="inconnu",
+        severity="critical",
+        reason="correspondances actionnables en retard",
+        now=now,
+    )
+    sent: list[tuple[str, object]] = []
+
+    async def send(text: str, markup=None) -> bool:
+        sent.append((text, markup))
+        return True
+
+    async def claim(_key: str, _ttl: int) -> bool:
+        return True
+
+    async with sqlite_only_database() as database:
+        await _seed(
+            database.session,
+            now=now,
+            matches=[
+                {
+                    "state": NotificationState.READY.value,
+                    "created_at": now - timedelta(hours=2),
+                    "next_attempt_at": now - timedelta(hours=1),
+                }
+            ],
+        )
+        code = await run_check(
+            session=database.session,
+            state_file=state_file,
+            window_hours=2.0,
+            stuck_hours=1.0,
+            max_sample=8,
+            dedup_seconds=3600,
+            commit=FULL_SHA,
+            now=now,
+            send=send,
+            claim=claim,
+        )
+
+    assert code == 1
+    assert len(sent) == 1
+    text, markup = sent[0]
+    assert markup is None
+    assert "Autorisation indisponible" in text
+    assert check_alert_chain.APPROVAL_LABEL not in text
+
+
+async def test_unattested_commit_dry_run_writes_nothing(tmp_path):
+    """En dry-run, le refus ne crée ni compteur, ni trace, ni notification."""
+    now = datetime.now(UTC)
+    state_file = tmp_path / "state" / "alert-chain.jsonl"
+    sent: list[str] = []
+
+    async def send(text: str, _markup=None) -> bool:
+        sent.append(text)
+        return True
+
+    async def claim(_key: str, _ttl: int) -> bool:
+        return True
+
+    async with sqlite_only_database() as database:
+        await _seed(
+            database.session,
+            now=now,
+            matches=[
+                {
+                    "state": NotificationState.READY.value,
+                    "created_at": now - timedelta(hours=2),
+                    "next_attempt_at": now - timedelta(hours=1),
+                }
+            ],
+        )
+        code = await run_check(
+            session=database.session,
+            state_file=state_file,
+            window_hours=2.0,
+            stuck_hours=1.0,
+            max_sample=8,
+            dedup_seconds=3600,
+            commit="inconnu",
+            now=now,
+            send=send,
+            claim=claim,
+            dry_run=True,
+        )
+
+    assert code == 2
+    assert sent == []
+    assert state_file.exists() is False
+    assert state.find_open_incident(state_file.parent) is None

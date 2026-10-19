@@ -26,6 +26,8 @@ from app.domain.enums import NotificationState  # noqa: E402
 from app.services import alert_chain_state as state  # noqa: E402
 from tests.database import sqlite_only_database  # noqa: E402
 
+FULL_SHA = "0123456789abcdef0123456789abcdef01234567"
+
 
 async def _seed(session: AsyncSession, *, now: datetime, blocked: bool = True) -> None:
     """Crée une correspondance actionnable échue, ou une correspondance saine."""
@@ -101,7 +103,7 @@ def _kwargs(state_file: Path, recorder: _Recorder) -> dict[str, object]:
         "stuck_hours": 1.0,
         "max_sample": 8,
         "dedup_seconds": 3600,
-        "commit": "abc123",
+        "commit": FULL_SHA,
         "send": recorder.send,
         "claim": _claim_always,
     }
@@ -142,12 +144,12 @@ async def test_no_duplicate_notification_with_disk_dedup(tmp_path):
         await run_check(
             session=database.session, now=now,
             state_file=state_file, window_hours=2.0, stuck_hours=1.0, max_sample=8,
-            dedup_seconds=3600, commit="abc123", send=recorder.send, claim=claim_refused,
+            dedup_seconds=3600, commit=FULL_SHA, send=recorder.send, claim=claim_refused,
         )
         await run_check(
             session=database.session, now=now + timedelta(minutes=5),
             state_file=state_file, window_hours=2.0, stuck_hours=1.0, max_sample=8,
-            dedup_seconds=3600, commit="abc123", send=recorder.send, claim=claim_refused,
+            dedup_seconds=3600, commit=FULL_SHA, send=recorder.send, claim=claim_refused,
         )
 
     assert len(recorder.messages) == 1
