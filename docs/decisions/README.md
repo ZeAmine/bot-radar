@@ -67,3 +67,4 @@ Conserver les identifiants et expliciter tout remplacement plutôt que renuméro
 | ADR-050 | Nouveautés au premier scan et minimum annuel unique vérifiable | [catalogue-market](catalogue-market.md#adr-050) |
 | ADR-051 | Le checkout Vinted automatisé est retiré | [marketplace](marketplace.md#adr-051) |
 | ADR-052 | Leboncoin entre dans les alertes, avec une sortie résidentielle auto-hébergée | [marketplace](marketplace.md#adr-052) |
+| ADR-053 | Les seuils de mesure Leboncoin sont pré-enregistrés, sans oracle de rappel | [marketplace](marketplace.md#adr-053) |
