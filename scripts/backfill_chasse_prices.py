@@ -14,16 +14,11 @@ async def run(args: argparse.Namespace) -> int:
 
     try:
         if args.apply:
-            from app.core import pilot_mode
-
-            if not pilot_mode.active():
-                raise pilot_mode.PilotBlockedError("Un pilote activé est requis")
-            manifest = (pilot_mode.read_state()["manifest"] if args.pilot_state
-                        else json.loads(args.manifest.read_text()))
+            manifest = json.loads(args.manifest.read_text())
             report = await apply_market_backfill(manifest, digest=args.approved_digest,
                                                 limit=args.limit)
             print(json.dumps(report, ensure_ascii=False))
-            return 2 if report.get("pilot_halted") else 0
+            return 0
         else:
             async with AsyncSessionLocal() as session:
                 from sqlalchemy import text
@@ -51,20 +46,12 @@ def main() -> int:
 
     setup_logging()
     parser = argparse.ArgumentParser()
-    inputs = parser.add_mutually_exclusive_group(required=True)
-    inputs.add_argument("--manifest", type=Path)
-    inputs.add_argument("--pilot-state", type=Path)
+    parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--catalogue-plan", type=Path)
     parser.add_argument("--approved-digest", default="")
     parser.add_argument("--limit", type=int, default=8)
     args = parser.parse_args()
-    if args.pilot_state:
-        if not args.apply:
-            parser.error("--pilot-state exige --apply")
-        from app.core.config import settings
-
-        settings.CHASSE_PILOT_STATE_PATH = str(args.pilot_state.resolve())
     if args.apply and not args.approved_digest:
         parser.error("--apply exige --approved-digest")
     if not 1 <= args.limit <= 8:

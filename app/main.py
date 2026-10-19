@@ -16,7 +16,6 @@ from app.api.middlewares.security import (
     SecurityHeadersMiddleware,
 )
 from app.api.routes import books, health, ingest, internal, telegram
-from app.core import pilot_mode
 from app.core.config import settings, validate_production_secrets
 from app.core.logging import setup_logging
 
@@ -28,8 +27,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     validate_production_secrets()
 
     from app.bot.bot_instance import bot, setup_bot_commands
-    if not pilot_mode.active():
-        await setup_bot_commands(bot)
+    await setup_bot_commands(bot)
 
     from app.core.tasks import safe_create_task
     from app.tasks.scheduler import scheduler
@@ -39,7 +37,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     poller_task = None
     scheduler.start()
 
-    if settings.VINTED_POLLER_ENABLED and not pilot_mode.active():
+    if settings.VINTED_POLLER_ENABLED:
         poller_task = safe_create_task(run_vinted_poller(stop_event))
 
     async def shutdown_services() -> None:
@@ -105,16 +103,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             raise caller_cancellation
 
 
-class PilotMaintenanceMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if pilot_mode.active() and not (
-            request.method == "GET" and (request.url.path == "/health"
-                                        or request.url.path.startswith("/api/v1/internal/"))
-        ):
-            return Response(status_code=503, headers={"Retry-After": "3600"})
-        return await call_next(request)
-
-
 class RequestIdMiddleware(BaseHTTPMiddleware):
     """Injecte un request_id unique dans chaque requête pour l'observabilité."""
 
@@ -148,7 +136,6 @@ def create_app() -> FastAPI:
     application.add_middleware(RateLimitMiddleware)
     application.add_middleware(PayloadSizeLimitMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)
-    application.add_middleware(PilotMaintenanceMiddleware)
 
     application.include_router(health.router)
     application.include_router(ingest.router)

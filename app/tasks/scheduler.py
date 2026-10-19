@@ -9,7 +9,6 @@ from apscheduler.events import EVENT_JOB_SUBMITTED, JobSubmissionEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.core import pilot_mode
 from app.core.config import settings
 from app.tasks.cleanup import cleanup_old_data_task
 from app.tasks.proactive_autotune import run_proactive_autotune_scan
@@ -135,16 +134,6 @@ def create_scheduler() -> AsyncIOScheduler:
     )
     logger.info("Job planifié : Auto-Tuning proactif à 10h, 14h, 18h et 22h Europe/Paris.")
 
-    if pilot_mode.active():
-        for job in scheduler.get_jobs():
-            operation = job.func
-
-            async def gated_operation(operation: Any = operation, **kwargs: Any) -> Any:
-                if pilot_mode.active():
-                    return None
-                return await operation(**kwargs)
-
-            job.modify(func=gated_operation)
     return scheduler
 
 

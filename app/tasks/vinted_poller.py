@@ -18,7 +18,6 @@ import httpx
 from sqlalchemy import select
 
 from app.core import alert_latency as latency
-from app.core import pilot_mode
 from app.core.config import settings
 from app.core.constants import AlertStatus, CategorySlug
 from app.core.redis import get_redis_client
@@ -572,8 +571,6 @@ async def poll_vinted_once(
 
 async def run_vinted_poller(stop_event: asyncio.Event) -> None:
     """Boucle principale de surveillance Vinted haute performance."""
-    if pilot_mode.active():
-        return
     if not settings.VINTED_POLLER_ENABLED:
         logger.info("Vinted poller désactivé dans la configuration.")
         return

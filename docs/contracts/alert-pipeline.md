@@ -104,7 +104,5 @@ nouveautés avant ce scan peuvent manquer, et l'âge réel d'une ancienne annonc
 découverte ultérieurement reste inconnu. Aucune date n'est déduite des identifiants.
 
 
-Pendant le [pilote CAL](../operations/chasse-pilot-release.md), l’ingestion et le
-webhook sont fermés avant matching ou écriture, le poller est arrêté et tous les
-envois Telegram sont bloqués. Ce gel persiste après redémarrage jusqu’à une sortie
-explicitement autorisée ; il ne modifie pas les statuts utilisateur des alertes.
+Les indisponibilités CAL ne suspendent pas le service d'annonces : les notifications
+utilisent le cache local et les collectes conservent leurs reprises espacées.

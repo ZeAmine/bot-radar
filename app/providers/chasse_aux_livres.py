@@ -13,7 +13,6 @@ from typing import Any
 
 import httpx
 
-from app.core import pilot_mode
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
 from app.domain.rules.market_offer import (
@@ -267,7 +266,6 @@ class ChasseAuxLivresProvider:
         edition: str | None = None,
     ) -> list[MarketOffer]:
         """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
-        pilot_mode.require_source(isbn13)
         _ = edition
         # ISBN utilisé seulement s'il passe sa clé de contrôle.
         clean_isbn = normalize_search_isbn(isbn13)

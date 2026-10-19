@@ -9,7 +9,6 @@ from time import monotonic
 
 import httpx
 
-from app.core import pilot_mode
 from app.domain.rules.market_offer import is_comparable_secondhand_offer
 from app.providers.base import (
     BookMarketProvider,
@@ -73,7 +72,6 @@ class ProviderRegistry:
             provider, ChasseAuxLivresProvider,
         ):
             return MarketOffers()
-        pilot_mode.require_source(isbn13)
         async with self._semaphore:
             started = monotonic()
             try:

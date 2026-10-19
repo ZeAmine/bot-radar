@@ -1,9 +1,9 @@
 # Prix Chasse aux livres : recette et reprise progressive
 
-Statut : correctif local sur `fix/chasse-weekly-prices`, base locale `7ba37e0`.
-Les commits et la PR relèvent du mandat de préparation ; aucun déploiement,
-migration ou backfill de production n’est autorisé par cette procédure. Une empreinte de manifeste contrôle le périmètre ; elle ne remplace
-pas l'autorisation humaine d'écriture. [Contrat marché](../contracts/catalogue-market.md).
+Statut : procédure de reprise manuelle par inventaire approuvé, indépendante du
+fonctionnement du bot. Aucune reprise massive n'est autorisée par cette page.
+Une empreinte contrôle le périmètre ; elle ne remplace pas l'autorisation humaine
+d'écriture. [Contrat marché](../contracts/catalogue-market.md).
 
 ## Préparer la reprise
 
@@ -32,16 +32,16 @@ pas l'autorisation humaine d'écriture. [Contrat marché](../contracts/catalogue
    données, limites et empreinte du manifeste. Attendre l'autorisation explicite
    avant toute commande `--apply`.
 
-## Exécution sous pilote après autorisation
+## Exécution bornée après autorisation
 
 ```sh
 python scripts/backfill_chasse_prices.py \
-  --pilot-state /var/lib/botradar/chasse-pilot/state.json \
-  --apply --approved-digest EMPREINTE_APPROUVEE --limit 7
+  --manifest /chemin/prive/inventaire.json \
+  --apply --approved-digest EMPREINTE_APPROUVEE --limit 8
 ```
 
-Le script exige le mode pilote actif et son manifeste approuvé. Chaque invocation
-traite au plus sept éditions autorisées, séquentiellement, avec les délais et
+Le script exige un inventaire et son empreinte approuvée. Chaque invocation
+traite un lot borné, séquentiellement, avec les délais et
 la politique de reprise du service partagé. Les invocations doivent être espacées
 et leurs bilans contrôlés ; ne pas lancer une boucle parallèle de reprises.
 Les livres devenus récents sont réutilisés, les échecs restent en repos, les
@@ -58,9 +58,9 @@ Après chaque lot : vérifier les résultats par livre, les nouvelles dates de r
 par composante, les offres conservées en cas d'échec et les réservations futures.
 Regénérer un inventaire READ ONLY pour mesurer les manquants et les conflits restants.
 Ne pas conclure à une reprise complète à partir du seul nombre de livres parcourus.
-Aucun nouveau cron ni processus worker n’est nécessaire. Pendant le pilote, tous
-les jobs restent suspendus, même après redémarrage ; leur reprise exige un mandat
-distinct. Voir la [procédure pilote](chasse-pilot-release.md).
+Aucun nouveau cron ni processus worker n'est nécessaire. Le bot reste en service.
+Les incidents sont traités par la politique de reprise des collectes et sessions,
+sans verrou global ni compteur persistant propre à cette procédure.
 
 ## Inventaire réel en lecture seule du 18 octobre 2026
 
@@ -91,8 +91,10 @@ Il prépare trois réparations explicites :
 La résolution catalogue automatique de Minor Arcana T2 n'a pas retrouvé de notice
 confirmée lors de la sonde ; la réparation proposée s'appuie sur la fiche explicite
 consultée et exige l'approbation du plan. Les autres associations de séries ne sont
-pas certifiées collectivement par cet inventaire. Aucun des trois changements ni
-la consolidation ISBN n'a été appliqué aux données réelles.
+pas certifiées collectivement par cet inventaire. À cette date d'inventaire, aucun des trois changements ni la consolidation ISBN
+n'avait été appliqué. Nanbanjin puis Minor Arcana T2 ont été réparés lors des
+exécutions suivantes ; leur retrait n'est pas prévu. Tout ce qui meurt & agonise
+et la consolidation ISBN restent à traiter sous mandat distinct.
 
 ## Preuves et limites
 
@@ -102,15 +104,3 @@ la concurrence, la sélection des tomes et l'idempotence des réparations.
 Les résultats détaillés et nombres de tests sont ceux du compte rendu de livraison.
 Le diagnostic réseau réel est distinct des transports simulés et de la base isolée.
 Un résultat local ne valide ni la livraison ni une reprise de production.
-
-
-## Manifeste pilote durable
-
-Le manifeste complet d'inventaire ci-dessus n'autorise aucune écriture globale.
-Le pilote validé est limité à sept éditions, sur un ensemble confirmé proposé de
-123 éditions uniques ; les 116 autres attendent une décision ultérieure. Son fichier
-privé durable est `/Users/aminezegmou/Projets/bot-radar-private/chasse-weekly-prices/pilot-manifest.json`,
-empreinte canonique `32ebfadebe3ea9b1e5b5afe4e66ba17949f73e7202578faedbbd38bba68ed36c`.
-Les 142 alertes et 274 fiches liées inventoriées ne sont pas un nombre de collectes.
-Le [protocole pilote](chasse-pilot-release.md) fixe le gel, les contrôles, la
-sauvegarde et l'absence de sortie automatique. Aucune réparation réelle n'a eu lieu.

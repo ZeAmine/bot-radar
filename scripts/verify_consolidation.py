@@ -649,7 +649,7 @@ def suite(
                 "scripts/exercise_backup_recovery.py",
                 "scripts/verify_pause_postgresql.py",
                 "scripts/verify_consolidation.py",
-                "scripts/chasse_pilot.py",
+                "scripts/chasse_prices.py",
                 "scripts/chasse_release_backup.py",
                 "scripts/exercise_chasse_release.py",
                 "scripts/deploy.py",

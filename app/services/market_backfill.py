@@ -6,7 +6,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import pilot_mode
 from app.db.repositories.book_repo import BookRepository
 from app.services.market_refresh_policy import collection_due
 
@@ -80,7 +79,6 @@ async def apply_catalogue_repair(session: AsyncSession, repair: dict[str, Any]) 
     from app.utils.isbn import normalize_listing_isbn
     from app.utils.text import normalize_text
 
-    pilot_mode.require_isbn(repair["isbn13"])
     code = normalize_listing_isbn(repair["isbn13"])
     if code is None or code != repair["isbn13"] or not repair.get("evidence_url"):
         raise ValueError("Référence de réparation incomplète")
@@ -125,8 +123,6 @@ async def apply_market_backfill(
 
     if digest != manifest.get("digest") or digest != manifest_digest(manifest):
         raise ValueError("Inventaire modifié ou empreinte incorrecte")
-    if pilot_mode.active() and pilot_mode.read_state()["digest"] != digest:
-        raise pilot_mode.PilotBlockedError("Manifeste différent du pilote activé")
     blocked = {key for row in manifest["alerts"] for key in row["mismatched_book_ids"]}
     allowed_alerts = {uuid.UUID(row["alert_id"]) for row in manifest["alerts"]}
     outcomes: list[dict[str, str | None]] = []
@@ -134,8 +130,6 @@ async def apply_market_backfill(
     aliases_relinked: list[dict[str, Any]] = []
     repaired_alerts: list[dict[str, Any]] = []
     for repair in manifest.get("catalogue_repairs", []):
-        if pilot_mode.active() and pilot_mode.read_state()["halted"]:
-            break
         if len(repaired_alerts) >= limit:
             break
         if uuid.UUID(repair["alert_id"]) not in allowed_alerts:
@@ -148,8 +142,6 @@ async def apply_market_backfill(
                                     "outcome": cache.collection_status if cache else "failed"})
     alias_ids: set[str] = set()
     for group in manifest.get("isbn_aliases", []):
-        if pilot_mode.active() and pilot_mode.read_state()["halted"]:
-            break
         for key in group["alias_book_ids"]:
             alias_ids.add(key)
             if len(aliases_relinked) + len(repaired_alerts) >= limit:
@@ -167,8 +159,6 @@ async def apply_market_backfill(
                     aliases_relinked.append({"book_id": key,
                                              "alerts": [str(key) for key in changed]})
     for row in manifest["books"]:
-        if pilot_mode.active() and pilot_mode.read_state()["halted"]:
-            break
         if len(outcomes) + len(aliases_relinked) + len(repaired_alerts) >= limit:
             break
         if row["book_id"] in blocked or row["book_id"] in alias_ids:
@@ -194,5 +184,4 @@ async def apply_market_backfill(
                          "outcome": cache.collection_status if cache else "failed"})
     return {"digest": digest, "processed": outcomes, "skipped": skipped,
             "aliases_relinked": aliases_relinked,
-            "blocked_identity_books": sorted(blocked), "repaired_alerts": repaired_alerts,
-            "pilot_halted": pilot_mode.active() and pilot_mode.read_state()["halted"]}
+            "blocked_identity_books": sorted(blocked), "repaired_alerts": repaired_alerts}

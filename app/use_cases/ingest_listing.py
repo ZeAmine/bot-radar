@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.bot_instance import bot as default_bot
 from app.core import alert_latency as latency
-from app.core import pilot_mode
 from app.core.constants import CategorySlug
 from app.core.tasks import safe_create_task
 from app.db.models.alert import Alert
@@ -208,8 +207,6 @@ class ProcessListingUseCase:
         raw_payload: dict[str, Any],
     ) -> ListingIngestResponse:
         """Sérialise l'annonce avant toute décision et jusqu'aux commits de notification."""
-        if pilot_mode.active():
-            raise pilot_mode.PilotBlockedError("Ingestion suspendue pendant le pilote")
         timing = latency.current() or latency.AlertTiming(ingestion_id=uuid.uuid4())
         timing.entered_at = latency.clock()
         outcome = "error"
