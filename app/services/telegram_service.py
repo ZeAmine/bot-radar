@@ -472,23 +472,23 @@ async def send_listing_alert(
             )
 
 
-async def notify_admins(
+async def notify_admins_outcome(
     text: str,
     bot: Bot | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
-) -> bool:
+) -> Literal["accepted", "failed", "uncertain"]:
     """Diffuse un message d'état système à tous les utilisateurs Telegram autorisés.
 
     Le client par défaut est l'instance partagée du bot : en créer un à chaque
     notification ouvrait une nouvelle session réseau pour un envoi, alors que le
     cycle de vie du client est déjà géré par le processus.
 
-    Rend `True` seulement si **tous** les envois ont abouti : un appelant qui
-    journalise ce booléen ne doit jamais enregistrer un succès fictif.
+    Distingue les reçus acceptés, les refus confirmés et les résultats incertains.
+    Un succès partiel entre destinataires reste incertain.
     """
     allowed_ids = settings.TELEGRAM_ALLOWED_USER_IDS
     if not allowed_ids:
-        return False
+        return "failed"
 
     target_bot = bot
     if target_bot is None:
@@ -496,7 +496,7 @@ async def notify_admins(
 
         target_bot = default_bot
 
-    delivered = True
+    outcomes: list[str] = []
     for user_id in allowed_ids:
         try:
             call: dict[str, Any] = {
@@ -506,12 +506,35 @@ async def notify_admins(
             }
             if reply_markup is not None:
                 call["reply_markup"] = reply_markup
-            await target_bot.send_message(**call)
+            receipt = await target_bot.send_message(**call)
+            outcomes.append("accepted" if usable_receipt(receipt, user_id) else "uncertain")
         except Exception as exc:
-            delivered = False
+            outcomes.append(
+                "failed"
+                if isinstance(
+                    exc,
+                    (
+                        TelegramBadRequest,
+                        TelegramForbiddenError,
+                        TelegramUnauthorizedError,
+                        TelegramRetryAfter,
+                    ),
+                )
+                else "uncertain"
+            )
             logger.warning(
                 "Impossible d'envoyer la notification système à l'utilisateur %s: %s",
                 user_id,
                 exc,
             )
-    return delivered
+    if all(value == "accepted" for value in outcomes):
+        return "accepted"
+    return "failed" if all(value == "failed" for value in outcomes) else "uncertain"
+
+
+async def notify_admins(
+    text: str,
+    bot: Bot | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> bool:
+    return await notify_admins_outcome(text, bot=bot, reply_markup=reply_markup) == "accepted"

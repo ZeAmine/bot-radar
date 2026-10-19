@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import tempfile
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -406,6 +407,12 @@ def request_approval(
     autorisation silencieusement écrasée.
     """
     with _exclusive_lock(directory):
+        try:
+            if is_suspended(directory):
+                return ApprovalResult(DecisionOutcome.WRONG_STATE, "maintenance suspendue")
+            validate_authority(directory)
+        except (OSError, ValueError):
+            return ApprovalResult(DecisionOutcome.WRONG_STATE, "état de maintenance incertain")
         incidents = read_incidents(directory)
         incident = incidents.get(alert_id)
         if incident is None:
@@ -589,7 +596,10 @@ def resume_maintenance(
 
 def is_suspended(directory: Path) -> bool:
     """Indique si la maintenance est suspendue."""
-    return bool(_read_json_object(directory / SUSPENSION_FILE).get("suspended") is True)
+    value = authoritative_object(directory / SUSPENSION_FILE)
+    if value is not None and not isinstance(value.get("suspended"), bool):
+        raise ValueError("suspension invalide")
+    return bool(value and value["suspended"])
 
 
 def suspension_state(directory: Path) -> dict[str, Any]:
@@ -655,3 +665,157 @@ def reset_technical_failures(*, directory: Path) -> None:
                 "last_success_at": datetime.now(UTC).isoformat(),
             },
         )
+
+
+def authoritative_object(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError(f"état invalide : {path.name}")
+    return value
+
+
+def authoritative_records(path: Path) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    records = []
+    for line in lines:
+        if line.strip():
+            value = json.loads(line)
+            if not isinstance(value, dict):
+                raise ValueError(f"journal invalide : {path.name}")
+            records.append(value)
+    return records
+
+
+def observe_incident(
+    *, directory: Path, incident: bool, commit: str, severity: str, reason: str, now: datetime
+) -> tuple[str, str | None]:
+    with exclusive_lock(directory):
+        if is_suspended(directory):
+            return "suspended", None
+        authoritative_records(directory / INCIDENTS_FILE)
+        current = find_open_incident(directory)
+        if current is not None and incident:
+            return "continue", current.alert_id
+        if current is None and not incident:
+            return "none", None
+        alert_id = current.alert_id if current else str(uuid.uuid4())
+        payload = {"event": "incident", "alert_id": alert_id, "commit": commit}
+        if incident:
+            payload.update(
+                status=IncidentStatus.OPEN.value,
+                opened_at=now.isoformat(),
+                severity=severity,
+                reason=reason,
+            )
+        else:
+            payload.update(status=IncidentStatus.VERIFIED.value, resolved_at=now.isoformat())
+        _atomic_append(directory / INCIDENTS_FILE, payload)
+        return ("open" if incident else "resolve"), alert_id
+
+
+def reserve_notification(
+    *,
+    directory: Path,
+    key: str,
+    alert_id: str,
+    observation_id: str,
+    now: datetime,
+    ttl_seconds: int,
+) -> str | None:
+    with exclusive_lock(directory):
+        records = authoritative_records(directory / "notifications.jsonl")
+        previous = next(
+            (v for v in reversed(records) if v.get("key") == key and not v.get("late_result")), None
+        )
+        if previous:
+            retry_at = parse_datetime(previous.get("retry_at"))
+            if retry_at is None:
+                raise ValueError("échéance de notification invalide")
+            if now < retry_at:
+                return None
+            if previous.get("status") == "reserved":
+                _atomic_append(
+                    directory / "notifications.jsonl",
+                    {
+                        **previous,
+                        "status": "interrupted",
+                        "at": now.isoformat(),
+                    },
+                )
+        reservation = uuid.uuid4().hex
+        _atomic_append(
+            directory / "notifications.jsonl",
+            {
+                "key": key,
+                "alert_id": alert_id,
+                "observation_id": observation_id,
+                "reservation_id": reservation,
+                "status": "reserved",
+                "at": now.isoformat(),
+                "retry_at": datetime.fromtimestamp(now.timestamp() + ttl_seconds, UTC).isoformat(),
+            },
+        )
+        return reservation
+
+
+def finish_notification(
+    *, directory: Path, reservation_id: str, status: str, now: datetime
+) -> None:
+    if status not in {"accepted", "failed", "uncertain"}:
+        raise ValueError("résultat de notification invalide")
+    with exclusive_lock(directory):
+        records = authoritative_records(directory / "notifications.jsonl")
+        previous = next(
+            (v for v in reversed(records) if v.get("reservation_id") == reservation_id), None
+        )
+        if previous is None or previous.get("status") not in {"reserved", "interrupted"}:
+            raise ValueError("réservation de notification inactive")
+        latest = next(
+            (
+                v
+                for v in reversed(records)
+                if v.get("key") == previous["key"] and not v.get("late_result")
+            ),
+            None,
+        )
+        payload = {
+            **previous,
+            "status": status,
+            "at": now.isoformat(),
+            "late_result": latest is not None and latest["reservation_id"] != reservation_id,
+        }
+        if status == "failed":
+            payload["retry_at"] = datetime.fromtimestamp(now.timestamp() + 60, UTC).isoformat()
+        _atomic_append(directory / "notifications.jsonl", payload)
+
+
+def validate_authority(directory: Path) -> None:
+    for name in (INCIDENTS_FILE, DECISIONS_FILE):
+        for record in authoritative_records(directory / name):
+            if not isinstance(record.get("alert_id"), str) or not record["alert_id"]:
+                raise ValueError("identifiant d'autorité invalide")
+            if name == INCIDENTS_FILE:
+                if record.get("event") != "incident":
+                    raise ValueError("événement d'incident invalide")
+                status = IncidentStatus(str(record.get("status")))
+                date_field = "resolved_at" if status == IncidentStatus.VERIFIED else "opened_at"
+            else:
+                if record.get("event") != "decision":
+                    raise ValueError("événement de décision invalide")
+                kind = DecisionKind(str(record.get("kind")))
+                if (
+                    kind in {DecisionKind.APPROVED, DecisionKind.REFUSED}
+                    and type(record.get("user_id")) is not int
+                ):
+                    raise ValueError("décideur invalide")
+                date_field = "decided_at"
+            raw = record.get(date_field)
+            if not isinstance(raw, str) or datetime.fromisoformat(raw).tzinfo is None:
+                raise ValueError("horodatage d'autorité invalide")

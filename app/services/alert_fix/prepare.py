@@ -274,12 +274,22 @@ def _apply_fix(candidate: Path, patch: str, patch_path: Path) -> None:
 
 
 def _evidence(ticket: core.Ticket, workspace: Path) -> dict[str, Any]:
+    policy.validate_context_files(ticket.evidence_files, ticket.evidence_hashes)
     files: list[dict[str, Any]] = []
+    total_bytes = 0
     for relative in ticket.evidence_files:
         path = workspace / relative
-        if not path.is_file() or path.is_symlink():
+        if (not path.resolve().is_relative_to(workspace.resolve())
+                or any(parent.is_symlink() for parent in (path, *path.parents)
+                       if parent != workspace and parent.is_relative_to(workspace))
+                or not path.is_file()):
             raise core.PolicyError(f"preuve absente : {relative}")
         raw = path.read_bytes()
+        if core.sha256_bytes(raw) != ticket.evidence_hashes[relative]:
+            raise core.PolicyError("empreinte de contexte différente du contexte approuvé")
+        total_bytes += len(raw)
+        if total_bytes > 64_000:
+            raise core.PolicyError("contexte total trop volumineux")
         if len(raw) > 20_000:
             raise core.PolicyError(f"preuve trop volumineuse : {relative}")
         try:
@@ -399,6 +409,7 @@ def _base_report(
         "llm": {
             "mode": "recorded",
             "calls": 0,
+            "proposals": 0,
             "model": None,
             "usage": None,
             "cost_usd": None,
@@ -408,10 +419,12 @@ def _base_report(
             "effective": effective.to_dict(),
         },
         "infra_files": [],
+        "provenance": "unverified",
+        "declared_provenance": ticket.provenance,
+        "isolation": "not_executed",
         "limitations": [
-            "propositions enregistrées : aucun appel IA réel",
-            "ticket synthétique : aucune preuve de production",
-            "runner local simulé : isolation logique, pas une sandbox noyau",
+            "usage et coût non mesurés",
+            "provenance du ticket non vérifiée par la commande prepare autonome",
             "aucune publication, aucun push, aucune notification",
         ],
         "publication": "none",
@@ -431,8 +444,13 @@ def _write_reports(run_dir: Path, report: Mapping[str, Any]) -> Path:
         f"- Run : `{report['run_id']}`",
         f"- Statut : `{report['status']}` ({report['reason_code']})",
         f"- Décision : **{report['decision']}**",
-        f"- LLM : `{report['llm']['mode']}` ({report['llm']['calls']} propositions, "
+        f"- LLM : `{report['llm']['mode']}` ({report['llm']['calls']} appels, "
         f"usage={report['llm']['usage']}, coût={report['llm']['cost_usd']})",
+        f"- Propositions : {report['llm']['proposals']}",
+        f"- Provenance : {report['provenance']}",
+        f"- Provenance déclarée : {report['declared_provenance']}",
+        f"- Isolation : {report['isolation']}",
+        "- Usage et coût absents : non mesurés",
         "- Publication : aucune",
         "",
         "## Cause proposée",
@@ -552,6 +570,7 @@ def run_prepare(
     proposal_source: str = "recorded",
     recorded_proposals: Path | None = None,
     runner: runner_module.Runner | None = None,
+    trusted_recorded: bool = False,
     now: datetime | None = None,
     stream: TextIO = sys.stderr,
 ) -> int:
@@ -580,6 +599,12 @@ def run_prepare(
     except core.TicketError as exc:
         print(f"précondition invalide : {exc}", file=stream)
         return core.exit_code_for(core.Status.TICKET_INVALID)
+    if (runner is None or isinstance(runner, runner_module.LocalRunner)) and not trusted_recorded:
+        print(
+            "exécuteur système isolé requis ; LocalRunner réservé aux fixtures de confiance",
+            file=stream,
+        )
+        return core.exit_code_for(core.Status.RUNNER_ERROR)
     run_id = uuid.uuid4().hex
     run_dir = state_dir / "runs" / f"{ticket.ticket_id}-{run_id}"
     try:
@@ -610,15 +635,16 @@ def run_prepare(
         base_workspace = run_dir / "workspace"
         _archive(repo_path, ticket.base_sha, base_workspace)
         _init_candidate_git(base_workspace)
-        evidence = _evidence(ticket, base_workspace)
+        try:
+            evidence = _evidence(ticket, base_workspace)
+        except core.PolicyError as exc:
+            _fail(report, core.Status.OUT_OF_SCOPE, "CONTEXT_INVALID", str(exc))
         core.write_json_atomic(run_dir / "evidence.json", evidence)
-        source = _proposal_source(
-            source=proposal_source, recorded_path=recorded_proposals
-        )
+        source = _proposal_source(source=proposal_source, recorded_path=recorded_proposals)
         report["llm"]["mode"] = source.mode
         try:
             proposals = source.load(ticket)
-            report["llm"]["calls"] = 2
+            report["llm"]["proposals"] = 2
         except core.AIUnavailableError as exc:
             _fail(report, core.Status.AI_ERROR, "USAGE_UNAVAILABLE", str(exc))
         except core.ProposalError as exc:
@@ -692,6 +718,11 @@ def run_prepare(
         report["modified_files"] = list(stats.files)
         report["cause"] = core.excerpt(proposals.fix.cause, 2000)
         actual_runner = runner or runner_module.LocalRunner(run_dir)
+        report["isolation"] = (
+            "host_subprocess"
+            if isinstance(actual_runner, runner_module.LocalRunner)
+            else "injected_runner"
+        )
         outcome_before = actual_runner.run_test(
             before_workspace, ticket.test_file, phase="before", deadline=deadline
         )
@@ -745,9 +776,7 @@ def run_prepare(
                     f"{control_name.upper()}_FAILED",
                     outcome_control.stdout + "\n" + outcome_control.stderr,
                 )
-        outcome_suite = actual_runner.run_isolated_suite(
-            after_workspace, deadline=deadline
-        )
+        outcome_suite = actual_runner.run_isolated_suite(after_workspace, deadline=deadline)
         report["controls"].append(_control_dict(outcome_suite))
         _run_outcome(
             outcome=outcome_suite,

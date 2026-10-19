@@ -113,6 +113,8 @@ async def handle_approve(callback: CallbackQuery) -> None:
         await _answer(callback, f"⛔ Rien à faire : {result.reason}.")
     elif result.outcome is state.DecisionOutcome.EXPIRED:
         await _answer(callback, f"⛔ {result.reason}.")
+    elif result.reason in {"maintenance suspendue", "état de maintenance incertain"}:
+        await _answer(callback, f"⛔ Décision refusée : {result.reason}.")
     else:
         await _answer(callback, OUT_OF_SCOPE_NOTICE)
 
@@ -206,7 +208,14 @@ async def handle_status(message: Message) -> None:
         await message.answer("⛔ Action réservée aux utilisateurs autorisés.")
         return
     directory = _state_dir()
-    suspended = state.is_suspended(directory)
+    try:
+        state.validate_authority(directory)
+        suspended = state.is_suspended(directory)
+    except (OSError, ValueError):
+        await message.answer(
+            "⚠️ État de maintenance illisible. Une vérification opérateur est nécessaire."
+        )
+        return
     incident = state.find_open_incident(directory)
     failures = state.consecutive_failures(directory)
     decisions = state.read_decisions(directory)

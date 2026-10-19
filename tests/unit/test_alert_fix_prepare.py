@@ -276,7 +276,8 @@ def test_successful_prepare_writes_report_and_never_publishes(tmp_path):
     assert report["publication"] == "none"
     assert report["llm"] == {
         "mode": "recorded",
-        "calls": 2,
+        "calls": 0,
+        "proposals": 2,
         "model": None,
         "usage": None,
         "cost_usd": None,
