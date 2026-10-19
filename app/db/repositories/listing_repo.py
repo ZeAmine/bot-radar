@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,6 +73,16 @@ class ListingRepository:
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def count_by_source(self, source_name: str) -> int:
+        """Compte les annonces connues d'une source (borne de la référence initiale)."""
+        stmt = (
+            select(func.count())
+            .select_from(Listing)
+            .where(Listing.source_name == source_name)
+        )
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
 
     async def get_by_source_and_external_id(
         self,

@@ -105,6 +105,17 @@ async def load_initial_seen_ids() -> FifoSet:
         return FifoSet()
 
 
+async def _source_is_empty() -> bool:
+    """Vrai seulement si aucune annonce Leboncoin n'existe en base."""
+    try:
+        async with AsyncSessionLocal() as session:
+            count = await ListingRepository(session).count_by_source(LEBONCOIN_SOURCE_NAME)
+            return count == 0
+    except Exception as exc:
+        logger.warning("Impossible de compter les annonces Leboncoin : %s", exc)
+        return False
+
+
 async def _fetch_items(
     url: str,
     proxy_url: str | None,
@@ -305,7 +316,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
     logger.info("Poller Leboncoin initialisé avec %d IDs en mémoire.", len(seen_ids))
 
     status = await get_poller_status()
-    baseline_pending = status is None and len(seen_ids) == 0
+    baseline_pending = status is None and await _source_is_empty()
     if baseline_pending:
         logger.info(
             "Aucune annonce Leboncoin connue : la première page servira de référence "
