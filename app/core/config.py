@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     )
     LEBONCOIN_PROXY_ENABLED: bool = False
     LEBONCOIN_PROXY_URL: str | None = None
+    LEBONCOIN_CATCHUP_MAX_PAGES: int = 2
 
     # Mode Nuit (Heures Creuses pour préserver l'IP et éviter les bans Cloudflare)
     NIGHT_MODE_ENABLED: bool = True

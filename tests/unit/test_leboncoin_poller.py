@@ -1,10 +1,11 @@
 """Tests unitaires du poller Leboncoin (collecte et ingestion simulées)."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.core.config import settings
 from app.db.models.listing import Listing
 from app.services.leboncoin_parsing import ScrapedLeboncoinItem
 from app.services.telegram_service import build_listing_caption
@@ -28,7 +29,9 @@ def _item(external_id: str) -> ScrapedLeboncoinItem:
 async def test_poll_skips_seen_and_ingests_new(monkeypatch: pytest.MonkeyPatch):
     ingested: list[str] = []
 
-    async def fake_fetch(_url: str, _proxy: str | None) -> list[ScrapedLeboncoinItem]:
+    async def fake_fetch(
+        _url: str, _proxy: str | None, _page: int = 1
+    ) -> list[ScrapedLeboncoinItem]:
         return [_item("1"), _item("2")]
 
     async def fake_ingest(item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
@@ -39,16 +42,19 @@ async def test_poll_skips_seen_and_ingests_new(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
 
     seen: set[str] = {"2"}
-    count = await poll_leboncoin_once(seen, cycle_index=1)
+    outcome = await poll_leboncoin_once(seen, cycle_index=1)
 
     assert ingested == ["1"]
-    assert count == 1
+    assert outcome.ingested_count == 1
+    assert outcome.ads_seen == 2
     assert "1" in seen
 
 
 @pytest.mark.asyncio
 async def test_poll_keeps_failed_and_retry_ids_for_next_cycle(monkeypatch: pytest.MonkeyPatch):
-    async def fake_fetch(_url: str, _proxy: str | None) -> list[ScrapedLeboncoinItem]:
+    async def fake_fetch(
+        _url: str, _proxy: str | None, _page: int = 1
+    ) -> list[ScrapedLeboncoinItem]:
         return [_item("boom"), _item("retry"), _item("ok")]
 
     async def fake_ingest(item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
@@ -62,18 +68,21 @@ async def test_poll_keeps_failed_and_retry_ids_for_next_cycle(monkeypatch: pytes
     monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
 
     seen: set[str] = set()
-    count = await poll_leboncoin_once(seen)
+    outcome = await poll_leboncoin_once(seen)
 
     assert "boom" not in seen
     assert "retry" not in seen
     assert "ok" in seen
     # L'échec n'est pas compté ; « retry » l'est (annonce ingérée, notification différée).
-    assert count == 2
+    assert outcome.ingested_count == 2
+    assert outcome.needs_retry is True
 
 
 @pytest.mark.asyncio
 async def test_poll_with_no_new_items_does_not_ingest(monkeypatch: pytest.MonkeyPatch):
-    async def fake_fetch(_url: str, _proxy: str | None) -> list[ScrapedLeboncoinItem]:
+    async def fake_fetch(
+        _url: str, _proxy: str | None, _page: int = 1
+    ) -> list[ScrapedLeboncoinItem]:
         return [_item("déjà-vu")]
 
     async def fake_ingest(_item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
@@ -82,7 +91,101 @@ async def test_poll_with_no_new_items_does_not_ingest(monkeypatch: pytest.Monkey
     monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
     monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
 
-    assert await poll_leboncoin_once({"déjà-vu"}) == 0
+    outcome = await poll_leboncoin_once({"déjà-vu"})
+
+    assert outcome.ingested_count == 0
+    assert outcome.ads_seen == 1
+
+
+@pytest.mark.asyncio
+async def test_first_cycle_baseline_marks_ids_without_ingesting(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fake_fetch(
+        _url: str, _proxy: str | None, _page: int = 1
+    ) -> list[ScrapedLeboncoinItem]:
+        return [_item("1"), _item("2")]
+
+    async def fake_ingest(_item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
+        raise AssertionError("aucune ingestion attendue pendant la référence")
+
+    monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
+    monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
+
+    seen: set[str] = set()
+    outcome = await poll_leboncoin_once(seen, baseline=True)
+
+    assert seen == {"1", "2"}
+    assert outcome.baseline_established is True
+    assert outcome.ingested_count == 0
+
+
+def _dated_items(
+    prefix: str, count: int, published_at: datetime
+) -> list[ScrapedLeboncoinItem]:
+    return [
+        ScrapedLeboncoinItem(
+            external_id=f"{prefix}{index}",
+            title=f"Blacksad {prefix}{index}",
+            url=f"https://www.leboncoin.fr/ad/livres/{prefix}{index}",
+            item_price_cents=2500,
+            condition=None,
+            photo_url=None,
+            published_at=published_at,
+        )
+        for index in range(count)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_saturated_page_reads_second_page(monkeypatch: pytest.MonkeyPatch):
+    pages: list[int] = []
+    now = datetime.now(UTC)
+
+    async def fake_fetch(
+        _url: str, _proxy: str | None, page: int = 1
+    ) -> list[ScrapedLeboncoinItem]:
+        pages.append(page)
+        return _dated_items("a", 32, now) if page == 1 else _dated_items("b", 2, now)
+
+    async def fake_ingest(_item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
+        return IngestOutcome(notified_count=0, needs_retry=False)
+
+    monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
+    monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
+    monkeypatch.setattr(settings, "LEBONCOIN_CATCHUP_MAX_PAGES", 2)
+
+    outcome = await poll_leboncoin_once(set(), since=now - timedelta(minutes=5))
+
+    assert pages == [1, 2]
+    assert outcome.pages_fetched == 2
+    assert outcome.ads_since_last_cycle == 32
+    assert outcome.ads_seen == 34
+
+
+@pytest.mark.asyncio
+async def test_page_with_few_recent_ads_stays_single_page(monkeypatch: pytest.MonkeyPatch):
+    pages: list[int] = []
+    now = datetime.now(UTC)
+
+    async def fake_fetch(
+        _url: str, _proxy: str | None, page: int = 1
+    ) -> list[ScrapedLeboncoinItem]:
+        pages.append(page)
+        return _dated_items("old", 27, now - timedelta(hours=2)) + _dated_items("new", 5, now)
+
+    async def fake_ingest(_item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
+        return IngestOutcome(notified_count=0, needs_retry=False)
+
+    monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
+    monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
+    monkeypatch.setattr(settings, "LEBONCOIN_CATCHUP_MAX_PAGES", 2)
+
+    outcome = await poll_leboncoin_once(set(), since=now - timedelta(minutes=10))
+
+    assert pages == [1]
+    assert outcome.pages_fetched == 1
+    assert outcome.ads_since_last_cycle == 5
 
 
 def test_block_cooldown_ladder_is_capped():

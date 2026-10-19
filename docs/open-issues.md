@@ -11,6 +11,8 @@ fonctionnel n'est autorisé par cette page. Ne pas transformer un constat en per
 | Garde ISBN sans génération dédiée | La garde des anciennes lignes utilise `updated_at` ; collisions/horloge/écritures hors contrat limitent la preuve ABA | Arbitrage de version dédiée si une garantie indépendante de l'horloge est requise ; voir [ISBN](isbn-removal.md) |
 | Sauvegarde opérationnelle | Outillage synthétique, sans transport indépendant, planification ou restauration production activés | Mandat d'exploitation séparé ; voir [récupération](backup-recovery.md) et prérequis historiques de livraison |
 | Livraison Telegram | Accusé, persistance et réception utilisateur diffèrent ; incertitude après transport et crash | Ne pas promettre exactement une fois ; appliquer [notification-delivery](notification-delivery.md) |
+| Collecte Leboncoin — sortie résidentielle | Validée depuis l'hôte VPS (relais résidentiel + tunnel, `200`) ; depuis `radar_app`, aucun port de l'hôte n'est joignable : `INPUT` n'accepte que `22` avant un `REJECT` | Choisir la variante pare-feu ou le conteneur dédié, puis vérifier depuis le conteneur ; voir [déploiement](operations/deployment.md#depuis-le-conteneur-radar_app--étape-supplémentaire-obligatoire) |
+| Collecte Leboncoin — cadence | La passe de 24 h interrogeait `?text=blast`, pas le flux BD, à environ 24 requêtes/jour et non 144 ; aucun blocage observé sur cette base | Soak de 48 h sur l'URL BD à 600 s avant activation ; relever captchas et couverture |
 
 ## Limites historiques remplacées
 

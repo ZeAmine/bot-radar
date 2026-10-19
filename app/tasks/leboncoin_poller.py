@@ -12,8 +12,8 @@ import json
 import logging
 import random
 import time
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from app.core.config import settings
@@ -45,6 +45,7 @@ WINDOW_LOG_EVERY_CYCLES = 20
 COLLECTION_FAILURE_ALERT_THRESHOLD = 5
 BLOCK_COOLDOWNS = (600, 1800, 3600, 7200)
 MAX_COLLECTION_BACKOFF_SECONDS = 1800.0
+SATURATION_MIN_ADS = 30
 
 _ingest_semaphore: asyncio.Semaphore | None = None
 
@@ -62,6 +63,11 @@ class IngestOutcome:
 
     notified_count: int
     needs_retry: bool
+    ingested_count: int = 0
+    ads_seen: int = 0
+    ads_since_last_cycle: int | None = None
+    pages_fetched: int = 1
+    baseline_established: bool = False
 
 
 async def save_poller_status(data: dict[str, Any]) -> None:
@@ -102,9 +108,10 @@ async def load_initial_seen_ids() -> FifoSet:
 async def _fetch_items(
     url: str,
     proxy_url: str | None,
+    page: int = 1,
 ) -> list[ScrapedLeboncoinItem]:
     """Une requête HTTP hors boucle d'événements : curl_cffi est synchrone."""
-    html = await asyncio.to_thread(fetch_search_page, url, proxy_url)
+    html = await asyncio.to_thread(fetch_search_page, url, proxy_url, page)
     return parse_search_page(html)
 
 
@@ -123,29 +130,33 @@ async def _ingest_item(item: ScrapedLeboncoinItem, category_slug: str) -> Ingest
     return IngestOutcome(notified_count=notified_count, needs_retry=response.needs_retry)
 
 
-def _log_window(items: list[ScrapedLeboncoinItem], cycle_index: int) -> None:
-    """Journalise la fenêtre réellement obtenue : une page courte rate des annonces."""
+def _log_window(
+    items: list[ScrapedLeboncoinItem],
+    cycle_index: int,
+    ads_since_last_cycle: int | None = None,
+) -> None:
+    """Journalise la fenêtre obtenue et sa part réellement nouvelle."""
     if not items:
         logger.warning("Page Leboncoin vide : aucune annonce extraite.")
         return
-    dated = [item.published_at for item in items if item.published_at is not None]
-    oldest_age = ""
-    if dated:
-        age_minutes = (datetime.now(tz=dated[0].tzinfo) - min(dated)).total_seconds() / 60
-        oldest_age = f", plus ancienne il y a {age_minutes:.0f} min"
+    since_label = (
+        f", dont {ads_since_last_cycle} publiées depuis le cycle précédent"
+        if ads_since_last_cycle is not None
+        else ""
+    )
     if len(items) < _expected_page_size():
         logger.warning(
             "Fenêtre Leboncoin courte : %d annonces pour %d attendues (%s)%s",
             len(items),
             _expected_page_size(),
             LEBONCOIN_SOURCE_NAME,
-            oldest_age,
+            since_label,
         )
     elif cycle_index % WINDOW_LOG_EVERY_CYCLES == 0:
         logger.info(
             "Fenêtre Leboncoin : %d annonces extraites%s",
             len(items),
-            oldest_age,
+            since_label,
         )
 
 
@@ -154,21 +165,81 @@ def _expected_page_size() -> int:
     return 35
 
 
+def _count_since(
+    items: list[ScrapedLeboncoinItem],
+    since: datetime | None,
+) -> int | None:
+    """Annonces publiées depuis le cycle précédent ; None au premier passage."""
+    if since is None:
+        return None
+    return sum(
+        1
+        for item in items
+        if item.published_at is not None and item.published_at >= since
+    )
+
+
+def _previous_poll_instant(status: dict[str, Any] | None) -> float | None:
+    """Horodatage du cycle précédent, s'il est exploitable."""
+    if not status:
+        return None
+    value = status.get("last_poll_at")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 async def poll_leboncoin_once(
     seen_ids: set[str],
     cycle_index: int = 0,
-) -> int:
-    """Un cycle : collecte, filtre des annonces déjà vues, ingestion."""
+    *,
+    baseline: bool = False,
+    since: datetime | None = None,
+) -> IngestOutcome:
+    """Un cycle : collecte, rattrapage borné, filtre des annonces déjà vues, ingestion."""
     url = settings.LEBONCOIN_SEARCH_URL
     proxy_url = settings.get_leboncoin_proxy()
-    items = await _fetch_items(url, proxy_url)
-    _log_window(items, cycle_index)
+    items = await _fetch_items(url, proxy_url, 1)
+    pages_fetched = 1
+    ads_since_last_cycle = _count_since(items, since)
+
+    if (
+        not baseline
+        and ads_since_last_cycle is not None
+        and ads_since_last_cycle >= SATURATION_MIN_ADS
+        and settings.LEBONCOIN_CATCHUP_MAX_PAGES > 1
+    ):
+        known = {item.external_id for item in items}
+        next_page = await _fetch_items(url, proxy_url, 2)
+        pages_fetched = 2
+        items = [*items, *(item for item in next_page if item.external_id not in known)]
+        logger.info(
+            "Page Leboncoin saturée (%d annonces du cycle précédent) : page 2 lue.",
+            ads_since_last_cycle,
+        )
+
+    _log_window(items, cycle_index, ads_since_last_cycle)
+    outcome = IngestOutcome(
+        notified_count=0,
+        needs_retry=False,
+        ads_seen=len(items),
+        ads_since_last_cycle=ads_since_last_cycle,
+        pages_fetched=pages_fetched,
+    )
     if not items:
-        return 0
+        return outcome
+
+    if baseline:
+        seen_ids.update(item.external_id for item in items)
+        logger.info(
+            "Référence Leboncoin posée : %d annonces marquées vues sans notification.",
+            len(items),
+        )
+        return replace(outcome, baseline_established=True)
 
     new_items = [item for item in items if item.external_id not in seen_ids]
     if not new_items:
-        return 0
+        return outcome
 
     logger.info(
         "Leboncoin : %d nouvelles annonces détectées (%s)",
@@ -183,6 +254,8 @@ async def poll_leboncoin_once(
         return_exceptions=True,
     )
     ingested_count = 0
+    notified_count = 0
+    needs_retry = False
     for item, result in zip(new_items, results, strict=True):
         if isinstance(result, BaseException):
             seen_ids.discard(item.external_id)
@@ -193,7 +266,9 @@ async def poll_leboncoin_once(
             continue
         if result.needs_retry:
             seen_ids.discard(item.external_id)
+            needs_retry = True
         ingested_count += 1
+        notified_count += result.notified_count
         if result.notified_count:
             logger.info(
                 "MATCH LEBONCOIN ! Titre: '%s' (Prix: %.2f €) -> %d alertes notifiées !",
@@ -201,7 +276,12 @@ async def poll_leboncoin_once(
                 item.item_price_cents / 100,
                 result.notified_count,
             )
-    return ingested_count
+    return replace(
+        outcome,
+        notified_count=notified_count,
+        needs_retry=needs_retry,
+        ingested_count=ingested_count,
+    )
 
 
 def _block_cooldown(consecutive_blocks: int) -> int:
@@ -224,6 +304,16 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
     seen_ids: FifoSet = await load_initial_seen_ids()
     logger.info("Poller Leboncoin initialisé avec %d IDs en mémoire.", len(seen_ids))
 
+    status = await get_poller_status()
+    baseline_pending = status is None and len(seen_ids) == 0
+    if baseline_pending:
+        logger.info(
+            "Aucune annonce Leboncoin connue : la première page servira de référence "
+            "sans notification."
+        )
+    last_poll_instant = _previous_poll_instant(status)
+    baseline_at: float | None = None
+
     if settings.LEBONCOIN_PROXY_URL and not settings.LEBONCOIN_PROXY_ENABLED:
         logger.warning(
             "LEBONCOIN_PROXY_URL est configurée mais LEBONCOIN_PROXY_ENABLED est faux : "
@@ -243,7 +333,20 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
         poll_cycle += 1
         cycle_started = time.monotonic()
         try:
-            count = await poll_leboncoin_once(seen_ids=seen_ids, cycle_index=poll_cycle)
+            since = (
+                datetime.fromtimestamp(last_poll_instant, tz=UTC)
+                if last_poll_instant is not None and not baseline_pending
+                else None
+            )
+            outcome = await poll_leboncoin_once(
+                seen_ids=seen_ids,
+                cycle_index=poll_cycle,
+                baseline=baseline_pending,
+                since=since,
+            )
+            if outcome.baseline_established:
+                baseline_pending = False
+                baseline_at = time.time()
 
             if consecutive_blocks > 0:
                 logger.info("Connexion Leboncoin rétablie.")
@@ -271,13 +374,22 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                     name="notify_leboncoin_collection_recovered",
                 )
 
+            last_poll_instant = time.time()
             await save_poller_status({
                 "status": "active",
                 "consecutive_blocks": 0,
-                "last_poll_at": time.time(),
-                "last_items_found": count,
+                "last_poll_at": last_poll_instant,
+                "last_ingested": outcome.ingested_count,
+                "ads_seen": outcome.ads_seen,
+                "ads_since_last_cycle": outcome.ads_since_last_cycle,
+                "pages_fetched": outcome.pages_fetched,
+                "baseline_at": baseline_at,
                 "seen_ids": len(seen_ids),
-                "message": "Collecte Leboncoin active",
+                "message": (
+                    "Référence initiale posée sans notification"
+                    if outcome.baseline_established
+                    else "Collecte Leboncoin active"
+                ),
             })
 
         except LeboncoinBlockError as block_exc:

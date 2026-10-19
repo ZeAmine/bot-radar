@@ -8,6 +8,7 @@ et passe ; la sortie doit rester résidentielle, donc un proxy SOCKS local
 
 import logging
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 logger = logging.getLogger("radar.leboncoin")
 
@@ -57,18 +58,34 @@ def reset_session() -> None:
     _session_proxy = None
 
 
+def _with_page(url: str, page: int) -> str:
+    """Ajoute ou remplace le paramètre `page` sans perdre l'encodage des filtres."""
+    if page <= 1:
+        return url
+    parts = urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key != "page"
+    ]
+    query.append(("page", str(page)))
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
 def fetch_search_page(
     url: str = DEFAULT_SEARCH_URL,
     proxy_url: str | None = None,
+    page: int = 1,
 ) -> str:
     """Récupère le HTML d'une page de recherche, ou lève une erreur typée."""
+    target = _with_page(url, page)
     try:
         session = _get_session(proxy_url)
     except ImportError as exc:
         raise LeboncoinCollectionError("curl_cffi indisponible") from exc
 
     try:
-        response = session.get(url, headers=REQUEST_HEADERS)
+        response = session.get(target, headers=REQUEST_HEADERS)
     except Exception as exc:
         reset_session()
         raise LeboncoinCollectionError(type(exc).__name__) from None
