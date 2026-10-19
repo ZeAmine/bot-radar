@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.core.constants import CategorySlug
+from app.core.constants import LEBONCOIN_SOURCE_NAME, CategorySlug
 from app.db.models.listing import Listing
 from app.services.ai.modules.base import BasePostAlertModule
 from app.services.ai.schemas import ProfitScoringPayload, ProfitScoringResult
@@ -36,14 +36,13 @@ class ProfitScoringModule(BasePostAlertModule):
 
         from app.services.price_calculator import calculate_estimated_total
 
-        total_cents = (
-            listing.estimated_total_cents
-            or calculate_estimated_total(
+        total_cents = listing.estimated_total_cents
+        if total_cents is None and listing.source_name != LEBONCOIN_SOURCE_NAME:
+            total_cents = calculate_estimated_total(
                 listing.item_price_cents or 0,
                 fallback_defaults=True,
             )
-            or 0
-        )
+        total_cents = total_cents or 0
         total_eur = total_cents / 100.0
         alert_name = getattr(alert, "name", None)
         alert_ctx = f" (recherche ciblée : '{alert_name}')" if alert_name else ""
@@ -79,7 +78,11 @@ class ProfitScoringModule(BasePostAlertModule):
         from app.services.price_calculator import calculate_estimated_total
 
         total_cents = listing.estimated_total_cents
-        if total_cents is None and listing.item_price_cents:
+        if (
+            total_cents is None
+            and listing.item_price_cents
+            and listing.source_name != LEBONCOIN_SOURCE_NAME
+        ):
             total_cents = calculate_estimated_total(
                 listing.item_price_cents,
                 fallback_defaults=True,

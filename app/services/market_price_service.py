@@ -13,7 +13,12 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
-from app.core.constants import CATEGORY_EMOJIS, CategorySlug, ComparisonStatus
+from app.core.constants import (
+    CATEGORY_EMOJIS,
+    LEBONCOIN_SOURCE_NAME,
+    CategorySlug,
+    ComparisonStatus,
+)
 from app.core.url_validator import is_safe_external_url
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
@@ -373,11 +378,17 @@ def _vinted_total_cents(listing: Listing) -> int | None:
     Le total déjà calculé est prioritaire ; à défaut, le barème standard Vinted est
     appliqué au prix de l'annonce (invariant : une offre sans port n'est jamais
     comparée à un prix article seul).
+
+    Une autre source n'a pas de frais connus : Leboncoin ne publie ni protection
+    acheteur ni port dans la recherche. Appliquer le barème Vinted inventerait un
+    total et l'écart livré serait faux ; la comparaison reste donc sans écart.
     """
     total = _positive(listing.estimated_total_cents)
 
     if total is not None:
         return total
+    if listing.source_name == LEBONCOIN_SOURCE_NAME:
+        return None
     item_price = _positive(listing.item_price_cents)
 
     if item_price is None:

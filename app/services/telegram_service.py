@@ -16,9 +16,10 @@ from aiogram.exceptions import (
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.bot.keyboards.listings import listing_alert_keyboard
-from app.bot.labels import abbreviate_condition, escape_html, join_list
+from app.bot.labels import abbreviate_condition, escape_html, join_list, platform_line
 from app.core import alert_latency as latency
 from app.core.config import settings
+from app.core.constants import LEBONCOIN_SOURCE_NAME
 from app.core.tasks import safe_create_task
 from app.db.models.listing import Listing
 from app.services.ai.pipeline import ai_post_alert_pipeline
@@ -103,6 +104,7 @@ def build_listing_caption(
     price_line = format_price_summary(
         item_price_cents=listing.item_price_cents,
         estimated_total_cents=listing.estimated_total_cents,
+        fallback_to_default_fees=listing.source_name != LEBONCOIN_SOURCE_NAME,
     )
 
     safe_title = escape_html(listing.title)
@@ -110,9 +112,14 @@ def build_listing_caption(
 
     lines: list[str] = [
         f"🆕 <b>{safe_title}</b>",
+    ]
+    source_line = platform_line(listing.source_name)
+    if source_line is not None:
+        lines.append(source_line)
+    lines.extend([
         price_line,
         f"<b>État :</b> {safe_condition}",
-    ]
+    ])
 
     if market_comparison_line and market_comparison_line not in (
         "📉 Occasion : indisponible",

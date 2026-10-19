@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.bot.labels import TITLE_OFFER, escape_html, format_price_cents
 from app.core.config import settings
+from app.core.constants import LEBONCOIN_SOURCE_NAME
 from app.db.models.listing import Listing
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import NegotiationPayload, NegotiationResult
@@ -48,11 +49,17 @@ class NegotiationModule(BaseAIModule):
 
         from app.services.price_calculator import calculate_estimated_total
 
-        price_cents = listing.estimated_total_cents or calculate_estimated_total(
-            listing.item_price_cents or 0,
-            fallback_defaults=True,
-        ) or 0
-        if price_cents <= 0:
+        price_cents = listing.estimated_total_cents
+        if price_cents is None:
+            if listing.source_name == LEBONCOIN_SOURCE_NAME:
+                # Leboncoin n'a pas de frais acheteur : le prix affiché est le prix vendeur.
+                price_cents = listing.item_price_cents
+            else:
+                price_cents = calculate_estimated_total(
+                    listing.item_price_cents or 0,
+                    fallback_defaults=True,
+                )
+        if not price_cents:
             return None
 
         if self.client.is_configured:

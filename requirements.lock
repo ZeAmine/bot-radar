@@ -24,8 +24,10 @@ ast_serialize==0.11.1
 asyncpg==0.31.0
 attrs==26.1.0
 certifi==2026.7.22
+cffi==2.1.1
 cfgv==3.5.0
 click==8.5.0
+curl_cffi==0.16.3
 distlib==0.4.3
 fastapi==0.141.1
 filelock==3.32.6
@@ -53,6 +55,7 @@ platformdirs==4.11.8
 pluggy==1.6.0
 pre_commit==4.6.2
 propcache==0.5.4
+pycparser==3.11
 pydantic-settings==2.15.0
 pydantic==2.13.5
 pydantic_core==2.46.5
@@ -64,13 +67,11 @@ python-dotenv==1.2.3
 PyYAML==6.0.3
 redis==8.1.0
 ruff==0.16.6
-sentry-sdk==2.69.1
 SQLAlchemy==2.1.1
 starlette==1.7.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzlocal==5.4.4
-urllib3==2.7.0
 uvicorn==0.54.0
 uvloop==0.22.1
 virtualenv==21.7.9

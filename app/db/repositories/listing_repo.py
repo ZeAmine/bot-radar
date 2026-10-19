@@ -101,13 +101,20 @@ class ListingRepository:
         self,
         payload: ListingIngestPayload,
         raw_dict: dict[str, Any],
+        *,
+        apply_default_fees: bool = True,
     ) -> Listing:
-        """Crée et persiste une nouvelle annonce à partir du payload validé."""
+        """Crée et persiste une nouvelle annonce à partir du payload validé.
+
+        `apply_default_fees` conserve le barème Vinted par défaut. Une source qui
+        ne publie ni protection ni port (Leboncoin) le désactive : le total reste
+        alors inconnu au lieu d'être inventé.
+        """
         estimated_total = calculate_estimated_total(
             item_price_cents=payload.item_price_cents,
             estimated_protection_cents=payload.estimated_protection_cents,
             estimated_shipping_cents=payload.estimated_shipping_cents,
-            fallback_defaults=True,
+            fallback_defaults=apply_default_fees,
         )
 
         listing = Listing(

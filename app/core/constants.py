@@ -18,6 +18,7 @@ __all__ = [
     "ItemCondition",
     "MatchConfidence",
     "ProviderQueryStatus",
+    "LEBONCOIN_SOURCE_NAME",
     "CATEGORY_LABELS",
     "CATEGORY_EMOJIS",
     "STANDARD_CONDITIONS",
@@ -37,6 +38,9 @@ CATEGORY_EMOJIS = {
     CategorySlug.TECH: "💻",
     CategorySlug.GAMING: "🎮",
 }
+
+# Source d'ingestion des annonces Leboncoin (flux BD, collecte résidentielle).
+LEBONCOIN_SOURCE_NAME = "leboncoin"
 
 # États standards d'occasion : une seule définition, l'enum ItemCondition
 STANDARD_CONDITIONS = [condition.value for condition in ItemCondition]

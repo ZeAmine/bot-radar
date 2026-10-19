@@ -108,6 +108,34 @@ Une simulation ne prouve pas cette invariance. Le `--dry-run` du 16 octobre
 affichait les trois conteneurs `Running` sans rien dire de l'écart de
 configuration qui allait être résolu : il compare l'état, pas l'effet.
 
+## Collecte Leboncoin (sortie résidentielle)
+
+Le collecteur Leboncoin est désactivé par défaut et n'utilise aucune sortie datacenter :
+DataDome y répond `403` même avec l'empreinte TLS de Chrome. Sur le VPS, renseigner :
+
+```sh
+LEBONCOIN_POLLER_ENABLED=true
+LEBONCOIN_POLL_INTERVAL_SECONDS=600
+LEBONCOIN_PROXY_ENABLED=true
+LEBONCOIN_PROXY_URL=socks5://127.0.0.1:1080
+```
+
+Le port `1080` est un tunnel SSH inverse ouvert par le Raspberry Pi du domicile,
+derrière un SOCKS5 en espace utilisateur. Ni root, ni port entrant, ni fournisseur
+tiers ne sont nécessaires. Côté Pi, la relance automatique tient en deux lignes de
+crontab (`@reboot`) : le serveur SOCKS local, puis `ssh -N -R 127.0.0.1:1080:127.0.0.1:8080`
+vers le VPS avec `ServerAliveInterval=15`.
+
+Contrôle depuis le VPS :
+
+```sh
+curl -sS --socks5-hostname 127.0.0.1:1080 -o /dev/null -w '%{http_code}\n' \
+  'https://www.leboncoin.fr/recherche?category=27&leisure_book_genre=comics%26mangas'
+```
+
+Attendu : `200`. Un `403` signifie que le tunnel est tombé ou que la sortie n'est plus
+résidentielle ; le poller met alors en pause croissante et alerte sur Telegram.
+
 ## Échec et retour
 
 L'interruption couvre synchronisation, construction, migration et démarrage jusqu'à

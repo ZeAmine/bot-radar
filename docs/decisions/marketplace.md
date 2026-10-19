@@ -57,3 +57,14 @@ Date : 2026-10-17 · Statut : **accepté**. Remplace ADR-047.
 - Décision et raison : Supprimer le bouton « Acheter » et tout le chemin serveur (provider, cas d’usage, handler, session de compte injectée, route interne, script de capture) ; l’accès à l’annonce reste manuel par « Voir l’annonce ».
 - Conséquences : ADR-047 devient caduque. ADR-048 et ADR-049 restent en vigueur et ne sont pas rouvertes : aucun userscript, aucune extension, aucun script injecté, et aucun remplacement automatisé n’est introduit. La réussite authentifiée de bout en bout d’ADR-047 n’était pas démontrée avant ce retrait ; elle ne l’est pas davantage après.
 - Observation historique bornée : les refus/DataDome du 14 octobre 2026 et l’absence de lien d’achat partageable restent consignés dans les ADR datées de ce recueil.
+
+<a id="adr-052"></a>
+
+## ADR-052 : Leboncoin entre dans les alertes, avec une sortie résidentielle auto-hébergée
+
+Date : 2026-10-19 · Statut : **accepté**.
+
+- Contexte : les alertes BD ne scrutaient que Vinted. L'utilisateur veut les mêmes alertes sur Leboncoin, sans compte payant, sans SaaS et sans exécution continue sur son Mac. DataDome protège le site et son `robots.txt` interdit `/recherche` ainsi que l'usage de robots. L'utilisateur lève explicitement, et pour ce seul collecteur, la règle anti-contournement d'`AGENTS.md` ; la modification du fichier de règles reste une étape distincte, non incluse ici.
+- Décision et raison : collecteur dans le processus unique, `source_name="leboncoin"`, une page de recherche Livres filtrée BD/manga (`category=27&leisure_book_genre=comics%26mangas`), triée par nouveauté. Parsing de `__NEXT_DATA__` sans navigateur, empreinte TLS Chrome via `curl_cffi`, et sortie résidentielle gratuite : SOCKS5 en espace utilisateur sur le Raspberry Pi du domicile, joignable par tunnel SSH inverse (`ssh -R 127.0.0.1:1080:127.0.0.1:8080`) ; ni root, ni port entrant, ni fournisseur tiers. Cadence 10 min ±, collecteur désactivé par défaut.
+- Conséquences : dédoublonnage inchangé `(source_name, external_id)` ; une annonce Leboncoin est nouvelle si `published_at > alert.created_at`, sans empreinte de premier scan ni migration ; aucun frais Vinted n'est appliqué et aucun port n'est inventé (`estimated_total_cents` reste `NULL`, pas de ligne d'écart livré) ; la légende porte « Plateforme : Leboncoin ». Vinted — collecteur, parsing, poller, barème — reste inchangé. Un blocage DataDome met le collecteur en pause croissante et le signale sur Telegram ; un tunnel coupé suspend la collecte sans toucher aux autres sources.
+- Limites : 35 annonces par page, soit une fenêtre d'environ 20 à 30 min à cette cadence ; aucune collecte si le Pi ou le tunnel est indisponible ; `robots.txt` reste en contradiction avec cette décision, assumée par l'utilisateur et bornée à ce flux.
