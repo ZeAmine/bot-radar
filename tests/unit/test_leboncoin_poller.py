@@ -251,9 +251,15 @@ def test_leboncoin_status_line_reports_pause_staleness_and_off(monkeypatch: pyte
     assert "30 min" in pause
 
     active = status_module._leboncoin_status_line(
-        {"status": "active", "last_poll_at": now.timestamp() - 30}, now
+        {
+            "status": "active",
+            "last_poll_at": now.timestamp() - 30,
+            "ads_since_last_cycle": 12,
+        },
+        now,
     )
     assert "Active" in active
+    assert "12 nouvelles" in active
 
     late = status_module._leboncoin_status_line(
         {"status": "active", "last_poll_at": now.timestamp() - 7200}, now

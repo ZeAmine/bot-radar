@@ -34,7 +34,13 @@ def _leboncoin_status_line(data: dict[str, Any] | None, now: datetime) -> str:
             return "⚪ <b>Inconnu</b> (horodatage absent)"
         elapsed = int(max(0.0, now.timestamp() - last_poll))
         if elapsed <= settings.LEBONCOIN_POLL_INTERVAL_SECONDS * 3:
-            return f"🟢 <b>Active</b> (collecte -{elapsed}s)"
+            since = data.get("ads_since_last_cycle")
+            suffix = (
+                f" · {since} nouvelles"
+                if isinstance(since, int) and not isinstance(since, bool)
+                else ""
+            )
+            return f"🟢 <b>Active</b> (collecte -{elapsed}s{suffix})"
         return f"🟠 <b>En retard</b> ({elapsed // 60} min)"
     if status == "stopped":
         return "🔴 <b>Arrêté</b>"
