@@ -255,6 +255,7 @@ async def refresh_book_prices_task(
     max_duration_seconds: float = MAX_PASS_DURATION_SECONDS,
     job_id: str | None = None,
     scheduled_for: datetime | None = None,
+    pause_range: tuple[float, float] | None = None,
 ) -> dict[str, int]:
     global _pass_loop, _pass_lock
     loop = asyncio.get_running_loop()
@@ -267,7 +268,8 @@ async def refresh_book_prices_task(
         return await _refresh_book_prices_pass(
             registry=registry, session=session, incremental=incremental,
             batch_size=batch_size, concurrency=concurrency,
-            max_duration_seconds=max_duration_seconds, job_id=job_id, scheduled_for=scheduled_for,
+            max_duration_seconds=max_duration_seconds, job_id=job_id,
+            scheduled_for=scheduled_for, pause_range=pause_range,
         )
 
 
@@ -280,6 +282,7 @@ async def _refresh_book_prices_pass(
     max_duration_seconds: float = MAX_PASS_DURATION_SECONDS,
     job_id: str | None = None,
     scheduled_for: datetime | None = None,
+    pause_range: tuple[float, float] | None = None,
 ) -> dict[str, int]:
     """Rafraîchit les prix de marché pour les livres associés à des alertes BD actives.
 
@@ -300,6 +303,9 @@ async def _refresh_book_prices_pass(
                        C'est lui qui date l'occurrence, jamais l'heure à laquelle le
                        code tourne : une passe de 19:00 lancée à 19:31 reste
                        l'occurrence de 19:00.
+        pause_range: Bornes de la pause anti-rate-limit entre deux vagues. Absent,
+                     elles suivent le mode de passe ; une maintenance nocturne
+                     impose les bornes longues sans changer le mode de bilan.
     """
     if registry is None:
         if session is None:
@@ -360,7 +366,9 @@ async def _refresh_book_prices_pass(
             if has_more:
                 # Pause anti-rate-limit une fois par vague : la pression sur les
                 # partenaires reste équivalente à un traitement séquentiel.
-                await asyncio.sleep(random.uniform(*PAUSE_RANGES[bool(incremental)]))
+                await asyncio.sleep(
+                    random.uniform(*(pause_range or PAUSE_RANGES[bool(incremental)]))
+                )
 
         logger.info(
             "Rafraîchissement BD terminé (%s) : %d traités, %d mis à jour, "

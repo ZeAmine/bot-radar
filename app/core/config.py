@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     NIGHT_MODE_START_HOUR: int = 0  # 00:00 (minuit) heure de Paris
     NIGHT_MODE_END_HOUR: int = 7    # 07:00 heure de Paris
     NIGHT_MODE_TIMEZONE: str = "Europe/Paris"
+    NIGHT_MAINTENANCE_BATCH_SIZE: int = 10
 
     def get_vinted_proxy(self) -> str | None:
         """Retourne l'URL d'un proxy Vinted actif.
