@@ -52,8 +52,18 @@ def build_ticket(
     now: datetime | None = None,
     ttl_seconds: int = 600,
     trace: dict[str, Any] | None = None,
+    evidence_hashes: dict[str, str] | None = None,
 ) -> core.Ticket:
     moment = (now or datetime.now(UTC)).astimezone(UTC)
+    if evidence_hashes is None:
+        evidence_hashes = {
+            path: core.sha256_bytes(
+                b"def value() -> int:" + bytes([10]) + b"    return 1" + bytes([10])
+            )
+            if path == "app/example.py"
+            else core.sha256_bytes((Path(__file__).resolve().parents[1] / path).read_bytes())
+            for path in evidence_files
+        }
     ticket = core.Ticket(
         schema_version=core.SCHEMA_VERSION,
         ticket_id=ticket_id or f"ticket-{uuid4().hex}",
@@ -77,6 +87,8 @@ def build_ticket(
         allowed_files=allowed_files,
         test_file=test_file,
         evidence_files=evidence_files,
+        evidence_hashes=evidence_hashes,
+        provenance="synthetic_fixture",
         trace=trace
         or {
             "ingested": 12,
@@ -111,7 +123,7 @@ def recorded_payload() -> dict[str, Any]:
             "path": TEST_PATH,
             "content": REPRO_TEST,
             "cause": "séparateur apostrophe supprimé",
-            "expected_failure": "normalize_text('l\'été') renvoie 'lete'",
+            "expected_failure": "normalize_text('l'été') renvoie 'lete'",
         },
         "fix": {
             "unified_diff": SYNTHETIC_FIX_PATCH,

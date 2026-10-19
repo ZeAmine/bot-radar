@@ -15,7 +15,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
-SCHEMA_VERSION: Final = 1
+from app.core.logging import redact_text as redact_log_text
+
+SCHEMA_VERSION: Final = 2
 MAX_FILES: Final = 3
 MAX_LINES: Final = 120
 MAX_BYTES: Final = 32 * 1024
@@ -24,7 +26,7 @@ MAX_DURATION_SECONDS: Final = 1800
 MAX_TICKET_TTL: Final = timedelta(hours=4)
 DEFAULT_STATE_DIR: Final = Path("~/.botradar/alert-fix")
 
-_SHA_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
+_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _DATETIME_FIELDS = frozenset({"issued_at", "expires_at"})
 _TICKET_FIELDS = frozenset(
     {
@@ -40,6 +42,8 @@ _TICKET_FIELDS = frozenset(
         "allowed_files",
         "test_file",
         "evidence_files",
+        "evidence_hashes",
+        "provenance",
         "trace",
         "limits",
     }
@@ -328,14 +332,18 @@ class Ticket:
     allowed_files: tuple[str, ...]
     test_file: str
     evidence_files: tuple[str, ...]
+    evidence_hashes: dict[str, str]
     trace: dict[str, Any]
     limits: Limits
+    provenance: str = "unverified"
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> Ticket:
         _check_keys(payload, _TICKET_FIELDS, field="ticket")
         if payload.get("schema_version") != SCHEMA_VERSION:
-            raise TicketError("schema_version non pris en charge")
+            raise TicketError(
+                "ancien schéma de ticket refusé ; réexport explicite au schéma 2 requis"
+            )
         ticket_id = _require_str(payload.get("ticket_id"), field="ticket_id")
         ticket_hash = _require_str(payload.get("ticket_hash"), field="ticket_hash")
         alert_id = _require_str(payload.get("alert_id"), field="alert_id")
@@ -364,8 +372,16 @@ class Ticket:
             raise TicketError("allowed_files dépasse le plafond dur")
         if test_file not in allowed_files:
             raise TicketError("test_file doit figurer dans allowed_files")
-        if not set(evidence_files).issubset(set(allowed_files)):
-            raise TicketError("evidence_files doit être un sous-ensemble de allowed_files")
+        from app.services.alert_fix import policy
+
+        evidence_hashes = _require_dict(payload.get("evidence_hashes"), field="evidence_hashes")
+        try:
+            policy.validate_context_files(evidence_files, evidence_hashes)
+        except PolicyError as exc:
+            raise TicketError(f"contexte invalide : {exc}") from exc
+        provenance = payload.get("provenance")
+        if provenance not in {"unverified", "synthetic_fixture", "approved_state"}:
+            raise TicketError("provenance déclarée invalide")
         if expires_at <= issued_at:
             raise TicketError("expires_at doit être postérieur à issued_at")
         if expires_at - issued_at > MAX_TICKET_TTL:
@@ -387,6 +403,8 @@ class Ticket:
             allowed_files=allowed_files,
             test_file=test_file,
             evidence_files=evidence_files,
+            evidence_hashes=dict(evidence_hashes),
+            provenance=str(provenance),
             trace=trace,
             limits=Limits.from_dict(_require_dict(payload.get("limits"), field="limits")),
         )
@@ -404,6 +422,8 @@ class Ticket:
             "allowed_files": list(self.allowed_files),
             "test_file": self.test_file,
             "evidence_files": list(self.evidence_files),
+            "evidence_hashes": dict(self.evidence_hashes),
+            "provenance": self.provenance,
             "trace": self.trace,
             "limits": self.limits.to_dict(),
         }
@@ -627,7 +647,7 @@ def redact_text(value: str) -> str:
             "[chemin]",
         ),
     )
-    redacted = value
+    redacted = redact_log_text(value)
     for pattern, replacement in patterns:
         redacted = pattern.sub(replacement, redacted)
     return redacted

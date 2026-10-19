@@ -1,6 +1,6 @@
 # Contrôle de silence de la chaîne d'alerte (niveau 1)
 
-Statut : procédure actuelle, **lecture seule**. Ce contrôle ne corrige rien et
+Statut : procédure actuelle, **lecture seule de la base métier**. Ce contrôle ne corrige rien et
 n'autorise aucune correction. Il **capture** une autorisation humaine, sans
 exécuter quoi que ce soit. Aucun timer n'est activé par ce dépôt.
 
@@ -83,7 +83,7 @@ Depuis le conteneur applicatif (code déjà présent dans l'image) :
 docker compose run --rm --no-deps -T app python scripts/check_alert_chain.py
 ```
 
-Simulation sans notification ni écriture persistante :
+Consultation sans réservation Redis/disque, création d’état, compteur ou notification :
 
 ```sh
 docker compose exec -T app python scripts/check_alert_chain.py --dry-run
@@ -127,8 +127,8 @@ dédoublonnage — **aucune correction automatique**.
 
 ## État durable partagé
 
-Le répertoire `/var/lib/botradar` fait autorité sur trois questions, et une seule
-source répond à chacune :
+Le répertoire `/var/lib/botradar` porte l’état de maintenance. Une seule source
+répond à chaque question :
 
 | Fichier | Autorité | Contenu |
 | --- | --- | --- |
@@ -136,9 +136,11 @@ source répond à chacune :
 | `decisions.jsonl` | Décisions humaines | Approbation, refus, expiration, suspension, reprise |
 | `suspension.json` | État de suspension | Drapeau et dernier changement |
 | `technical.json` | Contrôles impossibles | Compteur consécutif et alerte technique déjà émise |
-| `dedup/*.json` | Dédoublonnage inter-processus | Créneau de notification réservé |
+| `notifications.jsonl` | Réservations et résultats des notifications métier du détecteur | Tentatives liées aux observations et incidents |
+| `observations.jsonl` | Preuves des contrôles avant envoi | Relevés immuables identifiés |
+| `dedup/*.json` | Compatibilité du dédoublonnage historique | Créneaux antérieurs |
 
-Les deux journaux sont *append-only* et les écritures sont atomiques
+Les journaux sont *append-only* et les écritures sont atomiques
 (`tempfile` + `os.replace`), sous verrou `flock`. L'état courant est reconstruit
 par relecture complète : une interruption ne peut perdre qu'une écriture non
 terminée, jamais réécrire l'histoire. **Aucun fichier dérivé ne fait autorité**,
@@ -242,14 +244,14 @@ Requires=docker.service
 Type=oneshot
 User=ubuntu
 WorkingDirectory=/home/ubuntu/bot-radar
-ExecStart=/bin/sh -c 'GIT_COMMIT=$(cat .deployed_commit) exec docker compose run \
-  --rm --no-deps -T app python scripts/check_alert_chain.py'
+ExecStart=/bin/sh -c 'exec docker compose run \
+  --rm --no-deps -T app python scripts/check_alert_chain.py --commit "$(cat .deployed_commit)"'
 ```
 
-Le commit est lu dans `.deployed_commit`, que `make deploy` écrit à chaque
+Le paramètre `--commit` reçoit `.deployed_commit`, que `make deploy` écrit à chaque
 livraison : le relevé atteste donc le code réellement déployé. Une valeur figée
 dans l'unité deviendrait fausse au déploiement suivant, et le message prétendrait
-analyser un commit qui n'est plus celui qui tourne. Sans cette variable, le commit
+analyser un commit qui n'est plus celui qui tourne. Sans ce paramètre ou variable explicitement transmise, le commit
 vaut `inconnu` — l'image ne contient pas `.git`.
 
 `/etc/systemd/system/botradar-alert-chain.timer`
@@ -270,7 +272,7 @@ WantedBy=timers.target
 Alternative `cron` :
 
 ```cron
-*/15 * * * * cd /home/ubuntu/bot-radar && GIT_COMMIT=$(cat /home/ubuntu/bot-radar/.deployed_commit) /usr/bin/docker compose run --rm --no-deps -T app python scripts/check_alert_chain.py >> /var/log/botradar-alert-chain.log 2>&1
+*/15 * * * * cd /home/ubuntu/bot-radar && /usr/bin/docker compose run --rm --no-deps -T app python scripts/check_alert_chain.py --commit "$(cat /home/ubuntu/bot-radar/.deployed_commit)" >> /var/log/botradar-alert-chain.log 2>&1
 ```
 
 Si l'opérateur veut voir le code `1` comme un échec, ne pas ajouter
@@ -305,4 +307,31 @@ Puis lancer avec `-e DATABASE_URL=postgresql+asyncpg://botradar_ro:...@postgres:
   de code assistée par IA reste réservée aux incidents réels ou aux changements.
 - Limites : ne couvre que l'axe ingestion → notification ; faux positifs possibles
   sur des reprises lentes ; la trace dépend du disque de l'hôte ; le dédoublonnage
-  Redis retombe en local si Redis est indisponible.
+  des incidents utilise le journal de réservations partagé.
+
+
+## Garanties du socle de maintenance
+
+Le mode normal écrit l'état de maintenance et peut notifier ; seule la base
+métier reste en lecture seule. `--dry-run` ne réserve aucun créneau et ne crée
+aucun fichier, verrou ou journal. Un état invalide produit un contrôle impossible,
+pas une autorisation implicite. Les autres services restent indépendants.
+
+L'ouverture et la clôture sont décidées sous le même verrou que l'écriture du
+journal d'incidents. Deux détecteurs observant le même blocage partagent ainsi
+l'identifiant. Aucun verrou de fichier n'est conservé pendant l'envoi Telegram.
+
+`observations.jsonl` conserve le relevé avant l'envoi. `notifications.jsonl`
+relie observation, incident et réservation : `reserved`, `accepted`, `failed`,
+`uncertain`, puis éventuellement `interrupted`. La trace finale conserve le
+résultat. `accepted` signifie un reçu exploitable de l'API, pas une lecture par
+l'utilisateur. Une réponse partielle entre destinataires est incertaine.
+
+Une réservation interrompue ou incertaine attend le délai de dédoublonnage avant
+une nouvelle tentative. Un refus confirmé attend au moins 60 secondes. Une reprise
+peut produire un doublon si Telegram avait accepté un envoi sans que le processus
+ait pu en conserver le reçu. La livraison exactement une fois n'est pas garantie.
+
+Le SHA est passé explicitement avec `--commit` dans les exemples : une variable
+définie sur l'hôte n'est pas automatiquement transmise au conteneur Compose.
+Ces exemples ne constituent aucune installation ou activation.

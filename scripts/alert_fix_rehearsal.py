@@ -75,6 +75,7 @@ def _run_prepare(
             "--state-dir",
             str(state_dir),
             "--confirm-prepare",
+            "--trusted-recorded",
             "--confirm-ticket-hash",
             ticket_hash,
             "--recorded-proposals",
@@ -87,6 +88,13 @@ def _run_prepare(
         timeout=1800,
         env=environment,
     )
+
+
+
+def check_branches(repo: Path, expected: str) -> None:
+    current = _git(repo, "branch", "--format=%(refname)")
+    _require(current.returncode == 0, "branches illisibles")
+    _require(current.stdout.strip() == expected, "branches modifiées par prepare")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -130,11 +138,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             allowed_files=(fixtures.BUG_FILE, fixtures.TEST_PATH),
             test_file=fixtures.TEST_PATH,
             evidence_files=(fixtures.BUG_FILE,),
+            evidence_hashes={fixtures.BUG_FILE: fixtures.core.sha256_bytes(
+                (clone / fixtures.BUG_FILE).read_bytes())},
         )
         ticket_path = state_dir / "rehearsal-ticket.json"
         proposals_path = state_dir / "rehearsal-proposals.json"
         fixtures.write_ticket(ticket_path, ticket)
         fixtures.write_recorded(proposals_path)
+        branches_before = _git(clone, "branch", "--format=%(refname)").stdout.strip()
         first = _run_prepare(
             clone=clone,
             ticket=ticket_path,
@@ -181,8 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _require(len(ledger) == 1, "ledger inattendu")
         clean = _git(clone, "status", "--porcelain")
         _require(not clean.stdout.strip(), "clone modifié par prepare")
-        branches = _git(clone, "branch", "--list", "fix/*").stdout.strip()
-        _require(not branches, "branche fix créée")
+        check_branches(clone, branches_before)
         head = _git(clone, "rev-parse", "HEAD").stdout.strip()
         _require(head == base_sha, "commit créé par prepare")
         source_after = _git(source, "status", "--porcelain", "--untracked-files=no")

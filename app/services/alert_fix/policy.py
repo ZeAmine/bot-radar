@@ -7,7 +7,7 @@ import json
 import os
 import re
 import stat
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -481,3 +481,22 @@ def validate_fix_files(*, stats: core.DiffStats, fix_files: Iterable[str], test_
     declared = {normalize_path(path) for path in fix_files}
     if actual != declared:
         raise core.PolicyError("les fichiers du correctif ne correspondent pas au diff")
+
+
+
+def validate_context_files(paths: Sequence[str], hashes: Mapping[str, str]) -> None:
+    if not 1 <= len(paths) <= 8 or len(set(paths)) != len(paths):
+        raise core.PolicyError("liste de contexte invalide")
+    if set(paths) != set(hashes):
+        raise core.PolicyError("empreintes de contexte incomplètes")
+    for path in paths:
+        normalized = normalize_path(path)
+        parts = PurePosixPath(normalized).parts
+        if (normalized != path or not normalized.startswith(("app/", "docs/", "tests/unit/",
+                                                             "tests/integration/"))
+                or not normalized.endswith((".py", ".md"))
+                or any(part.casefold() in {"private", "secrets", ".git", ".ssh"}
+                       or part.casefold().startswith(".env") for part in parts)):
+            raise core.PolicyError("chemin de contexte interdit")
+        if not isinstance(hashes[path], str) or not re.fullmatch(r"[0-9a-f]{64}", hashes[path]):
+            raise core.PolicyError("empreinte de contexte invalide")

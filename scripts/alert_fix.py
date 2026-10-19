@@ -25,6 +25,7 @@ def _parser() -> argparse.ArgumentParser:
         "--state-dir", type=Path, default=core.default_state_dir()
     )
     prepare_parser.add_argument("--confirm-prepare", action="store_true")
+    prepare_parser.add_argument("--trusted-recorded", action="store_true")
     prepare_parser.add_argument("--confirm-ticket-hash", default="")
     prepare_parser.add_argument("--allow-file", action="append", default=[])
     prepare_parser.add_argument(
@@ -50,6 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_files=tuple(args.allow_file),
         proposal_source=args.proposal_source,
         recorded_proposals=args.recorded_proposals,
+        trusted_recorded=args.trusted_recorded,
     )
 
 

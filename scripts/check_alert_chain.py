@@ -78,7 +78,7 @@ ACTIONABLE_STATES = (
     NotificationState.SENDING.value,
 )
 
-SendMessage = Callable[[str, Any], Awaitable[bool]]
+SendMessage = Callable[[str, Any], Awaitable[bool | str]]
 ClaimSlot = Callable[[str, int], Awaitable[bool]]
 
 
@@ -453,9 +453,8 @@ def read_records(path: Path) -> list[dict[str, Any]]:
 
 
 def append_record(path: Path, record: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with state.exclusive_lock(path.parent):
+        state._atomic_append(path, record)
 
 
 def find_open_alert(records: Iterable[dict[str, Any]]) -> str | None:
@@ -510,27 +509,11 @@ async def _claim_notification_slot(key: str, ttl_seconds: int) -> bool:
         return True
 
 
-async def _claim_with_fallback(
-    *,
-    key: str,
-    ttl_seconds: int,
-    now: datetime,
-    claim: ClaimSlot,
-    directory: Path | None,
-) -> bool:
-    """Tente Redis, et retombe sur le disque pour un dédoublonnage réellement durable."""
-    if directory is None:
-        return await claim(key, ttl_seconds)
-    if not await claim(key, ttl_seconds):
-        return False
-    return claim_on_disk(directory=directory, key=key, ttl_seconds=ttl_seconds, now=now)
-
-
-async def _send_via_admins(text: str, reply_markup: Any = None) -> bool:
+async def _send_via_admins(text: str, reply_markup: Any = None) -> str:
     """Envoie via le service Telegram et rend le succès réel de la diffusion."""
-    from app.services.telegram_service import notify_admins
+    from app.services.telegram_service import notify_admins_outcome
 
-    return await notify_admins(text, reply_markup=reply_markup)
+    return await notify_admins_outcome(text, reply_markup=reply_markup)
 
 
 async def run_check(
@@ -562,11 +545,6 @@ async def run_check(
         )
         return EXIT_OK
 
-    open_incident = (
-        state.find_open_incident(directory) if directory is not None else None
-    )
-    open_alert_id = open_incident.alert_id if open_incident is not None else None
-
     snapshot = await collect_snapshot(
         session,
         now=now,
@@ -575,70 +553,33 @@ async def run_check(
         max_sample=max_sample,
     )
     verdict = evaluate(snapshot)
-    action = decide(incident=verdict.incident, open_alert_id=open_alert_id)
-
-    alert_id = open_alert_id
-    status = STATUS_OK
-    message: str | None = None
-    markup: Any = None
-    resolves: str | None = None
-
-    if action == "open":
+    if directory is not None:
+        state.authoritative_records(directory / state.INCIDENTS_FILE)
+        state.authoritative_records(directory / state.DECISIONS_FILE)
+    current = state.find_open_incident(directory) if directory else None
+    action = decide(incident=verdict.incident, open_alert_id=current.alert_id if current else None)
+    alert_id = current.alert_id if current else None
+    if not dry_run and directory is not None:
+        action, alert_id = state.observe_incident(
+            directory=directory,
+            incident=verdict.incident,
+            commit=commit,
+            severity=verdict.severity,
+            reason=verdict.reason,
+            now=now,
+        )
+        if action == "suspended":
+            return EXIT_OK
+    elif action == "open":
         alert_id = str(uuid.uuid4())
-        status = state.IncidentStatus.OPEN.value
-        message = format_alert(snapshot, verdict, alert_id=alert_id, commit=commit, now=now)
-        markup = approval_keyboard(alert_id)
-        await _claim_with_fallback(
-            key=INCIDENT_DEDUP_KEY,
-            ttl_seconds=dedup_seconds,
-            now=now,
-            claim=claim,
-            directory=directory,
-        )
-    elif action == "continue":
-        status = state.IncidentStatus.OPEN.value
-        if await _claim_with_fallback(
-            key=INCIDENT_DEDUP_KEY,
-            ttl_seconds=dedup_seconds,
-            now=now,
-            claim=claim,
-            directory=directory,
-        ):
-            message = format_alert(
-                snapshot, verdict, alert_id=alert_id or "", commit=commit, now=now
-            )
-            markup = approval_keyboard(alert_id or "")
-    elif action == "resolve":
-        status = state.IncidentStatus.VERIFIED.value
-        resolves = alert_id
-        message = format_resolution(snapshot, alert_id=alert_id or "", commit=commit, now=now)
-        if not await _claim_with_fallback(
-            key=RESOLUTION_DEDUP_KEY,
-            ttl_seconds=dedup_seconds,
-            now=now,
-            claim=claim,
-            directory=directory,
-        ):
-            message = None
-
-    if directory is not None and not dry_run:
-        if action == "open" and alert_id is not None:
-            state.record_incident(
-                directory=directory,
-                alert_id=alert_id,
-                commit=commit,
-                severity=verdict.severity,
-                reason=verdict.reason,
-                now=now,
-            )
-        elif action == "resolve" and resolves is not None:
-            state.record_resolution(
-                directory=directory, alert_id=resolves, commit=commit, now=now
-            )
-        state.expire_stale_requests(
-            directory=directory, now=now, ttl_seconds=approval_ttl_seconds
-        )
-
+    status = (
+        STATUS_OK
+        if action == "none"
+        else state.IncidentStatus.VERIFIED.value
+        if action == "resolve"
+        else state.IncidentStatus.OPEN.value
+    )
+    resolves = alert_id if action == "resolve" else None
     record = build_record(
         now=now,
         status=status,
@@ -649,48 +590,85 @@ async def run_check(
         verdict=verdict,
         resolves=resolves,
     )
-
-    logger.info(
-        "Contrôle chaîne d'alerte : %s",
-        verdict.reason,
-        extra={
-            "event": "alert_chain_check",
-            "status": status,
-            "action": action,
-            "alert_id": alert_id,
-            "severity": verdict.severity,
-            "ingested": snapshot.ingested,
-            "acknowledged": snapshot.acknowledged,
-            "matches_created": snapshot.matches_created,
-            "matches_notified": snapshot.matches_notified,
-            "blocked_actionable_due": snapshot.blocked_actionable_due,
-            "non_terminal_due": snapshot.non_terminal_due,
-            "window_hours": snapshot.window_hours,
-            "stuck_hours": snapshot.stuck_hours,
-            "commit": commit,
-        },
-    )
-
+    observation_id = uuid.uuid4().hex
+    record["observation_id"] = observation_id
+    message = None
+    markup = None
+    if action in {"open", "continue"}:
+        message = format_alert(snapshot, verdict, alert_id=alert_id or "", commit=commit, now=now)
+        markup = approval_keyboard(alert_id or "")
+    elif action == "resolve":
+        message = format_resolution(snapshot, alert_id=alert_id or "", commit=commit, now=now)
     if dry_run:
         print(json.dumps(record, ensure_ascii=False))
         if message:
             print(message)
-    else:
-        if state_file is not None:
-            append_record(state_file, record)
-        if message:
-            delivered = await send(message, markup)
-            if delivered:
-                record["notification"] = "envoyée"
-            else:
-                record["notification"] = "échec"
-                logger.error(
-                    "Notification non délivrée ; aucun succès n'est enregistré",
-                    extra={"event": "alert_chain_notify_failed", "alert_id": alert_id},
+        return EXIT_INCIDENT if verdict.incident else EXIT_OK
+    if directory is not None:
+        append_record(directory / "observations.jsonl", record)
+    record["notification"] = "not_required"
+    reservation = None
+    if message:
+        key = RESOLUTION_DEDUP_KEY if action == "resolve" else INCIDENT_DEDUP_KEY
+        key += ":" + (alert_id or "stateless")
+        granted = True
+        if directory is None or claim is not _claim_notification_slot:
+            granted = await claim(key, dedup_seconds)
+        if granted and directory is not None:
+            reservation = state.reserve_notification(
+                directory=directory,
+                key=key,
+                alert_id=alert_id or "",
+                observation_id=observation_id,
+                now=now,
+                ttl_seconds=dedup_seconds,
+            )
+            granted = reservation is not None
+        record["notification"] = "suppressed"
+        if granted:
+            outcome = "uncertain"
+            try:
+                result = await send(message, markup)
+                outcome = (
+                    "accepted"
+                    if result is True
+                    else "failed"
+                    if result is False
+                    else result
+                    if result in {"accepted", "failed", "uncertain"}
+                    else "uncertain"
                 )
-        if directory is not None:
-            state.reset_technical_failures(directory=directory)
-
+            except Exception:
+                outcome = "uncertain"
+            finally:
+                record["notification"] = outcome
+                record["reservation_id"] = reservation
+                if directory is not None and reservation is not None:
+                    state.finish_notification(
+                        directory=directory,
+                        reservation_id=reservation,
+                        status=outcome,
+                        now=datetime.now(UTC),
+                    )
+                if state_file is not None:
+                    append_record(state_file, record)
+    if state_file is not None and record["notification"] in {"not_required", "suppressed"}:
+        append_record(state_file, record)
+    if directory is not None:
+        state.expire_stale_requests(directory=directory, now=now, ttl_seconds=approval_ttl_seconds)
+        state.reset_technical_failures(directory=directory)
+    logger.info(
+        "Contrôle chaîne d'alerte terminé",
+        extra={
+            "event": "alert_chain_check",
+            "observation_id": observation_id,
+            "alert_id": alert_id,
+            "status": status,
+            "notification": record["notification"],
+            "blocked_actionable_due": snapshot.blocked_actionable_due,
+            "commit": commit,
+        },
+    )
     return EXIT_INCIDENT if verdict.incident else EXIT_OK
 
 
@@ -770,7 +748,7 @@ async def report_technical_failure(
         failures=failures, detail=detail, commit=commit, now=now
     )
     delivered = await send(message, None)
-    if delivered:
+    if delivered is True or delivered == "accepted":
         state.mark_technical_alert_sent(directory=directory, now=now)
     else:
         logger.error(
