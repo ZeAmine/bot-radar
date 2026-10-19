@@ -125,6 +125,15 @@ sont espacées de six heures, un jour puis sept jours ; elles conservent les val
 et dates de réussite. Les appels simultanés d'un même livre sont mutualisés dans
 l'unique processus ; deux passes de prix ne s'exécutent pas simultanément.
 
+Pendant la plage `NIGHT_MODE_*`, le même scheduler traite à :20 et :50 un lot
+borné (dix éditions uniques par défaut), avec les pauses longues entre vagues,
+puis rend la main ; il ne démarre plus de lot à la fin de la plage et le travail
+restant suit les réservations persistées. Ce rythme nocturne ne rend aucune
+composante éligible avant ses sept jours et ne modifie pas les passes de jour. Il
+est inactif si le mode nuit est désactivé, et les bilans Telegram restent ceux des
+incidents. Sa fin de plage suit l'heure locale du fuseau configuré, comme la pause
+du poller.
+
 La migration 0015 ajoute les champs de provenance et programmation sans créer de
 réussite historique. La [reprise progressive](../operations/chasse-weekly-prices.md)
 nécessite un inventaire puis une autorisation explicite avant écriture réelle.
@@ -138,6 +147,12 @@ elle apparaît. Les diagnostics par étape restent internes. Une panne CAL reste
 limitée aux collectes concernées ; elle ne ferme ni
 l'ingestion ni Telegram. Les délais de reprise et restrictions source restent
 appliqués par les chemins de collecte et de session.
+
+Une fiche CAL déjà enregistrée est réutilisable pour le même ISBN vérifié, sans
+recherche supplémentaire ni contournement des restrictions. Un corps HTTP 200 vide
+reste un échec source avec métadonnées HTTP, distinct d'un résultat JSON valide
+sans livre. Le [diagnostic ciblé](../operations/chasse-search-results.md) distingue
+les observations réseau des tests isolés.
 
 ## Diagnostic et bilans de rafraîchissement
 
@@ -178,3 +193,10 @@ L'état utilise Redis avec repli local dans l'unique processus ; le repli ne sur
 pas au redémarrage. Le dédoublonnage de bilan conserve sa fenêtre d'une heure.
 Un échec ou une annulation d'envoi libère le créneau ; une remise Telegram ambiguë
 ou partielle ne permet pas de garantir exactement un message par destinataire.
+
+Les réponses CAL d'offres structurées sans preuve fiable de complétude sont
+partielles, jamais une absence confirmée. La présence d'un groupe marchand, y
+compris 22, ne certifie pas la fin de la collecte. Leurs observations sont conservées
+en snapshots avec provenance et statut ; elles ne remplacent pas les dernières
+offres validées ni leur date de réussite complète. L'historique source peut réussir
+indépendamment. Le second relevé demeure borné, sans repli de recherche supplémentaire.

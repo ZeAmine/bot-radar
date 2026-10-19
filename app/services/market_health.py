@@ -614,7 +614,7 @@ def _incident_changes(
     for attempt in result.attempts:
         if attempt.status != "skipped":
             samples.setdefault(f"{attempt.provider}/{attempt.operation}", []).append(
-                attempt.status == "failed",
+                attempt.status in {"partial", "failed"},
             )
     samples["passe"] = [result.technical_interruption]
     samples["traitement"] = [True] * result.stats.get("errors", 0) + [False] * max(
@@ -737,7 +737,7 @@ async def notify_refresh_result(result: RefreshPassResult) -> None:
             lines.append("Diagnostic de fraîcheur indisponible.")
         lines.extend(changes)
         failed = sorted({f"{a.provider}/{a.operation} ({a.reason or 'cause inconnue'})"
-                         for a in result.attempts if a.status == "failed"})
+                         for a in result.attempts if a.status in {"partial", "failed"}})
         if stats["errors"] and not stats["refreshed"]:
             lines.append("⚠️ Collecte de prix en échec ; aucun relevé courant actualisé.")
         if stats["degraded"]:

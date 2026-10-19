@@ -397,3 +397,86 @@ async def test_a_failed_attempt_after_a_success_keeps_the_successful_date():
     assert cache.last_successful_collection_at == previous
     assert cache.last_attempt_at == collected_at
     assert cache.lowest_delivered_price_cents == 470
+
+
+@pytest.mark.parametrize('internal_retries', [0, 2])
+async def test_creation_retries_empty_response_once_without_stacking_provider_budgets(
+    monkeypatch, internal_retries,
+):
+    from app.providers.base import CollectionAttempt, MarketOffers
+    from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
+    from app.providers.registry import ProviderRegistry
+
+    empty = MarketOffers(failed_providers=('chasse_aux_livres',), attempts=(
+        CollectionAttempt('chasse_aux_livres', 'current', 'failed', 'empty_response', 200,
+                          stage='search_results'),
+    ))
+    success = MarketOffers([_offer('chasse_aux_livres', 1200)])
+    provider = ChasseAuxLivresProvider(max_retries=internal_retries)
+    fetch = AsyncMock(side_effect=[empty, success])
+    monkeypatch.setattr(provider, 'get_offers', fetch)
+    sleeper = AsyncMock()
+    monkeypatch.setattr(pricing.asyncio, 'sleep', sleeper)
+    registry = ProviderRegistry(providers=[provider])
+    result = await fetch_offers_for_book(_book(), registry, retry_transient=True)
+    if internal_retries:
+        assert result == []
+        assert fetch.await_count == 1
+        sleeper.assert_not_awaited()
+    else:
+        assert result[0].delivered_price_cents == 1200
+        assert fetch.await_count == 2
+        sleeper.assert_awaited_once_with(1.5)
+
+
+async def test_retrying_another_provider_keeps_the_unretried_cal_failure(monkeypatch):
+    from app.providers.base import CollectionAttempt, MarketOffers
+    from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
+    from app.providers.registry import ProviderRegistry
+
+    cal = ChasseAuxLivresProvider(max_retries=2)
+    cal_fetch = AsyncMock(return_value=MarketOffers(
+        failed_providers=(cal.name,), attempts=(
+            CollectionAttempt(cal.name, 'current', 'failed', 'empty_response', 200),
+        ),
+    ))
+    monkeypatch.setattr(cal, 'get_offers', cal_fetch)
+
+    class Other:
+        name = 'momox'
+        get_offers = AsyncMock(side_effect=[
+            MarketOffers(failed_providers=('momox',), attempts=(
+                CollectionAttempt('momox', 'current', 'failed', 'timeout'),
+            )),
+            MarketOffers([_offer('momox', 1100)]),
+        ])
+
+    other = Other()
+    registry = ProviderRegistry(providers=[cal, other])
+    result = await fetch_offers_for_book(_book(), registry, retry_transient=True)
+    assert 'chasse_aux_livres' in result.failed_providers
+    assert any(a.provider == cal.name and a.status == 'failed' for a in result.attempts)
+    assert cal_fetch.await_count == 1
+    assert other.get_offers.await_count == 2
+
+
+@pytest.mark.parametrize(('status', 'with_offer', 'succeeded', 'expected_price'), [
+    ('success', True, True, 600),
+    ('success', False, True, None),
+    ('partial', True, False, None),
+    ('partial', False, False, None),
+    ('failed', False, False, None),
+    ('failed', True, False, None),
+])
+def test_current_result_distinguishes_complete_empty_partial_and_technical_failure(
+    status, with_offer, succeeded, expected_price,
+):
+    from app.providers.base import CollectionAttempt, MarketOffers
+
+    offer = _offer('synthetic', 600)
+    offers = MarketOffers([offer] if with_offer else [],
+        failed_providers=() if status == 'success' else ('synthetic',),
+        attempts=(CollectionAttempt('synthetic', status=status),))
+    result = BookPricingResult.from_offers(offers, offer if with_offer else None, None)
+    assert result.current_collection_succeeded is succeeded
+    assert result.lowest_delivered_price_cents == expected_price

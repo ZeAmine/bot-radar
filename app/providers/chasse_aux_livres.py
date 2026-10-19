@@ -176,6 +176,25 @@ CHASSE_BROWSER_HEADERS = {
 }
 
 
+def verified_product_url(value: str | None, isbn: str | None) -> str | None:
+    expected = normalize_search_isbn(isbn)
+    if not isinstance(value, str) or not expected:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return None
+    if (parsed.scheme != "https" or parsed.netloc != "www.chasse-aux-livres.fr"
+            or not parsed.path.startswith("/prix/")):
+        return None
+    codes = re.findall(r"(?<!\d)(?:97[89]\d{10}|\d{9}[\dX])(?!\d)",
+                       urllib.parse.unquote(parsed.path))
+    identities = {value for code in codes if (value := isbn_from_identifier(code))}
+    if identities != {expected}:
+        return None
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
 def _build_ajax_headers(referer: str) -> dict[str, str]:
     return {
         **CHASSE_BROWSER_HEADERS,
@@ -264,11 +283,23 @@ class ChasseAuxLivresProvider:
         title: str,
         author: str | None = None,
         edition: str | None = None,
+        source_url: str | None = None,
     ) -> list[MarketOffer]:
         """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
         _ = edition
         # ISBN utilisé seulement s'il passe sa clé de contrôle.
         clean_isbn = normalize_search_isbn(isbn13)
+        known_url = verified_product_url(source_url, clean_isbn)
+        if known_url:
+            path = urllib.parse.urlsplit(known_url).path
+            known_offers = await self._try_deep_lookup(
+                self.http_client or get_shared_http_client(),
+                '<a href="' + html.escape(path, quote=True) + '">'
+                + html.escape(title) + '</a>',
+                clean_isbn or title, expected_title=title, expected_isbn=clean_isbn,
+            )
+            if known_offers is not None:
+                return known_offers
         failures: set[str] = set()
         historical_checked = False
         attempts: list[CollectionAttempt] = []
@@ -281,7 +312,7 @@ class ChasseAuxLivresProvider:
             historical_checked |= getattr(offers, "historical_checked", False)
             if offers or getattr(offers, "historical_checked", False):
                 return offers
-            if any(attempt.status == "failed" and (
+            if any(attempt.status in {"partial", "failed"} and (
                 attempt.operation == "current"
                 and attempt.reason not in {"identity_mismatch", "volume_mismatch"}
                 or attempt.reason in {"rate_limited", "bot_challenge", "session_unavailable"}
@@ -320,6 +351,7 @@ class ChasseAuxLivresProvider:
         max_retries = self.max_retries
         for attempt in range(max_retries + 1):
             stage = "search_page"
+            response: httpx.Response | None = None
             try:
                 resp1 = await client.get(
                     search_url,
@@ -327,6 +359,7 @@ class ChasseAuxLivresProvider:
                     timeout=self.timeout_seconds,
                     follow_redirects=True,
                 )
+                response = resp1
                 failure = _response_failure(resp1, stage=stage)
                 if failure is not None:
                     return failure
@@ -343,13 +376,21 @@ class ChasseAuxLivresProvider:
                 ajax_headers = _build_ajax_headers(search_url)
                 rest_url = f"{self.BASE_URL}/rest/search-results?h={data_hash}&p=1&l=1&b=d"
                 stage = "search_results"
+                response = None
                 resp2 = await client.get(
                     rest_url, headers=ajax_headers, timeout=self.timeout_seconds
                 )
+                response = resp2
                 failure = _response_failure(resp2, stage=stage)
                 if failure is not None:
                     return failure
 
+                if not resp2.content:
+                    if attempt < min(max_retries, 1) and not resp2.headers.get("Retry-After"):
+                        await self._sleep(1.5)
+                        continue
+                    return failed_offers(self.name, response=resp2, reason="empty_response",
+                                         stage=stage)
                 data = resp2.json()
                 if not isinstance(data, dict) or not isinstance(data.get("d"), str):
                     raise ValueError("Résultats de recherche invalides")
@@ -374,7 +415,11 @@ class ChasseAuxLivresProvider:
                     await self._sleep(1.5)
                     continue
                 logger.debug("Erreur connecteur Chasse-aux-livres: %s", type(exc).__name__)
-                return failed_offers(self.name, error=exc, stage=stage)
+                return failed_offers(
+                    self.name, response=response, error=exc, stage=stage,
+                    reason="invalid_response" if isinstance(exc, (ValueError, TypeError, KeyError))
+                    else None,
+                )
 
         return []
 
@@ -502,6 +547,8 @@ class ChasseAuxLivresProvider:
                     data = resp_lookup.json()
                 else:
                     data = {"offers": {"22": []}}
+                if not isinstance(data, dict):
+                    raise ValueError("Réponse courante invalide")
                 raw_offers = data.get("offers")
                 if not isinstance(raw_offers, dict):
                     raise ValueError("Offres courantes invalides")
@@ -532,6 +579,14 @@ class ChasseAuxLivresProvider:
                         logger.debug("Second passage lookup retry=1 ignoré : %s",
                                      type(exc).__name__)
 
+                if current_attempt.status == "success":
+                    current_attempt = CollectionAttempt(
+                        self.name, "current", "partial", "incomplete_offers",
+                        resp_lookup.status_code, stage="current_offers",
+                        response_content_type=resp_lookup.headers.get("content-type"),
+                        response_bytes=len(resp_lookup.content),
+                    )
+
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 current_attempt = failed_offers(self.name, error=exc,
                                                 stage="current_offers").attempts[0]
@@ -544,6 +599,8 @@ class ChasseAuxLivresProvider:
                 if not isinstance(off_list, list):
                     continue
                 for off in off_list:
+                    if not isinstance(off, dict):
+                        continue
                     merchant_raw = (
                         off.get("logo", {}).get("name")
                         or off.get("origin", {}).get("name")
@@ -664,7 +721,7 @@ class ChasseAuxLivresProvider:
             if "history" not in requested_components.get():
                 historical_failed = False
                 history_attempt = CollectionAttempt(self.name, "history", "skipped")
-            current_failed = current_attempt.status == "failed"
+            current_failed = current_attempt.status in {"partial", "failed"}
             if historical_failed:
                 logger.warning("Historique Chasse-aux-livres non reçu : réponse vide, "
                                "invalide ou refusée")
@@ -679,7 +736,8 @@ class ChasseAuxLivresProvider:
                             delivered_price_cents=0,
                             source_url=product_url,
                             currency="EUR",
-                            item_condition="Occasion indisponible",
+                            item_condition="Offres non confirmées" if current_failed
+                            else "Occasion indisponible",
                             confidence=MatchConfidence.HIGH,
                             is_available=False,
                             is_comparable=True,
@@ -689,6 +747,8 @@ class ChasseAuxLivresProvider:
                                 "query": query,
                                 "best_merchant": None,
                                 "partners": {},
+                                "collection_status": current_attempt.status,
+                                "collection_reason": current_attempt.reason,
                                 "historical_low_1y_cents": hist_low_1y_cents,
                             },
                         )
@@ -725,6 +785,8 @@ class ChasseAuxLivresProvider:
                             "query": query,
                             "best_merchant": primary["merchant"],
                             "partners": partners,
+                            "collection_status": current_attempt.status,
+                            "collection_reason": current_attempt.reason,
                             "historical_low_1y_cents": hist_low_1y_cents,
                         },
                     )

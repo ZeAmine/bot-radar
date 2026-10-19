@@ -362,22 +362,17 @@ async def test_chasse_aux_livres_strict_used_filtering():
     resp_lookup = httpx.Response(200, json=mock_lookup_only_new)
 
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        # Deux passes × quatre réponses : elles doivent aboutir sans être avalées par le retry.
         mock_get.side_effect = [
-            resp_search,
-            resp_rest,
-            resp_prod,
-            resp_lookup,
-            resp_search,
-            resp_rest,
-            resp_prod,
-            resp_lookup,
+            resp_search, resp_rest, resp_prod, resp_lookup, resp_lookup,
         ]
 
         offers = await provider.get_offers(isbn13="9791095670568", title="Rip Tome 1")
 
     assert len(offers) == 0
-    assert _search_call_count(mock_get) == 2
+    assert _search_call_count(mock_get) == 1
+    assert mock_get.await_count == 5
+    assert offers.attempts[0].status == "partial"
+    assert offers.attempts[0].reason == "incomplete_offers"
     assert slept == []
 
 
@@ -732,3 +727,224 @@ async def test_lookup_retry_restriction_preserves_already_received_offers(monkey
                for a in result.attempts)
     history.assert_not_awaited()
     assert sum(r.url.path == '/search' for r in requests) == 1
+
+
+@pytest.mark.parametrize("max_retries", [0, 2])
+async def test_observed_empty_http_200_is_a_failed_collection_with_bounded_retry(max_retries):
+    import json
+    from pathlib import Path
+
+    fixture = json.loads((Path(__file__).parents[1] / 'fixtures/chasse/'
+                          'empty_search_results_2026_10_19.json').read_text())
+    requests = []
+    sleeper = AsyncMock()
+
+    def response(request):
+        requests.append(request.url.path)
+        if request.url.path == '/search':
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        return httpx.Response(fixture['status'], headers=fixture['headers'], text=fixture['body'])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        provider = ChasseAuxLivresProvider(http_client=client, max_retries=max_retries,
+                                          sleep=sleeper)
+        offers = await provider.get_offers(isbn13='9791095670568', title='Rip Tome 1')
+    assert offers == []
+    attempt = offers.attempts[0]
+    assert (attempt.reason, attempt.http_status, attempt.stage) == (
+        'empty_response', 200, 'search_results',
+    )
+    assert attempt.response_content_type == 'text/plain;charset=utf-8'
+    assert attempt.response_bytes == 0
+    assert requests == ['/search', '/rest/search-results'] * (2 if max_retries else 1)
+    assert sleeper.await_count == (1 if max_retries else 0)
+
+
+async def test_empty_search_recovers_once_without_marking_a_source_restriction():
+    calls = []
+    sleeper = AsyncMock()
+
+    def response(request):
+        calls.append(request.url.path)
+        if request.url.path == '/search':
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        if calls.count('/rest/search-results') == 1:
+            return httpx.Response(200, content=b'', headers={'content-type': 'text/plain'})
+        return httpx.Response(200, json={'d': ''})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        provider = ChasseAuxLivresProvider(http_client=client, max_retries=2, sleep=sleeper)
+        offers = await provider._search_query('9791095670568')
+    assert offers == []
+    assert not getattr(offers, 'failed_providers', ())
+    assert calls == ['/search', '/rest/search-results'] * 2
+    sleeper.assert_awaited_once_with(1.5)
+
+
+@pytest.mark.parametrize(
+    ('body', 'reason'), [('', 'empty_response'), ('not json', 'invalid_response')],
+)
+async def test_search_errors_keep_http_metadata_and_respect_retry_after(body, reason):
+    requests = []
+    sleeper = AsyncMock()
+
+    def response(request):
+        requests.append(request.url.path)
+        if request.url.path == '/search':
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        return httpx.Response(200, text=body, headers={'Retry-After': '7200'})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        provider = ChasseAuxLivresProvider(http_client=client, max_retries=2, sleep=sleeper)
+        offers = await provider._search_query('9791095670568')
+    assert offers.attempts[0].reason == reason
+    assert offers.attempts[0].http_status == 200
+    assert offers.attempts[0].retry_after_seconds == 7200
+    assert len(requests) == 2
+    sleeper.assert_not_awaited()
+
+
+@pytest.mark.parametrize(('url', 'isbn', 'accepted'), [
+    ('https://www.chasse-aux-livres.fr/prix/2756079332/jean-doux-9782756079332',
+     '9782756079332', True),
+    ('https://www.chasse-aux-livres.fr/prix/2808500483/nanbanjin-9782808500487',
+     '9782756079332', False),
+    ('https://www.chasse-aux-livres.fr.evil.invalid/prix/9782756079332/book',
+     '9782756079332', False),
+    ('http://www.chasse-aux-livres.fr/prix/9782756079332/book', '9782756079332', False),
+    ('https://user@www.chasse-aux-livres.fr/prix/9782756079332/book',
+     '9782756079332', False),
+    ('https://[', '9782756079332', False),
+    ('https://www.chasse-aux-livres.fr/prix/9782756079332/book', None, False),
+])
+def test_cached_product_url_requires_the_source_host_and_same_edition(url, isbn, accepted):
+    from app.providers.chasse_aux_livres import verified_product_url
+
+    assert bool(verified_product_url(url, isbn)) == accepted
+
+
+async def test_cached_product_skips_search_and_stops_on_restriction():
+    requests = []
+    sleeper = AsyncMock()
+
+    def response(request):
+        requests.append(request.url.path)
+        assert request.url.path.startswith('/prix/')
+        return httpx.Response(429, headers={'Retry-After': '3600'})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        provider = ChasseAuxLivresProvider(http_client=client, max_retries=2, sleep=sleeper)
+        offers = await provider.get_offers(
+            isbn13='9782756079332', title='Jean Doux',
+            source_url='https://www.chasse-aux-livres.fr/prix/2756079332/jean-doux-9782756079332',
+        )
+    assert len(requests) == 1
+    assert offers.attempts[0].reason == 'rate_limited'
+    assert offers.attempts[0].http_status == 429
+    sleeper.assert_not_awaited()
+
+
+@pytest.mark.parametrize(('groups', 'expected_status', 'expected_count'), [
+    ({'0': [], '1': []}, 'partial', 0),
+    ({'0': MOCK_LOOKUP_JSON['offers']['0'], '1': []}, 'partial', 1),
+    ({'0': []}, 'partial', 0),
+    ({'22': []}, 'partial', 0),
+    ({'0': MOCK_LOOKUP_JSON['offers']['0']}, 'partial', 1),
+    ({'0': [], '1': None}, 'partial', 0),
+])
+async def test_engine_groups_do_not_certify_offer_completion(
+    groups, expected_status, expected_count,
+):
+    from app.providers.base import requested_components
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if request.url.path.startswith('/prix/'):
+            return httpx.Response(200, text=(
+                '<div data-asin="2756079332" data-lvs="synthetic" data-nbeng="2"></div>'
+            ))
+        return httpx.Response(200, json={'offers': groups})
+
+    scope = requested_components.set(frozenset({'current'}))
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            result = await ChasseAuxLivresProvider(http_client=client).get_offers(
+                isbn13='9782756079332', title='Jean Doux',
+                source_url='https://www.chasse-aux-livres.fr/prix/2756079332/9782756079332',
+            )
+    finally:
+        requested_components.reset(scope)
+    assert result.attempts[0].status == expected_status
+    assert len(result) == expected_count
+    assert len(requests) == (2 if '22' in groups else 3)
+    if expected_status == 'partial':
+        assert result.attempts[0].reason == 'incomplete_offers'
+        for offer in result:
+            assert offer.raw_payload['collection_status'] == 'partial'
+
+
+async def test_observed_partial_offers_do_not_claim_absence_or_retry_search(monkeypatch):
+    import json
+    from pathlib import Path
+
+    fixtures = Path(__file__).parents[1] / 'fixtures/chasse'
+    partial = json.loads((fixtures / 'partial_offers_2026_10_19.json').read_text())['payload']
+    history = json.loads((fixtures / 'jean_doux_history_2026_10_18.json').read_text())
+    monkeypatch.setattr('app.providers.chasse_aux_livres.resolve_session_token',
+                        AsyncMock(return_value='synthetic-session'))
+    history_call = AsyncMock(return_value=httpx.Response(200, json=history))
+    monkeypatch.setattr('app.providers.chasse_aux_livres.chasse_session.get_history', history_call)
+    requests = []
+
+    def respond(request):
+        requests.append(request.url.path)
+        if request.url.path == '/search':
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        if request.url.path == '/rest/search-results':
+            return httpx.Response(200, json={'d': (
+                '<a href="/prix/2756079332/9782756079332">Jean Doux</a>'
+            )})
+        if request.url.path.startswith('/prix/'):
+            return httpx.Response(200, text=(
+                '<div data-asin="2756079332" data-lvs="synthetic" '
+                'data-nbeng="25" data-didh="abc123"></div>'
+            ))
+        return httpx.Response(200, json=partial)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await ChasseAuxLivresProvider(http_client=client).get_offers(
+            isbn13='9782756079332', title='Jean Doux',
+        )
+    assert requests == ['/search', '/rest/search-results', '/prix/2756079332/9782756079332',
+                        '/rest/lookup/results', '/rest/lookup/results']
+    assert result.attempts[0].status == 'partial'
+    assert result.attempts[1].status == 'success'
+    assert result.historical_checked
+    assert all(not offer.is_available for offer in result)
+    assert all(offer.item_condition != 'Occasion indisponible' for offer in result)
+    history_call.assert_awaited_once()
+
+
+async def test_malformed_current_offers_remain_technical_failure():
+    from app.providers.base import requested_components
+
+    def respond(request):
+        if request.url.path.startswith('/prix/'):
+            return httpx.Response(200, text=(
+                '<div data-asin="2756079332" data-lvs="synthetic" data-nbeng="2"></div>'
+            ))
+        return httpx.Response(200, json={'offers': None})
+
+    scope = requested_components.set(frozenset({'current'}))
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            result = await ChasseAuxLivresProvider(http_client=client).get_offers(
+                isbn13='9782756079332', title='Jean Doux',
+                source_url='https://www.chasse-aux-livres.fr/prix/2756079332/9782756079332',
+            )
+    finally:
+        requested_components.reset(scope)
+    assert result.attempts[0].status == 'failed'
+    assert result.attempts[0].reason == 'invalid_response'

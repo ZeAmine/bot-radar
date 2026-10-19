@@ -1362,3 +1362,16 @@ async def test_the_seven_day_check_is_computed_from_the_successful_collection_da
 
     stale_after = finder.await_args.kwargs["stale_after"]
     assert before - timedelta(days=7, seconds=1) <= stale_after <= after - timedelta(days=7)
+
+
+def test_partial_offers_cannot_clear_an_existing_source_incident():
+    from app.providers.base import CollectionAttempt
+
+    result = market_health.RefreshPassResult(total=1, stats={"processed": 1, "errors": 0})
+    result.attempts.append(CollectionAttempt('chasse_aux_livres', status='partial',
+                                             reason='incomplete_offers'))
+    key = 'chasse_aux_livres/current'
+    previous = {key: {'ratio': 1.0, 'count': 1.0}}
+    updated, changes = market_health._incident_changes(result, previous)
+    assert updated[key] == previous[key]
+    assert key not in changes

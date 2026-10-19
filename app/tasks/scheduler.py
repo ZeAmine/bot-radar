@@ -11,6 +11,11 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import settings
 from app.tasks.cleanup import cleanup_old_data_task
+from app.tasks.night_book_maintenance import (
+    NIGHT_MAINTENANCE_JOB_ID,
+    night_timezone,
+    run_night_book_maintenance,
+)
 from app.tasks.proactive_autotune import run_proactive_autotune_scan
 from app.tasks.recover_notifications import RECOVERY_SCAN_SECONDS, recover_notifications
 from app.tasks.refresh_book_prices import refresh_book_prices_task
@@ -111,6 +116,20 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     logger.info("Job planifié : rafraîchissement BD toutes les 30 min, huit livres au plus.")
+
+    scheduler.add_job(
+        run_night_book_maintenance,
+        trigger=CronTrigger(minute="20,50", timezone=night_timezone()),
+        id=NIGHT_MAINTENANCE_JOB_ID,
+        name="Maintenance nocturne des livres",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "Job planifié : maintenance nocturne des livres à :20 et :50, "
+        "pendant la plage du mode nuit."
+    )
 
     scheduler.add_job(
         cleanup_old_data_task,
