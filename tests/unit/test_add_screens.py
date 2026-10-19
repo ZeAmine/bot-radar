@@ -392,7 +392,7 @@ async def test_the_confirmation_drops_the_engines_plea_but_keeps_its_verdict():
             entered.stop()
 
     recap = loading_message.edit_text.call_args_list[-1][0][0]
-    assert "L'IA n'a pas répondu après une relance" in recap
+    assert "L'IA n'a pas répondu" in recap
     # Le moteur n'a pas répondu : la recherche n'est pas définitive.
     assert state.data["keywords_finalized"] is False
 

@@ -1,8 +1,8 @@
 """Schémas Pydantic du sous-système IA, indépendants du moteur."""
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.services.book_metadata_service import BookMetadata, EditionAlternative, WorkAlternative
 
@@ -149,17 +149,17 @@ class NaturalAddPayload(_LoosePayload):
 class ProfitScoringPayload(_LoosePayload):
     """Portion JSON du scoring de rentabilité."""
 
-    estimated_resale_cents: int | None = None
+    estimated_resale_cents: int | None = Field(default=None, ge=0)
     net_profit_cents: int | None = None
-    pepite_score: float | None = None
+    pepite_score: float | None = Field(default=None, ge=1, le=10, allow_inf_nan=False)
     verdict: str | None = None
 
 
 class NegotiationPayload(_LoosePayload):
     """Portion JSON du coach de négociation."""
 
-    suggested_offer_cents: int | None = None
-    message: str | None = None
+    suggested_offer_cents: int | None = Field(default=None, gt=0)
+    message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = None
 
 
 class KeywordVariantsPayload(_LoosePayload):

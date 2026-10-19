@@ -1,11 +1,13 @@
 """Un accusé exploitable seul autorise un succès, sans fuite de contenu dans les diagnostics."""
 
+import asyncio
 import json
 import logging
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import SendMessage
@@ -229,3 +231,63 @@ async def test_rejected_fallback_does_not_erase_earlier_uncertainty(monkeypatch,
     assert result.outcome == ("unknown" if unknown_photo else "rejected")
     assert bot.send_photo.await_count == (1 if unknown_photo else 2)
     assert bot.send_message.await_count == (0 if unknown_photo else 1)
+
+
+async def test_initial_receipt_does_not_wait_for_generation(monkeypatch):
+    from app.core.tasks import safe_create_task
+    from app.providers.llm import base as llm_base
+    from app.providers.llm.openai_compatible import OpenAICompatibleClient
+    from app.services.ai.pipeline import AIPostAlertPipeline
+
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+    monkeypatch.setattr(settings, "AI_FEATURE_PROFIT_SCORING", True)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    requests = []
+    tasks = []
+
+    async def respond(request):
+        requests.append(request)
+        entered.set()
+        await release.wait()
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "stop",
+            "message": {"content": json.dumps({"profit_scoring": {
+                "pepite_score": 8, "estimated_resale_cents": 1000, "net_profit_cents": 500,
+            }})},
+        }]})
+
+    def schedule(coro, name):
+        task = safe_create_task(coro, name=name)
+        tasks.append(task)
+        return task
+
+    client = OpenAICompatibleClient(api_key="synthetic", base_url="https://example.invalid")
+    monkeypatch.setattr(
+        "app.services.telegram_service.ai_post_alert_pipeline", AIPostAlertPipeline(client),
+    )
+    monkeypatch.setattr("app.services.telegram_service.safe_create_task", schedule)
+    bot = AsyncMock()
+    receipt = telegram_message(message_id=876)
+    bot.send_message.return_value = receipt
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        monkeypatch.setattr(llm_base, "get_shared_http_client", lambda: http)
+        try:
+            result = await asyncio.wait_for(send_listing_alert(bot, 601, listing()), timeout=1)
+            assert result.receipt is receipt
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            assert not release.is_set()
+            assert len(tasks) == 1
+            assert not tasks[0].done()
+            assert bot.send_message.await_count == 1
+            release.set()
+            await asyncio.wait_for(tasks[0], timeout=1)
+            assert len(requests) == 1
+            assert bot.send_message.await_count == 2
+            assert bot.send_message.call_args.kwargs["reply_to_message_id"] == 876
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

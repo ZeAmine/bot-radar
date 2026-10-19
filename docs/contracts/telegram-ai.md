@@ -27,8 +27,9 @@ manuelle, jamais modification silencieuse des critères. La liste éditée rempl
 suggestion ; à l'application, elle rejoint les exclusions déjà enregistrées et le
 plafond des propositions ne peut pas en tronquer la fin. La confirmation affiche la
 liste réellement enregistrée. Les dislikes sont purgés atomiquement à l'application,
-conservés à l'annulation. Exclusions copiables en `<code>`. Scan et clic partagent
-la construction de proposition ; un créneau Redis atomique est acquis avant l'IA,
+conservés à l'annulation. Une analyse échouée, vide ou ne proposant aucune
+exclusion nouvelle conserve aussi les signalements. Exclusions copiables en `<code>`.
+Scan et clic partagent la construction de proposition ; un créneau Redis atomique est acquis avant l'IA,
 refusé si Redis manque, relâché si rien n'est émis. Les variantes proposées restent
 jetables en mémoire ; les exclusions ont leur store Redis.
 
@@ -68,6 +69,28 @@ Injecter le client via `BaseAIModule(client=...)`, pas le singleton dans un hand
 Un flag `AI_FEATURE_*` correspond à un module. Chaque JSON est validé avec champs
 optionnels et défauts ; pas d'HTTP direct dans les modules.
 La sonde HTTP n'atteste pas une génération.
+
+Une complétion émet un seul POST, sans relance automatique ; les variantes suivent
+la même limite et conservent leur repli sans réponse. Le timeout reste celui du
+client HTTP, avec une éventuelle surcharge par appel, sans échéance globale ajoutée.
+L'adaptateur compatible conserve le plafond de sortie implicite du fournisseur ;
+aucune optimisation de consommation n'est attestée. Les interruptions explicites
+`length`, `content_filter`, `insufficient_system_resource` et `aborted` sont refusées,
+même si leur contenu forme un JSON valide. L'absence de ce champ reste compatible.
+Référence du dialecte : [API DeepSeek](https://api-docs.deepseek.com/api/create-chat-completion/),
+consultée le 18 octobre 2026.
+
+Les logs distinguent la fin de requête (`llm_request`, durée, timeout effectif,
+statut HTTP et classe d'erreur), le rejet d'enveloppe ou de contenu (`llm_response`),
+le JSON refusé (`llm_json`) et la validation métier refusée (`ai_validation`).
+`text_received` atteste seulement la réception d'un texte, pas sa validité métier.
+Les diagnostics de rejet ne contiennent ni réponse brute ni valeurs Pydantic.
+Les tokens consommés ne sont pas relevés dans ce lot.
+
+Les offres IA doivent avoir un montant positif et un message non vide après
+nettoyage ; sinon le repli déterministe s'applique. Les scores doivent être finis,
+compris entre 1 et 10, avec une revente non négative ; une charge refusée ne produit
+aucune note. Les champs optionnels et les marges négatives restent acceptés.
 
 Pour les variantes/exclusions, un chargement précède l'attente ; verrou anti-double
 clic. `answered` distingue un avis vide d'une panne. Une réponse ne produisant aucun

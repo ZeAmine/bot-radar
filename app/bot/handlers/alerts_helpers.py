@@ -211,7 +211,7 @@ def keyword_note(
     """
     if not outcome.answered:
         head = (
-            "⚠️ L'IA n'a pas répondu après une relance : aucune variante ni exclusion "
+            "⚠️ L'IA n'a pas répondu : aucune variante ni exclusion "
             "n'a été ajoutée."
         )
         if retry_label:

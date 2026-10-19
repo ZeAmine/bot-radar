@@ -753,7 +753,7 @@ async def test_a_new_isbn_that_nobody_knows_leaves_the_alert_mute_and_says_so():
     note = journey["card_message"].answer.call_args[0][0]
     assert note.startswith("<i>")
     assert note.endswith("</i>")
-    assert "L'IA n'a pas répondu après une relance" in note
+    assert "L'IA n'a pas répondu" in note
     assert "aucune variante ni exclusion n'a été ajoutée" in note
 
 

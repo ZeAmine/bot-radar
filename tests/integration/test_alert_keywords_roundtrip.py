@@ -384,7 +384,7 @@ async def test_a_new_isbn_that_nobody_knows_leaves_the_alert_mute_and_says_so(
     assert stored.isbn == NOUVEL_ISBN
     assert stored.variants == ["couleurdeschose"]
     assert stored.exclude_keywords == ["coffret"]
-    assert "L'IA n'a pas répondu après une relance" in card_message.answer.call_args[0][0]
+    assert "L'IA n'a pas répondu" in card_message.answer.call_args[0][0]
 
 
 async def test_an_empty_title_does_not_wipe_the_exclusions_on_the_way_in(

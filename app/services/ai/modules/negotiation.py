@@ -72,6 +72,14 @@ class NegotiationModule(BaseAIModule):
                 try:
                     payload = NegotiationPayload.model_validate(data)
                 except ValidationError:
+                    logger.warning(
+                        "Offre IA refusée par la validation métier.",
+                        extra={
+                            "event": "ai_validation",
+                            "error_category": "business_validation",
+                            "ai_module": self.name,
+                        },
+                    )
                     payload = None
                 if payload and payload.suggested_offer_cents and payload.message:
                     offer_cents = int(payload.suggested_offer_cents)

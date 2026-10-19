@@ -94,8 +94,15 @@ class ProfitScoringModule(BasePostAlertModule):
                 pepite_score=chunk.pepite_score,
                 verdict=chunk.verdict,
             )
-        except (ValidationError, Exception) as exc:
-            logger.warning("Erreur parsing ProfitScoringResult: %s", exc)
+        except ValidationError:
+            logger.warning(
+                "Score IA refusé par la validation métier.",
+                extra={
+                    "event": "ai_validation",
+                    "error_category": "business_validation",
+                    "ai_module": self.name,
+                },
+            )
             return None
 
     def format_telegram_html(self, result: ProfitScoringResult | None) -> str | None:
