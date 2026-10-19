@@ -29,7 +29,7 @@ from app.providers.base import (
     normalize_search_isbn,
     requested_components,
 )
-from app.providers.chasse_session import chasse_session
+from app.providers.chasse_session import chasse_session, source_restriction
 from app.services.book_metadata_service import title_similarity
 from app.services.market_price_service import extract_tome_number_from_title
 from app.utils.isbn import isbn_from_identifier
@@ -189,6 +189,16 @@ def _build_ajax_headers(referer: str) -> dict[str, str]:
     }
 
 
+def _response_failure(
+    response: httpx.Response, *, stage: str, operation: str = "current",
+) -> MarketOffers | None:
+    reason = source_restriction(response)
+    if reason or response.status_code != 200:
+        return failed_offers("chasse_aux_livres", response=response, reason=reason,
+                             operation=operation, stage=stage)
+    return None
+
+
 class ChasseAuxLivresProvider:
     """Connecteur vers le comparateur multi-boutiques Chasse-aux-livres.
 
@@ -273,8 +283,11 @@ class ChasseAuxLivresProvider:
             historical_checked |= getattr(offers, "historical_checked", False)
             if offers or getattr(offers, "historical_checked", False):
                 return offers
-            if any(attempt.reason in {"rate_limited", "bot_challenge"}
-                   for attempt in getattr(offers, "attempts", ())):
+            if any(attempt.status == "failed" and (
+                attempt.operation == "current"
+                and attempt.reason not in {"identity_mismatch", "volume_mismatch"}
+                or attempt.reason in {"rate_limited", "bot_challenge", "session_unavailable"}
+            ) for attempt in getattr(offers, "attempts", ())):
                 return offers
 
         # Repli par titre (+ auteur) ; l'ISBN attendu prouve l'identité (ADR-035).
@@ -308,6 +321,7 @@ class ChasseAuxLivresProvider:
         client = self.http_client or get_shared_http_client()
         max_retries = self.max_retries
         for attempt in range(max_retries + 1):
+            stage = "search_page"
             try:
                 resp1 = await client.get(
                     search_url,
@@ -315,35 +329,28 @@ class ChasseAuxLivresProvider:
                     timeout=self.timeout_seconds,
                     follow_redirects=True,
                 )
-                if resp1.status_code == 429 or "Vérification robot" in resp1.text:
-                    logger.warning("Chasse-aux-livres accès limité pour %s.", query)
-                    return failed_offers(self.name, response=resp1, reason="rate_limited"
-                                         if resp1.status_code == 429 else "bot_challenge")
-
-                if resp1.status_code != 200:
-                    logger.debug(
-                        "Chasse-aux-livres returned HTTP %d on search page", resp1.status_code
-                    )
-                    return failed_offers(self.name, response=resp1)
+                failure = _response_failure(resp1, stage=stage)
+                if failure is not None:
+                    return failure
 
                 html_page = resp1.text
                 hash_match = re.search(r'data-hash=["\']([a-zA-Z0-9_-]{16,128})["\']', html_page)
                 if not hash_match:
                     logger.debug("No search data-hash found in Chasse-aux-livres page")
-                    return failed_offers(self.name, reason="invalid_response")
+                    return failed_offers(self.name, response=resp1, reason="invalid_response",
+                                         stage="search_metadata")
 
                 data_hash = hash_match.group(1)
 
                 ajax_headers = _build_ajax_headers(search_url)
                 rest_url = f"{self.BASE_URL}/rest/search-results?h={data_hash}&p=1&l=1&b=d"
+                stage = "search_results"
                 resp2 = await client.get(
                     rest_url, headers=ajax_headers, timeout=self.timeout_seconds
                 )
-                if resp2.status_code != 200:
-                    logger.debug(
-                        "Chasse-aux-livres returned HTTP %d on search-results", resp2.status_code
-                    )
-                    return failed_offers(self.name, response=resp2)
+                failure = _response_failure(resp2, stage=stage)
+                if failure is not None:
+                    return failure
 
                 data = resp2.json()
                 if not isinstance(data, dict) or not isinstance(data.get("d"), str):
@@ -369,7 +376,7 @@ class ChasseAuxLivresProvider:
                     await self._sleep(1.5)
                     continue
                 logger.debug("Erreur connecteur Chasse-aux-livres: %s", type(exc).__name__)
-                return failed_offers(self.name, error=exc)
+                return failed_offers(self.name, error=exc, stage=stage)
 
         return []
 
@@ -383,6 +390,7 @@ class ChasseAuxLivresProvider:
     ) -> list[MarketOffer] | None:
         """Tente une extraction détaillée des offres par boutique
         (eBay, Momox, Rakuten, Fnac, etc.)."""
+        stage = "candidate_identity"
         try:
             candidates = re.findall(r'href=["\'](/prix/[^"\']+)["\']', d_html)
             candidates = list(dict.fromkeys(html.unescape(path) for path in candidates))
@@ -450,16 +458,19 @@ class ChasseAuxLivresProvider:
                     found_title,
                 )
 
+            stage = "product_page"
             resp_prod = await client.get(product_url, headers=CHASSE_BROWSER_HEADERS, timeout=4)
-            if resp_prod.status_code != 200:
-                return failed_offers(self.name, response=resp_prod)
+            failure = _response_failure(resp_prod, stage=stage)
+            if failure is not None:
+                return failure
 
             p_html = resp_prod.text
             asin_m = re.search(r'data-asin="([^"]+)"', p_html)
             lvs_m = re.search(r'data-lvs="([^"]+)"', p_html)
             nbeng_m = re.search(r'data-nbeng="(\d+)"', p_html)
             if not (asin_m and lvs_m and nbeng_m):
-                return failed_offers(self.name, reason="invalid_response")
+                return failed_offers(self.name, response=resp_prod, reason="invalid_response",
+                                     stage="product_metadata")
 
             asin = asin_m.group(1)
             product_isbn = isbn_from_identifier(asin)
@@ -475,14 +486,20 @@ class ChasseAuxLivresProvider:
                 f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
                 f"&retry=0&duih=&lvs={lvs}&ui=&engines={engines}&f=false"
             )
+            source_blocked = False
             current_attempt = CollectionAttempt(
                 self.name, "current", "success" if "current" in requested_components.get()
                 else "skipped",
             )
             try:
                 if "current" in requested_components.get():
+                    stage = "current_offers"
                     resp_lookup = await client.get(lookup_url, headers=ajax_headers, timeout=4)
-                    if resp_lookup.status_code != 200:
+                    failure = _response_failure(resp_lookup, stage=stage)
+                    if failure is not None:
+                        if any(a.reason in {"rate_limited", "bot_challenge"}
+                               for a in failure.attempts):
+                            return failure
                         resp_lookup.raise_for_status()
                     data = resp_lookup.json()
                 else:
@@ -498,7 +515,13 @@ class ChasseAuxLivresProvider:
                     )
                     try:
                         resp_retry = await client.get(retry_url, headers=ajax_headers, timeout=3.5)
-                        if resp_retry.status_code == 200:
+                        failure = _response_failure(resp_retry, stage="current_offers_retry")
+                        if failure is not None and any(
+                            a.reason in {"rate_limited", "bot_challenge"} for a in failure.attempts
+                        ):
+                            current_attempt = failure.attempts[0]
+                            source_blocked = True
+                        if resp_retry.status_code == 200 and not source_blocked:
                             data_retry = resp_retry.json()
                             offers_retry = data_retry.get("offers", {})
                             if isinstance(offers_retry, dict):
@@ -512,7 +535,8 @@ class ChasseAuxLivresProvider:
                                      type(exc).__name__)
 
             except (httpx.HTTPError, ValueError, TypeError) as exc:
-                current_attempt = failed_offers(self.name, error=exc).attempts[0]
+                current_attempt = failed_offers(self.name, error=exc,
+                                                stage="current_offers").attempts[0]
                 raw_offers = {"22": []}
 
             partners: dict[str, dict[str, Any]] = {}
@@ -589,7 +613,10 @@ class ChasseAuxLivresProvider:
             historical_points: list[MarketOffer] = []
             historical_checked = False
             didh_m = re.search(r'data-didh=["\']([a-f0-9]+)["\']', p_html)
-            if didh_m and "history" in requested_components.get():
+            if source_blocked:
+                history_attempt = CollectionAttempt(self.name, "history", "failed",
+                                                    "source_restricted", stage="history")
+            if didh_m and "history" in requested_components.get() and not source_blocked:
                 didh = didh_m.group(1)
                 duih_val = await resolve_session_token()
                 ui_val = duih_val.split(".")[0] if "." in duih_val else duih_val
@@ -602,18 +629,16 @@ class ChasseAuxLivresProvider:
                         resp_jcd = await chasse_session.get_history(
                             client, product_url, history_params, ajax_headers,
                         )
+                    failure = _response_failure(resp_jcd, stage="history", operation="history")
                     if resp_jcd.extensions.get("chasse_auth_failed"):
                         history_attempt = CollectionAttempt(
                             self.name, "history", "failed", "session_unavailable",
                             None if resp_jcd.extensions.get("request_skipped")
-                            else resp_jcd.status_code,
+                            else resp_jcd.status_code, stage="history",
                         )
-                    elif resp_jcd.status_code != 200:
-                        historical_failed = True
-                        history_attempt = failed_offers(
-                            self.name, operation="history", response=resp_jcd,
-                        ).attempts[0]
-                    if resp_jcd.status_code == 200 and len(resp_jcd.text) > 0:
+                    elif failure is not None:
+                        history_attempt = failure.attempts[0]
+                    if failure is None and resp_jcd.status_code == 200 and resp_jcd.content:
                         jcd_data = resp_jcd.json()
                         if (not isinstance(jcd_data, dict)
                                 or not isinstance(jcd_data.get("stats"), list)):
@@ -633,7 +658,7 @@ class ChasseAuxLivresProvider:
                 except Exception as jcd_exc:
                     historical_failed = True
                     history_attempt = failed_offers(
-                        self.name, operation="history", error=jcd_exc,
+                        self.name, operation="history", error=jcd_exc, stage="history",
                     ).attempts[0]
                     logger.warning("Historique Chasse-aux-livres indisponible (%s)",
                                    type(jcd_exc).__name__)
@@ -713,4 +738,4 @@ class ChasseAuxLivresProvider:
         except Exception as exc:
             logger.debug("Échec de l'extraction détaillée Chasse-aux-livres: %s",
                          type(exc).__name__)
-            return failed_offers(self.name, error=exc)
+            return failed_offers(self.name, error=exc, stage=stage)

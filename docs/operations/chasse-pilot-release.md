@@ -32,11 +32,12 @@ incertaines des autres éditions de séries restent exclues des corrections.
 
 ## Mandat et préconditions de livraison
 
-La cible de production autorisée est `032f35aea902241b8cb10146bc55f410fa51b7f5`,
-avec le manifeste approuvé, sur `ubuntu@88.96.56.44`. Le mandat couvre la migration,
-les réparations démontrées et le pilote. Une PR du déployeur ne remplace pas
-implicitement cette cible par le dernier `main` : toute nouvelle cible livrée doit
-être explicitement validée. Le merge conserve sa confirmation séparée au SHA exact.
+La cible de production est le commit de `main` explicitement autorisé par le
+propriétaire, avec le manifeste approuvé, sur `ubuntu@88.96.56.44`. Le mandat doit
+couvrir les opérations prévues : migration, réparations démontrées et pilote.
+Une PR ne remplace pas implicitement la cible par le dernier `main` : toute nouvelle
+cible livrée doit être explicitement validée. Le merge conserve sa confirmation
+séparée au SHA exact.
 
 Avant arrêt de l'application, renseigner par canal confidentiel la configuration
 CAL distante et `CHASSE_PILOT_STATE_PATH=/var/lib/botradar/chasse-pilot/state.json`.
@@ -128,6 +129,42 @@ de persistance absente arrête le pilote. Comparer le minimum effectivement obte
 stocké et rendu ; 9,36 € est une observation historique, jamais une valeur forcée.
 La conservation lors d'un échec est testée en environnement isolé ; ne pas révoquer
 le vrai compte ni provoquer volontairement un échec réseau en production sans mandat.
+
+## Reprise manuelle après une restriction temporaire
+
+Une recherche publique redevenue accessible ne prouve pas que le compte ou
+l'historique fonctionnent. Ne pas supprimer le fichier d'état, effacer un essai,
+changer le manifeste ou contourner une page de vérification pour reprendre.
+
+Après diagnostic et autorisation explicite, une seule reprise opérateur est
+possible pour une édition dont la collecte est en échec. La commande lit
+`next_refresh_at` dans le cache en transaction READ ONLY et refuse une échéance
+absente ou future. Elle ne force ni prix ni date, et ne contacte pas la source :
+
+```sh
+docker compose exec -T app python scripts/chasse_pilot.py resume \
+  --state /var/lib/botradar/chasse-pilot/state.json \
+  --approved-digest EMPREINTE_APPROUVEE --isbn ISBN_APPROUVE \
+  --authorize-pilot-retry
+```
+
+Cette commande conserve le manifeste, les sept éditions uniques et le premier
+bilan. Elle autorise au plus un second essai pour la seule édition indiquée ;
+les éditions déjà réussies restent exclues. L'autorisation survit au redémarrage,
+mais ne peut pas être renouvelée. Une collecte interrompue, une violation de
+périmètre ou un second incident demandent un nouvel examen opérateur, sans
+réarmement automatique. Reprendre ensuite uniquement la commande de backfill
+bornée du pilote et arrêter de nouveau sur les critères source existants.
+
+Les étapes, fournisseurs, opérations et codes HTTP des tentatives sont conservés
+dans l'état pilote et les logs structurés, sans URL de requête ni données de
+session. Après une panne technique de recherche ISBN, aucun repli par titre n'est
+lancé ; le repli reste disponible après une recherche valide sans résultat ou un
+rejet bibliographique. Les restrictions sont reconnues aux différentes étapes
+avant de poursuivre vers les offres ou l'historique.
+
+La reprise maintient le mode pilote : ingestion, Telegram, poller et tâches
+automatiques restent suspendus. Elle ne constitue pas une sortie de maintenance.
 
 ## Retour et décision de sortie
 

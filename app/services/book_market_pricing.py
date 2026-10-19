@@ -263,7 +263,7 @@ async def fetch_offers_for_book(
                        "provider": attempt.provider, "operation": attempt.operation,
                        "outcome": attempt.status, "reason": attempt.reason,
                        "http_status": attempt.http_status,
-                       "duration_seconds": attempt.duration_seconds})
+                       "duration_seconds": attempt.duration_seconds, "stage": attempt.stage})
         return offers
     except TimeoutError:
         logger.warning("Délai global de collecte dépassé pour %s", book.id)
@@ -558,7 +558,10 @@ async def _price_book_once(
                 failures = [attempt.reason or "unclassified"
                             for result in result_sink or [] for attempt in result.attempts
                             if attempt.status == "failed" and attempt.reason != "identity_mismatch"]
-                pilot_mode.finish_collection(cache.collection_status or "unknown", failures)
+                diagnostics = [asdict(attempt) for result in result_sink or []
+                               for attempt in result.attempts]
+                pilot_mode.finish_collection(cache.collection_status or "unknown", failures,
+                                             diagnostics=diagnostics)
                 return cache
     except Exception as exc:
         logger.warning(

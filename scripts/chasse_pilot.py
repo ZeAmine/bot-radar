@@ -83,13 +83,42 @@ async def inspect_book(args: argparse.Namespace) -> dict[str, Any]:
         await engine.dispose()
 
 
+async def resume_pilot(args: argparse.Namespace) -> None:
+    from sqlalchemy import text
+
+    from app.core import pilot_mode
+    from app.db.repositories.book_repo import BookRepository
+    from app.db.session import AsyncSessionLocal, engine
+    from app.services.market_refresh_policy import aware
+
+    try:
+        state = pilot_mode.read_state()
+        if (not args.authorize_pilot_retry or args.approved_digest != state["digest"]
+                or args.isbn not in state["manifest"]["collection_isbn13"]):
+            raise pilot_mode.PilotBlockedError("Reprise pilote non autorisée")
+        async with AsyncSessionLocal() as session:
+            if session.bind is not None and session.bind.dialect.name == "postgresql":
+                await session.execute(text("SET TRANSACTION READ ONLY"))
+            book = await BookRepository(session).get_by_isbn13(args.isbn)
+            deadline = book.market_cache.next_refresh_at if book and book.market_cache else None
+            await session.rollback()
+        if deadline is None:
+            raise pilot_mode.PilotBlockedError("Échéance réelle de reprise absente")
+        pilot_mode.resume(args.state, args.approved_digest, isbn=args.isbn,
+                          authorize=args.authorize_pilot_retry, not_before=aware(deadline))
+    finally:
+        await engine.dispose()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['enable', 'status', 'release', 'probe', 'render'])
+    parser.add_argument('mode', choices=['enable', 'status', 'release', 'resume',
+                                         'probe', 'render'])
     parser.add_argument('--state', required=True, type=Path)
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--approved-digest')
     parser.add_argument('--authorize-normal-operation', action='store_true')
+    parser.add_argument('--authorize-pilot-retry', action='store_true')
     parser.add_argument('--isbn')
     args = parser.parse_args()
     from app.core import pilot_mode
@@ -102,6 +131,10 @@ def main() -> int:
                 parser.error('Manifeste et empreinte explicites requis')
             pilot_mode.enable(args.state, json.loads(args.manifest.read_text()),
                               args.approved_digest)
+        elif args.mode == 'resume':
+            if not args.isbn or not args.approved_digest or not args.authorize_pilot_retry:
+                parser.error('ISBN, empreinte et autorisation de reprise explicites requis')
+            asyncio.run(resume_pilot(args))
         elif args.mode == 'release':
             pilot_mode.release(args.state, args.approved_digest,
                                authorize=args.authorize_normal_operation)

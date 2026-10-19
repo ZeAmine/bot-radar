@@ -21,6 +21,15 @@ LEGACY_KEY = "radar:chasse:duih"
 RETRY_HOURS = 6
 
 
+def source_restriction(response: httpx.Response) -> str | None:
+    if response.status_code == 429:
+        return "rate_limited"
+    if ("vérification robot" in response.text.casefold()
+            or response.headers.get("cf-mitigated") == "challenge"):
+        return "bot_challenge"
+    return None
+
+
 def valid_history(response: httpx.Response) -> bool:
     if response.status_code != 200 or not response.content:
         return False
@@ -210,6 +219,8 @@ class ChasseSessionManager:
             return httpx.Response(401, extensions={"chasse_auth_failed": True,
                                                   "request_skipped": True})
         response = await request(token)
+        if source_restriction(response):
+            return response
         if valid_history(response):
             await self._verified(token, product_url)
             return response
@@ -228,6 +239,8 @@ class ChasseSessionManager:
             current = await self.token()
             if current and current != token:
                 response = await request(current)
+                if source_restriction(response):
+                    return response
                 if valid_history(response):
                     await self._verified(current, product_url)
                     return response
@@ -236,6 +249,8 @@ class ChasseSessionManager:
                 renewed = await self._login(client, headers)
                 if renewed:
                     response = await request(renewed)
+                    if source_restriction(response):
+                        return response
                     if valid_history(response):
                         self.state["origin"] = "renewed"
                         await self._verified(renewed, product_url)

@@ -272,3 +272,24 @@ async def test_reconnection_error_does_not_log_secret_values(monkeypatch, caplog
         await history(manager, client)
     assert 'private-password' not in caplog.text
     assert 'ConnectError' in caplog.text
+
+
+@pytest.mark.usefixtures('credentials')
+async def test_history_robot_page_does_not_trigger_login_or_account_notification():
+    calls = []
+    notify = AsyncMock()
+    store = MemoryStore()
+    manager = ChasseSessionManager(store=store, notify=notify)
+
+    def respond(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, text='<title>Vérification robot</title>')
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        response = await history(manager, client)
+    assert calls == ['/rest/jcd']
+    assert response.status_code == 200
+    assert not response.extensions.get('chasse_auth_failed')
+    assert not manager.login_attempted
+    assert 'retry_at' not in manager.state
+    notify.assert_not_awaited()

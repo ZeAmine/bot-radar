@@ -5,6 +5,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +99,29 @@ def release(path: Path, expected: str, *, authorize: bool) -> None:
         _save(path, state)
 
 
+def resume(
+    path: Path, expected: str, *, isbn: str, authorize: bool, not_before: datetime,
+) -> None:
+    with _locked(path):
+        state = read_state(path)
+        code = normalize_listing_isbn(isbn)
+        attempt = state["attempts"].get(code)
+        now = datetime.now(UTC)
+        if (not authorize or state["digest"] != expected or state["mode"] != "pilot"
+                or not state["halted"] or state.get("halt_reason") != "source_failure"
+                or code not in state["manifest"]["collection_isbn13"]
+                or not isinstance(attempt, dict) or attempt.get("status") != "failed"
+                or state.get("recovery") or not_before.tzinfo is None or not_before > now
+                or any(a.get("status") == "started" for a in state["attempts"].values())):
+            raise PilotBlockedError("Reprise pilote non autorisée ou prématurée")
+        state["recovery"] = {"isbn13": code, "authorized_at": now.isoformat(),
+                             "not_before": not_before.isoformat(),
+                             "previous_halt_reason": state["halt_reason"], "pending": True}
+        state.update(halted=False, consecutive_failures=0, last_failure=[])
+        state.pop("halt_reason", None)
+        _save(path, state)
+
+
 def require_isbn(raw: str | None) -> str | None:
     if not active():
         return normalize_listing_isbn(raw)
@@ -122,7 +146,14 @@ def require_source(raw: str | None) -> None:
 
 
 def was_attempted(raw: str | None) -> bool:
-    return active() and normalize_listing_isbn(raw) in read_state()["attempts"]
+    if not active():
+        return False
+    state = read_state()
+    code = normalize_listing_isbn(raw)
+    recovery = state.get("recovery", {})
+    return code in state["attempts"] and not (
+        recovery.get("pending") and recovery.get("isbn13") == code
+    )
 
 
 @contextmanager
@@ -134,11 +165,20 @@ def collection_scope(raw: str | None) -> Iterator[None]:
     path = state_path()
     with _locked(path):
         state = read_state(path)
-        if code in state["attempts"] or len(state["attempts"]) >= 7:
+        previous = state["attempts"].get(code)
+        recovery = state.get("recovery", {})
+        retry = (previous is not None and previous.get("status") == "failed"
+                 and recovery.get("pending") and recovery.get("isbn13") == code)
+        if (previous is not None and not retry) or (
+            previous is None and len(state["attempts"]) >= 7
+        ):
             raise PilotBlockedError("Édition déjà tentée ou budget épuisé")
         if any(item.get("status") == "started" for item in state["attempts"].values()):
             raise PilotBlockedError("Une collecte est active ou interrompue : examen requis")
         state["attempts"][code] = {"status": "started"}
+        if retry:
+            state["attempts"][code]["previous_attempts"] = [previous]
+            state["recovery"]["pending"] = False
         _save(path, state)
     token = _source_isbn.set(code)
     try:
@@ -153,7 +193,9 @@ def collection_scope(raw: str | None) -> Iterator[None]:
         _source_isbn.reset(token)
 
 
-def finish_collection(status: str, failures: list[str]) -> None:
+def finish_collection(
+    status: str, failures: list[str], *, diagnostics: list[dict[str, Any]] | None = None,
+) -> None:
     if not active():
         return
     code = _source_isbn.get()
@@ -162,7 +204,9 @@ def finish_collection(status: str, failures: list[str]) -> None:
         if code not in state["attempts"]:
             raise PilotBlockedError("Collecte non réservée")
         signature = sorted(set(failures))
-        state["attempts"][code] = {"status": status, "failures": signature}
+        state["attempts"][code].update(status=status, failures=signature)
+        if diagnostics is not None:
+            state["attempts"][code]["diagnostics"] = diagnostics
         state["consecutive_failures"] = (
             state["consecutive_failures"] + 1
             if signature and signature == state.get("last_failure")
