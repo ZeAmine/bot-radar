@@ -6,6 +6,7 @@ sortie (`create_connection`) est doublée. Aucun port n'est ouvert, aucun
 paquet ne sort.
 """
 
+import contextlib
 import socket
 import struct
 import threading
@@ -149,7 +150,8 @@ def test_handle_client_closes_on_foreign_greeting():
         with client_end:
             client_end.sendall(b"GET / HTTP/1.1\r\n\r\n")
             time.sleep(0.05)
-            assert client_end.recv(2) == b""
+            with contextlib.suppress(ConnectionResetError):
+                assert client_end.recv(2) == b""
     finally:
         thread.join(timeout=2.0)
         server.close()
