@@ -38,6 +38,7 @@ _OPERATIONS_METIER = (
     "cleanup_old_data_task",
     "run_proactive_autotune_scan",
     "refresh_book_prices_task",
+    "run_night_book_maintenance",
 )
 
 

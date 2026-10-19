@@ -125,6 +125,15 @@ sont espacées de six heures, un jour puis sept jours ; elles conservent les val
 et dates de réussite. Les appels simultanés d'un même livre sont mutualisés dans
 l'unique processus ; deux passes de prix ne s'exécutent pas simultanément.
 
+Pendant la plage `NIGHT_MODE_*`, le même scheduler traite à :20 et :50 un lot
+borné (dix éditions uniques par défaut), avec les pauses longues entre vagues,
+puis rend la main ; il ne démarre plus de lot à la fin de la plage et le travail
+restant suit les réservations persistées. Ce rythme nocturne ne rend aucune
+composante éligible avant ses sept jours et ne modifie pas les passes de jour. Il
+est inactif si le mode nuit est désactivé, et les bilans Telegram restent ceux des
+incidents. Sa fin de plage suit l'heure locale du fuseau configuré, comme la pause
+du poller.
+
 La migration 0015 ajoute les champs de provenance et programmation sans créer de
 réussite historique. La [reprise progressive](../operations/chasse-weekly-prices.md)
 nécessite un inventaire puis une autorisation explicite avant écriture réelle.
