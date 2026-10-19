@@ -698,3 +698,39 @@ async def test_shutdown_waits_for_a_slow_producer_then_finishes_cleanly(monkeypa
     assert not scheduler.running
     assert not registered
     assert [t for t in asyncio.all_tasks() if t is not asyncio.current_task()] == []
+
+
+@pytest.mark.parametrize("legacy_content", ['{"mode":"pilot","halted":true}', 'invalid'])
+@pytest.mark.parametrize("poller_enabled", [True, False])
+async def test_legacy_cal_state_cannot_block_startup_or_restart(
+    tmp_path, monkeypatch, legacy_content, poller_enabled,
+):
+    state = tmp_path / "state.json"
+    state.write_text(legacy_content)
+    monkeypatch.setenv("CHASSE_PILOT_STATE_PATH", str(state))
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", poller_enabled)
+    scheduler = scheduler_double()
+    commands = AsyncMock()
+    runs = []
+
+    async def poller(stop):
+        runs.append(stop)
+
+    with (
+        patch("app.main.setup_logging"),
+        patch("app.main.validate_production_secrets"),
+        patch("app.bot.bot_instance.setup_bot_commands", commands),
+        patch("app.tasks.scheduler.scheduler", scheduler),
+        patch("app.tasks.vinted_poller.run_vinted_poller", poller),
+        patch("app.core.http_client.close_shared_http_client", new_callable=AsyncMock),
+        patch("app.core.redis.close_redis", new_callable=AsyncMock),
+        patch("app.core.tasks.wait_all_background_tasks", new_callable=AsyncMock),
+    ):
+        for _ in range(2):
+            async with lifespan(FastAPI()):
+                await asyncio.sleep(0)
+    assert commands.await_count == 2
+    assert scheduler.start.call_count == 2
+    assert len(runs) == (2 if poller_enabled else 0)
+    assert state.read_text() == legacy_content
+    assert list(tmp_path.iterdir()) == [state]

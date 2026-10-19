@@ -10,7 +10,6 @@ from typing import Any
 
 import httpx
 
-from app.core import pilot_mode
 from app.core.config import settings
 from app.core.redis import get_redis_client
 
@@ -199,9 +198,6 @@ class ChasseSessionManager:
         params: dict[str, str],
         headers: dict[str, str],
     ) -> httpx.Response:
-        if pilot_mode.active():
-            codes = re.findall(r"(?<![0-9])97[89][0-9]{10}(?![0-9])", product_url.split("?")[0])
-            pilot_mode.require_source(codes[-1] if codes else None)
         await self._load()
         token = params.get("duih") or await self.token()
 
@@ -268,8 +264,6 @@ class ChasseSessionManager:
             return response
 
     async def maintain(self) -> None:
-        if pilot_mode.active():
-            return
         from app.core.http_client import get_shared_http_client
         from app.providers.chasse_aux_livres import CHASSE_BROWSER_HEADERS, _build_ajax_headers
 

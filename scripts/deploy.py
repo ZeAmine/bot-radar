@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import json
 import os
 import re
 import shlex
@@ -120,9 +119,6 @@ class Context:
     # bilan du déploiement nomme la référence de retour réellement disponible
     # plutôt qu'un nom supposé.
     rollback_image: str = ""
-    pilot: bool = False
-    pilot_manifest: Path | None = None
-    pilot_digest: str = ""
 
     def remote_or_default(self) -> Remote:
         if self.remote is None:
@@ -158,17 +154,6 @@ def _run_local(argv: list[str]) -> tuple[int, str]:
 
 def step_preflight(ctx: Context) -> int:
     """Contrôle l'état du VPS et l'écart de code avant de toucher quoi que ce soit."""
-    if ctx.pilot:
-        try:
-            if ctx.pilot_manifest is None:
-                return 1
-            manifest = json.loads(ctx.pilot_manifest.read_text())
-            from app.utils.pilot_manifest import validate_manifest
-
-            validate_manifest(manifest, ctx.pilot_digest)
-        except (OSError, ValueError, TypeError, KeyError):
-            print("Préconditions privées du pilote absentes ou invalides")
-            return 1
     print(f"{DIM}interroge le VPS, vérifie APP_ENV, les secrets et la migration en tête{RESET}")
     argv = [
         sys.executable,
@@ -179,28 +164,6 @@ def step_preflight(ctx: Context) -> int:
         ctx.key,
     ]
     return subprocess.run(argv).returncode
-
-
-def step_pilot_activate(ctx: Context) -> int:
-    if not ctx.pilot:
-        return 0
-    if ctx.pilot_manifest is None:
-        return 1
-    state = "/var/lib/botradar/chasse-pilot/state.json"
-    data = base64.b64encode(ctx.pilot_manifest.read_bytes()).decode("ascii")
-    script = (
-        f"set -eu\ncd {ctx.remote_dir}\n"
-        "docker compose run --rm -T --no-deps --pull never --entrypoint python app -c "
-        + shlex.quote(
-            "import base64,json; from pathlib import Path; "
-            "from app.core.config import settings; from app.core import pilot_mode; "
-            f"assert settings.CHASSE_PILOT_STATE_PATH == {state!r}; "
-            f"pilot_mode.enable(Path({state!r}),json.loads(base64.b64decode({data!r})),"
-            f"{ctx.pilot_digest!r}); print('Pilote persistant vérifié')"
-        ) + "\n"
-    )
-    code, _, _ = ctx.remote_or_default().run(script)
-    return int(code)
 
 
 def step_sync(ctx: Context) -> int:
@@ -215,6 +178,16 @@ def step_sync(ctx: Context) -> int:
     code, output = _run_local(rsync_argv(ctx))
     if output:
         print(f"{DIM}{output}{RESET}")
+    if code != 0:
+        return int(code)
+    retired = (
+        "app/core/pilot_mode.py", "app/utils/pilot_manifest.py", "scripts/chasse_pilot.py",
+        "tests/unit/test_chasse_pilot_mode.py", "tests/unit/test_chasse_pilot_deploy.py",
+        "tests/integration/test_chasse_pilot_collection.py",
+        "docs/operations/chasse-pilot-release.md",
+    )
+    script = f"set -eu\ncd {ctx.remote_dir}\nrm -f -- " + " ".join(retired) + "\n"
+    code, _, _ = ctx.remote_or_default().run(script)
     return int(code)
 
 
@@ -505,16 +478,8 @@ def get_deployed_commits(ctx: Context) -> tuple[str, list[str]]:
 
 def step_notify(ctx: Context) -> int:
     """Envoie la notification de mise en ligne sur Telegram et met à jour le commit de référence."""
-    if not ctx.pilot:
-        print(f"{DIM}envoie la notification de mise en ligne sur Telegram{RESET}")
+    print(f"{DIM}envoie la notification de mise en ligne sur Telegram{RESET}")
     current_head, commits = get_deployed_commits(ctx)
-    if ctx.pilot:
-        if not re.fullmatch("[a-f0-9]{40}", current_head):
-            return 1
-        code, _, _ = ctx.remote_or_default().run(
-            f"set -eu\ncd {ctx.remote_dir}\necho {shlex.quote(current_head)} > .deployed_commit\n"
-        )
-        return int(code)
     message = format_deploy_notification(commits)
 
     if ctx.dry_run:
@@ -545,7 +510,6 @@ STEPS: tuple[tuple[str, Callable[[Context], int]], ...] = (
     ("Arrêt confirmé de l'app", step_stop),
     ("Synchronisation", step_sync),
     ("Reconstruction de l'image", step_rebuild),
-    ("Activation du pilote", step_pilot_activate),
     ("Migration", step_migrate),
     ("Démarrage et santé", step_start),
     ("Vérification", step_verify),
@@ -587,20 +551,14 @@ def main() -> int:
         action="store_true",
         help="affiche l'ordre des étapes sans rien exécuter",
     )
-    parser.add_argument("--pilot", action="store_true")
-    parser.add_argument("--pilot-manifest", type=Path)
-    parser.add_argument("--pilot-digest", default="")
     args = parser.parse_args()
-    if args.pilot and not all((args.pilot_manifest, args.pilot_digest)):
-        parser.error("Le pilote exige un manifeste et son empreinte")
 
     ctx = Context(
         host=args.host,
         key=args.key,
         remote_dir=args.remote_dir,
         repo_root=repo_root(),
-        dry_run=args.dry_run, pilot=args.pilot, pilot_manifest=args.pilot_manifest,
-        pilot_digest=args.pilot_digest,
+        dry_run=args.dry_run,
     )
 
     print(f"{BOLD}Déploiement de BotRadar{RESET}  {DIM}→ {ctx.host}:{ctx.remote_dir}{RESET}")

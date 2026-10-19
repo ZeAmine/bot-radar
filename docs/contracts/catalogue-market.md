@@ -134,9 +134,10 @@ les priorités de configuration et la maintenance intégrée sans cron suppléme
 Une panne technique de la recherche CAL par ISBN ne déclenche pas de recherche
 par titre. Le repli bibliographique est réservé aux résultats vides valides ou
 aux identités rejetées ; une restriction source arrête le parcours à l'étape où
-elle apparaît. Les diagnostics par étape restent internes. La reprise du pilote
-est manuelle, bornée et soumise à son échéance persistée ; sa procédure canonique
-est la [livraison pilote](../operations/chasse-pilot-release.md).
+elle apparaît. Les diagnostics par étape restent internes. Une panne CAL reste
+limitée aux collectes concernées ; elle ne ferme ni
+l'ingestion ni Telegram. Les délais de reprise et restrictions source restent
+appliqués par les chemins de collecte et de session.
 
 ## Diagnostic et bilans de rafraîchissement
 

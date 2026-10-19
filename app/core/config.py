@@ -56,7 +56,6 @@ class Settings(BaseSettings):
     GOOGLE_BOOKS_API_KEY: SecretStr = SecretStr("")
 
     PRICE_REFRESH_TIMES: str = "07:00,19:00"
-    CHASSE_PILOT_STATE_PATH: str = ""
 
     RADAR_API_URL: str = "http://127.0.0.1:8000"
     BOTRADAR_API_URL: str | None = None

@@ -11,7 +11,7 @@ from typing import Any, cast
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import alert_latency, pilot_mode
+from app.core import alert_latency
 from app.core.alert_latency import observe_background
 from app.core.constants import ComparisonStatus, MatchConfidence
 from app.core.tasks import safe_create_task
@@ -533,36 +533,22 @@ async def _price_book_once(
             if book is None:
                 logger.warning("Cotation ignorée : livre ID %s introuvable (%s).", book_id, reason)
                 return None
-            if pilot_mode.active():
-                if reason != "backfill":
-                    raise pilot_mode.PilotBlockedError("Collecte automatique suspendue")
-                pilot_mode.require_isbn(book.isbn13)
             cache = await MarketPriceRepository(session).get_cache_by_book_id(book_id)
-            if pilot_mode.was_attempted(book.isbn13):
-                return cache
             if cache is not None and not collection_due(cache, datetime.now(UTC)):
                 return cache
             if cache is None:
                 cache = BookMarketCache(book_id=book_id)
                 session.add(cache)
-            with pilot_mode.collection_scope(book.isbn13):
-                attempted_at = datetime.now(UTC)
-                cache.last_attempt_at = attempted_at
-                # L'essai est validé avant la collecte : il reste acquis si elle échoue.
+            attempted_at = datetime.now(UTC)
+            cache.last_attempt_at = attempted_at
+            # L'essai est validé avant la collecte : il reste acquis si elle échoue.
+            await session.commit()
+            cache = await price_book(session, book, registry=registry, result_sink=result_sink,
+                                     retry_transient=reason == "alert_created")
+            async with reservation_lock():
+                await BookRepository(session).plan_price_refreshes(book_ids={book_id})
                 await session.commit()
-                cache = await price_book(session, book, registry=registry, result_sink=result_sink,
-                                         retry_transient=reason == "alert_created")
-                async with reservation_lock():
-                    await BookRepository(session).plan_price_refreshes(book_ids={book_id})
-                    await session.commit()
-                failures = [attempt.reason or "unclassified"
-                            for result in result_sink or [] for attempt in result.attempts
-                            if attempt.status == "failed" and attempt.reason != "identity_mismatch"]
-                diagnostics = [asdict(attempt) for result in result_sink or []
-                               for attempt in result.attempts]
-                pilot_mode.finish_collection(cache.collection_status or "unknown", failures,
-                                             diagnostics=diagnostics)
-                return cache
+            return cache
     except Exception as exc:
         logger.warning(
             "Cotation du livre ID %s impossible (%s), erreur=%s",
@@ -594,8 +580,6 @@ def schedule_book_pricing(book_id: uuid.UUID, *, reason: str) -> None:
     Plusieurs annonces de la même BD peuvent tomber dans la même seconde ; sans
     ce garde-fou, chacune déclencherait sa propre salve chez les marchands.
     """
-    if pilot_mode.active():
-        return
     with _pricing_lock:
         if book_id in _pricing_in_flight:
             logger.debug("Cotation déjà en vol pour le livre ID %s (%s).", book_id, reason)

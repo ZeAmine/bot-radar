@@ -18,7 +18,6 @@ from aiogram.types import InlineKeyboardMarkup, Message
 from app.bot.keyboards.listings import listing_alert_keyboard
 from app.bot.labels import abbreviate_condition, escape_html, join_list
 from app.core import alert_latency as latency
-from app.core import pilot_mode
 from app.core.config import settings
 from app.core.tasks import safe_create_task
 from app.db.models.listing import Listing
@@ -183,8 +182,6 @@ async def send_listing_alert(
     Un résultat inconnu arrête tout nouvel appel. L'accusé de l'API ne prouve
     jamais une lecture par l'utilisateur.
     """
-    if pilot_mode.active():
-        return DeliveryResult("not_sent", "none", reason="pilot_maintenance")
     attempt_id = attempt_id or uuid.uuid4()
     alert_id = getattr(alert, "id", None)
 
@@ -489,8 +486,6 @@ async def notify_admins(
     Rend `True` seulement si **tous** les envois ont abouti : un appelant qui
     journalise ce booléen ne doit jamais enregistrer un succès fictif.
     """
-    if pilot_mode.active():
-        return False
     allowed_ids = settings.TELEGRAM_ALLOWED_USER_IDS
     if not allowed_ids:
         return False

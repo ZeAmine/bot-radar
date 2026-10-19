@@ -5,7 +5,7 @@ Périmètre : contrat et procédure de l'outillage de sauvegarde/restauration ; 
 Statut : les preuves datées ci-dessous restent celles du schéma 0014. Le code
 courant de l’outillage synthétique est aligné sur 0015. Les essais isolés CAL aux
 schémas 0014 et 0015 restent des preuves historiques. Le
-[pilote CAL](operations/chasse-pilot-release.md) exclut désormais cet outillage de
+[chantier CAL](operations/chasse-normal-operation.md) exclut cet outillage de
 son parcours de livraison, sur instruction du propriétaire. Aucune sauvegarde
 indépendante, planification, rétention distante ou restauration de production
 n'est activée.

@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import pilot_mode
 from app.db.models.alert import Alert
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
@@ -257,9 +256,6 @@ async def refresh_book_prices_task(
     job_id: str | None = None,
     scheduled_for: datetime | None = None,
 ) -> dict[str, int]:
-    if pilot_mode.active():
-        return dict.fromkeys(("processed", "refreshed", "empty", "reused", "available",
-                              "unavailable", "degraded", "errors"), 0)
     global _pass_loop, _pass_lock
     loop = asyncio.get_running_loop()
     if _pass_lock is None or _pass_loop is not loop:

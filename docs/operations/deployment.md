@@ -10,11 +10,10 @@ La cible est un arbre rsync, **pas un dépôt Git** : un push ne déploie rien.
 Le gateway Caddy partagé vit hors dépôt dans `~/gateway/`, sur `web_gateway`.
 Ne pas réintroduire un Caddy local ni modifier les autres applications du gateway.
 
-Pour la livraison CAL, appliquer aussi le [pilote persistant](chasse-pilot-release.md) :
-arguments `--pilot`, `--pilot-manifest` et `--pilot-digest` obligatoires ;
-aucun message Telegram de déploiement. Sur instruction du propriétaire, ce chantier
-se livre sans sauvegarde préalable, GPG ni restauration de contrôle.
-Le mode ordinaire ci-dessous ne constitue pas la commande autorisée du pilote.
+Le dispositif pilote CAL est retiré. Le nettoyage ciblé de son ancienne
+configuration suit la [procédure de retrait](chasse-normal-operation.md), sous
+mandat de livraison distinct. Le chantier CAL reste sans prérequis de sauvegarde,
+GPG ni restauration de contrôle.
 
 ## Préconditions et commande canonique
 
