@@ -220,3 +220,93 @@ async def test_pilot_blocks_direct_automatic_session_maintenance(pilot, monkeypa
     monkeypatch.setattr(manager, '_load', load)
     await manager.maintain()
     load.assert_not_called()
+
+
+def test_manual_recovery_preserves_attempts_and_allows_one_failed_retry(pilot):
+    from datetime import UTC, datetime, timedelta
+
+    mode, path, value = pilot
+    code = "9782808500487"
+    with mode.collection_scope(code):
+        mode.finish_collection("failed", ["bot_challenge"])
+    failed = mode.read_state()["attempts"][code]
+    mode.resume(path, value["digest"], isbn=code, authorize=True,
+                not_before=datetime.now(UTC) - timedelta(seconds=1))
+    restarted = importlib.reload(mode)
+    assert restarted.active()
+    assert not restarted.read_state()["halted"]
+    assert not restarted.was_attempted(code)
+    assert restarted.read_state()["attempts"][code] == failed
+    with restarted.collection_scope(code):
+        restarted.finish_collection("complete", [])
+    state = restarted.read_state()
+    assert state["attempts"][code]["previous_attempts"] == [failed]
+    assert state["attempts"][code]["status"] == "complete"
+    assert state["manifest"] == value
+    assert len(state["attempts"]) == 1
+    assert restarted.was_attempted(code)
+    with pytest.raises(restarted.PilotBlockedError), restarted.collection_scope(code):
+        pytest.fail("Une troisième collecte a été admise")
+
+
+def test_manual_recovery_refuses_early_retry_and_does_not_change_state(pilot):
+    from datetime import UTC, datetime, timedelta
+
+    mode, path, value = pilot
+    with mode.collection_scope("9782808500487"):
+        mode.finish_collection("failed", ["bot_challenge"])
+    before = path.read_bytes()
+    with pytest.raises(mode.PilotBlockedError):
+        mode.resume(path, value["digest"], isbn="9782808500487", authorize=True,
+                    not_before=datetime.now(UTC) + timedelta(hours=6))
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("case", ["unauthorized", "digest", "scope", "successful",
+                                  "interrupted", "second_recovery"])
+def test_manual_recovery_rejects_unsafe_or_repeated_authorizations(pilot, case):
+    from datetime import UTC, datetime, timedelta
+
+    mode, path, value = pilot
+    code = "9782808500487"
+    if case == "interrupted":
+        with pytest.raises(RuntimeError), mode.collection_scope(code):
+            raise RuntimeError("Interrupted")
+    else:
+        with mode.collection_scope(code):
+            mode.finish_collection("complete" if case == "successful" else "failed",
+                                   [] if case == "successful" else ["bot_challenge"])
+        if case == "successful":
+            mode.halt("source_failure")
+    past = datetime.now(UTC) - timedelta(seconds=1)
+    if case == "second_recovery":
+        mode.resume(path, value["digest"], isbn=code, authorize=True, not_before=past)
+        with mode.collection_scope(code):
+            mode.finish_collection("failed", ["bot_challenge"])
+    before = path.read_bytes()
+    with pytest.raises(mode.PilotBlockedError):
+        mode.resume(path, "different" if case == "digest" else value["digest"],
+                    isbn="9782205055641" if case == "scope" else code,
+                    authorize=case != "unauthorized", not_before=past)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("missing", ["--isbn", "--approved-digest", "--authorize-pilot-retry"])
+def test_resume_command_requires_explicit_scope_and_authorization(pilot, monkeypatch, missing):
+    from scripts.chasse_pilot import main
+
+    mode, path, value = pilot
+    args = ["chasse_pilot.py", "resume", "--state", str(path)]
+    for flag, val in (("--isbn", "9782808500487"), ("--approved-digest", value["digest"]),
+                      ("--authorize-pilot-retry", None)):
+        if flag != missing:
+            args.append(flag)
+            if val is not None:
+                args.append(val)
+    monkeypatch.setattr("sys.argv", args)
+    before = path.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    assert path.read_bytes() == before
+    assert mode.active()

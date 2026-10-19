@@ -151,3 +151,65 @@ async def test_pilot_outside_edition_has_no_database_mutation_or_source_call(tmp
         assert source.calls == []
         async with database.maker() as reader:
             assert list((await reader.scalars(select(BookMarketCache))).all()) == []
+
+
+async def test_manual_recovery_keeps_prices_and_resumes_only_the_failed_edition(
+    tmp_path, monkeypatch,
+):
+    from argparse import Namespace
+
+    from scripts.chasse_pilot import resume_pilot
+
+    state = enable(tmp_path, monkeypatch)
+    old = datetime.now(UTC) - timedelta(days=8)
+    class RestrictedSource(Source):
+        async def get_offers(self, *, isbn13, **kwargs):
+            if self.failing:
+                pilot_mode.require_source(isbn13)
+                self.calls.append(isbn13)
+                return MarketOffers(failed_providers=(self.name,), attempts=(
+                    CollectionAttempt(self.name, "current", "failed", "bot_challenge",
+                                      200, stage="search_results"),
+                ))
+            return await super().get_offers(isbn13=isbn13, **kwargs)
+
+    source = RestrictedSource(failing=True)
+    registry = ProviderRegistry(providers=[source])
+    async with postgres_replayed_database() as database:
+        books = await seed(database.session)
+        database.session.add(BookMarketCache(book_id=books[0].id,
+            lowest_delivered_price_cents=1200, last_successful_collection_at=old,
+            historical_checked_at=old, source_history={"price_cents": 921,
+            "condition": "Très bon état +", "days": 365, "shipping_included": True,
+            "collected_at": old.isoformat()}))
+        await database.session.commit()
+        monkeypatch.setattr("app.services.book_market_pricing.AsyncSessionLocal", database.maker)
+        await price_book_now(books[0].id, reason="backfill", registry=registry)
+        before = pilot_mode.read_state()["attempts"][CODES[0]]
+        assert pilot_mode.read_state()["halted"]
+        assert before["diagnostics"][0]["stage"] == "search_results"
+        async with database.maker() as reader:
+            cache = await reader.scalar(select(BookMarketCache))
+            assert cache.lowest_delivered_price_cents == 1200
+            assert cache.source_history["price_cents"] == 921
+            assert cache.last_successful_collection_at.replace(tzinfo=UTC) == old
+            deadline = cache.next_refresh_at.replace(tzinfo=UTC)
+        future = deadline + timedelta(seconds=1)
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return future.astimezone(tz) if tz else future.replace(tzinfo=None)
+        monkeypatch.setattr(pilot_mode, "datetime", Clock)
+        monkeypatch.setattr("app.services.book_market_pricing.datetime", Clock)
+        monkeypatch.setattr("app.services.market_refresh_policy.datetime", Clock)
+        monkeypatch.setattr("app.db.session.AsyncSessionLocal", database.maker)
+        await resume_pilot(Namespace(state=state, approved_digest=pilot_mode.read_state()["digest"],
+                                    isbn=CODES[0], authorize_pilot_retry=True))
+        source.failing = False
+        await price_book_now(books[0].id, reason="backfill", registry=registry)
+        await price_book_now(books[0].id, reason="backfill", registry=registry)
+        await price_book_now(books[1].id, reason="backfill", registry=registry)
+        assert source.calls == [CODES[0], CODES[0], CODES[1]]
+        assert pilot_mode.read_state()["attempts"][CODES[0]]["previous_attempts"] == [before]
+        assert not pilot_mode.read_state()["halted"]
+        assert pilot_mode.active()

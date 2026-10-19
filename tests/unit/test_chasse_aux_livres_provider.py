@@ -614,3 +614,121 @@ async def test_source_restriction_stops_without_retries_or_title_fallback(status
     assert calls == ["/search"]
     assert result.failed_providers == ("chasse_aux_livres",)
     assert result.attempts[0].reason in {"rate_limited", "bot_challenge"}
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(503),
+    httpx.Response(200, text="<html>Page temporairement incomplète</html>"),
+])
+async def test_isbn_source_failure_does_not_launch_a_title_search(response):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await ChasseAuxLivresProvider(http_client=client).get_offers(
+            isbn13="9782808500487", title="Nanbanjin",
+        )
+    assert len(requests) == 1
+    assert result.failed_providers == ("chasse_aux_livres",)
+    assert result.attempts[0].stage in {"search_page", "search_metadata"}
+    assert result.attempts[0].http_status == response.status_code
+
+
+@pytest.mark.parametrize("stage", ["search_results", "product_page", "current_offers"])
+async def test_source_restriction_at_each_stage_stops_without_title_fallback(stage):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        path = request.url.path
+        current_stage = ("search_results" if path == "/rest/search-results"
+                         else "product_page" if path.startswith("/prix/")
+                         else "current_offers" if path == "/rest/lookup/results"
+                         else "search_page")
+        if current_stage == stage:
+            return httpx.Response(200, text="<title>Vérification robot</title>")
+        if path == "/search":
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        if path == "/rest/search-results":
+            return httpx.Response(200, json=MOCK_REST_JSON)
+        if path.startswith("/prix/"):
+            return httpx.Response(200, text=MOCK_PROD_HTML)
+        raise AssertionError(path)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await ChasseAuxLivresProvider(http_client=client).get_offers(
+            isbn13="9791095670568", title="Rip Tome 1",
+        )
+    assert sum(r.url.path == "/search" for r in requests) == 1
+    assert any(a.reason == "bot_challenge" and a.stage == stage for a in result.attempts)
+
+
+async def test_history_restriction_keeps_current_offers_and_does_not_fallback(monkeypatch):
+    from app.providers.base import requested_components
+
+    requests = []
+    monkeypatch.setattr('app.providers.chasse_aux_livres.resolve_session_token',
+                        AsyncMock(return_value='synthetic-session'))
+    monkeypatch.setattr('app.providers.chasse_aux_livres.chasse_session.get_history',
+                        AsyncMock(return_value=httpx.Response(
+                            200, text='<title>Vérification robot</title>')))
+    def respond(request):
+        requests.append(request)
+        if request.url.path == '/search':
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        if request.url.path == '/rest/search-results':
+            return httpx.Response(200, json=MOCK_REST_JSON)
+        if request.url.path.startswith('/prix/'):
+            return httpx.Response(200, text=MOCK_PROD_HTML.replace('></div>',
+                                  ' data-didh="abc123"></div>'))
+        if request.url.path == '/rest/lookup/results':
+            return httpx.Response(200, json={'offers': {'22': MOCK_LOOKUP_JSON['offers']['0']}})
+        raise AssertionError(request.url.path)
+
+    scope = requested_components.set(frozenset({'current', 'history'}))
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            result = await ChasseAuxLivresProvider(http_client=client).get_offers(
+                isbn13='9791095670568', title='Rip Tome 1')
+    finally:
+        requested_components.reset(scope)
+    assert len(result) == 1
+    assert result[0].delivered_price_cents == 1499
+    assert any(a.operation == 'history' and a.reason == 'bot_challenge'
+               and a.stage == 'history' for a in result.attempts)
+    assert not result.historical_checked
+    assert sum(r.url.path == '/search' for r in requests) == 1
+
+
+async def test_lookup_retry_restriction_preserves_already_received_offers(monkeypatch):
+    requests = []
+    history = AsyncMock()
+    monkeypatch.setattr('app.providers.chasse_aux_livres.chasse_session.get_history', history)
+
+    def respond(request):
+        requests.append(request)
+        if request.url.path == '/search':
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        if request.url.path == '/rest/search-results':
+            return httpx.Response(200, json=MOCK_REST_JSON)
+        if request.url.path.startswith('/prix/'):
+            return httpx.Response(200, text=MOCK_PROD_HTML.replace('></div>',
+                                  ' data-didh="abc123"></div>'))
+        if request.url.path == '/rest/lookup/results':
+            if request.url.params.get('retry') == '1':
+                return httpx.Response(200, text='<title>Vérification robot</title>')
+            return httpx.Response(200, json=MOCK_LOOKUP_JSON)
+        raise AssertionError(request.url.path)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await ChasseAuxLivresProvider(http_client=client).get_offers(
+            isbn13='9791095670568', title='Rip Tome 1')
+    assert len(result) == 1
+    assert result[0].delivered_price_cents == 1499
+    assert any(a.reason == 'bot_challenge' and a.stage == 'current_offers_retry'
+               for a in result.attempts)
+    history.assert_not_awaited()
+    assert sum(r.url.path == '/search' for r in requests) == 1

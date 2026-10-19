@@ -47,6 +47,9 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    from app.core.logging import setup_logging
+
+    setup_logging()
     parser = argparse.ArgumentParser()
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--manifest", type=Path)

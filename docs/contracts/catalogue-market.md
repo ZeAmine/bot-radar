@@ -131,6 +131,13 @@ nécessite un inventaire puis une autorisation explicite avant écriture réelle
 La [procédure d’accès](../operations/chasse-access.md) décrit l'authentification,
 les priorités de configuration et la maintenance intégrée sans cron supplémentaire.
 
+Une panne technique de la recherche CAL par ISBN ne déclenche pas de recherche
+par titre. Le repli bibliographique est réservé aux résultats vides valides ou
+aux identités rejetées ; une restriction source arrête le parcours à l'étape où
+elle apparaît. Les diagnostics par étape restent internes. La reprise du pilote
+est manuelle, bornée et soumise à son échéance persistée ; sa procédure canonique
+est la [livraison pilote](../operations/chasse-pilot-release.md).
+
 ## Diagnostic et bilans de rafraîchissement
 
 Le bilan automatique est consolidé par occurrence de passe complète, y compris

@@ -50,11 +50,12 @@ class CollectionAttempt:
     http_status: int | None = None
     retry_after_seconds: float | None = None
     duration_seconds: float = 0.0
+    stage: str | None = None
 
 
 def failed_offers(
     provider: str, *, operation: str = "current", response: httpx.Response | None = None,
-    error: Exception | None = None, reason: str | None = None,
+    error: Exception | None = None, reason: str | None = None, stage: str | None = None,
 ) -> "MarketOffers":
     status = response.status_code if response is not None else None
     if response is None and isinstance(error, httpx.HTTPStatusError):
@@ -81,7 +82,7 @@ def failed_offers(
             if retry_after is not None:
                 retry_after = max(0.0, retry_after) if isfinite(retry_after) else None
     return MarketOffers(failed_providers=(provider,), attempts=(CollectionAttempt(
-        provider, operation, "failed", reason, status, retry_after,
+        provider, operation, "failed", reason, status, retry_after, stage=stage,
     ),))
 
 
