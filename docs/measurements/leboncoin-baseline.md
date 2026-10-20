@@ -46,6 +46,7 @@ Le préfixe JA4 `t13d1516h2_8daaf6152771` est la forme Chrome attendue. La compa
 
 - 65 cycles, 65 réponses `200`, aucun captcha, aucune erreur, requête la plus lente à 3,2 s.
 - `new_recent_ids` (ids nouveaux dont `first_publication_date` suit le cycle précédent) : moyenne 13,8 par cycle, maximum 33, neuf cycles sans nouveauté. Soit λ ≈ 83 annonces/heure en journée, contre 61/h la nuit : la page de 35 places n'a plus que 2,5 fois de marge en moyenne et frôle la saturation en pointe.
+- En journée, la page est saturée : à 12 h, 33 nouveautés par cycle, soit le plafond de la page (35 places moins les épinglées). λ réel est donc censuré au-delà de 33 par cycle ; la page 2 n'est pas une sécurité mais une pièce du régime de pointe, et la fenêtre de page 1 tombe à 10 min vers midi.
 - `delta_total` : moyenne −1,0, minimum −53, maximum +54, corrélation 0,39 avec les nouveaux ids. **L'estimateur Δ`total` est invalide** : les suppressions compensent les arrivées et le compteur peut être retardé. Seul l'ensemble des ids datés reste fiable.
 - `gone_ids` : 1 164 sur la période, dont une majorité de départs de page 1 provoqués par les arrivées, pas seulement des suppressions.
 
