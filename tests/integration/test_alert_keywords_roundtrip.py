@@ -423,7 +423,7 @@ async def test_new_edition_is_prepared_in_database_before_surveillance_resumes(
     from app.core.constants import AlertStatus, MatchConfidence
     from app.db.models.book import Book
     from app.db.repositories.book_repo import BookRepository
-    from app.providers.base import MarketOffer, MarketOffers
+    from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers
     from app.services.book_market_pricing import price_book_now
 
     async with session_maker() as session:
@@ -471,7 +471,8 @@ async def test_new_edition_is_prepared_in_database_before_surveillance_resumes(
                         confidence=MatchConfidence.HIGH,
                         raw_payload={"historical_low_1y_cents": 1900},
                     )
-                ]
+                ],
+                attempts=(CollectionAttempt("test_market", "current"),),
             )
         return MarketOffers(failed_providers=("test_market",) if collection == "failed" else ())
 

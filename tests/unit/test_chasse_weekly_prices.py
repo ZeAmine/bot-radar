@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,7 +14,11 @@ from app.services.market_price_service import (
     reference_price,
     series_reference_total,
 )
-from app.services.market_refresh_policy import collection_due, component_due
+from app.services.market_refresh_policy import (
+    collection_due,
+    component_due,
+    component_success_at,
+)
 from app.services.tome_extractor import TomeMatchResult
 
 
@@ -72,6 +77,31 @@ def test_freshness_becomes_due_after_seven_days():
     _stamp_collection(cache, result)
     assert not collection_due(cache, result.collected_at + timedelta(days=6, hours=23))
     assert collection_due(cache, result.collected_at + timedelta(days=7))
+
+
+def test_verified_empty_history_is_dated_without_source_history():
+    checked = datetime.now(UTC) - timedelta(days=2)
+    offers = MarketOffers(
+        [],
+        historical_checked=True,
+        attempts=(CollectionAttempt("chasse_aux_livres", "history"),),
+    )
+    result = BookPricingResult.from_offers(offers, None, None)
+    cache = BookMarketCache(last_successful_collection_at=checked)
+
+    _stamp_collection(cache, replace(result, collected_at=checked))
+
+    assert result.historical_checked is True
+    assert cache.historical_checked_at == checked
+    assert cache.source_history is None
+    assert cache.historical_low_1y_cents is None
+    assert component_success_at(cache, "current") == checked
+    assert component_success_at(cache, "history") == checked
+    assert component_due(cache, "history", checked + timedelta(days=6)) == (
+        checked + timedelta(days=7)
+    )
+    assert not collection_due(cache, checked + timedelta(days=6))
+    assert collection_due(cache, checked + timedelta(days=7))
 
 
 @pytest.mark.parametrize("title", [
@@ -238,7 +268,7 @@ async def test_current_retry_preserves_the_history_obtained_in_the_first_attempt
     assert [a.status for a in offers.attempts if a.operation == "history"] == ["success"]
 
 
-def test_partial_current_collection_keeps_the_last_offer_of_a_failed_merchant():
+def test_confirmed_healthy_offer_wins_over_a_retained_failed_merchant():
     from dataclasses import asdict
 
     retained = MarketOffer("failed", 800, 100, 900, "https://example.com/retained",
@@ -246,7 +276,9 @@ def test_partial_current_collection_keeps_the_last_offer_of_a_failed_merchant():
     newer = MarketOffer("healthy", 1000, 100, 1100, "https://example.com/new",
                         item_condition="Très bon")
     old_date = datetime.now(UTC)-timedelta(days=8)
-    cache = BookMarketCache(lowest_delivered_price_cents=900,
+    cache = BookMarketCache(lowest_delivered_price_cents=1100,
+                            best_provider_name="healthy",
+                            best_source_url=newer.source_url,
                             last_successful_collection_at=old_date,
                             current_offers=[{k: v for k, v in asdict(retained).items()
                                              if k not in {"observed_at", "observation_id"}}])
@@ -254,7 +286,8 @@ def test_partial_current_collection_keeps_the_last_offer_of_a_failed_merchant():
         attempts=(CollectionAttempt("failed", "current", "failed"),
                   CollectionAttempt("healthy", "current"))), newer, None)
     _stamp_collection(cache, result)
-    assert cache.lowest_delivered_price_cents == 900
-    assert cache.best_source_url == retained.source_url
-    assert len(cache.current_offers) == 2
+    assert cache.lowest_delivered_price_cents == 1100
+    assert cache.best_provider_name == "healthy"
+    assert cache.best_source_url == newer.source_url
+    assert [offer["provider_name"] for offer in cache.current_offers] == ["healthy"]
     assert cache.last_successful_collection_at == old_date

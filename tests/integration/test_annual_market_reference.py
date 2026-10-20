@@ -12,7 +12,7 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.db.repositories.market_price_repo import MarketPriceRepository, _utc
 from app.domain.enums import ComparisonStatus
-from app.providers.base import MarketOffer
+from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers
 from app.services import market_price_service as market
 from app.services.book_market_pricing import BookPricingResult, persist_market_result
 from app.services.market_price_service import admissible_reference_price
@@ -152,7 +152,11 @@ async def test_retry_and_rollback_never_redate_or_duplicate_observation(evidence
     e = evidence
     value = offer(e.clock.now - timedelta(hours=25))
     value_book_id = e.book.id
-    result = BookPricingResult.from_offers([value], value, None)
+    result = BookPricingResult.from_offers(
+        MarketOffers([value], attempts=(CollectionAttempt("synthetic", "current"),)),
+        value,
+        None,
+    )
     await persist_market_result(e.db.session, e.book.id, result)
     await e.db.session.rollback()
     await persist_market_result(e.db.session, value_book_id, result)
@@ -392,7 +396,14 @@ async def test_historical_points_enter_annual_minimum_but_not_current_offers(evi
     point = offer(evidence.clock.now - timedelta(days=60), 545,
                   is_available=False, is_historical=True)
     current = offer(evidence.clock.now, 1103)
-    result = BookPricingResult.from_offers([current, point], current, None)
+    result = BookPricingResult.from_offers(
+        MarketOffers(
+            [current, point],
+            attempts=(CollectionAttempt("synthetic", "current"),),
+        ),
+        current,
+        None,
+    )
     cache = await persist_market_result(evidence.db.session, evidence.book.id, result)
     await evidence.db.session.commit()
     assert cache.annual_low_cents == 545

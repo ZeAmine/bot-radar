@@ -68,6 +68,7 @@ class BookPricingResult:
     attempts: tuple[CollectionAttempt, ...] = ()
     current_observed_at: datetime | None = None
     historical_checked: bool = False
+    price_confirmed: bool = False
     collected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
@@ -79,11 +80,64 @@ class BookPricingResult:
         )
 
     @property
-    def current_collection_succeeded(self) -> bool:
+    def current_collection_complete(self) -> bool:
         current = [a for a in self.attempts if a.operation == "current" and a.status != "skipped"]
         if self.attempts:
             return bool(current) and all(a.status == "success" for a in current)
-        return not self.failed_providers
+        return not self.failed_providers and (
+            self.lowest_delivered_price_cents is None or self.price_confirmed
+        )
+
+    @property
+    def current_collection_succeeded(self) -> bool:
+        return self.current_collection_complete
+
+    @property
+    def current_collection_usable(self) -> bool:
+        if not self.attempts:
+            return not self.failed_providers and (
+                self.lowest_delivered_price_cents is None or self.price_confirmed
+            )
+        current = [a for a in self.attempts if a.operation == "current" and a.status != "skipped"]
+        if not current or any(a.status == "failed" for a in current):
+            return False
+        if self.lowest_delivered_price_cents is not None and self.price_confirmed:
+            return True
+        return all(a.status == "success" for a in current)
+
+    @property
+    def current_collection_reason(self) -> str:
+        current = [a for a in self.attempts if a.operation == "current" and a.status != "skipped"]
+        if not self.attempts:
+            if self.failed_providers:
+                return "failed"
+            if self.lowest_delivered_price_cents is None:
+                return "empty_complete"
+            return "confirmed_price" if self.price_confirmed else "unproven_price"
+        if not current:
+            return "failed" if self.failed_providers else "no_current_attempt"
+        if any(a.status == "failed" for a in current):
+            return "failed"
+        if all(a.status == "success" for a in current):
+            if self.lowest_delivered_price_cents is None:
+                return "empty_complete"
+            return "confirmed_price" if self.price_confirmed else "all_sources_succeeded"
+        if self.lowest_delivered_price_cents is None:
+            return "partial_without_price"
+        return "confirmed_price" if self.price_confirmed else "unproven_price"
+
+    @staticmethod
+    def _price_is_confirmed(
+        offers: list[MarketOffer], best_offer: MarketOffer | None,
+    ) -> bool:
+        if best_offer is None:
+            return False
+        return any(
+            attempt.operation == "current"
+            and attempt.provider == best_offer.provider_name
+            and attempt.status == "success"
+            for attempt in getattr(offers, "attempts", ())
+        )
 
     @staticmethod
     def from_offers(
@@ -102,6 +156,9 @@ class BookPricingResult:
             best_offer = ProviderRegistry.select_best_offer([
                 offer for offer in offers if offer.provider_name not in unconfirmed_sources
             ])
+        price_confirmed = BookPricingResult._price_is_confirmed(offers, best_offer)
+        if best_offer is not None and not price_confirmed:
+            best_offer = None
         if best_offer is not None:
             merchant = None
             if best_offer.raw_payload:
@@ -122,6 +179,7 @@ class BookPricingResult:
                     for name in getattr(offers, "failed_providers", ())
                 ),
                 historical_checked=getattr(offers, "historical_checked", False),
+                price_confirmed=price_confirmed,
                 current_observed_at=best_offer.observed_at,
             )
 
@@ -159,6 +217,22 @@ class BookPricingResult:
             ),
             historical_checked=getattr(offers, "historical_checked", False),
         )
+
+
+def _current_component_requested(result: BookPricingResult) -> bool:
+    return not result.attempts or any(
+        attempt.operation == "current" and attempt.status != "skipped"
+        for attempt in result.attempts
+    )
+
+
+def _history_only(result: BookPricingResult) -> bool:
+    return any(
+        attempt.operation == "history" for attempt in result.attempts
+    ) and not any(
+        attempt.operation == "current" and attempt.status != "skipped"
+        for attempt in result.attempts
+    )
 
 
 def pricing_stat(cache: BookMarketCache | None) -> str:
@@ -352,6 +426,17 @@ async def persist_market_result(
     for offer in result.offers:
         await repo.save_snapshot(book_id, offer)
 
+    if _history_only(result):
+        cache = await repo.get_cache_by_book_id(book_id)
+        if cache is None:
+            cache = BookMarketCache(book_id=book_id)
+            session.add(cache)
+            await session.flush()
+        _stamp_collection(cache, result)
+        await repo.refresh_annual_references([book_id], force=True)
+        await _refresh_series_totals(session, book_id)
+        return cache
+
     if result.lowest_delivered_price_cents is None:
         # Résilience : un silence réseau ne doit pas priver l'utilisateur
         # d'un prix déjà connu et encore frais.
@@ -395,17 +480,22 @@ async def persist_market_result(
 
 def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None:
     """Conserve le résultat de tentative séparément de la date du dernier prix."""
-    cache.last_attempt_at = result.collected_at
-    if result.current_collection_succeeded:
-        cache.last_successful_collection_at = result.collected_at
-    current_requested = not result.attempts or any(
-        a.operation == "current" and a.status != "skipped" for a in result.attempts
-    )
+    current_requested = _current_component_requested(result)
+    current_attempted = not _history_only(result)
     history_requested = not any(a.operation == "history" for a in result.attempts) or any(
         a.operation == "history" and a.status != "skipped" for a in result.attempts
     )
+    if current_attempted:
+        cache.last_attempt_at = result.collected_at
     if current_requested:
-        record_component(cache, "current", succeeded=result.current_collection_succeeded,
+        logger.debug(
+            "Décision de collecte pour le livre ID %s : %s.",
+            cache.book_id,
+            result.current_collection_reason,
+        )
+        if result.current_collection_usable:
+            cache.last_successful_collection_at = result.collected_at
+        record_component(cache, "current", succeeded=result.current_collection_usable,
                          now=result.collected_at)
     if result.historical_checked:
         cache.historical_checked_at = result.collected_at
@@ -427,6 +517,8 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
     if history_requested:
         record_component(cache, "history", succeeded=result.historical_checked,
                          now=result.collected_at)
+    if not current_attempted:
+        return
     cache.failed_provider_names = list(result.failed_providers)
     retained_offers = cache.current_offers
     unconfirmed_sources = {a.provider for a in result.attempts
@@ -444,7 +536,7 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
         and not offer.is_historical
         and (offer.shipping_price_cents is not None or offer.price_includes_shipping)
     ]
-    if not result.current_collection_succeeded:
+    if not result.current_collection_usable and not result.price_confirmed:
         new_offers = cache.current_offers or []
         replaced = {str(offer.get("provider_name")) for offer in new_offers}
         cache.current_offers = [offer for offer in retained_offers or []
