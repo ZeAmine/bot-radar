@@ -102,11 +102,16 @@ def test_sync_retires_only_obsolete_pilot_source_files(
         remote.run.assert_not_called()
     else:
         script = remote.run.call_args.args[0]
-        paths = script.split('rm -f -- ', 1)[1].split()
-        assert set(paths) == {
+        lines = script.splitlines()
+        calibrated = next(line for line in lines if line.startswith('rm -f -- '))
+        maintenance = next(line for line in lines if line.startswith('rm -rf -- '))
+        assert set(calibrated.removeprefix('rm -f -- ').split()) == {
             'app/core/pilot_mode.py', 'app/utils/pilot_manifest.py', 'scripts/chasse_pilot.py',
             'tests/unit/test_chasse_pilot_mode.py', 'tests/unit/test_chasse_pilot_deploy.py',
             'tests/integration/test_chasse_pilot_collection.py',
             'docs/operations/chasse-pilot-release.md',
         }
+        assert set(maintenance.removeprefix('rm -rf -- ').split()) == set(
+            deploy.RETIRED_MAINTENANCE
+        )
         assert '--delete' not in deploy.rsync_argv(ctx)

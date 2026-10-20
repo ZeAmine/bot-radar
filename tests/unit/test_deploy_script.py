@@ -15,7 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from deploy import (  # noqa: E402
     HEALTH_ATTEMPTS,
+    RETIRED_MAINTENANCE,
     RSYNC_EXCLUDES,
+    STEPS,
     Context,
     clean_commit_message,
     format_deploy_notification,
@@ -26,6 +28,7 @@ from deploy import (  # noqa: E402
     step_rebuild,
     step_start,
     step_stop,
+    step_sync,
 )
 from deploy_dependencies import ServiceIdentity  # noqa: E402
 from notify_deploy import send_telegram_notification  # noqa: E402
@@ -117,6 +120,21 @@ def test_rsync_never_sends_the_local_env():
     }
     assert argv[0] == "rsync"
     assert argv[-1] == "ubuntu@example:~/bot-radar/"
+
+
+def test_sync_removes_retired_maintenance_before_rebuild(monkeypatch):
+    """Les chemins retirés quittent le contexte de build avant la reconstruction."""
+    remote = _FakeRemote()
+    monkeypatch.setattr("deploy._run_local", lambda _argv: (0, ""))
+
+    assert step_sync(_ctx(remote=remote)) == 0
+
+    script = remote.scripts[-1]
+    assert "rm -rf --" in script
+    for path in RETIRED_MAINTENANCE:
+        assert path in script
+    labels = [label for label, _ in STEPS]
+    assert labels.index("Synchronisation") < labels.index("Reconstruction de l'image")
 
 
 def test_migration_waits_for_a_healthy_container():

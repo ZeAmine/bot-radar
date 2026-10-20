@@ -22,8 +22,8 @@ les limites de concurrence et les reprises CAL restent en place. L'erreur CAL
    de configuration ni modifier les secrets CAL ou les options normales du poller.
 2. Dans le volume applicatif existant, retirer uniquement le répertoire
    `/var/lib/botradar/chasse-pilot/` après vérification de son chemin et de son
-   contenu. Ne supprimer ni le volume `alert_chain_state`, ni ses autres fichiers,
-   ni les volumes PostgreSQL/Redis. Les preuves privées et le manifeste local
+   contenu. Ne supprimer aucun volume ni fichier d'état non explicitement listé ;
+   préserver notamment les volumes PostgreSQL/Redis. Les preuves privées et le manifeste local
    peuvent être conservés comme historique ; aucun code ne les utilise désormais.
 3. Maintenir neutralisé l'ancien cron CAL déjà identifié : la maintenance de
    session et les prix sont pris en charge par l'unique scheduler applicatif.
