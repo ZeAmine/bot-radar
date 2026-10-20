@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -125,3 +126,24 @@ def test_to_ingest_payload_keeps_source_without_fees_or_seller():
     assert "estimated_protection_cents" not in payload
     assert "estimated_shipping_cents" not in payload
     assert "seller_name" not in payload
+
+
+FIXTURE_PAGE = Path(__file__).resolve().parents[1] / "fixtures" / "leboncoin" / "search_page.json"
+
+
+def test_captured_search_page_fixture_parses_with_expected_fields():
+    payload = json.loads(FIXTURE_PAGE.read_text(encoding="utf-8"))
+    html = (
+        '<script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps(payload)
+        + "</script>"
+    )
+
+    items = parse_search_page(html)
+
+    assert [item.external_id for item in items] == ["900000001", "900000002", "900000003"]
+    assert [item.item_price_cents for item in items] == [500, 1200, 700]
+    assert items[0].published_at == datetime(2026, 10, 19, 23, 37, 26, tzinfo=UTC)
+    assert items[0].condition is ItemCondition.NEW_WITHOUT_TAG
+    assert items[2].condition is ItemCondition.GOOD
+    assert items[0].photo_url == "https://img.example/leboncoin-1.jpg"

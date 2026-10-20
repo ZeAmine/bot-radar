@@ -42,11 +42,19 @@ Relevé via `https://tls.peet.ws/api/all`, même client, même sortie :
 
 Le préfixe JA4 `t13d1516h2_8daaf6152771` est la forme Chrome attendue. La comparaison avec un HAR de navigateur réel reste à faire.
 
+## Soak du 20 octobre — 10,9 h
+
+- 65 cycles, 65 réponses `200`, aucun captcha, aucune erreur, requête la plus lente à 3,2 s.
+- `new_recent_ids` (ids nouveaux dont `first_publication_date` suit le cycle précédent) : moyenne 13,8 par cycle, maximum 33, neuf cycles sans nouveauté. Soit λ ≈ 83 annonces/heure en journée, contre 61/h la nuit : la page de 35 places n'a plus que 2,5 fois de marge en moyenne et frôle la saturation en pointe.
+- `delta_total` : moyenne −1,0, minimum −53, maximum +54, corrélation 0,39 avec les nouveaux ids. **L'estimateur Δ`total` est invalide** : les suppressions compensent les arrivées et le compteur peut être retardé. Seul l'ensemble des ids datés reste fiable.
+- `gone_ids` : 1 164 sur la période, dont une majorité de départs de page 1 provoqués par les arrivées, pas seulement des suppressions.
+
 ## Ce que ces mesures invalident
 
 - « la page est triée par nouveauté » : vrai après 1 à 2 annonces épinglées, à exclure du calcul de flux ;
 - « `total` est la catégorie entière » : faux, il suit le filtre ;
 - « la page 2 n'existe pas ou recouvre la page 1 » : faux, elle avance ;
+- « `delta_total` mesure le flux » : faux, il ne suit pas les arrivées ;
 - l'estimation λ de 0,3/h calculée sur l'écart min/max est un artefact des annonces épinglées.
 
 ## Limites
