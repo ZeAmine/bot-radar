@@ -50,12 +50,22 @@ Le préfixe JA4 `t13d1516h2_8daaf6152771` est la forme Chrome attendue. La compa
 - `delta_total` : moyenne −1,0, minimum −53, maximum +54, corrélation 0,39 avec les nouveaux ids. **L'estimateur Δ`total` est invalide** : les suppressions compensent les arrivées et le compteur peut être retardé. Seul l'ensemble des ids datés reste fiable.
 - `gone_ids` : 1 164 sur la période, dont une majorité de départs de page 1 provoqués par les arrivées, pas seulement des suppressions.
 
+## Premier blocage observé
+
+- 20 octobre 2026, 10:58:48 UTC (12:58 Paris) : `403` avec page de challenge (`captcha-delivery`), après 65 cycles et environ 11 h à 600 s.
+- Deuxième cycle consécutif à 11:09:55 UTC, également `403`.
+- Les tests d'API du même jour commencent à 11:16 UTC : ils suivent le premier refus et ne l'expliquent pas.
+- Depuis 11:13 UTC, le soak applique le retrait progressif du collecteur (30, 60 puis 120 min) ; les cycles bloqués ne comptent ni arrivées ni couverture.
+- Conséquence : la borne « aucun échec sur 288 cycles » ne s'applique plus. Le taux observé est de 2 cycles bloqués sur 65 (≈ 3 %), et la durée du blocage reste à mesurer.
+
 ## Ce que ces mesures invalident
 
 - « la page est triée par nouveauté » : vrai après 1 à 2 annonces épinglées, à exclure du calcul de flux ;
 - « `total` est la catégorie entière » : faux, il suit le filtre ;
 - « la page 2 n'existe pas ou recouvre la page 1 » : faux, elle avance ;
 - « `delta_total` mesure le flux » : faux, il ne suit pas les arrivées ;
+- « l'API JSON est une voie anonyme » : faux, `403` sans session du navigateur ;
+- « aucune restriction pendant 48 h » : faux, un challenge DataDome est survenu après 11 h ;
 - l'estimation λ de 0,3/h calculée sur l'écart min/max est un artefact des annonces épinglées.
 
 ## Limites

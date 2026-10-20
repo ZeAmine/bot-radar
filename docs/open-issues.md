@@ -15,6 +15,7 @@ fonctionnel n'est autorisé par cette page. Ne pas transformer un constat en per
 | Collecte Leboncoin — cadence | Soak de 48 h sur le flux BD réel, 600 s ± jitter, démarré le 2026-10-20 01:43 (Paris) ; après 10,9 h : 65 cycles, 0 blocage, λ ≈ 83/h en journée, saturation observée à 33 nouveautés sur une page de 35 | Terminer le soak (2026-10-22 01:43) ; la page 2 reste nécessaire en pointe ; voir [mesures](measurements/leboncoin-baseline.md) |
 | Collecte Leboncoin — rappel | Aucun oracle externe : l'utilisateur refuse la recherche sauvegardée par e-mail comme l'échantillon manuel (décision du 2026-10-20) ; le rappel n'est donc pas mesurable contre la plateforme | Si un oracle est accepté plus tard, pré-enregistrer l'échantillon ; sans lui, ne revendiquer aucun rappel (ADR-053) |
 | Collecte Leboncoin — annonces épinglées | 1 à 2 annonces promues restent en tête de page avec une date ancienne (11–18 octobre observés) ; la fraîcheur les exclut, le dédoublonnage les absorbe | Surveiller leur part si elle dépasse 2 places ; voir [mesures](measurements/leboncoin-baseline.md) |
+| Collecte Leboncoin — blocage DataDome | Premier challenge le 2026-10-20 à 10:58 UTC après 65 cycles (`403` + `captcha-delivery`), deux cycles consécutifs ; le soak applique depuis un retrait 30/60/120 min | Mesurer la durée de déblocage et le taux sur la fin du soak ; si récidive, trancher cadence ou pauses ; voir [mesures](measurements/leboncoin-baseline.md) |
 
 ## Limites historiques remplacées
 
