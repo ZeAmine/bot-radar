@@ -83,6 +83,24 @@ RSYNC_EXCLUDES = (
     "vendor",
 )
 
+RETIRED_MAINTENANCE = (
+    "app/bot/handlers/alert_chain_approval.py",
+    "app/services/alert_chain_state.py",
+    "app/services/alert_fix",
+    "scripts/check_alert_chain.py",
+    "scripts/alert_fix.py",
+    "scripts/alert_fix_rehearsal.py",
+    "tests/alert_fix_fixtures.py",
+    "tests/unit/test_alert_chain_approval.py",
+    "tests/unit/test_alert_chain_state.py",
+    "tests/unit/test_alert_fix_prepare.py",
+    "tests/unit/test_check_alert_chain.py",
+    "tests/unit/test_check_alert_chain_state_integration.py",
+    "tests/unit/test_maintenance_foundation.py",
+    "docs/operations/alert-chain-check.md",
+    "docs/operations/alert-fix-executor.md",
+)
+
 # Attente de la santé du conteneur cible après migration, en tentatives de deux secondes.
 HEALTH_ATTEMPTS = 30
 
@@ -186,7 +204,11 @@ def step_sync(ctx: Context) -> int:
         "tests/integration/test_chasse_pilot_collection.py",
         "docs/operations/chasse-pilot-release.md",
     )
-    script = f"set -eu\ncd {ctx.remote_dir}\nrm -f -- " + " ".join(retired) + "\n"
+    script = (
+        f"set -eu\ncd {ctx.remote_dir}\n"
+        f"rm -f -- {' '.join(retired)}\n"
+        f"rm -rf -- {' '.join(RETIRED_MAINTENANCE)}\n"
+    )
     code, _, _ = ctx.remote_or_default().run(script)
     return int(code)
 
