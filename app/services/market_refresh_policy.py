@@ -24,14 +24,23 @@ def aware(moment: datetime) -> datetime:
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
+def component_success_at(
+    cache: BookMarketCache | None, component: Component,
+) -> datetime | None:
+    if cache is None:
+        return None
+    if component == "current":
+        return cache.last_successful_collection_at
+    return cache.historical_checked_at
+
+
 def component_due(cache: BookMarketCache | None, component: Component, now: datetime) -> datetime:
     if cache is None:
         return now
     state = (cache.refresh_state or {}).get(component)
     if isinstance(state, dict) and isinstance(state.get("due_at"), str):
         return datetime.fromisoformat(state["due_at"])
-    successful = (cache.last_successful_collection_at if component == "current"
-                  else cache.historical_checked_at if cache.source_history else None)
+    successful = component_success_at(cache, component)
     due = aware(successful) + REFRESH_INTERVAL if successful else now
     if cache.last_attempt_at and cache.collection_status in {"failed", "partial", "skipped"}:
         due = max(due, aware(cache.last_attempt_at) + RETRY_DELAYS[0])

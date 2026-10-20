@@ -37,7 +37,7 @@ from app.db.models.book import Book  # noqa: E402
 from app.db.models.book_market_cache import BookMarketCache  # noqa: E402
 from app.db.models.category import Category  # noqa: E402
 from app.db.models.user import User  # noqa: E402
-from app.providers.base import MarketOffer  # noqa: E402
+from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers  # noqa: E402
 from app.providers.registry import ProviderRegistry as RealProviderRegistry  # noqa: E402
 from app.services import book_market_pricing as pricing  # noqa: E402
 from app.services.book_metadata_service import BookMetadata, CatalogueVerdict  # noqa: E402
@@ -372,12 +372,12 @@ class _FakeRegistry:
         title: str,
         author: str | None = None,
         edition: str | None = None,
-    ) -> list[MarketOffer]:
+    ) -> MarketOffers:
         # La signature reproduit le vrai registre : le contexte est lu par le test.
         _FakeRegistry.calls.append(isbn13)
         _FakeRegistry.last_context = (title, author, edition)
         price = MARKET_CENTS[str(isbn13)]
-        return [
+        return MarketOffers([
             MarketOffer(
                 provider_name="Librairie Test",
                 observed_at=datetime.now(UTC),
@@ -391,7 +391,7 @@ class _FakeRegistry:
                     "historical_low_1y_cents": LOWEST_CENTS[str(isbn13)],
                 },
             )
-        ]
+        ], attempts=(CollectionAttempt("Librairie Test", "current"),))
 
     @staticmethod
     def select_best_offer(offers: list[MarketOffer]) -> MarketOffer | None:

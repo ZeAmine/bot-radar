@@ -9,7 +9,7 @@ import pytest
 from app.core.constants import ComparisonStatus, MatchConfidence
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
-from app.providers.base import MarketOffer, MarketOffers
+from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers
 from app.tasks.refresh_book_prices import _run_wave, refresh_book_prices_task
 
 
@@ -43,7 +43,9 @@ async def test_refresh_book_prices_task_success():
     )
 
     mock_registry = MagicMock()
-    mock_registry.fetch_all_offers = AsyncMock(return_value=[mock_offer])
+    mock_registry.fetch_all_offers = AsyncMock(return_value=MarketOffers(
+        [mock_offer], attempts=(CollectionAttempt("ebay", "current"),),
+    ))
     mock_registry.select_best_offer = MagicMock(return_value=mock_offer)
 
     mock_session = AsyncMock()
@@ -441,7 +443,12 @@ async def test_only_a_written_cote_counts_as_updated():
                                 shipping_price_cents=0, delivered_price_cents=1000,
                                 source_url="https://example.invalid")
             _kwargs["result_sink"].append(BookPricingResult.from_offers(
-                [offer] if wrote else [], offer if wrote else None, None,
+                MarketOffers(
+                    [offer] if wrote else [],
+                    attempts=(CollectionAttempt("source", "current"),) if wrote else (),
+                ),
+                offer if wrote else None,
+                None,
             ))
             return _CacheEcrit() if wrote else _CacheSansCote()
 

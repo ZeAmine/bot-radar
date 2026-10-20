@@ -15,7 +15,7 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.category import Category
 from app.db.models.user import User
 from app.db.repositories.market_price_repo import MarketPriceRepository
-from app.providers.base import MarketOffer
+from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers
 from app.services.book_market_pricing import BookPricingResult, persist_market_result
 from tests.database import postgres_replayed_database
 
@@ -85,7 +85,14 @@ async def test_two_committing_tomes_leave_the_complete_series_total(monkeypatch)
                     source_url="https://example.com",
                     item_condition="Très bon",
                 )
-                result = BookPricingResult.from_offers([offer], offer, None)
+                result = BookPricingResult.from_offers(
+                    MarketOffers(
+                        [offer],
+                        attempts=(CollectionAttempt("source", "current"),),
+                    ),
+                    offer,
+                    None,
+                )
                 await persist_market_result(tx, book_id, result)
                 await tx.commit()
 

@@ -38,6 +38,9 @@ Création, édition et scheduler partagent ce chemin et le travail par livre.
 Le panneau et les notifications lisent les données persistées sans collecte.
 Aucun réseau sous verrou d'alerte ; relire liaisons et caches après acquisition du
 verrou avant de persister un total. Une tentative et un relevé sont des faits distincts.
+Un prix ne date une réussite courante que si la source qui le fournit porte une
+tentative `current` `success` ; un prix sans cette preuve reste consultatif et
+n'avance pas la fraîcheur.
 
 [market_offer](../../app/domain/rules/market_offer.py) est l'unique filtre : occasion,
 état déclaré au moins « Très bon », marchand non exclu. Un état non qualifié
@@ -151,8 +154,10 @@ appliqués par les chemins de collecte et de session.
 Une fiche CAL déjà enregistrée est réutilisable pour le même ISBN vérifié, sans
 recherche supplémentaire ni contournement des restrictions. Un corps HTTP 200 vide
 reste un échec source avec métadonnées HTTP, distinct d'un résultat JSON valide
-sans livre. Le [diagnostic ciblé](../operations/chasse-search-results.md) distingue
-les observations réseau des tests isolés.
+sans livre. Une réponse historique ne date la composante que si elle est
+structurellement valide : objet, `stats` en liste de séries avec `label` textuel et
+`statValues` en liste. Le [diagnostic ciblé](../operations/chasse-search-results.md)
+distingue les observations réseau des tests isolés.
 
 ## Diagnostic et bilans de rafraîchissement
 

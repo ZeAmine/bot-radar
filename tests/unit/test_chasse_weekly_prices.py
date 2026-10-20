@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,7 +14,11 @@ from app.services.market_price_service import (
     reference_price,
     series_reference_total,
 )
-from app.services.market_refresh_policy import collection_due, component_due
+from app.services.market_refresh_policy import (
+    collection_due,
+    component_due,
+    component_success_at,
+)
 from app.services.tome_extractor import TomeMatchResult
 
 
@@ -72,6 +77,31 @@ def test_freshness_becomes_due_after_seven_days():
     _stamp_collection(cache, result)
     assert not collection_due(cache, result.collected_at + timedelta(days=6, hours=23))
     assert collection_due(cache, result.collected_at + timedelta(days=7))
+
+
+def test_verified_empty_history_is_dated_without_source_history():
+    checked = datetime.now(UTC) - timedelta(days=2)
+    offers = MarketOffers(
+        [],
+        historical_checked=True,
+        attempts=(CollectionAttempt("chasse_aux_livres", "history"),),
+    )
+    result = BookPricingResult.from_offers(offers, None, None)
+    cache = BookMarketCache(last_successful_collection_at=checked)
+
+    _stamp_collection(cache, replace(result, collected_at=checked))
+
+    assert result.historical_checked is True
+    assert cache.historical_checked_at == checked
+    assert cache.source_history is None
+    assert cache.historical_low_1y_cents is None
+    assert component_success_at(cache, "current") == checked
+    assert component_success_at(cache, "history") == checked
+    assert component_due(cache, "history", checked + timedelta(days=6)) == (
+        checked + timedelta(days=7)
+    )
+    assert not collection_due(cache, checked + timedelta(days=6))
+    assert collection_due(cache, checked + timedelta(days=7))
 
 
 @pytest.mark.parametrize("title", [

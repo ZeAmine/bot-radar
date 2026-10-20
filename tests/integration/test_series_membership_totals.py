@@ -22,6 +22,7 @@ from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.domain.enums import AlertStatus, ComparisonStatus
+from app.providers.base import CollectionAttempt, MarketOffers
 from app.schemas.listing import ListingIngestPayload
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, CatalogueVerdict
 from app.services.market_price_service import MarketPriceService
@@ -296,7 +297,14 @@ async def test_recalculation_reads_links_after_waiting_for_mutation(journey, mon
             await pricing.persist_market_result(
                 editor,
                 journey.books[0].id,
-                pricing.BookPricingResult.from_offers([offer], offer, None),
+                pricing.BookPricingResult.from_offers(
+                    MarketOffers(
+                        [offer],
+                        attempts=(CollectionAttempt("synthetic", "current"),),
+                    ),
+                    offer,
+                    None,
+                ),
             )
         await editor.commit()
         assert_retained(held_sessions[0])

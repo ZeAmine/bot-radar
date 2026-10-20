@@ -34,8 +34,11 @@ obligations actuelles sont définies dans [AGENTS](../AGENTS.md#convention-de-tr
   avec repos des échecs. Une erreur interne avant résultat acquiert aussi son tour.
 - Tentative, collecte vide réussie, résultat partiel et échec restent distincts.
   La fraîcheur des offres utilise une réussite explicite ; celle de l'historique
-  utilise une récupération qualifiée distincte. Les anciens prix restent conservés
-  après échec, sans nouvelle date fictive. Les avertissements portent sur un vrai
+  utilise une récupération qualifiée distincte. Une offre ne date la collecte
+  courante que si sa source a une tentative courante réussie ; sans cette preuve,
+  le prix reste consultatif. Une réponse historique doit être structurellement
+  valide pour dater sa composante. Les anciens prix restent conservés après échec,
+  sans nouvelle date fictive. Les avertissements portent sur un vrai
   retard de collecte ou de preuves historiques, sans demander qu'un minimum soit égalé.
 
 ## Causes établies et données accessibles

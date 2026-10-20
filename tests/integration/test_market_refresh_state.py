@@ -8,7 +8,7 @@ import pytest
 from app.core.constants import ComparisonStatus
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
-from app.providers.base import MarketOffer, MarketOffers
+from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers
 from app.services import book_market_pricing
 from app.services.book_market_pricing import price_book
 from app.services.market_price_service import admissible_reference_price
@@ -177,7 +177,8 @@ async def test_linked_book_keeps_refresh_metadata_with_production_autoflush_disa
                             source_url="https://example.com",
                             item_condition="Très bon",
                         )
-                    ]
+                    ],
+                    attempts=(CollectionAttempt("source", "current"),),
                 )
             )
         )

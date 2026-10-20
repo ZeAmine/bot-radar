@@ -156,6 +156,20 @@ def parse_historical_observations(
     return points
 
 
+def valid_history_payload(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    stats = data.get("stats")
+    if not isinstance(stats, list):
+        return False
+    return all(
+        isinstance(series, dict)
+        and isinstance(series.get("label"), str)
+        and isinstance(series.get("statValues"), list)
+        for series in stats
+    )
+
+
 CHASSE_BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -695,8 +709,7 @@ class ChasseAuxLivresProvider:
                         history_attempt = failure.attempts[0]
                     if failure is None and resp_jcd.status_code == 200 and resp_jcd.content:
                         jcd_data = resp_jcd.json()
-                        if (not isinstance(jcd_data, dict)
-                                or not isinstance(jcd_data.get("stats"), list)):
+                        if not valid_history_payload(jcd_data):
                             raise ValueError("Série historique invalide")
                         historical_failed = False
                         historical_checked = True
