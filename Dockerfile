@@ -23,8 +23,6 @@ WORKDIR /app
 RUN groupadd -g 1001 appgroup && \
     useradd -u 1001 -g appgroup -s /bin/sh -m appuser
 
-RUN install -d -o appuser -g appgroup -m 0755 /var/lib/botradar
-
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONPATH="/app" \

@@ -1,10 +1,11 @@
 """Tests unitaires pour la commande /status du bot Telegram et les notifications d'état."""
 
 import time
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiogram.types import Message
+from aiogram.types import Chat, Message
 
 from app.bot.handlers.status import handle_status
 from app.providers.llm.base import LLMHealth
@@ -216,21 +217,44 @@ async def test_handle_status_night_mode():
         assert "Aucune alerte active" in text
 
 
+def _receipt(chat_id: int) -> Message:
+    return Message(
+        message_id=1,
+        date=datetime.now(UTC),
+        chat=Chat(id=chat_id, type="private"),
+    )
+
+
 @pytest.mark.asyncio
 async def test_notify_admins():
     """Vérifie la diffusion d'un message aux utilisateurs autorisés."""
     bot = MagicMock()
-    bot.send_message = AsyncMock()
+    bot.send_message = AsyncMock(
+        side_effect=[_receipt(123456), _receipt(789012)]
+    )
 
     with patch("app.services.telegram_service.settings.TELEGRAM_ALLOWED_USER_IDS", [123456,
         789012]):
-        await notify_admins("Test alert message", bot=bot)
+        accepted = await notify_admins("Test alert message", bot=bot)
 
+        assert accepted is True
         assert bot.send_message.call_count == 2
         bot.send_message.assert_any_call(
             chat_id=123456, text="Test alert message", parse_mode="HTML")
         bot.send_message.assert_any_call(
             chat_id=789012, text="Test alert message", parse_mode="HTML")
+
+
+@pytest.mark.asyncio
+async def test_notify_admins_failure_is_not_accepted():
+    """Un échec d'envoi ne doit jamais être présenté comme accepté."""
+    bot = MagicMock()
+    bot.send_message = AsyncMock(side_effect=RuntimeError("transport indisponible"))
+
+    with patch("app.services.telegram_service.settings.TELEGRAM_ALLOWED_USER_IDS", [123456]):
+        accepted = await notify_admins("Test alert message", bot=bot)
+
+        assert accepted is False
 
 
 @pytest.mark.asyncio
