@@ -36,9 +36,12 @@ obligations actuelles sont définies dans [AGENTS](../AGENTS.md#convention-de-tr
   La fraîcheur des offres utilise une réussite explicite ; celle de l'historique
   utilise une récupération qualifiée distincte. Une offre ne date la collecte
   courante que si sa source a une tentative courante réussie ; sans cette preuve,
-  le prix reste consultatif. Une réponse historique doit être structurellement
-  valide pour dater sa composante. Les anciens prix restent conservés après échec,
-  sans nouvelle date fictive. Les avertissements portent sur un vrai
+  le prix reste consultatif. Un prix confirmé ne peut pas être remplacé par une
+  ancienne offre retenue. Une passe limitée à l'historique ne modifie pas la
+  composante courante : elle peut dater l'historique et recalculer l'échéance
+  globale. Une réponse historique doit être structurellement valide pour dater sa
+  composante. Les anciens prix restent conservés après échec, sans nouvelle date
+  fictive. Les avertissements portent sur un vrai
   retard de collecte ou de preuves historiques, sans demander qu'un minimum soit égalé.
 
 ## Causes établies et données accessibles

@@ -219,6 +219,22 @@ class BookPricingResult:
         )
 
 
+def _current_component_requested(result: BookPricingResult) -> bool:
+    return not result.attempts or any(
+        attempt.operation == "current" and attempt.status != "skipped"
+        for attempt in result.attempts
+    )
+
+
+def _history_only(result: BookPricingResult) -> bool:
+    return any(
+        attempt.operation == "history" for attempt in result.attempts
+    ) and not any(
+        attempt.operation == "current" and attempt.status != "skipped"
+        for attempt in result.attempts
+    )
+
+
 def pricing_stat(cache: BookMarketCache | None) -> str:
     """Ventilation d'une passe de cotation, lue dans la cote consolidée."""
     if cache is not None and cache.collection_status == "failed":
@@ -410,6 +426,17 @@ async def persist_market_result(
     for offer in result.offers:
         await repo.save_snapshot(book_id, offer)
 
+    if _history_only(result):
+        cache = await repo.get_cache_by_book_id(book_id)
+        if cache is None:
+            cache = BookMarketCache(book_id=book_id)
+            session.add(cache)
+            await session.flush()
+        _stamp_collection(cache, result)
+        await repo.refresh_annual_references([book_id], force=True)
+        await _refresh_series_totals(session, book_id)
+        return cache
+
     if result.lowest_delivered_price_cents is None:
         # Résilience : un silence réseau ne doit pas priver l'utilisateur
         # d'un prix déjà connu et encore frais.
@@ -453,21 +480,21 @@ async def persist_market_result(
 
 def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None:
     """Conserve le résultat de tentative séparément de la date du dernier prix."""
-    cache.last_attempt_at = result.collected_at
-    logger.debug(
-        "Décision de collecte pour le livre ID %s : %s.",
-        cache.book_id,
-        result.current_collection_reason,
-    )
-    if result.current_collection_usable:
-        cache.last_successful_collection_at = result.collected_at
-    current_requested = not result.attempts or any(
-        a.operation == "current" and a.status != "skipped" for a in result.attempts
-    )
+    current_requested = _current_component_requested(result)
+    current_attempted = not _history_only(result)
     history_requested = not any(a.operation == "history" for a in result.attempts) or any(
         a.operation == "history" and a.status != "skipped" for a in result.attempts
     )
+    if current_attempted:
+        cache.last_attempt_at = result.collected_at
     if current_requested:
+        logger.debug(
+            "Décision de collecte pour le livre ID %s : %s.",
+            cache.book_id,
+            result.current_collection_reason,
+        )
+        if result.current_collection_usable:
+            cache.last_successful_collection_at = result.collected_at
         record_component(cache, "current", succeeded=result.current_collection_usable,
                          now=result.collected_at)
     if result.historical_checked:
@@ -490,6 +517,8 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
     if history_requested:
         record_component(cache, "history", succeeded=result.historical_checked,
                          now=result.collected_at)
+    if not current_attempted:
+        return
     cache.failed_provider_names = list(result.failed_providers)
     retained_offers = cache.current_offers
     unconfirmed_sources = {a.provider for a in result.attempts
@@ -507,7 +536,7 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
         and not offer.is_historical
         and (offer.shipping_price_cents is not None or offer.price_includes_shipping)
     ]
-    if not result.current_collection_succeeded:
+    if not result.current_collection_usable and not result.price_confirmed:
         new_offers = cache.current_offers or []
         replaced = {str(offer.get("provider_name")) for offer in new_offers}
         cache.current_offers = [offer for offer in retained_offers or []

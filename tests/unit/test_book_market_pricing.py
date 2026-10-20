@@ -28,8 +28,10 @@ from app.services.book_market_pricing import (
     persist_market_result,
     price_book,
     price_book_now,
+    pricing_stat,
     schedule_book_pricing,
 )
+from app.services.market_price_service import _current_collection_is_empty
 from app.services.market_refresh_policy import component_due
 
 ISBN = "9782917501245"
@@ -77,6 +79,31 @@ def _registry(offers: list[MarketOffer]) -> MagicMock:
     registry = MagicMock()
     registry.fetch_all_offers = AsyncMock(return_value=offers)
     return registry
+
+
+def _current_cache(now: datetime) -> BookMarketCache:
+    old = now - timedelta(days=2)
+    return BookMarketCache(
+        book_id=uuid.uuid4(),
+        lowest_delivered_price_cents=1000,
+        best_provider_name="momox",
+        best_source_url="https://momox.example/1000",
+        confidence=MatchConfidence.HIGH,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=old,
+        expires_at=now + timedelta(hours=2),
+        last_successful_collection_at=old,
+        last_attempt_at=old,
+        collection_status="complete",
+        current_offers=[{
+            "provider_name": "momox", "delivered_price_cents": 1000,
+            "source_url": "https://momox.example/1000", "item_condition": "Très bon état",
+        }],
+        failed_provider_names=[],
+        refresh_state={"current": {
+            "due_at": (old + timedelta(days=7)).isoformat(), "failures": 0,
+        }},
+    )
 
 
 @pytest.mark.asyncio
@@ -674,6 +701,236 @@ def test_partial_current_source_without_a_confirmed_price_stays_retryable() -> N
     }
     assert cache.collection_status == "partial"
     assert component_due(cache, "current", now) == now + timedelta(hours=6)
+
+
+def test_confirmed_current_price_wins_over_a_retained_partial_cal_offer() -> None:
+    now = datetime.now(UTC)
+    old = now - timedelta(days=8)
+    retained = {
+        "provider_name": "chasse_aux_livres", "item_price_cents": 800,
+        "shipping_price_cents": None, "delivered_price_cents": 800,
+        "source_url": "https://chasse.example/800", "item_condition": "Très bon état",
+    }
+    cache = BookMarketCache(
+        book_id=uuid.uuid4(), current_offers=[retained],
+        lowest_delivered_price_cents=1000, best_provider_name="momox",
+        best_source_url="https://momox.example/1000",
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=old, expires_at=now + timedelta(hours=2),
+        last_successful_collection_at=old, last_attempt_at=old,
+    )
+    cal = _offer("chasse_aux_livres", 1500)
+    healthy = _offer("momox", 1000)
+    offers = MarketOffers(
+        [cal, healthy], failed_providers=("chasse_aux_livres",),
+        attempts=(
+            CollectionAttempt("chasse_aux_livres", "current", "partial", "incomplete_offers"),
+            CollectionAttempt("momox", "current"),
+        ),
+    )
+    result = BookPricingResult.from_offers(offers, healthy, None)
+
+    _stamp_collection(cache, replace(result, collected_at=now))
+
+    assert result.price_confirmed is True
+    assert cache.lowest_delivered_price_cents == 1000
+    assert cache.best_provider_name == "momox"
+    assert [offer["provider_name"] for offer in cache.current_offers] == ["momox"]
+    assert cache.last_successful_collection_at == now
+
+
+def test_partial_cal_alone_does_not_replace_the_last_known_price() -> None:
+    now = datetime.now(UTC)
+    old = now - timedelta(days=8)
+    retained = {
+        "provider_name": "chasse_aux_livres", "item_price_cents": 800,
+        "shipping_price_cents": None, "delivered_price_cents": 800,
+        "source_url": "https://chasse.example/800", "item_condition": "Très bon état",
+    }
+    cache = BookMarketCache(
+        book_id=uuid.uuid4(), current_offers=[retained],
+        lowest_delivered_price_cents=800, best_provider_name="chasse_aux_livres",
+        best_source_url="https://chasse.example/800",
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=old, expires_at=now + timedelta(hours=2),
+        last_successful_collection_at=old, last_attempt_at=old,
+    )
+    cal = _offer("chasse_aux_livres", 1500)
+    offers = MarketOffers(
+        [cal], failed_providers=("chasse_aux_livres",),
+        attempts=(
+            CollectionAttempt("chasse_aux_livres", "current", "partial", "incomplete_offers"),
+        ),
+    )
+    result = BookPricingResult.from_offers(offers, cal, None)
+
+    _stamp_collection(cache, replace(result, collected_at=now))
+
+    assert result.lowest_delivered_price_cents is None
+    assert cache.lowest_delivered_price_cents == 800
+    assert cache.current_offers == [retained]
+    assert cache.last_successful_collection_at == old
+    assert component_due(cache, "current", now) == now + timedelta(hours=6)
+
+
+def test_fully_successful_collection_replaces_the_known_offers_normally() -> None:
+    now = datetime.now(UTC)
+    old = now - timedelta(days=8)
+    cache = BookMarketCache(
+        book_id=uuid.uuid4(), current_offers=[{
+            "provider_name": "chasse_aux_livres", "delivered_price_cents": 800,
+            "source_url": "https://chasse.example/800", "item_condition": "Très bon état",
+        }],
+        lowest_delivered_price_cents=1000, best_provider_name="momox",
+        best_source_url="https://momox.example/offre/1000",
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=old, expires_at=now + timedelta(hours=2),
+        last_successful_collection_at=old, last_attempt_at=old,
+    )
+    healthy = _offer("momox", 1000)
+    offers = MarketOffers([healthy], attempts=(CollectionAttempt("momox", "current"),))
+    result = BookPricingResult.from_offers(offers, healthy, None)
+
+    _stamp_collection(cache, replace(result, collected_at=now))
+
+    assert cache.lowest_delivered_price_cents == 1000
+    assert [offer["provider_name"] for offer in cache.current_offers] == ["momox"]
+    assert cache.collection_status == "complete"
+    assert cache.last_successful_collection_at == now
+
+
+def test_failed_collection_without_a_price_keeps_the_last_known_offers() -> None:
+    now = datetime.now(UTC)
+    old = now - timedelta(days=8)
+    retained = {
+        "provider_name": "chasse_aux_livres", "delivered_price_cents": 800,
+        "source_url": "https://chasse.example/800", "item_condition": "Très bon état",
+    }
+    cache = BookMarketCache(
+        book_id=uuid.uuid4(), current_offers=[retained],
+        lowest_delivered_price_cents=800, best_provider_name="chasse_aux_livres",
+        comparison_status=ComparisonStatus.AVAILABLE,
+        checked_at=old, expires_at=now + timedelta(hours=2),
+        last_successful_collection_at=old, last_attempt_at=old,
+    )
+    result = BookPricingResult(
+        offers=[], lowest_delivered_price_cents=None, best_provider_name=None,
+        best_source_url=None, confidence=None, comparison_status=ComparisonStatus.UNAVAILABLE,
+        cache_duration_hours=6, historical_low_1y_cents=None,
+        failed_providers=("synthetic",), collected_at=now,
+    )
+
+    _stamp_collection(cache, result)
+
+    assert cache.current_offers == [retained]
+    assert cache.lowest_delivered_price_cents == 800
+    assert cache.last_successful_collection_at == old
+    assert cache.last_attempt_at == now
+    assert cache.collection_status == "failed"
+
+
+@pytest.mark.parametrize("with_point", [True, False])
+def test_history_only_success_preserves_current_state(with_point: bool) -> None:
+    now = datetime.now(UTC)
+    cache = _current_cache(now)
+    current_offers = list(cache.current_offers or [])
+    current_due = component_due(cache, "current", now)
+    checked_at = cache.checked_at
+    expires_at = cache.expires_at
+    point = replace(
+        _offer("chasse_aux_livres", 900), is_historical=True, is_available=False,
+        item_condition="Très bon état +", observed_at=now - timedelta(days=3),
+    )
+    offers = MarketOffers(
+        [point] if with_point else [], historical_checked=True,
+        attempts=(
+            CollectionAttempt("chasse_aux_livres", "current", "skipped"),
+            CollectionAttempt("chasse_aux_livres", "history"),
+        ),
+    )
+    result = BookPricingResult.from_offers(
+        offers, None, 900 if with_point else None,
+    )
+
+    _stamp_collection(cache, replace(result, collected_at=now))
+
+    assert cache.lowest_delivered_price_cents == 1000
+    assert cache.current_offers == current_offers
+    assert cache.collection_status == "complete"
+    assert cache.last_successful_collection_at == now - timedelta(days=2)
+    assert cache.last_attempt_at == now - timedelta(days=2)
+    assert cache.checked_at == checked_at
+    assert cache.expires_at == expires_at
+    assert cache.historical_checked_at == now
+    assert component_due(cache, "current", now) == current_due
+    assert pricing_stat(cache) == "available"
+    assert _current_collection_is_empty(cache) is False
+    if with_point:
+        assert cache.historical_low_1y_cents == 900
+        assert cache.source_history is not None
+        assert cache.source_history["price_cents"] == 900
+    else:
+        assert cache.historical_low_1y_cents is None
+        assert cache.source_history is None
+
+
+def test_history_only_failure_preserves_current_state() -> None:
+    now = datetime.now(UTC)
+    cache = _current_cache(now)
+    current_offers = list(cache.current_offers or [])
+    current_due = component_due(cache, "current", now)
+    old_checked = cache.historical_checked_at
+    offers = MarketOffers(
+        failed_providers=("chasse_aux_livres",),
+        attempts=(
+            CollectionAttempt("chasse_aux_livres", "current", "skipped"),
+            CollectionAttempt("chasse_aux_livres", "history", "failed", "timeout"),
+        ),
+    )
+    result = BookPricingResult.from_offers(offers, None, None)
+
+    _stamp_collection(cache, replace(result, collected_at=now))
+
+    assert cache.lowest_delivered_price_cents == 1000
+    assert cache.current_offers == current_offers
+    assert cache.collection_status == "complete"
+    assert cache.last_successful_collection_at == now - timedelta(days=2)
+    assert cache.last_attempt_at == now - timedelta(days=2)
+    assert cache.historical_checked_at == old_checked
+    assert component_due(cache, "current", now) == current_due
+    assert cache.refresh_state["history"]["failures"] == 1
+    assert pricing_stat(cache) == "available"
+    assert _current_collection_is_empty(cache) is False
+
+
+def test_combined_current_and_history_updates_both_components() -> None:
+    now = datetime.now(UTC)
+    cache = _current_cache(now)
+    healthy = _offer("momox", 1000)
+    point = replace(
+        _offer("chasse_aux_livres", 900), is_historical=True, is_available=False,
+        item_condition="Très bon état +", observed_at=now - timedelta(days=3),
+    )
+    offers = MarketOffers(
+        [healthy, point], historical_checked=True,
+        attempts=(
+            CollectionAttempt("momox", "current"),
+            CollectionAttempt("chasse_aux_livres", "history"),
+        ),
+    )
+    result = BookPricingResult.from_offers(offers, healthy, 900)
+
+    _stamp_collection(cache, replace(result, collected_at=now))
+
+    assert cache.lowest_delivered_price_cents == 1000
+    assert [offer["provider_name"] for offer in cache.current_offers] == ["momox"]
+    assert cache.collection_status == "complete"
+    assert cache.last_successful_collection_at == now
+    assert cache.last_attempt_at == now
+    assert cache.historical_checked_at == now
+    assert cache.historical_low_1y_cents == 900
+    assert cache.source_history is not None
+    assert cache.source_history["price_cents"] == 900
 
 
 def test_partial_current_source_alone_stays_retryable() -> None:
