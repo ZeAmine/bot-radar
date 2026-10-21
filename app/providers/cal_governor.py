@@ -45,6 +45,17 @@ CAL_LEASE_TTL_SECONDS = 45.0
 CAL_PASS_WINDOW_SECONDS = 900.0
 GOVERNOR_KEY = "radar:cal:governor"
 OUTSIDE_PASS = "hors-passe"
+ADMINISTRATIVE_DEFERRAL_REASONS = frozenset({
+    "pass_budget", "probe_in_flight", "storage_unavailable", "concurrency",
+    "rate_limited", "bot_challenge", "probe",
+})
+CAL_ADMINISTRATIVE_RETRY_SECONDS = 1800.0
+CAL_STORAGE_RETRY_SECONDS = 300.0
+
+
+def administrative_deferral(reason: str | None) -> bool:
+    """Un refus du régulateur prononcé avant toute requête HTTP."""
+    return reason in ADMINISTRATIVE_DEFERRAL_REASONS
 
 CLOSED = "closed"
 OPEN = "open"
@@ -127,8 +138,9 @@ if held >= max_concurrent then
   return {'wait', 'concurrency', ''}
 end
 
+local distinct_collection = ARGV[8] == '1'
 local last_emit = tonumber(redis.call('HGET', key, 'last_emit') or '0')
-if last_emit > 0 then
+if distinct_collection and last_emit > 0 then
   local due = last_emit + min_interval
   if now < due then
     return {'wait', 'spacing', tostring(due)}
@@ -204,7 +216,13 @@ local rest = probe_rest
 if reason == 'bot_challenge' or reason == 'rate_limited' then
   rest = challenge_rest
 end
-redis.call('HSET', key, 'open_until', tostring(now + rest), 'reason', reason)
+local proposed = now + rest
+local current_until = tonumber(redis.call('HGET', key, 'open_until') or '0')
+local probe_gen = tonumber(redis.call('HGET', key, 'probe_generation') or '0')
+if current_until > probe_gen and current_until >= proposed then
+  return {'kept', redis.call('HGET', key, 'reason') or ''}
+end
+redis.call('HSET', key, 'open_until', tostring(proposed), 'reason', reason)
 return {'reopened', reason}
 """
 
@@ -441,6 +459,7 @@ class CalGovernor:
                 str(self.wall_now()), token, str(self.max_concurrent),
                 str(self.min_interval_seconds), str(self.max_requests_per_window),
                 str(self.window_seconds), str(self.lease_ttl_seconds),
+                "1" if collection.opening_request else "0",
                 keys=[self.key, self.lease_key, self.window_key],
             )
             if not isinstance(raw, list):
@@ -475,10 +494,10 @@ class CalGovernor:
         token = await self._acquire_slot(collection)
         try:
             response = cast(httpx.Response, await getattr(client, _method)(*args, **kwargs))
+            await self.observe(response)
+            return response
         finally:
             await self._release(token)
-        await self.observe(response)
-        return response
 
     async def observe(self, response: httpx.Response) -> None:
         if response.status_code == 429:
@@ -519,6 +538,11 @@ class CalCollectionBudget:
         self.governor = governor
         self.limit = limit or governor.max_requests_per_collection
         self.used = 0
+
+    @property
+    def opening_request(self) -> bool:
+        """Vrai tant qu'aucune requête de cette collecte n'a été émise."""
+        return self.used == 0
 
     async def get(self, client: "CalHttpClient", *args: Any, **kwargs: Any) -> httpx.Response:
         return await self.governor.request(client, self, *args, **kwargs)
