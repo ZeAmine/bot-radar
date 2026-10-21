@@ -34,3 +34,14 @@ def isolate_notification_windows(monkeypatch):
     monkeypatch.setattr("app.services.market_health._incident_observations", {})
     monkeypatch.setattr("app.services.market_health._incident_pending", {})
     monkeypatch.setattr("app.services.market_health._incident_loaded", False)
+
+
+@pytest.fixture(autouse=True)
+def isolate_cal_governor(monkeypatch):
+    """Un coupe-circuit CAL ouvert ne doit jamais survivre au test qui l'a ouvert."""
+    from app.providers.cal_governor import CalGovernor
+
+    monkeypatch.setattr(
+        "app.providers.chasse_aux_livres.cal_governor",
+        CalGovernor(store=False, min_interval_seconds=0.0),
+    )

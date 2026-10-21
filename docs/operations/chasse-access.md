@@ -19,6 +19,45 @@ La clé historique `radar:chasse:duih` n'est un repli qu'en l'absence d'amorce c
 L'injection interne explicite actualise aussi l'état de session utilisé ; elle
 n'atteste pas à elle seule un accès authentifié.
 
+## Régulation des appels ordinaires
+
+`app/providers/cal_governor.py` arbitre les requêtes ordinaires émises par le
+fournisseur CAL : recherche, fiche, lookup initial, sondages et reprises. Chaque
+requête HTTP réellement émise consomme un jeton de collecte, un quota de fenêtre
+et un espacement.
+
+| Paramètre | Valeur initiale | Effet |
+| --- | --- | --- |
+| `CAL_MAX_CONCURRENT` | 1 | une seule requête CAL en vol |
+| `CAL_MIN_INTERVAL_SECONDS` | 2 s | espacement entre deux ouvertures de collecte |
+| `CAL_MAX_REQUESTS_PER_COLLECTION` | 12 | plafond par livre |
+| `CAL_MAX_REQUESTS_PER_WINDOW` | 30 | plafond par fenêtre de 60 s |
+| `CAL_CHALLENGE_REST_SECONDS` | 6 h | repos après un défi |
+| `CAL_429_DEFAULT_REST_SECONDS` | 15 min | repos sans `Retry-After` exploitable |
+
+L'espacement ne s'applique qu'entre deux collectes distinctes : il ne s'intercale
+pas entre le lookup et ses sondages, dont la fenêtre bornée reste de 1,5 s.
+
+Coût maximal par livre dans l'ordre réel du code : trois tentatives de recherche
+à deux requêtes (6), une fiche (1), un lookup (1), trois sondages (3), une
+recherche de repli par titre dans la même collecte (2). Le plafond de 12 requêtes
+par collecte borne l'ensemble ; la borne par passe vaut capacité du lot multipliée
+par ce plafond, elle-même plafonnée par la fenêtre de 30 requêtes.
+
+Une restriction ferme l'arbitre : `bot_challenge` ouvre un repos de six heures,
+`429` respecte `Retry-After` et prend sinon quinze minutes. Une collecte refusée
+porte le statut `skipped` avec la raison du report et l'échéance ; elle ne compte
+pas comme échec fournisseur, ne modifie aucune fraîcheur et ne renouvelle pas la
+session. Les requêtes déjà en vol ne sont pas annulables : leur nombre est borné
+par `CAL_MAX_CONCURRENT`.
+
+L'état vit dans Redis sous `radar:cal:governor`. Si le stockage est indisponible,
+l'arbitre ne bascule pas vers des appels non régulés : il signale
+`storage_unavailable` et son coupe-circuit local reste actif.
+
+Le montant du lot global reste de 8 livres par passe aux créneaux `:15` et `:45` ;
+la régulation CAL ne ralentit aucun autre fournisseur.
+
 ## Vérification locale sans base ni Telegram
 
 Depuis le checkout contenant le correctif, avec son interpréteur Python :
