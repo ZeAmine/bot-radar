@@ -30,6 +30,11 @@ from app.providers.base import (
     requested_components,
 )
 from app.providers.registry import ProviderRegistry
+from app.services.administrative_deferral import (
+    administrative_attempts,
+    administrative_deferral_only,
+    record_administrative_deferral,
+)
 from app.services.market_price_service import series_reference_total
 from app.services.market_refresh_policy import (
     collection_due,
@@ -484,6 +489,17 @@ async def persist_market_result(
 
 def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None:
     """Conserve le résultat de tentative séparément de la date du dernier prix."""
+    if administrative_deferral_only(result.attempts):
+        retry_at = record_administrative_deferral(cache, result.attempts, result.collected_at)
+        cache.next_refresh_at = retry_at
+        logger.info(
+            "Collecte CAL reportée avant toute requête pour le livre ID %s "
+            "(raisons %s), reprise %s.",
+            cache.book_id,
+            ",".join(sorted({str(a.reason) for a in administrative_attempts(result.attempts)})),
+            retry_at.isoformat(),
+        )
+        return
     current_requested = _current_component_requested(result)
     current_attempted = not _history_only(result)
     history_requested = not any(a.operation == "history" for a in result.attempts) or any(
