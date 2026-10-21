@@ -119,10 +119,9 @@ async def test_a_deferred_book_returns_at_its_retry_slot_without_looping():
 
 
 @pytest.mark.asyncio
-async def test_eight_due_books_progress_through_the_pass_capacity(
-    clean_cal_keys, cal_namespace,
-):
-    from app.providers.cal_governor import CAL_MAX_BOOKS_PER_PASS, CalGovernor
+async def test_eight_due_books_are_admitted_in_four_passes(clean_cal_keys, cal_namespace):
+    from app.providers.base import deferred_offers
+    from app.providers.cal_governor import CalGovernor, CalSuspendedError
 
     class Clock:
         def __init__(self) -> None:
@@ -132,61 +131,63 @@ async def test_eight_due_books_progress_through_the_pass_capacity(
             return self.now
 
     clock = Clock()
+    governor = CalGovernor(store=clean_cal_keys, namespace=cal_namespace, clock=clock)
 
-    async def advance(seconds: float) -> None:
-        clock.now += seconds
-
-    governor = CalGovernor(
-        store=clean_cal_keys, namespace=cal_namespace, clock=clock, sleep=advance,
-        min_interval_seconds=0.0,
-    )
     books = []
-    for _ in range(BOOKS):
-        cache = BookMarketCache(book_id=uuid.uuid4())
+    for index in range(1, BOOKS + 1):
+        cache = BookMarketCache(book_id=uuid.UUID(int=index))
         cache.next_refresh_at = PASS_START
         books.append(_book(cache))
 
-    admitted_order: list[int] = []
+    passes: list[tuple[datetime, list[int], list[str]]] = []
     moment = PASS_START
-    while len(admitted_order) < BOOKS and moment < PASS_START + timedelta(days=3):
+    for _ in range(4):
         clock.now = moment.timestamp()
-        repository = _repository(books, moment)
-        due = await _select(repository, moment)
-        due.sort(key=lambda book: (
-            component_due(book.market_cache, "current", moment), books.index(book),
-        ))
-        for book in due:
+        repository = _repository(books)
+        await _plan(repository, moment)
+        selected = await _select(repository, moment)
+
+        admitted: list[int] = []
+        refused: list[str] = []
+        for book in selected:
             try:
                 await governor.admit_book(None)
-            except Exception:
-                await _persist(book.market_cache, (
-                    CollectionAttempt("chasse_aux_livres", "current", "skipped",
-                                      "pass_budget", retry_after_seconds=1800.0),
-                ), now=moment)
+            except CalSuspendedError as exc:
+                refused.append(exc.reason)
+                await _persist(
+                    book.market_cache,
+                    deferred_offers(
+                        "chasse_aux_livres", reason=exc.reason, retry_at=exc.retry_at,
+                    ).attempts,
+                    now=moment,
+                )
             else:
-                admitted_order.append(books.index(book) + 1)
+                admitted.append(books.index(book) + 1)
                 await _persist(book.market_cache, (
                     CollectionAttempt("chasse_aux_livres", "current", "success"),
                 ), now=moment)
-            book.market_cache.next_refresh_at = None
-        await _plan(repository, moment)
+        passes.append((moment, admitted, refused))
         moment += timedelta(minutes=30)
 
-    assert admitted_order == list(range(1, BOOKS + 1))
-    assert CAL_MAX_BOOKS_PER_PASS == 2
-
+    assert [admitted for _, admitted, _ in passes] == [[1, 2], [3, 4], [5, 6], [7, 8]]
+    assert [slot.strftime("%H:%M") for slot, _, _ in passes] == [
+        "12:15", "12:45", "13:15", "13:45",
+    ]
+    assert {refusal for _, _, refused in passes for refusal in refused} == {"pass_budget"}
 
 
 @pytest.mark.asyncio
-async def test_a_deferred_book_is_not_counted_as_a_failure_for_the_policy():
+async def test_a_storage_deferral_schedules_a_bounded_retry():
+    from app.providers.cal_governor import CAL_STORAGE_RETRY_SECONDS
+
     cache = BookMarketCache(book_id=uuid.uuid4())
     cache.next_refresh_at = PASS_START
     moment = PASS_START
 
     await _persist(cache, (
         CollectionAttempt("chasse_aux_livres", "current", "skipped", "storage_unavailable"),
-    ))
+    ), now=moment)
 
-    due = component_due(cache, "current", moment)
-    assert due <= moment + timedelta(minutes=10)
-    assert due < moment + timedelta(hours=6)
+    assert cache.next_refresh_at == moment + timedelta(seconds=CAL_STORAGE_RETRY_SECONDS)
+    assert component_due(cache, "current", moment) <= moment + timedelta(minutes=10)
+    assert component_due(cache, "current", moment) < moment + timedelta(hours=6)

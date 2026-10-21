@@ -305,17 +305,29 @@ async def test_a_challenge_during_the_probe_reopens_for_six_hours(clean_cal_keys
 
 
 @pytest.mark.asyncio
-async def test_a_lost_probe_expires_without_blocking_forever(clean_cal_keys, cal_namespace):
+async def test_a_lost_probe_expires_into_a_new_probe_not_into_full_admission(
+    clean_cal_keys, cal_namespace,
+):
     clock = FakeClock()
     governor, _ = _governor(clock, clean_cal_keys, cal_namespace, probe_ttl_seconds=60.0)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
-    await governor.admit_book("passe-1")
+    first = await governor.admit_book("passe-1")
+    assert first is not None
     assert governor.phase() == PROBING
 
     clock.now += 61
+    assert governor.phase() == OPEN
+
+    second = await governor.admit_book("passe-2")
+    assert second is not None
+    assert second != first
+    assert governor.phase() == PROBING
+
+    assert await governor.conclude_probe(first, succeeded=True) == "ignored"
+    assert governor.phase() == PROBING
+    assert await governor.conclude_probe(second, succeeded=True) == "closed"
     assert governor.phase() == CLOSED
-    await governor.admit_book("passe-2")
 
 
 @pytest.mark.asyncio

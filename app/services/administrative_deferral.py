@@ -8,6 +8,7 @@ pour un incident qui ne le concerne pas.
 """
 
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from app.db.models.book_market_cache import BookMarketCache
 from app.providers.base import CollectionAttempt
@@ -18,6 +19,9 @@ from app.providers.cal_governor import (
     administrative_deferral,
 )
 
+if TYPE_CHECKING:
+    from app.services.book_market_pricing import BookPricingResult
+
 ADMINISTRATIVE_STATUS = "deferred"
 
 
@@ -25,11 +29,16 @@ def administrative_attempts(attempts: tuple[CollectionAttempt, ...]) -> list[Col
     return [a for a in attempts if a.status == "skipped" and administrative_deferral(a.reason)]
 
 
-def administrative_deferral_only(attempts: tuple[CollectionAttempt, ...]) -> bool:
-    """Vrai si la collecte n'a produit que des refus administratifs, sans requête."""
-    if not attempts:
+def administrative_deferral_only(result: "BookPricingResult") -> bool:
+    """Vrai si la collecte a été refusée avant d'émettre la moindre requête.
+
+    Le refus doit être prononcé par le régulateur **et** la preuve d'émission
+    doit être nulle : un refus survenu après le départ d'une requête est une
+    interruption de collecte, pas un report administratif.
+    """
+    if not result.attempts or result.emitted_requests:
         return False
-    return len(administrative_attempts(attempts)) == len(attempts)
+    return len(administrative_attempts(result.attempts)) == len(result.attempts)
 
 
 def administrative_retry_at(

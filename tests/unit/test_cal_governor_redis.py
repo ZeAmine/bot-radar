@@ -545,3 +545,39 @@ async def test_the_lease_is_released_when_the_call_is_cancelled(clean_cal_keys, 
 
 async def _no_sleep(_seconds: float) -> None:
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_probe_admits_one_new_probe_under_concurrency(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    abandoned = await governor.admit_book("passe-1")
+    assert abandoned is not None
+    clock.advance(61)
+    assert governor.phase() == "open"
+
+    outcomes = await asyncio.gather(*(
+        _admit_outcome(governor, "passe-2") for _ in range(5)
+    ))
+
+    admitted = [token for token in outcomes if isinstance(token, str)]
+    refused = [outcome for outcome in outcomes if not isinstance(outcome, str)]
+    assert len(admitted) == 1
+    assert len(refused) == 4
+    assert {outcome.reason for outcome in refused} == {"probe_in_flight"}
+    assert governor.phase() == "probing"
+
+    assert await governor.conclude_probe(abandoned, succeeded=True) == "ignored"
+    assert await governor.conclude_probe(admitted[0], succeeded=True) == "closed"
+
+
+async def _admit_outcome(governor, occurrence: str):
+    try:
+        return await governor.admit_book(occurrence)
+    except CalSuspendedError as exc:
+        return exc

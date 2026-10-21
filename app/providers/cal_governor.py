@@ -99,7 +99,7 @@ end
 
 if open_until > 0 then
   local token = ARGV[7]
-  redis.call('HSET', key, 'open_until', '0', 'reason', 'probe',
+  redis.call('HSET', key, 'reason', 'probe',
              'probe_pass', pass, 'probe_token', token,
              'probe_generation', tostring(now),
              'probe_until', tostring(now + probe_ttl))
@@ -378,6 +378,8 @@ class CalGovernor:
             return OPEN
         if self._local.probe_pass and now < self._local.probe_until:
             return PROBING
+        if self._local.open_until > 0:
+            return OPEN
         return CLOSED
 
     def is_open(self) -> bool:

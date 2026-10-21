@@ -75,6 +75,7 @@ class BookPricingResult:
     historical_checked: bool = False
     price_confirmed: bool = False
     collected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    emitted_requests: int = 0
 
     @property
     def has_data(self) -> bool:
@@ -183,6 +184,7 @@ class BookPricingResult:
                     CollectionAttempt(name, status="failed", reason="unclassified")
                     for name in getattr(offers, "failed_providers", ())
                 ),
+                emitted_requests=getattr(offers, "emitted_requests", 0),
                 historical_checked=getattr(offers, "historical_checked", False),
                 price_confirmed=price_confirmed,
                 current_observed_at=best_offer.observed_at,
@@ -203,6 +205,7 @@ class BookPricingResult:
                     CollectionAttempt(name, status="failed", reason="unclassified")
                     for name in getattr(offers, "failed_providers", ())
                 ),
+                emitted_requests=getattr(offers, "emitted_requests", 0),
                 historical_checked=getattr(offers, "historical_checked", False),
             )
 
@@ -220,6 +223,7 @@ class BookPricingResult:
                 CollectionAttempt(name, status="failed", reason="unclassified")
                 for name in getattr(offers, "failed_providers", ())
             ),
+            emitted_requests=getattr(offers, "emitted_requests", 0),
             historical_checked=getattr(offers, "historical_checked", False),
         )
 
@@ -351,6 +355,9 @@ async def fetch_offers_for_book(
                     attempts=retained_attempts + retried_attempts,
                     historical_checked=getattr(offers, "historical_checked", False)
                     or retried.historical_checked,
+                    emitted_requests=(
+                        getattr(offers, "emitted_requests", 0) + retried.emitted_requests
+                    ),
                 )
         observed_at = datetime.now(UTC)
         for offer in offers:
@@ -489,7 +496,7 @@ async def persist_market_result(
 
 def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None:
     """Conserve le résultat de tentative séparément de la date du dernier prix."""
-    if administrative_deferral_only(result.attempts):
+    if administrative_deferral_only(result):
         retry_at = record_administrative_deferral(cache, result.attempts, result.collected_at)
         cache.next_refresh_at = retry_at
         logger.info(

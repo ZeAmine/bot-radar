@@ -41,7 +41,7 @@ async def _persist(cache: BookMarketCache, attempts: tuple) -> BookMarketCache:
         return await persist_market_result(AsyncMock(), cache.book_id, result)
 
 
-def _deferred(reason: str = "pass_budget") -> tuple:
+def _administrative_deferral(reason: str = "pass_budget") -> tuple:
     return (CollectionAttempt("chasse_aux_livres", "current", "skipped", reason),)
 
 
@@ -50,7 +50,7 @@ async def test_a_never_queried_book_deferred_by_the_governor_is_not_marked_serve
     cache = BookMarketCache(book_id=uuid.uuid4())
     cache.next_refresh_at = datetime.now(UTC)
 
-    written = await _persist(cache, _deferred())
+    written = await _persist(cache, _administrative_deferral())
 
     assert written.collection_status == "deferred"
     assert written.last_successful_collection_at is None
@@ -63,7 +63,7 @@ async def test_a_never_queried_book_deferred_by_the_governor_is_not_marked_serve
 async def test_a_never_queried_book_deferred_by_the_governor_keeps_its_turn():
     cache = BookMarketCache(book_id=uuid.uuid4())
     cache.next_refresh_at = datetime.now(UTC)
-    written = await _persist(cache, _deferred())
+    written = await _persist(cache, _administrative_deferral())
 
     moment = datetime.now(UTC)
     assert component_due(written, "current", moment) <= moment + RETRY_DELAYS[0]
@@ -75,14 +75,14 @@ async def test_a_deferred_collection_invents_no_network_attempt():
     cache = BookMarketCache(book_id=uuid.uuid4())
     cache.next_refresh_at = datetime.now(UTC)
 
-    written = await _persist(cache, _deferred())
+    written = await _persist(cache, _administrative_deferral())
 
     assert written.last_attempt_at is None
     assert (written.refresh_state or {}).get("current") is None
     assert (written.refresh_state or {})["administrative"]["count"] == 1
 
 
-def test_a_deferral_counts_as_a_failure_and_backs_off():
+def test_a_component_failure_backs_off_six_hours_then_one_day_then_seven():
     cache = BookMarketCache(book_id=uuid.uuid4())
     moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
 
@@ -98,7 +98,7 @@ def test_a_deferral_counts_as_a_failure_and_backs_off():
     assert delays[2] == RETRY_DELAYS[2]
 
 
-def test_the_backoff_of_a_deferral_is_bounded():
+def test_the_component_backoff_is_bounded_to_three_steps():
     cache = BookMarketCache(book_id=uuid.uuid4())
     moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
 
@@ -110,21 +110,21 @@ def test_the_backoff_of_a_deferral_is_bounded():
     assert moment <= datetime(2026, 12, 31, tzinfo=UTC)
 
 
-def test_a_book_deferred_once_returns_before_a_book_already_served():
+def test_a_failed_component_returns_before_a_served_one():
     served = BookMarketCache(book_id=uuid.uuid4())
-    deferred = BookMarketCache(book_id=uuid.uuid4())
+    failed = BookMarketCache(book_id=uuid.uuid4())
     moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
 
     record_component(served, "current", succeeded=True, now=moment)
     served.last_successful_collection_at = moment
-    record_component(deferred, "current", succeeded=False, now=moment)
+    record_component(failed, "current", succeeded=False, now=moment)
 
-    assert component_due(deferred, "current", moment) < component_due(
+    assert component_due(failed, "current", moment) < component_due(
         served, "current", moment,
     )
 
 
-def test_a_deferred_book_stays_due_for_the_next_pass():
+def test_a_failed_component_stays_due_for_the_next_pass():
     cache = BookMarketCache(book_id=uuid.uuid4())
     moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
 
@@ -136,7 +136,7 @@ def test_a_deferred_book_stays_due_for_the_next_pass():
 
 
 @pytest.mark.asyncio
-async def test_a_deferred_provider_does_not_hide_another_provider_answer():
+async def test_an_administrative_deferral_does_not_hide_another_provider_answer():
     cache = BookMarketCache(book_id=uuid.uuid4())
     cache.next_refresh_at = datetime.now(UTC)
     attempts = (
@@ -151,34 +151,6 @@ async def test_a_deferred_provider_does_not_hide_another_provider_answer():
 
 
 @pytest.mark.asyncio
-async def test_eight_books_are_served_in_turn_under_a_two_book_governor_cap():
-    books = {index: BookMarketCache(book_id=uuid.uuid4()) for index in range(1, 9)}
-    clock = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
-    for cache in books.values():
-        cache.next_refresh_at = clock
-
-    served: list[int] = []
-    for _ in range(6):
-        due = [
-            index for index in sorted(books)
-            if component_due(books[index], "current", clock) <= clock
-        ]
-        admitted = due[:2]
-        served.extend(admitted)
-        for index in due:
-            attempt = (
-                CollectionAttempt("chasse_aux_livres", "current", "success")
-                if index in admitted
-                else CollectionAttempt("chasse_aux_livres", "current", "skipped", "pass_budget")
-            )
-            await _persist(books[index], (attempt,))
-            books[index].next_refresh_at = None
-        clock += RETRY_DELAYS[0]
-
-    assert served == list(range(1, 9))
-
-
-@pytest.mark.asyncio
 async def test_a_served_book_does_not_come_back_before_a_deferred_one():
     served = BookMarketCache(book_id=uuid.uuid4())
     deferred = BookMarketCache(book_id=uuid.uuid4())
@@ -187,8 +159,28 @@ async def test_a_served_book_does_not_come_back_before_a_deferred_one():
     deferred.next_refresh_at = clock
 
     await _persist(served, (CollectionAttempt("chasse_aux_livres", "current", "success"),))
-    await _persist(deferred, _deferred())
+    await _persist(deferred, _administrative_deferral())
 
     assert component_due(deferred, "current", clock) < component_due(
         served, "current", clock,
     )
+
+
+def test_deferred_status_is_outside_the_retry_backoff_of_the_shared_policy():
+    """Comportement réel de `component_due`, sans modification de la politique.
+
+    La politique applique son recul de six heures aux statuts `failed`,
+    `partial` et `skipped` — pas à `deferred`, qui n'y figure pas. Un livre
+    reporté avant toute requête ne subit donc pas le recul d'un échec.
+    """
+    moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
+
+    deferred = BookMarketCache(book_id=uuid.uuid4())
+    deferred.last_attempt_at = moment
+    deferred.collection_status = "deferred"
+    skipped = BookMarketCache(book_id=uuid.uuid4())
+    skipped.last_attempt_at = moment
+    skipped.collection_status = "skipped"
+
+    assert component_due(deferred, "current", moment) == moment
+    assert component_due(skipped, "current", moment) == moment + RETRY_DELAYS[0]

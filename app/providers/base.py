@@ -97,14 +97,17 @@ def failed_offers(
 
 def deferred_offers(
     provider: str, *, reason: str, retry_at: datetime | None = None,
-    operation: str = "current",
+    operation: str = "current", emitted_requests: int = 0,
 ) -> "MarketOffers":
     retry_after = None
     if retry_at is not None:
         retry_after = max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
-    return MarketOffers(attempts=(CollectionAttempt(
-        provider, operation, "skipped", reason, None, retry_after,
-    ),))
+    return MarketOffers(
+        attempts=(CollectionAttempt(
+            provider, operation, "skipped", reason, None, retry_after,
+        ),),
+        emitted_requests=emitted_requests,
+    )
 
 
 class MarketOffers(list[MarketOffer]):
@@ -117,11 +120,13 @@ class MarketOffers(list[MarketOffer]):
         failed_providers: tuple[str, ...] = (),
         historical_checked: bool = False,
         attempts: tuple[CollectionAttempt, ...] = (),
+        emitted_requests: int = 0,
     ) -> None:
         super().__init__(offers)
         self.attempts = attempts
         self.failed_providers = failed_providers
         self.historical_checked = historical_checked
+        self.emitted_requests = emitted_requests
 
 
 def normalize_search_isbn(raw_isbn: str | None) -> str | None:

@@ -2,7 +2,6 @@
 
 
 import time
-from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -275,9 +274,17 @@ async def test_an_unavailable_store_never_allows_ungoverned_calls(
 async def test_polling_a_collection_is_not_spaced_by_the_inter_collection_interval(
     clean_cal_keys, cal_namespace,
 ):
+    """Séquence Nanbanjin réelle : trois sondages sous le budget de 1,5 s.
+
+    Le régulateur tourne avec son horloge et ses pauses réelles, et l'espacement
+    inter-collectes garde sa valeur de production. Sans la correction, chaque
+    sondage attendrait deux secondes : le budget de sondage serait épuisé et il
+    n'y aurait pas trois sondages.
+    """
     from app.providers.base import requested_components
     from app.providers.chasse_aux_livres import (
         LOOKUP_POLL_BUDGET_SECONDS,
+        LOOKUP_POLL_DELAY_SECONDS,
         LOOKUP_POLL_MAX,
         ChasseAuxLivresProvider,
     )
@@ -298,8 +305,7 @@ async def test_polling_a_collection_is_not_spaced_by_the_inter_collection_interv
             "affiliateUrl": "https://example.com/momox",
         }]}})
 
-    clock = FakeClock()
-    governor = _governor(clock, clean_cal_keys, cal_namespace)
+    governor = CalGovernor(store=clean_cal_keys, namespace=cal_namespace)
     assert governor.min_interval_seconds == CAL_MIN_INTERVAL_SECONDS
     assert governor.min_interval_seconds > 0
 
@@ -308,7 +314,7 @@ async def test_polling_a_collection_is_not_spaced_by_the_inter_collection_interv
     try:
         async with _client(handler) as client:
             offers = await ChasseAuxLivresProvider(
-                http_client=client, sleep=AsyncMock(), governor=governor,
+                http_client=client, governor=governor,
             ).get_offers(
                 isbn13="9782756079332", title="Nanbanjin",
                 source_url=BASE + "/prix/2756079332/9782756079332",
@@ -323,8 +329,9 @@ async def test_polling_a_collection_is_not_spaced_by_the_inter_collection_interv
     assert attempt.engines_received < attempt.engines_requested
     assert governor.emitted == 2 + LOOKUP_POLL_MAX
     assert governor.emitted <= governor.max_requests_per_collection
-    assert elapsed < 2 * LOOKUP_POLL_BUDGET_SECONDS
-    assert elapsed < CAL_MIN_INTERVAL_SECONDS
+    assert elapsed >= LOOKUP_POLL_MAX * LOOKUP_POLL_DELAY_SECONDS
+    assert elapsed < LOOKUP_POLL_BUDGET_SECONDS * 2
+    assert len(seen) == 2 + LOOKUP_POLL_MAX
 
 
 @pytest.mark.asyncio

@@ -76,8 +76,12 @@ vol ne sont pas annulables : leur nombre est borné par `CAL_MAX_CONCURRENT`.
 Un refus prononcé **avant toute requête HTTP** — quota d'admission, fenêtre de
 concurrence, circuit ouvert, essai en cours, stockage indisponible — est un
 **report administratif**, reconnu à la raison du régulateur
-(`ADMINISTRATIVE_DEFERRAL_REASONS`) et non au seul statut `skipped`, que
-prennent aussi les composantes non demandées. Ce report :
+(`ADMINISTRATIVE_DEFERRAL_REASONS`) — et non au seul statut `skipped`, que
+prennent aussi les composantes non demandées — **et** à une preuve d'émission
+nulle : le budget de collecte compte les requêtes réellement parties, ce compte
+traverse l'agrégation des fournisseurs jusqu'au résultat que lit la persistance.
+Un refus survenu après le départ d'une requête n'est donc pas un report
+administratif, c'est une interruption de collecte. Ce report :
 
 - n'incrémente aucun échec de composante et ne fait donc pas escalader le recul ;
 - n'enregistre aucune tentative réseau : `last_attempt_at` reste inchangé ;
@@ -111,6 +115,12 @@ Seule une collecte réellement commencée produit un échec : elle escalade
 `RETRY_DELAYS` — 6 h, puis 1 jour, puis 7 jours — sans dépasser trois échelons.
 Un livre servi revient à `REFRESH_INTERVAL` (7 jours) ; un livre reporté reste dû
 dès sa reprise, donc avant un livre servi.
+
+`market_refresh_policy.component_due` n'a pas été modifiée : son recul de six
+heures ne s'applique qu'aux statuts `failed`, `partial` et `skipped`. Le statut
+`deferred` n'y figure pas, et le chemin administratif ne renseigne pas
+`last_attempt_at` : aucun recul d'échec n'est imputé à un livre reporté. La
+reprise vient de `next_refresh_at`, fixé par le report lui-même.
 
 
 ## Circuit et reprise progressive
@@ -149,10 +159,13 @@ Transitions :
   un report du régulateur, une restriction, un budget épuisé ou un stockage
   indisponible ne ferment jamais le circuit. Seule une collecte réellement
   exécutée — toutes ses tentatives `current` en `success` — vaut clôture réussie ;
-- l'essai est borné par un délai de validité de soixante secondes : s'il est
-  annulé, expiré ou si le processus meurt, l'essai est repris par le suivant sans
-  blocage permanent et sans libérer plusieurs essais d'un coup : la prise d'essai
-  est atomique, un seul appel obtient l'état `probing`.
+- l'essai est borné par un délai de validité de soixante secondes. Son expiration
+  ou son abandon **ne vaut jamais rétablissement** : la restriction reste
+  enregistrée et le circuit reste `open`. Un seul nouvel essai est alors admis ;
+  toute autre admission simultanée est refusée en `probe_in_flight`. Aucune
+  admission normale n'a lieu avant une conclusion de succès valide, et le jeton
+  de l'essai abandonné ne peut pas conclure le nouvel essai. La prise d'essai est
+  atomique : un seul appel obtient l'état `probing`.
 
 Une collecte complète sans offre éligible compte comme succès technique : c'est
 le statut des tentatives `current` qui décide, pas le nombre d'offres.

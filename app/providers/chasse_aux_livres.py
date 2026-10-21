@@ -337,7 +337,9 @@ class ChasseAuxLivresProvider:
         try:
             probe_token = await governor.admit_book(pass_occurrence.get())
         except CalSuspendedError as exc:
-            return deferred_offers(self.name, reason=exc.reason, retry_at=exc.retry_at)
+            return deferred_offers(
+                self.name, reason=exc.reason, retry_at=exc.retry_at, emitted_requests=0,
+            )
         self._budget = CalCollectionBudget(governor)
         self._cal_client_instance = GovernedClient(
             self.http_client or get_shared_http_client(), self._budget,
@@ -363,6 +365,9 @@ class ChasseAuxLivresProvider:
             return offers
         finally:
             self._cal_client_instance = None
+
+    def _emitted_requests(self) -> int:
+        return self._budget.used if self._budget is not None else 0
 
     def _cal_client(self) -> GovernedClient:
         if self._cal_client_instance is None:
@@ -396,6 +401,7 @@ class ChasseAuxLivresProvider:
         failures: set[str] = set()
         historical_checked = False
         attempts: list[CollectionAttempt] = []
+        claimed_emissions = 0
         if clean_isbn:
             offers = await self._search_query(
                 clean_isbn, expected_title=title, expected_isbn=clean_isbn
@@ -403,6 +409,7 @@ class ChasseAuxLivresProvider:
             attempts.extend(getattr(offers, "attempts", ()))
             failures.update(getattr(offers, "failed_providers", ()))
             historical_checked |= getattr(offers, "historical_checked", False)
+            claimed_emissions += getattr(offers, "emitted_requests", 0)
             if offers or getattr(offers, "historical_checked", False):
                 return offers
             if any(attempt.operation == "current" and attempt.status == "success"
@@ -428,10 +435,17 @@ class ChasseAuxLivresProvider:
             attempts.extend(getattr(offers, "attempts", ()))
             failures.update(getattr(offers, "failed_providers", ()))
             historical_checked |= getattr(offers, "historical_checked", False)
-            return MarketOffers(offers, failed_providers=tuple(sorted(failures)),
-                                historical_checked=historical_checked, attempts=tuple(attempts))
+            claimed_emissions += getattr(offers, "emitted_requests", 0)
+            return MarketOffers(
+                offers, failed_providers=tuple(sorted(failures)),
+                historical_checked=historical_checked, attempts=tuple(attempts),
+                emitted_requests=claimed_emissions,
+            )
 
-        return MarketOffers(failed_providers=tuple(sorted(failures)), attempts=tuple(attempts))
+        return MarketOffers(
+            failed_providers=tuple(sorted(failures)), attempts=tuple(attempts),
+            emitted_requests=claimed_emissions,
+        )
 
     async def _search_query(
         self,
@@ -507,7 +521,10 @@ class ChasseAuxLivresProvider:
                 return []
 
             except CalSuspendedError as exc:
-                return deferred_offers(self.name, reason=exc.reason, retry_at=exc.retry_at)
+                return deferred_offers(
+                    self.name, reason=exc.reason, retry_at=exc.retry_at,
+                    emitted_requests=self._emitted_requests(),
+                )
             except Exception as exc:
                 if attempt < max_retries and isinstance(exc, (httpx.RequestError, TimeoutError)):
                     await self._sleep(1.5)
@@ -734,7 +751,10 @@ class ChasseAuxLivresProvider:
                         )
 
             except CalSuspendedError as exc:
-                return deferred_offers(self.name, reason=exc.reason, retry_at=exc.retry_at)
+                return deferred_offers(
+                    self.name, reason=exc.reason, retry_at=exc.retry_at,
+                    emitted_requests=self._emitted_requests(),
+                )
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 current_attempt = failed_offers(self.name, error=exc,
                                                 stage="current_offers").attempts[0]
@@ -907,13 +927,15 @@ class ChasseAuxLivresProvider:
                         )
                     ], historical_checked=historical_checked,
                        failed_providers=(self.name,) if historical_failed or current_failed else (),
-                       attempts=(current_attempt, history_attempt))
+                       attempts=(current_attempt, history_attempt),
+                       emitted_requests=self._emitted_requests())
                 return MarketOffers(historical_points,
                                     failed_providers=(
                                         (self.name,) if historical_failed or current_failed else ()
                                     ),
                                     historical_checked=historical_checked,
-                                    attempts=(current_attempt, history_attempt))
+                                    attempts=(current_attempt, history_attempt),
+                                    emitted_requests=self._emitted_requests())
 
             primary = best_used
             cond_str = f"{primary['condition']} ({primary['merchant']})"
@@ -948,6 +970,7 @@ class ChasseAuxLivresProvider:
                 failed_providers=((self.name,) if historical_failed or current_failed else ()),
                 historical_checked=historical_checked,
                 attempts=(current_attempt, history_attempt),
+                emitted_requests=self._emitted_requests(),
             )
         except Exception as exc:
             logger.debug("Échec de l'extraction détaillée Chasse-aux-livres: %s",
