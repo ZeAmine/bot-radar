@@ -258,3 +258,52 @@ async def test_empty_poll_body_stops_as_partial_without_absence():
     assert result[0].delivered_price_cents == 1450
     assert result[0].raw_payload["collection_status"] == "partial"
     assert all(offer.item_condition != "Occasion indisponible" for offer in result)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_absence_still_attempts_history_before_returning(monkeypatch):
+    """Un current complet sans offre ne doit pas court-circuiter l'historique.
+
+    L'historique est collecté dans `_try_deep_lookup`, donc avant le retour
+    anticipé de `get_offers`. Ce test le verrouille : current complet sans offre
+    comparable, historique demandé mais en échec, et aucune recherche par titre.
+    """
+    monkeypatch.setattr(
+        "app.providers.chasse_aux_livres.resolve_session_token",
+        AsyncMock(return_value="synthetic-session"),
+    )
+    history_call = AsyncMock(return_value=httpx.Response(500))
+    monkeypatch.setattr(
+        "app.providers.chasse_aux_livres.chasse_session.get_history", history_call,
+    )
+    requests: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/search":
+            return httpx.Response(200, text=(
+                '<div id="hash-cont" data-hash="mockhash1234567890abcdef12345678"></div>'
+            ))
+        if request.url.path == "/rest/search-results":
+            return httpx.Response(200, json={
+                "d": '<a href="/prix/2756079332/9782756079332">Jean Doux</a>',
+            })
+        if request.url.path.startswith("/prix/"):
+            return httpx.Response(200, text=(
+                '<div data-asin="2756079332" data-lvs="synthetic" '
+                'data-nbeng="2" data-didh="abc123"></div>'
+            ))
+        return httpx.Response(200, json={"offers": {"0": [], "1": []}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await ChasseAuxLivresProvider(
+            http_client=client, sleep=AsyncMock(),
+        ).get_offers(isbn13="9782756079332", title="Jean Doux")
+
+    assert history_call.await_count == 1
+    assert requests.count("/search") == 1
+    assert [(attempt.operation, attempt.status) for attempt in result.attempts] == [
+        ("current", "success"),
+        ("history", "failed"),
+    ]
+    assert result.historical_checked is False
