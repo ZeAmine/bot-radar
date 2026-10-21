@@ -303,7 +303,7 @@ class ChasseSessionManager:
 
         governor = self.governor or cal_governor
         try:
-            await governor.admit_book("maintenance")
+            probe_token = await governor.admit_book("maintenance", counts_as_book=False)
         except CalSuspendedError as exc:
             logger.info("Entretien CAL reporté : %s", exc.reason)
             return
@@ -313,19 +313,30 @@ class ChasseSessionManager:
             page = await client.get(url, headers=CHASSE_BROWSER_HEADERS,
                                     follow_redirects=False, timeout=4)
             if page.status_code != 200:
+                await governor.conclude_probe(probe_token, succeeded=False,
+                                              reason="maintenance_page")
                 return
             attrs = {key: re.search(r'data-' + key + r'=["\']([^"\']+)', page.text)
                      for key in ("asin", "didh")}
             asin, didh = attrs["asin"], attrs["didh"]
             if asin is None or didh is None:
+                await governor.conclude_probe(probe_token, succeeded=False,
+                                              reason="maintenance_metadata")
                 return
-            await self.get_history(
+            response = await self.get_history(
                 client, url, {"id": asin[1], "didh": didh[1], "all": "true", "days": "365"},
                 _build_ajax_headers(url),
             )
+            await governor.conclude_probe(
+                probe_token, succeeded=source_restriction(response) is None,
+                reason="maintenance_history",
+            )
         except CalSuspendedError as exc:
+            await governor.conclude_probe(probe_token, succeeded=False, reason=exc.reason)
             logger.info("Entretien CAL interrompu par le régulateur : %s", exc.reason)
         except (httpx.HTTPError, TimeoutError) as exc:
+            await governor.conclude_probe(probe_token, succeeded=False,
+                                          reason="maintenance_timeout")
             logger.warning("Vérification de session Chasse interrompue : %s", type(exc).__name__)
 
     async def _verified(self, token: str, product_url: str) -> None:

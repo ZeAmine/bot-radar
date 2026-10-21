@@ -113,19 +113,23 @@ async def diagnose(store: PrivateFileStore, *, full_collection: bool = False) ->
         trust_env=False,
     ) as raw_client:
         try:
-            await cal_governor.admit_book("script-diagnostic")
+            probe_token = await cal_governor.admit_book("script-diagnostic", counts_as_book=False)
         except CalSuspendedError as exc:
             return {"history_access_verified": False,
                     "reason": f"cal_deferred:{exc.reason}"}
         client = GovernedClient(raw_client, CalCollectionBudget(cal_governor))
         page = await client.get(product_url, follow_redirects=False)
         if page.status_code != 200 or "9782756079332" not in page.text:
+            await cal_governor.conclude_probe(probe_token, succeeded=False,
+                                              reason="diagnostic_page")
             return {"history_access_verified": False, "reason": "product_unavailable"}
         attrs = {
             key: re.search(r"data-" + key + r"=[\"\x27]([^\"\x27]+)", page.text)
             for key in ("asin", "didh")
         }
         if not all(attrs.values()):
+            await cal_governor.conclude_probe(probe_token, succeeded=False,
+                                              reason="diagnostic_metadata")
             return {"history_access_verified": False, "reason": "missing_product_metadata"}
         params = {
             "id": attrs["asin"][1],
@@ -140,7 +144,10 @@ async def diagnose(store: PrivateFileStore, *, full_collection: bool = False) ->
             _build_ajax_headers(product_url),
         )
         if not valid_history(response):
+            await cal_governor.conclude_probe(probe_token, succeeded=False,
+                                              reason="diagnostic_history")
             return {"history_access_verified": False, "reason": "history_unavailable"}
+        await cal_governor.conclude_probe(probe_token, succeeded=True)
         data = response.json()
         data["price_includes_shipping"] = True
         points = [

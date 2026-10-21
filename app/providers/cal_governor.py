@@ -72,19 +72,27 @@ if probe_pass and now < probe_until then
 end
 
 if probe_pass then
-  redis.call('HDEL', key, 'probe_pass', 'probe_until')
-end
-
-if open_until > 0 then
-  redis.call('HSET', key, 'open_until', '0', 'reason', 'probe',
-             'probe_pass', pass, 'probe_until', tostring(now + probe_ttl))
-  return {'admitted', 'probe', ''}
+  redis.call('HDEL', key, 'probe_pass', 'probe_until', 'probe_token')
 end
 
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - pass_window)
+local counts_as_book = ARGV[8] == '1'
 local admitted_total = redis.call('ZCARD', KEYS[2])
-if admitted_total >= max_books then
+if counts_as_book and admitted_total >= max_books then
   return {'denied', 'pass_budget', ''}
+end
+
+if counts_as_book then
+  redis.call('ZADD', KEYS[2], now, ARGV[6])
+end
+
+if open_until > 0 then
+  local token = ARGV[7]
+  redis.call('HSET', key, 'open_until', '0', 'reason', 'probe',
+             'probe_pass', pass, 'probe_token', token,
+             'probe_generation', tostring(now),
+             'probe_until', tostring(now + probe_ttl))
+  return {'admitted', 'probe', token}
 end
 
 local admitted_pass = redis.call('HGET', key, 'admitted_pass')
@@ -93,7 +101,6 @@ if admitted_pass ~= pass or (now - admitted_at) > pass_window then
   redis.call('HSET', key, 'admitted_pass', pass, 'admitted_at', tostring(now))
 end
 
-redis.call('ZADD', KEYS[2], now, ARGV[6])
 return {'admitted', 'pass', ''}
 """
 
@@ -163,21 +170,34 @@ return 1
 
 CONCLUDE_SCRIPT = """
 local now = tonumber(ARGV[1])
-local succeeded = ARGV[2] == '1'
-local reason = ARGV[3]
-local challenge_rest = tonumber(ARGV[4])
-local probe_rest = tonumber(ARGV[5])
+local token = ARGV[2]
+local succeeded = ARGV[3] == '1'
+local reason = ARGV[4]
+local challenge_rest = tonumber(ARGV[5])
+local probe_rest = tonumber(ARGV[6])
 local key = KEYS[1]
 
+local probe_token = redis.call('HGET', key, 'probe_token')
+if not probe_token then
+  return {'ignored', 'no_probe'}
+end
+if probe_token ~= token then
+  return {'ignored', 'foreign_probe'}
+end
 if not redis.call('HGET', key, 'probe_pass') then
-  return 0
+  return {'ignored', 'no_probe'}
 end
 
-redis.call('HDEL', key, 'probe_pass', 'probe_until')
+redis.call('HDEL', key, 'probe_pass', 'probe_token', 'probe_until')
 
 if succeeded then
+  local open_until = tonumber(redis.call('HGET', key, 'open_until') or '0')
+  local probe_gen = tonumber(redis.call('HGET', key, 'probe_generation') or '0')
+  if open_until > probe_gen then
+    return {'ignored', 'newer_restriction'}
+  end
   redis.call('HSET', key, 'open_until', '0', 'reason', 'closed')
-  return 1
+  return {'closed', ''}
 end
 
 local rest = probe_rest
@@ -185,7 +205,7 @@ if reason == 'bot_challenge' or reason == 'rate_limited' then
   rest = challenge_rest
 end
 redis.call('HSET', key, 'open_until', tostring(now + rest), 'reason', reason)
-return 1
+return {'reopened', reason}
 """
 
 SNAPSHOT_SCRIPT = """
@@ -196,7 +216,6 @@ return {
   redis.call('HGET', key, 'probe_pass') or '',
   redis.call('HGET', key, 'probe_until') or '0',
   redis.call('HGET', key, 'admitted_pass') or '',
-  redis.call('HGET', key, 'admitted_books') or '0',
 }
 """
 
@@ -226,7 +245,6 @@ class GovernorSnapshot:
     probe_pass: str = ""
     probe_until: float = 0.0
     admitted_pass: str = ""
-    admitted_books: int = 0
 
 
 @dataclass
@@ -325,7 +343,7 @@ class CalGovernor:
 
     async def snapshot(self) -> GovernorSnapshot:
         raw = await self._run(SNAPSHOT_SCRIPT)
-        if not isinstance(raw, list) or len(raw) < 6:
+        if not isinstance(raw, list) or len(raw) < 5:
             return self._local
         self._local = GovernorSnapshot(
             open_until=float(raw[0] or 0),
@@ -333,7 +351,6 @@ class CalGovernor:
             probe_pass=str(raw[2] or ""),
             probe_until=float(raw[3] or 0),
             admitted_pass=str(raw[4] or ""),
-            admitted_books=int(raw[5] or 0),
         )
         return self._local
 
@@ -365,13 +382,20 @@ class CalGovernor:
         await self.snapshot()
         logger.warning("Régulateur CAL ouvert", extra={"reason": reason})
 
-    async def admit_book(self, occurrence: str | None) -> None:
+    async def admit_book(
+        self, occurrence: str | None, *, counts_as_book: bool = True,
+    ) -> str | None:
+        """Admet une collecte et renvoie le jeton d'essai, ou None hors essai.
+
+        Seule une collecte de livre consomme une place du plafond ; l'entretien et
+        les scripts sont bornés par la concurrence et la fenêtre de requêtes.
+        """
         current_pass = occurrence or OUTSIDE_PASS
         raw = await self._run(
             ADMIT_SCRIPT,
             str(self.wall_now()), current_pass, str(self.max_books_per_pass),
             str(self.probe_ttl_seconds), str(self.pass_window_seconds),
-            uuid.uuid4().hex,
+            uuid.uuid4().hex, uuid.uuid4().hex, "1" if counts_as_book else "0",
             keys=[self.key, self.admit_key],
         )
         if not isinstance(raw, list):
@@ -379,7 +403,8 @@ class CalGovernor:
             raise CalSuspendedError("storage_unavailable", None)
         await self.snapshot()
         if raw[0] == "admitted":
-            return
+            token = raw[2] if len(raw) > 2 and raw[2] else None
+            return str(token) if token else None
         self.deferred += 1
         retry = None
         if len(raw) > 2 and raw[2]:
@@ -388,13 +413,21 @@ class CalGovernor:
             )
         raise CalSuspendedError(str(raw[1] or "rest"), retry)
 
-    async def conclude_probe(self, *, succeeded: bool, reason: str | None = None) -> None:
-        await self._run(
+    async def conclude_probe(
+        self, token: str | None, *, succeeded: bool, reason: str | None = None,
+    ) -> str:
+        """Clôt l'essai identifié par `token` ; sans jeton, rien n'est clôturé."""
+        if not token:
+            return "no_probe"
+        raw = await self._run(
             CONCLUDE_SCRIPT,
-            str(self.wall_now()), "1" if succeeded else "0", reason or "",
+            str(self.wall_now()), token, "1" if succeeded else "0", reason or "",
             str(CAL_CHALLENGE_REST_SECONDS), str(CAL_PROBE_REST_SECONDS),
         )
         await self.snapshot()
+        if not isinstance(raw, list):
+            return "storage_unavailable"
+        return str(raw[0])
 
     async def _acquire_slot(self, collection: "CalCollectionBudget") -> str:
         deadline = self.wall_now() + self.max_wait_seconds
@@ -522,7 +555,12 @@ class UnregulatedGovernor(CalGovernor):
     def __init__(self) -> None:
         super().__init__(store=False, min_interval_seconds=0.0)
 
-    async def admit_book(self, _occurrence: str | None) -> None:
+    async def admit_book(
+        self,
+        _occurrence: str | None,
+        *,
+        counts_as_book: bool = True,  # noqa: ARG002
+    ) -> str | None:
         return None
 
     async def _acquire_slot(self, collection: "CalCollectionBudget") -> str:

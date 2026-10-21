@@ -247,12 +247,16 @@ def _response_failure(
 
 
 def _collection_concluded(offers: object) -> bool:
-    """Un succès technique : la collecte a conclu, avec ou sans offre."""
+    """Un succès technique : la collecte s'est déroulée, avec ou sans offre.
+
+    Un `skipped` n'est pas une conclusion : la collecte n'a pas eu lieu, ou a
+    été interrompue par le régulateur. Un seul `skipped` suffit à refuser.
+    """
     attempts = getattr(offers, "attempts", ())
     current = [a for a in attempts if a.operation == "current"]
     if not current:
         return False
-    return all(a.status in {"success", "skipped"} for a in current)
+    return all(a.status == "success" for a in current)
 
 
 class ChasseAuxLivresProvider:
@@ -331,7 +335,7 @@ class ChasseAuxLivresProvider:
         _ = edition
         governor = self._governor or cal_governor
         try:
-            await governor.admit_book(pass_occurrence.get())
+            probe_token = await governor.admit_book(pass_occurrence.get())
         except CalSuspendedError as exc:
             return deferred_offers(self.name, reason=exc.reason, retry_at=exc.retry_at)
         self._budget = CalCollectionBudget(governor)
@@ -343,13 +347,19 @@ class ChasseAuxLivresProvider:
                 isbn13=isbn13, title=title, author=author, source_url=source_url,
             )
         except CalSuspendedError as exc:
-            await governor.conclude_probe(succeeded=False, reason=exc.reason)
+            await governor.conclude_probe(
+                probe_token, succeeded=False, reason=exc.reason,
+            )
             raise
         except BaseException:
-            await governor.conclude_probe(succeeded=False, reason="collection_aborted")
+            await governor.conclude_probe(
+                probe_token, succeeded=False, reason="collection_aborted",
+            )
             raise
         else:
-            await governor.conclude_probe(succeeded=_collection_concluded(offers))
+            await governor.conclude_probe(
+                probe_token, succeeded=_collection_concluded(offers),
+            )
             return offers
         finally:
             self._cal_client_instance = None

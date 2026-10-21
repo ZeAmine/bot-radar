@@ -43,7 +43,9 @@ async def inspect_book(args: argparse.Namespace) -> dict[str, Any]:
         if not isinstance(url, str) or not url.startswith('https://www.chasse-aux-livres.fr/prix/'):
             raise ValueError('URL source certifiée requise après collecte')
         try:
-            await cal_governor.admit_book("script-chasse-prices")
+            probe_token = await cal_governor.admit_book(
+                "script-chasse-prices", counts_as_book=False,
+            )
         except CalSuspendedError as exc:
             raise ValueError(f'CAL reporté par le régulateur : {exc.reason}') from exc
         client = GovernedClient(get_shared_http_client(),
@@ -64,6 +66,7 @@ async def inspect_book(args: argparse.Namespace) -> dict[str, Any]:
             _build_ajax_headers(url),
         )
         verified = valid_history(response)
+        await cal_governor.conclude_probe(probe_token, succeeded=verified)
         from app.core.redis import get_redis_client
         from app.providers.chasse_session import SESSION_KEY
 
