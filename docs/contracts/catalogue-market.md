@@ -204,9 +204,20 @@ pas au redémarrage. Le dédoublonnage de bilan conserve sa fenêtre d'une heure
 Un échec ou une annulation d'envoi libère le créneau ; une remise Telegram ambiguë
 ou partielle ne permet pas de garantir exactement un message par destinataire.
 
-Les réponses CAL d'offres structurées sans preuve fiable de complétude sont
-partielles, jamais une absence confirmée. La présence d'un groupe marchand, y
-compris 22, ne certifie pas la fin de la collecte. Leurs observations sont conservées
-en snapshots avec provenance et statut ; elles ne remplacent pas les dernières
-offres validées ni leur date de réussite complète. L'historique source peut réussir
-indépendamment. Le second relevé demeure borné, sans repli de recherche supplémentaire.
+Une réponse CAL d'offres est complète quand **tous les moteurs demandés ont répondu** :
+un moteur qui a répondu sans rien trouver est présent avec une liste vide, un moteur
+muet est absent. La complétude se lit donc dans la différence entre les moteurs
+demandés et les groupes reçus, jamais dans la présence d'un groupe particulier :
+le groupe 22 n'est ni nécessaire ni suffisant. Une réponse dont l'ensemble en attente
+n'est pas vide reste `partial` (`incomplete_offers`), même après les sondages bornés :
+elle n'est jamais une absence confirmée, et un relevé partiel ne remplace ni les
+dernières offres validées, ni leur prix, ni leur date de réussite complète. Un relevé
+complet sans offre comparable est une absence confirmée, distincte d'un échec.
+
+Le sondage reprend la fiche et ses jetons déjà obtenus, avec pour seul état nouveau
+le compteur de tours et la liste des moteurs encore attendus. Il est borné en nombre
+de tours et en durée, ne régénère aucun `data-hash`, ne relance aucune recherche et
+s'arrête sur restriction source. Un schéma invalide reste un échec technique. Chaque
+tentative conserve le nombre de moteurs demandés et reçus, le nombre de sondages et
+leur durée, afin de rendre la mesure ultérieure possible sans nouvelle instrumentation.
+L'historique source peut réussir indépendamment.
