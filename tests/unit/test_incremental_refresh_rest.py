@@ -264,3 +264,84 @@ async def test_overdue_queue_keeps_one_batch_and_reserves_future_slots():
                  if book not in selected]
         assert all(slot.replace(tzinfo=UTC) > now for slot in slots)
         assert max(slots.count(slot) for slot in slots) <= 8
+
+
+async def test_resting_book_with_past_slot_is_not_selected():
+    """Un créneau resté dans le passé ne rend plus collectable un livre en repos.
+
+    C'est l'état observé en production : ``next_refresh_at`` n'est réécrit que
+    pour les livres sans créneau, donc un livre tenté puis mis au repos garde un
+    créneau échu et occupait sinon un des 8 créneaux de chaque passe.
+    """
+    now = datetime.now(UTC)
+    async with sqlite_only_database() as database:
+        session = database.session
+        user, category = await _catalogue(session)
+        resting = await _linked_book(session, user, category, title="Au repos")
+        due = await _linked_book(session, user, category, title="Du")
+        session.add_all([
+            BookMarketCache(
+                book_id=resting.id, collection_status="failed",
+                last_attempt_at=now - timedelta(hours=1),
+                next_refresh_at=now - timedelta(hours=3),
+            ),
+            BookMarketCache(
+                book_id=due.id, collection_status="failed",
+                last_attempt_at=now - timedelta(hours=FAILED_COLLECTION_REST_HOURS,
+                                              minutes=5),
+                next_refresh_at=now - timedelta(hours=3),
+            ),
+        ])
+        await session.commit()
+        selected = await BookRepository(session).get_books_needing_price_refresh(
+            limit=8, now=now,
+        )
+
+    ids = {book.id for book in selected}
+    assert resting.id not in ids
+    assert due.id in ids
+
+
+async def test_due_book_with_open_slot_is_selected():
+    """Un livre dû dont le créneau est échu reste sélectionnable."""
+    now = datetime.now(UTC)
+    async with sqlite_only_database() as database:
+        session = database.session
+        user, category = await _catalogue(session)
+        book = await _linked_book(session, user, category, title="Dû")
+        session.add(BookMarketCache(
+            book_id=book.id, collection_status="failed",
+            last_attempt_at=now - timedelta(hours=FAILED_COLLECTION_REST_HOURS,
+                                          minutes=5),
+            next_refresh_at=now - timedelta(minutes=1),
+        ))
+        await session.commit()
+        selected = await BookRepository(session).get_books_needing_price_refresh(
+            limit=8, now=now,
+        )
+
+    assert [b.id for b in selected] == [book.id]
+
+
+async def test_batch_size_and_half_hour_slots_are_unchanged():
+    """Le lot reste borné à 8 et les créneaux restent à :15/:45."""
+    now = datetime.now(UTC).replace(minute=50, second=0, microsecond=0)
+    async with sqlite_only_database() as database:
+        session = database.session
+        user, category = await _catalogue(session)
+        books = [await _linked_book(session, user, category, title=f"Livre {n}")
+                 for n in range(20)]
+        session.add_all([
+            BookMarketCache(book_id=book.id, next_refresh_at=now - timedelta(hours=2))
+            for book in books
+        ])
+        await session.commit()
+        repo = BookRepository(session)
+        await repo.plan_price_refreshes(now=now)
+        first = await repo.get_books_needing_price_refresh(limit=8, now=now)
+        assert len(first) == 8
+        planned = {book.market_cache.next_refresh_at for book in books
+                   if book not in first}
+        assert all(slot.replace(tzinfo=UTC) > now for slot in planned)
+        assert all(slot.replace(tzinfo=UTC).minute in (15, 45) for slot in planned)
+        assert all(slot.replace(tzinfo=UTC).second == 0 for slot in planned)
