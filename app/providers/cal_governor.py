@@ -522,7 +522,7 @@ class UnregulatedGovernor(CalGovernor):
     def __init__(self) -> None:
         super().__init__(store=False, min_interval_seconds=0.0)
 
-    async def admit_book(self, occurrence: str | None) -> None:
+    async def admit_book(self, _occurrence: str | None) -> None:
         return None
 
     async def _acquire_slot(self, collection: "CalCollectionBudget") -> str:
@@ -530,13 +530,13 @@ class UnregulatedGovernor(CalGovernor):
         self.emitted += 1
         return "unregulated"
 
-    async def _release(self, token: str) -> None:
+    async def _release(self, _token: str) -> None:
         return None
 
-    async def observe(self, response: httpx.Response) -> None:
+    async def observe(self, _response: httpx.Response) -> None:
         return None
 
-    async def suspend(self, reason: str, seconds: float) -> None:
+    async def suspend(self, _reason: str, _seconds: float) -> None:
         return None
 
 

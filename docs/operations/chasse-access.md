@@ -34,9 +34,11 @@ la mesure de ce que le site tolère.
 | --- | --- | --- | --- |
 | Livres admis | `CAL_MAX_BOOKS_PER_PASS` | 2 | collectes CAL ouvertes par passe planifiée |
 | Requêtes émises | `CAL_MAX_REQUESTS_PER_COLLECTION` | 12 | requêtes HTTP d'une seule collecte, sondages et reprises compris |
-| Concurrence | `CAL_MAX_CONCURRENT` | 1 | requêtes CAL simultanées dans tout le processus |
+| Concurrence | `CAL_MAX_CONCURRENT` | 1 | requêtes CAL simultanées, tous processus confondus |
 | Espacement | `CAL_MIN_INTERVAL_SECONDS` | 2 s | intervalle entre deux ouvertures de collecte |
 | Fenêtre de quota | `CAL_MAX_REQUESTS_PER_WINDOW` / `CAL_WINDOW_SECONDS` | 30 par 60 s | requêtes émises sur une fenêtre glissante, toutes collectes confondues |
+| Fenêtre d'admission | `CAL_PASS_WINDOW_SECONDS` | 900 s | durée au-delà de laquelle un plafond d'admission périmé ne bloque plus |
+| Bail de concurrence | `CAL_LEASE_TTL_SECONDS` | 45 s | durée de vie d'une autorisation dont le porteur a disparu |
 
 Repères arithmétiques, sans valeur de sécurité : un espacement de deux secondes
 autorise au plus 30 ouvertures par minute, soit 1800 par heure ; c'est la fenêtre
@@ -61,9 +63,38 @@ pas comme échec fournisseur, ne modifie aucune fraîcheur et ne renouvelle pas 
 session. Les requêtes déjà en vol ne sont pas annulables : leur nombre est borné
 par `CAL_MAX_CONCURRENT`.
 
-L'état vit dans Redis sous `radar:cal:governor`. Si le stockage est indisponible,
-l'arbitre ne bascule pas vers des appels non régulés : il signale
-`storage_unavailable` et son coupe-circuit local reste actif.
+L'état vit dans Redis sous `radar:cal:governor`. Chaque décision partagée
+(admission, consommation des quotas, acquisition et libération de la concurrence,
+ouverture du circuit, prise et clôture de l'essai) est un **script Lua unique**
+exécuté par Redis : lecture, décision et écriture forment une opération
+indivisible. Aucun `get` suivi d'un `set` ne décide quoi que ce soit, donc deux
+processus ne peuvent pas lire le même état périmé puis l'écraser chacun à leur
+tour. Le temps y est exprimé en secondes epoch, pour que tous les processus
+partagent la même horloge.
+
+Deux règles protègent l'état partagé :
+
+- une restriction plus récente n'est jamais effacée par la fin d'une collecte
+  ancienne : l'ouverture du circuit ne peut que repousser l'échéance, jamais la
+  raccourcir ;
+- une libération ne retire que le bail du porteur, jamais celui d'un autre appel,
+  et ne touche pas la fenêtre de quota — sans quoi terminer une collecte
+  annulerait sa propre consommation.
+
+Une autorisation abandonnée (processus tué, collecte interrompue) expire seule au
+bout du bail de 45 s, valeur supérieure au délai d'un lookup CAL et à celui d'un
+sondage : une autorisation vivante ne peut pas expirer sous son porteur, et une
+autorisation morte ne bloque pas plus de 45 s. Le plafond d'admission d'une passe
+s'efface au bout de 900 s, donc aucune passe ne peut rester bloquée
+indéfiniment, y compris pour les déclenchements hors passe.
+
+Sans identifiant de passe connu, les déclenchements se rangent sous `hors-passe` :
+ce n'est pas un contournement, le plafond étant global sur la fenêtre. Changer
+d'identifiant de passe ne recharge pas le quota.
+
+Si le stockage est indisponible, l'arbitre ne bascule pas vers des appels non
+régulés : il refuse l'admission et les requêtes en signalant
+`storage_unavailable`.
 
 Le montant du lot global reste de 8 livres par passe aux créneaux `:15` et `:45` ;
 la régulation CAL ne ralentit aucun autre fournisseur.
@@ -83,13 +114,15 @@ Transitions :
 - un défi ouvre le circuit six heures ; un `429` ouvre selon `Retry-After`,
   sinon quinze minutes ;
 - à l'expiration, la première collecte admise devient l'essai unique ;
-- un essai réussi rend le circuit `closed` et restitue le quota de la passe ;
+- un essai réussi rend le circuit `closed` ; l'essai reste compté dans le
+  plafond d'admission de la fenêtre, donc un essai ne donne jamais deux collectes
+  supplémentaires ;
 - un essai partiel, invalide ou interrompu n'y rend jamais l'admission pleine :
   un défi pendant l'essai rouvre six heures, un autre échec trente minutes ;
 - l'essai est borné par un délai de validité de soixante secondes : s'il est
-  annulé, expiré ou si le processus meurt, l'état repasse à `closed` sans blocage
-  permanent et sans libérer plusieurs essais d'un coup, puisque l'état est relu
-  depuis le stockage partagé avant chaque décision.
+  annulé, expiré ou si le processus meurt, l'essai est repris par le suivant sans
+  blocage permanent et sans libérer plusieurs essais d'un coup : la prise d'essai
+  est atomique, un seul appel obtient l'état `probing`.
 
 Une collecte complète sans offre éligible compte comme succès technique : c'est
 le statut des tentatives `current` qui décide, pas le nombre d'offres.
@@ -100,20 +133,51 @@ fondée sur l'observation.
 
 ## Chemins couverts et limites restantes
 
-Raccordés au régulateur : la recherche, la fiche, le lookup initial, les sondages,
-l'historique, l'entretien de session (`maintain()`), et les scripts
+Raccordés au régulateur, en `GET` comme en `POST` : la recherche, la fiche, le
+lookup initial, les sondages, l'historique, l'entretien de session
+(`maintain()`), la connexion automatique (`_login`, y compris sa page de
+protection, son envoi de formulaire et sa page d'accueil), ainsi que les scripts
 `chasse_prices.py` et `diagnose_chasse_access.py`.
+
+La connexion automatique déclenchée par `get_history()` ou `maintain()` reçoit le
+même client régulé que le reste de la collecte : ses trois requêtes sont comptées
+comme les autres, un circuit ouvert les interdit aussi, et chacune s'arrête si une
+restriction apparaît — aucune étape suivante n'est tentée. Le formulaire, les
+identifiants et la logique de connexion ne changent pas : seul le transport des
+requêtes est arbitré.
 
 Restent hors du budget de requêtes :
 
-- la connexion elle-même (`_login`, formulaire de connexion) et les scripts
-  `refresh_chasse_token.py` et `sync_chasse_session.py` qui portent
-  l'authentification : les raccorder demanderait de modifier la logique de
-  connexion, ce qui sort du périmètre de la régulation ;
+- `refresh_chasse_token.py`, qui s'exécute hors application avec son propre client
+  synchrone et n'est pas raccordé ; il relève d'une exécution manuelle ;
 - l'injection de session vers l'API interne, qui n'est pas un appel CAL.
 
 Ces chemins restent soumis au repos partagé de la session, pas au budget de
 requêtes.
+
+## Vérification locale contre un Redis de test
+
+Les décisions atomiques ne se prouvent pas avec un double mémoire : les tests qui
+les couvrent exigent une instance Redis jetable, fournie par
+`CAL_TEST_REDIS_URL`. Sans cette variable, ils sont **ignorés** — jamais
+remplacés par un double, jamais comptés comme verts.
+
+```sh
+docker run -d --rm --name radar-redis-test -p 127.0.0.1:6390:6379 \
+  redis:7-alpine redis-server --save '' --appendonly no
+CAL_TEST_REDIS_URL=redis://127.0.0.1:6390/0 \
+  /chemin/vers/.venv/bin/python -m pytest tests/unit/test_cal_governor_redis.py -q
+docker stop radar-redis-test
+```
+
+L'instance écoute sur la boucle locale d'un port haut, sans persistance ni
+exposition publique. Elle ne doit jamais pointer vers un Redis de production :
+la variable est lue dans le seul environnement de test.
+
+Ces tests exercent plusieurs instances du régulateur sur les mêmes clés, en
+parallèle : admission simultanée, concurrence maximale, quotas, essai unique après
+repos, restriction concurrente avec la fin d'une collecte, abandon et expiration,
+stockage indisponible.
 
 ## Vérification locale sans base ni Telegram
 
