@@ -55,7 +55,10 @@ Seule une collecte de livre consomme une place. L'entretien de session
 sont admis en `counts_as_book=False` et restent bornés par la concurrence et la
 fenêtre de requêtes, jamais au détriment des livres de la passe.
 
-L'espacement ne s'applique qu'entre deux collectes distinctes : il ne s'intercale
+L'espacement ne s'applique qu'entre **collectes distinctes**, c'est-à-dire à la
+première requête d'une collecte : il ne s'intercale jamais entre les sondages
+d'une même collecte, dont la fenêtre totale est de 1,5 s. Le quota de requêtes
+et la concurrence continuent de s'appliquer à chaque requête. Il ne s'intercale
 pas entre le lookup et ses sondages, dont la fenêtre bornée reste de 1,5 s.
 
 Coût d'une collecte dans l'ordre réel du code : trois tentatives de recherche à
@@ -70,60 +73,45 @@ porte le statut `skipped` avec la raison du report et l'échéance ; elle ne com
 pas comme échec fournisseur et ne renouvelle pas la session. Les requêtes déjà en
 vol ne sont pas annulables : leur nombre est borné par `CAL_MAX_CONCURRENT`.
 
-Un report a en revanche un effet de fraîcheur, mesuré sur `persist_market_result` :
+Un refus prononcé **avant toute requête HTTP** — quota d'admission, fenêtre de
+concurrence, circuit ouvert, essai en cours, stockage indisponible — est un
+**report administratif**, reconnu à la raison du régulateur
+(`ADMINISTRATIVE_DEFERRAL_REASONS`) et non au seul statut `skipped`, que
+prennent aussi les composantes non demandées. Ce report :
 
-| Situation | Statut écrit | `last_successful_collection_at` | Recul |
+- n'incrémente aucun échec de composante et ne fait donc pas escalader le recul ;
+- n'enregistre aucune tentative réseau : `last_attempt_at` reste inchangé ;
+- n'avance ni ne retire les dates de réussite, ni les offres confirmées ;
+- fixe `next_refresh_at` à une reprise bornée : au moins une demi-passe pour
+  `pass_budget` et `probe_in_flight`, cinq minutes pour un stockage
+  indisponible, l'échéance du circuit pour un circuit ouvert ;
+- laisse une trace dans `refresh_state["administrative"]` (nombre, première et
+  dernière fois, raisons, échéance) et une ligne de journal par livre, pour
+  qu'un livre reporté plusieurs fois soit repérable.
+
+Une collecte **commencée puis interrompue** — au moins une tentative non `skipped`
+— garde le comportement normal : échec compté, `partial` possible, recul de
+six heures. La distinction tient à l'émission : si aucune requête n'est partie,
+aucun échec n'est imputé au livre.
+
+Un refus administratif n'est ni une panne ni une donnée périmée : le bilan de
+passe compte les tentatives non effectuées séparément (`market_health` ignore
+les `skipped` dans les incidents), et aucune notification d'incident n'est
+déclenchée par ce seul motif.
+
+Effet sur la fraîcheur, mesuré sur `persist_market_result` :
+
+| Situation | Statut écrit | `last_attempt_at` | Recul |
 | --- | --- | --- | --- |
-| CAL seul, reporté | `skipped` | inchangé (jamais renseigné si le livre n'a jamais été interrogé) | 6 h → 1 j → 7 j, plafonné |
-| CAL reporté, une autre source répond | `empty` | renseigné par la source qui a répondu | aucun |
+| CAL seul, refusé avant émission | `deferred` | inchangé | aucun ; reprise bornée |
+| Collecte commencée puis interrompue | `partial` ou `failed` | renseigné | 6 h → 1 j → 7 j, plafonné |
+| CAL refusé, une autre source répond | `empty` | renseigné | aucun |
 
-Le report est enregistré par `record_component` comme un échec de la composante
-`current` : c'est pourquoi le recul escalade `RETRY_DELAYS` — 6 h, puis 1 jour,
-puis 7 jours — sans dépasser trois échelons. Un livre reporté reste donc dû avant
-un livre servi (7 jours). `last_attempt_at` est renseigné, `refresh_state` porte
-la composante avec son nombre d'échecs, et `next_refresh_at` est remis à zéro pour
-que le planificateur assigne un nouveau créneau, sans quoi le livre resterait dû
-sans jamais être replanifié.
+Seule une collecte réellement commencée produit un échec : elle escalade
+`RETRY_DELAYS` — 6 h, puis 1 jour, puis 7 jours — sans dépasser trois échelons.
+Un livre servi revient à `REFRESH_INTERVAL` (7 jours) ; un livre reporté reste dû
+dès sa reprise, donc avant un livre servi.
 
-Comme le recul plafonne à 7 jours, un livre que le régulateur reporterait en
-continu finirait par attendre une semaine entre deux essais : c'est une limite
-connue, pas une garantie de rattrapage.
-
-L'état vit dans Redis sous `radar:cal:governor`. Chaque décision partagée
-(admission, consommation des quotas, acquisition et libération de la concurrence,
-ouverture du circuit, prise et clôture de l'essai) est un **script Lua unique**
-exécuté par Redis : lecture, décision et écriture forment une opération
-indivisible. Aucun `get` suivi d'un `set` ne décide quoi que ce soit, donc deux
-processus ne peuvent pas lire le même état périmé puis l'écraser chacun à leur
-tour. Le temps y est exprimé en secondes epoch, pour que tous les processus
-partagent la même horloge.
-
-Deux règles protègent l'état partagé :
-
-- une restriction plus récente n'est jamais effacée par la fin d'une collecte
-  ancienne : l'ouverture du circuit ne peut que repousser l'échéance, jamais la
-  raccourcir ;
-- une libération ne retire que le bail du porteur, jamais celui d'un autre appel,
-  et ne touche pas la fenêtre de quota — sans quoi terminer une collecte
-  annulerait sa propre consommation.
-
-Une autorisation abandonnée (processus tué, collecte interrompue) expire seule au
-bout du bail de 45 s, valeur supérieure au délai d'un lookup CAL et à celui d'un
-sondage : une autorisation vivante ne peut pas expirer sous son porteur, et une
-autorisation morte ne bloque pas plus de 45 s. Le plafond d'admission d'une passe
-s'efface au bout de 900 s, donc aucune passe ne peut rester bloquée
-indéfiniment, y compris pour les déclenchements hors passe.
-
-Sans identifiant de passe connu, les déclenchements se rangent sous `hors-passe` :
-ce n'est pas un contournement, le plafond étant global sur la fenêtre. Changer
-d'identifiant de passe ne recharge pas le quota.
-
-Si le stockage est indisponible, l'arbitre ne bascule pas vers des appels non
-régulés : il refuse l'admission et les requêtes en signalant
-`storage_unavailable`.
-
-Le montant du lot global reste de 8 livres par passe aux créneaux `:15` et `:45` ;
-la régulation CAL ne ralentit aucun autre fournisseur.
 
 ## Circuit et reprise progressive
 
@@ -143,15 +131,20 @@ Transitions :
 - un essai réussi rend le circuit `closed` ; l'essai **consomme une place du
   plafond d'admission**, comme n'importe quelle collecte de livre, donc il ne donne
   jamais d'admission supplémentaire ;
-- une clôture réussie ne peut jamais effacer ni raccourcir une restriction
-  **plus récente** que l'ouverture de l'essai : le script compare l'horodatage de
-  l'ouverture de l'essai à celui de la restriction courante et refuse la clôture
-  si une restriction postérieure est en place ;
+- aucune clôture, réussie **ou échouée**, ne peut effacer ni raccourcir une
+  restriction active : le script compare l'échéance proposée à la restriction en
+  cours et la conserve si elle est postérieure à l'ouverture de l'essai et plus
+  longue. La branche d'échec ne remplace donc jamais un défi de six heures par
+  un repos de trente minutes, ni un `Retry-After` long par le repos par défaut ;
 - chaque essai porte un **jeton unique** ; une conclusion ne vaut que pour le
   jeton de l'essai qu'elle clôt. Une collecte admise avant une restriction, ou une
   collecte plus ancienne, ne peut pas conclure l'essai d'une autre.
 - un essai partiel, invalide ou interrompu n'y rend jamais l'admission pleine :
   un défi pendant l'essai rouvre six heures, un autre échec trente minutes ;
+- la restriction d'une réponse est enregistrée **avant** que le bail ne soit
+  rendu disponible : un appel concurrent attend le bail, puis voit la
+  restriction. Le bail est libéré dans tous les cas, y compris sur erreur et sur
+  annulation ;
 - une collecte dont la composante `current` est `skipped` n'est **pas** un succès :
   un report du régulateur, une restriction, un budget épuisé ou un stockage
   indisponible ne ferment jamais le circuit. Seule une collecte réellement
