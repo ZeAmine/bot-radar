@@ -1,28 +1,28 @@
-"""Régulation des requêtes Chasse-aux-livres : admission, budget, coupe-circuit.
+"""Régulation atomique des requêtes Chasse-aux-livres.
 
-Cinq plafonds distincts, indépendants les uns des autres :
+Toutes les décisions partagées entre processus sont prises par un script Lua
+exécuté par Redis : lecture, décision et écriture forment une seule opération.
+Aucune décision ne repose sur un `get` suivi d'un `set` séparé.
 
-- livres admis par passe planifiée (`CAL_MAX_BOOKS_PER_PASS`) ;
+Le temps y est exprimé en secondes epoch, pour que deux processus partagent la
+même horloge. Cinq plafonds distincts, tous des choix prudents internes et non
+des seuils garantis par CAL :
+
+- livres admis par passe planifiée ;
 - requêtes HTTP d'une collecte, sondages et reprises compris ;
-- concurrence CAL, indépendante de celle des autres fournisseurs ;
+- concurrence CAL, acquise par jeton et non par processus ;
 - espacement entre deux ouvertures de collecte ;
 - quota de requêtes sur une fenêtre glissante.
-
-Aucune de ces valeurs n'est un seuil de sécurité démontré de CAL : ce sont des
-valeurs prudentes choisies localement.
-
-Le circuit suit trois états : fermé, ouvert, essai. Un refus n'est pas un échec
-réseau : il porte une raison et une échéance de reprise.
 """
 
 import asyncio
-import json
 import logging
 import time
+import uuid
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import httpx
 
@@ -39,15 +39,175 @@ CAL_WINDOW_SECONDS = 60.0
 CAL_MAX_REQUESTS_PER_WINDOW = 30
 CAL_CHALLENGE_REST_SECONDS = 6 * 3600.0
 CAL_429_DEFAULT_REST_SECONDS = 900.0
-CAL_PROBE_TTL_SECONDS = 60.0
 CAL_PROBE_REST_SECONDS = 1800.0
+CAL_PROBE_TTL_SECONDS = 60.0
+CAL_LEASE_TTL_SECONDS = 45.0
+CAL_PASS_WINDOW_SECONDS = 900.0
 GOVERNOR_KEY = "radar:cal:governor"
+OUTSIDE_PASS = "hors-passe"
 
 CLOSED = "closed"
 OPEN = "open"
 PROBING = "probing"
 
 pass_occurrence: ContextVar[str | None] = ContextVar("cal_pass_occurrence", default=None)
+
+ADMIT_SCRIPT = """
+local now = tonumber(ARGV[1])
+local key = KEYS[1]
+local pass = ARGV[2]
+local max_books = tonumber(ARGV[3])
+local probe_ttl = tonumber(ARGV[4])
+local pass_window = tonumber(ARGV[5])
+
+local open_until = tonumber(redis.call('HGET', key, 'open_until') or '0')
+if now < open_until then
+  return {'denied', redis.call('HGET', key, 'reason') or 'rest', tostring(open_until)}
+end
+
+local probe_until = tonumber(redis.call('HGET', key, 'probe_until') or '0')
+local probe_pass = redis.call('HGET', key, 'probe_pass')
+if probe_pass and now < probe_until then
+  return {'denied', 'probe_in_flight', ''}
+end
+
+if probe_pass then
+  redis.call('HDEL', key, 'probe_pass', 'probe_until')
+end
+
+if open_until > 0 then
+  redis.call('HSET', key, 'open_until', '0', 'reason', 'probe',
+             'probe_pass', pass, 'probe_until', tostring(now + probe_ttl))
+  return {'admitted', 'probe', ''}
+end
+
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - pass_window)
+local admitted_total = redis.call('ZCARD', KEYS[2])
+if admitted_total >= max_books then
+  return {'denied', 'pass_budget', ''}
+end
+
+local admitted_pass = redis.call('HGET', key, 'admitted_pass')
+local admitted_at = tonumber(redis.call('HGET', key, 'admitted_at') or '0')
+if admitted_pass ~= pass or (now - admitted_at) > pass_window then
+  redis.call('HSET', key, 'admitted_pass', pass, 'admitted_at', tostring(now))
+end
+
+redis.call('ZADD', KEYS[2], now, ARGV[6])
+return {'admitted', 'pass', ''}
+"""
+
+ACQUIRE_SCRIPT = """
+local now = tonumber(ARGV[1])
+local token = ARGV[2]
+local max_concurrent = tonumber(ARGV[3])
+local min_interval = tonumber(ARGV[4])
+local max_per_window = tonumber(ARGV[5])
+local window = tonumber(ARGV[6])
+local lease_ttl = tonumber(ARGV[7])
+local key = KEYS[1]
+local lease_key = KEYS[2]
+local window_key = KEYS[3]
+
+local open_until = tonumber(redis.call('HGET', key, 'open_until') or '0')
+if now < open_until then
+  return {'denied', redis.call('HGET', key, 'reason') or 'rest', tostring(open_until)}
+end
+
+redis.call('ZREMRANGEBYSCORE', lease_key, '-inf', now)
+local held = redis.call('ZCARD', lease_key)
+if held >= max_concurrent then
+  return {'wait', 'concurrency', ''}
+end
+
+local last_emit = tonumber(redis.call('HGET', key, 'last_emit') or '0')
+if last_emit > 0 then
+  local due = last_emit + min_interval
+  if now < due then
+    return {'wait', 'spacing', tostring(due)}
+  end
+end
+
+redis.call('ZREMRANGEBYSCORE', window_key, '-inf', now - window)
+local used = redis.call('ZCARD', window_key)
+if used >= max_per_window then
+  local oldest = redis.call('ZRANGE', window_key, 0, 0, 'WITHSCORES')
+  local due = now
+  if oldest[2] then due = tonumber(oldest[2]) + window end
+  return {'wait', 'window', tostring(due)}
+end
+
+redis.call('ZADD', lease_key, now + lease_ttl, token)
+redis.call('ZADD', window_key, now, token)
+redis.call('HSET', key, 'last_emit', tostring(now))
+return {'admitted', '', ''}
+"""
+
+RELEASE_SCRIPT = """
+local token = ARGV[1]
+redis.call('ZREM', KEYS[2], token)
+return 1
+"""
+
+SUSPEND_SCRIPT = """
+local until_at = tonumber(ARGV[1])
+local reason = ARGV[2]
+local key = KEYS[1]
+local current = tonumber(redis.call('HGET', key, 'open_until') or '0')
+if until_at <= current then
+  return 0
+end
+redis.call('HSET', key, 'open_until', tostring(until_at), 'reason', reason)
+return 1
+"""
+
+CONCLUDE_SCRIPT = """
+local now = tonumber(ARGV[1])
+local succeeded = ARGV[2] == '1'
+local reason = ARGV[3]
+local challenge_rest = tonumber(ARGV[4])
+local probe_rest = tonumber(ARGV[5])
+local key = KEYS[1]
+
+if not redis.call('HGET', key, 'probe_pass') then
+  return 0
+end
+
+redis.call('HDEL', key, 'probe_pass', 'probe_until')
+
+if succeeded then
+  redis.call('HSET', key, 'open_until', '0', 'reason', 'closed')
+  return 1
+end
+
+local rest = probe_rest
+if reason == 'bot_challenge' or reason == 'rate_limited' then
+  rest = challenge_rest
+end
+redis.call('HSET', key, 'open_until', tostring(now + rest), 'reason', reason)
+return 1
+"""
+
+SNAPSHOT_SCRIPT = """
+local key = KEYS[1]
+return {
+  redis.call('HGET', key, 'open_until') or '0',
+  redis.call('HGET', key, 'reason') or '',
+  redis.call('HGET', key, 'probe_pass') or '',
+  redis.call('HGET', key, 'probe_until') or '0',
+  redis.call('HGET', key, 'admitted_pass') or '',
+  redis.call('HGET', key, 'admitted_books') or '0',
+}
+"""
+
+
+def _decoded(value: Any) -> Any:
+    """Redis renvoie des octets : la décision se lit sur des chaînes."""
+    if isinstance(value, bytes):
+        return value.decode()
+    if isinstance(value, list):
+        return [_decoded(item) for item in value]
+    return value
 
 
 class CalSuspendedError(Exception):
@@ -60,41 +220,22 @@ class CalSuspendedError(Exception):
 
 
 @dataclass
-class GovernorState:
+class GovernorSnapshot:
     open_until: float = 0.0
-    reason: str | None = None
-    admitted_pass: str | None = None
-    admitted_books: int = 0
+    reason: str = ""
+    probe_pass: str = ""
     probe_until: float = 0.0
-    probe_occurrence: str | None = None
-    window: list[float] = field(default_factory=list)
+    admitted_pass: str = ""
+    admitted_books: int = 0
 
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "open_until": self.open_until,
-            "reason": self.reason,
-            "admitted_pass": self.admitted_pass,
-            "admitted_books": self.admitted_books,
-            "probe_until": self.probe_until,
-            "probe_occurrence": self.probe_occurrence,
-        }
 
-    @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "GovernorState":
-        open_until = payload.get("open_until")
-        reason = payload.get("reason")
-        admitted_pass = payload.get("admitted_pass")
-        admitted_books = payload.get("admitted_books")
-        probe_until = payload.get("probe_until")
-        probe_occurrence = payload.get("probe_occurrence")
-        return cls(
-            open_until=float(open_until) if isinstance(open_until, (int, float)) else 0.0,
-            reason=reason if isinstance(reason, str) else None,
-            admitted_pass=admitted_pass if isinstance(admitted_pass, str) else None,
-            admitted_books=int(admitted_books) if isinstance(admitted_books, int) else 0,
-            probe_until=float(probe_until) if isinstance(probe_until, (int, float)) else 0.0,
-            probe_occurrence=probe_occurrence if isinstance(probe_occurrence, str) else None,
-        )
+@dataclass
+class GovernorStats:
+    emitted: int = 0
+    denied: int = 0
+    throttled: int = 0
+    deferred: int = 0
+    storage_unavailable: bool = False
 
 
 class CalGovernor:
@@ -108,11 +249,13 @@ class CalGovernor:
         max_books_per_pass: int = CAL_MAX_BOOKS_PER_PASS,
         window_seconds: float = CAL_WINDOW_SECONDS,
         max_requests_per_window: int = CAL_MAX_REQUESTS_PER_WINDOW,
+        pass_window_seconds: float = CAL_PASS_WINDOW_SECONDS,
         probe_ttl_seconds: float = CAL_PROBE_TTL_SECONDS,
+        lease_ttl_seconds: float = CAL_LEASE_TTL_SECONDS,
         store: Any = None,
-        clock: Any = time.monotonic,
-        wall_clock: Any = None,
+        clock: Any = None,
         sleep: Any = asyncio.sleep,
+        namespace: str = "",
     ) -> None:
         self.max_concurrent = max(1, max_concurrent)
         self.min_interval_seconds = max(0.0, min_interval_seconds)
@@ -121,41 +264,40 @@ class CalGovernor:
         self.max_books_per_pass = max(1, max_books_per_pass)
         self.window_seconds = max(1.0, window_seconds)
         self.max_requests_per_window = max(1, max_requests_per_window)
+        self.pass_window_seconds = max(1.0, pass_window_seconds)
         self.probe_ttl_seconds = max(1.0, probe_ttl_seconds)
+        self.lease_ttl_seconds = max(1.0, lease_ttl_seconds)
         self.store = store
-        self.clock = clock
-        self.wall_clock = wall_clock or (lambda: datetime.now(UTC))
+        self.clock = clock or time.time
         self.sleep = sleep
-        self.state = GovernorState()
-        self._semaphore = asyncio.Semaphore(self.max_concurrent)
-        self._lock = asyncio.Lock()
-        self._last_emit = 0.0
-        self._load_lock = asyncio.Lock()
-        self._loaded = False
+        self.namespace = namespace
         self.emitted = 0
         self.denied = 0
         self.throttled = 0
         self.deferred = 0
         self.storage_unavailable = False
+        self._local = GovernorSnapshot()
 
-    def phase(self) -> str:
-        if self.clock() < self.state.open_until:
-            return OPEN
-        if self.state.probe_occurrence is not None and self.clock() < self.state.probe_until:
-            return PROBING
-        return CLOSED
+    @property
+    def key(self) -> str:
+        return f"{GOVERNOR_KEY}:{self.namespace}" if self.namespace else GOVERNOR_KEY
 
-    def is_open(self) -> bool:
-        return self.phase() == OPEN
+    @property
+    def lease_key(self) -> str:
+        return self.key + ":lease"
 
-    def retry_at(self) -> datetime | None:
-        if not self.is_open():
-            return None
-        return self.wall_clock() + timedelta(
-            seconds=max(0.0, self.state.open_until - self.clock())
-        )
+    @property
+    def admit_key(self) -> str:
+        return self.key + ":admit"
 
-    async def _resolve_store(self) -> Any:
+    @property
+    def window_key(self) -> str:
+        return self.key + ":window"
+
+    def wall_now(self) -> float:
+        return float(self.clock())
+
+    async def _redis(self) -> Any:
         if self.store is False:
             return None
         if self.store is not None:
@@ -165,146 +307,145 @@ class CalGovernor:
         except Exception:
             return None
 
-    async def _load(self) -> None:
-        async with self._load_lock:
-            self._loaded = True
-            store = await self._resolve_store()
-            if store is None:
-                if self.store is not False:
-                    self.storage_unavailable = True
-                return
-            try:
-                raw = await asyncio.wait_for(store.get(GOVERNOR_KEY), timeout=2)
-            except Exception as exc:
-                self.storage_unavailable = True
-                logger.warning("État du régulateur CAL illisible : %s", type(exc).__name__)
-                return
-            if not raw:
-                return
-            try:
-                payload = json.loads(raw)
-            except (ValueError, TypeError):
-                return
-            if isinstance(payload, dict):
-                self.state = GovernorState.from_payload(payload)
-
-    async def _persist(self) -> None:
-        store = await self._resolve_store()
-        if store is None:
-            if self.store is not False:
-                self.storage_unavailable = True
-            return
+    async def _run(self, script: str, *args: Any, keys: list[str] | None = None) -> Any:
+        client = await self._redis()
+        if client is None:
+            self.storage_unavailable = True
+            return None
+        resolved = keys or [self.key]
         try:
-            await asyncio.wait_for(
-                store.set(GOVERNOR_KEY, json.dumps(self.state.to_payload())), timeout=2
+            raw = await asyncio.wait_for(
+                client.eval(script, len(resolved), *resolved, *args), timeout=2,
             )
         except Exception as exc:
             self.storage_unavailable = True
-            logger.warning("État du régulateur CAL non persisté : %s", type(exc).__name__)
+            logger.warning("Régulateur CAL indisponible : %s: %s", type(exc).__name__, exc)
+            return None
+        return _decoded(raw)
+
+    async def snapshot(self) -> GovernorSnapshot:
+        raw = await self._run(SNAPSHOT_SCRIPT)
+        if not isinstance(raw, list) or len(raw) < 6:
+            return self._local
+        self._local = GovernorSnapshot(
+            open_until=float(raw[0] or 0),
+            reason=str(raw[1] or ""),
+            probe_pass=str(raw[2] or ""),
+            probe_until=float(raw[3] or 0),
+            admitted_pass=str(raw[4] or ""),
+            admitted_books=int(raw[5] or 0),
+        )
+        return self._local
+
+    def phase(self) -> str:
+        now = self.wall_now()
+        if now < self._local.open_until:
+            return OPEN
+        if self._local.probe_pass and now < self._local.probe_until:
+            return PROBING
+        return CLOSED
+
+    def is_open(self) -> bool:
+        return self.wall_now() < self._local.open_until
+
+    def retry_at(self) -> datetime | None:
+        if not self.is_open():
+            return None
+        return datetime.now(UTC) + timedelta(seconds=self._local.open_until - self.wall_now())
 
     async def suspend(self, reason: str, seconds: float) -> None:
-        async with self._lock:
-            until = self.clock() + max(1.0, seconds)
-            if until > self.state.open_until:
-                self.state.open_until = until
-                self.state.reason = reason
-                await self._persist()
-            logger.warning(
-                "Régulateur CAL ouvert", extra={"reason": reason,
-                                              "seconds": round(seconds, 1)}
-            )
+        until = self.wall_now() + max(1.0, seconds)
+        result = await self._run(SUSPEND_SCRIPT, str(until), reason)
+        if result is None:
+            if until > self._local.open_until:
+                self._local.open_until = until
+                self._local.reason = reason
+            logger.warning("Régulateur CAL ouvert (local)", extra={"reason": reason})
+            return
+        await self.snapshot()
+        logger.warning("Régulateur CAL ouvert", extra={"reason": reason})
 
     async def admit_book(self, occurrence: str | None) -> None:
-        """Admet une collecte CAL : plafond par passe, puis état d'essai."""
-        async with self._lock:
-            await self._load()
-            if self.is_open():
-                self.deferred += 1
-                raise CalSuspendedError(self.state.reason or "rest", self.retry_at())
-            current_pass = occurrence or "hors-passe"
-            if self.phase() == PROBING:
-                raise CalSuspendedError("probe_in_flight", None)
-            if self.state.open_until > 0:
-                self.state.open_until = 0.0
-                self.state.reason = "probe"
-                self.state.probe_occurrence = current_pass
-                self.state.probe_until = self.clock() + self.probe_ttl_seconds
-                await self._persist()
-                return
-            if self.state.admitted_pass != current_pass:
-                self.state.admitted_pass = current_pass
-                self.state.admitted_books = 0
-            if self.state.admitted_books >= self.max_books_per_pass:
-                self.deferred += 1
-                raise CalSuspendedError("pass_budget", None)
-            self.state.admitted_books += 1
-            await self._persist()
+        current_pass = occurrence or OUTSIDE_PASS
+        raw = await self._run(
+            ADMIT_SCRIPT,
+            str(self.wall_now()), current_pass, str(self.max_books_per_pass),
+            str(self.probe_ttl_seconds), str(self.pass_window_seconds),
+            uuid.uuid4().hex,
+            keys=[self.key, self.admit_key],
+        )
+        if not isinstance(raw, list):
+            self.deferred += 1
+            raise CalSuspendedError("storage_unavailable", None)
+        await self.snapshot()
+        if raw[0] == "admitted":
+            return
+        self.deferred += 1
+        retry = None
+        if len(raw) > 2 and raw[2]:
+            retry = datetime.now(UTC) + timedelta(
+                seconds=max(0.0, float(raw[2]) - self.wall_now()),
+            )
+        raise CalSuspendedError(str(raw[1] or "rest"), retry)
 
     async def conclude_probe(self, *, succeeded: bool, reason: str | None = None) -> None:
-        """Clôt l'essai en cours : seul un succès technique rend le circuit fermé."""
-        async with self._lock:
-            if self.state.probe_occurrence is None:
-                return
-            self.state.probe_occurrence = None
-            self.state.probe_until = 0.0
-            if succeeded:
-                self.state.open_until = 0.0
-                self.state.reason = None
-                self.state.admitted_books = 0
-            else:
-                self.state.open_until = (
-                    self.clock() + CAL_CHALLENGE_REST_SECONDS
-                    if reason in {"bot_challenge", "rate_limited"}
-                    else self.clock() + CAL_PROBE_REST_SECONDS
-                )
-                self.state.reason = reason or "probe_incomplete"
-            await self._persist()
+        await self._run(
+            CONCLUDE_SCRIPT,
+            str(self.wall_now()), "1" if succeeded else "0", reason or "",
+            str(CAL_CHALLENGE_REST_SECONDS), str(CAL_PROBE_REST_SECONDS),
+        )
+        await self.snapshot()
 
-    async def _acquire_slot(self, collection: "CalCollectionBudget") -> None:
-        deadline = self.clock() + self.max_wait_seconds
+    async def _acquire_slot(self, collection: "CalCollectionBudget") -> str:
+        deadline = self.wall_now() + self.max_wait_seconds
+        token = uuid.uuid4().hex
         while True:
-            async with self._lock:
-                await self._load()
-                if self.is_open():
-                    self.denied += 1
-                    raise CalSuspendedError(self.state.reason or "rest", self.retry_at())
-                if collection.used >= self.max_requests_per_collection:
-                    self.denied += 1
-                    raise CalSuspendedError("collection_budget", None)
-                if collection.used == 0 and self.max_wait_seconds <= 0:
-                    raise CalSuspendedError("collection_budget", None)
-                now = self.clock()
-                self.state.window = [
-                    stamp for stamp in self.state.window
-                    if now - stamp < self.window_seconds
-                ]
-                wait_for = 0.0
-                if self._last_emit and collection.used == 0:
-                    wait_for = max(wait_for, self.min_interval_seconds - (now - self._last_emit))
-                if len(self.state.window) >= self.max_requests_per_window:
-                    oldest = min(self.state.window)
-                    wait_for = max(wait_for, self.window_seconds - (now - oldest))
-                if wait_for <= 0:
-                    self.state.window.append(now)
-                    self._last_emit = now
-                    collection.used += 1
-                    self.emitted += 1
-                    return
-                if now + wait_for > deadline:
-                    self.denied += 1
-                    raise CalSuspendedError("spacing", None)
+            if collection.used >= self.max_requests_per_collection:
+                self.denied += 1
+                raise CalSuspendedError("collection_budget", None)
+            raw = await self._run(
+                ACQUIRE_SCRIPT,
+                str(self.wall_now()), token, str(self.max_concurrent),
+                str(self.min_interval_seconds), str(self.max_requests_per_window),
+                str(self.window_seconds), str(self.lease_ttl_seconds),
+                keys=[self.key, self.lease_key, self.window_key],
+            )
+            if not isinstance(raw, list):
+                self.denied += 1
+                self.storage_unavailable = True
+                raise CalSuspendedError("storage_unavailable", None)
+            if raw[0] == "admitted":
+                collection.used += 1
+                self.emitted += 1
+                return token
+            if raw[0] == "denied":
+                self.denied += 1
+                raise CalSuspendedError(str(raw[1] or "rest"), None)
+            wait_for = 0.1
+            if len(raw) > 2 and raw[2]:
+                wait_for = max(0.05, min(1.0, float(raw[2]) - self.wall_now()))
+            if self.wall_now() + wait_for > deadline:
+                self.denied += 1
+                raise CalSuspendedError(str(raw[1] or "spacing"), None)
             self.throttled += 1
             await self.sleep(wait_for)
 
+    async def _release(self, token: str) -> None:
+        await self._run(
+            RELEASE_SCRIPT, token, keys=[self.key, self.lease_key, self.window_key],
+        )
+
     async def request(
         self, client: "CalHttpClient", collection: "CalCollectionBudget",
-        *args: Any, **kwargs: Any,
+        *args: Any, _method: str = "get", **kwargs: Any,
     ) -> httpx.Response:
-        async with self._semaphore:
-            await self._acquire_slot(collection)
-            response = await client.get(*args, **kwargs)
-            await self.observe(response)
-            return response
+        token = await self._acquire_slot(collection)
+        try:
+            response = cast(httpx.Response, await getattr(client, _method)(*args, **kwargs))
+        finally:
+            await self._release(token)
+        await self.observe(response)
+        return response
 
     async def observe(self, response: httpx.Response) -> None:
         if response.status_code == 429:
@@ -319,6 +460,8 @@ class CalGovernor:
 
 class CalHttpClient(Protocol):
     async def get(self, *args: Any, **kwargs: Any) -> httpx.Response: ...
+
+    async def post(self, *args: Any, **kwargs: Any) -> httpx.Response: ...
 
 
 def challenged(response: httpx.Response) -> bool:
@@ -339,8 +482,6 @@ def retry_after_seconds(response: httpx.Response) -> float | None:
 
 
 class CalCollectionBudget:
-    """Requêtes restantes pour une collecte de livre."""
-
     def __init__(self, governor: CalGovernor, limit: int | None = None) -> None:
         self.governor = governor
         self.limit = limit or governor.max_requests_per_collection
@@ -349,10 +490,11 @@ class CalCollectionBudget:
     async def get(self, client: "CalHttpClient", *args: Any, **kwargs: Any) -> httpx.Response:
         return await self.governor.request(client, self, *args, **kwargs)
 
+    async def post(self, client: "CalHttpClient", *args: Any, **kwargs: Any) -> httpx.Response:
+        return await self.governor.request(client, self, *args, _method="post", **kwargs)
+
 
 class GovernedClient:
-    """Client HTTP dont chaque .get() passe par le régulateur."""
-
     def __init__(self, client: "CalHttpClient", budget: CalCollectionBudget) -> None:
         while isinstance(client, GovernedClient):
             client = client._client
@@ -362,8 +504,40 @@ class GovernedClient:
     async def get(self, *args: Any, **kwargs: Any) -> httpx.Response:
         return await self._budget.get(self._client, *args, **kwargs)
 
+    async def post(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        return await self._budget.post(self._client, *args, **kwargs)
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
+
+
+class UnregulatedGovernor(CalGovernor):
+    """Régulateur inerte réservé aux tests qui n'examinent pas la régulation.
+
+    Rien n'est compté ni persisté : ces tests vérifient un autre comportement et
+    ne doivent pas dépendre d'un stockage partagé. La production utilise
+    toujours `cal_governor`, adossé à Redis.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(store=False, min_interval_seconds=0.0)
+
+    async def admit_book(self, occurrence: str | None) -> None:
+        return None
+
+    async def _acquire_slot(self, collection: "CalCollectionBudget") -> str:
+        collection.used += 1
+        self.emitted += 1
+        return "unregulated"
+
+    async def _release(self, token: str) -> None:
+        return None
+
+    async def observe(self, response: httpx.Response) -> None:
+        return None
+
+    async def suspend(self, reason: str, seconds: float) -> None:
+        return None
 
 
 cal_governor = CalGovernor()

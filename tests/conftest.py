@@ -39,9 +39,8 @@ def isolate_notification_windows(monkeypatch):
 @pytest.fixture(autouse=True)
 def isolate_cal_governor(monkeypatch):
     """Un coupe-circuit CAL ouvert ne doit jamais survivre au test qui l'a ouvert."""
-    from app.providers.cal_governor import CalGovernor
+    from app.providers.cal_governor import UnregulatedGovernor
 
     monkeypatch.setattr(
-        "app.providers.chasse_aux_livres.cal_governor",
-        CalGovernor(store=False, min_interval_seconds=0.0),
+        "app.providers.chasse_aux_livres.cal_governor", UnregulatedGovernor(),
     )

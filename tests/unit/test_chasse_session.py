@@ -7,6 +7,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.core.config import settings
+from app.providers.cal_governor import UnregulatedGovernor
 from app.providers.chasse_session import ChasseSessionManager
 
 
@@ -181,7 +182,9 @@ async def test_maintenance_checks_the_session_without_collecting_book_offers(mon
 
     calls = []
     store = MemoryStore()
-    manager = ChasseSessionManager(store=store, notify=AsyncMock())
+    manager = ChasseSessionManager(
+        store=store, notify=AsyncMock(), governor=UnregulatedGovernor(),
+    )
     await manager.token()
     manager.state.update(
         probe_url='https://www.chasse-aux-livres.fr/prix/test',

@@ -6,7 +6,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -153,7 +153,7 @@ class ChasseSessionManager:
         await self._save()
 
     @staticmethod
-    async def _login(client: httpx.AsyncClient, headers: dict[str, str]) -> str | None:
+    async def _login(client: "CalHttpClient", headers: dict[str, str]) -> str | None:
         email = settings.CHASSE_ACCOUNT_EMAIL.get_secret_value()
         password = settings.CHASSE_ACCOUNT_PASSWORD.get_secret_value()
         if not email or not password:
@@ -162,6 +162,8 @@ class ChasseSessionManager:
             page = await client.get(
                 BASE_URL + "/login?protect=true", headers=headers, follow_redirects=False, timeout=4
             )
+            if source_restriction(page):
+                return None
             if page.status_code != 200 or any(
                 marker in page.text.lower()
                 for marker in ("g-recaptcha", "h-captcha", "cf-chl-", "vérification robot")
@@ -181,6 +183,8 @@ class ChasseSessionManager:
                 follow_redirects=False,
                 timeout=4,
             )
+            if source_restriction(response):
+                return None
             if response.status_code not in {200, 302, 303} or re.search(
                 r"<form\b[^>]*(?:id|name)=[\"\x27]login[\"\x27]",
                 response.text,
@@ -190,6 +194,8 @@ class ChasseSessionManager:
             home = await client.get(
                 BASE_URL + "/", headers=headers, follow_redirects=False, timeout=4
             )
+            if source_restriction(home):
+                return None
             if home.status_code != 200:
                 return None
             match = re.search(r"data-duih=[\"\x27]([^\"\x27]+)", home.text)
@@ -247,9 +253,7 @@ class ChasseSessionManager:
                     return response
             try:
                 self.login_attempted = True
-                renewed = await self._login(
-                    cast(httpx.AsyncClient, client), headers,
-                )
+                renewed = await self._login(client, headers)
                 if renewed:
                     response = await request(renewed)
                     if source_restriction(response):
