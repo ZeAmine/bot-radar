@@ -120,7 +120,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
     mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
 
     market_line = ("<b>Prix bas constaté (T6) :</b> 5,12 €\n"
-                   "<b>Écart livré estimé :</b> 13,16 € au-dessus du prix de référence ⛔️")
+                   "<b>Écart estimé :</b> +13,16 €")
     with (
         patch(
             "app.use_cases.ingest_listing.comparison_line_from_loaded_books",
@@ -193,7 +193,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         _, kwargs = mock_send_alert.call_args
         assert kwargs["market_comparison_line"] == (
             "<b>Prix bas constaté (T6) :</b> 5,12 €\n"
-            "<b>Écart livré estimé :</b> 13,16 € au-dessus du prix de référence ⛔️"
+            "<b>Écart estimé :</b> +13,16 €"
         )
 
         # L'enrichissement IA part dans send_listing_alert, pas dans un second use case.

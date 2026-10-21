@@ -134,7 +134,7 @@ def test_comparator_vinted_cheaper_than_market():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 22,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart livré estimé :</b> 8,31 € en dessous du prix de référence ✅" in summary
+    assert "<b>Écart estimé :</b> −8,31 €" in summary
 
 
 def test_comparator_vinted_very_good_deal_fire_badge():
@@ -145,7 +145,7 @@ def test_comparator_vinted_very_good_deal_fire_badge():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 30,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart livré estimé :</b> 15,00 € en dessous du prix de référence ✅" in summary
+    assert "<b>Écart estimé :</b> −15,00 €" in summary
 
 
 def test_comparator_vinted_more_expensive_than_market():
@@ -156,7 +156,7 @@ def test_comparator_vinted_more_expensive_than_market():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart livré estimé :</b> 5,00 € au-dessus du prix de référence ⛔️" in summary
+    assert "<b>Écart estimé :</b> +5,00 €" in summary
 
 
 def test_comparator_small_difference_warning():
@@ -167,18 +167,11 @@ def test_comparator_small_difference_warning():
     assert summary is not None
     assert "<b>Prix bas constaté :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart livré estimé :</b> 0,50 € au-dessus du prix de référence ⛔️" in summary
+    assert "<b>Écart estimé :</b> +0,50 €" in summary
 
 
-def test_gap_marker_closes_the_line_and_stays_out_of_a_null_gap():
-    """Le marqueur ferme la ligne ; à l'égalité, il disparaît.
-
-    Un emoji en tête de ligne se lit comme une puce qui qualifierait tout le
-    bloc alors qu'il ne parle que de cet écart — sur iOS, ses métriques
-    verticales le poussent en outre au-dessus du texte. En fin de ligne le
-    décalage ne se voit plus. À l'écart nul, « au prix de référence » porte
-    déjà le sens : un marqueur vert y serait une approbation de trop.
-    """
+def test_gap_amount_is_signed_without_a_suffix_or_a_sign_at_zero():
+    """Le montant signé suffit à exprimer l'écart, sans suffixe."""
     above = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
     below = create_book_with_cache(lowest_delivered_cents=2200, annual_low_cents=2200)
     equal = create_book_with_cache(lowest_delivered_cents=2000, annual_low_cents=2000)
@@ -196,16 +189,16 @@ def test_gap_marker_closes_the_line_and_stays_out_of_a_null_gap():
     assert summary_below is not None
     assert summary_equal is not None
 
-    above_line = next(line for line in summary_above.splitlines() if "Écart livré estimé :" in line)
-    below_line = next(line for line in summary_below.splitlines() if "Écart livré estimé :" in line)
-    equal_line = next(line for line in summary_equal.splitlines() if "Écart livré estimé :" in line)
+    above_line = next(line for line in summary_above.splitlines() if "Écart estimé :" in line)
+    below_line = next(line for line in summary_below.splitlines() if "Écart estimé :" in line)
+    equal_line = next(line for line in summary_equal.splitlines() if "Écart estimé :" in line)
 
-    assert above_line.endswith("⛔️")
-    assert below_line.endswith("✅")
+    assert above_line == "<b>Écart estimé :</b> +5,00 €"
+    assert below_line == "<b>Écart estimé :</b> −4,00 €"
     assert not above_line.startswith(("✅", "⛔️"))
     assert not below_line.startswith(("✅", "⛔️"))
 
-    assert equal_line == "<b>Écart livré estimé :</b> au prix de référence"
+    assert equal_line == "<b>Écart estimé :</b> 0,00 €"
     assert "✅" not in equal_line
     assert "⛔️" not in equal_line
 
@@ -240,7 +233,7 @@ def test_comparator_with_historical_low_1y():
     assert summary is not None
     assert "Prix du marché" not in summary
     assert "<b>Prix bas constaté :</b> 18,50 €" in summary
-    assert "<b>Écart livré estimé :</b> 4,81 € en dessous du prix de référence ✅" in summary
+    assert "<b>Écart estimé :</b> −4,81 €" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "🆕 Vinted" not in card
@@ -257,7 +250,7 @@ def test_comparator_no_historical_low_falls_back_to_live_market_price():
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     assert "<b>Dernière offre connue :</b> 22,00 € (Ebay)" in summary
-    assert "<b>Écart livré estimé :</b> 8,31 € en dessous du prix de référence ✅" in summary
+    assert "<b>Écart estimé :</b> −8,31 €" in summary
 
 
 def test_comparator_market_details_card_excludes_amazon_de():
@@ -301,7 +294,7 @@ def test_comparator_historical_low_when_status_unavailable():
     assert summary is not None
     assert "Prix du marché" not in summary
     assert "<b>Prix bas constaté :</b> 18,50 €" in summary
-    assert "<b>Écart livré estimé :</b> 4,81 € en dessous du prix de référence ✅" in summary
+    assert "<b>Écart estimé :</b> −4,81 €" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "📊 <b>Prix du marché</b>" in card
@@ -506,7 +499,7 @@ def test_summary_uses_vinted_total_including_shipping():
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     # 1 500 + 75 (5 %) + 70 + 288 (port) = 1 933 cts : écart -0,67 € contre 2 000 cts.
-    assert "<b>Écart livré estimé :</b> 0,67 € en dessous du prix de référence ✅" in summary
+    assert "<b>Écart estimé :</b> −0,67 €" in summary
 
 
 def test_lot_summary_reports_partial_tome_matching():
@@ -907,7 +900,7 @@ def test_series_with_one_empty_tome_does_not_claim_the_whole_collection_is_empty
     assert "Actualisation" not in card
     assert "07/10 à 02:00" not in card
     assert "1 tome(s) sans aucune offre trouvée" in card
-    assert "• Tome 1 : 22,00 €" in card
+    assert "Tome 1 : 22,00 €" in card
 
 
 def test_an_empty_current_offer_set_falls_back_to_the_last_known_offers():

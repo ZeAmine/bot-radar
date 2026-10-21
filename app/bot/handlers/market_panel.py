@@ -13,7 +13,11 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.bot.labels import BTN_CLOSE
 from app.core.constants import AlertStatus
 from app.db.models.book import Book
-from app.services.market_price_service import MarketPriceService, extract_tome_number_from_title
+from app.services.market_price_service import (
+    MarketPriceService,
+    confirmed_series_isbns,
+    series_display_volumes,
+)
 from app.use_cases.view_market_details import MarketPanelData
 
 logger = logging.getLogger(__name__)
@@ -85,10 +89,11 @@ def _content(view: PanelView) -> tuple[str, InlineKeyboardMarkup]:
     panel = view.panel
     books = panel.books_in_series or ([panel.book] if panel.book else [])
     selected = next((b for b in books if b.id == view.selected_id), None)
+    volumes = series_display_volumes(books, panel.alert.name if panel.alert else None)
     missing_first = (
         view.alert_id
         and len(books) > 1
-        and not any(extract_tome_number_from_title(b.title) == 1 for b in books)
+        and not any(volume.number == 1 for volume in volumes)
     )
     text = MarketPriceService.format_market_details_card(
         listing=panel.listing,
@@ -104,9 +109,13 @@ def _content(view: PanelView) -> tuple[str, InlineKeyboardMarkup]:
             else None
         ),
         next_check_at=_next_check_for(view, selected),
+        series_title=panel.alert.name if panel.alert else None,
+        preferred_isbns=confirmed_series_isbns(panel.alert),
     )
     source_id = view.listing_id or view.alert_id
-    rows = _tome_selection_rows(source_id, books) if source_id and len(books) > 1 else []
+    rows = (_tome_selection_rows(
+        source_id, books, panel.alert.name if panel.alert else None
+    ) if source_id and len(books) > 1 else [])
     rows.append([InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel")])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -146,11 +155,13 @@ async def open_panel(
         and not (panel.tome_result and panel.tome_result.is_lot)
         and not (panel.tome_result and panel.tome_result.tome_number is not None)
     ):
-        books = sorted(
-            panel.books_in_series, key=lambda b: extract_tome_number_from_title(b.title) or 999
+        volumes = series_display_volumes(
+            panel.books_in_series, panel.alert.name if panel.alert else None,
+            confirmed_series_isbns(panel.alert),
         )
-        panel.book = books[0]
-        view.selected_id = books[0].id
+        if volumes:
+            panel.book = volumes[0].callback_book
+            view.selected_id = panel.book.id
     text, keyboard = _content(view)
     view.message = await callback.message.reply(
         text=text,
@@ -169,7 +180,11 @@ async def select_panel_tome(callback: CallbackQuery, book_id: uuid.UUID | None) 
     if view is None:
         return False
     books = view.panel.books_in_series or ([view.panel.book] if view.panel.book else [])
-    if book_id is not None and not any(b.id == book_id for b in books):
+    series_title = view.panel.alert.name if view.panel.alert else None
+    if book_id is not None and not any(
+        b.id == book_id and series_display_volumes([b], series_title)
+        for b in books
+    ):
         await callback.answer("Tome introuvable.")
         return True
     view.selected_id = book_id

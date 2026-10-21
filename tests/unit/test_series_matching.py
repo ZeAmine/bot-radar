@@ -91,7 +91,7 @@ def test_series_matching_specific_tome_summary():
     assert summary is not None
     assert "<b>Prix bas constaté (T2) :</b> 18,50 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart livré estimé :</b> 6,50 € en dessous du prix de référence ✅" in summary
+    assert "<b>Écart estimé :</b> −6,50 €" in summary
 
 
 @pytest.mark.parametrize(
@@ -229,7 +229,7 @@ def test_series_matching_lot_summary():
     assert summary is not None
     assert "<b>Prix bas constaté (Lot) :</b> ~54,50 €" in summary
     assert "Prix du marché" not in summary
-    assert "<b>Écart livré estimé :</b> 29,50 € en dessous du prix de référence ✅" in summary
+    assert "<b>Écart estimé :</b> −29,50 €" in summary
 
 
 def test_series_matching_generic_range_summary():
@@ -340,7 +340,7 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     assert summary is not None
     assert "Prix du marché" not in summary
     assert "<b>Prix bas constaté (Lot) :</b> ~42,30 €" in summary
-    assert "<b>Écart livré estimé :</b> 5,12 € en dessous du prix de référence ✅" in summary
+    assert "<b>Écart estimé :</b> −5,12 €" in summary
 
 
 @pytest.mark.parametrize(
@@ -390,9 +390,9 @@ def test_series_matching_lot_variations_matrix(
     )
     assert summary is not None
     assert expected_label in summary
-    direction = "en dessous" if expected_diff.startswith("-") else "au-dessus"
-    assert (f"<b>Écart livré estimé :</b> {expected_diff[1:]} {direction} "
-            f"du prix de référence {expected_icon}") in summary
+    assert expected_icon not in summary
+    signed_diff = expected_diff.replace("-", "−")
+    assert f"<b>Écart estimé :</b> {signed_diff}" in summary
 
 
 def test_series_matching_blacksad_generic():
@@ -954,7 +954,7 @@ def test_format_market_details_card_keeps_missing_tome_visible_in_lot():
 def test_market_details_card_series_tomes_formatting():
     """Vérifie que la carte de détails affiche strictement 'Prix du marché' en titre,
     exclut les entrées sans tome ou sans cote ('Blacksad, cote indisponible'),
-    et met en gras le tome courant dans la liste des tomes."""
+    et présente uniquement le numéro et le prix de chaque tome."""
     root_book = _create_mock_book("Blacksad", None)
     b1 = _create_mock_book("Blacksad — Tome 1 (Quelque part entre les ombres)", 470)
     b2 = _create_mock_book("Blacksad — Tome 2 (Arctic-Nation)", 526)
@@ -989,12 +989,12 @@ def test_market_details_card_series_tomes_formatting():
     assert "Cote indisponible" not in card
 
     assert "<b>Autres tomes de la série :</b>" in card
-    assert "• Tome 1 : 4,70 €" in card
-    assert "• Tome 2 : 5,26 €" in card
-    assert "• Tome 4 : 6,70 €" in card
-    assert "• <b>Tome 5 : 3,19 € — Dernière MAJ :" in card
-    assert "• Tome 6 : 5,12 €" in card
-    assert "• Tome 7 : 10,49 €" in card
+    assert "Tome 1 : 4,70 €" in card
+    assert "Tome 2 : 5,26 €" in card
+    assert "Tome 4 : 6,70 €" in card
+    assert "Tome 5 : 3,19 €" in card
+    assert "Tome 6 : 5,12 €" in card
+    assert "Tome 7 : 10,49 €" in card
 
 
 @pytest.mark.asyncio
@@ -1160,7 +1160,7 @@ def test_counted_lot_resolves_to_the_whole_series_and_prices_it():
         "(Lot de 4 tomes, composition déduite) :</b> ~40,77 €"
         in summary
     )
-    assert "<b>Écart livré estimé :</b> 15,31 € au-dessus du prix de référence ⛔️" in summary
+    assert "<b>Écart estimé :</b> +15,31 €" in summary
 
 
 def test_counted_lot_is_refused_when_the_series_is_longer():

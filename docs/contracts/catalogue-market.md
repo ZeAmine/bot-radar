@@ -9,7 +9,14 @@ locale des références. Aucune formule n'est redéfinie ici.
 `partial`, `not_found`, `unavailable`. Les nouvelles créations Telegram utilisent
 une projection partagée : seul `found` confirme l'ISBN ; un candidat partiel
 n'alimente ni identité confirmée ni `BookContext`. Les œuvres homonymes se choisissent
-avant les éditions. Choix et confirmation sont revalidés ; un clic ne prouve rien seul.
+avant les éditions, avec leurs auteurs et leurs ISBN distincts. Choix et confirmation
+sont revalidés ; un clic ne prouve rien seul.
+
+La liste et les boutons de tomes partagent une projection de présentation, limitée
+à la série retenue et dédupliquée par numéro. L'édition confirmée dans la préparation
+reste prioritaire ; plusieurs éditions sans choix établi restent ambiguës. Cette
+projection ne modifie ni les livres liés, ni les compositions ou totaux du marché.
+Les offres d'une édition ne sont pas affichées sous l'identité d'une autre.
 
 La BNF est primaire ; OpenLibrary puis Google Books configuré sont des replis
 non confirmants, de provenance déclarée, jamais un remplacement d'une notice BNF

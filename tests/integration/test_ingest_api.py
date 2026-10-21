@@ -212,7 +212,7 @@ async def test_ingest_bd_listing_with_market_comparison(
         comparison_line = kwargs.get("market_comparison_line")
         assert comparison_line is not None
         assert "22,00 €" in comparison_line
-        assert "8,31 € en dessous" in comparison_line
+        assert "<b>Écart estimé :</b> −8,31 €" in comparison_line
 
     stmt_link = select(AlertBook).where(
         AlertBook.alert_id == alert.id,

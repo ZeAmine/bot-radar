@@ -28,9 +28,8 @@ from app.domain.rules.catalogue_search import is_uncatalogued
 from app.services.ai.modules.negotiation import negotiation_module
 from app.services.market_price_service import (
     MarketPriceService,
-    clean_tome_display_title,
-    extract_tome_number_from_title,
-    listable_series_books,
+    confirmed_series_isbns,
+    series_display_volumes,
 )
 from app.use_cases.view_market_details import ViewMarketDetailsUseCase
 
@@ -112,6 +111,7 @@ def _decode_tome_ref(data: str | None) -> tuple[uuid.UUID, uuid.UUID] | None:
 def _tome_selection_rows(
     listing_id: uuid.UUID,
     books: list[Book],
+    series_title: str | None = None,
 ) -> list[list[InlineKeyboardButton]]:
     """Rangées de boutons « choisir un tome » — une seule implémentation.
 
@@ -122,16 +122,9 @@ def _tome_selection_rows(
     """
     rows: list[list[InlineKeyboardButton]] = []
     current_row: list[InlineKeyboardButton] = []
-    for book in sorted(
-        listable_series_books(books),
-        key=lambda b: (extract_tome_number_from_title(b.title) or 999, b.title),
-    ):
-        number = extract_tome_number_from_title(book.title)
-        btn_text = f"T{number}" if number else clean_tome_display_title(book.title)[:20]
-        duplicates = sum(extract_tome_number_from_title(candidate.title) == number
-                         for candidate in books)
-        if duplicates > 1 and book.isbn13:
-            btn_text += f" · {book.isbn13[-6:]}"
+    for volume in series_display_volumes(books, series_title):
+        book = volume.callback_book
+        btn_text = f"T{volume.number}"
         current_row.append(
             InlineKeyboardButton(
                 text=btn_text,
@@ -207,18 +200,22 @@ async def _show_market_details(
         latest_snapshot=panel.latest_snapshot,
         series_total_cents=panel.series_total_cents,
         catalogue_exhausted=panel.catalogue_exhausted,
+        series_title=panel.alert.name if panel.alert else None,
+        preferred_isbns=confirmed_series_isbns(panel.alert),
     )
     # Les tomes se choisissent depuis n'importe quel panneau de la série, résolu
     # ou non : condition unique `len(books_in_series) > 1` (voir helper).
     tome_buttons: list[list[InlineKeyboardButton]] = []
     if books_in_series and len(books_in_series) > 1:
-        tome_buttons = _tome_selection_rows(listing.id, books_in_series)
+        tome_buttons = _tome_selection_rows(
+            listing.id, books_in_series, panel.alert.name if panel.alert else None
+        )
 
     tome_buttons.append([InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel")])
     back_keyboard = InlineKeyboardMarkup(inline_keyboard=tome_buttons)
 
     if isinstance(callback.message, Message):
-        is_market_view = "<b>Prix du marché</b>" in (callback.message.html_text or "")
+        is_market_view = "Prix du marché" in (callback.message.text or "")
         if (callback.data or "").startswith("market_details:") and is_market_view:
             await callback.message.edit_text(
                 text=details_text,
@@ -275,6 +272,12 @@ async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
     alert = await listing_repo.get_alert_for_listing(listing.id)
     if alert:
         books_in_series = await book_repo.get_all_books_for_alert(alert.id)
+        if not any(
+            candidate.id == book_id and series_display_volumes([candidate], alert.name)
+            for candidate in books_in_series
+        ):
+            await callback.answer("Tome introuvable.", show_alert=True)
+            return
 
     latest_snap = None
     if book:
@@ -289,12 +292,16 @@ async def _select_market_tome(callback: CallbackQuery, db_session: Any) -> None:
         latest_snapshot=latest_snap,
         series_total_cents=alert.series_total_cents if alert else None,
         catalogue_exhausted=is_uncatalogued(alert) if alert else False,
+        series_title=alert.name if alert else None,
+        preferred_isbns=confirmed_series_isbns(alert),
     )
 
     # Depuis un tome, la sélection reste ouverte aux autres tomes de la série.
     keyboard_rows: list[list[InlineKeyboardButton]] = []
     if books_in_series and len(books_in_series) > 1:
-        keyboard_rows = _tome_selection_rows(listing.id, books_in_series)
+        keyboard_rows = _tome_selection_rows(
+            listing.id, books_in_series, alert.name if alert else None
+        )
     keyboard_rows.append([InlineKeyboardButton(text=BTN_CLOSE, callback_data="close_market_panel")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 

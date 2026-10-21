@@ -116,8 +116,7 @@ EXPECTED_CAPTION_BD = "\n".join(
         "<b>État :</b> TBE",
         "",
         "<b>Dernière offre connue :</b> 20,00 € (Momox)",
-        "<b>Écart livré estimé :</b> 6,97 € en dessous du prix de référence ✅",
-        "<i>Référence livrée ; estimation Vinted avec livraison et protection.</i>",
+        "<b>Écart estimé :</b> −6,97 €",
         "",
         "<b>Mots-clés :</b> blacksad",
     ]

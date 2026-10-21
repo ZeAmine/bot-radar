@@ -15,9 +15,18 @@ La charte canonique est [labels](../../app/bot/labels.py), dont la docstring est
 consommée par [test_charte_copy](../../tests/unit/test_charte_copy.py) : libellés de
 champs gras, valeurs romaines, consignes en italique, avertissements isolés en italique.
 La série est une indication hors de la liste d'informations. Le prix livré est
-qualifié TTC ; le marqueur d'écart ferme la ligne, sans approbation verte à écart nul.
+qualifié TTC ; « Écart estimé » affiche uniquement un montant signé : négatif sous
+la référence, positif au-dessus, zéro sans signe. Aucun suffixe ni note de frais
+ne suit cette ligne.
 Le récap de création et sa confirmation utilisent la même carte ; alternatives
 d'édition proposées uniquement à partir de deux éditions exploitables.
+
+Le titre du panneau « Prix du marché » renvoie à une URL CAL déjà enregistrée
+pour l'ISBN affiché, si elle est sûre et compatible ; sinon il reste sans lien.
+L'ISBN est copiable en `<code>`. L'action d'ouverture du panneau garde son callback.
+Les tomes sont présentés une fois par numéro : boutons `T1`, `T2`, etc., lignes
+`Tome X : XX,XX €` ou `Tome X : Non renseigné`, sans métadonnées supplémentaires.
+Une sélection ambiguë entre éditions ne reçoit ni ISBN ni prix arbitraire.
 
 Le signalement faux positif est confirmé/annulable. Le scan périodique et le
 déclenchement après signalement attendent le **troisième** faux positif d'une même
