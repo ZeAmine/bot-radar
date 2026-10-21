@@ -358,3 +358,42 @@ async def test_the_inter_collection_interval_still_separates_two_collections(
     assert observed
     assert sum(observed) >= CAL_MIN_INTERVAL_SECONDS
     assert governor.emitted == 2
+
+
+@pytest.mark.usefixtures("pass_token")
+@pytest.mark.asyncio
+async def test_a_real_probe_collects_through_the_governed_client(clean_cal_keys, cal_namespace):
+    from tests.unit.test_chasse_aux_livres_provider import (
+        MOCK_LOOKUP_JSON,
+        MOCK_PROD_HTML,
+        MOCK_REST_JSON,
+        MOCK_SEARCH_PAGE_HTML,
+    )
+
+    reached: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        reached.append(path)
+        if path == "/search":
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        if path == "/rest/search-results":
+            return httpx.Response(200, json=MOCK_REST_JSON)
+        if path.startswith("/prix/"):
+            return httpx.Response(200, text=MOCK_PROD_HTML)
+        return httpx.Response(200, json=MOCK_LOOKUP_JSON)
+
+    clock = FakeClock()
+    governor = _governor(clock, clean_cal_keys, cal_namespace)
+    await governor.suspend("bot_challenge", 3600)
+    clock.now += 3601
+
+    async with _client(handler) as client:
+        provider = ChasseAuxLivresProvider(
+            http_client=client, max_retries=0, governor=governor,
+        )
+        offers = await provider.get_offers(isbn13=ISBN, title="Rip Tome 1")
+
+    assert reached
+    assert offers.emitted_requests == len(reached)
+    assert all(attempt.status != "skipped" for attempt in offers.attempts)

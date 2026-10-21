@@ -744,3 +744,137 @@ async def test_a_collection_resuming_after_the_rest_must_hold_the_probe(
     holder = _Emitter(governor, probe)
     assert await holder.get("/search") == "emitted"
     assert holder.reached == ["/search"]
+
+
+async def _governor_under_rest(store, namespace: str, clock: _SharedClock) -> CalGovernor:
+    governor = _governor(store, namespace, clock=clock, probe_ttl_seconds=60.0)
+    await governor.suspend("bot_challenge", 600)
+    clock.advance(601)
+    return governor
+
+
+@pytest.mark.asyncio
+async def test_an_admission_taken_before_the_rest_cannot_send_its_first_request(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0)
+    await governor.admit_book("passe-A")
+    await governor.suspend("bot_challenge", 600)
+    clock.advance(601)
+
+    probe = await governor.admit_book("passe-B")
+    assert probe is not None
+
+    earlier = _Emitter(governor)
+    assert earlier.budget.used == 0
+    assert await earlier.get("/search") == "probe_in_flight"
+    assert earlier.reached == []
+
+    holder = _Emitter(governor, probe)
+    assert await holder.get("/search") == "emitted"
+    assert holder.reached == ["/search"]
+
+
+@pytest.mark.asyncio
+async def test_without_a_probe_the_first_request_of_an_old_admission_is_refused(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0)
+    await governor.admit_book("passe-A")
+    await governor.suspend("bot_challenge", 600)
+    clock.advance(601)
+    assert governor.phase() == "open"
+
+    earlier = _Emitter(governor)
+    assert earlier.budget.used == 0
+    assert await earlier.get("/search") == "probe_in_flight"
+    assert earlier.reached == []
+
+
+@pytest.mark.asyncio
+async def test_the_probe_holder_sends_its_first_request_and_polls(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = await _governor_under_rest(clean_cal_keys, cal_namespace, clock)
+    probe = await governor.admit_book("passe-B")
+    assert probe is not None
+
+    holder = _Emitter(governor, probe)
+    first = await holder.get("/search")
+    polls = [await holder.get(f"/rest/search-results?page={page}") for page in range(3)]
+
+    assert first == "emitted"
+    assert polls == ["emitted"] * 3
+    assert holder.reached == [
+        "/search", "/rest/search-results", "/rest/search-results", "/rest/search-results",
+    ]
+    assert holder.budget.used == 4
+
+
+@pytest.mark.asyncio
+async def test_no_budget_of_an_abandoned_probe_can_emit_under_the_new_one(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = await _governor_under_rest(clean_cal_keys, cal_namespace, clock)
+    abandoned_probe = await governor.admit_book("passe-A")
+    assert abandoned_probe is not None
+    clock.advance(61)
+    assert governor.phase() == "open"
+
+    started = _Emitter(governor, abandoned_probe)
+    assert started.budget.used == 0
+    assert await started.get("/search") == "probe_in_flight"
+    assert started.reached == []
+
+    fresh_probe = await governor.admit_book("passe-B")
+    assert fresh_probe is not None
+    assert fresh_probe != abandoned_probe
+
+    mid_collection = _Emitter(governor, abandoned_probe)
+    mid_collection.budget.used = 2
+    for emitter in (started, mid_collection):
+        assert await emitter.get("/search") == "probe_in_flight"
+    assert started.reached == []
+    assert mid_collection.reached == []
+
+    holder = _Emitter(governor, fresh_probe)
+    assert await holder.get("/search") == "emitted"
+    assert holder.reached == ["/search"]
+
+
+@pytest.mark.asyncio
+async def test_a_normally_closed_circuit_lets_an_ordinary_collection_emit(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock)
+    assert governor.phase() == "closed"
+    await governor.admit_book("passe-A")
+
+    ordinary = _Emitter(governor)
+    assert ordinary.budget.used == 0
+    assert await ordinary.get("/search") == "emitted"
+    assert await ordinary.get("/rest/search-results") == "emitted"
+    assert ordinary.reached == ["/search", "/rest/search-results"]
+    assert ordinary.budget.used == 2
+
+
+@pytest.mark.asyncio
+async def test_during_the_active_rest_no_first_request_is_allowed(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0)
+    await governor.admit_book("passe-A")
+    await governor.suspend("bot_challenge", 600)
+    assert governor.phase() == "open"
+
+    without_token = _Emitter(governor)
+    assert without_token.budget.used == 0
+    assert await without_token.get("/search") == "bot_challenge"
+    assert without_token.reached == []
+
+    with_stale_token = _Emitter(governor, "jeton-perime")
+    assert with_stale_token.budget.used == 0
+    assert await with_stale_token.get("/search") == "bot_challenge"
+    assert with_stale_token.reached == []

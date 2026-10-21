@@ -167,14 +167,17 @@ Transitions :
   de l'essai abandonné ne peut pas conclure le nouvel essai. La prise d'essai est
   atomique : un seul appel obtient l'état `probing` ;
 - l'essai est exclusif au moment de l'émission, pas seulement à l'admission :
-  `ACQUIRE_SCRIPT` vérifie, dans la même opération atomique, que le jeton porté
-  par le budget de collecte est bien celui de l'essai actif et non expiré. Une
-  collecte admise avant la restriction, ou une requête tardive d'un essai
-  expiré, est refusée en `probe_in_flight` sans qu'aucune requête ne parte. Un
-  porteur valide émet dans ses budgets habituels, et une nouvelle restriction
-  l'arrête comme les autres. Reste hors de cette règle la **première** requête
-  d'une collecte qui n'est pas née pendant une restriction : elle ne peut pas
-  usurper l'essai d'autrui, mais elle n'est pas un essai non plus ;
+  tant que le circuit exige un essai (`open_until > 0`), `ACQUIRE_SCRIPT`
+  vérifie, dans la même opération atomique, que le jeton porté par le budget de
+  collecte est bien celui de l'essai actif et non expiré. À défaut, la requête
+  est refusée en `probe_in_flight` **sans qu'aucune requête ne parte, première
+  requête comprise**. L'exclusivité ne dépend donc pas du nombre de requêtes
+  déjà émises : une collecte admise avant la restriction, une requête tardive
+  d'un essai expiré, une collecte reprise sans essai attribué ou un ancien
+  budget sont tous refusés. Un porteur valide émet dans ses budgets habituels,
+  et une nouvelle restriction l'arrête comme les autres. Quand le circuit est
+  normalement fermé (`open_until == 0`), une collecte ordinaire émet sans jeton.
+  Une ancienne admission n'est jamais convertie en admission d'essai ;
 - une collecte déjà admise **ne reprend pas** après rétablissement : elle est
   réadmise. Le fournisseur refuse en `readmission_required` un client démonté
   dont le budget existe encore, au lieu de continuer sur l'admission

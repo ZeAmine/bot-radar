@@ -124,7 +124,6 @@ local max_per_window = tonumber(ARGV[5])
 local window = tonumber(ARGV[6])
 local lease_ttl = tonumber(ARGV[7])
 local probe_token = ARGV[9]
-local emitted = ARGV[10] == '1'
 local key = KEYS[1]
 local lease_key = KEYS[2]
 local window_key = KEYS[3]
@@ -138,8 +137,7 @@ local probe_until = tonumber(redis.call('HGET', key, 'probe_until') or '0')
 local current_probe = redis.call('HGET', key, 'probe_token')
 local in_probe = current_probe and now < probe_until
 local holds_probe = probe_token ~= '' and current_probe == probe_token and in_probe
-local needs_probe = probe_token ~= '' or (open_until > 0 and emitted)
-if needs_probe and not holds_probe then
+if open_until > 0 and not holds_probe then
   return {'denied', 'probe_in_flight', tostring(probe_until)}
 end
 
@@ -473,7 +471,7 @@ class CalGovernor:
                 str(self.min_interval_seconds), str(self.max_requests_per_window),
                 str(self.window_seconds), str(self.lease_ttl_seconds),
                 "1" if collection.opening_request else "0",
-                collection.probe_token or "", "1" if collection.used else "0",
+                collection.probe_token or "",
                 keys=[self.key, self.lease_key, self.window_key],
             )
             if not isinstance(raw, list):
