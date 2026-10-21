@@ -15,6 +15,8 @@ import httpx
 import pytest
 
 from app.providers.cal_governor import (
+    CAL_CHALLENGE_REST_SECONDS,
+    CAL_PROBE_REST_SECONDS,
     CalCollectionBudget,
     CalGovernor,
     CalSuspendedError,
@@ -59,8 +61,8 @@ async def _admissions(governors, pass_id: str) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_simultaneous_admissions_never_exceed_the_shared_quota(cal_redis, cal_namespace):
-    governors = [_governor(cal_redis, cal_namespace) for _ in range(12)]
+async def test_simultaneous_admissions_never_exceed_the_shared_quota(clean_cal_keys, cal_namespace):
+    governors = [_governor(clean_cal_keys, cal_namespace) for _ in range(12)]
 
     outcomes = await _admissions(governors, "passe-1")
 
@@ -70,9 +72,9 @@ async def test_simultaneous_admissions_never_exceed_the_shared_quota(cal_redis, 
 
 @pytest.mark.asyncio
 async def test_simultaneous_admissions_across_distinct_passes_stay_bounded(
-    cal_redis, cal_namespace,
+    clean_cal_keys, cal_namespace,
 ):
-    governors = [_governor(cal_redis, cal_namespace) for _ in range(8)]
+    governors = [_governor(clean_cal_keys, cal_namespace) for _ in range(8)]
 
     async def attempt(index: int, governor: CalGovernor) -> str:
         try:
@@ -86,7 +88,7 @@ async def test_simultaneous_admissions_across_distinct_passes_stay_bounded(
 
 
 @pytest.mark.asyncio
-async def test_concurrency_is_never_exceeded_across_instances(cal_redis, cal_namespace):
+async def test_concurrency_is_never_exceeded_across_instances(clean_cal_keys, cal_namespace):
     class Tracker:
         def __init__(self) -> None:
             self.active = 0
@@ -101,7 +103,7 @@ async def test_concurrency_is_never_exceeded_across_instances(cal_redis, cal_nam
 
     tracker = Tracker()
     governors = [
-        _governor(cal_redis, cal_namespace, max_wait_seconds=10.0) for _ in range(6)
+        _governor(clean_cal_keys, cal_namespace, max_wait_seconds=10.0) for _ in range(6)
     ]
 
     async def run(governor: CalGovernor) -> None:
@@ -114,12 +116,12 @@ async def test_concurrency_is_never_exceeded_across_instances(cal_redis, cal_nam
 
 
 @pytest.mark.asyncio
-async def test_only_one_probe_is_admitted_after_the_rest(cal_redis, cal_namespace):
-    seed = _governor(cal_redis, cal_namespace)
+async def test_only_one_probe_is_admitted_after_the_rest(clean_cal_keys, cal_namespace):
+    seed = _governor(clean_cal_keys, cal_namespace)
     await seed.suspend("bot_challenge", 1)
     await asyncio.sleep(1.1)
 
-    governors = [_governor(cal_redis, cal_namespace) for _ in range(6)]
+    governors = [_governor(clean_cal_keys, cal_namespace) for _ in range(6)]
     outcomes = await _admissions(governors, "passe-1")
 
     assert outcomes.count("admitted") == 1
@@ -128,9 +130,10 @@ async def test_only_one_probe_is_admitted_after_the_rest(cal_redis, cal_namespac
 
 @pytest.mark.asyncio
 async def test_a_concurrent_restriction_is_not_erased_by_a_collection_ending(
-    cal_redis, cal_namespace,
+    clean_cal_keys, cal_namespace,
 ):
-    governor, other = _governor(cal_redis, cal_namespace), _governor(cal_redis, cal_namespace)
+    governor = _governor(clean_cal_keys, cal_namespace)
+    other = _governor(clean_cal_keys, cal_namespace)
 
     async def slow(_request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(0.05)
@@ -151,8 +154,8 @@ async def test_a_concurrent_restriction_is_not_erased_by_a_collection_ending(
 
 
 @pytest.mark.asyncio
-async def test_an_abandoned_lease_expires_and_stops_blocking(cal_redis, cal_namespace):
-    stuck = _governor(cal_redis, cal_namespace, lease_ttl_seconds=1.0, max_wait_seconds=0.05)
+async def test_an_abandoned_lease_expires_and_stops_blocking(clean_cal_keys, cal_namespace):
+    stuck = _governor(clean_cal_keys, cal_namespace, lease_ttl_seconds=1.0, max_wait_seconds=0.05)
 
     async def slowish(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200)
@@ -162,23 +165,23 @@ async def test_an_abandoned_lease_expires_and_stops_blocking(cal_redis, cal_name
         await stuck._acquire_slot(budget)
 
         blocked = await _admissions(
-            [_governor(cal_redis, cal_namespace, max_wait_seconds=0.05)], "passe-1",
+            [_governor(clean_cal_keys, cal_namespace, max_wait_seconds=0.05)], "passe-1",
         )
         assert blocked == ["admitted"]
 
         with pytest.raises(CalSuspendedError):
             await _governor(
-                cal_redis, cal_namespace, max_wait_seconds=0.05,
-            )._acquire_slot(CalCollectionBudget(_governor(cal_redis, cal_namespace)))
+                clean_cal_keys, cal_namespace, max_wait_seconds=0.05,
+            )._acquire_slot(CalCollectionBudget(_governor(clean_cal_keys, cal_namespace)))
 
         await asyncio.sleep(1.1)
         await stuck._acquire_slot(CalCollectionBudget(stuck))
-        assert await cal_redis.zcard(stuck.lease_key) == 1
+        assert await clean_cal_keys.zcard(stuck.lease_key) == 1
 
 
 @pytest.mark.asyncio
 async def test_an_unavailable_store_blocks_every_instance(
-    cal_redis, cal_namespace,  # noqa: ARG001
+    clean_cal_keys, cal_namespace,  # noqa: ARG001
 ):
     class BrokenStore:
         async def eval(self, *_args, **_kwargs):
@@ -194,13 +197,13 @@ def test_the_redis_url_comes_from_the_test_environment_only():
 
 
 @pytest.mark.asyncio
-async def test_the_admission_wait_is_bounded_and_then_refused(cal_redis, cal_namespace):
+async def test_the_admission_wait_is_bounded_and_then_refused(clean_cal_keys, cal_namespace):
     holder = _governor(
-        cal_redis, cal_namespace, max_concurrent=1, min_interval_seconds=0.0,
+        clean_cal_keys, cal_namespace, max_concurrent=1, min_interval_seconds=0.0,
         max_wait_seconds=0.3,
     )
     waiter = _governor(
-        cal_redis, cal_namespace, max_concurrent=1, min_interval_seconds=0.0,
+        clean_cal_keys, cal_namespace, max_concurrent=1, min_interval_seconds=0.0,
         max_wait_seconds=0.3,
     )
 
@@ -219,9 +222,11 @@ async def test_the_admission_wait_is_bounded_and_then_refused(cal_redis, cal_nam
 
 
 @pytest.mark.asyncio
-async def test_a_user_trigger_outside_any_pass_shares_the_same_budget(cal_redis, cal_namespace):
-    scheduled = _governor(cal_redis, cal_namespace)
-    greeted = _governor(cal_redis, cal_namespace)
+async def test_a_user_trigger_outside_any_pass_shares_the_same_budget(
+    clean_cal_keys, cal_namespace,
+):
+    scheduled = _governor(clean_cal_keys, cal_namespace)
+    greeted = _governor(clean_cal_keys, cal_namespace)
 
     await scheduled.admit_book("passe-2026-10-21T12:15")
     await scheduled.admit_book("passe-2026-10-21T12:15")
@@ -233,7 +238,7 @@ async def test_a_user_trigger_outside_any_pass_shares_the_same_budget(cal_redis,
 
 @pytest.mark.asyncio
 async def test_concurrent_collections_and_maintenance_share_one_serialised_lane(
-    cal_redis, cal_namespace,
+    clean_cal_keys, cal_namespace,
 ):
     peak = {"active": 0, "max": 0}
 
@@ -245,10 +250,10 @@ async def test_concurrent_collections_and_maintenance_share_one_serialised_lane(
         return httpx.Response(200)
 
     collection = _governor(
-        cal_redis, cal_namespace, max_wait_seconds=10.0, min_interval_seconds=0.0,
+        clean_cal_keys, cal_namespace, max_wait_seconds=10.0, min_interval_seconds=0.0,
     )
     maintenance = _governor(
-        cal_redis, cal_namespace, max_wait_seconds=10.0, min_interval_seconds=0.0,
+        clean_cal_keys, cal_namespace, max_wait_seconds=10.0, min_interval_seconds=0.0,
     )
 
     async def lane(governor: CalGovernor, pass_id: str, times: int) -> None:
@@ -268,9 +273,9 @@ async def test_concurrent_collections_and_maintenance_share_one_serialised_lane(
 
 
 @pytest.mark.asyncio
-async def test_a_successful_probe_never_erases_a_newer_restriction(cal_redis, cal_namespace):
+async def test_a_successful_probe_never_erases_a_newer_restriction(clean_cal_keys, cal_namespace):
     clock = _SharedClock()
-    governor = _governor(cal_redis, cal_namespace, clock=clock, probe_ttl_seconds=600.0)
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=600.0)
     await governor.suspend("bot_challenge", 1)
     clock.advance(1.1)
 
@@ -288,9 +293,11 @@ async def test_a_successful_probe_never_erases_a_newer_restriction(cal_redis, ca
 
 
 @pytest.mark.asyncio
-async def test_an_older_collection_cannot_conclude_someone_elses_probe(cal_redis, cal_namespace):
+async def test_an_older_collection_cannot_conclude_someone_elses_probe(
+    clean_cal_keys, cal_namespace,
+):
     clock = _SharedClock()
-    governor = _governor(cal_redis, cal_namespace, clock=clock, probe_ttl_seconds=600.0)
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=600.0)
     await governor.suspend("bot_challenge", 1)
     clock.advance(1.1)
 
@@ -306,10 +313,10 @@ async def test_an_older_collection_cannot_conclude_someone_elses_probe(cal_redis
 
 @pytest.mark.asyncio
 async def test_an_old_token_cannot_close_a_probe_it_did_not_hold(
-    cal_redis, cal_namespace,
+    clean_cal_keys, cal_namespace,
 ):
     clock = _SharedClock()
-    governor = _governor(cal_redis, cal_namespace, clock=clock, probe_ttl_seconds=600.0)
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=600.0)
     await governor.suspend("bot_challenge", 1)
     clock.advance(1.1)
 
@@ -328,9 +335,9 @@ async def test_an_old_token_cannot_close_a_probe_it_did_not_hold(
 
 
 @pytest.mark.asyncio
-async def test_an_interrupted_probe_does_not_close_the_circuit(cal_redis, cal_namespace):
+async def test_an_interrupted_probe_does_not_close_the_circuit(clean_cal_keys, cal_namespace):
     clock = _SharedClock()
-    governor = _governor(cal_redis, cal_namespace, clock=clock)
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock)
     await governor.suspend("bot_challenge", 1)
     clock.advance(1.1)
 
@@ -340,9 +347,9 @@ async def test_an_interrupted_probe_does_not_close_the_circuit(cal_redis, cal_na
 
 
 @pytest.mark.asyncio
-async def test_a_probe_consumes_an_admission_slot(cal_redis, cal_namespace):
+async def test_a_probe_consumes_an_admission_slot(clean_cal_keys, cal_namespace):
     clock = _SharedClock()
-    governor = _governor(cal_redis, cal_namespace, clock=clock, max_books_per_pass=2)
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, max_books_per_pass=2)
     await governor.suspend("bot_challenge", 1)
     clock.advance(1.1)
 
@@ -357,9 +364,9 @@ async def test_a_probe_consumes_an_admission_slot(cal_redis, cal_namespace):
 
 @pytest.mark.asyncio
 async def test_maintenance_and_user_triggers_do_not_consume_book_admissions(
-    cal_redis, cal_namespace,
+    clean_cal_keys, cal_namespace,
 ):
-    governor = _governor(cal_redis, cal_namespace, max_books_per_pass=2)
+    governor = _governor(clean_cal_keys, cal_namespace, max_books_per_pass=2)
 
     await governor.admit_book("maintenance", counts_as_book=False)
     await governor.admit_book(None, counts_as_book=False)
@@ -372,11 +379,169 @@ async def test_maintenance_and_user_triggers_do_not_consume_book_admissions(
 
 
 @pytest.mark.asyncio
-async def test_a_script_consumes_no_slot_from_the_books_pass(cal_redis, cal_namespace):
-    governor = _governor(cal_redis, cal_namespace, max_books_per_pass=2)
+async def test_a_script_consumes_no_slot_from_the_books_pass(clean_cal_keys, cal_namespace):
+    governor = _governor(clean_cal_keys, cal_namespace, max_books_per_pass=2)
 
     await governor.admit_book("script-chasse-prices", counts_as_book=False)
     await governor.admit_book("script-diagnostic", counts_as_book=False)
 
     assert await governor.admit_book("passe-1") is None
     assert await governor.admit_book("passe-1") is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_conclusion_never_shortens_a_longer_active_restriction(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    token = await governor.admit_book("passe-1")
+    assert token is not None
+    await governor.suspend("bot_challenge", CAL_CHALLENGE_REST_SECONDS)
+    before = (await governor.snapshot()).open_until
+
+    outcome = await governor.conclude_probe(token, succeeded=False, reason="collection_aborted")
+
+    assert outcome == "kept"
+    assert (await governor.snapshot()).open_until == before
+    assert (await governor.snapshot()).open_until - clock.now >= CAL_CHALLENGE_REST_SECONDS - 1
+
+
+@pytest.mark.asyncio
+async def test_a_deferral_conclusion_never_shortens_a_challenge(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    token = await governor.admit_book("passe-1")
+    assert token is not None
+    await governor.suspend("bot_challenge", CAL_CHALLENGE_REST_SECONDS)
+    before = (await governor.snapshot()).open_until
+
+    assert await governor.conclude_probe(
+        token, succeeded=False, reason="pass_budget",
+    ) == "kept"
+    assert (await governor.snapshot()).open_until == before
+
+
+@pytest.mark.asyncio
+async def test_a_longer_retry_after_survives_a_failed_conclusion(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    token = await governor.admit_book("passe-1")
+    assert token is not None
+    await governor.suspend("rate_limited", 4 * 3600)
+    before = (await governor.snapshot()).open_until
+
+    await governor.conclude_probe(token, succeeded=False, reason="collection_aborted")
+
+    assert (await governor.snapshot()).open_until == before
+    assert (await governor.snapshot()).reason == "rate_limited"
+
+
+@pytest.mark.asyncio
+async def test_a_shorter_default_rest_still_applies_without_a_newer_restriction(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    token = await governor.admit_book("passe-1")
+    assert token is not None
+    outcome = await governor.conclude_probe(token, succeeded=False, reason="collection_aborted")
+
+    assert outcome == "reopened"
+    assert (await governor.snapshot()).open_until - clock.now == CAL_PROBE_REST_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_challenge_is_recorded_before_the_lease_is_released(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, max_concurrent=1)
+    observed_at_release: list[str] = []
+    original_release = governor._release
+    response_ready = asyncio.Event()
+    release_response = asyncio.Event()
+    calls: list[str] = []
+
+    async def release_and_probe(token: str) -> None:
+        observed_at_release.append(governor.phase())
+        await original_release(token)
+
+    governor._release = release_and_probe
+
+    class Client:
+        async def get(self, url: str, **_kwargs) -> httpx.Response:
+            calls.append(url)
+            if url.endswith("/challenge"):
+                response_ready.set()
+                await release_response.wait()
+                return httpx.Response(200, text="<title>Vérification robot</title>")
+            return httpx.Response(200, text="ok")
+
+    started = asyncio.create_task(
+        GovernedClient(Client(), CalCollectionBudget(governor)).get(
+            "https://example.test/challenge",
+        ),
+    )
+    await response_ready.wait()
+    release_response.set()
+    await started
+
+    assert observed_at_release == ["open"]
+    assert governor.phase() == "open"
+
+
+@pytest.mark.asyncio
+async def test_the_lease_is_released_even_when_the_call_raises(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, max_concurrent=1)
+
+    class Broken:
+        async def get(self, _url: str, **_kwargs) -> httpx.Response:
+            raise RuntimeError("transport")
+
+    budget = CalCollectionBudget(governor)
+    with pytest.raises(RuntimeError):
+        await GovernedClient(Broken(), budget).get("https://example.test/x")
+
+    assert await clean_cal_keys.zcard(governor.lease_key) == 0
+
+
+@pytest.mark.asyncio
+async def test_the_lease_is_released_when_the_call_is_cancelled(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(clean_cal_keys, cal_namespace, clock=clock, max_concurrent=1)
+    entered = asyncio.Event()
+
+    class Slow:
+        async def get(self, _url: str, **_kwargs) -> httpx.Response:
+            entered.set()
+            await asyncio.sleep(10)
+            return httpx.Response(200, text="ok")
+
+    task = asyncio.create_task(
+        GovernedClient(Slow(), CalCollectionBudget(governor)).get("https://example.test/x"),
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert await clean_cal_keys.zcard(governor.lease_key) == 0
+
+
+
+async def _no_sleep(_seconds: float) -> None:
+    await asyncio.sleep(0)

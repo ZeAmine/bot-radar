@@ -1,10 +1,14 @@
 """Effets de bout en bout du régulateur CAL sur le parcours applicatif réel."""
 
 
+import time
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
 from app.providers.cal_governor import (
+    CAL_MIN_INTERVAL_SECONDS,
     OPEN,
     CalCollectionBudget,
     CalGovernor,
@@ -40,9 +44,11 @@ def _client(handler) -> httpx.AsyncClient:
 
 
 def _governor(clock: FakeClock, store, namespace: str, **kwargs) -> CalGovernor:
+    async def _advance(seconds: float) -> None:
+        clock.now += seconds
+
     options = {
-        "store": store, "clock": clock, "min_interval_seconds": 0.0,
-        "namespace": namespace,
+        "store": store, "clock": clock, "namespace": namespace, "sleep": _advance,
     }
     options.update(kwargs)
     return CalGovernor(**options)
@@ -57,7 +63,7 @@ def pass_token():
 
 @pytest.mark.usefixtures("pass_token")
 @pytest.mark.asyncio
-async def test_a_deferral_before_any_call_is_not_a_provider_failure(cal_redis, cal_namespace):
+async def test_a_deferral_before_any_call_is_not_a_provider_failure(clean_cal_keys, cal_namespace):
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -65,7 +71,7 @@ async def test_a_deferral_before_any_call_is_not_a_provider_failure(cal_redis, c
         return httpx.Response(200, json={"offers": {}})
 
     clock = FakeClock()
-    governor = _governor(clock, cal_redis, cal_namespace)
+    governor = _governor(clock, clean_cal_keys, cal_namespace)
     await governor.suspend("bot_challenge", 3600)
 
     async with _client(handler) as client:
@@ -82,7 +88,7 @@ async def test_a_deferral_before_any_call_is_not_a_provider_failure(cal_redis, c
 
 
 async def test_exhausted_collection_budget_keeps_received_offers_as_partial(
-    cal_redis, cal_namespace,
+    clean_cal_keys, cal_namespace,
 ):
     seen: list[str] = []
 
@@ -100,7 +106,7 @@ async def test_exhausted_collection_budget_keeps_received_offers_as_partial(
         return httpx.Response(200, json=MOCK_LOOKUP_JSON)
 
     clock = FakeClock()
-    governor = _governor(clock, cal_redis, cal_namespace, max_requests_per_collection=4)
+    governor = _governor(clock, clean_cal_keys, cal_namespace, max_requests_per_collection=4)
     async with _client(handler) as client:
         provider = ChasseAuxLivresProvider(
             http_client=client, max_retries=0, governor=governor,
@@ -120,7 +126,7 @@ async def test_exhausted_collection_budget_keeps_received_offers_as_partial(
 
 @pytest.mark.usefixtures("pass_token")
 @pytest.mark.asyncio
-async def test_a_challenge_during_a_poll_blocks_every_later_call(cal_redis, cal_namespace):
+async def test_a_challenge_during_a_poll_blocks_every_later_call(clean_cal_keys, cal_namespace):
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -137,7 +143,7 @@ async def test_a_challenge_during_a_poll_blocks_every_later_call(cal_redis, cal_
         return httpx.Response(200, json=MOCK_LOOKUP_JSON)
 
     clock = FakeClock()
-    governor = _governor(clock, cal_redis, cal_namespace)
+    governor = _governor(clock, clean_cal_keys, cal_namespace)
     async with _client(handler) as client:
         provider = ChasseAuxLivresProvider(
             http_client=client, max_retries=0, governor=governor,
@@ -151,7 +157,7 @@ async def test_a_challenge_during_a_poll_blocks_every_later_call(cal_redis, cal_
 
 
 @pytest.mark.asyncio
-async def test_maintenance_respects_an_open_circuit(cal_redis, cal_namespace):
+async def test_maintenance_respects_an_open_circuit(clean_cal_keys, cal_namespace):
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -159,14 +165,14 @@ async def test_maintenance_respects_an_open_circuit(cal_redis, cal_namespace):
         return httpx.Response(200, text="<html></html>")
 
     clock = FakeClock()
-    governor = _governor(clock, cal_redis, cal_namespace)
+    governor = _governor(clock, clean_cal_keys, cal_namespace)
     await governor.suspend("bot_challenge", 3600)
 
     async def no_notification(_message: str) -> bool:
         return False
 
     session = ChasseSessionManager(
-        store=cal_redis, notify=no_notification, governor=governor,
+        store=clean_cal_keys, notify=no_notification, governor=governor,
     )
     session.state = {"probe_url": BASE + "/prix/123/titre", "seed": session._seed()}
     session.loaded = True
@@ -182,20 +188,20 @@ async def test_maintenance_respects_an_open_circuit(cal_redis, cal_namespace):
 
 
 @pytest.mark.asyncio
-async def test_maintenance_is_admitted_once_the_circuit_is_closed(cal_redis, cal_namespace):
+async def test_maintenance_is_admitted_once_the_circuit_is_closed(clean_cal_keys, cal_namespace):
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         return httpx.Response(200, text="<html></html>")
 
-    governor = _governor(FakeClock(), cal_redis, cal_namespace)
+    governor = _governor(FakeClock(), clean_cal_keys, cal_namespace)
 
     async def no_notification(_message: str) -> bool:
         return False
 
     session = ChasseSessionManager(
-        store=cal_redis, notify=no_notification, governor=governor,
+        store=clean_cal_keys, notify=no_notification, governor=governor,
     )
     session.state = {"probe_url": BASE + "/prix/123/titre", "seed": session._seed()}
     session.loaded = True
@@ -213,10 +219,10 @@ async def test_maintenance_is_admitted_once_the_circuit_is_closed(cal_redis, cal
 
 
 @pytest.mark.asyncio
-async def test_two_governor_instances_share_the_admission_quota(cal_redis, cal_namespace):
+async def test_two_governor_instances_share_the_admission_quota(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    first = _governor(clock, cal_redis, cal_namespace)
-    second = _governor(clock, cal_redis, cal_namespace)
+    first = _governor(clock, clean_cal_keys, cal_namespace)
+    second = _governor(clock, clean_cal_keys, cal_namespace)
 
     await first.admit_book("passe-1")
     await second.admit_book("passe-1")
@@ -226,10 +232,10 @@ async def test_two_governor_instances_share_the_admission_quota(cal_redis, cal_n
 
 
 @pytest.mark.asyncio
-async def test_two_governor_instances_share_the_single_probe(cal_redis, cal_namespace):
+async def test_two_governor_instances_share_the_single_probe(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    first = _governor(clock, cal_redis, cal_namespace)
-    second = _governor(clock, cal_redis, cal_namespace)
+    first = _governor(clock, clean_cal_keys, cal_namespace)
+    second = _governor(clock, clean_cal_keys, cal_namespace)
     await first.suspend("bot_challenge", 3600)
     clock.now += 3601
 
@@ -241,7 +247,7 @@ async def test_two_governor_instances_share_the_single_probe(cal_redis, cal_name
 
 @pytest.mark.asyncio
 async def test_an_unavailable_store_never_allows_ungoverned_calls(
-    cal_redis, cal_namespace,  # noqa: ARG001
+    clean_cal_keys, cal_namespace,  # noqa: ARG001
 ):
     class BrokenStore:
         async def eval(self, *_args, **_kwargs):
@@ -263,3 +269,85 @@ async def test_an_unavailable_store_never_allows_ungoverned_calls(
     assert denied.value.reason == "storage_unavailable"
     assert calls["n"] == 0
     assert governor.storage_unavailable is True
+
+
+@pytest.mark.asyncio
+async def test_polling_a_collection_is_not_spaced_by_the_inter_collection_interval(
+    clean_cal_keys, cal_namespace,
+):
+    from app.providers.base import requested_components
+    from app.providers.chasse_aux_livres import (
+        LOOKUP_POLL_BUDGET_SECONDS,
+        LOOKUP_POLL_MAX,
+        ChasseAuxLivresProvider,
+    )
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path.startswith("/prix/"):
+            return httpx.Response(200, text=(
+                '<div data-asin="2756079332" data-lvs="nanbanjin" data-nbeng="2"></div>'
+            ))
+        return httpx.Response(200, json={"offers": {"0": [{
+            "logo": {"name": "MOMOX_SHOP"},
+            "condition": {"_name": "USED"},
+            "subCondition": {"name": "Très bon"},
+            "totalPrice": {"amount": 1499},
+            "affiliateUrl": "https://example.com/momox",
+        }]}})
+
+    clock = FakeClock()
+    governor = _governor(clock, clean_cal_keys, cal_namespace)
+    assert governor.min_interval_seconds == CAL_MIN_INTERVAL_SECONDS
+    assert governor.min_interval_seconds > 0
+
+    scope = requested_components.set(frozenset({"current"}))
+    started = time.monotonic()
+    try:
+        async with _client(handler) as client:
+            offers = await ChasseAuxLivresProvider(
+                http_client=client, sleep=AsyncMock(), governor=governor,
+            ).get_offers(
+                isbn13="9782756079332", title="Nanbanjin",
+                source_url=BASE + "/prix/2756079332/9782756079332",
+            )
+    finally:
+        requested_components.reset(scope)
+    elapsed = time.monotonic() - started
+
+    attempt = offers.attempts[0]
+    assert attempt.poll_count == LOOKUP_POLL_MAX
+    assert attempt.status == "partial"
+    assert attempt.engines_received < attempt.engines_requested
+    assert governor.emitted == 2 + LOOKUP_POLL_MAX
+    assert governor.emitted <= governor.max_requests_per_collection
+    assert elapsed < 2 * LOOKUP_POLL_BUDGET_SECONDS
+    assert elapsed < CAL_MIN_INTERVAL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_the_inter_collection_interval_still_separates_two_collections(
+    clean_cal_keys, cal_namespace,
+):
+    clock = FakeClock()
+    governor = _governor(clock, clean_cal_keys, cal_namespace)
+    observed: list[float] = []
+
+    async def recording_sleep(seconds: float) -> None:
+        observed.append(seconds)
+        clock.now += seconds
+
+    governor.sleep = recording_sleep
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html></html>")
+
+    async with _client(handler) as client:
+        await GovernedClient(client, CalCollectionBudget(governor)).get(BASE + "/prix/1")
+        await GovernedClient(client, CalCollectionBudget(governor)).get(BASE + "/prix/2")
+
+    assert observed
+    assert sum(observed) >= CAL_MIN_INTERVAL_SECONDS
+    assert governor.emitted == 2

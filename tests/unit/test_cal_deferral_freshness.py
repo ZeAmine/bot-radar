@@ -52,10 +52,11 @@ async def test_a_never_queried_book_deferred_by_the_governor_is_not_marked_serve
 
     written = await _persist(cache, _deferred())
 
-    assert written.collection_status == "skipped"
+    assert written.collection_status == "deferred"
     assert written.last_successful_collection_at is None
     assert written.historical_checked_at is None
-    assert written.next_refresh_at is None
+    assert written.next_refresh_at is not None
+    assert written.next_refresh_at > datetime.now(UTC)
 
 
 @pytest.mark.asyncio
@@ -70,13 +71,15 @@ async def test_a_never_queried_book_deferred_by_the_governor_keeps_its_turn():
 
 
 @pytest.mark.asyncio
-async def test_a_deferred_collection_records_an_attempt_date():
+async def test_a_deferred_collection_invents_no_network_attempt():
     cache = BookMarketCache(book_id=uuid.uuid4())
     cache.next_refresh_at = datetime.now(UTC)
 
     written = await _persist(cache, _deferred())
 
-    assert written.last_attempt_at is not None
+    assert written.last_attempt_at is None
+    assert (written.refresh_state or {}).get("current") is None
+    assert (written.refresh_state or {})["administrative"]["count"] == 1
 
 
 def test_a_deferral_counts_as_a_failure_and_backs_off():

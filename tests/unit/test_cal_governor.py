@@ -56,14 +56,14 @@ def _client(handler) -> httpx.AsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_a_pass_admits_at_most_two_cal_books(cal_redis, cal_namespace):
+async def test_a_pass_admits_at_most_two_cal_books(clean_cal_keys, cal_namespace):
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         return httpx.Response(200, json={"offers": {}})
 
-    governor, _ = _governor(FakeClock(), cal_redis, cal_namespace)
+    governor, _ = _governor(FakeClock(), clean_cal_keys, cal_namespace)
     async with _client(handler) as client:
         provider = ChasseAuxLivresProvider(
             http_client=client, max_retries=0, governor=governor,
@@ -79,8 +79,8 @@ async def test_a_pass_admits_at_most_two_cal_books(cal_redis, cal_namespace):
 
 
 @pytest.mark.asyncio
-async def test_a_new_pass_cannot_reload_the_quota_inside_the_window(cal_redis, cal_namespace):
-    governor, _ = _governor(FakeClock(), cal_redis, cal_namespace)
+async def test_a_new_pass_cannot_reload_the_quota_inside_the_window(clean_cal_keys, cal_namespace):
+    governor, _ = _governor(FakeClock(), clean_cal_keys, cal_namespace)
     await governor.admit_book("passe-1")
     await governor.admit_book("passe-1")
     with pytest.raises(CalSuspendedError) as denied:
@@ -89,9 +89,9 @@ async def test_a_new_pass_cannot_reload_the_quota_inside_the_window(cal_redis, c
 
 
 @pytest.mark.asyncio
-async def test_the_outside_pass_budget_expires_on_its_own_window(cal_redis, cal_namespace):
+async def test_the_outside_pass_budget_expires_on_its_own_window(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    governor, _ = _governor(clock, cal_redis, cal_namespace)
+    governor, _ = _governor(clock, clean_cal_keys, cal_namespace)
     await governor.admit_book(None)
     await governor.admit_book(None)
     with pytest.raises(CalSuspendedError) as denied:
@@ -103,8 +103,8 @@ async def test_the_outside_pass_budget_expires_on_its_own_window(cal_redis, cal_
 
 
 @pytest.mark.asyncio
-async def test_changing_the_pass_identifier_cannot_bypass_the_quota(cal_redis, cal_namespace):
-    governor, _ = _governor(FakeClock(), cal_redis, cal_namespace, max_books_per_pass=2)
+async def test_changing_the_pass_identifier_cannot_bypass_the_quota(clean_cal_keys, cal_namespace):
+    governor, _ = _governor(FakeClock(), clean_cal_keys, cal_namespace, max_books_per_pass=2)
     await governor.admit_book("passe-1")
     await governor.admit_book("passe-1")
     with pytest.raises(CalSuspendedError) as denied:
@@ -113,9 +113,9 @@ async def test_changing_the_pass_identifier_cannot_bypass_the_quota(cal_redis, c
 
 
 @pytest.mark.asyncio
-async def test_collection_budget_counts_every_request(cal_redis, cal_namespace):
+async def test_collection_budget_counts_every_request(clean_cal_keys, cal_namespace):
     governor, _ = _governor(
-        FakeClock(), cal_redis, cal_namespace, max_requests_per_collection=3,
+        FakeClock(), clean_cal_keys, cal_namespace, max_requests_per_collection=3,
     )
     budget = CalCollectionBudget(governor)
 
@@ -134,10 +134,10 @@ async def test_collection_budget_counts_every_request(cal_redis, cal_namespace):
 
 
 @pytest.mark.asyncio
-async def test_window_limit_bounds_requests_over_time(cal_redis, cal_namespace):
+async def test_window_limit_bounds_requests_over_time(clean_cal_keys, cal_namespace):
     clock = FakeClock()
     governor, slept = _governor(
-        clock, cal_redis, cal_namespace, max_requests_per_window=2,
+        clock, clean_cal_keys, cal_namespace, max_requests_per_window=2,
         max_wait_seconds=120.0, min_interval_seconds=0.0,
     )
 
@@ -154,8 +154,8 @@ async def test_window_limit_bounds_requests_over_time(cal_redis, cal_namespace):
 
 
 @pytest.mark.asyncio
-async def test_challenge_opens_the_breaker_and_blocks_later_calls(cal_redis, cal_namespace):
-    governor, _ = _governor(FakeClock(), cal_redis, cal_namespace)
+async def test_challenge_opens_the_breaker_and_blocks_later_calls(clean_cal_keys, cal_namespace):
+    governor, _ = _governor(FakeClock(), clean_cal_keys, cal_namespace)
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="Veuillez patienter, vérification robot")
@@ -173,9 +173,9 @@ async def test_challenge_opens_the_breaker_and_blocks_later_calls(cal_redis, cal
 
 
 @pytest.mark.asyncio
-async def test_rate_limited_respects_retry_after(cal_redis, cal_namespace):
+async def test_rate_limited_respects_retry_after(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    governor, _ = _governor(clock, cal_redis, cal_namespace)
+    governor, _ = _governor(clock, clean_cal_keys, cal_namespace)
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, headers={"Retry-After": "120"})
@@ -189,9 +189,9 @@ async def test_rate_limited_respects_retry_after(cal_redis, cal_namespace):
 
 
 @pytest.mark.asyncio
-async def test_rate_limited_without_header_uses_prudent_delay(cal_redis, cal_namespace):
+async def test_rate_limited_without_header_uses_prudent_delay(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    governor, _ = _governor(clock, cal_redis, cal_namespace)
+    governor, _ = _governor(clock, clean_cal_keys, cal_namespace)
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(429)
@@ -216,10 +216,10 @@ def test_retry_after_parsing_ignores_invalid_values():
 
 
 @pytest.mark.asyncio
-async def test_spacing_serialises_collection_starts(cal_redis, cal_namespace):
+async def test_spacing_serialises_collection_starts(clean_cal_keys, cal_namespace):
     clock = FakeClock()
     governor, slept = _governor(
-        clock, cal_redis, cal_namespace, min_interval_seconds=2.0,
+        clock, clean_cal_keys, cal_namespace, min_interval_seconds=2.0,
     )
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -234,9 +234,9 @@ async def test_spacing_serialises_collection_starts(cal_redis, cal_namespace):
 
 
 @pytest.mark.asyncio
-async def test_probe_state_admits_a_single_collection(cal_redis, cal_namespace):
+async def test_probe_state_admits_a_single_collection(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    governor, _ = _governor(clock, cal_redis, cal_namespace)
+    governor, _ = _governor(clock, clean_cal_keys, cal_namespace)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
 
@@ -248,9 +248,9 @@ async def test_probe_state_admits_a_single_collection(cal_redis, cal_namespace):
 
 
 @pytest.mark.asyncio
-async def test_a_successful_probe_closes_the_circuit(cal_redis, cal_namespace):
+async def test_a_successful_probe_closes_the_circuit(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    governor, _ = _governor(clock, cal_redis, cal_namespace)
+    governor, _ = _governor(clock, clean_cal_keys, cal_namespace)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
     token = await governor.admit_book("passe-1")
@@ -261,9 +261,9 @@ async def test_a_successful_probe_closes_the_circuit(cal_redis, cal_namespace):
 
 
 @pytest.mark.asyncio
-async def test_a_probe_never_grants_an_extra_admission(cal_redis, cal_namespace):
+async def test_a_probe_never_grants_an_extra_admission(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    governor, _ = _governor(clock, cal_redis, cal_namespace, max_books_per_pass=2)
+    governor, _ = _governor(clock, clean_cal_keys, cal_namespace, max_books_per_pass=2)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
 
@@ -278,9 +278,9 @@ async def test_a_probe_never_grants_an_extra_admission(cal_redis, cal_namespace)
 
 
 @pytest.mark.asyncio
-async def test_an_incomplete_probe_never_restores_full_admission(cal_redis, cal_namespace):
+async def test_an_incomplete_probe_never_restores_full_admission(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    governor, _ = _governor(clock, cal_redis, cal_namespace)
+    governor, _ = _governor(clock, clean_cal_keys, cal_namespace)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
     token = await governor.admit_book("passe-1")
@@ -292,9 +292,9 @@ async def test_an_incomplete_probe_never_restores_full_admission(cal_redis, cal_
 
 
 @pytest.mark.asyncio
-async def test_a_challenge_during_the_probe_reopens_for_six_hours(cal_redis, cal_namespace):
+async def test_a_challenge_during_the_probe_reopens_for_six_hours(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    governor, _ = _governor(clock, cal_redis, cal_namespace)
+    governor, _ = _governor(clock, clean_cal_keys, cal_namespace)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
     token = await governor.admit_book("passe-1")
@@ -305,9 +305,9 @@ async def test_a_challenge_during_the_probe_reopens_for_six_hours(cal_redis, cal
 
 
 @pytest.mark.asyncio
-async def test_a_lost_probe_expires_without_blocking_forever(cal_redis, cal_namespace):
+async def test_a_lost_probe_expires_without_blocking_forever(clean_cal_keys, cal_namespace):
     clock = FakeClock()
-    governor, _ = _governor(clock, cal_redis, cal_namespace, probe_ttl_seconds=60.0)
+    governor, _ = _governor(clock, clean_cal_keys, cal_namespace, probe_ttl_seconds=60.0)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
     await governor.admit_book("passe-1")
@@ -320,11 +320,11 @@ async def test_a_lost_probe_expires_without_blocking_forever(cal_redis, cal_name
 
 @pytest.mark.asyncio
 async def test_a_newer_restriction_is_never_erased_by_an_older_collection(
-    cal_redis, cal_namespace,
+    clean_cal_keys, cal_namespace,
 ):
     clock = FakeClock()
     governor, _ = _governor(
-        clock, cal_redis, cal_namespace, min_interval_seconds=0.0,
+        clock, clean_cal_keys, cal_namespace, min_interval_seconds=0.0,
     )
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -340,8 +340,8 @@ async def test_a_newer_restriction_is_never_erased_by_an_older_collection(
 
 
 @pytest.mark.asyncio
-async def test_releasing_one_lease_keeps_another_holder(cal_redis, cal_namespace):  # noqa: ARG001
-    governor, _ = _governor(FakeClock(), cal_redis, cal_namespace, max_concurrent=2)
+async def test_releasing_one_lease_keeps_another_holder(clean_cal_keys, cal_namespace):  # noqa: ARG001
+    governor, _ = _governor(FakeClock(), clean_cal_keys, cal_namespace, max_concurrent=2)
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200)
@@ -352,16 +352,16 @@ async def test_releasing_one_lease_keeps_another_holder(cal_redis, cal_namespace
         token_a = await governor._acquire_slot(first)
         token_b = await governor._acquire_slot(second)
         await governor._release(token_a)
-        assert await cal_redis.zcard(governor.lease_key) == 1
+        assert await clean_cal_keys.zcard(governor.lease_key) == 1
         await governor._release(token_b)
-        assert await cal_redis.zcard(governor.lease_key) == 0
+        assert await clean_cal_keys.zcard(governor.lease_key) == 0
 
 
 @pytest.mark.asyncio
-async def test_an_abandoned_lease_expires_without_blocking_forever(cal_redis, cal_namespace):
+async def test_an_abandoned_lease_expires_without_blocking_forever(clean_cal_keys, cal_namespace):
     clock = FakeClock()
     governor, _ = _governor(
-        clock, cal_redis, cal_namespace, max_concurrent=1, lease_ttl_seconds=30.0,
+        clock, clean_cal_keys, cal_namespace, max_concurrent=1, lease_ttl_seconds=30.0,
         min_interval_seconds=0.0, max_wait_seconds=0.05,
     )
     await governor._acquire_slot(CalCollectionBudget(governor))
@@ -374,7 +374,7 @@ async def test_an_abandoned_lease_expires_without_blocking_forever(cal_redis, ca
 
 @pytest.mark.asyncio
 async def test_an_unavailable_store_never_allows_ungoverned_calls(
-    cal_redis, cal_namespace,  # noqa: ARG001
+    clean_cal_keys, cal_namespace,  # noqa: ARG001
 ):
     class BrokenStore:
         async def eval(self, *_args, **_kwargs):
@@ -411,7 +411,7 @@ def test_default_budget_is_bounded_and_explicit():
 
 
 @pytest.mark.asyncio
-async def test_a_governed_client_is_never_wrapped_twice(cal_redis, cal_namespace):
+async def test_a_governed_client_is_never_wrapped_twice(clean_cal_keys, cal_namespace):
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -419,7 +419,7 @@ async def test_a_governed_client_is_never_wrapped_twice(cal_redis, cal_namespace
         return httpx.Response(200)
 
     governor, _ = _governor(
-        FakeClock(), cal_redis, cal_namespace, min_interval_seconds=0.0,
+        FakeClock(), clean_cal_keys, cal_namespace, min_interval_seconds=0.0,
     )
     async with _client(handler) as inner:
         outer = GovernedClient(inner, CalCollectionBudget(governor))
