@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from app.core.constants import MatchConfidence
-from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
+from app.providers.chasse_aux_livres import LOOKUP_POLL_MAX, ChasseAuxLivresProvider
 
 MOCK_SEARCH_PAGE_HTML = """
 <!DOCTYPE html>
@@ -54,7 +54,7 @@ MOCK_REST_JSON = {
 }
 
 MOCK_PROD_HTML = (
-    '<div id="book-details" data-asin="B07B5VXYBF" data-lvs="mocklvs" data-nbeng="5"></div>'
+    '<div id="book-details" data-asin="B07B5VXYBF" data-lvs="mocklvs" data-nbeng="1"></div>'
 )
 
 MOCK_LOOKUP_JSON = {
@@ -370,9 +370,11 @@ async def test_chasse_aux_livres_strict_used_filtering():
 
     assert len(offers) == 0
     assert _search_call_count(mock_get) == 1
-    assert mock_get.await_count == 5
-    assert offers.attempts[0].status == "partial"
-    assert offers.attempts[0].reason == "incomplete_offers"
+    assert mock_get.await_count == 4
+    assert offers.attempts[0].status == "success"
+    assert offers.attempts[0].reason is None
+    assert offers.attempts[0].engines_requested == 1
+    assert offers.attempts[0].engines_received == 1
     assert slept == []
 
 
@@ -710,8 +712,10 @@ async def test_lookup_retry_restriction_preserves_already_received_offers(monkey
         if request.url.path == '/rest/search-results':
             return httpx.Response(200, json=MOCK_REST_JSON)
         if request.url.path.startswith('/prix/'):
-            return httpx.Response(200, text=MOCK_PROD_HTML.replace('></div>',
-                                  ' data-didh="abc123"></div>'))
+            return httpx.Response(200, text=(
+                '<div data-asin="B07B5VXYBF" data-lvs="mocklvs" '
+                'data-nbeng="2" data-didh="abc123"></div>'
+            ))
         if request.url.path == '/rest/lookup/results':
             if request.url.params.get('retry') == '1':
                 return httpx.Response(200, text='<title>Vérification robot</title>')
@@ -844,17 +848,12 @@ async def test_cached_product_skips_search_and_stops_on_restriction():
     sleeper.assert_not_awaited()
 
 
-@pytest.mark.parametrize(('groups', 'expected_status', 'expected_count'), [
-    ({'0': [], '1': []}, 'partial', 0),
-    ({'0': MOCK_LOOKUP_JSON['offers']['0'], '1': []}, 'partial', 1),
-    ({'0': []}, 'partial', 0),
-    ({'22': []}, 'partial', 0),
-    ({'0': MOCK_LOOKUP_JSON['offers']['0']}, 'partial', 1),
-    ({'0': [], '1': None}, 'partial', 0),
+@pytest.mark.parametrize(('groups', 'expected_count'), [
+    ({'0': [], '1': []}, 0),
+    ({'0': MOCK_LOOKUP_JSON['offers']['0'], '1': []}, 1),
+    ({'0': [], '1': None}, 0),
 ])
-async def test_engine_groups_do_not_certify_offer_completion(
-    groups, expected_status, expected_count,
-):
+async def test_all_requested_engines_replied_certifies_completion(groups, expected_count):
     from app.providers.base import requested_components
 
     requests = []
@@ -870,19 +869,61 @@ async def test_engine_groups_do_not_certify_offer_completion(
     scope = requested_components.set(frozenset({'current'}))
     try:
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            result = await ChasseAuxLivresProvider(http_client=client).get_offers(
+            result = await ChasseAuxLivresProvider(
+                http_client=client, sleep=AsyncMock(),
+            ).get_offers(
                 isbn13='9782756079332', title='Jean Doux',
                 source_url='https://www.chasse-aux-livres.fr/prix/2756079332/9782756079332',
             )
     finally:
         requested_components.reset(scope)
-    assert result.attempts[0].status == expected_status
+    attempt = result.attempts[0]
+    assert attempt.status == 'success'
+    assert attempt.reason is None
+    assert attempt.engines_requested == 2
+    assert attempt.engines_received == 2
+    assert attempt.poll_count == 0
     assert len(result) == expected_count
-    assert len(requests) == (2 if '22' in groups else 3)
-    if expected_status == 'partial':
-        assert result.attempts[0].reason == 'incomplete_offers'
-        for offer in result:
-            assert offer.raw_payload['collection_status'] == 'partial'
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize('groups', [
+    {'0': []},
+    {'22': []},
+    {'0': MOCK_LOOKUP_JSON['offers']['0']},
+])
+async def test_missing_engines_stay_partial_after_bounded_polls(groups):
+    from app.providers.base import requested_components
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if request.url.path.startswith('/prix/'):
+            return httpx.Response(200, text=(
+                '<div data-asin="2756079332" data-lvs="synthetic" data-nbeng="2"></div>'
+            ))
+        return httpx.Response(200, json={'offers': groups})
+
+    scope = requested_components.set(frozenset({'current'}))
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            result = await ChasseAuxLivresProvider(
+                http_client=client, sleep=AsyncMock(),
+            ).get_offers(
+                isbn13='9782756079332', title='Jean Doux',
+                source_url='https://www.chasse-aux-livres.fr/prix/2756079332/9782756079332',
+            )
+    finally:
+        requested_components.reset(scope)
+    attempt = result.attempts[0]
+    assert attempt.status == 'partial'
+    assert attempt.reason == 'incomplete_offers'
+    assert attempt.poll_count == LOOKUP_POLL_MAX
+    assert attempt.engines_received < attempt.engines_requested
+    assert len(requests) == 2 + LOOKUP_POLL_MAX
+    for offer in result:
+        assert offer.raw_payload['collection_status'] == 'partial'
 
 
 async def test_observed_partial_offers_do_not_claim_absence_or_retry_search(monkeypatch):
@@ -918,7 +959,7 @@ async def test_observed_partial_offers_do_not_claim_absence_or_retry_search(monk
             isbn13='9782756079332', title='Jean Doux',
         )
     assert requests == ['/search', '/rest/search-results', '/prix/2756079332/9782756079332',
-                        '/rest/lookup/results', '/rest/lookup/results']
+                        '/rest/lookup/results'] + ['/rest/lookup/results'] * LOOKUP_POLL_MAX
     assert result.attempts[0].status == 'partial'
     assert result.attempts[1].status == 'success'
     assert result.historical_checked
