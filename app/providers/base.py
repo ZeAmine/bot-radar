@@ -95,6 +95,18 @@ def failed_offers(
     ),))
 
 
+def deferred_offers(
+    provider: str, *, reason: str, retry_at: datetime | None = None,
+    operation: str = "current",
+) -> "MarketOffers":
+    retry_after = None
+    if retry_at is not None:
+        retry_after = max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+    return MarketOffers(attempts=(CollectionAttempt(
+        provider, operation, "skipped", reason, None, retry_after,
+    ),))
+
+
 class MarketOffers(list[MarketOffer]):
     """Offres collectées et sources en échec ; une liste vide n'est pas un diagnostic."""
 

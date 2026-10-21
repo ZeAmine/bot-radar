@@ -6,12 +6,15 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
 from app.core.config import settings
 from app.core.redis import get_redis_client
+
+if TYPE_CHECKING:
+    from app.providers.cal_governor import CalHttpClient
 
 logger = logging.getLogger(__name__)
 BASE_URL = "https://www.chasse-aux-livres.fr"
@@ -193,7 +196,7 @@ class ChasseSessionManager:
 
     async def get_history(
         self,
-        client: httpx.AsyncClient,
+        client: "CalHttpClient",
         product_url: str,
         params: dict[str, str],
         headers: dict[str, str],
@@ -242,7 +245,9 @@ class ChasseSessionManager:
                     return response
             try:
                 self.login_attempted = True
-                renewed = await self._login(client, headers)
+                renewed = await self._login(
+                    cast(httpx.AsyncClient, client), headers,
+                )
                 if renewed:
                     response = await request(renewed)
                     if source_restriction(response):

@@ -25,9 +25,18 @@ from app.providers.base import (
     CollectionAttempt,
     MarketOffer,
     MarketOffers,
+    deferred_offers,
     failed_offers,
     normalize_search_isbn,
     requested_components,
+)
+from app.providers.cal_governor import (
+    CalCollectionBudget,
+    CalGovernor,
+    CalHttpClient,
+    CalSuspendedError,
+    GovernedClient,
+    cal_governor,
 )
 from app.providers.chasse_session import chasse_session, source_restriction
 from app.services.book_metadata_service import title_similarity
@@ -252,9 +261,13 @@ class ChasseAuxLivresProvider:
         http_client: httpx.AsyncClient | None = None,
         sleep: Sleeper = asyncio.sleep,
         max_retries: int = 2,
+        governor: CalGovernor | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.http_client = http_client
+        self._governor = governor
+        self._budget: CalCollectionBudget | None = None
+        self._cal_client_instance: GovernedClient | None = None
         self._sleep = sleep
         self.max_retries = max(0, max_retries)
 
@@ -306,13 +319,40 @@ class ChasseAuxLivresProvider:
     ) -> list[MarketOffer]:
         """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
         _ = edition
+        self._budget = CalCollectionBudget(self._governor or cal_governor)
+        self._cal_client_instance = GovernedClient(
+            self.http_client or get_shared_http_client(), self._budget,
+        )
+        try:
+            return await self._collect_offers(
+                isbn13=isbn13, title=title, author=author, source_url=source_url,
+            )
+        finally:
+            self._cal_client_instance = None
+
+    def _cal_client(self) -> GovernedClient:
+        if self._cal_client_instance is None:
+            self._budget = CalCollectionBudget(self._governor or cal_governor)
+            self._cal_client_instance = GovernedClient(
+                self.http_client or get_shared_http_client(), self._budget,
+            )
+        return self._cal_client_instance
+
+    async def _collect_offers(
+        self,
+        *,
+        isbn13: str | None,
+        title: str,
+        author: str | None = None,
+        source_url: str | None = None,
+    ) -> list[MarketOffer]:
         # ISBN utilisé seulement s'il passe sa clé de contrôle.
         clean_isbn = normalize_search_isbn(isbn13)
         known_url = verified_product_url(source_url, clean_isbn)
         if known_url:
             path = urllib.parse.urlsplit(known_url).path
             known_offers = await self._try_deep_lookup(
-                self.http_client or get_shared_http_client(),
+                self._cal_client(),
                 '<a href="' + html.escape(path, quote=True) + '">'
                 + html.escape(title) + '</a>',
                 clean_isbn or title, expected_title=title, expected_isbn=clean_isbn,
@@ -369,7 +409,7 @@ class ChasseAuxLivresProvider:
         search_encoded = urllib.parse.quote_plus(query)
         search_url = f"{self.BASE_URL}/search?query={search_encoded}&catalog=fr"
 
-        client = self.http_client or get_shared_http_client()
+        client = self._cal_client()
         max_retries = self.max_retries
         for attempt in range(max_retries + 1):
             stage = "search_page"
@@ -432,6 +472,8 @@ class ChasseAuxLivresProvider:
 
                 return []
 
+            except CalSuspendedError as exc:
+                return deferred_offers(self.name, reason=exc.reason, retry_at=exc.retry_at)
             except Exception as exc:
                 if attempt < max_retries and isinstance(exc, (httpx.RequestError, TimeoutError)):
                     await self._sleep(1.5)
@@ -447,7 +489,7 @@ class ChasseAuxLivresProvider:
 
     async def _try_deep_lookup(
         self,
-        client: httpx.AsyncClient,
+        client: CalHttpClient,
         d_html: str,
         query: str,
         expected_title: str | None = None,
@@ -657,6 +699,8 @@ class ChasseAuxLivresProvider:
                             lookup_seconds=lookup_seconds,
                         )
 
+            except CalSuspendedError as exc:
+                return deferred_offers(self.name, reason=exc.reason, retry_at=exc.retry_at)
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 current_attempt = failed_offers(self.name, error=exc,
                                                 stage="current_offers").attempts[0]
