@@ -17,6 +17,7 @@ from app.db.repositories.book_repo import BookRepository
 from app.db.session import AsyncSessionLocal
 from app.domain.enums import AlertStatus
 from app.providers.base import CollectionAttempt, MarketOffer, extract_best_historical_low
+from app.providers.cal_governor import pass_occurrence
 from app.providers.registry import ProviderRegistry
 from app.services.book_market_pricing import (
     BookPricingResult,
@@ -314,6 +315,7 @@ async def _refresh_book_prices_pass(
         registry = ProviderRegistry()
 
     occurrence = _occurrence_token(job_id, scheduled_for=scheduled_for) if job_id else None
+    pass_occurrence.set(occurrence or f"passe-{scheduled_for or 'immediate'}")
 
     stats = {
         "processed": 0,

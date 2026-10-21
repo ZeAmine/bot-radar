@@ -54,9 +54,11 @@ class ChasseSessionManager:
         *,
         store: Any = None,
         notify: Callable[[str], Awaitable[bool]] = _notify,
+        governor: Any = None,
     ) -> None:
         self.store = store
         self.notify = notify
+        self.governor = governor
         self.lock = asyncio.Lock()
         self.load_lock = asyncio.Lock()
         self.state: dict[str, Any] = {}
@@ -288,7 +290,21 @@ class ChasseSessionManager:
                 pass
         self.state["maintenance_at"] = now.isoformat()
         await self._save()
-        client = get_shared_http_client()
+        from app.providers.cal_governor import (
+            CalCollectionBudget,
+            CalSuspendedError,
+            GovernedClient,
+            cal_governor,
+        )
+
+        governor = self.governor or cal_governor
+        try:
+            await governor.admit_book("maintenance")
+        except CalSuspendedError as exc:
+            logger.info("Entretien CAL reporté : %s", exc.reason)
+            return
+        budget = CalCollectionBudget(governor)
+        client = GovernedClient(get_shared_http_client(), budget)
         try:
             page = await client.get(url, headers=CHASSE_BROWSER_HEADERS,
                                     follow_redirects=False, timeout=4)
@@ -303,6 +319,8 @@ class ChasseSessionManager:
                 client, url, {"id": asin[1], "didh": didh[1], "all": "true", "days": "365"},
                 _build_ajax_headers(url),
             )
+        except CalSuspendedError as exc:
+            logger.info("Entretien CAL interrompu par le régulateur : %s", exc.reason)
         except (httpx.HTTPError, TimeoutError) as exc:
             logger.warning("Vérification de session Chasse interrompue : %s", type(exc).__name__)
 

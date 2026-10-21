@@ -15,6 +15,12 @@ async def inspect_book(args: argparse.Namespace) -> dict[str, Any]:
     from app.core.redis import close_redis
     from app.db.repositories.book_repo import BookRepository
     from app.db.session import AsyncSessionLocal, engine
+    from app.providers.cal_governor import (
+        CalCollectionBudget,
+        CalSuspendedError,
+        GovernedClient,
+        cal_governor,
+    )
     from app.providers.chasse_aux_livres import (
         CHASSE_BROWSER_HEADERS,
         _build_ajax_headers,
@@ -36,7 +42,12 @@ async def inspect_book(args: argparse.Namespace) -> dict[str, Any]:
             await session.rollback()
         if not isinstance(url, str) or not url.startswith('https://www.chasse-aux-livres.fr/prix/'):
             raise ValueError('URL source certifiée requise après collecte')
-        client = get_shared_http_client()
+        try:
+            await cal_governor.admit_book("script-chasse-prices")
+        except CalSuspendedError as exc:
+            raise ValueError(f'CAL reporté par le régulateur : {exc.reason}') from exc
+        client = GovernedClient(get_shared_http_client(),
+                                CalCollectionBudget(cal_governor))
         page = await client.get(url, headers=CHASSE_BROWSER_HEADERS,
                                 follow_redirects=False, timeout=4)
         if page.status_code != 200:

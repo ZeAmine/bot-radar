@@ -37,6 +37,7 @@ from app.providers.cal_governor import (
     CalSuspendedError,
     GovernedClient,
     cal_governor,
+    pass_occurrence,
 )
 from app.providers.chasse_session import chasse_session, source_restriction
 from app.services.book_metadata_service import title_similarity
@@ -245,6 +246,15 @@ def _response_failure(
     return None
 
 
+def _collection_concluded(offers: object) -> bool:
+    """Un succès technique : la collecte a conclu, avec ou sans offre."""
+    attempts = getattr(offers, "attempts", ())
+    current = [a for a in attempts if a.operation == "current"]
+    if not current:
+        return False
+    return all(a.status in {"success", "skipped"} for a in current)
+
+
 class ChasseAuxLivresProvider:
     """Connecteur vers le comparateur multi-boutiques Chasse-aux-livres.
 
@@ -319,14 +329,28 @@ class ChasseAuxLivresProvider:
     ) -> list[MarketOffer]:
         """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
         _ = edition
-        self._budget = CalCollectionBudget(self._governor or cal_governor)
+        governor = self._governor or cal_governor
+        try:
+            await governor.admit_book(pass_occurrence.get())
+        except CalSuspendedError as exc:
+            return deferred_offers(self.name, reason=exc.reason, retry_at=exc.retry_at)
+        self._budget = CalCollectionBudget(governor)
         self._cal_client_instance = GovernedClient(
             self.http_client or get_shared_http_client(), self._budget,
         )
         try:
-            return await self._collect_offers(
+            offers = await self._collect_offers(
                 isbn13=isbn13, title=title, author=author, source_url=source_url,
             )
+        except CalSuspendedError as exc:
+            await governor.conclude_probe(succeeded=False, reason=exc.reason)
+            raise
+        except BaseException:
+            await governor.conclude_probe(succeeded=False, reason="collection_aborted")
+            raise
+        else:
+            await governor.conclude_probe(succeeded=_collection_concluded(offers))
+            return offers
         finally:
             self._cal_client_instance = None
 

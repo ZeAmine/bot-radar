@@ -48,6 +48,12 @@ class PrivateFileStore:
 async def diagnose(store: PrivateFileStore, *, full_collection: bool = False) -> dict[str, Any]:
     import httpx
 
+    from app.providers.cal_governor import (
+        CalCollectionBudget,
+        CalSuspendedError,
+        GovernedClient,
+        cal_governor,
+    )
     from app.providers.chasse_aux_livres import (
         CHASSE_BROWSER_HEADERS,
         _build_ajax_headers,
@@ -105,7 +111,13 @@ async def diagnose(store: PrivateFileStore, *, full_collection: bool = False) ->
         event_hooks={"request": [guard], "response": [inspect_offer_fields]},
         timeout=8,
         trust_env=False,
-    ) as client:
+    ) as raw_client:
+        try:
+            await cal_governor.admit_book("script-diagnostic")
+        except CalSuspendedError as exc:
+            return {"history_access_verified": False,
+                    "reason": f"cal_deferred:{exc.reason}"}
+        client = GovernedClient(raw_client, CalCollectionBudget(cal_governor))
         page = await client.get(product_url, follow_redirects=False)
         if page.status_code != 200 or "9782756079332" not in page.text:
             return {"history_access_verified": False, "reason": "product_unavailable"}
