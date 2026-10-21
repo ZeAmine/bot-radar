@@ -1,5 +1,6 @@
 """Régulation des requêtes CAL : budget, concurrence, espacement, coupe-circuit."""
 
+import asyncio
 from datetime import UTC, datetime
 
 import httpx
@@ -8,12 +9,16 @@ import pytest
 from app.providers.cal_governor import (
     CAL_MAX_REQUESTS_PER_COLLECTION,
     CAL_MAX_REQUESTS_PER_WINDOW,
+    CLOSED,
+    OPEN,
+    PROBING,
     CalCollectionBudget,
     CalGovernor,
     CalSuspendedError,
     GovernedClient,
     retry_after_seconds,
 )
+from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 
 BASE = "https://www.chasse-aux-livres.fr"
 
@@ -354,3 +359,157 @@ def test_governed_client_exposes_the_underlying_client():
     governor = CalGovernor(store=False)
     wrapped = GovernedClient(inner, CalCollectionBudget(governor))
     assert wrapped.timeout is inner.timeout
+
+
+@pytest.mark.asyncio
+async def test_a_pass_admits_at_most_two_cal_books():
+    from app.providers.cal_governor import pass_occurrence
+
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"offers": {}})
+
+    governor = CalGovernor(store=False, min_interval_seconds=0.0)
+    token = pass_occurrence.set("passe-unique")
+    try:
+        async with _client(handler) as client:
+            provider = ChasseAuxLivresProvider(
+                http_client=client, max_retries=0, governor=governor,
+            )
+            results = [await provider.get_offers(isbn13="9782035951463", title=f"T{i}")
+                       for i in range(5)]
+    finally:
+        pass_occurrence.reset(token)
+
+    reasons = [r.attempts[0].reason for r in results]
+    assert reasons.count("pass_budget") == 3
+    assert governor.state.admitted_books == 2
+    assert governor.deferred == 3
+
+
+@pytest.mark.asyncio
+async def test_a_new_pass_gets_its_own_admission_quota():
+
+    governor = CalGovernor(store=False, min_interval_seconds=0.0)
+    await governor.admit_book("passe-1")
+    await governor.admit_book("passe-1")
+    await governor.admit_book("passe-2")
+    assert governor.state.admitted_pass == "passe-2"
+    assert governor.state.admitted_books == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_state_admits_a_single_collection():
+    clock = FakeClock()
+    governor, _ = _governor(clock)
+    await governor.suspend("bot_challenge", 3600)
+    clock.now += 3601
+
+    await governor.admit_book("passe-1")
+    assert governor.phase() == PROBING
+    with pytest.raises(CalSuspendedError) as same:
+        await governor.admit_book("passe-1")
+    assert same.value.reason == "probe_in_flight"
+    with pytest.raises(CalSuspendedError) as other:
+        await governor.admit_book("passe-2")
+    assert other.value.reason == "probe_in_flight"
+
+
+@pytest.mark.asyncio
+async def test_a_successful_probe_closes_the_circuit_and_restores_the_quota():
+    clock = FakeClock()
+    governor, _ = _governor(clock)
+    await governor.suspend("bot_challenge", 3600)
+    clock.now += 3601
+    await governor.admit_book("passe-1")
+    await governor.conclude_probe(succeeded=True)
+
+    assert governor.phase() == CLOSED
+    assert governor.state.admitted_books == 0
+    await governor.admit_book("passe-1")
+    await governor.admit_book("passe-1")
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_probe_never_restores_full_admission():
+    clock = FakeClock()
+    governor, _ = _governor(clock)
+    await governor.suspend("bot_challenge", 3600)
+    clock.now += 3601
+    await governor.admit_book("passe-1")
+    await governor.conclude_probe(succeeded=False, reason="partial")
+
+    assert governor.phase() == OPEN
+    with pytest.raises(CalSuspendedError):
+        await governor.admit_book("passe-2")
+
+
+@pytest.mark.asyncio
+async def test_a_challenge_during_the_probe_reopens_for_six_hours():
+    clock = FakeClock()
+    governor, _ = _governor(clock)
+    await governor.suspend("bot_challenge", 3600)
+    clock.now += 3601
+    await governor.admit_book("passe-1")
+    await governor.conclude_probe(succeeded=False, reason="bot_challenge")
+
+    assert governor.state.open_until - clock.now == pytest.approx(6 * 3600, abs=1)
+
+
+@pytest.mark.asyncio
+async def test_a_lost_probe_expires_without_blocking_forever():
+    clock = FakeClock()
+    governor, _ = _governor(clock, probe_ttl_seconds=60.0)
+    await governor.suspend("bot_challenge", 3600)
+    clock.now += 3601
+    await governor.admit_book("passe-1")
+    assert governor.phase() == PROBING
+
+    clock.now += 61
+    assert governor.phase() == CLOSED
+    await governor.admit_book("passe-2")
+
+
+@pytest.mark.asyncio
+async def test_a_probe_abandoned_by_process_death_is_not_replayed_in_a_burst():
+    class MemoryStore:
+        def __init__(self) -> None:
+            self.data: dict[str, str] = {}
+
+        async def get(self, key):
+            return self.data.get(key)
+
+        async def set(self, key, value):
+            self.data[key] = value
+
+    store = MemoryStore()
+    clock = FakeClock()
+    governor, _ = _governor(clock, store=store)
+    await governor.suspend("bot_challenge", 3600)
+    clock.now += 3601
+    await governor.admit_book("passe-1")
+
+    revived, _ = _governor(clock, store=store)
+    with pytest.raises(CalSuspendedError) as denied:
+        await revived.admit_book("passe-2")
+    assert denied.value.reason == "probe_in_flight"
+
+
+@pytest.mark.asyncio
+async def test_a_governed_client_is_never_wrapped_twice():
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200)
+
+    governor = CalGovernor(store=False, min_interval_seconds=0.0)
+    async with _client(handler) as inner:
+        outer = GovernedClient(inner, CalCollectionBudget(governor))
+        nested = GovernedClient(outer, CalCollectionBudget(governor))
+        await asyncio.wait_for(nested.get(BASE + "/prix/x"), timeout=5)
+
+    assert calls["n"] == 1
+    assert governor.emitted == 1

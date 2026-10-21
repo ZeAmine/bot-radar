@@ -26,23 +26,33 @@ fournisseur CAL : recherche, fiche, lookup initial, sondages et reprises. Chaque
 requête HTTP réellement émise consomme un jeton de collecte, un quota de fenêtre
 et un espacement.
 
-| Paramètre | Valeur initiale | Effet |
-| --- | --- | --- |
-| `CAL_MAX_CONCURRENT` | 1 | une seule requête CAL en vol |
-| `CAL_MIN_INTERVAL_SECONDS` | 2 s | espacement entre deux ouvertures de collecte |
-| `CAL_MAX_REQUESTS_PER_COLLECTION` | 12 | plafond par livre |
-| `CAL_MAX_REQUESTS_PER_WINDOW` | 30 | plafond par fenêtre de 60 s |
-| `CAL_CHALLENGE_REST_SECONDS` | 6 h | repos après un défi |
-| `CAL_429_DEFAULT_REST_SECONDS` | 15 min | repos sans `Retry-After` exploitable |
+Cinq plafonds distincts, chacun bornant une chose différente. Aucun n'est un
+seuil garanti par CAL : ce sont des valeurs prudentes choisies localement, pas
+la mesure de ce que le site tolère.
+
+| Notion | Paramètre | Valeur initiale | Ce qu'elle borne |
+| --- | --- | --- | --- |
+| Livres admis | `CAL_MAX_BOOKS_PER_PASS` | 2 | collectes CAL ouvertes par passe planifiée |
+| Requêtes émises | `CAL_MAX_REQUESTS_PER_COLLECTION` | 12 | requêtes HTTP d'une seule collecte, sondages et reprises compris |
+| Concurrence | `CAL_MAX_CONCURRENT` | 1 | requêtes CAL simultanées dans tout le processus |
+| Espacement | `CAL_MIN_INTERVAL_SECONDS` | 2 s | intervalle entre deux ouvertures de collecte |
+| Fenêtre de quota | `CAL_MAX_REQUESTS_PER_WINDOW` / `CAL_WINDOW_SECONDS` | 30 par 60 s | requêtes émises sur une fenêtre glissante, toutes collectes confondues |
+
+Repères arithmétiques, sans valeur de sécurité : un espacement de deux secondes
+autorise au plus 30 ouvertures par minute, soit 1800 par heure ; c'est la fenêtre
+de quota (30 par minute) qui contraint réellement le débit, pas l'espacement.
+Le plafond de livres admis est le seul qui limite le nombre de livres CAL traités
+par une passe ; il ne réduit ni le lot global de huit livres, ni le débit des
+autres fournisseurs.
 
 L'espacement ne s'applique qu'entre deux collectes distinctes : il ne s'intercale
 pas entre le lookup et ses sondages, dont la fenêtre bornée reste de 1,5 s.
 
-Coût maximal par livre dans l'ordre réel du code : trois tentatives de recherche
-à deux requêtes (6), une fiche (1), un lookup (1), trois sondages (3), une
-recherche de repli par titre dans la même collecte (2). Le plafond de 12 requêtes
-par collecte borne l'ensemble ; la borne par passe vaut capacité du lot multipliée
-par ce plafond, elle-même plafonnée par la fenêtre de 30 requêtes.
+Coût d'une collecte dans l'ordre réel du code : trois tentatives de recherche à
+deux requêtes (6), une fiche (1), un lookup (1), trois sondages (3), une recherche
+de repli par titre dans la même collecte (2). Le plafond de 12 requêtes par
+collecte borne cet ensemble ; avec deux livres admis par passe, la borne par
+passe est de 24 requêtes, elle-même plafonnée par la fenêtre de quota.
 
 Une restriction ferme l'arbitre : `bot_challenge` ouvre un repos de six heures,
 `429` respecte `Retry-After` et prend sinon quinze minutes. Une collecte refusée
@@ -57,6 +67,53 @@ l'arbitre ne bascule pas vers des appels non régulés : il signale
 
 Le montant du lot global reste de 8 livres par passe aux créneaux `:15` et `:45` ;
 la régulation CAL ne ralentit aucun autre fournisseur.
+
+## Circuit et reprise progressive
+
+Le circuit CAL suit trois états, décidés par `cal_governor.phase()` :
+
+| État | Condition | Effet sur les collectes |
+| --- | --- | --- |
+| `closed` | repos expiré et aucun essai en cours | admission normale, dans le plafond de la passe |
+| `open` | `open_until` non atteint | tout appel est reporté, y compris ceux déjà en attente |
+| `probing` | repos expiré, un essai admis et non encore conclu | une seule collecte d'essai, toutes passes confondues |
+
+Transitions :
+
+- un défi ouvre le circuit six heures ; un `429` ouvre selon `Retry-After`,
+  sinon quinze minutes ;
+- à l'expiration, la première collecte admise devient l'essai unique ;
+- un essai réussi rend le circuit `closed` et restitue le quota de la passe ;
+- un essai partiel, invalide ou interrompu n'y rend jamais l'admission pleine :
+  un défi pendant l'essai rouvre six heures, un autre échec trente minutes ;
+- l'essai est borné par un délai de validité de soixante secondes : s'il est
+  annulé, expiré ou si le processus meurt, l'état repasse à `closed` sans blocage
+  permanent et sans libérer plusieurs essais d'un coup, puisque l'état est relu
+  depuis le stockage partagé avant chaque décision.
+
+Une collecte complète sans offre éligible compte comme succès technique : c'est
+le statut des tentatives `current` qui décide, pas le nombre d'offres.
+
+Les paliers de montée en charge ne sont pas automatiques : le plafond de deux
+livres admis par passe reste la valeur initiale jusqu'à une décision explicite
+fondée sur l'observation.
+
+## Chemins couverts et limites restantes
+
+Raccordés au régulateur : la recherche, la fiche, le lookup initial, les sondages,
+l'historique, l'entretien de session (`maintain()`), et les scripts
+`chasse_prices.py` et `diagnose_chasse_access.py`.
+
+Restent hors du budget de requêtes :
+
+- la connexion elle-même (`_login`, formulaire de connexion) et les scripts
+  `refresh_chasse_token.py` et `sync_chasse_session.py` qui portent
+  l'authentification : les raccorder demanderait de modifier la logique de
+  connexion, ce qui sort du périmètre de la régulation ;
+- l'injection de session vers l'API interne, qui n'est pas un appel CAL.
+
+Ces chemins restent soumis au repos partagé de la session, pas au budget de
+requêtes.
 
 ## Vérification locale sans base ni Telegram
 
