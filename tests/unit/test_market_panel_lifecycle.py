@@ -20,7 +20,7 @@ def test_series_buttons_only_offer_numbered_volumes():
         for title in ("Série", "Série, Volume 2", "Série, Vol. 1")
     ]
     rows = _tome_selection_rows(uuid.uuid4(), books)
-    assert [button.text for row in rows for button in row] == ["T1", "T2", "Série"]
+    assert [button.text for row in rows for button in row] == ["T1", "T2"]
 
 
 def test_panel_has_no_global_series_button():

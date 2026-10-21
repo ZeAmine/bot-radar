@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 from app.core.constants import CATEGORY_EMOJIS, CategorySlug, ComparisonStatus
@@ -17,6 +18,7 @@ from app.core.url_validator import is_safe_external_url
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
+from app.domain.rules.book_volume import notice_volume
 from app.domain.rules.market_offer import (
     is_brand_new_partner,
     is_merchant_excluded,
@@ -24,7 +26,9 @@ from app.domain.rules.market_offer import (
     normalize_secondhand_condition,
 )
 from app.services.price_calculator import calculate_estimated_total
+from app.utils.isbn import isbn_from_identifier
 from app.utils.price import format_cents
+from app.utils.text import normalize_text
 
 if TYPE_CHECKING:
     from app.services.tome_extractor import TomeMatchResult
@@ -382,32 +386,10 @@ def _vinted_total_cents(listing: Listing) -> int | None:
 
 
 def _format_gap(total_cents: int, reference_cents: int) -> str:
-    """Ligne d'écart entre le total Vinted et le prix de référence.
-
-    Le libellé est gras, la valeur en romain (charte), et l'emoji qui porte le
-    sens du signe reste hors du gras : il n'a pas à être mis en gras avec lui.
-
-    L'emoji est en **fin** de ligne, pas en tête. Sur iOS les métriques
-    verticales d'un emoji le poussent au-dessus de la ligne de texte ; en tête
-    de ligne ce décalage se lit comme une puce de titre qui qualifierait tout le
-    bloc, alors qu'il ne concerne que cet écart. En fin de ligne il ne se voit
-    plus. Et si la ligne se replie sur un écran étroit, l'emoji seul sur la
-    deuxième ligne se lit encore comme la conclusion de la ligne précédente.
-
-    À l'écart nul, aucun emoji : « au prix de référence » porte déjà le sens,
-    et un marqueur vert devant un écart nul se lit comme une approbation.
-    """
-    basis = "\n<i>Référence livrée ; estimation Vinted avec livraison et protection.</i>"
+    """Écart signé entre le total Vinted et le prix de référence."""
     diff_cents = total_cents - reference_cents
-    diff_euros = format_cents(abs(diff_cents))
-
-    if diff_cents < 0:
-        return (f"<b>Écart livré estimé :</b> {diff_euros} en dessous du prix de référence ✅"
-                + basis)
-
-    if diff_cents > 0:
-        return f"<b>Écart livré estimé :</b> {diff_euros} au-dessus du prix de référence ⛔️" + basis
-    return "<b>Écart livré estimé :</b> au prix de référence" + basis
+    sign = "−" if diff_cents < 0 else "+" if diff_cents > 0 else ""
+    return f"<b>Écart estimé :</b> {sign}{format_cents(abs(diff_cents))}"
 
 
 def _match_lot_books(books: list[Book], lot_tomes: list[int]) -> list[Book]:
@@ -423,6 +405,55 @@ def _match_lot_books(books: list[Book], lot_tomes: list[int]) -> list[Book]:
 def listable_series_books(books: list[Book]) -> list[Book]:
     """Livres liés présentés sans omission."""
     return list(books)
+
+
+@dataclass(frozen=True)
+class SeriesDisplayVolume:
+    number: int
+    book: Book | None
+    callback_book: Book
+
+
+def _series_title(title: str) -> str:
+    normalized = normalize_text(title)
+    marker = re.search(r"\b(?:tomes?|t|volumes?|vols?)\s*\d+\b", normalized)
+    if marker:
+        return normalized[:marker.start()].strip()
+    return re.sub(r"\s+\d{1,3}$", "", normalized).strip()
+
+
+def series_display_volumes(
+    books: list[Book],
+    series_title: str | None = None,
+    preferred_isbns: dict[int, str] | None = None,
+) -> list[SeriesDisplayVolume]:
+    groups: dict[int, dict[object, Book]] = {}
+    wanted = normalize_text(series_title) if isinstance(series_title, str) else None
+    for book in books:
+        number = notice_volume(book.title)
+        if number is None or (wanted and _series_title(book.title) != wanted):
+            continue
+        groups.setdefault(number, {})[book.id] = book
+    volumes = []
+    for number, group in sorted(groups.items()):
+        candidates = sorted(group.values(), key=lambda b: (b.isbn13 or "", str(b.id)))
+        preferred_code = (preferred_isbns or {}).get(number)
+        preferred = [b for b in candidates if preferred_code and b.isbn13 == preferred_code]
+        selected = preferred[0] if len(preferred) == 1 else (
+            candidates[0] if len(candidates) == 1 else None
+        )
+        volumes.append(SeriesDisplayVolume(number, selected, selected or candidates[0]))
+    return volumes
+
+
+def confirmed_series_isbns(alert: Any) -> dict[int, str]:
+    preparation = getattr(alert, "preparation", None)
+    rows = preparation.get("series_volumes") if isinstance(preparation, dict) else None
+    return {
+        row["number"]: row["isbn13"] for row in rows or []
+        if isinstance(row, dict) and isinstance(row.get("number"), int)
+        and row.get("confirmed") is True and isinstance(row.get("isbn13"), str)
+    }
 
 
 def series_reference_total(books: list[Book]) -> int | None:
@@ -815,6 +846,8 @@ class MarketPriceService:
         catalogue_exhausted: bool = False,
         additional_note: str | None = None,
         next_check_at: datetime | None = None,
+        series_title: str | None = None,
+        preferred_isbns: dict[int, str] | None = None,
     ) -> str:
         """Génère le texte complet du panneau callback « Prix du marché ».
 
@@ -832,18 +865,46 @@ class MarketPriceService:
         dans tous les autres cas.
         """
         books_in_series = books_in_series or []
+        initial_book = book
+        series_title = series_title or (_series_title(book.title) if book else None)
+        volumes = series_display_volumes(books_in_series, series_title, preferred_isbns)
+        ambiguous_number = None
+        if book is not None:
+            number = notice_volume(book.title)
+            volume = next((v for v in volumes if v.number == number), None)
+            if volume is not None:
+                book = volume.book
+                if book is None:
+                    ambiguous_number = volume.number
+            elif (number is not None and isinstance(series_title, str)
+                  and not series_display_volumes([book], series_title)):
+                book = None
+        if (book is None and ambiguous_number is None
+                and tome_result and not tome_result.is_lot):
+            volume = next((v for v in volumes if v.number == tome_result.tome_number), None)
+            if volume is not None:
+                book = volume.book
+                if book is None:
+                    ambiguous_number = volume.number
+
+        if book is not initial_book:
+            latest_snapshot = None
 
         if series_total_cents != series_reference_total(books_in_series):
             series_total_cents = None
 
 
-        if (not book and len(books_in_series) == 1
+        if (not book and initial_book is None and len(books_in_series) == 1
                 and not (tome_result and (
                     tome_result.is_lot or tome_result.tome_number is not None))):
             book = books_in_series[0]
 
 
-        if tome_result and tome_result.is_lot:
+        if ambiguous_number is not None:
+            card = "\n".join(MarketPriceService._header(
+                f"Tome {ambiguous_number} : plusieurs éditions, cote non attribuée."
+            ))
+        elif tome_result and tome_result.is_lot:
             # La sélection d'un tome garde ses détails, jamais d'écart avec le total de l'annonce.
             card = MarketPriceService._lot_card(books_in_series, tome_result.lot_tomes)
             if book:
@@ -857,13 +918,30 @@ class MarketPriceService:
                 listing, tome_result.tome_number
             )
         elif not book and books_in_series:
-            card = MarketPriceService._series_card(listing, books_in_series, series_total_cents)
+            card = MarketPriceService._series_card(
+                listing, books_in_series, series_total_cents, series_title, preferred_isbns
+            )
         elif not book and catalogue_exhausted:
             card = MarketPriceService._no_catalogue_card()
         else:
             card = MarketPriceService._single_book_card(
-                book, books_in_series, latest_snapshot, series_total_cents
+                book, books_in_series, latest_snapshot, series_total_cents,
+                series_title, preferred_isbns,
             )
+
+        if (ambiguous_number is not None or (
+            book is not None and len(volumes) > 1 and "Autres tomes de la série" not in card
+            and not (tome_result and tome_result.is_lot)
+        )):
+            card += "\n\n<b>Autres tomes de la série :</b>\n" + "\n".join(
+                MarketPriceService._series_books_lines(
+                    books_in_series, book, series_title=series_title,
+                    preferred_isbns=preferred_isbns,
+                )
+            )
+        if book is not None:
+            header = MarketPriceService._book_market_header(book)
+            card = card.replace("📊 <b>Prix du marché</b>", header, 1)
 
         if additional_note:
             card = card.replace("\n\n", f"\n\n{additional_note}\n\n", 1)
@@ -885,35 +963,45 @@ class MarketPriceService:
         books: list[Book],
         current_book: Book | None,
         fallback_price: int | None = None,
+        series_title: str | None = None,
+        preferred_isbns: dict[int, str] | None = None,
     ) -> list[str]:
-        """Lignes « tome : prix » d'une série, tome courant mis en gras."""
+        """Lignes « tome : prix » des volumes distincts de la série."""
         lines: list[str] = []
-        for book in _sort_series_books(listable_series_books(books)):
-            is_current = _is_same_book(book, current_book)
-            price_cents, _ = reference_price(book.market_cache)
-
-            if price_cents is None and is_current:
+        for volume in series_display_volumes(books, series_title, preferred_isbns):
+            book = volume.book
+            price_cents, historical = reference_price(book.market_cache if book else None)
+            if book is not None and _is_same_book(book, current_book) and price_cents is None:
                 price_cents = fallback_price
-
-            historical = reference_price(book.market_cache)[1]
             price = (format_cents(price_cents) if price_cents is not None and historical
                      else "Non renseigné")
-            title = html.escape(clean_tome_display_title(book.title))
-            number = extract_tome_number_from_title(book.title)
-            duplicates = sum(extract_tome_number_from_title(candidate.title) == number
-                             for candidate in books)
-            if duplicates > 1 and book.isbn13:
-                title += f" — {html.escape(book.isbn13)}"
-            entry = f"• {title} : {price}"
-            source = book.market_cache.source_history if book.market_cache else None
-            if historical and isinstance(source, dict):
-                collected = source.get("collected_at")
-                if isinstance(collected, str):
-                    entry += " — Dernière MAJ : " + _format_verification_at(
-                        datetime.fromisoformat(collected),
-                    )
-            lines.append(f"• <b>{entry[2:]}</b>" if is_current else entry)
+            lines.append(f"Tome {volume.number} : {price}")
         return lines
+
+    @staticmethod
+    def _book_market_header(book: Book) -> str:
+        from app.providers.chasse_session import BASE_URL
+
+        cache = _loaded_market_cache(book)
+        candidates = []
+        if cache is not None:
+            if isinstance(cache.source_history, dict):
+                candidates.append(cache.source_history.get("source_url"))
+            if cache.best_provider_name == "chasse_aux_livres":
+                candidates.append(cache.best_source_url)
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not book.isbn13:
+                continue
+            safe, _ = is_safe_external_url(candidate)
+            if not safe or not candidate.startswith(BASE_URL + "/prix/"):
+                continue
+            path = unquote(urlsplit(candidate).path)
+            codes = re.findall(r"(?<!\d)(?:97[89]\d{10}|\d{9}[\dX])(?!\d)", path)
+            identities = {isbn_from_identifier(code) for code in codes}
+            if identities == {isbn_from_identifier(book.isbn13)} and None not in identities:
+                safe_url = html.escape(candidate, quote=True)
+                return f'📊 <b><a href="{safe_url}">Prix du marché</a></b>'
+        return "📊 <b>Prix du marché</b>"
 
     @staticmethod
     def _lot_card(books_in_series: list[Book], lot_tomes: list[int] | None) -> str:
@@ -951,6 +1039,8 @@ class MarketPriceService:
         listing: Listing | None,
         books_in_series: list[Book],
         series_total_cents: int | None = None,
+        series_title: str | None = None,
+        preferred_isbns: dict[int, str] | None = None,
     ) -> str:
         """Panneau d'une série sans tome résolu : les cotes de tous ses tomes.
 
@@ -968,7 +1058,9 @@ class MarketPriceService:
         else:
             lines.append("Annonce sans tome précis détecté.\n")
         lines.append("<b>Cotes par tome (plus bas connu) :</b>")
-        lines.extend(MarketPriceService._series_books_lines(books_in_series, None))
+        lines.extend(MarketPriceService._series_books_lines(
+            books_in_series, None, series_title=series_title, preferred_isbns=preferred_isbns
+        ))
         # Un tome sans cote est en attente ; une passe conclue à l'absence d'offre n'attend plus.
         unpriced = _unpriced_tome_lines(books_in_series)
         if unpriced:
@@ -984,6 +1076,8 @@ class MarketPriceService:
         books_in_series: list[Book],
         latest_snapshot: Any,
         series_total_cents: int | None = None,
+        series_title: str | None = None,
+        preferred_isbns: dict[int, str] | None = None,
     ) -> str:
         """Panneau d'un tome résolu : cote 1 an, comparatif par boutique, série."""
         cache = book.market_cache if book else None
@@ -1014,7 +1108,7 @@ class MarketPriceService:
                 f"{CATEGORY_EMOJIS[CategorySlug.BD_COMICS]} <b>{html.escape(book.title)}</b>"
             )
         if book is not None and book.isbn13:
-            lines.append(f"<b>ISBN :</b> {html.escape(book.isbn13)}")
+            lines.append(f"<b>ISBN :</b> <code>{html.escape(book.isbn13)}</code>")
         current_price = _positive(cache.lowest_delivered_price_cents)
 
         lines.append("<b>Dernière offre connue :</b> " + (
@@ -1043,7 +1137,7 @@ class MarketPriceService:
 
         if len(books_in_series) > 1:
             series_lines = MarketPriceService._series_books_lines(
-                books_in_series, book, reference_cents
+                books_in_series, book, reference_cents, series_title, preferred_isbns
             )
 
             if len(series_lines) > 1:
@@ -1176,6 +1270,8 @@ class MarketPriceService:
             if book
             else ""
         )
-        return (f"📊 <b>Prix du marché</b>\n\n{title}{absence}\n"
+        isbn = (f"<b>ISBN :</b> <code>{html.escape(book.isbn13)}</code>\n"
+                if book and book.isbn13 else "")
+        return (f"📊 <b>Prix du marché</b>\n\n{title}{isbn}{absence}\n"
                 "<b>Dernière offre connue :</b> Non renseigné\n"
                 "<b>Prix bas constaté :</b> Non renseigné")

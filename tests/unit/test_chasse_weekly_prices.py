@@ -142,7 +142,7 @@ def test_series_lists_every_volume_and_never_uses_a_partial_total():
                   normalized_title="absolute 2", market_cache=None)
     card = MarketPriceService.format_market_details_card(None, first, [first, second])
     assert "Vol. 1" in card
-    assert "Vol. 2" in card
+    assert "Tome 2 : Non renseigné" in card
     assert "Non renseigné" in card
     assert series_reference_total([first, second]) is None
     assert "Total de la série" not in card
