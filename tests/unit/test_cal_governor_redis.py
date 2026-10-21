@@ -581,3 +581,166 @@ async def _admit_outcome(governor, occurrence: str):
         return await governor.admit_book(occurrence)
     except CalSuspendedError as exc:
         return exc
+
+
+class _Emitter:
+    """Émissions réelles via `GovernedClient`, sur un transport simulé compté."""
+
+    def __init__(self, governor: CalGovernor, probe_token: str | None = None) -> None:
+        self.governor = governor
+        self.budget = CalCollectionBudget(governor)
+        self.budget.probe_token = probe_token
+        self.reached: list[str] = []
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:
+        self.reached.append(request.url.path)
+        return httpx.Response(200, text="ok")
+
+    async def get(self, path: str) -> str:
+        transport = httpx.MockTransport(self.handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            try:
+                await GovernedClient(client, self.budget).get(BASE + path)
+            except CalSuspendedError as exc:
+                return exc.reason
+            return "emitted"
+
+
+@pytest.mark.asyncio
+async def test_a_collection_admitted_before_the_rest_cannot_emit_during_the_probe(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(
+        clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0,
+    )
+    await governor.admit_book("passe-A")
+    await governor.suspend("bot_challenge", 600)
+    clock.advance(601)
+
+    probe = await governor.admit_book("passe-B")
+    assert probe is not None
+
+    earlier = _Emitter(governor)
+    earlier.budget.used = 1
+    assert await earlier.get("/search") == "probe_in_flight"
+    assert earlier.reached == []
+
+    holder = _Emitter(governor, probe)
+    assert await holder.get("/search") == "emitted"
+    assert holder.reached == ["/search"]
+
+
+@pytest.mark.asyncio
+async def test_a_late_request_of_an_expired_probe_is_refused(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(
+        clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0,
+    )
+    await governor.suspend("bot_challenge", 600)
+    clock.advance(601)
+
+    first = await governor.admit_book("passe-A")
+    clock.advance(61)
+    second = await governor.admit_book("passe-B")
+    assert second is not None
+    assert second != first
+
+    late = _Emitter(governor, first)
+    assert await late.get("/search") == "probe_in_flight"
+    assert late.reached == []
+
+    holder = _Emitter(governor, second)
+    assert await holder.get("/search") == "emitted"
+    assert holder.reached == ["/search"]
+
+
+@pytest.mark.asyncio
+async def test_the_probe_holder_emits_within_its_own_budgets(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(
+        clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0,
+    )
+    await governor.suspend("bot_challenge", 600)
+    clock.advance(601)
+    probe = await governor.admit_book("passe-B")
+    assert probe is not None
+
+    holder = _Emitter(governor, probe)
+    outcomes = [await holder.get(f"/search?page={page}") for page in range(5)]
+
+    assert outcomes == ["emitted"] * 5
+    assert len(holder.reached) == 5
+    assert holder.budget.used == 5
+    assert governor.emitted == 5
+
+
+@pytest.mark.asyncio
+async def test_a_valid_probe_conclusion_restores_normal_admission(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(
+        clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0,
+    )
+    await governor.suspend("bot_challenge", 600)
+    clock.advance(601)
+    probe = await governor.admit_book("passe-B")
+    assert probe is not None
+
+    holder = _Emitter(governor, probe)
+    assert await holder.get("/search") == "emitted"
+
+    assert await governor.conclude_probe(probe, succeeded=True) == "closed"
+    assert governor.phase() == "closed"
+
+    other = _Emitter(governor)
+    assert await other.get("/search") == "emitted"
+    assert other.budget.probe_token is None
+    assert other.reached == ["/search"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_restriction_also_stops_the_probe_holder(clean_cal_keys, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(
+        clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0,
+    )
+    await governor.suspend("bot_challenge", 600)
+    clock.advance(601)
+    probe = await governor.admit_book("passe-B")
+    assert probe is not None
+
+    holder = _Emitter(governor, probe)
+    assert await holder.get("/search") == "emitted"
+
+    await governor.suspend("rate_limited", 900)
+    assert await holder.get("/search?page=2") == "rate_limited"
+    assert holder.reached == ["/search"]
+
+
+@pytest.mark.asyncio
+async def test_a_collection_resuming_after_the_rest_must_hold_the_probe(
+    clean_cal_keys, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(
+        clean_cal_keys, cal_namespace, clock=clock, probe_ttl_seconds=60.0,
+    )
+    reached: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reached.append(request.url.path)
+        return httpx.Response(200, text="ok")
+
+    await governor.suspend("bot_challenge", 600)
+    clock.advance(601)
+    probe = await governor.admit_book("passe-B")
+    assert probe is not None
+
+    resuming = _Emitter(governor)
+    resuming.budget.used = 3
+    assert await resuming.get("/search") == "probe_in_flight"
+    assert resuming.reached == []
+
+    holder = _Emitter(governor, probe)
+    assert await holder.get("/search") == "emitted"
+    assert holder.reached == ["/search"]

@@ -47,7 +47,7 @@ GOVERNOR_KEY = "radar:cal:governor"
 OUTSIDE_PASS = "hors-passe"
 ADMINISTRATIVE_DEFERRAL_REASONS = frozenset({
     "pass_budget", "probe_in_flight", "storage_unavailable", "concurrency",
-    "rate_limited", "bot_challenge", "probe",
+    "rate_limited", "bot_challenge", "probe", "readmission_required",
 })
 CAL_ADMINISTRATIVE_RETRY_SECONDS = 1800.0
 CAL_STORAGE_RETRY_SECONDS = 300.0
@@ -123,6 +123,8 @@ local min_interval = tonumber(ARGV[4])
 local max_per_window = tonumber(ARGV[5])
 local window = tonumber(ARGV[6])
 local lease_ttl = tonumber(ARGV[7])
+local probe_token = ARGV[9]
+local emitted = ARGV[10] == '1'
 local key = KEYS[1]
 local lease_key = KEYS[2]
 local window_key = KEYS[3]
@@ -130,6 +132,15 @@ local window_key = KEYS[3]
 local open_until = tonumber(redis.call('HGET', key, 'open_until') or '0')
 if now < open_until then
   return {'denied', redis.call('HGET', key, 'reason') or 'rest', tostring(open_until)}
+end
+
+local probe_until = tonumber(redis.call('HGET', key, 'probe_until') or '0')
+local current_probe = redis.call('HGET', key, 'probe_token')
+local in_probe = current_probe and now < probe_until
+local holds_probe = probe_token ~= '' and current_probe == probe_token and in_probe
+local needs_probe = probe_token ~= '' or (open_until > 0 and emitted)
+if needs_probe and not holds_probe then
+  return {'denied', 'probe_in_flight', tostring(probe_until)}
 end
 
 redis.call('ZREMRANGEBYSCORE', lease_key, '-inf', now)
@@ -462,6 +473,7 @@ class CalGovernor:
                 str(self.min_interval_seconds), str(self.max_requests_per_window),
                 str(self.window_seconds), str(self.lease_ttl_seconds),
                 "1" if collection.opening_request else "0",
+                collection.probe_token or "", "1" if collection.used else "0",
                 keys=[self.key, self.lease_key, self.window_key],
             )
             if not isinstance(raw, list):
@@ -540,6 +552,7 @@ class CalCollectionBudget:
         self.governor = governor
         self.limit = limit or governor.max_requests_per_collection
         self.used = 0
+        self.probe_token: str | None = None
 
     @property
     def opening_request(self) -> bool:

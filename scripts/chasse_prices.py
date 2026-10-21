@@ -48,8 +48,9 @@ async def inspect_book(args: argparse.Namespace) -> dict[str, Any]:
             )
         except CalSuspendedError as exc:
             raise ValueError(f'CAL reporté par le régulateur : {exc.reason}') from exc
-        client = GovernedClient(get_shared_http_client(),
-                                CalCollectionBudget(cal_governor))
+        budget = CalCollectionBudget(cal_governor)
+        budget.probe_token = probe_token
+        client = GovernedClient(get_shared_http_client(), budget)
         page = await client.get(url, headers=CHASSE_BROWSER_HEADERS,
                                 follow_redirects=False, timeout=4)
         if page.status_code != 200:

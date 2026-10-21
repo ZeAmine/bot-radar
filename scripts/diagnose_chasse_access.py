@@ -117,7 +117,9 @@ async def diagnose(store: PrivateFileStore, *, full_collection: bool = False) ->
         except CalSuspendedError as exc:
             return {"history_access_verified": False,
                     "reason": f"cal_deferred:{exc.reason}"}
-        client = GovernedClient(raw_client, CalCollectionBudget(cal_governor))
+        budget = CalCollectionBudget(cal_governor)
+        budget.probe_token = probe_token
+        client = GovernedClient(raw_client, budget)
         page = await client.get(product_url, follow_redirects=False)
         if page.status_code != 200 or "9782756079332" not in page.text:
             await cal_governor.conclude_probe(probe_token, succeeded=False,

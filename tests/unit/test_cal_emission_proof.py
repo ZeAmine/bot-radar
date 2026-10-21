@@ -16,7 +16,7 @@ import pytest
 
 from app.db.models.book_market_cache import BookMarketCache
 from app.providers.base import CollectionAttempt, MarketOffers
-from app.providers.cal_governor import CalGovernor
+from app.providers.cal_governor import CalGovernor, CalSuspendedError
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
 from app.services.administrative_deferral import administrative_deferral_only
 from app.services.book_market_pricing import (
@@ -254,3 +254,41 @@ async def test_a_restriction_opening_mid_collection_is_not_zero_emission(
 
     assert written.collection_status != "deferred"
     assert "administrative" not in (written.refresh_state or {})
+
+
+@pytest.mark.usefixtures("pass_token")
+@pytest.mark.asyncio
+async def test_a_collection_interrupted_by_the_rest_is_readmitted_not_resumed(
+    clean_cal_keys, cal_namespace,
+):
+    """Une collecte déjà admise ne reprend pas après rétablissement.
+
+    Règle retenue : seul un appel frais de `get_offers`, avec sa propre
+    admission, peut émettre. Une collecte dont le budget existe déjà mais dont le
+    client a été démonté est refusée en `readmission_required` plutôt que de
+    continuer sur l'admission précédente.
+    """
+    clock = _Clock()
+    governor = _governor(clock, clean_cal_keys, cal_namespace)
+
+    class OpeningClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get(self, _url: str, **_kwargs) -> httpx.Response:
+            self.calls += 1
+            await governor.suspend("bot_challenge", 3600)
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+
+    client = OpeningClient()
+    provider = ChasseAuxLivresProvider(governor=governor)
+    provider.http_client = client  # type: ignore[assignment]
+    offers = await provider.get_offers(isbn13=None, title=TITLE)
+    assert offers.emitted_requests == 1
+
+    provider._cal_client_instance = None
+    with pytest.raises(CalSuspendedError) as refused:
+        provider._cal_client()
+
+    assert refused.value.reason == "readmission_required"
+    assert client.calls == 1

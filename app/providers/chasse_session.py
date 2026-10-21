@@ -308,6 +308,7 @@ class ChasseSessionManager:
             logger.info("Entretien CAL reporté : %s", exc.reason)
             return
         budget = CalCollectionBudget(governor)
+        budget.probe_token = probe_token
         client = GovernedClient(get_shared_http_client(), budget)
         try:
             page = await client.get(url, headers=CHASSE_BROWSER_HEADERS,

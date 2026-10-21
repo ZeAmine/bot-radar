@@ -341,6 +341,7 @@ class ChasseAuxLivresProvider:
                 self.name, reason=exc.reason, retry_at=exc.retry_at, emitted_requests=0,
             )
         self._budget = CalCollectionBudget(governor)
+        self._budget.probe_token = probe_token
         self._cal_client_instance = GovernedClient(
             self.http_client or get_shared_http_client(), self._budget,
         )
@@ -371,6 +372,8 @@ class ChasseAuxLivresProvider:
 
     def _cal_client(self) -> GovernedClient:
         if self._cal_client_instance is None:
+            if self._budget is not None:
+                raise CalSuspendedError("readmission_required", None)
             self._budget = CalCollectionBudget(self._governor or cal_governor)
             self._cal_client_instance = GovernedClient(
                 self.http_client or get_shared_http_client(), self._budget,

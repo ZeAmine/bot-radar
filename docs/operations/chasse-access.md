@@ -165,7 +165,20 @@ Transitions :
   toute autre admission simultanée est refusée en `probe_in_flight`. Aucune
   admission normale n'a lieu avant une conclusion de succès valide, et le jeton
   de l'essai abandonné ne peut pas conclure le nouvel essai. La prise d'essai est
-  atomique : un seul appel obtient l'état `probing`.
+  atomique : un seul appel obtient l'état `probing` ;
+- l'essai est exclusif au moment de l'émission, pas seulement à l'admission :
+  `ACQUIRE_SCRIPT` vérifie, dans la même opération atomique, que le jeton porté
+  par le budget de collecte est bien celui de l'essai actif et non expiré. Une
+  collecte admise avant la restriction, ou une requête tardive d'un essai
+  expiré, est refusée en `probe_in_flight` sans qu'aucune requête ne parte. Un
+  porteur valide émet dans ses budgets habituels, et une nouvelle restriction
+  l'arrête comme les autres. Reste hors de cette règle la **première** requête
+  d'une collecte qui n'est pas née pendant une restriction : elle ne peut pas
+  usurper l'essai d'autrui, mais elle n'est pas un essai non plus ;
+- une collecte déjà admise **ne reprend pas** après rétablissement : elle est
+  réadmise. Le fournisseur refuse en `readmission_required` un client démonté
+  dont le budget existe encore, au lieu de continuer sur l'admission
+  précédente ; seule une collecte fraîche, avec sa propre admission, émet.
 
 Une collecte complète sans offre éligible compte comme succès technique : c'est
 le statut des tentatives `current` qui décide, pas le nombre d'offres.
