@@ -109,6 +109,7 @@ class ProviderRegistry:
                     historical_checked=getattr(offers, "historical_checked", False),
                     attempts=tuple(replace(a, duration_seconds=monotonic() - started)
                                    for a in attempts),
+                    emitted_requests=getattr(offers, "emitted_requests", 0),
                 )
             except Exception as exc:
                 failed = failed_offers(
@@ -169,6 +170,10 @@ class ProviderRegistry:
             all_offers, failed_providers=tuple(sorted(failures)),
             attempts=tuple(attempts),
             historical_checked=any(getattr(res, "historical_checked", False) for res in results),
+            emitted_requests=sum(
+                getattr(res, "emitted_requests", 0) for res in results
+                if isinstance(res, list)
+            ),
         )
 
     @staticmethod

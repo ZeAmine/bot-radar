@@ -6,12 +6,15 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from app.core.config import settings
 from app.core.redis import get_redis_client
+
+if TYPE_CHECKING:
+    from app.providers.cal_governor import CalHttpClient
 
 logger = logging.getLogger(__name__)
 BASE_URL = "https://www.chasse-aux-livres.fr"
@@ -51,9 +54,11 @@ class ChasseSessionManager:
         *,
         store: Any = None,
         notify: Callable[[str], Awaitable[bool]] = _notify,
+        governor: Any = None,
     ) -> None:
         self.store = store
         self.notify = notify
+        self.governor = governor
         self.lock = asyncio.Lock()
         self.load_lock = asyncio.Lock()
         self.state: dict[str, Any] = {}
@@ -148,7 +153,7 @@ class ChasseSessionManager:
         await self._save()
 
     @staticmethod
-    async def _login(client: httpx.AsyncClient, headers: dict[str, str]) -> str | None:
+    async def _login(client: "CalHttpClient", headers: dict[str, str]) -> str | None:
         email = settings.CHASSE_ACCOUNT_EMAIL.get_secret_value()
         password = settings.CHASSE_ACCOUNT_PASSWORD.get_secret_value()
         if not email or not password:
@@ -157,6 +162,8 @@ class ChasseSessionManager:
             page = await client.get(
                 BASE_URL + "/login?protect=true", headers=headers, follow_redirects=False, timeout=4
             )
+            if source_restriction(page):
+                return None
             if page.status_code != 200 or any(
                 marker in page.text.lower()
                 for marker in ("g-recaptcha", "h-captcha", "cf-chl-", "vérification robot")
@@ -176,6 +183,8 @@ class ChasseSessionManager:
                 follow_redirects=False,
                 timeout=4,
             )
+            if source_restriction(response):
+                return None
             if response.status_code not in {200, 302, 303} or re.search(
                 r"<form\b[^>]*(?:id|name)=[\"\x27]login[\"\x27]",
                 response.text,
@@ -185,6 +194,8 @@ class ChasseSessionManager:
             home = await client.get(
                 BASE_URL + "/", headers=headers, follow_redirects=False, timeout=4
             )
+            if source_restriction(home):
+                return None
             if home.status_code != 200:
                 return None
             match = re.search(r"data-duih=[\"\x27]([^\"\x27]+)", home.text)
@@ -193,7 +204,7 @@ class ChasseSessionManager:
 
     async def get_history(
         self,
-        client: httpx.AsyncClient,
+        client: "CalHttpClient",
         product_url: str,
         params: dict[str, str],
         headers: dict[str, str],
@@ -283,22 +294,50 @@ class ChasseSessionManager:
                 pass
         self.state["maintenance_at"] = now.isoformat()
         await self._save()
-        client = get_shared_http_client()
+        from app.providers.cal_governor import (
+            CalCollectionBudget,
+            CalSuspendedError,
+            GovernedClient,
+            cal_governor,
+        )
+
+        governor = self.governor or cal_governor
+        try:
+            probe_token = await governor.admit_book("maintenance", counts_as_book=False)
+        except CalSuspendedError as exc:
+            logger.info("Entretien CAL reporté : %s", exc.reason)
+            return
+        budget = CalCollectionBudget(governor)
+        budget.probe_token = probe_token
+        client = GovernedClient(get_shared_http_client(), budget)
         try:
             page = await client.get(url, headers=CHASSE_BROWSER_HEADERS,
                                     follow_redirects=False, timeout=4)
             if page.status_code != 200:
+                await governor.conclude_probe(probe_token, succeeded=False,
+                                              reason="maintenance_page")
                 return
             attrs = {key: re.search(r'data-' + key + r'=["\']([^"\']+)', page.text)
                      for key in ("asin", "didh")}
             asin, didh = attrs["asin"], attrs["didh"]
             if asin is None or didh is None:
+                await governor.conclude_probe(probe_token, succeeded=False,
+                                              reason="maintenance_metadata")
                 return
-            await self.get_history(
+            response = await self.get_history(
                 client, url, {"id": asin[1], "didh": didh[1], "all": "true", "days": "365"},
                 _build_ajax_headers(url),
             )
+            await governor.conclude_probe(
+                probe_token, succeeded=source_restriction(response) is None,
+                reason="maintenance_history",
+            )
+        except CalSuspendedError as exc:
+            await governor.conclude_probe(probe_token, succeeded=False, reason=exc.reason)
+            logger.info("Entretien CAL interrompu par le régulateur : %s", exc.reason)
         except (httpx.HTTPError, TimeoutError) as exc:
+            await governor.conclude_probe(probe_token, succeeded=False,
+                                          reason="maintenance_timeout")
             logger.warning("Vérification de session Chasse interrompue : %s", type(exc).__name__)
 
     async def _verified(self, token: str, product_url: str) -> None:

@@ -25,9 +25,19 @@ from app.providers.base import (
     CollectionAttempt,
     MarketOffer,
     MarketOffers,
+    deferred_offers,
     failed_offers,
     normalize_search_isbn,
     requested_components,
+)
+from app.providers.cal_governor import (
+    CalCollectionBudget,
+    CalGovernor,
+    CalHttpClient,
+    CalSuspendedError,
+    GovernedClient,
+    cal_governor,
+    pass_occurrence,
 )
 from app.providers.chasse_session import chasse_session, source_restriction
 from app.services.book_metadata_service import title_similarity
@@ -236,6 +246,19 @@ def _response_failure(
     return None
 
 
+def _collection_concluded(offers: object) -> bool:
+    """Un succès technique : la collecte s'est déroulée, avec ou sans offre.
+
+    Un `skipped` n'est pas une conclusion : la collecte n'a pas eu lieu, ou a
+    été interrompue par le régulateur. Un seul `skipped` suffit à refuser.
+    """
+    attempts = getattr(offers, "attempts", ())
+    current = [a for a in attempts if a.operation == "current"]
+    if not current:
+        return False
+    return all(a.status == "success" for a in current)
+
+
 class ChasseAuxLivresProvider:
     """Connecteur vers le comparateur multi-boutiques Chasse-aux-livres.
 
@@ -252,9 +275,13 @@ class ChasseAuxLivresProvider:
         http_client: httpx.AsyncClient | None = None,
         sleep: Sleeper = asyncio.sleep,
         max_retries: int = 2,
+        governor: CalGovernor | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.http_client = http_client
+        self._governor = governor
+        self._budget: CalCollectionBudget | None = None
+        self._cal_client_instance: GovernedClient | None = None
         self._sleep = sleep
         self.max_retries = max(0, max_retries)
 
@@ -306,13 +333,68 @@ class ChasseAuxLivresProvider:
     ) -> list[MarketOffer]:
         """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
         _ = edition
+        governor = self._governor or cal_governor
+        try:
+            probe_token = await governor.admit_book(pass_occurrence.get())
+        except CalSuspendedError as exc:
+            return deferred_offers(
+                self.name, reason=exc.reason, retry_at=exc.retry_at, emitted_requests=0,
+            )
+        self._budget = CalCollectionBudget(governor)
+        self._budget.probe_token = probe_token
+        self._cal_client_instance = GovernedClient(
+            self.http_client or get_shared_http_client(), self._budget,
+        )
+        try:
+            offers = await self._collect_offers(
+                isbn13=isbn13, title=title, author=author, source_url=source_url,
+            )
+        except CalSuspendedError as exc:
+            await governor.conclude_probe(
+                probe_token, succeeded=False, reason=exc.reason,
+            )
+            raise
+        except BaseException:
+            await governor.conclude_probe(
+                probe_token, succeeded=False, reason="collection_aborted",
+            )
+            raise
+        else:
+            await governor.conclude_probe(
+                probe_token, succeeded=_collection_concluded(offers),
+            )
+            return offers
+        finally:
+            self._cal_client_instance = None
+
+    def _emitted_requests(self) -> int:
+        return self._budget.used if self._budget is not None else 0
+
+    def _cal_client(self) -> GovernedClient:
+        if self._cal_client_instance is None:
+            if self._budget is not None:
+                raise CalSuspendedError("readmission_required", None)
+            self._budget = CalCollectionBudget(self._governor or cal_governor)
+            self._cal_client_instance = GovernedClient(
+                self.http_client or get_shared_http_client(), self._budget,
+            )
+        return self._cal_client_instance
+
+    async def _collect_offers(
+        self,
+        *,
+        isbn13: str | None,
+        title: str,
+        author: str | None = None,
+        source_url: str | None = None,
+    ) -> list[MarketOffer]:
         # ISBN utilisé seulement s'il passe sa clé de contrôle.
         clean_isbn = normalize_search_isbn(isbn13)
         known_url = verified_product_url(source_url, clean_isbn)
         if known_url:
             path = urllib.parse.urlsplit(known_url).path
             known_offers = await self._try_deep_lookup(
-                self.http_client or get_shared_http_client(),
+                self._cal_client(),
                 '<a href="' + html.escape(path, quote=True) + '">'
                 + html.escape(title) + '</a>',
                 clean_isbn or title, expected_title=title, expected_isbn=clean_isbn,
@@ -322,6 +404,7 @@ class ChasseAuxLivresProvider:
         failures: set[str] = set()
         historical_checked = False
         attempts: list[CollectionAttempt] = []
+        claimed_emissions = 0
         if clean_isbn:
             offers = await self._search_query(
                 clean_isbn, expected_title=title, expected_isbn=clean_isbn
@@ -329,6 +412,7 @@ class ChasseAuxLivresProvider:
             attempts.extend(getattr(offers, "attempts", ()))
             failures.update(getattr(offers, "failed_providers", ()))
             historical_checked |= getattr(offers, "historical_checked", False)
+            claimed_emissions += getattr(offers, "emitted_requests", 0)
             if offers or getattr(offers, "historical_checked", False):
                 return offers
             if any(attempt.operation == "current" and attempt.status == "success"
@@ -354,10 +438,17 @@ class ChasseAuxLivresProvider:
             attempts.extend(getattr(offers, "attempts", ()))
             failures.update(getattr(offers, "failed_providers", ()))
             historical_checked |= getattr(offers, "historical_checked", False)
-            return MarketOffers(offers, failed_providers=tuple(sorted(failures)),
-                                historical_checked=historical_checked, attempts=tuple(attempts))
+            claimed_emissions += getattr(offers, "emitted_requests", 0)
+            return MarketOffers(
+                offers, failed_providers=tuple(sorted(failures)),
+                historical_checked=historical_checked, attempts=tuple(attempts),
+                emitted_requests=claimed_emissions,
+            )
 
-        return MarketOffers(failed_providers=tuple(sorted(failures)), attempts=tuple(attempts))
+        return MarketOffers(
+            failed_providers=tuple(sorted(failures)), attempts=tuple(attempts),
+            emitted_requests=claimed_emissions,
+        )
 
     async def _search_query(
         self,
@@ -369,7 +460,7 @@ class ChasseAuxLivresProvider:
         search_encoded = urllib.parse.quote_plus(query)
         search_url = f"{self.BASE_URL}/search?query={search_encoded}&catalog=fr"
 
-        client = self.http_client or get_shared_http_client()
+        client = self._cal_client()
         max_retries = self.max_retries
         for attempt in range(max_retries + 1):
             stage = "search_page"
@@ -432,6 +523,11 @@ class ChasseAuxLivresProvider:
 
                 return []
 
+            except CalSuspendedError as exc:
+                return deferred_offers(
+                    self.name, reason=exc.reason, retry_at=exc.retry_at,
+                    emitted_requests=self._emitted_requests(),
+                )
             except Exception as exc:
                 if attempt < max_retries and isinstance(exc, (httpx.RequestError, TimeoutError)):
                     await self._sleep(1.5)
@@ -447,7 +543,7 @@ class ChasseAuxLivresProvider:
 
     async def _try_deep_lookup(
         self,
-        client: httpx.AsyncClient,
+        client: CalHttpClient,
         d_html: str,
         query: str,
         expected_title: str | None = None,
@@ -657,6 +753,11 @@ class ChasseAuxLivresProvider:
                             lookup_seconds=lookup_seconds,
                         )
 
+            except CalSuspendedError as exc:
+                return deferred_offers(
+                    self.name, reason=exc.reason, retry_at=exc.retry_at,
+                    emitted_requests=self._emitted_requests(),
+                )
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 current_attempt = failed_offers(self.name, error=exc,
                                                 stage="current_offers").attempts[0]
@@ -829,13 +930,15 @@ class ChasseAuxLivresProvider:
                         )
                     ], historical_checked=historical_checked,
                        failed_providers=(self.name,) if historical_failed or current_failed else (),
-                       attempts=(current_attempt, history_attempt))
+                       attempts=(current_attempt, history_attempt),
+                       emitted_requests=self._emitted_requests())
                 return MarketOffers(historical_points,
                                     failed_providers=(
                                         (self.name,) if historical_failed or current_failed else ()
                                     ),
                                     historical_checked=historical_checked,
-                                    attempts=(current_attempt, history_attempt))
+                                    attempts=(current_attempt, history_attempt),
+                                    emitted_requests=self._emitted_requests())
 
             primary = best_used
             cond_str = f"{primary['condition']} ({primary['merchant']})"
@@ -870,6 +973,7 @@ class ChasseAuxLivresProvider:
                 failed_providers=((self.name,) if historical_failed or current_failed else ()),
                 historical_checked=historical_checked,
                 attempts=(current_attempt, history_attempt),
+                emitted_requests=self._emitted_requests(),
             )
         except Exception as exc:
             logger.debug("Échec de l'extraction détaillée Chasse-aux-livres: %s",
