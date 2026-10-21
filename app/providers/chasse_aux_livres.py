@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 import re
+import time
 import urllib.parse
 import uuid
 from collections.abc import Awaitable, Callable
@@ -42,6 +43,10 @@ REDIS_SESSION_KEY = "radar:chasse:duih"
 Sleeper = Callable[[float], Awaitable[None]]
 
 TITLE_COHERENCE_MIN = 0.72
+
+LOOKUP_POLL_MAX = 3
+LOOKUP_POLL_BUDGET_SECONDS = 1.5
+LOOKUP_POLL_DELAY_SECONDS = 0.2
 
 _TITLE_STOP_WORDS = frozenset(
     {
@@ -326,6 +331,9 @@ class ChasseAuxLivresProvider:
             historical_checked |= getattr(offers, "historical_checked", False)
             if offers or getattr(offers, "historical_checked", False):
                 return offers
+            if any(attempt.operation == "current" and attempt.status == "success"
+                   for attempt in getattr(offers, "attempts", ())):
+                return offers
             if any(attempt.status in {"partial", "failed"} and (
                 attempt.operation == "current"
                 and attempt.reason not in {"identity_mismatch", "volume_mismatch"}
@@ -536,14 +544,22 @@ class ChasseAuxLivresProvider:
                 return failed_offers(self.name, reason="identity_mismatch")
             lvs = lvs_m.group(1)
             nbeng = int(nbeng_m.group(1))
-            engines = "_".join(str(i) for i in range(min(nbeng, 32)))
+            requested_engines = [str(i) for i in range(min(nbeng, 32))]
+            if not requested_engines:
+                return failed_offers(self.name, response=resp_prod,
+                                     reason="invalid_response", stage="product_metadata")
 
             ajax_headers = _build_ajax_headers(product_url)
             lookup_url = (
                 f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
-                f"&retry=0&duih=&lvs={lvs}&ui=&engines={engines}&f=false"
+                f"&retry=0&duih=&lvs={lvs}&ui="
+                f"&engines={'_'.join(requested_engines)}&f=false"
             )
             source_blocked = False
+            received_engines: list[str] = []
+            poll_count = 0
+            lookup_seconds = 0.0
+            raw_offers: dict[str, Any] = {}
             current_attempt = CollectionAttempt(
                 self.name, "current", "success" if "current" in requested_components.get()
                 else "skipped",
@@ -551,6 +567,7 @@ class ChasseAuxLivresProvider:
             try:
                 if "current" in requested_components.get():
                     stage = "current_offers"
+                    lookup_started = time.monotonic()
                     resp_lookup = await client.get(lookup_url, headers=ajax_headers, timeout=4)
                     failure = _response_failure(resp_lookup, stage=stage)
                     if failure is not None:
@@ -560,51 +577,89 @@ class ChasseAuxLivresProvider:
                         resp_lookup.raise_for_status()
                     data = resp_lookup.json()
                 else:
-                    data = {"offers": {"22": []}}
+                    data = {"offers": {}}
                 if not isinstance(data, dict):
                     raise ValueError("Réponse courante invalide")
-                raw_offers = data.get("offers")
-                if not isinstance(raw_offers, dict):
+                parsed_offers = data.get("offers")
+                if not isinstance(parsed_offers, dict):
                     raise ValueError("Offres courantes invalides")
+                raw_offers = parsed_offers
 
-                if "22" not in raw_offers:
-                    retry_url = (
-                        f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
-                        f"&retry=1&duih=&lvs={lvs}&ui=&engines={engines}&f=false"
-                    )
-                    try:
-                        resp_retry = await client.get(retry_url, headers=ajax_headers, timeout=3.5)
-                        failure = _response_failure(resp_retry, stage="current_offers_retry")
-                        if failure is not None and any(
-                            a.reason in {"rate_limited", "bot_challenge"} for a in failure.attempts
-                        ):
-                            current_attempt = failure.attempts[0]
-                            source_blocked = True
-                        if resp_retry.status_code == 200 and not source_blocked:
-                            data_retry = resp_retry.json()
-                            offers_retry = data_retry.get("offers", {})
-                            if isinstance(offers_retry, dict):
-                                for k, v in offers_retry.items():
-                                    if k not in raw_offers:
-                                        raw_offers[k] = v
-                                    elif isinstance(v, list) and isinstance(raw_offers[k], list):
-                                        raw_offers[k].extend(v)
-                    except Exception as exc:
-                        logger.debug("Second passage lookup retry=1 ignoré : %s",
-                                     type(exc).__name__)
+                if "current" in requested_components.get():
+                    pending = [engine for engine in requested_engines
+                               if engine not in raw_offers]
+                    while pending and poll_count < LOOKUP_POLL_MAX:
+                        elapsed = time.monotonic() - lookup_started
+                        if elapsed + LOOKUP_POLL_DELAY_SECONDS >= LOOKUP_POLL_BUDGET_SECONDS:
+                            break
+                        await self._sleep(LOOKUP_POLL_DELAY_SECONDS)
+                        remaining = LOOKUP_POLL_BUDGET_SECONDS - (
+                            time.monotonic() - lookup_started
+                        )
+                        if remaining <= 0:
+                            break
+                        poll_count += 1
+                        poll_url = (
+                            f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
+                            f"&retry={poll_count}&duih=&lvs={lvs}&ui="
+                            f"&engines={'_'.join(pending)}&f=false"
+                        )
+                        try:
+                            resp_poll = await client.get(
+                                poll_url, headers=ajax_headers,
+                                timeout=max(0.5, min(3.5, remaining)),
+                            )
+                            failure = _response_failure(resp_poll,
+                                                        stage="current_offers_retry")
+                            if failure is not None:
+                                if any(a.reason in {"rate_limited", "bot_challenge"}
+                                       for a in failure.attempts):
+                                    current_attempt = failure.attempts[0]
+                                    source_blocked = True
+                                break
+                            if not resp_poll.content:
+                                break
+                            poll_data = resp_poll.json()
+                            poll_offers = (
+                                poll_data.get("offers")
+                                if isinstance(poll_data, dict) else None
+                            )
+                            if not isinstance(poll_offers, dict):
+                                break
+                            for key, value in poll_offers.items():
+                                if key not in raw_offers:
+                                    raw_offers[key] = value
+                                elif (isinstance(value, list)
+                                      and isinstance(raw_offers[key], list)):
+                                    raw_offers[key].extend(value)
+                        except Exception as exc:
+                            logger.debug("Sondage lookup interrompu : %s",
+                                         type(exc).__name__)
+                            break
+                        pending = [engine for engine in requested_engines
+                                   if engine not in raw_offers]
 
-                if current_attempt.status == "success":
-                    current_attempt = CollectionAttempt(
-                        self.name, "current", "partial", "incomplete_offers",
-                        resp_lookup.status_code, stage="current_offers",
-                        response_content_type=resp_lookup.headers.get("content-type"),
-                        response_bytes=len(resp_lookup.content),
-                    )
+                    received_engines = [engine for engine in requested_engines
+                                        if engine in raw_offers]
+                    lookup_seconds = round(time.monotonic() - lookup_started, 3)
+                    if current_attempt.status == "success":
+                        complete = not pending
+                        current_attempt = CollectionAttempt(
+                            self.name, "current",
+                            "success" if complete else "partial",
+                            None if complete else "incomplete_offers",
+                            resp_lookup.status_code, stage="current_offers",
+                            response_content_type=resp_lookup.headers.get("content-type"),
+                            response_bytes=len(resp_lookup.content),
+                            engines_requested=len(requested_engines),
+                            engines_received=len(received_engines),
+                            poll_count=poll_count,
+                            lookup_seconds=lookup_seconds,
+                        )
 
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 current_attempt = failed_offers(self.name, error=exc,
                                                 stage="current_offers").attempts[0]
-                raw_offers = {"22": []}
 
             partners: dict[str, dict[str, Any]] = {}
             best_used: dict[str, Any] | None = None
@@ -735,6 +790,12 @@ class ChasseAuxLivresProvider:
                 historical_failed = False
                 history_attempt = CollectionAttempt(self.name, "history", "skipped")
             current_failed = current_attempt.status in {"partial", "failed"}
+            lookup_trace = {
+                "engines_requested": len(requested_engines),
+                "engines_received": len(received_engines),
+                "poll_count": poll_count,
+                "lookup_seconds": lookup_seconds,
+            }
             if historical_failed:
                 logger.warning("Historique Chasse-aux-livres non reçu : réponse vide, "
                                "invalide ou refusée")
@@ -763,6 +824,7 @@ class ChasseAuxLivresProvider:
                                 "collection_status": current_attempt.status,
                                 "collection_reason": current_attempt.reason,
                                 "historical_low_1y_cents": hist_low_1y_cents,
+                                **lookup_trace,
                             },
                         )
                     ], historical_checked=historical_checked,
@@ -801,6 +863,7 @@ class ChasseAuxLivresProvider:
                             "collection_status": current_attempt.status,
                             "collection_reason": current_attempt.reason,
                             "historical_low_1y_cents": hist_low_1y_cents,
+                            **lookup_trace,
                         },
                     )
                 ],

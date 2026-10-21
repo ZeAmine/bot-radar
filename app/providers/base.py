@@ -53,6 +53,10 @@ class CollectionAttempt:
     stage: str | None = None
     response_content_type: str | None = None
     response_bytes: int | None = None
+    engines_requested: int | None = None
+    engines_received: int | None = None
+    poll_count: int | None = None
+    lookup_seconds: float | None = None
 
 
 def failed_offers(

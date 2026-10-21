@@ -361,7 +361,11 @@ async def fetch_offers_for_book(
                        "http_status": attempt.http_status,
                        "duration_seconds": attempt.duration_seconds, "stage": attempt.stage,
                        "response_content_type": attempt.response_content_type,
-                       "response_bytes": attempt.response_bytes})
+                       "response_bytes": attempt.response_bytes,
+                       "engines_requested": attempt.engines_requested,
+                       "engines_received": attempt.engines_received,
+                       "poll_count": attempt.poll_count,
+                       "lookup_seconds": attempt.lookup_seconds})
         return offers
     except TimeoutError:
         logger.warning("Délai global de collecte dépassé pour %s", book.id)
