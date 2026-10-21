@@ -189,3 +189,72 @@ async def test_incomplete_pending_engines_never_expose_a_successful_collection(b
     for offer in result:
         assert offer.raw_payload["collection_status"] == "partial"
         assert offer.raw_payload["engines_received"] < offer.raw_payload["engines_requested"]
+
+
+@pytest.mark.asyncio
+async def test_product_page_without_engines_is_a_technical_failure():
+    lookups: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/prix/"):
+            return httpx.Response(200, text=_product_page(JEAN_DOUX["item_id"], 0))
+        lookups.append(request)
+        return httpx.Response(200, json={"offers": {}})
+
+    scope = requested_components.set(frozenset({"current"}))
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            result = await ChasseAuxLivresProvider(
+                http_client=client, sleep=AsyncMock(),
+            ).get_offers(
+                isbn13=JEAN_DOUX["isbn13"],
+                title="Jean Doux",
+                source_url=BASE + JEAN_DOUX["path"],
+            )
+    finally:
+        requested_components.reset(scope)
+
+    assert result.attempts[0].status == "failed"
+    assert result.attempts[0].reason == "invalid_response"
+    assert lookups == []
+
+
+@pytest.mark.asyncio
+async def test_empty_poll_body_stops_as_partial_without_absence():
+    offer = {
+        "logo": {"name": "MOMOX_SHOP"},
+        "condition": {"_name": "USED"},
+        "subCondition": {"name": "Très bon"},
+        "price": {"amount": 1200},
+        "shippingCost": {"amount": 250},
+        "totalPrice": {"amount": 1450},
+        "affiliateUrl": "https://merchant.example/offer",
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/prix/"):
+            return httpx.Response(200, text=_product_page(JEAN_DOUX["item_id"], 2))
+        if request.url.params.get("retry") == "0":
+            return httpx.Response(200, json={"offers": {"0": [offer]}})
+        return httpx.Response(200, content=b"", headers={"content-type": "text/plain"})
+
+    scope = requested_components.set(frozenset({"current"}))
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            result = await ChasseAuxLivresProvider(
+                http_client=client, sleep=AsyncMock(),
+            ).get_offers(
+                isbn13=JEAN_DOUX["isbn13"],
+                title="Jean Doux",
+                source_url=BASE + JEAN_DOUX["path"],
+            )
+    finally:
+        requested_components.reset(scope)
+
+    attempt = result.attempts[0]
+    assert attempt.status == "partial"
+    assert attempt.poll_count == 1
+    assert attempt.engines_received == 1
+    assert result[0].delivered_price_cents == 1450
+    assert result[0].raw_payload["collection_status"] == "partial"
+    assert all(offer.item_condition != "Occasion indisponible" for offer in result)
