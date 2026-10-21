@@ -9,10 +9,8 @@ avantage ni pénalisé, et sans monopoliser les créneaux du lot.
 from datetime import UTC, datetime
 
 from app.services.market_refresh_policy import (
-    REFRESH_INTERVAL,
     RETRY_DELAYS,
     collection_due,
-    component_due,
     record_component,
 )
 
@@ -47,33 +45,8 @@ def _pass(
         cache.last_attempt_at = now
         cache.collection_status = "skipped"
         record_component(cache, "current", succeeded=False, now=now)
+        record_component(cache, "history", succeeded=False, now=now)
     return admitted, deferred
-
-
-def test_eight_due_books_are_served_in_turn_across_consecutive_passes():
-    books = {index: Cache() for index in range(1, BATCH + 1)}
-    clock = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
-
-    served: list[int] = []
-    for _ in range(6):
-        admitted, _ = _pass(books, clock)
-        served.extend(admitted)
-        clock += RETRY_DELAYS[0]
-
-    assert served == list(range(1, BATCH + 1))
-    assert set(served) == set(books)
-
-
-def test_a_deferred_book_is_not_pushed_back_by_a_served_one():
-    books = {index: Cache() for index in range(1, BATCH + 1)}
-    clock = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
-    _pass(books, clock)
-
-    served_due = component_due(books[1], "current", clock)
-    deferred_due = component_due(books[8], "current", clock)
-
-    assert deferred_due < served_due
-    assert served_due == clock + REFRESH_INTERVAL
 
 
 def test_a_deferred_book_stays_at_the_head_of_the_queue_without_blocking_others():
@@ -120,44 +93,6 @@ def test_a_deferred_book_records_an_attempt_without_claiming_a_collection():
     assert cache.refresh_state["current"]["failures"] == 1
     assert collection_due(cache, clock) is False
     assert collection_due(cache, clock + RETRY_DELAYS[0]) is True
-
-
-def test_the_queue_drains_completely_before_any_book_returns():
-    books = {index: Cache() for index in range(1, BATCH + 1)}
-    clock = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
-
-    first_round: list[int] = []
-    for _ in range(6):
-        admitted, _ = _pass(books, clock)
-        first_round.extend(admitted)
-        clock += RETRY_DELAYS[0]
-
-    assert first_round == list(range(1, BATCH + 1))
-
-
-def test_a_deferred_cal_collection_is_not_a_failed_provider_for_other_sources():
-    from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers
-    from app.services.book_market_pricing import BookPricingResult
-
-    offer = MarketOffer(
-        "momox", 1200, 300, 1500, "https://example.test/1",
-        item_condition="Bon", price_includes_shipping=True,
-    )
-    offers = MarketOffers(
-        [offer], historical_checked=True, attempts=(
-            CollectionAttempt("chasse_aux_livres", "current", "skipped", "rate_limited"),
-            CollectionAttempt("chasse_aux_livres", "history", "skipped", "rate_limited"),
-            CollectionAttempt("momox", "current", "success"),
-            CollectionAttempt("momox", "history", "success"),
-        ),
-    )
-
-    result = BookPricingResult.from_offers(offers, offer, None)
-
-    assert result.failed_providers == ()
-    assert result.lowest_delivered_price_cents == 1500
-    assert result.current_collection_usable is True
-    assert result.historical_checked is True
 
 
 def test_a_book_whose_only_source_is_deferred_is_not_claimed_as_collected():

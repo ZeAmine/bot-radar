@@ -253,24 +253,24 @@ async def test_a_successful_probe_closes_the_circuit(cal_redis, cal_namespace):
     governor, _ = _governor(clock, cal_redis, cal_namespace)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
-    await governor.admit_book("passe-1")
-    await governor.conclude_probe(succeeded=True)
+    token = await governor.admit_book("passe-1")
+    await governor.conclude_probe(token, succeeded=True)
 
     assert governor.phase() == CLOSED
-    await governor.admit_book("passe-1")
-    await governor.admit_book("passe-1")
+    assert await governor.admit_book("passe-1") is None
 
 
 @pytest.mark.asyncio
-async def test_a_probe_does_not_grant_two_extra_collections(cal_redis, cal_namespace):
+async def test_a_probe_never_grants_an_extra_admission(cal_redis, cal_namespace):
     clock = FakeClock()
     governor, _ = _governor(clock, cal_redis, cal_namespace, max_books_per_pass=2)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
 
-    await governor.admit_book("passe-1")
-    await governor.conclude_probe(succeeded=True)
-    await governor.admit_book("passe-1")
+    token = await governor.admit_book("passe-1")
+    assert token is not None
+    await governor.conclude_probe(token, succeeded=True)
+
     await governor.admit_book("passe-1")
     with pytest.raises(CalSuspendedError) as denied:
         await governor.admit_book("passe-1")
@@ -283,8 +283,8 @@ async def test_an_incomplete_probe_never_restores_full_admission(cal_redis, cal_
     governor, _ = _governor(clock, cal_redis, cal_namespace)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
-    await governor.admit_book("passe-1")
-    await governor.conclude_probe(succeeded=False, reason="partial")
+    token = await governor.admit_book("passe-1")
+    await governor.conclude_probe(token, succeeded=False, reason="partial")
 
     assert governor.phase() == OPEN
     with pytest.raises(CalSuspendedError):
@@ -297,8 +297,8 @@ async def test_a_challenge_during_the_probe_reopens_for_six_hours(cal_redis, cal
     governor, _ = _governor(clock, cal_redis, cal_namespace)
     await governor.suspend("bot_challenge", 3600)
     clock.now += 3601
-    await governor.admit_book("passe-1")
-    await governor.conclude_probe(succeeded=False, reason="bot_challenge")
+    token = await governor.admit_book("passe-1")
+    await governor.conclude_probe(token, succeeded=False, reason="bot_challenge")
 
     snapshot = await governor.snapshot()
     assert snapshot.open_until - clock.now == pytest.approx(6 * 3600, abs=2)

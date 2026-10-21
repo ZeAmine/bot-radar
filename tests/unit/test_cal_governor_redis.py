@@ -27,8 +27,22 @@ pytest_plugins = ["tests.unit.cal_redis_fixture"]
 BASE = "https://www.chasse-aux-livres.fr"
 
 
+class _SharedClock:
+    def __init__(self) -> None:
+        self.now = 1_800_000_000.0
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    def __call__(self) -> float:
+        return self.now
+
+
 def _governor(store, namespace: str, **kwargs) -> CalGovernor:
     options = {"store": store, "namespace": namespace, "min_interval_seconds": 0.0}
+    clock = kwargs.pop("clock", None)
+    if clock is not None:
+        options["clock"] = clock
     options.update({key: value for key, value in kwargs.items() if value is not None})
     return CalGovernor(**options)
 
@@ -251,3 +265,118 @@ async def test_concurrent_collections_and_maintenance_share_one_serialised_lane(
 
     assert peak["max"] == 1
     assert collection.emitted + maintenance.emitted == 7
+
+
+@pytest.mark.asyncio
+async def test_a_successful_probe_never_erases_a_newer_restriction(cal_redis, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(cal_redis, cal_namespace, clock=clock, probe_ttl_seconds=600.0)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    token = await governor.admit_book("passe-1")
+    assert token is not None
+
+    await governor.suspend("bot_challenge", 3600)
+    before = (await governor.snapshot()).open_until
+
+    outcome = await governor.conclude_probe(token, succeeded=True)
+
+    assert outcome == "ignored"
+    assert (await governor.snapshot()).open_until == before
+    assert governor.phase() == "open"
+
+
+@pytest.mark.asyncio
+async def test_an_older_collection_cannot_conclude_someone_elses_probe(cal_redis, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(cal_redis, cal_namespace, clock=clock, probe_ttl_seconds=600.0)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    token = await governor.admit_book("passe-1")
+    outcome = await governor.conclude_probe("jeton-etranger", succeeded=True)
+
+    assert outcome == "ignored"
+    assert governor.phase() == "probing"
+    assert (await governor.snapshot()).probe_pass == "passe-1"
+
+    assert await governor.conclude_probe(token, succeeded=True) == "closed"
+
+
+@pytest.mark.asyncio
+async def test_an_old_token_cannot_close_a_probe_it_did_not_hold(
+    cal_redis, cal_namespace,
+):
+    clock = _SharedClock()
+    governor = _governor(cal_redis, cal_namespace, clock=clock, probe_ttl_seconds=600.0)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    old_token = await governor.admit_book("passe-1")
+    assert old_token is not None
+    assert await governor.conclude_probe(old_token, succeeded=True) == "closed"
+
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+    new_token = await governor.admit_book("passe-2")
+    assert new_token is not None
+
+    assert await governor.conclude_probe(old_token, succeeded=True) == "ignored"
+    assert governor.phase() == "probing"
+    assert await governor.conclude_probe(new_token, succeeded=True) == "closed"
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_probe_does_not_close_the_circuit(cal_redis, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(cal_redis, cal_namespace, clock=clock)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    token = await governor.admit_book("passe-1")
+    assert await governor.conclude_probe(token, succeeded=False, reason="pass_budget") != "closed"
+    assert governor.phase() == "open"
+
+
+@pytest.mark.asyncio
+async def test_a_probe_consumes_an_admission_slot(cal_redis, cal_namespace):
+    clock = _SharedClock()
+    governor = _governor(cal_redis, cal_namespace, clock=clock, max_books_per_pass=2)
+    await governor.suspend("bot_challenge", 1)
+    clock.advance(1.1)
+
+    token = await governor.admit_book("passe-1")
+    assert token is not None
+    await governor.conclude_probe(token, succeeded=True)
+
+    await governor.admit_book("passe-1")
+    with pytest.raises(CalSuspendedError):
+        await governor.admit_book("passe-1")
+
+
+@pytest.mark.asyncio
+async def test_maintenance_and_user_triggers_do_not_consume_book_admissions(
+    cal_redis, cal_namespace,
+):
+    governor = _governor(cal_redis, cal_namespace, max_books_per_pass=2)
+
+    await governor.admit_book("maintenance", counts_as_book=False)
+    await governor.admit_book(None, counts_as_book=False)
+
+    await governor.admit_book("passe-1")
+    await governor.admit_book("passe-1")
+    with pytest.raises(CalSuspendedError) as denied:
+        await governor.admit_book("passe-1")
+    assert denied.value.reason == "pass_budget"
+
+
+@pytest.mark.asyncio
+async def test_a_script_consumes_no_slot_from_the_books_pass(cal_redis, cal_namespace):
+    governor = _governor(cal_redis, cal_namespace, max_books_per_pass=2)
+
+    await governor.admit_book("script-chasse-prices", counts_as_book=False)
+    await governor.admit_book("script-diagnostic", counts_as_book=False)
+
+    assert await governor.admit_book("passe-1") is None
+    assert await governor.admit_book("passe-1") is None

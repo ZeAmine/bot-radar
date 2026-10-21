@@ -21,6 +21,8 @@ from tests.unit.test_chasse_aux_livres_provider import (
     MOCK_SEARCH_PAGE_HTML,
 )
 
+pytest_plugins = ["tests.unit.cal_redis_fixture"]
+
 BASE = "https://www.chasse-aux-livres.fr"
 ISBN = "9782035951463"
 
@@ -79,31 +81,41 @@ async def test_a_deferral_before_any_call_is_not_a_provider_failure(cal_redis, c
     assert list(offers) == []
 
 
-@pytest.mark.usefixtures("pass_token")
-@pytest.mark.asyncio
 async def test_exhausted_collection_budget_keeps_received_offers_as_partial(
     cal_redis, cal_namespace,
 ):
+    seen: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
-        if "/rest/lookup/results" in str(request.url):
-            return httpx.Response(200, json={"offers": {"0": [
-                {"price": 900, "shipping": 300, "url": "https://merchant.example/a",
-                 "shop": "Boutique", "state": "Très bon état"},
-            ]}})
-        return httpx.Response(200, text="<html></html>")
+        path = str(request.url).replace(BASE, "")
+        seen.append(path)
+        if path.startswith("/search?query="):
+            return httpx.Response(200, text=MOCK_SEARCH_PAGE_HTML)
+        if path.startswith("/rest/search-results"):
+            return httpx.Response(200, json=MOCK_REST_JSON)
+        if path.startswith("/prix/"):
+            return httpx.Response(200, text=MOCK_PROD_HTML.replace(
+                'data-nbeng="1"', 'data-nbeng="2"',
+            ))
+        return httpx.Response(200, json=MOCK_LOOKUP_JSON)
 
     clock = FakeClock()
-    governor = _governor(clock, cal_redis, cal_namespace, max_requests_per_collection=2)
+    governor = _governor(clock, cal_redis, cal_namespace, max_requests_per_collection=4)
     async with _client(handler) as client:
         provider = ChasseAuxLivresProvider(
             http_client=client, max_retries=0, governor=governor,
         )
-        offers = await provider.get_offers(isbn13=ISBN, title="Titre")
+        offers = await provider.get_offers(isbn13=None, title="Rip Tome 1")
 
+    assert len(seen) == 4
+    assert governor.emitted == 4
+    assert list(offers)
     current = [a for a in offers.attempts if a.operation == "current"]
     assert current
-    assert current[0].status in {"partial", "failed"}
-    assert governor.emitted <= 2
+    assert current[0].status == "partial"
+    assert current[0].reason == "incomplete_offers"
+    assert sum(1 for offer in offers) >= 1
+    assert governor.denied >= 1
 
 
 @pytest.mark.usefixtures("pass_token")
