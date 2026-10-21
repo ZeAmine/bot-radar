@@ -274,17 +274,23 @@ class BookRepository:
 
     async def get_books_needing_price_refresh(self, limit: int = 8, *,
                                             now: datetime | None = None) -> list[Book]:
+        from app.services.market_refresh_policy import aware, collection_due
+
         now = now or datetime.now(UTC)
+
+        def slot_open(book: Book) -> bool:
+            cache = book.market_cache
+            return (cache is not None and cache.next_refresh_at is not None
+                    and aware(cache.next_refresh_at) <= now)
+
+        def scheduled(book: Book) -> datetime:
+            cache = cast(BookMarketCache, book.market_cache)
+            return aware(cast(datetime, cache.next_refresh_at))
+
         books = await self.get_books_for_active_bd_alerts()
-        eligible = [book for book in books if book.market_cache is not None
-                    and book.market_cache.next_refresh_at is not None
-                    and (book.market_cache.next_refresh_at.replace(tzinfo=UTC)
-                         if book.market_cache.next_refresh_at.tzinfo is None
-                         else book.market_cache.next_refresh_at) <= now]
-        eligible.sort(key=lambda book: (
-            book.market_cache.next_refresh_at if book.market_cache is not None else now,
-            str(book.id),
-        ))
+        eligible = [book for book in books
+                    if slot_open(book) and collection_due(book.market_cache, now)]
+        eligible.sort(key=lambda book: (scheduled(book), str(book.id)))
         return eligible[:limit]
 
     async def get_book_for_alert(self, alert_id: uuid.UUID) -> Book | None:
