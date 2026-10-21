@@ -45,7 +45,15 @@ autorise au plus 30 ouvertures par minute, soit 1800 par heure ; c'est la fenêt
 de quota (30 par minute) qui contraint réellement le débit, pas l'espacement.
 Le plafond de livres admis est le seul qui limite le nombre de livres CAL traités
 par une passe ; il ne réduit ni le lot global de huit livres, ni le débit des
-autres fournisseurs.
+autres fournisseurs. Ce plafond est **global sur une fenêtre glissante de 900 s**,
+et non par identifiant de passe : on doit le lire « deux admissions de livre par
+fenêtre glissante ». Un identifiant de passe ne compte pas ; changer de passe ne
+recharge donc pas le quota.
+
+Seule une collecte de livre consomme une place. L'entretien de session
+(`maintain()`) et les scripts (`chasse_prices.py`, `diagnose_chasse_access.py`)
+sont admis en `counts_as_book=False` et restent bornés par la concurrence et la
+fenêtre de requêtes, jamais au détriment des livres de la passe.
 
 L'espacement ne s'applique qu'entre deux collectes distinctes : il ne s'intercale
 pas entre le lookup et ses sondages, dont la fenêtre bornée reste de 1,5 s.
@@ -59,9 +67,27 @@ passe est de 24 requêtes, elle-même plafonnée par la fenêtre de quota.
 Une restriction ferme l'arbitre : `bot_challenge` ouvre un repos de six heures,
 `429` respecte `Retry-After` et prend sinon quinze minutes. Une collecte refusée
 porte le statut `skipped` avec la raison du report et l'échéance ; elle ne compte
-pas comme échec fournisseur, ne modifie aucune fraîcheur et ne renouvelle pas la
-session. Les requêtes déjà en vol ne sont pas annulables : leur nombre est borné
-par `CAL_MAX_CONCURRENT`.
+pas comme échec fournisseur et ne renouvelle pas la session. Les requêtes déjà en
+vol ne sont pas annulables : leur nombre est borné par `CAL_MAX_CONCURRENT`.
+
+Un report a en revanche un effet de fraîcheur, mesuré sur `persist_market_result` :
+
+| Situation | Statut écrit | `last_successful_collection_at` | Recul |
+| --- | --- | --- | --- |
+| CAL seul, reporté | `skipped` | inchangé (jamais renseigné si le livre n'a jamais été interrogé) | 6 h → 1 j → 7 j, plafonné |
+| CAL reporté, une autre source répond | `empty` | renseigné par la source qui a répondu | aucun |
+
+Le report est enregistré par `record_component` comme un échec de la composante
+`current` : c'est pourquoi le recul escalade `RETRY_DELAYS` — 6 h, puis 1 jour,
+puis 7 jours — sans dépasser trois échelons. Un livre reporté reste donc dû avant
+un livre servi (7 jours). `last_attempt_at` est renseigné, `refresh_state` porte
+la composante avec son nombre d'échecs, et `next_refresh_at` est remis à zéro pour
+que le planificateur assigne un nouveau créneau, sans quoi le livre resterait dû
+sans jamais être replanifié.
+
+Comme le recul plafonne à 7 jours, un livre que le régulateur reporterait en
+continu finirait par attendre une semaine entre deux essais : c'est une limite
+connue, pas une garantie de rattrapage.
 
 L'état vit dans Redis sous `radar:cal:governor`. Chaque décision partagée
 (admission, consommation des quotas, acquisition et libération de la concurrence,
@@ -114,11 +140,22 @@ Transitions :
 - un défi ouvre le circuit six heures ; un `429` ouvre selon `Retry-After`,
   sinon quinze minutes ;
 - à l'expiration, la première collecte admise devient l'essai unique ;
-- un essai réussi rend le circuit `closed` ; l'essai reste compté dans le
-  plafond d'admission de la fenêtre, donc un essai ne donne jamais deux collectes
-  supplémentaires ;
+- un essai réussi rend le circuit `closed` ; l'essai **consomme une place du
+  plafond d'admission**, comme n'importe quelle collecte de livre, donc il ne donne
+  jamais d'admission supplémentaire ;
+- une clôture réussie ne peut jamais effacer ni raccourcir une restriction
+  **plus récente** que l'ouverture de l'essai : le script compare l'horodatage de
+  l'ouverture de l'essai à celui de la restriction courante et refuse la clôture
+  si une restriction postérieure est en place ;
+- chaque essai porte un **jeton unique** ; une conclusion ne vaut que pour le
+  jeton de l'essai qu'elle clôt. Une collecte admise avant une restriction, ou une
+  collecte plus ancienne, ne peut pas conclure l'essai d'une autre.
 - un essai partiel, invalide ou interrompu n'y rend jamais l'admission pleine :
   un défi pendant l'essai rouvre six heures, un autre échec trente minutes ;
+- une collecte dont la composante `current` est `skipped` n'est **pas** un succès :
+  un report du régulateur, une restriction, un budget épuisé ou un stockage
+  indisponible ne ferment jamais le circuit. Seule une collecte réellement
+  exécutée — toutes ses tentatives `current` en `success` — vaut clôture réussie ;
 - l'essai est borné par un délai de validité de soixante secondes : s'il est
   annulé, expiré ou si le processus meurt, l'essai est repris par le suivant sans
   blocage permanent et sans libérer plusieurs essais d'un coup : la prise d'essai
