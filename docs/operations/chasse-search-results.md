@@ -79,15 +79,19 @@ la politique de fraîcheur, des dates, des critères utilisateur ou du scheduler
 Les ouvrages sans URL vérifiée continuent à utiliser la recherche : cette correction
 ne garantit pas la résolution d'une panne serveur persistante.
 
-Une réponse d'offres structurée ne certifie pas à elle seule sa complétude.
-En l'absence de signal source fiable démontré, les relevés CAL sont `partial`
-(`incomplete_offers`), même avec le groupe 22. Le second relevé existant reste
-borné ; sa condition actuelle n'est pas une preuve de complétude. Aucun nouveau
-relevé ni repli par titre n'est ajouté pour une réponse partielle identifiée.
-Un schéma invalide reste un échec technique. Les autres fournisseurs ou résultats
-explicitement réussis distinguent toujours offre comparable et résultat complet
-sans offre comparable ; CAL ne certifie actuellement aucune absence d'offre par
-ce parcours. Cette limite est volontairement visible dans le diagnostic interne.
+Une réponse d'offres structurée ne certifie pas à elle seule sa complétude, mais un
+signal vérifiable existe : la collecte est complète quand tous les moteurs demandés
+ont répondu. Un moteur qui a répondu sans rien trouver est présent avec une liste
+vide ; un moteur muet est absent. Le groupe 22 n'est ni nécessaire ni suffisant.
+Le relevé se poursuit par un sondage borné, en réutilisant la fiche et ses jetons
+déjà obtenus et la liste rétrécissante des moteurs encore attendus, sans régénérer
+le `data-hash` ni relancer la recherche. Trois états restent distincts : `complete`
+si l'ensemble en attente est vide, `partial` (`incomplete_offers`) si la borne de
+tours ou de durée est atteinte, absence confirmée si la collecte est complète sans
+offre comparable. Un `partial` n'est jamais converti en absence, et un schéma
+invalide reste un échec technique. Les autres fournisseurs ou résultats explicitement
+réussis distinguent toujours offre comparable et résultat complet sans offre
+comparable. Cette limite est volontairement visible dans le diagnostic interne.
 
 Les observations comparables partielles sont enregistrées en snapshots avec
 provenance et statut, sans remplacer les offres validées ni leur prix ou date de
@@ -143,6 +147,16 @@ La recette PostgreSQL teste collecteur, offres, frais/états, historique source,
 stockage/relecture/rendu, conservation après HTTP 429 et sélection du prochain lot.
 Le minimum 9,36 € y vient uniquement de la fixture source antérieure du 18 octobre ;
 il n'est ni une constante applicative ni une observation réseau du jour.
+
+Deux captures navigateur du 21 octobre 2026 fondent le critère de complétude :
+Jean Doux reçoit ses 32 moteurs au premier relevé, sans sondage ; Nanbanjin en reçoit
+27 puis les 5 restants après trois sondages, la liste des moteurs attendus passant
+de `0_1_22_30_31` à `1_30_31` puis `30_31`. Les réponses rejouées sont conservées
+dans `lookup_jean_doux_2026_10_21.json` et `lookup_nanbanjin_2026_10_21.json` :
+montants, états et groupes y sont réels, les liens d'affiliation et les jetons de
+session ont été retirés. Jean Doux y porte 15 offres retenues, la meilleure à
+16,28 € livrée ; Nanbanjin est complet sans offre comparable. Ces deux livres ne
+mesurent pas un taux de réussite : ils démontrent un protocole.
 
 Après validation et autorisation de livraison au SHA exact : commencer par un
 petit lot d'éditions à identité démontrée et sans repos actif, réutiliser les données

@@ -1,0 +1,338 @@
+{
+  "provenance": {
+    "source": "HAR nanbanjin.har, 2026-10-21T09:59:57Z",
+    "book": "Nanbanjin",
+    "isbn13": "9782808500487",
+    "engines": 32,
+    "note": "Reponses de sondage reelles (groupes par tour) ; liens remplaces."
+  },
+  "responses": {
+    "0": {
+      "offers": {
+        "2": [],
+        "3": [],
+        "4": [
+          {
+            "logo": {
+              "_name": "BD_FUGUE",
+              "name": "BD_FUGUE"
+            },
+            "origin": {
+              "_name": "BD_FUGUE",
+              "name": "BD_FUGUE"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 4900,
+              "formattedPrice": "49,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 10,
+              "formattedPrice": "0,10 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 4910,
+              "formattedPrice": "49,10 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-1"
+          }
+        ],
+        "5": [],
+        "6": [],
+        "7": [],
+        "8": [],
+        "9": [],
+        "10": [],
+        "11": [],
+        "12": [
+          {
+            "logo": {
+              "_name": "EYROLLES",
+              "name": "EYROLLES"
+            },
+            "origin": {
+              "_name": "EYROLLES",
+              "name": "EYROLLES"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 4900,
+              "formattedPrice": "49,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 1,
+              "formattedPrice": "0,01 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 4901,
+              "formattedPrice": "49,01 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-2"
+          }
+        ],
+        "13": [],
+        "14": [],
+        "15": [
+          {
+            "logo": {
+              "_name": "LA_PROCURE",
+              "name": "LA_PROCURE"
+            },
+            "origin": {
+              "_name": "LA_PROCURE",
+              "name": "LA_PROCURE"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 4900,
+              "formattedPrice": "49,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 300,
+              "formattedPrice": "3,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 5200,
+              "formattedPrice": "52,00 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-3"
+          }
+        ],
+        "16": [
+          {
+            "logo": {
+              "_name": "FNAC",
+              "name": "FNAC"
+            },
+            "origin": {
+              "_name": "FNAC_API_OFFER",
+              "name": "FNAC_API_OFFER"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 4900,
+              "formattedPrice": "49,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 1,
+              "formattedPrice": "0,01 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 4901,
+              "formattedPrice": "49,01 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-4"
+          },
+          {
+            "logo": {
+              "_name": "FNAC",
+              "name": "FNAC"
+            },
+            "origin": {
+              "_name": "FNAC_API_OFFER",
+              "name": "FNAC_API_OFFER"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 4900,
+              "formattedPrice": "49,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 399,
+              "formattedPrice": "3,99 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 5299,
+              "formattedPrice": "52,99 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-5"
+          }
+        ],
+        "17": [
+          {
+            "logo": {
+              "_name": "LES_LIBRAIRES",
+              "name": "LES_LIBRAIRES"
+            },
+            "origin": {
+              "_name": "LES_LIBRAIRES_OFFER",
+              "name": "LES_LIBRAIRES_OFFER"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 4900,
+              "formattedPrice": "49,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 900,
+              "formattedPrice": "9,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 5800,
+              "formattedPrice": "58,00 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-6"
+          }
+        ],
+        "18": [],
+        "19": [],
+        "20": [],
+        "21": [],
+        "23": [],
+        "24": [],
+        "25": [],
+        "26": [],
+        "27": [],
+        "28": [],
+        "29": []
+      }
+    },
+    "1": {
+      "offers": {
+        "0": [
+          {
+            "logo": {
+              "_name": "AMAZON",
+              "name": "AMAZON"
+            },
+            "origin": {
+              "_name": "AMAZON_OFFER_ALL",
+              "name": "AMAZON_OFFER_ALL"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 4900,
+              "formattedPrice": "49,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 1,
+              "formattedPrice": "0,01 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 4901,
+              "formattedPrice": "49,01 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-7"
+          }
+        ],
+        "22": []
+      }
+    },
+    "2": {
+      "offers": {
+        "1": [
+          {
+            "logo": {
+              "_name": "AMAZON_DE",
+              "name": "AMAZON_DE"
+            },
+            "origin": {
+              "_name": "AMAZON_DE_OFFER_ALL",
+              "name": "AMAZON_DE_OFFER_ALL"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 4900,
+              "formattedPrice": "49,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 500,
+              "formattedPrice": "5,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 5400,
+              "formattedPrice": "54,00 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-8"
+          }
+        ]
+      }
+    },
+    "3": {
+      "offers": {
+        "30": [],
+        "31": []
+      }
+    }
+  }
+}

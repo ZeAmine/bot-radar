@@ -1,0 +1,1080 @@
+{
+  "provenance": {
+    "source": "HAR jeandoux.har, 2026-10-21T09:59:32Z",
+    "book": "Jean Doux et le mystere de la disquette molle",
+    "isbn13": "9782756079332",
+    "engines": 32,
+    "note": "Montants, etats et groupes reels ; liens d affilies remplaces car opaques."
+  },
+  "responses": {
+    "0": {
+      "offers": {
+        "0": [
+          {
+            "logo": {
+              "_name": "AMAZON_MARKET",
+              "name": "AMAZON_MARKET"
+            },
+            "origin": {
+              "_name": "AMAZON_OFFER_ALL",
+              "name": "AMAZON_OFFER_ALL"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1454,
+              "formattedPrice": "14,54 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 299,
+              "formattedPrice": "2,99 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1753,
+              "formattedPrice": "17,53 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-1"
+          },
+          {
+            "logo": {
+              "_name": "AMAZON",
+              "name": "AMAZON"
+            },
+            "origin": {
+              "_name": "AMAZON_OFFER_ALL",
+              "name": "AMAZON_OFFER_ALL"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 300,
+              "formattedPrice": "3,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 3295,
+              "formattedPrice": "32,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-2"
+          }
+        ],
+        "1": [
+          {
+            "logo": {
+              "_name": "AMAZON_DE",
+              "name": "AMAZON_DE"
+            },
+            "origin": {
+              "_name": "AMAZON_DE_OFFER_ALL",
+              "name": "AMAZON_DE_OFFER_ALL"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1675,
+              "formattedPrice": "16,75 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 500,
+              "formattedPrice": "5,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2175,
+              "formattedPrice": "21,75 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-3"
+          },
+          {
+            "logo": {
+              "_name": "AMAZON_DE",
+              "name": "AMAZON_DE"
+            },
+            "origin": {
+              "_name": "AMAZON_DE_OFFER_ALL",
+              "name": "AMAZON_DE_OFFER_ALL"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 500,
+              "formattedPrice": "5,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 3495,
+              "formattedPrice": "34,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-4"
+          }
+        ],
+        "2": [],
+        "3": [],
+        "4": [
+          {
+            "logo": {
+              "_name": "BD_FUGUE",
+              "name": "BD_FUGUE"
+            },
+            "origin": {
+              "_name": "BD_FUGUE",
+              "name": "BD_FUGUE"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1200,
+              "formattedPrice": "12,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 499,
+              "formattedPrice": "4,99 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1699,
+              "formattedPrice": "16,99 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-5"
+          },
+          {
+            "logo": {
+              "_name": "BD_FUGUE",
+              "name": "BD_FUGUE"
+            },
+            "origin": {
+              "_name": "BD_FUGUE",
+              "name": "BD_FUGUE"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 300,
+              "formattedPrice": "3,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 3295,
+              "formattedPrice": "32,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-6"
+          },
+          {
+            "logo": {
+              "_name": "BD_FUGUE",
+              "name": "BD_FUGUE"
+            },
+            "origin": {
+              "_name": "BD_FUGUE",
+              "name": "BD_FUGUE"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "MINT",
+              "name": "Comme neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 4500,
+              "formattedPrice": "45,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 650,
+              "formattedPrice": "6,50 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 5150,
+              "formattedPrice": "51,50 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-7"
+          }
+        ],
+        "5": [],
+        "6": [],
+        "7": [],
+        "8": [],
+        "9": [],
+        "10": [],
+        "11": [],
+        "12": [
+          {
+            "logo": {
+              "_name": "EYROLLES",
+              "name": "EYROLLES"
+            },
+            "origin": {
+              "_name": "EYROLLES",
+              "name": "EYROLLES"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 300,
+              "formattedPrice": "3,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 3295,
+              "formattedPrice": "32,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-8"
+          }
+        ],
+        "13": [
+          {
+            "logo": {
+              "_name": "LIREKA",
+              "name": "LIREKA"
+            },
+            "origin": {
+              "_name": "LIREKA",
+              "name": "LIREKA"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 300,
+              "formattedPrice": "3,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 3295,
+              "formattedPrice": "32,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-9"
+          }
+        ],
+        "14": [],
+        "15": [],
+        "16": [
+          {
+            "logo": {
+              "_name": "FNAC",
+              "name": "FNAC"
+            },
+            "origin": {
+              "_name": "FNAC_API_OFFER",
+              "name": "FNAC_API_OFFER"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1353,
+              "formattedPrice": "13,53 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 300,
+              "formattedPrice": "3,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1653,
+              "formattedPrice": "16,53 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-10"
+          },
+          {
+            "logo": {
+              "_name": "FNAC",
+              "name": "FNAC"
+            },
+            "origin": {
+              "_name": "FNAC_API_OFFER",
+              "name": "FNAC_API_OFFER"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1305,
+              "formattedPrice": "13,05 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 349,
+              "formattedPrice": "3,49 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1654,
+              "formattedPrice": "16,54 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-11"
+          },
+          {
+            "logo": {
+              "_name": "FNAC",
+              "name": "FNAC"
+            },
+            "origin": {
+              "_name": "FNAC_API_OFFER",
+              "name": "FNAC_API_OFFER"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 300,
+              "formattedPrice": "3,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 3295,
+              "formattedPrice": "32,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-12"
+          },
+          {
+            "logo": {
+              "_name": "FNAC",
+              "name": "FNAC"
+            },
+            "origin": {
+              "_name": "FNAC_API_OFFER",
+              "name": "FNAC_API_OFFER"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "MINT",
+              "name": "Comme neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 9499,
+              "formattedPrice": "94,99 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 499,
+              "formattedPrice": "4,99 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 9998,
+              "formattedPrice": "99,98 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-13"
+          },
+          {
+            "logo": {
+              "_name": "FNAC",
+              "name": "FNAC"
+            },
+            "origin": {
+              "_name": "FNAC_API_OFFER",
+              "name": "FNAC_API_OFFER"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 0,
+              "formattedPrice": "0,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-14"
+          }
+        ],
+        "17": [
+          {
+            "logo": {
+              "_name": "LES_LIBRAIRES",
+              "name": "LES_LIBRAIRES"
+            },
+            "origin": {
+              "_name": "LES_LIBRAIRES_OFFER",
+              "name": "LES_LIBRAIRES_OFFER"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 900,
+              "formattedPrice": "9,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 3895,
+              "formattedPrice": "38,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-15"
+          },
+          {
+            "logo": {
+              "_name": "LES_LIBRAIRES",
+              "name": "LES_LIBRAIRES"
+            },
+            "origin": {
+              "_name": "LES_LIBRAIRES_OFFER",
+              "name": "LES_LIBRAIRES_OFFER"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 0,
+              "formattedPrice": "0,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-16"
+          }
+        ],
+        "18": [
+          {
+            "logo": {
+              "_name": "MOMOX_SHOP",
+              "name": "MOMOX_SHOP"
+            },
+            "origin": {
+              "_name": "MOMOX_SHOP_BOOKS",
+              "name": "MOMOX_SHOP_BOOKS"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "GOOD",
+              "name": "Bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1599,
+              "formattedPrice": "15,99 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 199,
+              "formattedPrice": "1,99 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1798,
+              "formattedPrice": "17,98 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-17"
+          },
+          {
+            "logo": {
+              "_name": "MOMOX_SHOP",
+              "name": "MOMOX_SHOP"
+            },
+            "origin": {
+              "_name": "MOMOX_SHOP_BOOKS",
+              "name": "MOMOX_SHOP_BOOKS"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1769,
+              "formattedPrice": "17,69 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 199,
+              "formattedPrice": "1,99 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1968,
+              "formattedPrice": "19,68 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-18"
+          }
+        ],
+        "19": [],
+        "20": [
+          {
+            "logo": {
+              "_name": "ABEBOOKS",
+              "name": "ABEBOOKS"
+            },
+            "origin": {
+              "_name": "ABEBOOKS_SWS",
+              "name": "ABEBOOKS_SWS"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "GOOD",
+              "name": "Bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1726,
+              "formattedPrice": "17,26 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 300,
+              "formattedPrice": "3,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2026,
+              "formattedPrice": "20,26 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-19"
+          },
+          {
+            "logo": {
+              "_name": "ABEBOOKS",
+              "name": "ABEBOOKS"
+            },
+            "origin": {
+              "_name": "ABEBOOKS_SWS",
+              "name": "ABEBOOKS_SWS"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2044,
+              "formattedPrice": "20,44 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 0,
+              "formattedPrice": "0,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2044,
+              "formattedPrice": "20,44 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-20"
+          },
+          {
+            "logo": {
+              "_name": "ABEBOOKS",
+              "name": "ABEBOOKS"
+            },
+            "origin": {
+              "_name": "ABEBOOKS_SWS",
+              "name": "ABEBOOKS_SWS"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "MINT",
+              "name": "Comme neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1851,
+              "formattedPrice": "18,51 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 399,
+              "formattedPrice": "3,99 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2250,
+              "formattedPrice": "22,50 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-21"
+          },
+          {
+            "logo": {
+              "_name": "ABEBOOKS",
+              "name": "ABEBOOKS"
+            },
+            "origin": {
+              "_name": "ABEBOOKS_SWS",
+              "name": "ABEBOOKS_SWS"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2068,
+              "formattedPrice": "20,68 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 299,
+              "formattedPrice": "2,99 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2367,
+              "formattedPrice": "23,67 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-22"
+          },
+          {
+            "logo": {
+              "_name": "ABEBOOKS",
+              "name": "ABEBOOKS"
+            },
+            "origin": {
+              "_name": "ABEBOOKS_SWS",
+              "name": "ABEBOOKS_SWS"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "MINT",
+              "name": "Comme neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2000,
+              "formattedPrice": "20,00 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 650,
+              "formattedPrice": "6,50 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2650,
+              "formattedPrice": "26,50 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-23"
+          }
+        ],
+        "21": [],
+        "22": [
+          {
+            "logo": {
+              "_name": "EBAY",
+              "name": "EBAY"
+            },
+            "origin": {
+              "_name": "EBAY_OFFER_SEARCH",
+              "name": "EBAY_OFFER_SEARCH"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "GOOD",
+              "name": "Bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1619,
+              "formattedPrice": "16,19 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 0,
+              "formattedPrice": "0,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1619,
+              "formattedPrice": "16,19 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-24"
+          },
+          {
+            "logo": {
+              "_name": "EBAY",
+              "name": "EBAY"
+            },
+            "origin": {
+              "_name": "EBAY_OFFER_SEARCH",
+              "name": "EBAY_OFFER_SEARCH"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1650,
+              "formattedPrice": "16,50 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 0,
+              "formattedPrice": "0,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1650,
+              "formattedPrice": "16,50 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-25"
+          },
+          {
+            "logo": {
+              "_name": "EBAY",
+              "name": "EBAY"
+            },
+            "origin": {
+              "_name": "EBAY_OFFER_SEARCH",
+              "name": "EBAY_OFFER_SEARCH"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2068,
+              "formattedPrice": "20,68 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 299,
+              "formattedPrice": "2,99 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2367,
+              "formattedPrice": "23,67 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-26"
+          }
+        ],
+        "23": [],
+        "24": [
+          {
+            "logo": {
+              "_name": "AMMAREAL",
+              "name": "AMMAREAL"
+            },
+            "origin": {
+              "_name": "AMMAREAL",
+              "name": "AMMAREAL"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1965,
+              "formattedPrice": "19,65 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 0,
+              "formattedPrice": "0,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1965,
+              "formattedPrice": "19,65 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-27"
+          }
+        ],
+        "25": [],
+        "26": [
+          {
+            "logo": {
+              "_name": "RECYCLIVRE",
+              "name": "RECYCLIVRE"
+            },
+            "origin": {
+              "_name": "RECYCLIVRE",
+              "name": "RECYCLIVRE"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "VERYGOOD",
+              "name": "Très bon"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 1628,
+              "formattedPrice": "16,28 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 0,
+              "formattedPrice": "0,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 1628,
+              "formattedPrice": "16,28 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-28"
+          }
+        ],
+        "27": [],
+        "28": [],
+        "29": [],
+        "30": [],
+        "31": [
+          {
+            "logo": {
+              "_name": "BAL",
+              "name": "BAL"
+            },
+            "origin": {
+              "_name": "BAL",
+              "name": "BAL"
+            },
+            "condition": {
+              "_name": "USED",
+              "name": "D'occasion"
+            },
+            "subCondition": {
+              "_name": "ACCEPTABLE",
+              "name": "Correct"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2695,
+              "formattedPrice": "26,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 0,
+              "formattedPrice": "0,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 2695,
+              "formattedPrice": "26,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-29"
+          },
+          {
+            "logo": {
+              "_name": "BAL",
+              "name": "BAL"
+            },
+            "origin": {
+              "_name": "BAL",
+              "name": "BAL"
+            },
+            "condition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "subCondition": {
+              "_name": "NEW",
+              "name": "Neuf"
+            },
+            "price": {
+              "currency": "EUR",
+              "amount": 2995,
+              "formattedPrice": "29,95 €"
+            },
+            "shippingCost": {
+              "currency": "EUR",
+              "amount": 300,
+              "formattedPrice": "3,00 €"
+            },
+            "totalPrice": {
+              "currency": "EUR",
+              "amount": 3295,
+              "formattedPrice": "32,95 €"
+            },
+            "affiliateUrl": "https://merchant.example/offer-30"
+          }
+        ]
+      }
+    }
+  }
+}

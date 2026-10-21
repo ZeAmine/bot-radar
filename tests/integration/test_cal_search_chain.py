@@ -10,7 +10,11 @@ from app.core.constants import ComparisonStatus
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.market_price_snapshot import MarketPriceSnapshot
 from app.db.repositories.book_repo import BookRepository
-from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
+from app.providers.chasse_aux_livres import (
+    LOOKUP_POLL_DELAY_SECONDS,
+    LOOKUP_POLL_MAX,
+    ChasseAuxLivresProvider,
+)
 from app.providers.registry import ProviderRegistry
 from app.services.book_market_pricing import price_book_now
 from app.services.market_price_service import MarketPriceService
@@ -74,7 +78,7 @@ async def test_partial_source_stores_observations_and_history_without_refreshing
         monkeypatch.setattr(book_market_pricing, 'AsyncSessionLocal', database.maker)
         async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
             registry = ProviderRegistry(providers=[ChasseAuxLivresProvider(
-                http_client=client, max_retries=0,
+                http_client=client, max_retries=0, sleep=AsyncMock(),
             )])
             await price_book_now(book.id, reason='alert_created', registry=registry)
             async with database.maker() as reader:
@@ -129,9 +133,9 @@ async def test_partial_source_stores_observations_and_history_without_refreshing
                         cache.historical_checked_at) == before
                 assert cache.collection_status == 'failed'
                 assert aware(cache.last_attempt_at) >= later
-        assert requests == [URL.removeprefix('https://www.chasse-aux-livres.fr'),
-                            '/rest/lookup/results',
-                            URL.removeprefix('https://www.chasse-aux-livres.fr')]
+        assert requests == [URL.removeprefix('https://www.chasse-aux-livres.fr')] + [
+            '/rest/lookup/results'] * (1 + LOOKUP_POLL_MAX) + [
+            URL.removeprefix('https://www.chasse-aux-livres.fr')]
 
 
 async def test_initial_zero_eligible_is_followed_by_the_reserved_batch_without_date_invention():
@@ -194,9 +198,12 @@ async def test_empty_search_recovers_once_and_stores_history_independently_of_pa
         offers = await ProviderRegistry(providers=[provider]).fetch_all_offers(
             isbn13='9782756079332', title='Jean Doux',
         )
-        provider._sleep.assert_awaited_once_with(1.5)
+        provider._sleep.assert_awaited()
+        delays = [call.args[0] for call in provider._sleep.await_args_list]
+        assert delays[0] == 1.5
+        assert delays[1:] == [LOOKUP_POLL_DELAY_SECONDS] * LOOKUP_POLL_MAX
     assert requests == ['/search', '/rest/search-results', '/search', '/rest/search-results',
-                        URL.split('.fr')[1], '/rest/lookup/results', '/rest/lookup/results']
+                        URL.split('.fr')[1]] + ['/rest/lookup/results'] * (1 + LOOKUP_POLL_MAX)
     assert offers.attempts[0].status == 'partial'
     assert offers.attempts[1].status == 'success'
     result = BookPricingResult.from_offers(

@@ -7,7 +7,7 @@ import httpx
 
 from app.db.models.book_market_cache import BookMarketCache
 from app.providers.base import extract_best_historical_low
-from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
+from app.providers.chasse_aux_livres import LOOKUP_POLL_MAX, ChasseAuxLivresProvider
 from app.providers.registry import ProviderRegistry
 from app.services.book_market_pricing import BookPricingResult, _stamp_collection
 from app.services.market_refresh_policy import component_due
@@ -50,7 +50,9 @@ async def _collect(monkeypatch, history_body: dict) -> tuple:
         return httpx.Response(200, json=partial)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        result = await ChasseAuxLivresProvider(http_client=client).get_offers(
+        result = await ChasseAuxLivresProvider(
+            http_client=client, sleep=AsyncMock(),
+        ).get_offers(
             isbn13="9782756079332", title="Jean Doux",
         )
     return result, requests, history_call
@@ -73,9 +75,7 @@ async def test_raw_cal_partial_and_empty_history_replay_through_pricing(monkeypa
         "/search",
         "/rest/search-results",
         "/prix/2756079332/9782756079332",
-        "/rest/lookup/results",
-        "/rest/lookup/results",
-    ]
+    ] + ["/rest/lookup/results"] * (1 + LOOKUP_POLL_MAX)
     assert [(attempt.operation, attempt.status) for attempt in result.attempts] == [
         ("current", "partial"),
         ("history", "success"),
