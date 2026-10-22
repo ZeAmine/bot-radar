@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,15 +19,14 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.leboncoin_parsing import LeboncoinParseError, parse_search_page  # noqa: E402
+from app.core.constants import LEBONCOIN_SEARCH_URL as DEFAULT_SEARCH_URL  # noqa: E402
+from app.services.leboncoin_parsing import (  # noqa: E402
+    NEXT_DATA_PATTERN,
+    LeboncoinParseError,
+    parse_search_page,
+)
 
-DEFAULT_URL = (
-    "https://www.leboncoin.fr/recherche"
-    "?category=27&leisure_book_genre=comics%26mangas"
-)
-NEXT_DATA_PATTERN = re.compile(
-    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL
-)
+DEFAULT_URL = DEFAULT_SEARCH_URL
 REQUIRED_AD_FIELDS = ("list_id", "subject", "url", "price", "first_publication_date")
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 SAMPLE_SIZE = 10

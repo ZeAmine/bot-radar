@@ -9,6 +9,8 @@ from typing import Annotated
 from pydantic import BeforeValidator, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.constants import LEBONCOIN_SEARCH_URL as DEFAULT_LEBONCOIN_SEARCH_URL
+
 
 def parse_allowed_user_ids(v: str | list[int] | None) -> list[int]:
     """Parse une liste d'identifiants Telegram séparés par des virgules."""
@@ -74,9 +76,7 @@ class Settings(BaseSettings):
     # DataDome répond 403 même avec l'empreinte TLS de Chrome.
     LEBONCOIN_POLLER_ENABLED: bool = False
     LEBONCOIN_POLL_INTERVAL_SECONDS: int = 600
-    LEBONCOIN_SEARCH_URL: str = (
-        "https://www.leboncoin.fr/recherche?category=27&leisure_book_genre=comics%26mangas"
-    )
+    LEBONCOIN_SEARCH_URL: str = DEFAULT_LEBONCOIN_SEARCH_URL
     LEBONCOIN_PROXY_ENABLED: bool = False
     LEBONCOIN_PROXY_URL: str | None = None
     LEBONCOIN_CATCHUP_MAX_PAGES: int = 2
