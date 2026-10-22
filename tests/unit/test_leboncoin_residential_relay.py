@@ -1061,3 +1061,147 @@ def test_the_watchdog_is_the_backstop_when_socket_timeouts_do_not_apply():
     assert finished, "le worker rend la main malgré des timeouts ignorés"
     assert elapsed < 2.0, "c'est le watchdog, et non le timeout de socket, qui libère"
     assert elapsed >= 0.2, "la coupure a bien attendu l'échéance"
+
+
+def test_a_send_slower_than_the_connect_timeout_still_succeeds_within_the_deadline():
+    """Le relais ne réutilise pas le timeout de connexion : il reste borné par la deadline."""
+    from scripts.leboncoin_residential_relay import _relay
+
+    client_side, relay_client = _pair()
+    relay_upstream, upstream_side = _pair()
+    deadline = time.monotonic() + 5.0
+    thread = threading.Thread(
+        target=_relay,
+        args=(relay_client, relay_upstream),
+        kwargs={"deadline": deadline, "idle_timeout": 30.0},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        client_side.settimeout(5.0)
+        upstream_side.settimeout(5.0)
+        time.sleep(0.6)
+        client_side.sendall(b"tardif")
+        assert upstream_side.recv(6) == b"tardif", "un envoi après le timeout de connexion passe"
+        upstream_side.sendall(b"reponse")
+        assert client_side.recv(7) == b"reponse"
+    finally:
+        for sock in (client_side, upstream_side, relay_client, relay_upstream):
+            with contextlib.suppress(OSError):
+                sock.close()
+        thread.join(timeout=3.0)
+
+
+def test_a_send_beyond_the_deadline_is_cut():
+    """Un pair qui ne lit plus est coupé à l'échéance, même en cours d'écriture."""
+    client_side, relay_client = _pair()
+    relay_upstream, upstream_side = _pair()
+    deadline = time.monotonic() + 0.3
+    watchdog = __import__(
+        "scripts.leboncoin_residential_relay", fromlist=["DeadlineWatchdog"]
+    ).DeadlineWatchdog(deadline, relay_client, relay_upstream)
+    watchdog.start()
+
+    class NeverReads:
+        def __init__(self, sock: socket.socket) -> None:
+            self._sock = sock
+
+        def fileno(self) -> int:
+            return self._sock.fileno()
+
+        def recv(self, size: int) -> bytes:
+            return self._sock.recv(size)
+
+        def settimeout(self, value: float | None) -> None:
+            self._sock.settimeout(value)
+
+        def sendall(self, data: bytes) -> None:
+            while True:
+                self._sock.sendall(data)
+
+        def shutdown(self, _how: int) -> None:
+            with contextlib.suppress(OSError):
+                self._sock.shutdown(socket.SHUT_RDWR)
+
+        def close(self) -> None:
+            with contextlib.suppress(OSError):
+                self._sock.close()
+
+    from scripts.leboncoin_residential_relay import _relay
+
+    thread = threading.Thread(
+        target=_relay,
+        args=(relay_client, NeverReads(relay_upstream)),
+        kwargs={"deadline": deadline, "idle_timeout": 30.0},
+        daemon=True,
+    )
+    started = time.monotonic()
+    thread.start()
+    try:
+        with contextlib.suppress(OSError):
+            client_side.sendall(b"x" * 65536)
+        thread.join(timeout=3.0)
+        assert not thread.is_alive(), "le relais rend la main à l'échéance"
+        assert time.monotonic() - started < 2.0
+    finally:
+        watchdog.stop()
+        for sock in (client_side, upstream_side, relay_client, relay_upstream):
+            with contextlib.suppress(OSError):
+                sock.close()
+
+
+@pytest.mark.parametrize(
+    ("domain", "reason"),
+    [
+        ("", "vide"),
+        ("   ", "vide"),
+        ("leboncoin", "point"),
+        ("*", "joker"),
+        ("*.leboncoin.fr", "joker"),
+        ("leboncoin.fr/*", "joker"),
+        ("leboncoin.fr:443", "port"),
+        ("leboncoin.fr/annonces", "chemin"),
+        ("93.184.216.34", "adresse IP"),
+        ("2a00:1450:4007:810::200e", "adresse IP"),
+        (".leboncoin.fr", "étiquette vide"),
+        ("leboncoin..fr", "étiquette vide"),
+        ("-leboncoin.fr", "tiret"),
+        ("leboncoin-.fr", "tiret"),
+        ("lebon coin.fr", "caractère interdit"),
+    ],
+)
+def test_invalid_allowed_domains_are_refused_at_startup(domain: str, reason: str):
+    from scripts.leboncoin_residential_relay import normalize_domain
+
+    with pytest.raises(ValueError, match=reason):
+        normalize_domain(domain)
+
+
+def test_allowed_domains_are_normalized_at_startup():
+    from scripts.leboncoin_residential_relay import normalize_domain
+
+    assert normalize_domain("LeBonCoin.FR") == "leboncoin.fr"
+    assert normalize_domain("  www.leboncoin.fr.  ") == "www.leboncoin.fr"
+    server = Socks5Server(allowed_domains=("Leboncoin.FR.",))
+    assert server.allowed_domains == ("leboncoin.fr",)
+
+
+def test_an_empty_allowed_domain_list_is_refused():
+    with pytest.raises(ValueError, match="vide"):
+        Socks5Server(allowed_domains=())
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["64:ff9b::10.0.0.1", "2002:0a00:0001::1", "2001::1", "64:ff9b:1::1"],
+)
+def test_ipv6_translation_prefixes_are_not_public(address: str):
+    from scripts.leboncoin_residential_relay import _is_public_address
+
+    assert not _is_public_address(address), "préfixe de traduction IPv4 en IPv6 refusé"
+
+
+def test_a_public_ipv6_address_stays_allowed():
+    from scripts.leboncoin_residential_relay import _is_public_address
+
+    assert _is_public_address("2a00:1450:4007:810::200e")

@@ -75,6 +75,10 @@ NON_PUBLIC_NETWORKS = [
         "fe80::/10",
         "ff00::/8",
         "2001:db8::/32",
+        "2002::/16",
+        "2001::/32",
+        "64:ff9b::/96",
+        "64:ff9b:1::/48",
     )
 ]
 
@@ -97,11 +101,9 @@ class Socks5Server:
             )
         self.host = host
         self.port = port
-        self.allowed_domains = tuple(
-            domain.strip().lower().lstrip(".") for domain in allowed_domains if domain.strip()
-        )
-        if not self.allowed_domains:
+        if not allowed_domains:
             raise ValueError("liste de domaines autorisés vide")
+        self.allowed_domains = tuple(normalize_domain(domain) for domain in allowed_domains)
         if isinstance(max_connections, bool) or not isinstance(max_connections, int):
             raise ValueError("plafond de connexions invalide")
         if max_connections < 1:
@@ -188,6 +190,8 @@ class Socks5Server:
                 return
             watchdog.watch(client, upstream)
             _send_reply(client, REPLY_SUCCEEDED, deadline)
+            client.settimeout(_remaining(deadline))
+            upstream.settimeout(_remaining(deadline))
             _relay(
                 client,
                 upstream,
@@ -335,6 +339,49 @@ def _is_public_address(address: str) -> bool:
     return parsed.is_global
 
 
+def normalize_domain(domain: str) -> str:
+    """Normalise un domaine autorisé et refuse toute forme ambiguë."""
+    candidate = domain.strip().lower()
+    if not candidate:
+        raise ValueError("domaine autorisé vide")
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        pass
+    else:
+        raise ValueError(
+            f"domaine autorisé invalide (adresse IP littérale) : {candidate!r}"
+        )
+    candidate = candidate.rstrip(".")
+    if not candidate:
+        raise ValueError("domaine autorisé vide après normalisation")
+    if any(
+        character in candidate
+        for character in ("*", "?", "/", "\\", ":", "@", "#", "%")
+    ) or any(character.isspace() for character in candidate):
+        raise ValueError(
+            "domaine autorisé invalide (joker, port, chemin ou caractère "
+            f"interdit) : {candidate!r}"
+        )
+    if "." not in candidate:
+        raise ValueError(
+            f"domaine autorisé invalide (au moins un point attendu) : {candidate!r}"
+        )
+    if candidate.startswith(".") or ".." in candidate:
+        raise ValueError(f"domaine autorisé invalide (étiquette vide) : {candidate!r}")
+    for label in candidate.split("."):
+        if not all(character.isalnum() or character == "-" for character in label):
+            raise ValueError(
+                f"domaine autorisé invalide (étiquette {label!r}) : {candidate!r}"
+            )
+        if label.startswith("-") or label.endswith("-"):
+            raise ValueError(
+                "domaine autorisé invalide (étiquette finissant par un tiret) : "
+                f"{candidate!r}"
+            )
+    return candidate
+
+
 def domain_is_allowed(host: str, allowed_domains: tuple[str, ...]) -> bool:
     """Le nom doit être le domaine autorisé lui-même ou l'un de ses sous-domaines."""
     normalized = host.strip().rstrip(".").lower()
@@ -420,6 +467,8 @@ def _relay(
                     return
                 destination = upstream if source is client else client
                 try:
+                    if deadline is not None:
+                        destination.settimeout(_remaining(deadline))
                     destination.sendall(data)
                 except OSError:
                     return
