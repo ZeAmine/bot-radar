@@ -12,14 +12,15 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.core.constants import LEBONCOIN_SOURCE_NAME
 from app.domain.enums import ItemCondition
 
-_NEXT_DATA_PATTERN = re.compile(
+NEXT_DATA_PATTERN = re.compile(
     r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL
 )
 _PARIS = ZoneInfo("Europe/Paris")
 
-SOURCE_NAME = "leboncoin"
+SOURCE_NAME = LEBONCOIN_SOURCE_NAME
 
 # Codes d'état observés sur le flux Livres/BD, relevés sur les annonces réelles.
 CONDITION_BY_CODE: dict[str, ItemCondition] = {
@@ -106,7 +107,7 @@ def _condition(attributes: Any) -> ItemCondition | None:
 
 def parse_search_page(html: str) -> list[ScrapedLeboncoinItem]:
     """Extrait les annonces d'une page de recherche, dans l'ordre reçu."""
-    match = _NEXT_DATA_PATTERN.search(html)
+    match = NEXT_DATA_PATTERN.search(html)
     if match is None:
         raise LeboncoinParseError("__NEXT_DATA__ absent de la page")
     try:
