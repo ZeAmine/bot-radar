@@ -1,5 +1,6 @@
 """Tests unitaires du poller Leboncoin (collecte et ingestion simulées)."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -361,3 +362,111 @@ async def test_blocked_cycle_raises_block_error_and_rotates_session(
 
     with pytest.raises(leboncoin_poller.LeboncoinBlockError):
         await poll_leboncoin_once(set())
+
+
+@pytest.mark.asyncio
+async def test_silence_alert_fires_once_after_threshold(monkeypatch: pytest.MonkeyPatch):
+    dispatched: list[object] = []
+
+    clock = {"now": 1_000_000.0}
+    monkeypatch.setattr(leboncoin_poller.time, "time", lambda: clock["now"])
+
+    def _capture(coro, **_kwargs: object) -> None:
+        dispatched.append(coro)
+        coro.close()
+
+    monkeypatch.setattr(leboncoin_poller, "safe_create_task", _capture)
+
+    last_success = clock["now"] - 600.0
+    assert await leboncoin_poller._alert_silence_once(last_success, False) is False
+    assert dispatched == []
+
+    clock["now"] += 400.0
+    assert await leboncoin_poller._alert_silence_once(last_success, False) is True
+    assert len(dispatched) == 1
+
+    clock["now"] += 600.0
+    assert await leboncoin_poller._alert_silence_once(last_success, True) is True
+    assert len(dispatched) == 1
+
+
+async def test_silence_alert_fires_when_first_cycle_never_succeeded(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    dispatched: list[object] = []
+    started = 1_000_000.0
+    clock = {"now": started + leboncoin_poller.SILENCE_ALERT_SECONDS + 1.0}
+
+    monkeypatch.setattr(leboncoin_poller.time, "time", lambda: clock["now"])
+
+    def _capture(coro, **_kwargs: object) -> None:
+        dispatched.append(coro)
+        coro.close()
+
+    monkeypatch.setattr(leboncoin_poller, "safe_create_task", _capture)
+
+    assert await leboncoin_poller._alert_silence_once(started, False) is True
+    assert len(dispatched) == 1
+
+
+@pytest.mark.asyncio
+async def test_silence_alert_rearms_after_a_recovery(monkeypatch: pytest.MonkeyPatch):
+    """Panne → alerte → succès → nouvelle panne → nouvelle alerte, une seule par épisode."""
+    clock = {"now": 1_000_000.0}
+    alerts: list[float] = []
+    outcomes = ["fail", "fail", "ok", "fail", "fail", "fail", "stop"]
+
+    async def fake_fetch(*_args: object, **_kwargs: object) -> list[ScrapedLeboncoinItem]:
+        behaviour = outcomes.pop(0) if len(outcomes) > 1 else "stop"
+        if behaviour == "stop":
+            raise asyncio.CancelledError
+        if behaviour == "fail":
+            raise leboncoin_poller.LeboncoinCollectionError("tunnel mort")
+        return [_item("seen-1")]
+
+    async def fake_ingest(_item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
+        return IngestOutcome(notified_count=0, needs_retry=False)
+
+    def scheduled(coro, **_kwargs: object) -> None:
+        frame = getattr(coro, "cr_frame", None)
+        text = frame.f_locals.get("text") if frame is not None else None
+        coro.close()
+        if isinstance(text, str) and "muette" in text:
+            alerts.append(clock["now"])
+
+    async def fake_wait(awaitable: object, timeout: float = 0) -> None:
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        clock["now"] += max(timeout, 1.0) + leboncoin_poller.SILENCE_ALERT_SECONDS
+
+    async def fake_status() -> dict[str, object] | None:
+        return {"status": "active", "last_poll_at": clock["now"]}
+
+    async def fake_save(_payload: dict[str, object]) -> None:
+        return None
+
+    async def fake_seen() -> set[str]:
+        return set()
+
+    monkeypatch.setattr(settings, "LEBONCOIN_POLLER_ENABLED", True)
+    monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
+    monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
+    monkeypatch.setattr(leboncoin_poller, "get_poller_status", fake_status)
+    monkeypatch.setattr(leboncoin_poller, "save_poller_status", fake_save)
+    monkeypatch.setattr(leboncoin_poller, "load_initial_seen_ids", fake_seen)
+    monkeypatch.setattr(leboncoin_poller, "_source_is_empty", lambda: _true())
+    monkeypatch.setattr(leboncoin_poller, "safe_create_task", scheduled)
+    monkeypatch.setattr(leboncoin_poller.asyncio, "wait_for", fake_wait)
+    monkeypatch.setattr(leboncoin_poller.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(leboncoin_poller.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(leboncoin_poller.random, "uniform", lambda _a, _b: 1.0)
+
+    with pytest.raises(asyncio.CancelledError):
+        await leboncoin_poller.run_leboncoin_poller(asyncio.Event())
+
+    assert len(alerts) == 2
+
+
+async def _true() -> bool:
+    return True

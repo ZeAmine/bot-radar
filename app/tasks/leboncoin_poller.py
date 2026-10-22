@@ -46,6 +46,7 @@ COLLECTION_FAILURE_ALERT_THRESHOLD = 5
 BLOCK_COOLDOWNS = (600, 1800, 3600, 7200)
 MAX_COLLECTION_BACKOFF_SECONDS = 1800.0
 SATURATION_MIN_ADS = 30
+SILENCE_ALERT_SECONDS = 900
 
 _ingest_semaphore: asyncio.Semaphore | None = None
 
@@ -317,6 +318,29 @@ def _block_cooldown(consecutive_blocks: int) -> int:
     return BLOCK_COOLDOWNS[max(index, 0)]
 
 
+async def _alert_silence_once(
+    last_success_at: float,
+    silence_notified: bool,
+) -> bool:
+    """Prévient une fois quand aucun cycle exploitable n'a abouti depuis le seuil de silence."""
+    if silence_notified:
+        return silence_notified
+    if time.time() - last_success_at < SILENCE_ALERT_SECONDS:
+        return silence_notified
+    silent_seconds = int(time.time() - last_success_at)
+    logger.error(
+        "Collecte Leboncoin muette depuis %d s : alerte de silence émise.",
+        silent_seconds,
+    )
+    message = (
+        "🚨 <b>BotRadar — Collecte Leboncoin muette</b>\n\n"
+        f"🚨 Aucun cycle exploitable depuis {silent_seconds // 60} min.\n"
+        "Vérifier le tunnel résidentiel du Pi et son relais SOCKS5."
+    )
+    safe_create_task(notify_admins(text=message), name="notify_leboncoin_silence")
+    return True
+
+
 async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
     """Boucle de collecte Leboncoin, cadencée et tolérante aux blocages."""
     if not settings.LEBONCOIN_POLLER_ENABLED:
@@ -354,6 +378,8 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
     consecutive_blocks = 0
     consecutive_collection_failures = 0
     collection_failure_notified = False
+    silence_notified = False
+    last_success_at = time.time()
     poll_cycle = 0
 
     while not stop_event.is_set():
@@ -389,6 +415,8 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 )
 
             consecutive_collection_failures = 0
+            last_success_at = time.time()
+            silence_notified = False
             if collection_failure_notified:
                 collection_failure_notified = False
                 safe_create_task(
@@ -448,6 +476,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 ),
                 name="notify_leboncoin_blocked",
             )
+            silence_notified = await _alert_silence_once(last_success_at, silence_notified)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=cooldown)
             continue
@@ -478,6 +507,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                     ),
                     name="notify_leboncoin_collection_degraded",
                 )
+            silence_notified = await _alert_silence_once(last_success_at, silence_notified)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=backoff)
             continue

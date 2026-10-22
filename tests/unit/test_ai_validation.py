@@ -89,3 +89,29 @@ def test_profit_validation_log_omits_provider_content(listing, caplog):
         getattr(record, "error_category", None) == "business_validation"
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_leboncoin_offer_uses_the_displayed_price_without_buyer_fees():
+    leboncoin_listing = Listing(
+        id=uuid.uuid4(), title="Blacksad T1", category_slug="bd",
+        item_price_cents=2500, estimated_total_cents=None, source_name="leboncoin",
+    )
+    vinted_listing = Listing(
+        id=uuid.uuid4(), title="Blacksad T1", category_slug="bd",
+        item_price_cents=2500, estimated_total_cents=None, source_name="vinted",
+    )
+
+    with patch.object(settings, "AI_ENABLED", True), patch.object(
+        settings, "AI_FEATURE_NEGOTIATION", True,
+    ):
+        leboncoin = await NegotiationModule(
+            client=FakeLLM(enabled=False),
+        ).generate_offer(leboncoin_listing)
+        vinted = await NegotiationModule(
+            client=FakeLLM(enabled=False),
+        ).generate_offer(vinted_listing)
+
+    assert leboncoin is not None
+    assert vinted is not None
+    assert leboncoin.suggested_offer_cents < vinted.suggested_offer_cents
