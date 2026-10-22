@@ -44,6 +44,13 @@ def _leboncoin_status_line(data: dict[str, Any] | None, now: datetime) -> str:
         return f"🟠 <b>En retard</b> ({elapsed // 60} min)"
     if status == "stopped":
         return "🔴 <b>Arrêté</b>"
+    if status == "durable_block":
+        reason = data.get("reason")
+        if reason == "episode_unreadable":
+            return "⛔ <b>Suspendu</b> (état de blocage illisible)"
+        if reason == "persistence_failed":
+            return "⛔ <b>Arrêté</b> (persistance impossible : reprise non garantie)"
+        return "🛑 <b>Arrêté sur blocage durable</b> (reprise manuelle)"
     return "⚪ <b>Inconnu</b> (aucun état exploitable)"
 
 
