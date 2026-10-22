@@ -10,11 +10,11 @@ import logging
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from app.core.constants import LEBONCOIN_SEARCH_URL
+
 logger = logging.getLogger("radar.leboncoin")
 
-DEFAULT_SEARCH_URL = (
-    "https://www.leboncoin.fr/recherche?category=27&leisure_book_genre=comics%26mangas"
-)
+DEFAULT_SEARCH_URL = LEBONCOIN_SEARCH_URL
 
 REQUEST_HEADERS: dict[str, str] = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

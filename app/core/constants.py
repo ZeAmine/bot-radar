@@ -42,6 +42,10 @@ CATEGORY_EMOJIS = {
 # Source d'ingestion des annonces Leboncoin (flux BD, collecte résidentielle).
 LEBONCOIN_SOURCE_NAME = "leboncoin"
 
+LEBONCOIN_SEARCH_URL = (
+    "https://www.leboncoin.fr/recherche?category=27&leisure_book_genre=comics%26mangas"
+)
+
 # États standards d'occasion : une seule définition, l'enum ItemCondition
 STANDARD_CONDITIONS = [condition.value for condition in ItemCondition]
 

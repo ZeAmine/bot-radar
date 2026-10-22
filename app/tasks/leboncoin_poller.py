@@ -45,6 +45,7 @@ LEBONCOIN_BLOCK_EPISODE_KEY = "radar:leboncoin_block_episode"
 MIN_CYCLE_GAP_SECONDS = 20.0
 WINDOW_LOG_EVERY_CYCLES = 20
 COLLECTION_FAILURE_ALERT_THRESHOLD = 5
+EXPECTED_PAGE_SIZE = 35
 BLOCK_COOLDOWNS = (600, 1800, 3600, 7200)
 MAX_COLLECTION_BACKOFF_SECONDS = 1800.0
 SATURATION_MIN_ADS = 30
@@ -276,7 +277,7 @@ def _log_window(
 
 def _expected_page_size() -> int:
     """Taille nominale d'une page de résultats Leboncoin."""
-    return 35
+    return EXPECTED_PAGE_SIZE
 
 
 def _count_since(

@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from app.core.constants import LEBONCOIN_SOURCE_NAME
+
 
 class AlertFreshness(Protocol):
     listing_baseline: dict[str, Any] | None
@@ -35,7 +37,7 @@ def listing_is_new_for_leboncoin(alert: AlertFreshness, listing: ListingFreshnes
 
 def listing_is_new_for_alert(alert: AlertFreshness, listing: ListingFreshness) -> bool:
     """Une date absente ne devient jamais une date de publication inventée."""
-    if listing.source_name == "leboncoin":
+    if listing.source_name == LEBONCOIN_SOURCE_NAME:
         return listing_is_new_for_leboncoin(alert, listing)
     baseline = alert.listing_baseline
     if not isinstance(baseline, dict) or listing.source_name != "vinted":
