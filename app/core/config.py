@@ -6,7 +6,7 @@ Toutes les valeurs réelles et secrètes sont chargées dynamiquement depuis le 
 
 from typing import Annotated
 
-from pydantic import BeforeValidator, SecretStr
+from pydantic import BeforeValidator, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     LEBONCOIN_PROXY_ENABLED: bool = False
     LEBONCOIN_PROXY_URL: str | None = None
     LEBONCOIN_CATCHUP_MAX_PAGES: int = 2
+    LEBONCOIN_BLOCK_STOP_SECONDS: int = Field(default=7200, gt=0)
 
     # Mode Nuit (Heures Creuses pour préserver l'IP et éviter les bans Cloudflare)
     NIGHT_MODE_ENABLED: bool = True

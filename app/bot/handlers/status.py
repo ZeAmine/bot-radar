@@ -11,10 +11,24 @@ from aiogram.types import Message
 from app.core.config import settings
 from app.db.repositories.stats_repo import StatsRepository
 from app.providers.llm.registry import llm_client
+from app.tasks.leboncoin_poller import (
+    get_durable_block_status as get_leboncoin_durable_status,
+)
 from app.tasks.leboncoin_poller import get_poller_status as get_leboncoin_poller_status
 from app.tasks.vinted_poller import get_poller_status, is_night_time
 
 router = Router(name="status_router")
+
+
+async def _resolve_leboncoin_status(
+    data: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Complète un statut absent ou périmé par l'arrêt durable, qui n'expire pas."""
+    current = data or {}
+    if current.get("status") == "durable_block" and current.get("reason") == "persistence_failed":
+        return data
+    durable = await get_leboncoin_durable_status()
+    return durable if durable is not None else data
 
 
 def _leboncoin_status_line(data: dict[str, Any] | None, now: datetime) -> str:
@@ -44,6 +58,13 @@ def _leboncoin_status_line(data: dict[str, Any] | None, now: datetime) -> str:
         return f"🟠 <b>En retard</b> ({elapsed // 60} min)"
     if status == "stopped":
         return "🔴 <b>Arrêté</b>"
+    if status == "durable_block":
+        reason = data.get("reason")
+        if reason == "episode_unreadable":
+            return "⛔ <b>Suspendu</b> (état de blocage illisible)"
+        if reason == "persistence_failed":
+            return "⛔ <b>Arrêté</b> (persistance impossible : reprise non garantie)"
+        return "🛑 <b>Arrêté sur blocage durable</b> (reprise manuelle)"
     return "⚪ <b>Inconnu</b> (aucun état exploitable)"
 
 
@@ -128,6 +149,8 @@ async def handle_status(message: Message, db_session: Any) -> None:
     leboncoin_data = (
         await get_leboncoin_poller_status() if settings.LEBONCOIN_POLLER_ENABLED else None
     )
+    if settings.LEBONCOIN_POLLER_ENABLED:
+        leboncoin_data = await _resolve_leboncoin_status(leboncoin_data)
     leboncoin_status = _leboncoin_status_line(leboncoin_data, now)
 
     if night_active:

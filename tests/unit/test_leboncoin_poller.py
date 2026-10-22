@@ -449,6 +449,15 @@ async def test_silence_alert_rearms_after_a_recovery(monkeypatch: pytest.MonkeyP
     async def fake_seen() -> set[str]:
         return set()
 
+    async def no_episode() -> leboncoin_poller.BlockEpisode | None:
+        return None
+
+    async def keep_episode(_episode: leboncoin_poller.BlockEpisode) -> None:
+        return None
+
+    async def drop_episode() -> None:
+        return None
+
     monkeypatch.setattr(settings, "LEBONCOIN_POLLER_ENABLED", True)
     monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
     monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
@@ -456,6 +465,9 @@ async def test_silence_alert_rearms_after_a_recovery(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(leboncoin_poller, "save_poller_status", fake_save)
     monkeypatch.setattr(leboncoin_poller, "load_initial_seen_ids", fake_seen)
     monkeypatch.setattr(leboncoin_poller, "_source_is_empty", lambda: _true())
+    monkeypatch.setattr(leboncoin_poller, "load_block_episode", no_episode)
+    monkeypatch.setattr(leboncoin_poller, "save_block_episode", keep_episode)
+    monkeypatch.setattr(leboncoin_poller, "clear_block_episode", drop_episode)
     monkeypatch.setattr(leboncoin_poller, "safe_create_task", scheduled)
     monkeypatch.setattr(leboncoin_poller.asyncio, "wait_for", fake_wait)
     monkeypatch.setattr(leboncoin_poller.time, "time", lambda: clock["now"])

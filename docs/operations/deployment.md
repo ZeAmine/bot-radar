@@ -262,6 +262,8 @@ Les anciennes préparations BD exigent une maintenance bloquant les updates Tele
 pour un retour vers un code qui ignore les intentions. Inhiber le scheduler seul
 ne protège pas `/resume`. La procédure BD détaille compatibilité et artefact de retour.
 La sauvegarde/restauration exige en plus [son propre contrat](../backup-recovery.md).
+Le collecteur Leboncoin peut s'arrêter seul sur blocage durable : voir la
+[procédure d'arrêt et de reprise](leboncoin-block-stop.md).
 
 ## Portée des preuves
 

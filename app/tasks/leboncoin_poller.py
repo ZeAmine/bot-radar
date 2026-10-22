@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import random
 import time
 from dataclasses import dataclass, replace
@@ -39,6 +40,7 @@ from app.tasks.vinted_poller import FifoSet, remaining_cycle_sleep
 logger = logging.getLogger("radar.leboncoin_poller")
 
 LEBONCOIN_POLLER_STATUS_KEY = "radar:leboncoin_poller_status"
+LEBONCOIN_BLOCK_EPISODE_KEY = "radar:leboncoin_block_episode"
 
 MIN_CYCLE_GAP_SECONDS = 20.0
 WINDOW_LOG_EVERY_CYCLES = 20
@@ -91,6 +93,106 @@ async def get_poller_status() -> dict[str, Any] | None:
     except Exception as exc:
         logger.debug("Impossible de lire l'état Leboncoin depuis Redis : %s", exc)
     return None
+
+
+class BlockEpisodeError(RuntimeError):
+    """L'état d'épisode de blocage est illisible, invalide ou impossible à persister."""
+
+
+@dataclass(frozen=True)
+class BlockEpisode:
+    """Épisode de blocage DataDome : ouverture, deadline et arrêt de sécurité."""
+
+    started_at: float
+    stopped_at: float | None = None
+
+    def deadline(self) -> float:
+        return self.started_at + settings.LEBONCOIN_BLOCK_STOP_SECONDS
+
+    def remaining(self, now: float) -> float:
+        return max(0.0, self.deadline() - now)
+
+
+def _episode_timestamp(raw: Any, field: str) -> float:
+    """Convertit une date d'épisode : type, finitude et plausibilité vérifiés."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise BlockEpisodeError(f"{field} d'épisode absente ou non numérique")
+    try:
+        value = float(raw)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise BlockEpisodeError(f"{field} d'épisode non convertible en réel") from exc
+    if not math.isfinite(value):
+        raise BlockEpisodeError(f"{field} d'épisode non finie")
+    if value <= 0:
+        raise BlockEpisodeError(f"{field} d'épisode non plausible")
+    return value
+
+
+def _parse_block_episode(raw: Any) -> BlockEpisode | None:
+    """Valide un état sérialisé ; une absence est normale, une forme douteuse ne l'est pas."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BlockEpisodeError("état d'épisode non conforme (objet attendu)")
+    started_at = _episode_timestamp(raw.get("started_at"), "date de départ")
+    raw_stopped_at = raw.get("stopped_at")
+    stopped_at: float | None = None
+    if raw_stopped_at is not None:
+        stopped_at = _episode_timestamp(raw_stopped_at, "date d'arrêt")
+        if stopped_at < started_at:
+            raise BlockEpisodeError("date d'arrêt antérieure à la date de départ")
+    return BlockEpisode(started_at=started_at, stopped_at=stopped_at)
+
+
+async def get_durable_block_status() -> dict[str, Any] | None:
+    """État d'arrêt durable relu depuis l'épisode persistant, sans effet de bord."""
+    try:
+        episode = await load_block_episode()
+    except BlockEpisodeError as exc:
+        logger.debug("État d'épisode Leboncoin illisible pour /status : %s", exc)
+        return {"status": "durable_block", "reason": "episode_unreadable"}
+    if episode is None or episode.stopped_at is None:
+        return None
+    return {
+        "status": "durable_block",
+        "reason": "durable_block",
+        "stopped_at": episode.stopped_at,
+        "started_at": episode.started_at,
+    }
+
+
+async def load_block_episode() -> BlockEpisode | None:
+    """Relit l'état d'épisode : absence de clé normale, lecture impossible nommée."""
+    try:
+        raw = await get_redis_client().get(LEBONCOIN_BLOCK_EPISODE_KEY)
+    except Exception as exc:
+        raise BlockEpisodeError(f"lecture de l'état d'épisode impossible : {exc}") from exc
+    if raw is None:
+        return None
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise BlockEpisodeError("état d'épisode illisible (JSON invalide)") from exc
+    return _parse_block_episode(decoded)
+
+
+async def save_block_episode(episode: BlockEpisode) -> None:
+    """Écrit l'état d'épisode sans TTL : un arrêt de sécurité n'expire pas de lui-même."""
+    payload: dict[str, Any] = {"started_at": episode.started_at}
+    if episode.stopped_at is not None:
+        payload["stopped_at"] = episode.stopped_at
+    try:
+        await get_redis_client().set(LEBONCOIN_BLOCK_EPISODE_KEY, json.dumps(payload))
+    except Exception as exc:
+        raise BlockEpisodeError(f"écriture de l'état d'épisode impossible : {exc}") from exc
+
+
+async def clear_block_episode() -> None:
+    """Efface l'état d'épisode d'un blocage résolu."""
+    try:
+        await get_redis_client().delete(LEBONCOIN_BLOCK_EPISODE_KEY)
+    except Exception as exc:
+        raise BlockEpisodeError(f"effacement de l'état d'épisode impossible : {exc}") from exc
 
 
 async def load_initial_seen_ids() -> FifoSet:
@@ -325,9 +427,9 @@ async def _alert_silence_once(
     """Prévient une fois quand aucun cycle exploitable n'a abouti depuis le seuil de silence."""
     if silence_notified:
         return silence_notified
-    if time.time() - last_success_at < SILENCE_ALERT_SECONDS:
+    if _now() - last_success_at < SILENCE_ALERT_SECONDS:
         return silence_notified
-    silent_seconds = int(time.time() - last_success_at)
+    silent_seconds = int(_now() - last_success_at)
     logger.error(
         "Collecte Leboncoin muette depuis %d s : alerte de silence émise.",
         silent_seconds,
@@ -341,6 +443,126 @@ async def _alert_silence_once(
     return True
 
 
+async def notify_durable_stop(
+    episode: BlockEpisode, persisted: bool, observed_at: float | None = None
+) -> None:
+    """Annonce la transition vers l'arrêt durable, une seule fois par épisode."""
+    elapsed_min = int(max(0.0, (observed_at or _now()) - episode.started_at) // 60)
+    threshold_min = int(settings.LEBONCOIN_BLOCK_STOP_SECONDS // 60)
+    message = (
+        "🛑 <b>BotRadar — Collecte Leboncoin arrêtée</b>\n\n"
+        f"⛔ Aucune collecte exploitable depuis <b>{elapsed_min} min</b> "
+        f"(seuil d'arrêt : {threshold_min} min).\n"
+        "Le collecteur Leboncoin est <b>arrêté</b> ; Vinted, l'API et le bot continuent.\n\n"
+        "<i>Reprise manuelle : supprimer la clé d'épisode puis redémarrer le service.</i>"
+    )
+    if not persisted:
+        message = (
+            "🛑 <b>BotRadar — Collecte Leboncoin arrêtée</b>\n\n"
+            f"⛔ Aucune collecte exploitable depuis <b>{elapsed_min} min</b> "
+            f"(seuil d'arrêt : {threshold_min} min).\n"
+            "Le collecteur Leboncoin est <b>arrêté pour ce processus</b> ; Vinted, l'API et "
+            "le bot continuent.\n\n"
+            "⚠️ L'arrêt <b>n'a pas pu être enregistré</b> : après un redémarrage du service, "
+            "la collecte peut repartir sans reprise manuelle."
+        )
+    logger.error("Arrêt durable du collecteur Leboncoin (épisode depuis %s).", episode.started_at)
+    safe_create_task(
+        notify_admins(text=message),
+        name="notify_leboncoin_durable_stop",
+    )
+
+
+def _now() -> float:
+    """Horloge murale du collecteur, isolée de la boucle d'événements."""
+    return time.time()
+
+
+def _monotonic() -> float:
+    """Horloge monotone du collecteur, isolée de la boucle d'événements."""
+    return time.monotonic()
+
+
+async def _wait_until_stop_or_delay(stop_event: asyncio.Event, timeout: float) -> None:
+    """Attend le signal d'arrêt ou l'échéance, sans propager l'expiration."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(stop_event.wait(), timeout=timeout)
+
+
+def _bounded_wait(delay: float, episode: BlockEpisode | None) -> float:
+    """Plafonne une attente au temps restant de l'épisode ouvert, s'il y en a un."""
+    if episode is None:
+        return delay
+    return max(0.0, min(delay, episode.remaining(_now())))
+
+
+async def notify_persistence_suspension() -> None:
+    """Annonce la suspension du collecteur, sans détail brut de Redis."""
+    safe_create_task(
+        notify_admins(
+            text=(
+                "⚠️ <b>BotRadar — Collecte Leboncoin suspendue</b>\n\n"
+                "🔒 L'état de blocage n'a pas pu être enregistré : la collecte Leboncoin "
+                "est <b>suspendue pour ce processus</b>. Vinted, l'API et le bot continuent.\n\n"
+                "⚠️ La non-reprise <b>après redémarrage n'est pas garantie</b> : le collecteur "
+                "peut repartir sans reprise manuelle."
+            )
+        ),
+        name="notify_leboncoin_persistence_suspended",
+    )
+
+
+async def _suspend_on_persistence_failure(
+    exc: BlockEpisodeError, *, notify: bool = True
+) -> None:
+    """Suspension du seul Leboncoin quand la protection ne peut pas être persistée."""
+    logger.error(
+        "Protection d'arrêt Leboncoin non persistée (%s) : collecte suspendue pour "
+        "ce processus. La garantie après redémarrage n'est pas assurée.",
+        exc,
+    )
+    if notify:
+        await notify_persistence_suspension()
+    await save_poller_status({
+        "status": "durable_block",
+        "reason": "persistence_failed",
+        "message": "État de blocage non persistable : collecte Leboncoin suspendue.",
+        "detail": str(exc),
+    })
+
+
+async def _conclude_durable_stop(episode: BlockEpisode) -> str:
+    """Arrête le collecteur et rend le motif à enregistrer, sans masquer un échec."""
+    persisted = await _stop_durably(episode)
+    if not persisted:
+        await _suspend_on_persistence_failure(
+            BlockEpisodeError("arrêt de sécurité non enregistré dans Redis"),
+            notify=False,
+        )
+        return "persistence_failed"
+    await save_poller_status({
+        "status": "durable_block",
+        "reason": "durable_block",
+        "stopped_at": _now(),
+        "message": "Arrêt durable Leboncoin : reprise manuelle requise.",
+    })
+    return "durable_block"
+
+
+async def _stop_durably(episode: BlockEpisode) -> bool:
+    """Enregistre l'arrêt de sécurité puis annonce la transition ; rend la persistance."""
+    observed_at = _now()
+    stopped = BlockEpisode(started_at=episode.started_at, stopped_at=observed_at)
+    persisted = True
+    try:
+        await save_block_episode(stopped)
+    except BlockEpisodeError as exc:
+        persisted = False
+        logger.error("%s : arrêt non garanti après redémarrage.", exc)
+    await notify_durable_stop(stopped, persisted, observed_at)
+    return persisted
+
+
 async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
     """Boucle de collecte Leboncoin, cadencée et tolérante aux blocages."""
     if not settings.LEBONCOIN_POLLER_ENABLED:
@@ -351,6 +573,41 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
         "Démarrage du poller Leboncoin (intervalle : %ds, ingestion in-process).",
         settings.LEBONCOIN_POLL_INTERVAL_SECONDS,
     )
+
+    try:
+        episode = await load_block_episode()
+    except BlockEpisodeError as exc:
+        logger.error(
+            "État d'épisode Leboncoin illisible ou invalide (%s) : collecte non démarrée.",
+            exc,
+        )
+        await save_poller_status({
+            "status": "durable_block",
+            "reason": "episode_unreadable",
+            "message": "État d'épisode illisible : collecte Leboncoin suspendue.",
+            "detail": str(exc),
+        })
+        return
+
+    if episode is not None and episode.stopped_at is not None:
+        logger.error(
+            "Arrêt durable Leboncoin déjà enregistré (%s) : collecte non démarrée.",
+            episode.stopped_at,
+        )
+        await save_poller_status({
+            "status": "durable_block",
+            "reason": "durable_block",
+            "stopped_at": episode.stopped_at,
+            "message": "Arrêt durable Leboncoin : reprise manuelle requise.",
+        })
+        return
+
+    if episode is not None and episode.remaining(_now()) <= 0:
+        logger.error(
+            "Épisode de blocage échu à l'arrêt du collecteur : arrêt sans nouvelle requête."
+        )
+        await _conclude_durable_stop(episode)
+        return
 
     seen_ids: FifoSet = await load_initial_seen_ids()
     logger.info("Poller Leboncoin initialisé avec %d IDs en mémoire.", len(seen_ids))
@@ -379,12 +636,17 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
     consecutive_collection_failures = 0
     collection_failure_notified = False
     silence_notified = False
-    last_success_at = time.time()
+    last_success_at = _now()
     poll_cycle = 0
+    durable_block_reason: str | None = None
 
     while not stop_event.is_set():
+        if episode is not None and episode.remaining(_now()) <= 0:
+            durable_block_reason = await _conclude_durable_stop(episode)
+            break
+
         poll_cycle += 1
-        cycle_started = time.monotonic()
+        cycle_started = _monotonic()
         try:
             since = (
                 datetime.fromtimestamp(last_poll_instant, tz=UTC)
@@ -399,7 +661,20 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
             )
             if outcome.baseline_established:
                 baseline_pending = False
-                baseline_at = time.time()
+                baseline_at = _now()
+
+            if episode is not None:
+                try:
+                    await clear_block_episode()
+                except BlockEpisodeError as exc:
+                    logger.error(
+                        "%s : protection d'arrêt non garantie, collecte suspendue.",
+                        exc,
+                    )
+                    await _suspend_on_persistence_failure(exc)
+                    durable_block_reason = "persistence_failed"
+                    break
+                episode = None
 
             if consecutive_blocks > 0:
                 logger.info("Connexion Leboncoin rétablie.")
@@ -415,7 +690,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 )
 
             consecutive_collection_failures = 0
-            last_success_at = time.time()
+            last_success_at = _now()
             silence_notified = False
             if collection_failure_notified:
                 collection_failure_notified = False
@@ -429,7 +704,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                     name="notify_leboncoin_collection_recovered",
                 )
 
-            last_poll_instant = time.time()
+            last_poll_instant = _now()
             await save_poller_status({
                 "status": "active",
                 "consecutive_blocks": 0,
@@ -451,6 +726,14 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
             consecutive_blocks += 1
             cooldown = _block_cooldown(consecutive_blocks)
             reset_session()
+            if episode is None:
+                episode = BlockEpisode(started_at=_now())
+                try:
+                    await save_block_episode(episode)
+                except BlockEpisodeError as exc:
+                    await _suspend_on_persistence_failure(exc)
+                    durable_block_reason = "persistence_failed"
+                    break
             logger.warning(
                 "DataDome refuse la collecte Leboncoin (#%d, %s) : pause de %d s.",
                 consecutive_blocks,
@@ -460,7 +743,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
             await save_poller_status({
                 "status": "cooldown",
                 "consecutive_blocks": consecutive_blocks,
-                "last_poll_at": time.time(),
+                "last_poll_at": _now(),
                 "cooldown_seconds": cooldown,
                 "message": f"Pause de sécurité #{consecutive_blocks} ({cooldown // 60} min)",
             })
@@ -477,8 +760,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 name="notify_leboncoin_blocked",
             )
             silence_notified = await _alert_silence_once(last_success_at, silence_notified)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop_event.wait(), timeout=cooldown)
+            await _wait_until_stop_or_delay(stop_event, _bounded_wait(cooldown, episode))
             continue
 
         except LeboncoinCollectionError as exc:
@@ -508,8 +790,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                     name="notify_leboncoin_collection_degraded",
                 )
             silence_notified = await _alert_silence_once(last_success_at, silence_notified)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+            await _wait_until_stop_or_delay(stop_event, _bounded_wait(backoff, episode))
             continue
 
         except asyncio.CancelledError:
@@ -521,15 +802,15 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
         target_interval = float(settings.LEBONCOIN_POLL_INTERVAL_SECONDS)
         jitter = random.uniform(-0.1 * target_interval, 0.15 * target_interval)
         sleep_time = max(MIN_CYCLE_GAP_SECONDS, target_interval + jitter)
-        work_seconds = time.monotonic() - cycle_started
+        work_seconds = _monotonic() - cycle_started
         sleep_time = remaining_cycle_sleep(sleep_time, work_seconds)
 
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop_event.wait(), timeout=sleep_time)
+        await _wait_until_stop_or_delay(stop_event, _bounded_wait(sleep_time, episode))
 
-    await save_poller_status({
-        "status": "stopped",
-        "last_poll_at": time.time(),
-        "message": "Collecte Leboncoin arrêtée",
-    })
-    logger.info("Poller Leboncoin arrêté proprement.")
+    if durable_block_reason is None:
+        await save_poller_status({
+            "status": "stopped",
+            "last_poll_at": _now(),
+            "message": "Collecte Leboncoin arrêtée",
+        })
+        logger.info("Poller Leboncoin arrêté proprement.")
