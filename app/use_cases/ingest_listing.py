@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.bot_instance import bot as default_bot
 from app.core import alert_latency as latency
-from app.core.constants import CategorySlug
+from app.core.constants import LEBONCOIN_SOURCE_NAME, CategorySlug
 from app.core.tasks import safe_create_task
 from app.db.models.alert import Alert
 from app.db.models.book import Book
@@ -299,7 +299,11 @@ class ProcessListingUseCase:
             is_duplicate = True
             notified_ids, pending_ids = await self.listing_repo.match_notification_state(listing.id)
         else:
-            listing = await self.listing_repo.create_from_payload(payload, raw_dict=raw_payload)
+            listing = await self.listing_repo.create_from_payload(
+                payload,
+                raw_dict=raw_payload,
+                apply_default_fees=payload.source_name != LEBONCOIN_SOURCE_NAME,
+            )
             is_duplicate = False
 
         timing = latency.current()

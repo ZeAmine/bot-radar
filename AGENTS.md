@@ -129,8 +129,8 @@ Intégration et découverte selon le harness : [référence ciblée](docs/agent-
 
 - Aucun paiement, confirmation d'achat ou choix de relais automatisé. Aucune
   interaction marketplace automatisée, aucun userscript, extension ou script
-  injecté. Aucun contournement anti-bot. Ne promettre ni absence de risque
-  contractuel ni succès authentifié non observé.
+  injecté. Ne promettre ni absence de risque contractuel ni succès authentifié
+  non observé.
 - Sans demande explicite, ne pas étendre ou améliorer `vinted_scraper.py`,
   `sync_vinted_session.py`, `chasse_aux_livres.py`, les formules de prix ou de marché.
   Les exceptions de preuve ISBN et filtres communs sont dans le contrat marché.

@@ -1,0 +1,552 @@
+{
+ "props": {
+  "pageProps": {
+   "searchData": {
+    "total": 1256127,
+    "ads": [
+     {
+      "list_id": 900000001,
+      "subject": "BD de test tome 1",
+      "url": "https://www.leboncoin.fr/ad/livres/900000001",
+      "price": [
+       5
+      ],
+      "attributes": [
+       {
+        "key": "rating_score",
+        "value": "0.83",
+        "values": [
+         "0.83"
+        ],
+        "value_label": "0.83",
+        "generic": false
+       },
+       {
+        "key": "rating_count",
+        "value": "52",
+        "values": [
+         "52"
+        ],
+        "value_label": "52",
+        "generic": false
+       },
+       {
+        "key": "profile_picture_url",
+        "value": "https://img.leboncoin.fr/api/v1/tenants/9a6387a1-6259-4f2c-a887-7e67f23dd4cb/domains/20bda58f-d650-462e-a72a-a5a7ecf2bf88/buckets/21d2b0bc-e54c-4b64-a30b-89127b18b785/images/profile/pictures/default/98cfb9c6-a2c8-5c13-8ef1-33c1112b5cd5?rule=pp-small",
+        "values": [
+         "https://img.leboncoin.fr/api/v1/tenants/9a6387a1-6259-4f2c-a887-7e67f23dd4cb/domains/20bda58f-d650-462e-a72a-a5a7ecf2bf88/buckets/21d2b0bc-e54c-4b64-a30b-89127b18b785/images/profile/pictures/default/98cfb9c6-a2c8-5c13-8ef1-33c1112b5cd5?rule=pp-small"
+        ],
+        "value_label": "https://img.leboncoin.fr/api/v1/tenants/9a6387a1-6259-4f2c-a887-7e67f23dd4cb/domains/20bda58f-d650-462e-a72a-a5a7ecf2bf88/buckets/21d2b0bc-e54c-4b64-a30b-89127b18b785/images/profile/pictures/default/98cfb9c6-a2c8-5c13-8ef1-33c1112b5cd5?rule=pp-small",
+        "generic": false
+       },
+       {
+        "key": "estimated_parcel_weight",
+        "value": "2000",
+        "values": [
+         "2000"
+        ],
+        "value_label": "2000",
+        "generic": false
+       },
+       {
+        "key": "estimated_parcel_size",
+        "value": "S",
+        "values": [
+         "S"
+        ],
+        "value_label": "S",
+        "generic": false
+       },
+       {
+        "key": "is_bundleable",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "purchase_cta_visible",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "negotiation_cta_visible",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "country_isocode3166",
+        "value": "FR",
+        "values": [
+         "FR"
+        ],
+        "value_label": "FR",
+        "generic": false
+       },
+       {
+        "key": "condition",
+        "value": "etatneuf",
+        "values": [
+         "etatneuf"
+        ],
+        "key_label": "État",
+        "value_label": "État neuf",
+        "generic": true
+       },
+       {
+        "key": "shipping_type",
+        "value": "mondial_relay",
+        "values": [
+         "mondial_relay",
+         "shop2shop",
+         "courrier_suivi",
+         "colissimo",
+         "face_to_face"
+        ],
+        "value_label": "mondial_relay",
+        "generic": false
+       },
+       {
+        "key": "shippable",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "is_import",
+        "value": "false",
+        "values": [
+         "false"
+        ],
+        "value_label": "false",
+        "generic": false
+       },
+       {
+        "key": "leisure_book_format",
+        "value": "large",
+        "values": [
+         "large"
+        ],
+        "key_label": "Format",
+        "value_label": "Grand format",
+        "generic": true
+       },
+       {
+        "key": "leisure_book_genre",
+        "value": "comics&mangas",
+        "values": [
+         "comics&mangas"
+        ],
+        "key_label": "Genre",
+        "value_label": "Bande dessinée et manga",
+        "generic": true
+       },
+       {
+        "key": "leisure_book_language",
+        "value": "french",
+        "values": [
+         "french"
+        ],
+        "key_label": "Langue",
+        "value_label": "Français",
+        "generic": true
+       }
+      ],
+      "images": {
+       "thumb_url": "https://img.example/leboncoin-1.jpg",
+       "small_url": "https://img.example/leboncoin-1.jpg",
+       "nb_images": 1,
+       "urls": [
+        "https://img.example/leboncoin-1.jpg"
+       ],
+       "urls_thumb": [
+        "https://img.example/leboncoin-1.jpg"
+       ],
+       "urls_large": [
+        "https://img.example/leboncoin-1.jpg"
+       ]
+      },
+      "first_publication_date": "2026-10-20 01:37:26",
+      "category_name": "Livres",
+      "status": "active",
+      "index_date": "2026-10-20 01:37:26",
+      "ad_type": "offer"
+     },
+     {
+      "list_id": 900000002,
+      "subject": "BD de test tome 2",
+      "url": "https://www.leboncoin.fr/ad/livres/900000002",
+      "price": [
+       12
+      ],
+      "attributes": [
+       {
+        "key": "rating_score",
+        "value": "0.83",
+        "values": [
+         "0.83"
+        ],
+        "value_label": "0.83",
+        "generic": false
+       },
+       {
+        "key": "rating_count",
+        "value": "52",
+        "values": [
+         "52"
+        ],
+        "value_label": "52",
+        "generic": false
+       },
+       {
+        "key": "profile_picture_url",
+        "value": "https://img.leboncoin.fr/api/v1/tenants/9a6387a1-6259-4f2c-a887-7e67f23dd4cb/domains/20bda58f-d650-462e-a72a-a5a7ecf2bf88/buckets/21d2b0bc-e54c-4b64-a30b-89127b18b785/images/profile/pictures/default/98cfb9c6-a2c8-5c13-8ef1-33c1112b5cd5?rule=pp-small",
+        "values": [
+         "https://img.leboncoin.fr/api/v1/tenants/9a6387a1-6259-4f2c-a887-7e67f23dd4cb/domains/20bda58f-d650-462e-a72a-a5a7ecf2bf88/buckets/21d2b0bc-e54c-4b64-a30b-89127b18b785/images/profile/pictures/default/98cfb9c6-a2c8-5c13-8ef1-33c1112b5cd5?rule=pp-small"
+        ],
+        "value_label": "https://img.leboncoin.fr/api/v1/tenants/9a6387a1-6259-4f2c-a887-7e67f23dd4cb/domains/20bda58f-d650-462e-a72a-a5a7ecf2bf88/buckets/21d2b0bc-e54c-4b64-a30b-89127b18b785/images/profile/pictures/default/98cfb9c6-a2c8-5c13-8ef1-33c1112b5cd5?rule=pp-small",
+        "generic": false
+       },
+       {
+        "key": "estimated_parcel_weight",
+        "value": "5000",
+        "values": [
+         "5000"
+        ],
+        "value_label": "5000",
+        "generic": false
+       },
+       {
+        "key": "estimated_parcel_size",
+        "value": "S",
+        "values": [
+         "S"
+        ],
+        "value_label": "S",
+        "generic": false
+       },
+       {
+        "key": "is_bundleable",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "purchase_cta_visible",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "negotiation_cta_visible",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "country_isocode3166",
+        "value": "FR",
+        "values": [
+         "FR"
+        ],
+        "value_label": "FR",
+        "generic": false
+       },
+       {
+        "key": "condition",
+        "value": "etatneuf",
+        "values": [
+         "etatneuf"
+        ],
+        "key_label": "État",
+        "value_label": "État neuf",
+        "generic": true
+       },
+       {
+        "key": "shipping_type",
+        "value": "mondial_relay",
+        "values": [
+         "mondial_relay",
+         "shop2shop",
+         "colissimo",
+         "face_to_face"
+        ],
+        "value_label": "mondial_relay",
+        "generic": false
+       },
+       {
+        "key": "shippable",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "is_import",
+        "value": "false",
+        "values": [
+         "false"
+        ],
+        "value_label": "false",
+        "generic": false
+       },
+       {
+        "key": "leisure_book_format",
+        "value": "large",
+        "values": [
+         "large"
+        ],
+        "key_label": "Format",
+        "value_label": "Grand format",
+        "generic": true
+       },
+       {
+        "key": "leisure_book_genre",
+        "value": "comics&mangas",
+        "values": [
+         "comics&mangas"
+        ],
+        "key_label": "Genre",
+        "value_label": "Bande dessinée et manga",
+        "generic": true
+       },
+       {
+        "key": "leisure_book_language",
+        "value": "french",
+        "values": [
+         "french"
+        ],
+        "key_label": "Langue",
+        "value_label": "Français",
+        "generic": true
+       }
+      ],
+      "images": {
+       "thumb_url": "https://img.example/leboncoin-2.jpg",
+       "small_url": "https://img.example/leboncoin-2.jpg",
+       "nb_images": 1,
+       "urls": [
+        "https://img.example/leboncoin-2.jpg"
+       ],
+       "urls_thumb": [
+        "https://img.example/leboncoin-2.jpg"
+       ],
+       "urls_large": [
+        "https://img.example/leboncoin-2.jpg"
+       ]
+      },
+      "first_publication_date": "2026-10-20 01:34:20",
+      "category_name": "Livres",
+      "status": "active",
+      "index_date": "2026-10-20 01:34:20",
+      "ad_type": "offer"
+     },
+     {
+      "list_id": 900000003,
+      "subject": "BD de test tome 3",
+      "url": "https://www.leboncoin.fr/ad/livres/900000003",
+      "price": [
+       7
+      ],
+      "attributes": [
+       {
+        "key": "rating_score",
+        "value": "0.99",
+        "values": [
+         "0.99"
+        ],
+        "value_label": "0.99",
+        "generic": false
+       },
+       {
+        "key": "rating_count",
+        "value": "53",
+        "values": [
+         "53"
+        ],
+        "value_label": "53",
+        "generic": false
+       },
+       {
+        "key": "profile_picture_url",
+        "value": "https://img.leboncoin.fr/api/v1/tenants/9a6387a1-6259-4f2c-a887-7e67f23dd4cb/domains/20bda58f-d650-462e-a72a-a5a7ecf2bf88/buckets/21d2b0bc-e54c-4b64-a30b-89127b18b785/images/profile/pictures/default/e657dab3-db18-512c-80d3-c3b7b141d5c4?rule=pp-small",
+        "values": [
+         "https://img.leboncoin.fr/api/v1/tenants/9a6387a1-6259-4f2c-a887-7e67f23dd4cb/domains/20bda58f-d650-462e-a72a-a5a7ecf2bf88/buckets/21d2b0bc-e54c-4b64-a30b-89127b18b785/images/profile/pictures/default/e657dab3-db18-512c-80d3-c3b7b141d5c4?rule=pp-small"
+        ],
+        "value_label": "https://img.leboncoin.fr/api/v1/tenants/9a6387a1-6259-4f2c-a887-7e67f23dd4cb/domains/20bda58f-d650-462e-a72a-a5a7ecf2bf88/buckets/21d2b0bc-e54c-4b64-a30b-89127b18b785/images/profile/pictures/default/e657dab3-db18-512c-80d3-c3b7b141d5c4?rule=pp-small",
+        "generic": false
+       },
+       {
+        "key": "estimated_parcel_weight",
+        "value": "1322",
+        "values": [
+         "1322"
+        ],
+        "value_label": "1322",
+        "generic": false
+       },
+       {
+        "key": "estimated_parcel_size",
+        "value": "S",
+        "values": [
+         "S"
+        ],
+        "value_label": "S",
+        "generic": false
+       },
+       {
+        "key": "is_bundleable",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "purchase_cta_visible",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "negotiation_cta_visible",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "country_isocode3166",
+        "value": "FR",
+        "values": [
+         "FR"
+        ],
+        "value_label": "FR",
+        "generic": false
+       },
+       {
+        "key": "condition",
+        "value": "bonetat",
+        "values": [
+         "bonetat"
+        ],
+        "key_label": "État",
+        "value_label": "Bon état",
+        "generic": true
+       },
+       {
+        "key": "shipping_type",
+        "value": "mondial_relay",
+        "values": [
+         "mondial_relay",
+         "shop2shop",
+         "colissimo",
+         "face_to_face"
+        ],
+        "value_label": "mondial_relay",
+        "generic": false
+       },
+       {
+        "key": "shippable",
+        "value": "true",
+        "values": [
+         "true"
+        ],
+        "value_label": "true",
+        "generic": false
+       },
+       {
+        "key": "is_import",
+        "value": "false",
+        "values": [
+         "false"
+        ],
+        "value_label": "false",
+        "generic": false
+       },
+       {
+        "key": "leisure_book_format",
+        "value": "large",
+        "values": [
+         "large"
+        ],
+        "key_label": "Format",
+        "value_label": "Grand format",
+        "generic": true
+       },
+       {
+        "key": "leisure_book_genre",
+        "value": "comics&mangas",
+        "values": [
+         "comics&mangas"
+        ],
+        "key_label": "Genre",
+        "value_label": "Bande dessinée et manga",
+        "generic": true
+       },
+       {
+        "key": "leisure_book_language",
+        "value": "french",
+        "values": [
+         "french"
+        ],
+        "key_label": "Langue",
+        "value_label": "Français",
+        "generic": true
+       }
+      ],
+      "images": {
+       "thumb_url": "https://img.example/leboncoin-3.jpg",
+       "small_url": "https://img.example/leboncoin-3.jpg",
+       "nb_images": 1,
+       "urls": [
+        "https://img.example/leboncoin-3.jpg"
+       ],
+       "urls_thumb": [
+        "https://img.example/leboncoin-3.jpg"
+       ],
+       "urls_large": [
+        "https://img.example/leboncoin-3.jpg"
+       ]
+      },
+      "first_publication_date": "2026-10-20 01:33:59",
+      "category_name": "Livres",
+      "status": "active",
+      "index_date": "2026-10-20 01:33:59",
+      "ad_type": "offer"
+     }
+    ]
+   }
+  }
+ }
+}

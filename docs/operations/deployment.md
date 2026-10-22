@@ -4,7 +4,8 @@ Statut : procédure actuelle ; à lire obligatoirement avant un déploiement aut
 Périmètre : livraison du code, schéma cible et contrôles de reprise. Cette page
 n'autorise ni accès production ni modification de passerelle.
 
-Cible documentée : `ubuntu@88.96.56.44`, clé `~/.ssh/ssh-key-2026-09-10.key`,
+Cible documentée : `${VPS_USER}@${VPS_HOST}` (définis dans l'environnement local,
+jamais dans ce dépôt), clé SSH désignée par `$VPS_SSH_KEY`,
 répertoire `~/bot-radar/`, domaine `https://radar.aminezegmou.fr`.
 La cible est un arbre rsync, **pas un dépôt Git** : un push ne déploie rien.
 Le gateway Caddy partagé vit hors dépôt dans `~/gateway/`, sur `web_gateway`.
@@ -107,6 +108,78 @@ visible au lieu de le laisser passer.
 Une simulation ne prouve pas cette invariance. Le `--dry-run` du 16 octobre
 affichait les trois conteneurs `Running` sans rien dire de l'écart de
 configuration qui allait être résolu : il compare l'état, pas l'effet.
+
+## Collecte Leboncoin (sortie résidentielle)
+
+Le collecteur Leboncoin est désactivé par défaut et n'utilise aucune sortie datacenter :
+DataDome y répond `403` même avec l'empreinte TLS de Chrome. Sur le VPS, renseigner :
+
+```sh
+LEBONCOIN_POLLER_ENABLED=true
+LEBONCOIN_POLL_INTERVAL_SECONDS=600
+LEBONCOIN_PROXY_ENABLED=true
+LEBONCOIN_PROXY_URL=socks5://127.0.0.1:1080
+LEBONCOIN_CATCHUP_MAX_PAGES=2
+```
+
+Le port `1080` est un tunnel SSH inverse ouvert par le Raspberry Pi du domicile,
+derrière un SOCKS5 en espace utilisateur. Ni root, ni port entrant, ni fournisseur
+tiers ne sont nécessaires.
+
+### Pi, sans sudo
+
+```sh
+mkdir -p ~/bot-radar-relay/logs
+# copier scripts/leboncoin_residential_relay.py dans ~/bot-radar-relay/
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_tunnel -N '' -C botradar-tunnel
+# publier ~/.ssh/id_ed25519_tunnel.pub dans ~/.ssh/authorized_keys du VPS
+ssh-keyscan -p 22 "$VPS_HOST" >> ~/.ssh/known_hosts
+crontab -e
+```
+
+Deux boucles supervisées, avec chemins absolus, pour survivre au redémarrage et aux
+crashs. `cron` n'hérite pas de l'environnement du shell : les valeurs de
+`$VPS_USER` et `$VPS_HOST` y sont écrites **au moment de l'installation**, depuis
+l'environnement de l'opérateur, et ne sont jamais stockées dans ce dépôt :
+
+```sh
+: "${VPS_USER:?définir VPS_USER}" "${VPS_HOST:?définir VPS_HOST}"
+( crontab -l 2>/dev/null; cat <<CRON
+@reboot sleep 20; mkdir -p \$HOME/bot-radar-relay/logs; while true; do /usr/bin/python3 \$HOME/bot-radar-relay/leboncoin_residential_relay.py --port 8080 >> \$HOME/bot-radar-relay/logs/relay.log 2>&1; sleep 5; done
+@reboot sleep 30; while true; do /usr/bin/ssh -N -T -i \$HOME/.ssh/id_ed25519_tunnel -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:1080:127.0.0.1:8080 ${VPS_USER}@${VPS_HOST} >> \$HOME/bot-radar-relay/logs/tunnel.log 2>&1; sleep 10; done
+CRON
+) | crontab -
+```
+
+### Contrôle depuis l'hôte VPS
+
+```sh
+curl -sS --socks5-hostname 127.0.0.1:1080 https://api.ipify.org; echo
+python3 -m venv /tmp/lbc && /tmp/lbc/bin/pip -q install curl_cffi==0.16.3
+/tmp/lbc/bin/python -c "from curl_cffi import requests as r; print(r.get('https://www.leboncoin.fr/recherche?category=27&leisure_book_genre=comics%26mangas', impersonate='chrome', proxy='socks5://127.0.0.1:1080', timeout=30).status_code)"
+```
+
+Attendu : l'IP publique du domicile, puis `200`. Un `curl` nu renvoie `403` : c'est
+l'empreinte TLS, pas le tunnel. Un `403` avec `curl_cffi`, ou une IP de datacenter,
+signifie que le tunnel est tombé ou que la sortie n'est plus résidentielle.
+
+### Depuis le conteneur `radar_app` : étape supplémentaire obligatoire
+
+Dans le conteneur, `127.0.0.1` désigne son propre loopback, et aucun port de l'hôte
+n'est joignable : la chaîne `INPUT` du VPS n'accepte que `22` avant un
+`REJECT --reject-with icmp-host-prohibited` (mesuré : `172.21.0.1:1080` renvoie
+`EHOSTUNREACH`). `LEBONCOIN_PROXY_URL=socks5://127.0.0.1:1080` ne joint donc rien
+depuis `radar_app`. Avant activation, choisir et autoriser une variante :
+
+1. écouter le tunnel sur l'IP du bridge (`GatewayPorts clientspecified` puis
+   `-R 172.21.0.1:1080:127.0.0.1:8080`) et ouvrir ce port aux conteneurs par une
+   règle `iptables` insérée avant le `REJECT`, persistée ;
+2. ou faire porter la sortie résidentielle par un conteneur dédié du même réseau.
+
+L'IP du bridge se lit par `docker network inspect bot-radar_default -f '{{(index .IPAM.Config 0).Gateway}}'`.
+Ces variantes touchent le pare-feu ou `sshd` : elles exigent un mandat d'exploitation
+explicite. Sans elles, la collecte échoue en `LeboncoinCollectionError` et alerte
+après cinq cycles.
 
 ## Échec et retour
 

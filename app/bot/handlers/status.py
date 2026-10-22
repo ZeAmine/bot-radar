@@ -11,9 +11,40 @@ from aiogram.types import Message
 from app.core.config import settings
 from app.db.repositories.stats_repo import StatsRepository
 from app.providers.llm.registry import llm_client
+from app.tasks.leboncoin_poller import get_poller_status as get_leboncoin_poller_status
 from app.tasks.vinted_poller import get_poller_status, is_night_time
 
 router = Router(name="status_router")
+
+
+def _leboncoin_status_line(data: dict[str, Any] | None, now: datetime) -> str:
+    """État de la collecte Leboncoin : sans elle, une sortie résidentielle tombée est muette."""
+    if not settings.LEBONCOIN_POLLER_ENABLED:
+        return "⏸️ <b>Désactivé</b>"
+    if not data:
+        return "⚪ <b>Inconnu</b> (aucun état exploitable)"
+    status = data.get("status")
+    if status == "cooldown":
+        cooldown = data.get("cooldown_seconds")
+        minutes = int(cooldown) // 60 if isinstance(cooldown, (int, float)) else 0
+        return f"🛡️ <b>Pause anti-blocage</b> ({minutes} min)"
+    if status == "active":
+        last_poll = data.get("last_poll_at")
+        if isinstance(last_poll, bool) or not isinstance(last_poll, (int, float)):
+            return "⚪ <b>Inconnu</b> (horodatage absent)"
+        elapsed = int(max(0.0, now.timestamp() - last_poll))
+        if elapsed <= settings.LEBONCOIN_POLL_INTERVAL_SECONDS * 3:
+            since = data.get("ads_since_last_cycle")
+            suffix = (
+                f" · {since} nouvelles"
+                if isinstance(since, int) and not isinstance(since, bool)
+                else ""
+            )
+            return f"🟢 <b>Active</b> (collecte -{elapsed}s{suffix})"
+        return f"🟠 <b>En retard</b> ({elapsed // 60} min)"
+    if status == "stopped":
+        return "🔴 <b>Arrêté</b>"
+    return "⚪ <b>Inconnu</b> (aucun état exploitable)"
 
 
 def _format_span(seconds: float) -> str:
@@ -94,6 +125,10 @@ async def handle_status(message: Message, db_session: Any) -> None:
 
     night_active = is_night_time(now)
     poller_data = await get_poller_status()
+    leboncoin_data = (
+        await get_leboncoin_poller_status() if settings.LEBONCOIN_POLLER_ENABLED else None
+    )
+    leboncoin_status = _leboncoin_status_line(leboncoin_data, now)
 
     if night_active:
         poller_status = "<b>Mode nuit</b>"
@@ -194,6 +229,7 @@ async def handle_status(message: Message, db_session: Any) -> None:
         "<b>État du service</b>\n\n"
         f"<b>Heure locale :</b> {time_str} ({tz_label})\n"
         f"<b>Scanner Vinted :</b> {poller_status}\n"
+        f"<b>Scanner Leboncoin :</b> {leboncoin_status}\n"
         f"<b>Moteur IA</b> (sonde) : {ai_status}\n"
         f"<b>Plage de veille :</b> {night_hours_info}\n\n"
         "<b>Latence</b>\n"

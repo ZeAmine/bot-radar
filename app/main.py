@@ -30,15 +30,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await setup_bot_commands(bot)
 
     from app.core.tasks import safe_create_task
+    from app.tasks.leboncoin_poller import run_leboncoin_poller
     from app.tasks.scheduler import scheduler
     from app.tasks.vinted_poller import run_vinted_poller
 
     stop_event = asyncio.Event()
     poller_task = None
+    leboncoin_task = None
     scheduler.start()
 
     if settings.VINTED_POLLER_ENABLED:
         poller_task = safe_create_task(run_vinted_poller(stop_event))
+
+    if settings.LEBONCOIN_POLLER_ENABLED:
+        leboncoin_task = safe_create_task(run_leboncoin_poller(stop_event))
 
     async def shutdown_services() -> None:
         stop_event.set()
@@ -54,16 +59,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             scheduler.pause()
             executor = scheduler._executors.get("default")
             pending_jobs = tuple(getattr(executor, "_pending_futures", ()))
-            if poller_task:
-                poller_task.cancel()
+            for task in (poller_task, leboncoin_task):
+                if task is not None:
+                    task.cancel()
             scheduler.shutdown(wait=False)
             await stopped.wait()
         finally:
             scheduler.remove_listener(scheduler_stopped)
 
         producers = {task for task in pending_jobs if not task.done()}
-        if poller_task is not None and not poller_task.done():
-            producers.add(poller_task)
+        for task in (poller_task, leboncoin_task):
+            if task is not None and not task.done():
+                producers.add(task)
         if producers:
             logging.getLogger("radar.tasks").warning(
                 "Arrêt non terminé : attente du nettoyage de %d producteur(s).", len(producers)

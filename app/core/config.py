@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     VINTED_PROXY_ENABLED: bool = False
     VINTED_PROXY_URL: str | None = None
 
+    # Collecte Leboncoin : désactivée par défaut, et sans sortie résidentielle
+    # DataDome répond 403 même avec l'empreinte TLS de Chrome.
+    LEBONCOIN_POLLER_ENABLED: bool = False
+    LEBONCOIN_POLL_INTERVAL_SECONDS: int = 600
+    LEBONCOIN_SEARCH_URL: str = (
+        "https://www.leboncoin.fr/recherche?category=27&leisure_book_genre=comics%26mangas"
+    )
+    LEBONCOIN_PROXY_ENABLED: bool = False
+    LEBONCOIN_PROXY_URL: str | None = None
+    LEBONCOIN_CATCHUP_MAX_PAGES: int = 2
+
     # Mode Nuit (Heures Creuses pour préserver l'IP et éviter les bans Cloudflare)
     NIGHT_MODE_ENABLED: bool = True
     NIGHT_MODE_START_HOUR: int = 0  # 00:00 (minuit) heure de Paris
@@ -86,6 +97,16 @@ class Settings(BaseSettings):
         if not self.VINTED_PROXY_ENABLED or not self.VINTED_PROXY_URL:
             return None
         proxies = [p.strip() for p in self.VINTED_PROXY_URL.split(",") if p.strip()]
+        if not proxies:
+            return None
+        import random
+        return random.choice(proxies)
+
+    def get_leboncoin_proxy(self) -> str | None:
+        """Proxy résidentiel de la collecte Leboncoin ; une URL seule ne l'active pas."""
+        if not self.LEBONCOIN_PROXY_ENABLED or not self.LEBONCOIN_PROXY_URL:
+            return None
+        proxies = [p.strip() for p in self.LEBONCOIN_PROXY_URL.split(",") if p.strip()]
         if not proxies:
             return None
         import random

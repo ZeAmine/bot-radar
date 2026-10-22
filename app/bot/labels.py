@@ -88,6 +88,7 @@ FIELD_PUBLISHER = "Éditeur"
 FIELD_EDITION = "Édition"
 FIELD_PERIOD = "Période"
 FIELD_PRICE = "Prix"
+FIELD_PLATFORM = "Plateforme"
 # Pas de libellé détaillé : « TTC » suffit et garde la ligne lisible sur téléphone.
 TOTAL_SUFFIX_TTC = "TTC"
 FIELD_FALSE_POSITIVES = "Faux positifs"
@@ -207,6 +208,22 @@ def format_price_line(
 def escape_html(value: str | None) -> str:
     """Échappe toute valeur dynamique : la donnée source ne modifie pas le formatage."""
     return html.escape(value or "", quote=False)
+
+
+# Une source hors Vinted se nomme dans le message ; Vinted reste implicite pour
+# que les alertes existantes gardent exactement leur rendu.
+SOURCE_DISPLAY = {
+    "vinted": "Vinted",
+    "leboncoin": "Leboncoin",
+}
+
+
+def platform_line(source_name: str | None) -> str | None:
+    """Ligne « Plateforme : … », absente pour Vinted."""
+    if not source_name or source_name == "vinted":
+        return None
+    display = SOURCE_DISPLAY.get(source_name, source_name)
+    return f"<b>{FIELD_PLATFORM} :</b> {escape_html(display)}"
 
 
 # Au-delà, la liste devient illisible sur un téléphone ; le reste est compté, jamais
