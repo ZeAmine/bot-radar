@@ -5,7 +5,7 @@ import pytest
 from app.core.config import settings
 from app.tasks import leboncoin_poller
 from app.tasks.leboncoin_poller import COLLECTION_FAILURE_ALERT_THRESHOLD, SILENCE_ALERT_SECONDS
-from tests.unit.test_leboncoin_block_stop import LoopHarness
+from tests.unit._leboncoin_harness import LoopHarness
 
 
 def _parse_alerts(harness: LoopHarness) -> list[str]:
@@ -144,3 +144,51 @@ async def test_a_failing_parse_alert_does_not_stop_collection(
     assert harness.tasks
     assert all(task.done() for task in harness.tasks)
     assert harness.requests, "la collecte continue malgré l'échec d'alerte"
+
+
+def _status_line(payload: dict[str, object]) -> str:
+    from datetime import UTC, datetime
+
+    from app.bot.handlers.status import _leboncoin_status_line
+
+    return _leboncoin_status_line(payload, datetime.now(UTC))
+
+
+def test_the_status_line_never_falls_back_to_unknown_on_parse_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "LEBONCOIN_POLLER_ENABLED", True)
+    line = _status_line({"status": "parse_failure", "consecutive_parse_failures": 3})
+
+    assert "Structure de page inattendue" in line
+    assert "Inconnu" not in line
+    assert "3 cycles" in line
+
+
+def test_the_status_line_reports_growing_cycles(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "LEBONCOIN_POLLER_ENABLED", True)
+
+    first = _status_line({"status": "parse_failure", "consecutive_parse_failures": 1})
+    later = _status_line({"status": "parse_failure", "consecutive_parse_failures": 12})
+
+    assert "1 cycles" in first
+    assert "12 cycles" in later
+
+
+def test_the_status_line_tolerates_a_missing_counter(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "LEBONCOIN_POLLER_ENABLED", True)
+    line = _status_line({"status": "parse_failure"})
+
+    assert "Structure de page inattendue" in line
+    assert "cycles" not in line
+
+
+@pytest.mark.asyncio
+async def test_the_parse_status_reaches_the_status_line(monkeypatch: pytest.MonkeyPatch):
+    harness = LoopHarness(monkeypatch, ["parse", "parse", "stop"])
+    await harness.run()
+
+    last = [s for s in harness.statuses if s.get("status") == "parse_failure"][-1]
+    line = _status_line(dict(last))
+    assert "Structure de page inattendue" in line
+    assert "2 cycles" in line

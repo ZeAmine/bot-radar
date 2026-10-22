@@ -58,6 +58,14 @@ def _leboncoin_status_line(data: dict[str, Any] | None, now: datetime) -> str:
         return f"🟠 <b>En retard</b> ({elapsed // 60} min)"
     if status == "stopped":
         return "🔴 <b>Arrêté</b>"
+    if status == "parse_failure":
+        cycles = data.get("consecutive_parse_failures")
+        suffix = (
+            f" ({cycles} cycles consécutifs)"
+            if isinstance(cycles, int) and not isinstance(cycles, bool)
+            else ""
+        )
+        return f"🟠 <b>Structure de page inattendue</b>{suffix}"
     if status == "durable_block":
         reason = data.get("reason")
         if reason == "episode_unreadable":

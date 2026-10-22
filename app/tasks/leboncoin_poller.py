@@ -832,8 +832,8 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                         text=(
                             "⚠️ <b>BotRadar — Structure de page Leboncoin inattendue</b>\n\n"
                             f"⚠️ {consecutive_parse_failures} cycles consécutifs sans "
-                            "annonce exploitable : la page de recherche n'a plus la "
-                            "structure attendue.\n\n"
+                            "annonce exploitable : structure inattendue ou page de "
+                            "challenge non reconnue.\n\n"
                             "<i>Aucune collecte n'est possible tant que la page n'est pas "
                             "reconnue.</i>"
                         )
