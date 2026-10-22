@@ -67,13 +67,11 @@ python-dotenv==1.2.3
 PyYAML==6.0.3
 redis==8.1.0
 ruff==0.16.6
-sentry-sdk==2.69.1
 SQLAlchemy==2.1.1
 starlette==1.7.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzlocal==5.4.4
-urllib3==2.7.0
 uvicorn==0.54.0
 uvloop==0.22.1
 virtualenv==21.7.9
