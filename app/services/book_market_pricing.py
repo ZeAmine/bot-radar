@@ -8,8 +8,9 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import update
+from sqlalchemy import event, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session, SessionTransaction
 
 from app.core import alert_latency
 from app.core.alert_latency import observe_background
@@ -37,6 +38,7 @@ from app.services.administrative_deferral import (
 )
 from app.services.market_price_service import series_reference_total
 from app.services.market_refresh_policy import (
+    aware,
     collection_due,
     component_due,
     record_component,
@@ -427,6 +429,29 @@ async def recalculate_invalidated_series(session: AsyncSession) -> None:
         await refresh_series_total(session, alert_id)
 
 
+def _release_price_reservation(session: Session, transaction: SessionTransaction) -> None:
+    if transaction.parent is None:
+        lock = session.info.pop("price_reservation_lock", None)
+        if lock is not None:
+            lock.release()
+
+
+async def _reserve_next_refresh(
+    session: AsyncSession, book_id: uuid.UUID, cache: BookMarketCache,
+) -> None:
+    if cache.collection_status == "deferred" and cache.next_refresh_at is not None:
+        return
+    if "price_reservation_lock" not in session.info:
+        if not event.contains(
+            session.sync_session, "after_transaction_end", _release_price_reservation,
+        ):
+            event.listen(session.sync_session, "after_transaction_end", _release_price_reservation)
+        lock = reservation_lock()
+        await lock.acquire()
+        session.info["price_reservation_lock"] = lock
+    await BookRepository(session).plan_price_refreshes(book_ids={book_id})
+
+
 async def persist_market_result(
     session: AsyncSession,
     book_id: uuid.UUID,
@@ -448,9 +473,13 @@ async def persist_market_result(
             cache = BookMarketCache(book_id=book_id)
             session.add(cache)
             await session.flush()
+        deferred_until = cache.next_refresh_at if cache.collection_status == "deferred" else None
         _stamp_collection(cache, result)
+        if deferred_until is not None and aware(deferred_until) > datetime.now(UTC):
+            cache.next_refresh_at = deferred_until
         await repo.refresh_annual_references([book_id], force=True)
         await _refresh_series_totals(session, book_id)
+        await _reserve_next_refresh(session, book_id, cache)
         return cache
 
     if result.lowest_delivered_price_cents is None:
@@ -474,6 +503,7 @@ async def persist_market_result(
             _stamp_collection(existing, result)
             # Conserver le relevé informatif, jamais renouveler sa validité sans observation.
             await _refresh_series_totals(session, book_id)
+            await _reserve_next_refresh(session, book_id, existing)
             return existing
 
     cache = await repo.update_or_create_cache(
@@ -491,6 +521,7 @@ async def persist_market_result(
     await repo.refresh_annual_references([book_id], force=True)
     _stamp_collection(cache, result)
     await _refresh_series_totals(session, book_id)
+    await _reserve_next_refresh(session, book_id, cache)
     return cache
 
 
@@ -682,6 +713,8 @@ async def _price_book_once(
                 return None
             cache = await MarketPriceRepository(session).get_cache_by_book_id(book_id)
             if cache is not None and not collection_due(cache, datetime.now(UTC)):
+                await _reserve_next_refresh(session, book_id, cache)
+                await session.commit()
                 return cache
             if cache is None:
                 cache = BookMarketCache(book_id=book_id)
@@ -692,9 +725,7 @@ async def _price_book_once(
             await session.commit()
             cache = await price_book(session, book, registry=registry, result_sink=result_sink,
                                      retry_transient=reason == "alert_created")
-            async with reservation_lock():
-                await BookRepository(session).plan_price_refreshes(book_ids={book_id})
-                await session.commit()
+            await session.commit()
             return cache
     except Exception as exc:
         logger.warning(
@@ -704,14 +735,19 @@ async def _price_book_once(
         if attempted_at is not None:
             try:
                 async with AsyncSessionLocal() as recovery:
-                    await recovery.execute(
+                    changed = await recovery.scalar(
                         update(BookMarketCache)
                         .where(
                             BookMarketCache.book_id == book_id,
                             BookMarketCache.last_attempt_at == attempted_at,
                         )
                         .values(collection_status="failed", next_refresh_at=None)
+                        .returning(BookMarketCache.book_id)
                     )
+                    if changed is not None:
+                        cache = await MarketPriceRepository(recovery).get_cache_by_book_id(book_id)
+                        if cache is not None:
+                            await _reserve_next_refresh(recovery, book_id, cache)
                     await recovery.commit()
             except Exception as persistence_error:
                 logger.warning(

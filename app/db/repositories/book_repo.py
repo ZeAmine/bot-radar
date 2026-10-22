@@ -242,9 +242,19 @@ class BookRepository:
             cache = book.market_cache
             if cache is not None and cache.next_refresh_at is not None:
                 slot = aware(cache.next_refresh_at)
+                if book_ids is not None and book.id in book_ids:
+                    due = min(component_due(cache, component, moment)
+                              for component in ("current", "history"))
+                    if slot < due and cache.collection_status != "deferred":
+                        cache.next_refresh_at = None
+                        pending.append(book)
+                        continue
                 if slot > moment:
                     slot = next_refresh_slot(slot)
-                    cache.next_refresh_at = slot
+                    if cache.collection_status != "deferred" and (
+                        book_ids is None or book.id in book_ids
+                    ):
+                        cache.next_refresh_at = slot
                 occupied[slot] = occupied.get(slot, 0) + 1
             elif book_ids is None or book.id in book_ids:
                 pending.append(book)

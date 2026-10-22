@@ -34,6 +34,13 @@ from app.services.book_market_pricing import (
 from app.services.market_price_service import _current_collection_is_empty
 from app.services.market_refresh_policy import component_due
 
+
+@pytest.fixture(autouse=True)
+def synthetic_reservations(monkeypatch):
+    monkeypatch.setattr(pricing.BookRepository, "plan_price_refreshes", AsyncMock())
+    monkeypatch.setattr(pricing, "_reserve_next_refresh", AsyncMock())
+
+
 ISBN = "9782917501245"
 TITRE = "Les Dépressifs anonymes"
 

@@ -16,6 +16,10 @@ from app.tasks.refresh_book_prices import _run_wave, refresh_book_prices_task
 @pytest.fixture(autouse=True)
 def synthetic_health_transports(monkeypatch):
     """Cette suite double la tâche ; les sondes SQL sont vérifiées en intégration."""
+    monkeypatch.setattr("app.services.book_market_pricing._reserve_next_refresh", AsyncMock())
+    monkeypatch.setattr(
+        "app.services.book_market_pricing.BookRepository.plan_price_refreshes", AsyncMock()
+    )
     client = MagicMock()
     client.set = AsyncMock(return_value=True)
     monkeypatch.setattr("app.services.market_health.get_redis_client", lambda: client)

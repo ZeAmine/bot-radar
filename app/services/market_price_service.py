@@ -7,6 +7,7 @@ Les montants livrés et règles d'arrondi du comparateur sont inchangés.
 
 import html
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -28,7 +29,6 @@ from app.domain.rules.market_offer import (
     is_brand_new_partner,
     is_merchant_excluded,
     is_very_good_or_better,
-    normalize_secondhand_condition,
 )
 from app.services.price_calculator import calculate_estimated_total
 from app.utils.isbn import isbn_from_identifier
@@ -985,7 +985,7 @@ class MarketPriceService:
             if book is not None and _is_same_book(book, current_book) and price_cents is None:
                 price_cents = fallback_price
             price = (format_cents(price_cents) if price_cents is not None and historical
-                     else "Non renseigné")
+                     else "minimum annuel indisponible")
             lines.append(f"Tome {volume.number} : {price}")
         return lines
 
@@ -1122,9 +1122,10 @@ class MarketPriceService:
             lines.append(f"<b>ISBN :</b> <code>{html.escape(book.isbn13)}</code>")
         current_price = _positive(cache.lowest_delivered_price_cents)
 
-        lines.append("<b>Dernière offre connue :</b> " + (
-            format_cents(current_price) if current_price else "Non renseigné"
-        ))
+        if current_price is not None:
+            lines.append(f"<b>Dernière offre connue :</b> {format_cents(current_price)}")
+        else:
+            lines.append("Offre actuelle indisponible.")
 
 
         if is_historical and reference_cents is not None:
@@ -1132,18 +1133,7 @@ class MarketPriceService:
                 f"<b>Prix bas constaté :</b> {format_cents(reference_cents)}"
             )
         else:
-            lines.append("<b>Prix bas constaté :</b> Non renseigné")
-
-
-        if partners:
-            lines.append("\n<b>Dernières offres connues :</b>")
-            for merchant, data in sorted(
-                partners.items(), key=lambda item: _positive(item[1].get("total_cents")) or 0
-            ):
-                total_cents = _positive(data.get("total_cents")) or 0
-                condition = normalize_secondhand_condition(data.get("condition"))
-                label = html.escape(merchant)
-                lines.append(f"• {label} : {format_cents(total_cents)} — {html.escape(condition)}")
+            lines.append("Minimum annuel sans preuve source disponible.")
 
 
         if len(books_in_series) > 1:
@@ -1204,21 +1194,16 @@ class MarketPriceService:
         if cache is not None and isinstance(cache.source_history, dict):
             collected = cache.source_history.get("collected_at")
             if isinstance(collected, str):
-                history = datetime.fromisoformat(collected)
-        if current is not None and history is not None and current == history:
-            lines.append(f"Dernière MAJ : {_format_verification_at(current)}")
-        else:
-            values = []
-            if current is not None:
-                values.append(f"offres {_format_verification_at(current)}")
-            if history is not None:
-                values.append(f"historique {_format_verification_at(history)}")
-            lines.append("Dernière MAJ : " + (" ; ".join(values) or "Non renseignée"))
+                with suppress(ValueError):
+                    history = datetime.fromisoformat(collected)
+        successful = [
+            _aware_checked_at(moment) for moment in (current, history) if moment is not None
+        ]
+        if successful:
+            lines.append(f"Dernière MAJ : {_format_verification_at(max(successful))}")
         scheduled = cache.next_refresh_at if cache is not None else None
         if scheduled is not None and _aware_checked_at(scheduled) > datetime.now(UTC):
             lines.append(f"Prochaine MAJ : {_format_verification_at(scheduled)}")
-        else:
-            lines.append("Prochaine MAJ : en attente de programmation")
         return "\n".join(lines)
 
     @staticmethod
@@ -1283,6 +1268,4 @@ class MarketPriceService:
         )
         isbn = (f"<b>ISBN :</b> <code>{html.escape(book.isbn13)}</code>\n"
                 if book and book.isbn13 else "")
-        return (f"📊 <b>Prix du marché</b>\n\n{title}{isbn}{absence}\n"
-                "<b>Dernière offre connue :</b> Non renseigné\n"
-                "<b>Prix bas constaté :</b> Non renseigné")
+        return f"📊 <b>Prix du marché</b>\n\n{title}{isbn}{absence}"

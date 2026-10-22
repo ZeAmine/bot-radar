@@ -120,7 +120,7 @@ def test_creation_and_panel_use_the_same_source_minimum_without_diagnostics(titl
                           "relevé(s)", "non vérifiable", "Dernière vérif."):
             assert forbidden not in text
     assert "Dernière MAJ :" in panel
-    assert "Prochaine MAJ :" in panel
+    assert "Prochaine MAJ :" not in panel
 
 
 def test_explicit_second_volume_is_not_replaced_by_the_only_first_volume():
@@ -142,8 +142,8 @@ def test_series_lists_every_volume_and_never_uses_a_partial_total():
                   normalized_title="absolute 2", market_cache=None)
     card = MarketPriceService.format_market_details_card(None, first, [first, second])
     assert "Vol. 1" in card
-    assert "Tome 2 : Non renseigné" in card
-    assert "Non renseigné" in card
+    assert "Tome 2 : minimum annuel indisponible" in card
+    assert "Non renseigné" not in card
     assert series_reference_total([first, second]) is None
     assert "Total de la série" not in card
 
