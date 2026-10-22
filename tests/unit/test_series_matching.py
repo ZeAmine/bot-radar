@@ -1326,7 +1326,7 @@ def test_legacy_minimum_without_observation_never_becomes_annual_reference(date_
     panel = MarketPriceService.format_market_details_card(listing, book, [], None)
     assert "Ancien minimum" not in panel
     assert "1,00 €" not in panel
-    assert "Prix bas constaté :</b> Non renseigné" in panel
+    assert "Minimum annuel sans preuve source disponible." in panel
     assert (book.market_cache.checked_at, book.market_cache.historical_low_at) == before
 
 

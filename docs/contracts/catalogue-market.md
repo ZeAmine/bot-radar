@@ -119,23 +119,33 @@ une collecte réelle ; les procédures de session et leurs permissions restent d
 
 ## Minimum source et fraîcheur indépendante
 
-Le panneau affiche « Dernière offre connue », « Prix bas constaté » et « Dernières
-offres connues ». La ligne du prix bas ne porte ni parenthèse technique, ni compteur
-de relevés. Les marchands, états et liens sont associés au livre sélectionné.
+Le panneau conserve « Dernière offre connue » et « Prix bas constaté » quand une
+valeur existe, ainsi que le lien de l'offre du livre sélectionné. La liste de
+boutiques n'est plus affichée ; ses données sources et les filtres de comparabilité
+restent conservés. Sans valeur, le panneau explique l'indisponibilité sans champ
+chiffré vide ni validation implicite du prix.
 
 Les offres courantes et l'historique ont des dates de réussite distinctes. Une
 réussite partielle ne rafraîchit pas la composante en échec. Une réponse vide valide
 peut dater la vérification sans effacer le dernier prix connu ; la date de ce prix
-reste sa collecte réelle. « Dernière MAJ » distingue offres et historique si leurs
-dates diffèrent. Ni tentative, ni date de changement du prix ne remplace une collecte
-réussie. Aucun ancien cache ne reçoit une date inventée.
+reste sa collecte réelle. « Dernière MAJ » affiche seulement la date et l'heure de
+la dernière réussite connue parmi les composantes, dont les dates distinctes restent
+en base. Elle ne certifie pas leur fraîcheur commune. Ni tentative ni date de
+changement du prix ne remplace une collecte réussie ; sans date réelle, la ligne
+est omise. Une date historique mal formée n'efface pas la date courante connue.
 
 Chaque composante devient éligible sept jours après sa réussite. Le scheduler
 existant réserve des créneaux persistés `next_refresh_at` aux passages de :15 et
 :45, huit livres au plus, concurrence deux. Les reprises catalogue sont bornées à
 quatre alertes par passe. Les réservations en retard excédant le lot courant sont
-reportées dans de futurs créneaux. « Prochaine MAJ » lit cette réservation, sinon
-annonce l'attente de programmation, sans date décorative. Après échec, les reprises
+reportées dans de futurs créneaux. « Prochaine MAJ » affiche uniquement une réservation
+future réellement enregistrée ; sans réservation, la ligne est omise. La persistance
+centrale réserve la prochaine passe, y compris après un historique seul ou un échec.
+Un cache récent sans réservation exploitable est replanifié sans nouvelle collecte.
+La réservation conserve son verrou jusqu’à la fin de la transaction, commit ou
+annulation. Une planification ciblée ne modifie pas les échéances des autres livres.
+Un report administratif encore actif garde sa reprise datée, y compris après un
+historique seul, sans replanification métier ni faux succès. Après échec, les reprises
 sont espacées de six heures, un jour puis sept jours ; elles conservent les valeurs
 et dates de réussite. Les appels simultanés d'un même livre sont mutualisés dans
 l'unique processus ; deux passes de prix ne s'exécutent pas simultanément.

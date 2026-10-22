@@ -95,7 +95,7 @@ def test_missing_first_tome_keeps_its_note_and_the_freshness_footer():
     text, _ = market_panel._content(view)
     assert "Actualisation" not in text
     assert "Tome 1 absent du catalogue" in text
-    assert "Dernière MAJ :" in text
+    assert "Dernière MAJ :" not in text
 
 
 def _panel_callback():

@@ -18,6 +18,7 @@ def test_market_card_dates_the_last_successful_check_at_the_bottom():
     successful = datetime(datetime.now(UTC).year, 10, 7, 15, 4, tzinfo=UTC)
     book.market_cache.collection_status = "partial"
     book.market_cache.last_successful_collection_at = successful
+    book.market_cache.source_history["collected_at"] = successful.isoformat()
     book.market_cache.last_attempt_at = successful + timedelta(hours=1)
     book.market_cache.annual_low_observed_at = successful - timedelta(days=1)
     book.market_cache.annual_first_at = book.market_cache.annual_low_observed_at
@@ -30,7 +31,7 @@ def test_market_card_dates_the_last_successful_check_at_the_bottom():
     assert "(06/10" not in card
     assert "relevé(s) conservé(s)" not in card
     assert "<b>Dernière offre connue :</b> 22,00 €" in card
-    assert "Dernière MAJ : offres 07/10 à 17:04" in card
+    assert "Dernière MAJ : 07/10 à 17:04" in card
     assert card.count("07/10 à 17:04") == 1
     assert "Dernière tentative" not in card
     assert "Dernière mise à jour" not in card
@@ -42,10 +43,11 @@ def test_failed_refresh_keeps_the_last_successful_check_and_retained_prices():
     successful = datetime(datetime.now(UTC).year, 10, 7, 15, 4, tzinfo=UTC)
     book.market_cache.collection_status = "failed"
     book.market_cache.last_successful_collection_at = successful
+    book.market_cache.source_history["collected_at"] = successful.isoformat()
     book.market_cache.last_attempt_at = successful + timedelta(days=1)
     card = MarketPriceService.format_market_details_card(None, book)
     assert "Actualisation" not in card
-    assert "Dernière MAJ : offres 07/10 à 17:04" in card
+    assert "Dernière MAJ : 07/10 à 17:04" in card
     assert "08/10 à 17:04" not in card
     assert "<b>Dernière offre connue :</b> 22,00 €" in card
     assert "Meilleure offre actuelle" not in card
@@ -67,7 +69,7 @@ def test_a_failed_collection_without_any_price_is_no_longer_in_progress():
     assert "Actualisation" not in card
     assert "07/10 à 17:04" not in card
     assert "en cours" not in card
-    assert "Dernière MAJ : Non renseignée" in card
+    assert "Dernière MAJ :" not in card
 
 
 def create_book_with_cache(
@@ -276,7 +278,11 @@ def test_comparator_market_details_card_excludes_amazon_de():
 
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "Amazon (De)" not in card
-    assert "• Rakuten : 20,00 € — Très bon" in card
+    assert "<b>Dernière offre connue :</b> 20,00 €" in card
+    from app.services.market_price_service import _extract_partners, _select_secondhand_partners
+
+    partners = _select_secondhand_partners(_extract_partners(book.market_cache, None, None))
+    assert set(partners) == {"Rakuten"}
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
@@ -403,25 +409,13 @@ def test_comparator_excludes_brand_new_and_inferior_conditions():
     assert "💵 Offres" not in card
     assert "Écart" not in card
 
-    assert "<b>Dernières offres connues :</b>" in card
-    assert "• Rakuten : 8,69 € — Comme neuf" in card
-    assert "• Fnac : 8,99 € — Très bon" in card
-    assert "• Bd Fugue : 9,50 € — Très bon" in card
-    assert "• Bal : 9,80 € — Très bon" in card
-    assert "• Amazon : 10,50 € — Comme neuf" in card
+    assert "<b>Dernière offre connue :</b> 8,69 €" in card
+    assert "Dernières offres connues" not in card
+    from app.services.market_price_service import _extract_partners, _select_secondhand_partners
 
-    assert "Momox" not in card
-    assert "(Bon)" not in card
-    assert "Abebooks" not in card
-    assert "(Correct)" not in card
-    assert "Recyclivre" not in card
-    assert "Les Libraires" not in card
-    assert "(Neuf)" not in card
-
-    # Ebay est la 6e offre valide : le plafond de 5 la laisse dehors.
-    assert "• Ebay : 12,00 € — Très bon" in card
-
-    assert "Dernière MAJ :" in card
+    partners = _select_secondhand_partners(_extract_partners(book.market_cache, None, None))
+    assert set(partners) == {"Rakuten", "Fnac", "Bd Fugue", "Bal", "Amazon", "Ebay"}
+    assert all(merchant not in card for merchant in partners)
 
 
 def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_partners():
@@ -466,9 +460,8 @@ def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_
     card = MarketPriceService.format_market_details_card(listing, book)
 
     assert "<b>Prix bas constaté :</b> 5,48 €" in card
-    assert "<b>Dernières offres connues :</b>" in card
-    assert "• Momox : 21,04 € — Très bon" in card
-    assert "• Fnac : 27,15 € — Très bon" in card
+    assert "Dernières offres connues" not in card
+    assert "<b>Dernière offre connue :</b> 21,04 €" in card
     assert '<a href="https://momox.fr/indes">Consulter l\'offre</a>' in card
 
 
@@ -904,12 +897,7 @@ def test_series_with_one_empty_tome_does_not_claim_the_whole_collection_is_empty
 
 
 def test_an_empty_current_offer_set_falls_back_to_the_last_known_offers():
-    """Une collecte échouée ne doit pas effacer la liste des offres conservées.
-
-    `current_offers` vide était traité comme « aucune offre à montrer » et masquait
-    le dernier relevé pourtant disponible. La liste revient, présentée comme les
-    dernières offres connues.
-    """
+    """Le lien conservé reste disponible sans réintroduire de liste de boutiques."""
     book = create_book_with_cache()
     book.market_cache.current_offers = []
     book.market_cache.collection_status = "failed"
@@ -936,10 +924,10 @@ def test_an_empty_current_offer_set_falls_back_to_the_last_known_offers():
         None, book, latest_snapshot=snapshot
     )
 
-    assert "Dernières offres connues :" in card
-    assert "• Bd Fugue : 24,99 € — Comme neuf" in card
-    assert "• Rakuten : 25,99 € — Très bon" in card
-    assert card.count("• ") == 2
+    assert "Dernières offres connues" not in card
+    assert "<b>Dernière offre connue :</b> 22,00 €" in card
+    assert 'href="https://bdfugue.example/offre"' in card
+    assert card.count("• ") == 0
     assert "Actualisation" not in card
 
 
@@ -953,7 +941,11 @@ def test_the_freshness_footer_closes_the_panel_after_the_offer_link():
     book.market_cache.last_successful_collection_at = datetime(
         year, 10, 17, 7, 0, tzinfo=paris
     )
-    next_check = datetime(year, 10, 18, 7, 0, tzinfo=paris)
+    book.market_cache.source_history["collected_at"] = (
+        book.market_cache.last_successful_collection_at.isoformat()
+    )
+    next_check = datetime.now(UTC) + timedelta(hours=1)
+    book.market_cache.next_refresh_at = next_check
     snapshot = MagicMock()
     snapshot.raw_payload = {
         "partners": {
@@ -972,7 +964,7 @@ def test_the_freshness_footer_closes_the_panel_after_the_offer_link():
     )
     lines = card.splitlines()
 
-    assert "Dernière MAJ : offres 17/10 à 07:00" in lines[-2]
+    assert "Dernière MAJ : 17/10 à 07:00" in lines[-2]
     assert lines[-1].startswith("Prochaine MAJ :")
     assert card.index("Consulter l'offre") < card.index("Dernière MAJ")
     assert "Actualisation" not in card
@@ -987,7 +979,7 @@ def test_the_freshness_footer_distinguishes_never_from_unknown():
     )
     never.market_cache = BookMarketCache(id=uuid.uuid4(), book_id=never.id)
     never_card = MarketPriceService.format_market_details_card(None, never)
-    assert "Dernière MAJ : Non renseignée" in never_card
+    assert "Dernière MAJ :" not in never_card
 
     unknown = Book(
         id=uuid.uuid4(),
@@ -1001,7 +993,7 @@ def test_the_freshness_footer_distinguishes_never_from_unknown():
         historical_low_1y_cents=1200,
     )
     unknown_card = MarketPriceService.format_market_details_card(None, unknown)
-    assert "Dernière MAJ : Non renseignée" in unknown_card
+    assert "Dernière MAJ :" not in unknown_card
 
     settled_without_date = Book(
         id=uuid.uuid4(),
@@ -1014,7 +1006,7 @@ def test_the_freshness_footer_distinguishes_never_from_unknown():
         collection_status="complete",
     )
     settled_card = MarketPriceService.format_market_details_card(None, settled_without_date)
-    assert "Dernière MAJ : Non renseignée" in settled_card
+    assert "Dernière MAJ :" not in settled_card
 
 
 def test_the_freshness_footer_shows_the_year_when_it_is_ambiguous():
@@ -1028,10 +1020,13 @@ def test_the_freshness_footer_shows_the_year_when_it_is_ambiguous():
         previous_year, 12, 31, 7, 0, tzinfo=paris
     )
 
+    book.market_cache.source_history["collected_at"] = (
+        book.market_cache.last_successful_collection_at.isoformat()
+    )
     card = MarketPriceService.format_market_details_card(None, book)
 
-    assert f"offres 31/12/{previous_year} à 07:00" in card
-    assert "Prochaine MAJ : en attente de programmation" in card
+    assert f"Dernière MAJ : 31/12/{previous_year} à 07:00" in card
+    assert "Prochaine MAJ :" not in card
 
 
 def test_next_full_pass_ignores_incremental_jobs(monkeypatch):

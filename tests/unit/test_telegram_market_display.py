@@ -54,7 +54,7 @@ def test_series_buttons_exclude_a_neighboring_series():
 def test_series_lines_keep_only_number_and_price_without_assigning_an_edition():
     books = _series_books()
     lines = MarketPriceService._series_books_lines(books, books[0])
-    assert lines == ["Tome 1 : 11,49 €", "Tome 2 : Non renseigné"]
+    assert lines == ["Tome 1 : 11,49 €", "Tome 2 : minimum annuel indisponible"]
 
 
 @pytest.mark.parametrize("priced", [True, False])
@@ -296,7 +296,7 @@ def test_an_edition_without_isbn_is_not_an_implicit_preference(reverse):
     if reverse:
         books.reverse()
     lines = MarketPriceService._series_books_lines(books, None)
-    assert lines == ["Tome 1 : 11,49 €", "Tome 2 : Non renseigné"]
+    assert lines == ["Tome 1 : 11,49 €", "Tome 2 : minimum annuel indisponible"]
     ambiguous = next(book for book in books if "Vol. 2" in book.title)
     card = MarketPriceService.format_market_details_card(None, ambiguous, books)
     assert "plusieurs éditions" in card
