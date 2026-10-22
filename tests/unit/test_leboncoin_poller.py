@@ -268,3 +268,96 @@ def test_leboncoin_status_line_reports_pause_staleness_and_off(monkeypatch: pyte
 
     monkeypatch.setattr(status_module.settings, "LEBONCOIN_POLLER_ENABLED", False)
     assert "Désactivé" in status_module._leboncoin_status_line(None, now)
+@pytest.mark.asyncio
+async def test_fully_stale_page_triggers_second_page(monkeypatch: pytest.MonkeyPatch):
+    pages: list[int] = []
+    now = datetime.now(UTC)
+    old = now - timedelta(hours=3)
+
+    async def fake_fetch(
+        _url: str, _proxy: str | None, page: int = 1
+    ) -> list[ScrapedLeboncoinItem]:
+        pages.append(page)
+        if page == 1:
+            return _dated_items("old", 35, old)
+        return _dated_items("new", 5, now)
+
+    async def fake_ingest(_item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
+        return IngestOutcome(notified_count=0, needs_retry=False)
+
+    monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
+    monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
+    monkeypatch.setattr(settings, "LEBONCOIN_CATCHUP_MAX_PAGES", 2)
+
+    outcome = await poll_leboncoin_once(set(), since=now - timedelta(minutes=10))
+
+    assert pages == [1, 2]
+    assert outcome.pages_fetched == 2
+    assert outcome.ads_seen == 40
+
+
+@pytest.mark.asyncio
+async def test_partial_page_stays_single_page(monkeypatch: pytest.MonkeyPatch):
+    pages: list[int] = []
+    now = datetime.now(UTC)
+
+    async def fake_fetch(
+        _url: str, _proxy: str | None, page: int = 1
+    ) -> list[ScrapedLeboncoinItem]:
+        pages.append(page)
+        return _dated_items("old", 30, now - timedelta(hours=2)) + _dated_items("new", 5, now)
+
+    async def fake_ingest(_item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
+        return IngestOutcome(notified_count=0, needs_retry=False)
+
+    monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
+    monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
+    monkeypatch.setattr(settings, "LEBONCOIN_CATCHUP_MAX_PAGES", 2)
+
+    outcome = await poll_leboncoin_once(set(), since=datetime.now(UTC) - timedelta(minutes=10))
+
+    assert pages == [1]
+    assert outcome.pages_fetched == 1
+
+
+@pytest.mark.asyncio
+async def test_second_page_failure_keeps_first_page_ads(monkeypatch: pytest.MonkeyPatch):
+    now = datetime.now(UTC)
+    ingested: list[str] = []
+
+    async def fake_fetch(
+        _url: str, _proxy: str | None, page: int = 1
+    ) -> list[ScrapedLeboncoinItem]:
+        if page == 2:
+            raise leboncoin_poller.LeboncoinCollectionError("HTTP 500")
+        return [_item(f"p1-{index}") for index in range(5)]
+
+    async def fake_ingest(item: ScrapedLeboncoinItem, _slug: str) -> IngestOutcome:
+        ingested.append(item.external_id)
+        return IngestOutcome(notified_count=0, needs_retry=False)
+
+    monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
+    monkeypatch.setattr(leboncoin_poller, "_ingest_item", fake_ingest)
+    monkeypatch.setattr(settings, "LEBONCOIN_CATCHUP_MAX_PAGES", 2)
+
+    outcome = await poll_leboncoin_once(set(), since=now - timedelta(minutes=10))
+
+    assert len(ingested) == 5
+    assert outcome.pages_fetched == 1
+    assert outcome.ads_seen == 5
+
+
+@pytest.mark.asyncio
+async def test_blocked_cycle_raises_block_error_and_rotates_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    resets: list[bool] = []
+
+    async def fake_fetch(*_args: object, **_kwargs: object) -> list[ScrapedLeboncoinItem]:
+        raise leboncoin_poller.LeboncoinBlockError("HTTP 403")
+
+    monkeypatch.setattr(leboncoin_poller, "_fetch_items", fake_fetch)
+    monkeypatch.setattr(leboncoin_poller, "reset_session", lambda: resets.append(True))
+
+    with pytest.raises(leboncoin_poller.LeboncoinBlockError):
+        await poll_leboncoin_once(set())

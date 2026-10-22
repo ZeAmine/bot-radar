@@ -200,6 +200,18 @@ def _previous_poll_instant(status: dict[str, Any] | None) -> float | None:
     return float(value)
 
 
+def _needs_second_page(
+    items: list[ScrapedLeboncoinItem],
+    ads_since_last_cycle: int | None,
+) -> bool:
+    """Page 2 utile si la page 1 est saturée de nouveautés ou entièrement antérieure au cycle."""
+    if settings.LEBONCOIN_CATCHUP_MAX_PAGES <= 1 or ads_since_last_cycle is None:
+        return False
+    if ads_since_last_cycle >= SATURATION_MIN_ADS:
+        return True
+    return ads_since_last_cycle == 0 and len(items) >= _expected_page_size()
+
+
 async def poll_leboncoin_once(
     seen_ids: set[str],
     cycle_index: int = 0,
@@ -214,20 +226,24 @@ async def poll_leboncoin_once(
     pages_fetched = 1
     ads_since_last_cycle = _count_since(items, since)
 
-    if (
-        not baseline
-        and ads_since_last_cycle is not None
-        and ads_since_last_cycle >= SATURATION_MIN_ADS
-        and settings.LEBONCOIN_CATCHUP_MAX_PAGES > 1
-    ):
+    if not baseline and _needs_second_page(items, ads_since_last_cycle):
         known = {item.external_id for item in items}
-        next_page = await _fetch_items(url, proxy_url, 2)
-        pages_fetched = 2
-        items = [*items, *(item for item in next_page if item.external_id not in known)]
-        logger.info(
-            "Page Leboncoin saturée (%d annonces du cycle précédent) : page 2 lue.",
-            ads_since_last_cycle,
-        )
+        try:
+            next_page = await _fetch_items(url, proxy_url, 2)
+        except LeboncoinCollectionError as exc:
+            logger.warning(
+                "Page 2 Leboncoin indisponible (%s) : %d annonces de page 1 conservées.",
+                exc,
+                len(items),
+            )
+        else:
+            pages_fetched = 2
+            items = [*items, *(item for item in next_page if item.external_id not in known)]
+            logger.info(
+                "Rattrapage Leboncoin (%d nouvelles, %d annonces en page 1) : page 2 lue.",
+                ads_since_last_cycle or 0,
+                len(known),
+            )
 
     _log_window(items, cycle_index, ads_since_last_cycle)
     outcome = IngestOutcome(
