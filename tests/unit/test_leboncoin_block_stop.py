@@ -94,7 +94,7 @@ def test_block_stop_seconds_rejects_non_positive(monkeypatch: pytest.MonkeyPatch
 
 def test_bounded_wait_is_capped_by_remaining_episode_time(monkeypatch: pytest.MonkeyPatch):
     clock = {"now": 1_000.0}
-    monkeypatch.setattr(leboncoin_poller.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(leboncoin_poller, "_now", lambda: clock["now"])
     monkeypatch.setattr(settings, "LEBONCOIN_BLOCK_STOP_SECONDS", 7200)
 
     episode = BlockEpisode(started_at=clock["now"])
@@ -113,7 +113,7 @@ def test_bounded_wait_applies_to_network_backoff_and_normal_cadence(
     monkeypatch: pytest.MonkeyPatch,
 ):
     clock = {"now": 1_000.0}
-    monkeypatch.setattr(leboncoin_poller.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(leboncoin_poller, "_now", lambda: clock["now"])
     monkeypatch.setattr(settings, "LEBONCOIN_BLOCK_STOP_SECONDS", 7200)
     episode = BlockEpisode(started_at=clock["now"])
     clock["now"] += 7180.0
@@ -405,6 +405,7 @@ class LoopHarness:
 
         async def fake_notify_admins(text: str, **_kwargs: object) -> bool:
             self.sent.append(text)
+            self.double.events.append(("alert", text))
             if self.send_error is not None:
                 raise self.send_error
             return True
@@ -731,3 +732,253 @@ def test_status_line_keeps_disabled_and_unknown_states(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(settings, "LEBONCOIN_POLLER_ENABLED", True)
     assert "Inconnu" in _leboncoin_status_line(None, datetime.now(UTC))
+
+
+# --- visibilité de /status au-delà de 24 h ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_status_shows_a_recorded_stop_after_the_status_key_expired(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "LEBONCOIN_POLLER_ENABLED", True)
+    from datetime import UTC, datetime
+
+    from app.bot.handlers.status import _leboncoin_status_line, _resolve_leboncoin_status
+
+    double = _RedisDouble()
+    double.store[leboncoin_poller.LEBONCOIN_BLOCK_EPISODE_KEY] = (
+        '{"started_at": 999000.0, "stopped_at": 1000000.0}'
+    )
+    _install_redis(monkeypatch, double)
+
+    resolved = await _resolve_leboncoin_status(None)
+    line = _leboncoin_status_line(resolved, datetime.now(UTC))
+
+    assert "Arrêté sur blocage durable" in line
+    assert "reprise manuelle" in line
+
+
+@pytest.mark.asyncio
+async def test_status_prefers_the_durable_stop_over_a_stale_status(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.bot.handlers.status import _resolve_leboncoin_status
+
+    double = _RedisDouble()
+    double.store[leboncoin_poller.LEBONCOIN_BLOCK_EPISODE_KEY] = (
+        '{"started_at": 999000.0, "stopped_at": 1000000.0}'
+    )
+    _install_redis(monkeypatch, double)
+
+    resolved = await _resolve_leboncoin_status({"status": "active", "last_poll_at": 1.0})
+    assert resolved is not None
+    assert resolved.get("status") == "durable_block"
+
+
+@pytest.mark.asyncio
+async def test_status_absence_stays_a_normal_state(monkeypatch: pytest.MonkeyPatch):
+    from app.bot.handlers.status import _resolve_leboncoin_status
+
+    double = _RedisDouble()
+    _install_redis(monkeypatch, double)
+
+    assert await _resolve_leboncoin_status(None) is None
+    assert await _resolve_leboncoin_status({"status": "active"}) == {"status": "active"}
+
+
+@pytest.mark.asyncio
+async def test_status_reports_an_unreadable_episode_instead_of_a_healthy_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "LEBONCOIN_POLLER_ENABLED", True)
+    from datetime import UTC, datetime
+
+    from app.bot.handlers.status import _leboncoin_status_line, _resolve_leboncoin_status
+
+    double = _RedisDouble()
+    double.store[leboncoin_poller.LEBONCOIN_BLOCK_EPISODE_KEY] = "{cassé"
+    _install_redis(monkeypatch, double)
+
+    resolved = await _resolve_leboncoin_status(None)
+    line = _leboncoin_status_line(resolved, datetime.now(UTC))
+    assert "illisible" in line, "un état douteux ne doit pas être présenté comme sain"
+
+
+@pytest.mark.asyncio
+async def test_status_keeps_an_unpersisted_stop_visible(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "LEBONCOIN_POLLER_ENABLED", True)
+    from datetime import UTC, datetime
+
+    from app.bot.handlers.status import _leboncoin_status_line, _resolve_leboncoin_status
+
+    double = _RedisDouble()
+    double.store[leboncoin_poller.LEBONCOIN_BLOCK_EPISODE_KEY] = (
+        '{"started_at": 999000.0, "stopped_at": 1000000.0}'
+    )
+    _install_redis(monkeypatch, double)
+
+    unpersisted = {"status": "durable_block", "reason": "persistence_failed"}
+    resolved = await _resolve_leboncoin_status(unpersisted)
+
+    assert resolved == unpersisted, "persistence_failed n'est pas masqué par l'état persistant"
+    assert "persistance impossible" in _leboncoin_status_line(resolved, datetime.now(UTC))
+
+
+# --- alerte de suspension hors transition d'arrêt ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_suspension_on_episode_opening_alerts_once(monkeypatch: pytest.MonkeyPatch):
+    harness = LoopHarness(monkeypatch, ["block", "block", "block"])
+    harness.double.write_error = RuntimeError("redis refuse l'écriture")
+    await harness.run()
+
+    assert any(s.get("reason") == "persistence_failed" for s in harness.statuses)
+    suspensions = [text for text in harness.alerts if "suspendue" in text]
+    assert len(suspensions) == 1, "une seule alerte par suspension"
+    assert "suspendue pour ce processus" in suspensions[0]
+    assert "n'est pas garantie" in suspensions[0]
+
+
+@pytest.mark.asyncio
+async def test_suspension_on_clear_failure_alerts_once(monkeypatch: pytest.MonkeyPatch):
+    harness = LoopHarness(monkeypatch, ["block", "ok", "ok"])
+    harness.double.delete_error = RuntimeError("redis refuse la suppression")
+    await harness.run()
+
+    suspensions = [text for text in harness.alerts if "suspendue" in text]
+    assert len(suspensions) == 1
+    assert any(s.get("reason") == "persistence_failed" for s in harness.statuses)
+
+
+@pytest.mark.asyncio
+async def test_the_suspension_alert_never_leaks_redis_detail(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    harness = LoopHarness(monkeypatch, ["block", "block", "block"])
+    harness.double.write_error = RuntimeError("127.0.0.1:6379 ECONNREFUSED")
+    await harness.run()
+
+    suspensions = [text for text in harness.alerts if "suspendue" in text]
+    assert len(suspensions) == 1
+    assert "127.0.0.1" not in suspensions[0]
+    assert "6379" not in suspensions[0]
+    assert "ECONNREFUSED" not in suspensions[0]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_suspension_alert_still_suspends(monkeypatch: pytest.MonkeyPatch):
+    harness = LoopHarness(monkeypatch, ["block", "block", "block"])
+    harness.double.write_error = RuntimeError("redis refuse l'écriture")
+    harness.send_error = RuntimeError("Telegram indisponible")
+    await harness.run()
+
+    assert any(s.get("reason") == "persistence_failed" for s in harness.statuses)
+    assert harness.tasks, "l'alerte a bien été tentée"
+    assert all(task.done() for task in harness.tasks)
+
+
+# --- ordre des messages à la réussite ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recovery_is_announced_only_after_the_episode_is_cleared(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    harness = LoopHarness(monkeypatch, ["block", "ok", "stop"])
+    await harness.run()
+
+    events = harness.double.events
+    cleared_at = next(i for i, (kind, _) in enumerate(events) if kind == "delete")
+    recovery_at = next(
+        i for i, (kind, value) in enumerate(events) if kind == "alert" and "rétablie" in value
+    )
+
+    assert recovery_at > cleared_at, "l'annonce de rétablissement suit l'effacement"
+    assert not any(
+        kind == "write" and "stopped_at" in value for kind, value in events
+    ), "aucun arrêt enregistré : l'épisode a bien été refermé par un succès"
+    assert harness.double.deletes == [leboncoin_poller.LEBONCOIN_BLOCK_EPISODE_KEY]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_clear_never_announces_a_full_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    harness = LoopHarness(monkeypatch, ["block", "ok", "ok"])
+    harness.double.delete_error = RuntimeError("suppression refusée")
+    await harness.run()
+
+    assert not any("rétablie" in text for text in harness.sent), (
+        "aucun rétablissement annoncé si l'épisode n'a pas pu être effacé"
+    )
+    assert not any("rétablie" in value for kind, value in harness.double.events if kind == "alert")
+    assert any(s.get("reason") == "persistence_failed" for s in harness.statuses)
+
+
+# --- précision de l'alerte d'arrêt ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_stop_alert_reports_the_observed_duration_not_the_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    harness = LoopHarness(monkeypatch, ["ok"])
+    started_at = harness.clock_start - (7200.0 + 3600.0)
+    harness.double.store[leboncoin_poller.LEBONCOIN_BLOCK_EPISODE_KEY] = (
+        f'{{"started_at": {started_at}}}'
+    )
+    await harness.run()
+
+    alert = harness.stop_alerts()[0]
+    assert "180 min" in alert, "la durée observée est annoncée"
+    assert "seuil d'arrêt : 120 min" in alert, "le seuil reste nommé comme tel"
+    assert "depuis 120 min sans rétablissement" not in alert
+
+
+@pytest.mark.asyncio
+async def test_the_stop_alert_at_the_deadline_reports_the_threshold_duration(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    harness = LoopHarness(monkeypatch, ["block", "block", "block", "block", "ok"])
+    await harness.run()
+
+    alert = harness.stop_alerts()[0]
+    assert "min" in alert
+    assert "seuil d'arrêt : 120 min" in alert
+
+
+# --- aucune relance automatique après sortie de la tâche --------------------
+
+
+def test_the_collector_is_created_once_and_never_supervised():
+    """Aucun superviseur ni boucle de redémarrage ne relance la tâche terminée."""
+    import ast
+    from pathlib import Path
+
+    import app.main as main_module
+
+    main_source = Path(main_module.__file__).read_text()
+    tree = ast.parse(main_source)
+
+    creations = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "safe_create_task"
+        and any(
+            isinstance(arg, ast.Call) and getattr(arg.func, "id", None) == "run_leboncoin_poller"
+            for arg in node.args
+        )
+    ]
+    assert len(creations) == 1, "une seule création de la tâche Leboncoin"
+
+    referenced = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == "leboncoin_task"
+    ]
+    assert referenced, "la tâche est suivie par la référence locale"
+    for node in referenced:
+        assert isinstance(node.ctx, (ast.Load, ast.Store))

@@ -25,6 +25,13 @@ par la mesure disponible : le seul blocage mesuré a duré moins de 45 min.
 Le compteur de refus consécutifs reste informatif : il choisit le palier de pause
 et le texte des alertes, il ne décide pas de l'arrêt.
 
+L'alerte d'arrêt annonce la **durée réellement observée** depuis le premier refus,
+et rappelle le seuil configuré. Elle n'affirme donc pas une durée exacte de
+blocage lorsqu'un redémarrage tardif constate l'échéance après coup.
+
+Un cycle réussi n'annonce le rétablissement qu'**après** l'effacement effectif de
+l'épisode : si l'effacement échoue, aucun rétablissement complet n'est annoncé.
+
 ## Ce qui est enregistré
 
 L'état vit dans la clé Redis `radar:leboncoin_block_episode`, volontairement
@@ -70,8 +77,23 @@ qui refuse.
   La garantie de non-reprise **après redémarrage n'est pas assurée** tant que
   l'écriture n'a pas abouti : après un redémarrage, le collecteur peut repartir.
   Vinted n'est pas concerné.
-- **Un échec d'envoi Telegram ne modifie rien** : l'arrêt est déjà appliqué, il
-  n'est ni différé ni annulé par l'échec de l'alerte.
+- **Un échec d'envoi Telegram ne modifie rien** : l'arrêt ou la suspension est
+  déjà appliqué, il n'est ni différé ni annulé par l'échec de l'alerte. Une
+  suspension donne lieu à **une** alerte dédiée, sans détail brut de Redis.
+
+## Visibilité dans `/status`
+
+Le statut courant expire au bout de 24 h. Une fois le collecteur arrêté, plus rien
+ne le réécrit : `/status` relit donc aussi la clé d'épisode, qui n'expire pas.
+Un arrêt enregistré reste ainsi visible au-delà de 24 h.
+
+`/status` n'effectue aucune reprise : il se contente de lire. L'absence de clé
+reste un état normal, et un état d'épisode illisible est affiché comme tel plutôt
+que comme un état sain.
+
+Un arrêt dont la persistance a échoué (`persistence_failed`) reste affiché depuis
+le statut courant : cet arrêt n'a pas d'état persistant garanti, et cette
+information prime sur l'état persisté.
 
 ## Hors périmètre
 
