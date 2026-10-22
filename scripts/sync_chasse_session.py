@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import settings  # noqa: E402
 from app.providers.base import extract_best_historical_low  # noqa: E402
+from app.providers.cal_governor import CalCollectionBudget, CalSuspendedError  # noqa: E402
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -70,12 +71,17 @@ def read_token(args: argparse.Namespace) -> str:
     return (os.environ.get("CHASSE_AUX_LIVRES_DUIH") or "").strip()
 
 
-async def _probe_series(token: str, isbn13: str, title: str) -> int | None:
+async def _probe_series(
+    token: str, isbn13: str, title: str, *,
+    collection_budget: CalCollectionBudget | None = None,
+) -> int | None:
     """Série 1 an d'une sonde donnée, avec ce jeton — config restaurée quoi qu'il arrive."""
     previous = settings.CHASSE_AUX_LIVRES_DUIH
     settings.CHASSE_AUX_LIVRES_DUIH = token
     try:
-        offers = await ChasseAuxLivresProvider().get_offers(isbn13=isbn13, title=title)
+        provider = (ChasseAuxLivresProvider(collection_budget=collection_budget)
+                    if collection_budget is not None else ChasseAuxLivresProvider())
+        offers = await provider.get_offers(isbn13=isbn13, title=title)
     except Exception as exc:
         logger.error("Validation impossible (%s) : %s", type(exc).__name__, exc)
         return None
@@ -85,21 +91,31 @@ async def _probe_series(token: str, isbn13: str, title: str) -> int | None:
     return extract_best_historical_low(offers)
 
 
-async def validate_token(token: str) -> int | None:
+async def validate_token(
+    token: str, *, collection_budget: CalCollectionBudget | None = None,
+) -> int | None:
     """Interroge la série 1 an avec ce jeton. Renvoie le prix bas, ou ``None``.
 
     La validation passe par le provider lui-même : c'est le seul moyen de savoir
     que le jeton marche pour nous, avec nos paramètres et nos titres de sonde —
-    pas seulement pour une requête quelconque. Chaque sonde est essayée à son
-    tour : le refus ne tombe qu'après la dernière, pour qu'une sonde retirée du
-    site ne condamne jamais un jeton valide.
+    pas seulement pour une requête quelconque. Sans restriction du régulateur et
+    avec du budget disponible, chaque sonde est essayée à son tour : une sonde
+    retirée du site ne condamne pas à elle seule un jeton valide.
     """
     for isbn13, title in PROBE_CANDIDATES:
-        low_cents = await _probe_series(token, isbn13, title)
+        low_cents = (await _probe_series(token, isbn13, title)
+                    if collection_budget is None else await _probe_series(
+                        token, isbn13, title, collection_budget=collection_budget,
+                    ))
+        if collection_budget is not None and collection_budget.suspension is not None:
+            raise collection_budget.suspension
         if low_cents is not None:
             logger.info("Série 1 an confirmée par la sonde %s (%s).", isbn13, title)
             return low_cents
         logger.warning("Aucune série pour la sonde %s (%s).", isbn13, title)
+        if (collection_budget is not None and collection_budget.used
+                >= collection_budget.governor.max_requests_per_collection):
+            raise CalSuspendedError("collection_budget", None)
     return None
 
 

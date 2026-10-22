@@ -245,7 +245,7 @@ async def test_internal_collection_error_keeps_attempt_and_allows_other_books(mo
             assert following[0].id != first.id
 
 
-async def test_overdue_queue_keeps_one_batch_and_reserves_future_slots():
+async def test_overdue_queue_keeps_one_batch_without_postponing_overflow():
     now = datetime.now(UTC)
     async with sqlite_only_database() as database:
         session = database.session
@@ -262,8 +262,8 @@ async def test_overdue_queue_keeps_one_batch_and_reserves_future_slots():
         assert len(selected) == 8
         slots = [book.market_cache.next_refresh_at for book in books
                  if book not in selected]
-        assert all(slot.replace(tzinfo=UTC) > now for slot in slots)
-        assert max(slots.count(slot) for slot in slots) <= 8
+        assert all(slot.replace(tzinfo=UTC) == now-timedelta(hours=2) for slot in slots)
+        assert len(slots) == 11
 
 
 async def test_resting_book_with_past_slot_is_not_selected():
@@ -332,8 +332,10 @@ async def test_batch_size_and_half_hour_slots_are_unchanged():
         books = [await _linked_book(session, user, category, title=f"Livre {n}")
                  for n in range(20)]
         session.add_all([
-            BookMarketCache(book_id=book.id, next_refresh_at=now - timedelta(hours=2))
-            for book in books
+            BookMarketCache(book_id=book.id, next_refresh_at=(
+                now - timedelta(hours=2) if index < 8 else None
+            ))
+            for index, book in enumerate(books)
         ])
         await session.commit()
         repo = BookRepository(session)

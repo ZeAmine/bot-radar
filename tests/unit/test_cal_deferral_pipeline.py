@@ -95,7 +95,9 @@ async def test_a_deferred_book_keeps_a_slot_and_no_invented_failure():
     assert retry_at >= PASS_START + timedelta(minutes=30)
 
     await _plan(repository, PASS_START)
-    assert cache.next_refresh_at == retry_at
+    assert retry_at <= cache.next_refresh_at < retry_at + timedelta(minutes=30)
+    assert cache.next_refresh_at.minute in (15, 45)
+    assert cache.next_refresh_at.second == cache.next_refresh_at.microsecond == 0
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import asyncio
 import html
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import monotonic
@@ -18,6 +19,7 @@ from app.core.alert_latency import observe_background
 from app.core.redis import get_redis_client
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.providers.base import CollectionAttempt
+from app.providers.cal_governor import CalGovernor, cal_governor
 from app.services.market_price_service import (
     COTE_UNAVAILABLE_LINE,
     LOT_UNRESOLVED_LINE,
@@ -26,9 +28,70 @@ from app.services.market_price_service import (
     SEARCHING_BOOK_LINE,
     is_no_offer_line,
 )
-from app.services.telegram_service import notify_admins
+from app.services.telegram_service import notify_admins, notify_admins_outcome
 
 logger = logging.getLogger(__name__)
+
+CAL_STORAGE_ALERT_AFTER_SECONDS = 300.0
+CAL_STORAGE_ALERT_RETRY_SECONDS = 300.0
+CAL_STORAGE_ALERT_MAX_ATTEMPTS = 3
+
+
+class CalStorageHealth:
+    def __init__(
+        self, *, governor: CalGovernor,
+        notify: Callable[[str], Awaitable[str]] = notify_admins_outcome,
+    ) -> None:
+        self.governor = governor
+        self.notify = notify
+        self._lock = asyncio.Lock()
+        self._episode = 0
+        self._attempts = 0
+        self._next_attempt_at = 0.0
+        self._terminal = False
+
+    async def check(self) -> None:
+        async with self._lock:
+            await self.governor.snapshot()
+            since = self.governor.storage_unavailable_since
+            if since is None:
+                return
+            now = float(self.governor.monotonic_clock())
+            if self._episode != self.governor.storage_incident:
+                self._episode = self.governor.storage_incident
+                self._attempts = 0
+                self._terminal = False
+                self._next_attempt_at = since + CAL_STORAGE_ALERT_AFTER_SECONDS
+            if self._terminal or now < self._next_attempt_at:
+                return
+            if self._attempts == 0:
+                logger.error("Stockage du régulateur CAL indisponible depuis au moins cinq minutes")
+            self._attempts += 1
+            self._terminal = True
+            try:
+                outcome = await self.notify(
+                    "⚠️ <b>Régulation CAL indisponible</b>\n"
+                    "Le stockage Redis du régulateur est inaccessible "
+                    "depuis au moins cinq minutes. "
+                    "Les nouveaux appels CAL sont refusés ; "
+                    "les livres non interrogés sont reportés. "
+                    "La reprise sera automatique après rétablissement du stockage."
+                )
+            except Exception as exc:
+                logger.warning("Résultat de l’alerte Redis incertain (%s)", type(exc).__name__)
+                return
+            if outcome == "failed" and self._attempts < CAL_STORAGE_ALERT_MAX_ATTEMPTS:
+                self._terminal = False
+                self._next_attempt_at = now + CAL_STORAGE_ALERT_RETRY_SECONDS
+            if outcome != "accepted":
+                logger.warning("Alerte Redis non confirmée : %s", outcome)
+
+
+_cal_storage_health = CalStorageHealth(governor=cal_governor)
+
+
+async def check_cal_storage_health() -> None:
+    await _cal_storage_health.check()
 
 STALE_AFTER_DAYS = 7
 

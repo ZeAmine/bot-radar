@@ -2,9 +2,20 @@
 
 from datetime import timedelta
 
+from app.services.market_health import check_cal_storage_health
 from app.tasks.night_book_maintenance import NIGHT_MAINTENANCE_JOB_ID
 from app.tasks.recover_notifications import RECOVERY_SCAN_SECONDS
 from app.tasks.scheduler import create_scheduler
+
+
+def test_cal_storage_health_checks_redis_every_minute_without_overlap():
+    scheduler = create_scheduler()
+    job = scheduler.get_job("check_cal_storage_health")
+    assert job is not None
+    assert job.func is check_cal_storage_health
+    assert job.trigger.interval == timedelta(minutes=1)
+    assert job.max_instances == 1
+    assert job.coalesce is True
 
 
 def test_notification_recovery_scans_twice_a_minute() -> None:

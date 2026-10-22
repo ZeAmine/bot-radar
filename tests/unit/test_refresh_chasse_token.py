@@ -16,6 +16,8 @@ from pathlib import Path
 
 import httpx
 
+from app.providers.cal_governor import CalCollectionBudget, GovernedClient, UnregulatedGovernor
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
@@ -86,15 +88,15 @@ def test_missing_login_fields_are_none_not_empty_values():
     assert extract_login_fields(no_hidden) is None
 
 
-def _client(handler) -> httpx.Client:
-    return httpx.Client(
+def _client(handler) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
         follow_redirects=True,
         timeout=5.0,
     )
 
 
-def test_capture_logs_in_and_reads_the_home_attribute():
+async def test_capture_logs_in_and_reads_the_home_attribute():
     """La chaîne complète : formulaire → POST → accueil membre → data-duih."""
     posted: dict[str, str] = {}
 
@@ -115,8 +117,11 @@ def test_capture_logs_in_and_reads_the_home_attribute():
             return httpx.Response(200, text=MEMBER_HOME_HTML, request=request)
         return httpx.Response(404, request=request)
 
-    with _client(handler) as client:
-        token = capture_token(client, "membre@example.org", "mot-de-passe")
+    async with _client(handler) as client:
+        token = await capture_token(
+            GovernedClient(client, CalCollectionBudget(UnregulatedGovernor())),
+            "membre@example.org", "mot-de-passe",
+        )
 
     assert token == "jeton-membre.signature"
     assert "SOURCE-PAGE-123" in posted["body"]
@@ -124,7 +129,7 @@ def test_capture_logs_in_and_reads_the_home_attribute():
     assert "membre%40example.org" in posted["body"]
 
 
-def test_capture_refuses_when_the_form_is_still_open_after_post():
+async def test_capture_refuses_when_the_form_is_still_open_after_post():
     """Un formulaire rendu intact après POST = identifiants refusés : rien à valider."""
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET" and request.url.path == "/login":
@@ -132,13 +137,16 @@ def test_capture_refuses_when_the_form_is_still_open_after_post():
         # Réponse de connexion en échec : la page de connexion revient telle quelle.
         return httpx.Response(200, text=LOGIN_PAGE_HTML, request=request)
 
-    with _client(handler) as client:
-        token = capture_token(client, "membre@example.org", "mauvais-mdp")
+    async with _client(handler) as client:
+        token = await capture_token(
+            GovernedClient(client, CalCollectionBudget(UnregulatedGovernor())),
+            "membre@example.org", "mauvais-mdp",
+        )
 
     assert token is None
 
 
-def test_capture_stops_before_posting_when_the_form_changed():
+async def test_capture_stops_before_posting_when_the_form_changed():
     """Sans champs anti-rejeu, la connexion ne tente même pas : formulaire changé."""
     posted_methods: list[str] = []
 
@@ -147,14 +155,17 @@ def test_capture_stops_before_posting_when_the_form_changed():
         bare = LOGIN_PAGE_HTML.split('<div style="display:none;visibility: hidden">')[0]
         return httpx.Response(200, text=bare, request=request)
 
-    with _client(handler) as client:
-        token = capture_token(client, "membre@example.org", "mot-de-passe")
+    async with _client(handler) as client:
+        token = await capture_token(
+            GovernedClient(client, CalCollectionBudget(UnregulatedGovernor())),
+            "membre@example.org", "mot-de-passe",
+        )
 
     assert token is None
     assert "POST" not in posted_methods
 
 
-def test_capture_returns_none_when_the_home_has_no_duih():
+async def test_capture_returns_none_when_the_home_has_no_duih():
     """Membre connecté mais aucun jeton rendu : None explicite, pas une chaîne vide."""
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/login" and request.method == "GET":
@@ -165,7 +176,10 @@ def test_capture_returns_none_when_the_home_has_no_duih():
             )
         return httpx.Response(200, text="<html><body>accueil</body></html>", request=request)
 
-    with _client(handler) as client:
-        token = capture_token(client, "membre@example.org", "mot-de-passe")
+    async with _client(handler) as client:
+        token = await capture_token(
+            GovernedClient(client, CalCollectionBudget(UnregulatedGovernor())),
+            "membre@example.org", "mot-de-passe",
+        )
 
     assert token is None

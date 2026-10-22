@@ -24,6 +24,13 @@ def aware(moment: datetime) -> datetime:
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
+def next_refresh_slot(moment: datetime) -> datetime:
+    slot = moment.replace(minute=15, second=0, microsecond=0)
+    while slot < moment:
+        slot += timedelta(minutes=30)
+    return slot
+
+
 def component_success_at(
     cache: BookMarketCache | None, component: Component,
 ) -> datetime | None:

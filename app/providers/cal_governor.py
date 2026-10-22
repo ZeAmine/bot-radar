@@ -299,6 +299,7 @@ class CalGovernor:
         lease_ttl_seconds: float = CAL_LEASE_TTL_SECONDS,
         store: Any = None,
         clock: Any = None,
+        monotonic_clock: Any = None,
         sleep: Any = asyncio.sleep,
         namespace: str = "",
     ) -> None:
@@ -314,6 +315,7 @@ class CalGovernor:
         self.lease_ttl_seconds = max(1.0, lease_ttl_seconds)
         self.store = store
         self.clock = clock or time.time
+        self.monotonic_clock = monotonic_clock or time.monotonic
         self.sleep = sleep
         self.namespace = namespace
         self.emitted = 0
@@ -321,6 +323,8 @@ class CalGovernor:
         self.throttled = 0
         self.deferred = 0
         self.storage_unavailable = False
+        self.storage_unavailable_since: float | None = None
+        self.storage_incident = 0
         self._local = GovernorSnapshot()
 
     @property
@@ -355,7 +359,7 @@ class CalGovernor:
     async def _run(self, script: str, *args: Any, keys: list[str] | None = None) -> Any:
         client = await self._redis()
         if client is None:
-            self.storage_unavailable = True
+            self._storage_failed("client_absent")
             return None
         resolved = keys or [self.key]
         try:
@@ -363,10 +367,20 @@ class CalGovernor:
                 client.eval(script, len(resolved), *resolved, *args), timeout=2,
             )
         except Exception as exc:
-            self.storage_unavailable = True
-            logger.warning("Régulateur CAL indisponible : %s: %s", type(exc).__name__, exc)
+            self._storage_failed(type(exc).__name__)
             return None
+        if self.storage_unavailable:
+            logger.info("Stockage du régulateur CAL rétabli")
+        self.storage_unavailable = False
+        self.storage_unavailable_since = None
         return _decoded(raw)
+
+    def _storage_failed(self, error_type: str) -> None:
+        if not self.storage_unavailable:
+            self.storage_unavailable_since = float(self.monotonic_clock())
+            self.storage_incident += 1
+            logger.warning("Stockage du régulateur CAL indisponible (%s)", error_type)
+        self.storage_unavailable = True
 
     async def snapshot(self) -> GovernorSnapshot:
         raw = await self._run(SNAPSHOT_SCRIPT)
@@ -551,6 +565,7 @@ class CalCollectionBudget:
         self.limit = limit or governor.max_requests_per_collection
         self.used = 0
         self.probe_token: str | None = None
+        self.suspension: CalSuspendedError | None = None
 
     @property
     def opening_request(self) -> bool:
@@ -558,23 +573,39 @@ class CalCollectionBudget:
         return self.used == 0
 
     async def get(self, client: "CalHttpClient", *args: Any, **kwargs: Any) -> httpx.Response:
-        return await self.governor.request(client, self, *args, **kwargs)
+        try:
+            return await self.governor.request(client, self, *args, **kwargs)
+        except CalSuspendedError as exc:
+            self.suspension = exc
+            raise
 
     async def post(self, client: "CalHttpClient", *args: Any, **kwargs: Any) -> httpx.Response:
-        return await self.governor.request(client, self, *args, _method="post", **kwargs)
+        try:
+            return await self.governor.request(client, self, *args, _method="post", **kwargs)
+        except CalSuspendedError as exc:
+            self.suspension = exc
+            raise
 
 
 class GovernedClient:
-    def __init__(self, client: "CalHttpClient", budget: CalCollectionBudget) -> None:
+    def __init__(
+        self, client: "CalHttpClient", budget: CalCollectionBudget, *,
+        follow_redirects: bool | None = None,
+    ) -> None:
         while isinstance(client, GovernedClient):
             client = client._client
         self._client: CalHttpClient = client
         self._budget = budget
+        self._follow_redirects = follow_redirects
 
     async def get(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        if self._follow_redirects is not None:
+            kwargs["follow_redirects"] = self._follow_redirects
         return await self._budget.get(self._client, *args, **kwargs)
 
     async def post(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        if self._follow_redirects is not None:
+            kwargs["follow_redirects"] = self._follow_redirects
         return await self._budget.post(self._client, *args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
