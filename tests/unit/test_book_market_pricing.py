@@ -41,12 +41,6 @@ def synthetic_reservations(monkeypatch):
     monkeypatch.setattr(pricing, "_reserve_next_refresh", AsyncMock())
 
 
-@pytest.fixture(autouse=True)
-def mock_price_refresh_planner(monkeypatch):
-    monkeypatch.setattr("app.db.repositories.book_repo.BookRepository.plan_price_refreshes",
-                        AsyncMock())
-
-
 ISBN = "9782917501245"
 TITRE = "Les Dépressifs anonymes"
 
