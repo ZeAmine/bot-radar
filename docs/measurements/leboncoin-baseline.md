@@ -56,7 +56,22 @@ Le préfixe JA4 `t13d1516h2_8daaf6152771` est la forme Chrome attendue. La compa
 - Deuxième cycle consécutif à 11:09:55 UTC, également `403`.
 - Les tests d'API du même jour commencent à 11:16 UTC : ils suivent le premier refus et ne l'expliquent pas.
 - Depuis 11:13 UTC, le soak applique le retrait progressif du collecteur (30, 60 puis 120 min) ; les cycles bloqués ne comptent ni arrivées ni couverture.
-- Conséquence : la borne « aucun échec sur 288 cycles » ne s'applique plus. Le taux observé est de 2 cycles bloqués sur 65 (≈ 3 %), et la durée du blocage reste à mesurer.
+- Conséquence : la borne « aucun échec sur 288 cycles » ne s'applique plus. Le taux observé est de 2 cycles bloqués sur 65 (≈ 3 %).
+
+### Retour à la normale
+
+- 20 octobre, 11:43 UTC : le soak reprend après le retrait de 30 min, sans nouveau `403`.
+- 22 octobre, 11:29 Paris (09:29 UTC) : canari exécuté depuis le clone VPS via le tunnel — `ok`, `200`, 1,19 Mo. Le blocage a duré moins de 45 min ; il est confiné à l'IP résidentielle et se dissipe seul, ce que le retrait progressif du collecteur exploite correctement.
+
+## Panne du tunnel résidentiel — 45 h sans collecte
+
+Le soak a perdu le tunnel le 20 octobre vers 11:43 UTC et ne l'a retrouvé que le 22 à 09:28 UTC :
+
+- 240 `ConnectionError` et 2 `Timeout` sur 339 cycles ; 94 seulement ont vu un `200`.
+- Sur le Pi, le client `ssh -R` s'est figé sur `Timeout, server 88.96.56.44 not responding` et **la boucle `@reboot` qui devait le relancer avait disparu** : plus aucun processus, aucune tentative de reconnexion journalisée.
+- Le relais SOCKS5 du Pi était intact et le VPS joignable : la défaillance est celle du superviseur, pas du réseau.
+
+**C'est le mode de défaillance le plus dangereux documenté à ce jour** : un tunnel à demi-ouvert ne produit ni exception claire ni alerte, seulement une collecte muette. Correctif appliqué : veille cron de 5 min sur le Pi, qui relance la boucle détachée si aucun client `ssh -R` n'existe. Le soak est reparti le 22 octobre à 11:29 Paris.
 
 ## Ce que ces mesures invalident
 
@@ -66,10 +81,11 @@ Le préfixe JA4 `t13d1516h2_8daaf6152771` est la forme Chrome attendue. La compa
 - « `delta_total` mesure le flux » : faux, il ne suit pas les arrivées ;
 - « l'API JSON est une voie anonyme » : faux, `403` sans session du navigateur ;
 - « aucune restriction pendant 48 h » : faux, un challenge DataDome est survenu après 11 h ;
+- « un soak de 48 h prouve la cadence » : faux, la panne du tunnel l'a interrompu après 11,4 h ;
 - l'estimation λ de 0,3/h calculée sur l'écart min/max est un artefact des annonces épinglées.
 
 ## Limites
 
 - Une session nocturne, un seul jour : ni week-end, ni soirée, ni saisonnalité.
 - Aucun oracle externe : le rappel n'est pas mesuré (ADR-053).
-- Pas encore de HAR de navigateur ni de canari de schéma.
+- Une seule panne de tunnel observée sur une seule nuit : sa fréquence n'est pas connue.
