@@ -276,10 +276,12 @@ class ChasseAuxLivresProvider:
         sleep: Sleeper = asyncio.sleep,
         max_retries: int = 2,
         governor: CalGovernor | None = None,
+        collection_budget: CalCollectionBudget | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.http_client = http_client
         self._governor = governor
+        self._provided_budget = collection_budget
         self._budget: CalCollectionBudget | None = None
         self._cal_client_instance: GovernedClient | None = None
         self._sleep = sleep
@@ -333,36 +335,44 @@ class ChasseAuxLivresProvider:
     ) -> list[MarketOffer]:
         """Interroge Chasse-aux-livres par ISBN-13 ou par Titre canonique avec repli automatique."""
         _ = edition
-        governor = self._governor or cal_governor
+        owns_budget = self._provided_budget is None
+        governor = self._provided_budget.governor if self._provided_budget else (
+            self._governor or cal_governor
+        )
         try:
-            probe_token = await governor.admit_book(pass_occurrence.get())
+            probe_token = (self._provided_budget.probe_token if self._provided_budget is not None
+                           else await governor.admit_book(pass_occurrence.get()))
         except CalSuspendedError as exc:
             return deferred_offers(
                 self.name, reason=exc.reason, retry_at=exc.retry_at, emitted_requests=0,
             )
-        self._budget = CalCollectionBudget(governor)
+        self._budget = self._provided_budget or CalCollectionBudget(governor)
         self._budget.probe_token = probe_token
         self._cal_client_instance = GovernedClient(
             self.http_client or get_shared_http_client(), self._budget,
+            follow_redirects=False if self._provided_budget is not None else None,
         )
         try:
             offers = await self._collect_offers(
                 isbn13=isbn13, title=title, author=author, source_url=source_url,
             )
         except CalSuspendedError as exc:
-            await governor.conclude_probe(
-                probe_token, succeeded=False, reason=exc.reason,
-            )
+            if owns_budget:
+                await governor.conclude_probe(
+                    probe_token, succeeded=False, reason=exc.reason,
+                )
             raise
         except BaseException:
-            await governor.conclude_probe(
-                probe_token, succeeded=False, reason="collection_aborted",
-            )
+            if owns_budget:
+                await governor.conclude_probe(
+                    probe_token, succeeded=False, reason="collection_aborted",
+                )
             raise
         else:
-            await governor.conclude_probe(
-                probe_token, succeeded=_collection_concluded(offers),
-            )
+            if owns_budget:
+                await governor.conclude_probe(
+                    probe_token, succeeded=_collection_concluded(offers),
+                )
             return offers
         finally:
             self._cal_client_instance = None

@@ -12,7 +12,8 @@ Pourquoi le compte, pas un navigateur
 Le défi est un reCAPTCHA v2 en images que le site sert à **toute** requête
 pilotée — Chromium headless ou headful confondus (constat du 06/10 : la
 capture Playwright échouait en code 2 à chaque passe, sans jamais toucher au
-jeton en base). La connexion au compte, elle, n'expose aucun captcha :
+jeton en base). La connexion au compte reste soumise aux défis de la source.
+Le parcours attendu est :
 ``GET /login?protect=true`` rend le formulaire (champs anti-rejeu
 ``_sourcePage`` et ``__fp``), ``POST /login`` soumet
 email / mot de passe / protect, puis un membre connecté lit ``data-duih``
@@ -52,6 +53,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from sync_chasse_session import push_token_to_radar, validate_token  # noqa: E402
+
+from app.core.http_client import close_shared_http_client, get_shared_http_client  # noqa: E402
+from app.core.redis import close_redis  # noqa: E402
+from app.providers.cal_governor import (  # noqa: E402
+    CalCollectionBudget,
+    CalSuspendedError,
+    GovernedClient,
+    cal_governor,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 # httpx journalise chaque URL complète en INFO — dont /rest/jcd qui porte le duih.
@@ -114,7 +124,29 @@ def extract_duih(html_attr: str | None, cookies: list[dict]) -> str | None:
     return None
 
 
-def capture_token(client: httpx.Client, email: str, password: str) -> str | None:
+async def _login_request(
+    client: GovernedClient, method: str, url: str, **kwargs,
+) -> httpx.Response:
+    headers = LOGIN_HEADERS
+    for _ in range(client.max_redirects + 1):
+        response = await getattr(client, method)(
+            url, headers=headers, follow_redirects=False,
+            timeout=REQUEST_TIMEOUT_SECONDS, **kwargs,
+        )
+        redirect = response.next_request
+        if redirect is None:
+            return response
+        if (redirect.url.scheme, redirect.url.host, redirect.url.port) != (
+            "https", "www.chasse-aux-livres.fr", None,
+        ):
+            raise ValueError("Redirection CAL hors origine refusée")
+        method, url = redirect.method.lower(), str(redirect.url)
+        headers = dict(redirect.headers)
+        kwargs = {"content": await redirect.aread()} if method == "post" else {}
+    raise ValueError("Trop de redirections CAL")
+
+
+async def capture_token(client: GovernedClient, email: str, password: str) -> str | None:
     """Se connecte au compte, lit ``data-duih`` sur l'accueil, renvoie le jeton.
 
     Chaque étape logue précisément et rend ``None`` : le cron a un code à
@@ -122,7 +154,7 @@ def capture_token(client: httpx.Client, email: str, password: str) -> str | None
     le journal.
     """
     try:
-        response = client.get(LOGIN_URL)
+        response = await _login_request(client, "get", LOGIN_URL)
     except httpx.HTTPError as exc:
         logger.error("Page de connexion injoignable (%s).", type(exc).__name__)
         return None
@@ -140,7 +172,8 @@ def capture_token(client: httpx.Client, email: str, password: str) -> str | None
     source_page, fingerprint = fields
 
     try:
-        response = client.post(
+        response = await _login_request(
+            client, "post",
             f"{BASE_URL}/login",
             data={
                 "email": email,
@@ -164,7 +197,7 @@ def capture_token(client: httpx.Client, email: str, password: str) -> str | None
         return None
 
     try:
-        response = client.get(f"{BASE_URL}/")
+        response = await _login_request(client, "get", f"{BASE_URL}/")
     except httpx.HTTPError as exc:
         logger.error("Accueil injoignable après connexion (%s).", type(exc).__name__)
         return None
@@ -209,14 +242,34 @@ async def main() -> int:
         )
         return 2
 
-    with httpx.Client(
-        headers=LOGIN_HEADERS, follow_redirects=True, timeout=REQUEST_TIMEOUT_SECONDS
-    ) as client:
-        duih = capture_token(client, email, password)
-    if not duih:
+    probe_token = None
+    validated = False
+    reason = "token_refresh_aborted"
+    try:
+        probe_token = await cal_governor.admit_book(
+            "script-refresh-token", counts_as_book=False,
+        )
+        budget = CalCollectionBudget(cal_governor)
+        budget.probe_token = probe_token
+        client = GovernedClient(get_shared_http_client(), budget)
+        duih = await capture_token(client, email, password)
+        if not duih:
+            return 2
+        low_cents = await validate_token(duih, collection_budget=budget)
+        validated = low_cents is not None
+    except CalSuspendedError as exc:
+        reason = exc.reason
+        logger.warning("Renouvellement CAL reporté : %s", exc.reason)
         return 2
-
-    low_cents = await validate_token(duih)
+    except ValueError:
+        logger.error("Redirection de connexion CAL refusée.")
+        return 2
+    finally:
+        try:
+            await cal_governor.conclude_probe(probe_token, succeeded=validated, reason=reason)
+        finally:
+            await close_shared_http_client()
+            await close_redis()
     if low_cents is None:
         logger.error(
             "Connexion acceptée mais le jeton ne rend pas la série 1 an : "

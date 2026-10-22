@@ -229,13 +229,12 @@ class BookRepository:
     async def plan_price_refreshes(self, *, now: datetime | None = None,
                                   capacity: int = 8,
                                   book_ids: set[uuid.UUID] | None = None) -> None:
-        from app.services.market_refresh_policy import aware, component_due
+        from app.services.market_refresh_policy import aware, component_due, next_refresh_slot
 
         moment = now or datetime.now(UTC)
         books = await self.get_books_for_active_bd_alerts()
         occupied: dict[datetime, int] = {}
         pending: list[Book] = []
-        overdue = 0
         for book in sorted(books, key=lambda item: (
             aware(item.market_cache.next_refresh_at)
             if item.market_cache and item.market_cache.next_refresh_at else moment,
@@ -243,12 +242,9 @@ class BookRepository:
             cache = book.market_cache
             if cache is not None and cache.next_refresh_at is not None:
                 slot = aware(cache.next_refresh_at)
-                if slot <= moment and book_ids is None:
-                    overdue += 1
-                    if overdue > capacity:
-                        cache.next_refresh_at = None
-                        pending.append(book)
-                        continue
+                if slot > moment:
+                    slot = next_refresh_slot(slot)
+                    cache.next_refresh_at = slot
                 occupied[slot] = occupied.get(slot, 0) + 1
             elif book_ids is None or book.id in book_ids:
                 pending.append(book)
@@ -260,12 +256,7 @@ class BookRepository:
                 book.market_cache = cache
             due = max(moment, min(component_due(cache, component, moment)
                                   for component in ("current", "history")))
-            slot = due.replace(second=0, microsecond=0)
-            slot = slot.replace(minute=15 if slot.minute < 15 else 45) if slot.minute < 45 else (
-                slot.replace(minute=15) + timedelta(hours=1)
-            )
-            if slot < due:
-                slot += timedelta(minutes=30)
+            slot = next_refresh_slot(due)
             while occupied.get(slot, 0) >= capacity:
                 slot += timedelta(minutes=30)
             cache.next_refresh_at = slot

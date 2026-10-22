@@ -10,6 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import settings
+from app.services.market_health import check_cal_storage_health
 from app.tasks.cleanup import cleanup_old_data_task
 from app.tasks.night_book_maintenance import (
     NIGHT_MAINTENANCE_JOB_ID,
@@ -78,6 +79,11 @@ def create_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         recover_notifications, "interval", seconds=RECOVERY_SCAN_SECONDS,
         id="recover_notifications", max_instances=1, coalesce=True, replace_existing=True,
+    )
+
+    scheduler.add_job(
+        check_cal_storage_health, "interval", minutes=1,
+        id="check_cal_storage_health", max_instances=1, coalesce=True, replace_existing=True,
     )
 
     # Format attendu : « 07:00,19:00 ».

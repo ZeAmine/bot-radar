@@ -52,6 +52,7 @@ recharge donc pas le quota.
 
 Seule une collecte de livre consomme une place. L'entretien de session
 (`maintain()`) et les scripts (`chasse_prices.py`, `diagnose_chasse_access.py`)
+ainsi que `refresh_chasse_token.py`
 sont admis en `counts_as_book=False` et restent bornés par la concurrence et la
 fenêtre de requêtes, jamais au détriment des livres de la passe.
 
@@ -122,6 +123,39 @@ heures ne s'applique qu'aux statuts `failed`, `partial` et `skipped`. Le statut
 `last_attempt_at` : aucun recul d'échec n'est imputé à un livre reporté. La
 reprise vient de `next_refresh_at`, fixé par le report lui-même.
 
+Lors de la planification, une échéance strictement future hors grille est arrondie
+au prochain créneau `:15/:45`, secondes et microsecondes nulles. Une échéance déjà
+alignée reste identique. Une échéance passée ou égale à maintenant reste due,
+y compris au-delà des huit livres du lot : la sélection reste bornée et sert les
+échéances les plus anciennes, sans repousser les autres livres à chaque passe.
+
+### Stockage du régulateur indisponible
+
+Le premier échec Redis ouvre un épisode local et produit un journal sans URL ni
+contenu d'exception. Toute opération réussie termine cet épisode, réinitialise
+l'indicateur d'indisponibilité et réarme la surveillance. Les nouvelles demandes
+restent refusées pendant la panne ; les livres non interrogés gardent leur report
+administratif, sans nouvel échec fournisseur.
+
+Le job `check_cal_storage_health` de l'unique APScheduler contrôle Redis chaque
+minute, sans appel CAL ni admission de livre. À la première observation située au
+moins cinq minutes après le début de l'épisode, il journalise la panne prolongée
+et tente une notification opérationnelle. Une panne entre deux observations ne
+constitue pas une preuve d'indisponibilité continue ; un succès observé, même dans
+une autre opération du régulateur, recommence la mesure au prochain incident.
+
+Après acceptation de la notification, aucun nouvel envoi n'est tenté pendant cet
+épisode. Un échec confirmé autorise au plus deux reprises espacées de cinq minutes.
+Un résultat incertain ou une exception d'envoi est journalisé sans nouvelle tentative
+automatique, pour limiter les doublons. Un envoi accepté n'atteste pas une lecture
+par le destinataire. L'état local ne garantit pas la déduplication après redémarrage
+du processus et ne dépend pas du Redis en panne.
+
+Le rétablissement permet les nouvelles admissions, sans intervention sur le
+régulateur. Les livres sont repris à leur prochaine sélection éligible, après
+leur échéance administrative et son éventuel réalignement ; il n'y a pas de collecte
+immédiate forcée de tous les livres au retour du stockage.
+
 
 ## Circuit et reprise progressive
 
@@ -190,13 +224,18 @@ Les paliers de montée en charge ne sont pas automatiques : le plafond de deux
 livres admis par passe reste la valeur initiale jusqu'à une décision explicite
 fondée sur l'observation.
 
+Ces limites ne protègent pas contre l'apparition d'un challenge : CAL peut en
+présenter à tout moment, y compris pendant une connexion ou l'essai de reprise.
+Le comportement vérifié est l'arrêt prudent : repos après challenge, refus des
+appels suivants et essai unique après expiration, sans résolution du défi.
+
 ## Chemins couverts et limites restantes
 
 Raccordés au régulateur, en `GET` comme en `POST` : la recherche, la fiche, le
 lookup initial, les sondages, l'historique, l'entretien de session
 (`maintain()`), la connexion automatique (`_login`, y compris sa page de
 protection, son envoi de formulaire et sa page d'accueil), ainsi que les scripts
-`chasse_prices.py` et `diagnose_chasse_access.py`.
+`chasse_prices.py`, `diagnose_chasse_access.py` et `refresh_chasse_token.py`.
 
 La connexion automatique déclenchée par `get_history()` ou `maintain()` reçoit le
 même client régulé que le reste de la collecte : ses trois requêtes sont comptées
@@ -205,14 +244,46 @@ restriction apparaît — aucune étape suivante n'est tentée. Le formulaire, l
 identifiants et la logique de connexion ne changent pas : seul le transport des
 requêtes est arbitré.
 
-Restent hors du budget de requêtes :
+Le renouvellement explicite `refresh_chasse_token.py` admet une seule collecte
+hors plafond des livres. Capture, redirections de connexion suivies et validation
+de la série historique partagent son budget. Les redirections de connexion hors
+origine sont refusées ; celles rencontrées pendant la validation ne sont pas
+suivies automatiquement. Seul le renouvellement conclut son éventuel essai, après
+validation historique, ou le clôt en échec sur interruption. La lecture d'un jeton
+ne prouve pas son utilité. L'injection vers l'API interne reste hors budget : ce
+n'est pas un appel CAL.
 
-- `refresh_chasse_token.py`, qui s'exécute hors application avec son propre client
-  synchrone et n'est pas raccordé ; il relève d'une exécution manuelle ;
-- l'injection de session vers l'API interne, qui n'est pas un appel CAL.
+Le script utilise `app.core.redis` et l'espace de clés par défaut du régulateur,
+comme l'application. Cela coordonne les deux processus **à condition** que leurs
+environnements désignent le même stockage logique et la même base Redis. Les
+défauts d'adresse peuvent différer entre l'hôte et un conteneur ; une configuration
+identique en texte n'est donc ni nécessaire ni suffisante. Sans accès au stockage
+configuré, le script refuse avant toute requête CAL. Aucun cron n'est activé par
+ce changement.
 
-Ces chemins restent soumis au repos partagé de la session, pas au budget de
-requêtes.
+### Portée de l'atomicité Redis
+
+**Topologie déployée non confirmée** : aucun accès production ni lecture de secrets
+n'a été effectué pour cette vérification. La configuration prévue par
+[`compose.yml`](../../compose.yml) définit un serveur autonome `radar_redis`,
+image `redis:7-alpine`. Le pool de
+[`app/core/redis.py`](../../app/core/redis.py) utilise un client Redis standard
+configuré par `REDIS_URL`, sans client cluster. Le régulateur exécute ses arbitrages
+multiclés par Lua.
+
+Les tests prouvent la coordination de plusieurs clients et instances du régulateur
+partageant un serveur Redis autonome, une base et les mêmes clés. Cette preuve
+couvre la topologie versionnée sous ces conditions, sans attester celle du
+déploiement réel. Des serveurs indépendants ne partageraient pas leurs quotas et
+essais. Sur Redis Cluster, les clés actuelles n'ont pas de hash tag commun : les
+scripts multiclés peuvent être refusés en `CROSSSLOT`. Aucune compatibilité cluster
+ni garantie de bascule avec perte d'état n'est revendiquée.
+
+Vérification ultérieure minimale, avec mandat distinct : confirmer le mode Redis
+effectivement utilisé, puis que l'application et le renouvellement ciblent le même
+stockage logique, la même base et l'espace de clés attendu. Conserver seulement
+une conclusion expurgée, jamais des URL contenant des identifiants. Aucun changement
+de clés ou d'architecture n'est introduit pour une topologie hypothétique.
 
 ## Vérification locale contre un Redis de test
 
@@ -222,12 +293,16 @@ les couvrent exigent une instance Redis jetable, fournie par
 remplacés par un double, jamais comptés comme verts.
 
 ```sh
-docker run -d --rm --name radar-redis-test -p 127.0.0.1:6390:6379 \
-  redis:7-alpine redis-server --save '' --appendonly no
-CAL_TEST_REDIS_URL=redis://127.0.0.1:6390/0 \
-  /chemin/vers/.venv/bin/python -m pytest tests/unit/test_cal_governor_redis.py -q
-docker stop radar-redis-test
+/chemin/vers/.venv/bin/python -B scripts/verify_cal.py
 ```
+
+Cette recette exige Docker et l'image locale `redis:7-alpine` ; aucun téléchargement
+n'est implicite. Elle crée son propre conteneur sans persistance sur un port libre
+lié à `127.0.0.1`, fixe `CAL_TEST_REDIS_URL` uniquement dans le processus de test,
+neutralise les `.env` et répertoires de secrets avant imports, interdit les transports
+externes et les sous-processus de test. Seul ce Redis est joignable. Le parent
+arrête et redémarre exclusivement son conteneur pour le scénario de panne, puis le
+retire. `--target chemin/test.py` permet une sélection explicite.
 
 L'instance écoute sur la boucle locale d'un port haut, sans persistance ni
 exposition publique. Elle ne doit jamais pointer vers un Redis de production :
@@ -237,6 +312,13 @@ Ces tests exercent plusieurs instances du régulateur sur les mêmes clés, en
 parallèle : admission simultanée, concurrence maximale, quotas, essai unique après
 repos, restriction concurrente avec la fin d'une collecte, abandon et expiration,
 stockage indisponible.
+
+`test_cal_storage_recovery.py` exerce un arrêt et un redémarrage réels du serveur,
+avec relecture SQL des reports et un destinataire Telegram simulé.
+`test_cal_refresh_grid.py` exerce des écritures et relectures SQL ; la CI PostgreSQL
+les rejoue, tandis que la recette locale CAL utilise SQLite. Un test avec
+`BrokenStore` reste une injection d'exception, pas une coupure de serveur. Les
+tests utilisant un repository substitué ne prouvent pas une écriture SQL réelle.
 
 ## Vérification locale sans base ni Telegram
 
@@ -252,7 +334,9 @@ Le parent du fichier de session doit exister. Ce fichier privé, écrit atomique
 avec des droits `0600`, contient un secret : le conserver hors dépôt et ne pas
 l'envoyer. Le diagnostic ne charge que les trois variables Chasse aux livres,
 neutralise les autres variables avant les imports applicatifs et limite les
-requêtes au domaine HTTPS de la source. Il n'utilise ni Redis, ni DB, ni Telegram.
+requêtes au domaine HTTPS de la source. La session de diagnostic reste dans le
+fichier privé ; l'admission et le budget utilisent Redis pour la régulation.
+Il n'utilise ni base SQL ni Telegram.
 Il ne montre aucun corps de réponse, cookie, mot de passe ou URL d'historique signée.
 
 Relancer la même commande dans un second processus vérifie la réutilisation du
