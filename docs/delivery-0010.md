@@ -129,12 +129,16 @@ ci-dessous ne sont pas des destinations par défaut : refuser une valeur absente
    dans staging/<UUID> hors runtime. Vérifier leurs empreintes après transfert.
    Cela n’est ni synchronisation de l’app ni sauvegarde de données.
 
+   Bloc exécutable sous **bash** (la substitution `${VPS_SSH_KEY//…}` n’est pas POSIX).
+
 ```sh
-SSH='ssh -i /Users/aminezegmou/.ssh/ssh-key-2026-09-10.key -o StrictHostKeyChecking=yes'
+VPS_SSH_KEY="${VPS_SSH_KEY:?définir VPS_SSH_KEY}"
+qkey="\"${VPS_SSH_KEY//\"/\"\"}\""
+SSH="ssh -o StrictHostKeyChecking=yes -i $qkey"
 # UUID créé une seule fois ; dossier serveur neuf, 0700, aucun écrasement.
 rsync -av -e "$SSH" scripts/delivery_prerequisites.py \
   /Users/aminezegmou/BotRadar-recovery/procedures/source-0010.json \
-  ubuntu@88.96.56.44:/home/ubuntu/bot-radar-recovery/staging/$UUID/
+  ubuntu@${VPS_HOST:?définir VPS_HOST}:/home/ubuntu/bot-radar-recovery/staging/$UUID/
 ```
 
 3. Maintenance Radar seule. Fichier gateway actuel SHA256
@@ -188,7 +192,7 @@ Récupération depuis Mac, destination neuve `backups/$UUID`, sans clé privée 
 
 ```sh
 rsync -av --ignore-existing -e "$SSH" \
-  ubuntu@88.96.56.44:/home/ubuntu/bot-radar-recovery/staging/$UUID/archive/ \
+  ubuntu@${VPS_HOST:?définir VPS_HOST}:/home/ubuntu/bot-radar-recovery/staging/$UUID/archive/ \
   /Users/aminezegmou/BotRadar-recovery/backups/$UUID/
 .venv/bin/python -B scripts/delivery_prerequisites.py verify-copy \
   --file /Users/aminezegmou/BotRadar-recovery/backups/$UUID/backup.tar.gpg \
