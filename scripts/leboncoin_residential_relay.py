@@ -11,11 +11,13 @@ attaché à la boucle locale, le tunnel SSH étant la frontière de sécurité.
 
 import argparse
 import contextlib
+import ipaddress
 import logging
 import select
 import socket
 import struct
 import threading
+import time
 
 logger = logging.getLogger("radar.leboncoin_relay")
 
@@ -35,14 +37,70 @@ REPLY_SUCCEEDED = 0
 REPLY_GENERAL_FAILURE = 1
 REPLY_HOST_UNREACHABLE = 4
 REPLY_CONNECTION_REFUSED = 5
+REPLY_NOT_ALLOWED = 2
+
+DEFAULT_ALLOWED_DOMAINS = ("leboncoin.fr",)
+DEFAULT_MAX_CONNECTIONS = 8
+DEFAULT_MAX_CONNECTION_SECONDS = 120.0
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+NON_PUBLIC_NETWORKS = [
+    ipaddress.ip_network(network)
+    for network in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "::/128",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+        "2001:db8::/32",
+    )
+]
 
 
 class Socks5Server:
     """Serveur SOCKS5 sans authentification, lié à la boucle locale par défaut."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8080) -> None:
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        allowed_domains: tuple[str, ...] = DEFAULT_ALLOWED_DOMAINS,
+        max_connections: int = DEFAULT_MAX_CONNECTIONS,
+        max_connection_seconds: float = DEFAULT_MAX_CONNECTION_SECONDS,
+        allow_non_loopback: bool = False,
+    ) -> None:
+        if not allow_non_loopback and host not in LOOPBACK_HOSTS:
+            raise ValueError(
+                "écoute non locale refusée : le tunnel SSH est la frontière de sécurité"
+            )
         self.host = host
         self.port = port
+        self.allowed_domains = tuple(
+            domain.strip().lower().lstrip(".") for domain in allowed_domains if domain.strip()
+        )
+        if not self.allowed_domains:
+            raise ValueError("liste de domaines autorisés vide")
+        if max_connections < 1:
+            raise ValueError("plafond de connexions invalide")
+        if max_connection_seconds <= 0:
+            raise ValueError("durée maximale de connexion invalide")
+        self.max_connections = max_connections
+        self.max_connection_seconds = max_connection_seconds
+        self._slots = threading.BoundedSemaphore(max_connections)
         self._socket: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stopped = threading.Event()
@@ -73,12 +131,24 @@ class Socks5Server:
                 client, _ = self._socket.accept()
             except OSError:
                 return
+            if not self._slots.acquire(blocking=False):
+                logger.info("Refus SOCKS5 : plafond de connexions simultanées atteint.")
+                with contextlib.suppress(OSError):
+                    client.close()
+                continue
             threading.Thread(
-                target=self._handle_client, args=(client,), name="socks5-client", daemon=True
+                target=self._serve_client, args=(client,), name="socks5-client", daemon=True
             ).start()
+
+    def _serve_client(self, client: socket.socket) -> None:
+        try:
+            self._handle_client(client)
+        finally:
+            self._slots.release()
 
     def _handle_client(self, client: socket.socket) -> None:
         upstream: socket.socket | None = None
+        deadline = time.monotonic() + self.max_connection_seconds
         try:
             client.settimeout(CONNECT_TIMEOUT_SECONDS)
             if not _negotiate(client):
@@ -87,18 +157,34 @@ class Socks5Server:
             if target is None:
                 return
             host, port = target
-            try:
-                upstream = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_SECONDS)
-            except ConnectionRefusedError:
-                _send_reply(client, REPLY_CONNECTION_REFUSED)
+            addresses = resolve_allowed_addresses(host, port, self.allowed_domains)
+            if addresses is None:
+                _send_reply(client, REPLY_NOT_ALLOWED)
                 return
-            except OSError:
-                _send_reply(client, REPLY_HOST_UNREACHABLE)
+            refused = False
+            for address in addresses:
+                try:
+                    upstream = connect_to_validated(address, port)
+                except ConnectionRefusedError:
+                    refused = True
+                except OSError:
+                    continue
+                if upstream is not None:
+                    break
+            if upstream is None:
+                _send_reply(
+                    client, REPLY_CONNECTION_REFUSED if refused else REPLY_HOST_UNREACHABLE
+                )
                 return
             _send_reply(client, REPLY_SUCCEEDED)
             client.settimeout(None)
             upstream.settimeout(None)
-            _relay(client, upstream)
+            _relay(
+                client,
+                upstream,
+                deadline=deadline,
+                idle_timeout=RELAY_IDLE_TIMEOUT_SECONDS,
+            )
         except (OSError, ValueError):
             logger.debug("Connexion SOCKS5 interrompue.", exc_info=True)
         finally:
@@ -152,18 +238,93 @@ def _read_request(client: socket.socket) -> tuple[str, int] | None:
     return host, port
 
 
+def _is_public_address(address: str) -> bool:
+    parsed = ipaddress.ip_address(address)
+    if parsed.is_private or parsed.is_loopback or parsed.is_link_local:
+        return False
+    if parsed.is_multicast or parsed.is_reserved or parsed.is_unspecified:
+        return False
+    if any(parsed in network for network in NON_PUBLIC_NETWORKS):
+        return False
+    return parsed.is_global
+
+
+def domain_is_allowed(host: str, allowed_domains: tuple[str, ...]) -> bool:
+    """Le nom doit être le domaine autorisé lui-même ou l'un de ses sous-domaines."""
+    normalized = host.strip().rstrip(".").lower()
+    if not normalized:
+        return False
+    return any(
+        normalized == domain or normalized.endswith(f".{domain}")
+        for domain in allowed_domains
+    )
+
+
+def resolve_allowed_addresses(
+    host: str,
+    port: int,
+    allowed_domains: tuple[str, ...],
+) -> list[str] | None:
+    """Résout une seule fois et rend toutes les adresses, ou None si un refus s'impose."""
+    try:
+        if ipaddress.ip_address(host):
+            logger.info("Refus SOCKS5 : destination littérale en adresse IP.")
+            return None
+    except ValueError:
+        pass
+    if not domain_is_allowed(host, allowed_domains):
+        logger.info("Refus SOCKS5 : domaine hors liste autorisée.")
+        return None
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        logger.info("Refus SOCKS5 : résolution impossible.")
+        return None
+    addresses: list[str] = []
+    for info in infos:
+        address = str(info[4][0])
+        if not _is_public_address(address):
+            logger.info("Refus SOCKS5 : résolution vers une adresse non publique.")
+            return None
+        if address not in addresses:
+            addresses.append(address)
+    if not addresses:
+        logger.info("Refus SOCKS5 : résolution vide.")
+        return None
+    return addresses
+
+
+def connect_to_validated(address: str, port: int) -> socket.socket:
+    """Se connecte à une adresse numérique déjà validée, sans nouvelle résolution."""
+    return socket.create_connection((address, port), timeout=CONNECT_TIMEOUT_SECONDS)
+
+
 def _send_reply(client: socket.socket, reply: int) -> None:
     header = struct.pack("!BBBB", SOCKS_VERSION, reply, 0, ATYP_IPV4)
     client.sendall(header + b"\x00\x00\x00\x00\x00\x00")
 
 
-def _relay(client: socket.socket, upstream: socket.socket) -> None:
-    """Recopie bidirectionnelle jusqu'à fermeture ou inactivité prolongée."""
+def _relay(
+    client: socket.socket,
+    upstream: socket.socket,
+    deadline: float | None = None,
+    idle_timeout: float = RELAY_IDLE_TIMEOUT_SECONDS,
+) -> None:
+    """Recopie bidirectionnelle jusqu'à fermeture, inactivité ou échéance de durée."""
     peers = [client, upstream]
     try:
         while True:
-            readable, _, _ = select.select(peers, [], [], RELAY_IDLE_TIMEOUT_SECONDS)
+            wait = idle_timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.info("Fermeture SOCKS5 : durée maximale de connexion atteinte.")
+                    return
+                wait = min(wait, remaining)
+            readable, _, _ = select.select(peers, [], [], wait)
             if not readable:
+                if deadline is not None and time.monotonic() >= deadline:
+                    logger.info("Fermeture SOCKS5 : durée maximale de connexion atteinte.")
                 return
             for source in readable:
                 try:
@@ -185,12 +346,52 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Relais SOCKS5 résidentiel (Leboncoin).")
     parser.add_argument("--host", default="127.0.0.1", help="adresse d'écoute (boucle locale)")
     parser.add_argument("--port", type=int, default=8080, help="port d'écoute")
+    parser.add_argument(
+        "--allowed-domain",
+        action="append",
+        metavar="DOMAINE",
+        help="domaine autorisé, répétable (défaut : leboncoin.fr et ses sous-domaines)",
+    )
+    parser.add_argument(
+        "--max-connections",
+        type=int,
+        default=DEFAULT_MAX_CONNECTIONS,
+        help="connexions simultanées autorisées",
+    )
+    parser.add_argument(
+        "--max-connection-seconds",
+        type=float,
+        default=DEFAULT_MAX_CONNECTION_SECONDS,
+        help="durée totale maximale d'une connexion",
+    )
+    parser.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help="écoute hors boucle locale : retire la protection portée par le tunnel SSH",
+    )
     arguments = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    server = Socks5Server(host=arguments.host, port=arguments.port)
+    allowed_domains = (
+        tuple(arguments.allowed_domain)
+        if arguments.allowed_domain
+        else DEFAULT_ALLOWED_DOMAINS
+    )
+    server = Socks5Server(
+        host=arguments.host,
+        port=arguments.port,
+        allowed_domains=allowed_domains,
+        max_connections=arguments.max_connections,
+        max_connection_seconds=arguments.max_connection_seconds,
+        allow_non_loopback=arguments.allow_non_loopback,
+    )
     port = server.start()
-    logger.info("Relais SOCKS5 écoute sur %s:%d", arguments.host, port)
+    logger.info(
+        "Relais SOCKS5 écoute sur %s:%d (domaines autorisés : %s)",
+        arguments.host,
+        port,
+        ", ".join(sorted(allowed_domains)),
+    )
     try:
         threading.Event().wait()
     except KeyboardInterrupt:
