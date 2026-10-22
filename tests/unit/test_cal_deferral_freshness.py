@@ -37,6 +37,10 @@ async def _persist(cache: BookMarketCache, attempts: tuple) -> BookMarketCache:
         "app.services.book_market_pricing._refresh_series_totals", AsyncMock(),
     ), patch(
         "app.services.book_market_pricing.AsyncSessionLocal", MagicMock(),
+    ), patch(
+        "app.db.repositories.book_repo.BookRepository.plan_price_refreshes", AsyncMock(),
+    ), patch(
+        "app.services.book_market_pricing._reserve_next_refresh", AsyncMock(),
     ):
         return await persist_market_result(AsyncMock(), cache.book_id, result)
 
