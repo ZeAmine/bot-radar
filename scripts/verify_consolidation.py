@@ -27,6 +27,7 @@ PORT = 55514
 # Opérations métier que le planificateur appelle et que les tests d'occurrence
 # substituent avant le scheduler ; liste explicite, vérifiée par résolution de nom.
 OPERATIONS_METIER_SCHEDULER = (
+    "check_cal_storage_health",
     "recover_bd_preparations",
     "recover_notifications",
     "cleanup_old_data_task",
@@ -62,6 +63,7 @@ def _identite_operations_applicatives() -> dict[str, int]:
     échoue explicitement s'il a besoin d'un témoin manquant.
     """
     origine = {
+        "check_cal_storage_health": "app.services.market_health",
         "recover_bd_preparations": "app.use_cases.prepare_bd_alert",
         "recover_notifications": "app.tasks.recover_notifications",
         "cleanup_old_data_task": "app.tasks.cleanup",

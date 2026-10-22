@@ -33,6 +33,7 @@ scheduler_module = sys.modules["app.tasks.scheduler"]
 # Jobs planifiés par `create_scheduler()` et opération métier à neutraliser : un job
 # non couvert fait échouer le helper plutôt que de s'exécuter réellement.
 _OPERATIONS_METIER = (
+    "check_cal_storage_health",
     "recover_bd_preparations",
     "recover_notifications",
     "cleanup_old_data_task",
