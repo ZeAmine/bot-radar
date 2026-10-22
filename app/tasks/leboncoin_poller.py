@@ -24,6 +24,7 @@ from app.core.tasks import safe_create_task
 from app.db.repositories.listing_repo import ListingRepository
 from app.db.session import AsyncSessionLocal
 from app.services.leboncoin_parsing import (
+    LeboncoinParseError,
     ScrapedLeboncoinItem,
     parse_search_page,
     to_ingest_payload,
@@ -635,6 +636,8 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
     consecutive_blocks = 0
     consecutive_collection_failures = 0
     collection_failure_notified = False
+    consecutive_parse_failures = 0
+    parse_failure_notified = False
     silence_notified = False
     last_success_at = _now()
     poll_cycle = 0
@@ -690,8 +693,20 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 )
 
             consecutive_collection_failures = 0
+            consecutive_parse_failures = 0
             last_success_at = _now()
             silence_notified = False
+            if parse_failure_notified:
+                parse_failure_notified = False
+                safe_create_task(
+                    notify_admins(
+                        text=(
+                            "✅ <b>BotRadar — Collecte Leboncoin rétablie</b>\n\n"
+                            "🟢 La page de recherche a de nouveau une structure connue."
+                        )
+                    ),
+                    name="notify_leboncoin_parse_recovered",
+                )
             if collection_failure_notified:
                 collection_failure_notified = False
                 safe_create_task(
@@ -792,6 +807,39 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
             silence_notified = await _alert_silence_once(last_success_at, silence_notified)
             await _wait_until_stop_or_delay(stop_event, _bounded_wait(backoff, episode))
             continue
+
+        except LeboncoinParseError as exc:
+            consecutive_parse_failures += 1
+            logger.warning(
+                "Structure de page Leboncoin inattendue (%d cycles consécutifs) : %s",
+                consecutive_parse_failures,
+                exc,
+            )
+            await save_poller_status({
+                "status": "parse_failure",
+                "consecutive_parse_failures": consecutive_parse_failures,
+                "last_poll_at": _now(),
+                "message": "Structure de page Leboncoin inattendue",
+            })
+            if (
+                consecutive_parse_failures == COLLECTION_FAILURE_ALERT_THRESHOLD
+                and not parse_failure_notified
+            ):
+                parse_failure_notified = True
+                safe_create_task(
+                    notify_admins(
+                        text=(
+                            "⚠️ <b>BotRadar — Structure de page Leboncoin inattendue</b>\n\n"
+                            f"⚠️ {consecutive_parse_failures} cycles consécutifs sans "
+                            "annonce exploitable : la page de recherche n'a plus la "
+                            "structure attendue.\n\n"
+                            "<i>Aucune collecte n'est possible tant que la page n'est pas "
+                            "reconnue.</i>"
+                        )
+                    ),
+                    name="notify_leboncoin_parse_degraded",
+                )
+            silence_notified = await _alert_silence_once(last_success_at, silence_notified)
 
         except asyncio.CancelledError:
             raise
