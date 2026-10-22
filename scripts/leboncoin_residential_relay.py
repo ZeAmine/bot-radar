@@ -13,6 +13,7 @@ import argparse
 import contextlib
 import ipaddress
 import logging
+import math
 import select
 import socket
 import struct
@@ -43,6 +44,13 @@ DEFAULT_ALLOWED_DOMAINS = ("leboncoin.fr",)
 DEFAULT_MAX_CONNECTIONS = 8
 DEFAULT_MAX_CONNECTION_SECONDS = 120.0
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+Candidate = tuple[
+    int,
+    int,
+    int,
+    tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes],
+]
 
 NON_PUBLIC_NETWORKS = [
     ipaddress.ip_network(network)
@@ -94,9 +102,16 @@ class Socks5Server:
         )
         if not self.allowed_domains:
             raise ValueError("liste de domaines autorisés vide")
+        if isinstance(max_connections, bool) or not isinstance(max_connections, int):
+            raise ValueError("plafond de connexions invalide")
         if max_connections < 1:
             raise ValueError("plafond de connexions invalide")
-        if max_connection_seconds <= 0:
+        if (
+            isinstance(max_connection_seconds, bool)
+            or not isinstance(max_connection_seconds, (int, float))
+            or not math.isfinite(max_connection_seconds)
+            or max_connection_seconds <= 0
+        ):
             raise ValueError("durée maximale de connexion invalide")
         self.max_connections = max_connections
         self.max_connection_seconds = max_connection_seconds
@@ -132,7 +147,9 @@ class Socks5Server:
             except OSError:
                 return
             if not self._slots.acquire(blocking=False):
-                logger.info("Refus SOCKS5 : plafond de connexions simultanées atteint.")
+                logger.info(
+                    "Refus SOCKS5 : plafond atteint, fermeture TCP immédiate sans réponse SOCKS5."
+                )
                 with contextlib.suppress(OSError):
                     client.close()
                 continue
@@ -140,45 +157,37 @@ class Socks5Server:
                 target=self._serve_client, args=(client,), name="socks5-client", daemon=True
             ).start()
 
-    def _serve_client(self, client: socket.socket) -> None:
+    def _serve_client(self, client: socket.socket, holds_slot: bool = True) -> None:
         try:
             self._handle_client(client)
         finally:
-            self._slots.release()
+            if holds_slot:
+                self._slots.release()
 
     def _handle_client(self, client: socket.socket) -> None:
-        upstream: socket.socket | None = None
         deadline = time.monotonic() + self.max_connection_seconds
+        upstream: socket.socket | None = None
+        watchdog = DeadlineWatchdog(deadline, client)
+        watchdog.start()
         try:
-            client.settimeout(CONNECT_TIMEOUT_SECONDS)
-            if not _negotiate(client):
+            client.settimeout(_remaining(deadline))
+            if not _negotiate(client, deadline):
                 return
-            target = _read_request(client)
+            target = _read_request(client, deadline)
             if target is None:
                 return
             host, port = target
             addresses = resolve_allowed_addresses(host, port, self.allowed_domains)
             if addresses is None:
-                _send_reply(client, REPLY_NOT_ALLOWED)
+                _send_reply(client, REPLY_NOT_ALLOWED, deadline)
                 return
-            refused = False
-            for address in addresses:
-                try:
-                    upstream = connect_to_validated(address, port)
-                except ConnectionRefusedError:
-                    refused = True
-                except OSError:
-                    continue
-                if upstream is not None:
-                    break
+            watchdog.watch(client)
+            upstream, reply = _connect_first(addresses, deadline, watchdog)
             if upstream is None:
-                _send_reply(
-                    client, REPLY_CONNECTION_REFUSED if refused else REPLY_HOST_UNREACHABLE
-                )
+                _send_reply(client, reply, deadline)
                 return
-            _send_reply(client, REPLY_SUCCEEDED)
-            client.settimeout(None)
-            upstream.settimeout(None)
+            watchdog.watch(client, upstream)
+            _send_reply(client, REPLY_SUCCEEDED, deadline)
             _relay(
                 client,
                 upstream,
@@ -188,6 +197,7 @@ class Socks5Server:
         except (OSError, ValueError):
             logger.debug("Connexion SOCKS5 interrompue.", exc_info=True)
         finally:
+            watchdog.stop()
             with contextlib.suppress(OSError):
                 client.close()
             if upstream is not None:
@@ -195,9 +205,83 @@ class Socks5Server:
                     upstream.close()
 
 
-def _recv_exact(sock: socket.socket, size: int) -> bytes:
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("échéance de connexion atteinte")
+    return remaining
+
+
+class DeadlineWatchdog:
+    """Force la fermeture des sockets à l'échéance, y compris pendant un blocage système."""
+
+    def __init__(self, deadline: float, *sockets: socket.socket) -> None:
+        self._sockets: list[socket.socket] = list(sockets)
+        self._deadline = deadline
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._run, name="socks5-deadline", daemon=True
+        )
+        self._thread.start()
+
+    def watch(self, *sockets: socket.socket) -> None:
+        with self._lock:
+            for sock in sockets:
+                if sock not in self._sockets:
+                    self._sockets.append(sock)
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        if self._stop.wait(max(0.0, self._deadline - time.monotonic())):
+            return
+        with self._lock:
+            sockets = tuple(self._sockets)
+        logger.info("Fermeture SOCKS5 : durée maximale de connexion atteinte.")
+        for sock in sockets:
+            with contextlib.suppress(Exception):
+                sock.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(Exception):
+                sock.close()
+
+
+def _connect_first(
+    candidates: list[Candidate],
+    deadline: float,
+    watchdog: DeadlineWatchdog,
+) -> tuple[socket.socket | None, int]:
+    """Tente les seuls candidats validés, dans le budget restant ; ferme les échecs."""
+    refused = False
+    for family, socktype, proto, sockaddr in candidates:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        candidate: socket.socket | None = None
+        try:
+            candidate = socket.socket(family, socktype, proto)
+            candidate.settimeout(min(CONNECT_TIMEOUT_SECONDS, remaining))
+            watchdog.watch(candidate)
+            candidate.connect(sockaddr)
+            return candidate, REPLY_SUCCEEDED
+        except ConnectionRefusedError:
+            refused = True
+        except OSError:
+            pass
+        if candidate is not None:
+            with contextlib.suppress(OSError):
+                candidate.close()
+    return None, REPLY_CONNECTION_REFUSED if refused else REPLY_HOST_UNREACHABLE
+
+
+def _recv_exact(sock: socket.socket, size: int, deadline: float) -> bytes:
     data = b""
     while len(data) < size:
+        sock.settimeout(_remaining(deadline))
         chunk = sock.recv(size - len(data))
         if not chunk:
             raise ConnectionError("flux SOCKS5 clos prématurément")
@@ -205,36 +289,38 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
     return data
 
 
-def _negotiate(client: socket.socket) -> bool:
+def _negotiate(client: socket.socket, deadline: float) -> bool:
     """Poignée de main : aucune méthode d'authentification acceptée."""
-    version, method_count = struct.unpack("!BB", _recv_exact(client, 2))
+    version, method_count = struct.unpack("!BB", _recv_exact(client, 2, deadline))
     if version != SOCKS_VERSION:
         return False
-    methods = _recv_exact(client, method_count)
+    methods = _recv_exact(client, method_count, deadline)
     if METHOD_NO_AUTH not in methods:
         client.sendall(bytes([SOCKS_VERSION, METHOD_UNACCEPTABLE]))
         return False
+    client.settimeout(_remaining(deadline))
     client.sendall(bytes([SOCKS_VERSION, METHOD_NO_AUTH]))
     return True
 
 
-def _read_request(client: socket.socket) -> tuple[str, int] | None:
+def _read_request(client: socket.socket, deadline: float) -> tuple[str, int] | None:
     """Lit la demande CONNECT et rend (hôte, port), ou None si elle est refusée."""
-    version, command, _reserved, address_type = struct.unpack("!BBBB", _recv_exact(client, 4))
+    header = _recv_exact(client, 4, deadline)
+    version, command, _reserved, address_type = struct.unpack("!BBBB", header)
     if version != SOCKS_VERSION or command != COMMAND_CONNECT:
-        _send_reply(client, REPLY_GENERAL_FAILURE)
+        _send_reply(client, REPLY_GENERAL_FAILURE, deadline)
         return None
     if address_type == ATYP_IPV4:
-        host = socket.inet_ntoa(_recv_exact(client, 4))
+        host = socket.inet_ntoa(_recv_exact(client, 4, deadline))
     elif address_type == ATYP_IPV6:
-        host = socket.inet_ntop(socket.AF_INET6, _recv_exact(client, 16))
+        host = socket.inet_ntop(socket.AF_INET6, _recv_exact(client, 16, deadline))
     elif address_type == ATYP_DOMAIN:
-        length = _recv_exact(client, 1)[0]
-        host = _recv_exact(client, length).decode("idna")
+        length = _recv_exact(client, 1, deadline)[0]
+        host = _recv_exact(client, length, deadline).decode("idna")
     else:
-        _send_reply(client, REPLY_GENERAL_FAILURE)
+        _send_reply(client, REPLY_GENERAL_FAILURE, deadline)
         return None
-    port = struct.unpack("!H", _recv_exact(client, 2))[0]
+    port = struct.unpack("!H", _recv_exact(client, 2, deadline))[0]
     return host, port
 
 
@@ -264,7 +350,7 @@ def resolve_allowed_addresses(
     host: str,
     port: int,
     allowed_domains: tuple[str, ...],
-) -> list[str] | None:
+) -> list[Candidate] | None:
     """Résout une seule fois et rend toutes les adresses, ou None si un refus s'impose."""
     try:
         if ipaddress.ip_address(host):
@@ -276,31 +362,30 @@ def resolve_allowed_addresses(
         logger.info("Refus SOCKS5 : domaine hors liste autorisée.")
         return None
     try:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(
+            host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP
+        )
     except OSError:
         logger.info("Refus SOCKS5 : résolution impossible.")
         return None
-    addresses: list[str] = []
-    for info in infos:
-        address = str(info[4][0])
+    candidates: list[Candidate] = []
+    for family, socktype, proto, _canonname, sockaddr in infos:
+        address = str(sockaddr[0])
         if not _is_public_address(address):
             logger.info("Refus SOCKS5 : résolution vers une adresse non publique.")
             return None
-        if address not in addresses:
-            addresses.append(address)
-    if not addresses:
+        candidate: Candidate = (family, socktype, proto, sockaddr)
+        if candidate not in candidates:
+            candidates.append(candidate)
+    if not candidates:
         logger.info("Refus SOCKS5 : résolution vide.")
         return None
-    return addresses
+    return candidates
 
 
-def connect_to_validated(address: str, port: int) -> socket.socket:
-    """Se connecte à une adresse numérique déjà validée, sans nouvelle résolution."""
-    return socket.create_connection((address, port), timeout=CONNECT_TIMEOUT_SECONDS)
-
-
-def _send_reply(client: socket.socket, reply: int) -> None:
+def _send_reply(client: socket.socket, reply: int, deadline: float) -> None:
     header = struct.pack("!BBBB", SOCKS_VERSION, reply, 0, ATYP_IPV4)
+    client.settimeout(_remaining(deadline))
     client.sendall(header + b"\x00\x00\x00\x00\x00\x00")
 
 
