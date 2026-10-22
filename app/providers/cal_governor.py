@@ -565,6 +565,7 @@ class CalCollectionBudget:
         self.limit = limit or governor.max_requests_per_collection
         self.used = 0
         self.probe_token: str | None = None
+        self.suspension: CalSuspendedError | None = None
 
     @property
     def opening_request(self) -> bool:
@@ -572,10 +573,18 @@ class CalCollectionBudget:
         return self.used == 0
 
     async def get(self, client: "CalHttpClient", *args: Any, **kwargs: Any) -> httpx.Response:
-        return await self.governor.request(client, self, *args, **kwargs)
+        try:
+            return await self.governor.request(client, self, *args, **kwargs)
+        except CalSuspendedError as exc:
+            self.suspension = exc
+            raise
 
     async def post(self, client: "CalHttpClient", *args: Any, **kwargs: Any) -> httpx.Response:
-        return await self.governor.request(client, self, *args, _method="post", **kwargs)
+        try:
+            return await self.governor.request(client, self, *args, _method="post", **kwargs)
+        except CalSuspendedError as exc:
+            self.suspension = exc
+            raise
 
 
 class GovernedClient:

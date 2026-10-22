@@ -27,10 +27,12 @@ au niveau WARNING — elles loguent l'URL complète en INFO, dont ``/rest/jcd``
 qui porte le ``duih`` (même réglage que ``app/core/logging.py``).
 
 Codes de sortie (lus par le cron) :
-    0 = jeton injecté (ou rien à faire avec --print-only)
+    0 = jeton injecté (ou validé sans injection avec --print-only)
     1 = jeton capturé mais refusé par la validation, ou injection échouée
-    2 = capture impossible (identifiants absents, formulaire incomplet,
-        site injoignable)
+    2 = identifiants de compte ou jeton interne absents, ou capture impossible
+        (formulaire incomplet, connexion refusée, site injoignable)
+    3 = renouvellement reporté par le régulateur, y compris si Redis est
+        indisponible, pendant la capture ou la validation
 
 Usage :
     CHASSE_ACCOUNT_EMAIL=… CHASSE_ACCOUNT_PASSWORD=… \
@@ -149,9 +151,8 @@ async def _login_request(
 async def capture_token(client: GovernedClient, email: str, password: str) -> str | None:
     """Se connecte au compte, lit ``data-duih`` sur l'accueil, renvoie le jeton.
 
-    Chaque étape logue précisément et rend ``None`` : le cron a un code à
-    relire, pas d'exception à deviner. Ni mot de passe ni jeton n'atteignent
-    le journal.
+    Les erreurs de capture rendent ``None`` ; les refus du régulateur remontent
+    au code appelant. Ni mot de passe ni jeton n'atteignent le journal.
     """
     try:
         response = await _login_request(client, "get", LOGIN_URL)
@@ -260,7 +261,7 @@ async def main() -> int:
     except CalSuspendedError as exc:
         reason = exc.reason
         logger.warning("Renouvellement CAL reporté : %s", exc.reason)
-        return 2
+        return 3
     except ValueError:
         logger.error("Redirection de connexion CAL refusée.")
         return 2

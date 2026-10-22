@@ -419,6 +419,8 @@ class ChasseAuxLivresProvider:
             offers = await self._search_query(
                 clean_isbn, expected_title=title, expected_isbn=clean_isbn
             )
+            if self._budget is not None and self._budget.suspension is not None:
+                return offers
             attempts.extend(getattr(offers, "attempts", ()))
             failures.update(getattr(offers, "failed_providers", ()))
             historical_checked |= getattr(offers, "historical_checked", False)

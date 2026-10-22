@@ -151,6 +151,14 @@ automatique, pour limiter les doublons. Un envoi accepté n'atteste pas une lect
 par le destinataire. L'état local ne garantit pas la déduplication après redémarrage
 du processus et ne dépend pas du Redis en panne.
 
+Pour une réponse Telegram `uncertain`, il reste le journal `ERROR` de panne
+prolongée, puis le `WARNING` `Alerte Redis non confirmée : uncertain`. Une seule
+tentative d'alerte est faite si l'incertitude arrive dès le premier envoi. Des
+échecs confirmés peuvent l'avoir précédée, dans la limite des trois tentatives ;
+aucune réémission automatique ne suit le résultat incertain. Si
+l'envoi lève une exception, le `WARNING` indique un résultat incertain et le type
+de l'exception, sans son contenu ; la même absence de réémission s'applique.
+
 Le rétablissement permet les nouvelles admissions, sans intervention sur le
 régulateur. Les livres sont repris à leur prochaine sélection éligible, après
 leur échéance administrative et son éventuel réalignement ; il n'y a pas de collecte
@@ -260,6 +268,34 @@ défauts d'adresse peuvent différer entre l'hôte et un conteneur ; une configu
 identique en texte n'est donc ni nécessaire ni suffisante. Sans accès au stockage
 configuré, le script refuse avant toute requête CAL. Aucun cron n'est activé par
 ce changement.
+
+### Codes de sortie du renouvellement explicite
+
+| Code Python | Résultat |
+| --- | --- |
+| `0` | Jeton validé et injecté, ou validé sans injection avec `--print-only` |
+| `1` | Jeton refusé par la validation historique ou injection échouée |
+| `2` | Identifiants de compte ou jeton interne absents, ou capture impossible |
+| `3` | Report du régulateur, notamment circuit ouvert, essai en cours, concurrence, quota ou Redis indisponible |
+
+Le code `3` vaut aussi pour un refus pendant la validation historique : le budget
+partagé conserve ce refus même si le fournisseur l'a transformé en résultat vide.
+La recherche ISBN ne poursuit pas le repli par titre après ce refus. La validation
+n'essaie alors pas une autre sonde, ni lorsque la sonde précédente a épuisé le
+budget sans confirmer d'historique. Sans restriction et avec du budget disponible,
+une recherche ISBN vide conserve son repli par titre et une sonde sans historique
+conserve son repli vers la sonde suivante. Ce report ne signifie ni que les
+identifiants sont invalides, ni que le jeton a été refusé par le fournisseur.
+
+Le wrapper historique `scripts/refresh_chasse_cron.sh` journalise le code enfant
+`3` comme `Report CAL (code 3)` et termine lui-même avec le code `0`, pour ne pas
+le signaler comme échec à son appelant. Il ne relance pas immédiatement et ne
+déclenche aucune alerte d'échec pour ce report. La prochaine échéance normale
+suffit ; chaque invocation reportée ajoute une nouvelle ligne horodatée, et le
+journal Python conserve la raison du régulateur. Des reports prolongés restent
+donc visibles dans `refresh.log`, dans la limite de sa rotation existante.
+Les codes `1`, `2` et `124` restent transmis, le dernier indiquant le dépassement
+du délai maximal. Ce contrat ne réactive pas le cron et n'ajoute pas de planification.
 
 ### Portée de l'atomicité Redis
 

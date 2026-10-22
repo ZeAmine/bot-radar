@@ -6,7 +6,7 @@
 # Incertitude (base injoignable, réponse illisible, compteur cassé) → renouvellement ; verrou anti-concurrence ; délai max ; journal tournant >1 Mo sans secret ; passe ratée alerte « Cotes de marché figées » sous 7 j.
 # Jeton mort jusqu'à ~35 h ; baisser CHASSE_STALE_HOURS resserre au prix d'une connexion plus fréquente (filets 48 h et 7 j).
 
-# Usage : ./scripts/refresh_chasse_cron.sh ; cron 0 2 * * * ; codes 0=à jour/renouvelé, 1=validation refusée, 2=capture impossible, 124=délai dépassé.
+# Usage : ./scripts/refresh_chasse_cron.sh ; cron 0 2 * * * ; codes Python 0=validé, 1=validation/injection refusée, 2=capture/configuration impossible, 3=report (cron : sortie 0), 124=délai dépassé.
 # Réglages : CHASSE_STALE_HOURS(24), CHASSE_HOME(~/chasse-refresh), CHASSE_VENV, CHASSE_CAPTURE_TIMEOUT(300), CHASSE_ACCOUNT_ENV, POSTGRES_CONTAINER/USER/DB.
 
 set -euo pipefail
@@ -129,6 +129,10 @@ timeout -k 30 "${CAPTURE_TIMEOUT}" "${VENV_PYTHON}" "${SCRIPT_DIR}/refresh_chass
 case "${rc}" in
     0)
         log "Terminé : jeton renouvelé et validé."
+        ;;
+    3)
+        log "Report CAL (code 3) : nouvelle tentative à la prochaine échéance prévue."
+        rc=0
         ;;
     124)
         log "Délai de ${CAPTURE_TIMEOUT} s dépassé : nouvelle tentative à la passe suivante."
