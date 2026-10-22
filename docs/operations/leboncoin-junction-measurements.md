@@ -8,141 +8,334 @@ Convention : tout élément entre chevrons (`<réseau>`, `<service>`, `<compte>`
 un **paramètre à remplacer par l'opérateur**, jamais une valeur fournie par ce
 dépôt. Les commandes sont données sans leurs paramètres réels par construction.
 
-Chaque ligne indique :
+## Comment rapporter sans fuite
 
-- la **commande** à exécuter ;
-- ce que le résultat **prouve** — et ce qu'il ne prouve pas ;
-- ce qu'il **ne faut pas recopier** dans un rapport.
+Les commandes ci-dessous produisent parfois des adresses, des noms de comptes ou
+des chemins. **Chaque bloc indique son filtre.** Règle générale :
 
-> Règle générale : un rapport ne contient **jamais** d'adresse IP publique, de nom
-> d'hôte, de nom de clé, d'empreinte, de contenu de `authorized_keys`, ni de la
-> moindre sortie brute de `sshd -T`. Il contient le **résultat de la lecture**
-> (autorisé / refusé / valeur) et la date de la mesure.
+1. Exécuter la commande **telle quelle**, sur la machine, sous mandat.
+2. Ne recopier dans le rapport que la **conclusion** (autorisé / refusé / ordre /
+   oui / non), jamais la sortie brute.
+3. Quand une valeur doit être connue pour agir (une gateway, une adresse d'écoute),
+   la noter **hors du rapport**, dans l'espace de travail de l'opérateur.
+4. Pour un extrait qui doit remonter, appliquer le filtre de masquage indiqué :
+   seuls les **noms** de règles, d'options ou de chaînes sont conservés.
 
-## 1. État du pare-feu
+Un rapport ne contient **jamais** : adresse IP, nom d'hôte, nom de compte, chemin
+de clé, empreinte, contenu de `authorized_keys`, ni ligne de commande de tunnel.
 
-À exécuter sur l'hôte VPS, sous mandat. Les commandes de lecture de `iptables`
-peuvent nécessiter des droits ; demander le mandat adapté plutôt que d'élargir
-l'accès.
+Chaque section précise ce que la mesure **prouve** et ce qu'elle **ne prouve pas**.
 
-| # | Mesure | Commande | Ce que cela prouve |
-| --- | --- | --- | --- |
-| 1.1 | Règles en place | `ss -H -ltn` puis lecture des règles actives selon le pare-feu installé | Quels ports écoutent réellement |
-| 1.2 | Chaîne `INPUT` | lecture de la chaîne `INPUT` avec numéros de ligne | L'ordre exact des règles, donc si une règle est insérée **avant** le `REJECT` |
-| 1.3 | Chaîne `DOCKER-USER` | lecture de la chaîne `DOCKER-USER` | Les règles réellement appliquées au trafic des conteneurs |
-| 1.4 | Chaîne `FORWARD` | lecture de la chaîne `FORWARD` | Si le trafic conteneur → hôte est filtré, et où |
-| 1.5 | Persistance | présence et nature du mécanisme de sauvegarde du pare-feu | Si une règle ajoutée à chaud survit à un redémarrage |
-| 1.6 | Comportement par défaut | politique par défaut des chaînes | Le sort d'un flux non explicitement autorisé |
+## 1. Pare-feu
 
-**Ce que ces mesures ne prouvent pas** : qu'un port soit joignable *depuis le
-conteneur*. L'écoute peut exister sur l'hôte et rester refusée au conteneur.
+### 1.1 Identifier le moteur actif
 
-**À ne pas recopier** : les adresses publiques, les adresses de bridge, les
-identifiants de conteneurs, la sortie brute complète.
+```sh
+command -v nft; command -v iptables; command -v ufw
+```
 
-**À mesurer** : l'état constaté de chaque chaîne, la politique par défaut, le
-mécanisme de persistance et la date de la mesure.
+Un système peut avoir `iptables` comme interface de compatibilité au-dessus de
+`nft`. **Lire les deux** quand les deux commandes existent : une règle visible
+dans l'un peut être invisible dans l'autre selon l'ordre de parcours.
 
-## 2. Réseaux Docker
+### 1.2 `nft` — règles complètes
 
-| # | Mesure | Commande | Ce que cela prouve |
-| --- | --- | --- | --- |
-| 2.1 | Réseaux présents | liste des réseaux Docker | Quels réseaux existent et lesquels sont attachés au service |
-| 2.2 | Sous-réseau du réseau applicatif | inspection du réseau applicatif, champ de configuration IPAM | La plage d'adresses du réseau, donc le **gateway** réel |
-| 2.3 | Gateway du réseau | `docker network inspect <réseau> -f '{{(index .IPAM.Config 0).Gateway}}'` | L'adresse que le conteneur peut viser pour joindre l'hôte |
-| 2.4 | Appartenance du service | inspection du service applicatif | Que le conteneur est bien sur ce réseau, et lui seul |
-| 2.5 | Options de publication | inspection des ports publiés du service | Si un port de l'hôte est déjà publié vers le conteneur |
+```sh
+nft list ruleset
+```
 
-**Ce que ces mesures ne prouvent pas** : que le conteneur peut *atteindre* la
-gateway. Le pare-feu de l'hôte peut refuser le flux malgré une gateway valide.
+**Filtre de rapport** — ne remonter que la structure, sans adresses :
 
-**À ne pas recopier** : la valeur de la gateway, la plage du sous-réseau, les noms
-de conteneurs internes, les identifiants.
+```sh
+nft list ruleset | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/ADRESSE/g' \
+  | sed -E 's/[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}/ADRESSE/g'
+```
 
-**À mesurer** : le nom du réseau applicatif, la présence du service applicatif,
-l'existence de ports publiés — et **la gateway elle-même, à noter hors rapport**.
+Ce que cela prouve : la présence et l'ordre des chaînes, l'existence d'un rejet
+par défaut, les règles d'acceptation du trafic des conteneurs.
 
-## 3. Valeurs effectives de `sshd` concernant les redirections
+Ce que cela ne prouve pas : qu'une règle soit effectivement atteinte — une règle
+placée **après** un rejet n'est jamais évaluée.
 
-| # | Mesure | Commande | Ce que cela prouve |
-| --- | --- | --- | --- |
-| 3.1 | Configuration effective | `sshd -T` (lecture) | La valeur **effective**, pas celle du fichier de configuration |
-| 3.2 | Redirections distantes | `sshd -T` puis recherche des options de redirection distante | Si un client peut demander une redirection inverse |
-| 3.3 | Publication de la redirection | `sshd -T` puis recherche de l'option de contrôle d'hôte de bind | Si la redirection inverse peut écouter sur autre chose que le loopback |
-| 3.4 | Restriction de bind | `sshd -T` puis recherche des options `PermitOpen` / `AllowTcpForwarding` applicables au compte du Pi | Ce que le compte du Pi a le droit de joindre |
-| 3.5 | Compte du Pi | lecture des options du compte concerné dans la configuration `sshd` | Si des `Match` particuliers s'appliquent à ce compte |
+### 1.3 `iptables` — chaînes utiles
 
-**Attention** : `sshd -T` représente la **configuration interprétée**, pas la
-garantie d'application. Une configuration modifiée sans rechargement n'est pas
-active. Constater aussi l'heure de démarrage du service.
+```sh
+iptables -L INPUT -n -v --line-numbers
+iptables -L DOCKER-USER -n -v --line-numbers
+iptables -L FORWARD -n -v --line-numbers
+iptables -S
+```
 
-**Ce que ces mesures ne prouvent pas** : qu'une redirection demandée par le Pi
-réussisse. Le refus peut venir de la clé, du pare-feu ou du réseau.
+**Filtre de rapport** — conserver noms de chaînes, cibles et numéros de ligne,
+retirer les adresses :
 
-**À ne pas recopier** : la sortie brute de `sshd -T` (elle contient des chemins de
-clés et des noms), les noms de compte, les chemins de fichiers de configuration.
+```sh
+iptables -S | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?/ADRESSE/g'
+```
 
-**À mesurer** : les valeurs effectives des options de redirection et de bind,
-l'heure de démarrage du service, la date de la mesure.
+Ce que cela prouve : l'**ordre exact** des règles avec leurs numéros, donc si une
+règle peut être insérée **avant** le rejet ; la politique par défaut.
 
-## 4. Restrictions de la clé du Pi
+Ce que cela ne prouve pas : l'état après redémarrage (voir 1.5).
 
-| # | Mesure | Commande | Ce que cela prouve |
-| --- | --- | --- | --- |
-| 4.1 | Existence d'une entrée dédiée | lecture du fichier `authorized_keys` du compte concerné, sans en recopier le contenu | Si la clé du Pi est identifiable séparément |
-| 4.2 | Options de cette entrée | lecture des **noms d'options** présents sur la ligne | Si des options limitent les redirections et les commandes |
-| 4.3 | Présence d'une empreinte | comparaison d'empreinte par outil dédié, sans afficher la clé | Que la clé observée est celle attendue |
+### 1.4 `ufw`, si présent
 
-**Ce que ces mesures ne prouvent pas** : l'effet réel des options, qui dépendent
-aussi des `Match` et de la configuration globale. Croiser avec la section 3.
+```sh
+ufw status verbose
+```
 
-**À ne pas recopier** : la clé, son empreinte complète, le commentaire associé,
-le chemin exact du fichier, le nom du compte si le rapport circule au-delà du
-strict nécessaire.
+Ce que cela prouve : la politique par défaut et les profils autorisés.
 
-**À mesurer** : présence ou absence d'une entrée dédiée (**oui / non**, sans
-contenu), noms d'options limitantes (**liste de noms**), correspondance de
-l'empreinte (**oui / non**), date.
+**Attention** : `ufw` peut gérer les mêmes chaînes que `iptables`. Ajouter une
+règle en direct sans passer par `ufw` peut la rendre invisible à `ufw status` et
+être écrasée au prochain rechargement.
 
-## 5. État du tunnel
+**Filtre de rapport** : ne remonter que `Default:`, `Status:` et les **numéros de
+port** avec leur politique, jamais les adresses source.
 
-| # | Mesure | Commande | Ce que cela prouve |
-| --- | --- | --- | --- |
-| 5.1 | Processus de tunnel | liste des processus du compte concerné, filtrée sur le client SSH | Si un tunnel est ouvert, depuis quand |
-| 5.2 | Écoute locale | `ss -H -ltn` filtré sur le port du relais | Si l'hôte écoute sur ce port, et sur quelle adresse |
-| 5.3 | Écoute sur loopback uniquement ou non | même commande, colonne d'adresse locale | Si l'écoute est limitée au loopback |
-| 5.4 | Joignabilité depuis l'hôte | une requête de contrôle **respectant le protocole du relais** | Que la chaîne relais fonctionne vue de l'hôte |
-| 5.5 | Joignabilité depuis le conteneur | même contrôle exécuté **dans** le conteneur, sur l'adresse visée | Le point exact où la jonction échoue, s'il échoue |
-| 5.6 | Sortie résidentielle | contrôle de sortie par le relais | Que la sortie est bien celle du domicile, et non du datacenter |
+### 1.5 Persistance
 
-**Ce que ces mesures ne prouvent pas** : que la sortie soit acceptée par le site
-visé, ni qu'elle le restera. Un tunnel résidentiel n'implique pas l'absence de
-challenge.
+```sh
+command -v netfilter-persistent; ls /etc/iptables 2>/dev/null
+systemctl is-enabled netfilter-persistent 2>/dev/null
+systemctl is-enabled ufw 2>/dev/null
+systemctl is-enabled nftables 2>/dev/null
+```
 
-**À ne pas recopier** : l'adresse publique observée, le nom d'hôte de la cible, le
-port exact du tunnel, la ligne de commande complète du processus de tunnel (elle
-contient l'hôte et l'utilisateur de destination).
+Ce que cela prouve : **quel** mécanisme réapplique les règles au démarrage, et
+s'il est activé.
 
-**À mesurer** : tunnel présent (**oui / non**), heure d'ouverture, adresse locale
-d'écoute (**loopback / autre**, sans valeur), résultat de 5.4, de 5.5 et de 5.6
-(**atteint / refusé / délai dépassé**), date et heure.
+Ce que cela ne prouve pas : que le fichier sauvegardé soit à jour. Comparer son
+horodatage avec celui du dernier changement de règles.
 
-## 6. Synthèse à produire
+### 1.6 Matrice de synthèse pare-feu
 
-Le rapport final de mesure contient un tableau, et rien de plus :
+| Chaîne | Politique par défaut | Rejet présent | Numéro de ligne du rejet | Une insertion avant est possible |
+| --- | --- | --- | --- | --- |
+| `INPUT` | à mesurer | à mesurer | à mesurer | à mesurer |
+| `DOCKER-USER` | à mesurer | à mesurer | à mesurer | à mesurer |
+| `FORWARD` | à mesurer | à mesurer | à mesurer | à mesurer |
+
+## 2. Docker
+
+### 2.1 Réseaux présents
+
+```sh
+docker network ls
+```
+
+Ce que cela prouve : les réseaux existants et leur moteur.
+
+Filtre de rapport : noms de réseaux applicatifs **uniquement** s'ils ne révèlent
+pas d'infrastructure sensible ; sinon, rapporter « réseau applicatif identifié :
+oui ».
+
+### 2.2 Gateway du réseau applicatif
+
+```sh
+docker network inspect <réseau> \
+  -f '{{(index .IPAM.Config 0).Subnet}} / {{(index .IPAM.Config 0).Gateway}}'
+```
+
+Ce que cela prouve : le sous-réseau et la gateway réels.
+
+**Ne pas recopier la valeur** : noter seulement « gateway connue : oui », et
+conserver la valeur hors rapport. Le rapport n'a pas besoin de l'adresse.
+
+### 2.3 Appartenance du service
+
+```sh
+docker inspect <service> --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+```
+
+Ce que cela prouve : les réseaux auxquels le service est attaché, et lui seul.
+
+### 2.4 Ports publiés
+
+```sh
+docker ps --format '{{.Names}}\t{{.Ports}}' | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/ADRESSE/g'
+```
+
+Ce que cela prouve : quels ports sont publiés sur l'hôte, et sur quelle interface.
+
+Filtre de rapport : ne remonter que « ports publiés : aucun / liste de ports ».
+
+### 2.5 Profondeur des règles Docker
+
+```sh
+iptables -t nat -L DOCKER -n --line-numbers
+```
+
+Ce que cela prouve : que les règles de publication de ports sont gérées par
+Docker dans `DOCKER`, distinctes de `DOCKER-USER` (que l'on contrôle, et qui est
+évalué avant le filtrage de Docker).
+
+## 3. `sshd` — options de redirection
+
+### 3.1 Extraction filtrée
+
+`sshd -T` affiche **toute** la configuration effective, y compris des chemins.
+Extraire uniquement les options utiles :
+
+```sh
+sshd -T | grep -E '^(port|allowtcpforwarding|gatewayports|permitopen|permitlisten|disableforwarding|x11forwarding|allowagentforwarding)'
+```
+
+Ce que cela prouve : les valeurs **effectives** des options qui décident si une
+redirection inverse est possible et où elle peut écouter.
+
+| Option | Rôle exact |
+| --- | --- |
+| `AllowTcpForwarding` | Autorise globalement la redirection de ports TCP (`yes`, `no`, `local`, `remote`, ou les deux) |
+| `GatewayPorts` | Décide si une redirection **inverse** (`-R`) peut écouter sur autre chose que le loopback (`no`, `clientspecified`) |
+| `PermitListen` | Restreint **où** une redirection inverse (`-R`) peut écouter : c'est l'option pertinente pour le tunnel du Pi |
+| `PermitOpen` | Restreint **vers quoi** une redirection **locale** (`-L`) peut se connecter ; ne concerne pas la redirection inverse |
+| `DisableForwarding` | Coupe **toutes** les redirections ; prime sur les options ci-dessus |
+
+Deux précisions documentaires (OpenSSH) :
+
+- `PermitListen` gouverne **l'écoute** d'une redirection inverse ; `GatewayPorts`
+  peut la restreindre **en plus**. Les deux se lisent ensemble, aucune ne suffit seule.
+- `PermitOpen` vise les redirections **locales** (`-L`) et `PermitOpen` n'a **pas**
+  d'effet sur l'écoute d'une redirection inverse : le citer comme contrôle d'un
+  tunnel `-R` serait une erreur d'interprétation.
+
+Ce que cela ne prouve pas : l'effet réel pour le compte concerné, si des blocs
+`Match` s'appliquent. Vérifier la configuration interprétée **pour ce compte** :
+
+```sh
+sshd -T -C user=<compte>,host=<hôte-client>,addr=<adresse-client> \
+  | grep -E '^(allowtcpforwarding|gatewayports|permitlisten|permitopen|disableforwarding)'
+```
+
+**Attention** : `-C` exige des valeurs réelles. Exécuter la commande sur place et
+ne rapporter que les **noms d'options et leurs valeurs effectives**, jamais les
+paramètres saisis au passage.
+
+### 3.2 État du service
+
+```sh
+systemctl show -p ActiveEnterTimestamp sshd
+```
+
+Ce que cela prouve : si la configuration observée est bien **chargée** (une
+modification non suivie d'un rechargement n'est pas active).
+
+### 3.3 Options de l'entrée `authorized_keys` du Pi
+
+Seuls les **noms d'options** sont extraits ; la clé, son commentaire et le chemin
+du fichier ne sont jamais affichés.
+
+```sh
+grep -h -o -E '^(restrict|permitlisten|permitopen|command|no-port-forwarding|no-pty|from)="[^"]*"' <fichier> || true
+```
+
+Pour ne garder que les **noms** :
+
+```sh
+grep -h -o -E '^(restrict|permitlisten|permitopen|command|no-port-forwarding|no-pty|from)' <fichier> || true
+```
+
+| Option | Rôle |
+| --- | --- |
+| `restrict` | Coupe tout ce qui n'est pas explicitement réactivé (dont la redirection de ports) |
+| `permitlisten` | Autorise **explicitement** une écoute de redirection inverse ; sans `restrict` levé sur ce point, la redirection échoue |
+| `no-port-forwarding` | Interdit toute redirection de ports |
+| `permitopen` | Restreint les redirections **locales** uniquement (sans effet sur l'écoute inverse) |
+
+Ce que cela prouve : la présence de restrictions et leur nature.
+
+Ce que cela ne prouve pas : que l'option soit la seule contrainte — la
+configuration `sshd` (3.1) s'applique en plus.
+
+**Ne jamais recopier** : la clé, son empreinte, son commentaire, le chemin exact,
+le nom du compte.
+
+## 4. État du tunnel
+
+### 4.1 Processus de tunnel
+
+```sh
+ps -o pid,etime,args -C ssh 2>/dev/null | sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}/ADRESSE/g' \
+  | sed -E 's/[^ ]*\.(fr|com|net|org)/HOTE/g'
+```
+
+Ce que cela prouve : qu'un tunnel est ouvert, et depuis combien de temps (`etime`).
+
+**Ne jamais recopier** la ligne de commande : elle contient l'hôte et l'utilisateur
+de destination. Ne remonter que « tunnel présent : oui / non » et l'ancienneté.
+
+### 4.2 Écoute locale
+
+```sh
+ss -H -ltn | awk 'NR>1 {print $4}' | sed -E 's/:[0-9]+$//' | sort -u
+```
+
+Ce que cela prouve : sur **quelles adresses** l'hôte écoute, donc si l'écoute est
+limitée au loopback ou non.
+
+Filtre de rapport : ne remonter que « écoute loopback seulement : oui / non ».
+
+### 4.3 Joignabilité depuis l'hôte
+
+Contrôle respectant le protocole du relais, sans requête applicative :
+
+```sh
+timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/<port>; printf "\x05\x01\x00" >&3; head -c 2 <&3 | od -An -tx1'
+```
+
+Ce que cela prouve : le relais répond au salut SOCKS5 depuis l'hôte.
+
+Ce que cela ne prouve pas : que la requête aboutisse à une sortie résidentielle.
+
+### 4.4 Joignabilité depuis le conteneur
+
+```sh
+docker exec <service> sh -c 'timeout 5 bash -c "exec 3<>/dev/tcp/<adresse-visée>/<port>; printf \"\x05\x01\x00\" >&3; head -c 2 <&3 | od -An -tx1"'
+```
+
+Ce que cela prouve : si la jonction fonctionne vue du conteneur, et **où** elle
+échoue si elle échoue.
+
+`<adresse-visée>` n'apparaît jamais dans le rapport : ne remonter que
+« atteint : oui / non / délai dépassé ».
+
+### 4.5 Sortie résidentielle
+
+Contrôle de sortie par le relais (domaine de contrôle ajouté explicitement, voir
+la [procédure de mise à jour du relais](leboncoin-relay-update.md)).
+
+Ce que cela prouve : que la sortie est celle du domicile.
+
+**Ne jamais recopier l'adresse publique observée.** Ne remonter que
+« sortie résidentielle : conforme / non conforme », et l'adresse hors rapport
+pour comparaison avant/après.
+
+## 5. Synthèse à produire
 
 | Mesure | Résultat | Date et heure | Motif si non concluant |
 | --- | --- | --- | --- |
-| Pare-feu `INPUT` — ordre | à mesurer | à mesurer | à mesurer |
-| Pare-feu `DOCKER-USER` | à mesurer | à mesurer | à mesurer |
-| Pare-feu `FORWARD` | à mesurer | à mesurer | à mesurer |
-| Persistance pare-feu | à mesurer | à mesurer | à mesurer |
+| Moteur pare-feu actif | à mesurer | à mesurer | à mesurer |
+| `INPUT` — ordre des règles | à mesurer | à mesurer | à mesurer |
+| `INPUT` — rejet présent | à mesurer | à mesurer | à mesurer |
+| `DOCKER-USER` | à mesurer | à mesurer | à mesurer |
+| `FORWARD` | à mesurer | à mesurer | à mesurer |
+| `ufw` présent | à mesurer | à mesurer | à mesurer |
+| Persistance — mécanisme | à mesurer | à mesurer | à mesurer |
+| Persistance — activée | à mesurer | à mesurer | à mesurer |
 | Réseau applicatif identifié | à mesurer | à mesurer | à mesurer |
-| `sshd` — redirection distante | à mesurer | à mesurer | à mesurer |
-| `sshd` — contrôle du bind | à mesurer | à mesurer | à mesurer |
+| Gateway connue | à mesurer | à mesurer | à mesurer |
+| Ports publiés | à mesurer | à mesurer | à mesurer |
+| `sshd` — `AllowTcpForwarding` | à mesurer | à mesurer | à mesurer |
+| `sshd` — `GatewayPorts` | à mesurer | à mesurer | à mesurer |
+| `sshd` — `PermitListen` | à mesurer | à mesurer | à mesurer |
+| `sshd` — `PermitOpen` (local) | à mesurer | à mesurer | à mesurer |
+| `sshd` — configuration `Match` appliquée | à mesurer | à mesurer | à mesurer |
+| `sshd` — configuration chargée | à mesurer | à mesurer | à mesurer |
 | Clé du Pi — entrée dédiée | à mesurer | à mesurer | à mesurer |
+| Clé du Pi — noms d'options | à mesurer | à mesurer | à mesurer |
 | Tunnel ouvert | à mesurer | à mesurer | à mesurer |
-| Écoute hôte | à mesurer | à mesurer | à mesurer |
+| Écoute loopback seulement | à mesurer | à mesurer | à mesurer |
 | Joignabilité depuis l'hôte | à mesurer | à mesurer | à mesurer |
 | Joignabilité depuis le conteneur | à mesurer | à mesurer | à mesurer |
 | Sortie résidentielle | à mesurer | à mesurer | à mesurer |

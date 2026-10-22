@@ -20,24 +20,31 @@ et la [procédure d'arrêt sur blocage](leboncoin-block-stop.md).
 
 | Document | Contenu |
 | --- | --- |
-| [Mesures de jonction](leboncoin-junction-measurements.md) | Mesures en lecture seule, ce qu'elles prouvent, ce qu'il ne faut pas recopier |
-| [Matrice de jonction](leboncoin-junction-matrix.md) | Variantes V1 / V2 / autres, risques, contrôles, rollback |
-| [Mise à jour du relais](leboncoin-relay-update.md) | Préchecks, déploiement, vérification, rollback |
-| [Validation après activation](leboncoin-activation-validation.md) | Cycle réel, latences, soak, tunnel tombé, blocage durable |
-| [Checklist d'activation](leboncoin-activation-checklist.md) | Deux colonnes : dépôt / prérequis opérationnels |
-| [Mandats requis](#opérations-exigeant-un-mandat-séparé) | Liste explicite des opérations hors de ce dossier |
+| [Mesures de jonction](leboncoin-junction-measurements.md) | Commandes exactes en lecture seule (`nft`, `iptables`, `ufw`, Docker, `sshd -T`), filtres de masquage, ce que chacune prouve et ne prouve pas |
+| [Matrice de jonction](leboncoin-junction-matrix.md) | Variantes V1 / V2 / V4 / V5, variantes écartées et leurs motifs, risques, contrôles, rollback |
+| [Mise à jour du relais](leboncoin-relay-update.md) | Préchecks, déploiement, vérification, contrôle de sortie volontaire, rollback |
+| [Activation et désactivation](leboncoin-activation-and-rollback.md) | Variables concernées, ordre imposé, redémarrage, vérifications, retour arrière |
+| [Validation après activation](leboncoin-activation-validation.md) | Référence initiale, cycle réel, latences exactes, soak, tunnel tombé, blocage durable |
+| [Checklist d'activation](leboncoin-activation-checklist.md) | Deux colonnes : dépôt / prérequis opérationnels datés |
+| [Mandats requis](#opérations-exigeant-un-mandat-séparé) | Les **13** opérations hors de ce dossier |
 
-Les cinq procédures ont les dépendances suivantes :
+Les documents ont les dépendances suivantes :
 
 ```
 mesures ──→ matrice ──→ (mandat d'exploitation)
-                            ├──→ mise à jour du relais ──→ validation ──→ soak
-                            └───────────────────────────↗
+                            ├──→ mise à jour du relais ──┐
+                            └──→ jonction ───────────────┤
+                                                          ├──→ activation ──→ validation ──→ soak
+                                                          └──→ désactivation (rollback)
 checklist : transverse, se remplit au fil des mesures
 ```
 
-La mise à jour du relais **précède** la validation : mesurer la collecte avec
-l'ancien relais n'apprend rien sur les garde-fous du nouveau.
+Deux règles d'ordre :
+
+- La révision du relais **précède** la validation : mesurer la collecte avec
+  l'ancien relais n'apprend rien sur les garde-fous du nouveau.
+- La **référence initiale** précède toute mesure d'alerte : le premier cycle ne
+  notifie rien, par conception.
 
 ## Découpage des responsabilités
 
