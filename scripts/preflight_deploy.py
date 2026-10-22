@@ -31,7 +31,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_HOST = "ubuntu@88.96.56.44"
+DEFAULT_HOST = os.environ.get("VPS_USER_HOST", "")
 DEFAULT_KEY = os.path.expanduser("~/.ssh/ssh-key-2026-09-10.key")
 DEFAULT_REMOTE_DIR = "~/bot-radar"
 

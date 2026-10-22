@@ -4,7 +4,8 @@ Statut : procédure actuelle ; à lire obligatoirement avant un déploiement aut
 Périmètre : livraison du code, schéma cible et contrôles de reprise. Cette page
 n'autorise ni accès production ni modification de passerelle.
 
-Cible documentée : `ubuntu@88.96.56.44`, clé `~/.ssh/ssh-key-2026-09-10.key`,
+Cible documentée : `${VPS_USER}@${VPS_HOST}` (définis dans l'environnement local,
+jamais dans ce dépôt), clé SSH désignée par `$VPS_SSH_KEY`,
 répertoire `~/bot-radar/`, domaine `https://radar.aminezegmou.fr`.
 La cible est un arbre rsync, **pas un dépôt Git** : un push ne déploie rien.
 Le gateway Caddy partagé vit hors dépôt dans `~/gateway/`, sur `web_gateway`.
@@ -132,16 +133,22 @@ mkdir -p ~/bot-radar-relay/logs
 # copier scripts/leboncoin_residential_relay.py dans ~/bot-radar-relay/
 ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_tunnel -N '' -C botradar-tunnel
 # publier ~/.ssh/id_ed25519_tunnel.pub dans ~/.ssh/authorized_keys du VPS
-ssh-keyscan -p 22 88.96.56.44 >> ~/.ssh/known_hosts
+ssh-keyscan -p 22 "$VPS_HOST" >> ~/.ssh/known_hosts
 crontab -e
 ```
 
 Deux boucles supervisées, avec chemins absolus, pour survivre au redémarrage et aux
-crashs :
+crashs. `cron` n'hérite pas de l'environnement du shell : les valeurs de
+`$VPS_USER` et `$VPS_HOST` y sont écrites **au moment de l'installation**, depuis
+l'environnement de l'opérateur, et ne sont jamais stockées dans ce dépôt :
 
-```cron
-@reboot sleep 20; mkdir -p $HOME/bot-radar-relay/logs; while true; do /usr/bin/python3 $HOME/bot-radar-relay/leboncoin_residential_relay.py --port 8080 >> $HOME/bot-radar-relay/logs/relay.log 2>&1; sleep 5; done
-@reboot sleep 30; while true; do /usr/bin/ssh -N -T -i $HOME/.ssh/id_ed25519_tunnel -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:1080:127.0.0.1:8080 ubuntu@88.96.56.44 >> $HOME/bot-radar-relay/logs/tunnel.log 2>&1; sleep 10; done
+```sh
+: "${VPS_USER:?définir VPS_USER}" "${VPS_HOST:?définir VPS_HOST}"
+( crontab -l 2>/dev/null; cat <<CRON
+@reboot sleep 20; mkdir -p \$HOME/bot-radar-relay/logs; while true; do /usr/bin/python3 \$HOME/bot-radar-relay/leboncoin_residential_relay.py --port 8080 >> \$HOME/bot-radar-relay/logs/relay.log 2>&1; sleep 5; done
+@reboot sleep 30; while true; do /usr/bin/ssh -N -T -i \$HOME/.ssh/id_ed25519_tunnel -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:1080:127.0.0.1:8080 ${VPS_USER}@${VPS_HOST} >> \$HOME/bot-radar-relay/logs/tunnel.log 2>&1; sleep 10; done
+CRON
+) | crontab -
 ```
 
 ### Contrôle depuis l'hôte VPS

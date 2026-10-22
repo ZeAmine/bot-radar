@@ -68,7 +68,7 @@ Le préfixe JA4 `t13d1516h2_8daaf6152771` est la forme Chrome attendue. La compa
 Le soak a perdu le tunnel le 20 octobre vers 11:43 UTC et ne l'a retrouvé que le 22 à 09:28 UTC :
 
 - 240 `ConnectionError` et 2 `Timeout` sur 339 cycles ; 94 seulement ont vu un `200`.
-- Sur le Pi, le client `ssh -R` s'est figé sur `Timeout, server 88.96.56.44 not responding` et **la boucle `@reboot` qui devait le relancer avait disparu** : plus aucun processus, aucune tentative de reconnexion journalisée.
+- Sur le Pi, le client `ssh -R` s'est figé sur `Timeout, server <hôte-vps> not responding` et **la boucle `@reboot` qui devait le relancer avait disparu** : plus aucun processus, aucune tentative de reconnexion journalisée.
 - Le relais SOCKS5 du Pi était intact et le VPS joignable : la défaillance est celle du superviseur, pas du réseau.
 
 **C'est le mode de défaillance le plus dangereux documenté à ce jour** : un tunnel à demi-ouvert ne produit ni exception claire ni alerte, seulement une collecte muette. Correctif appliqué : veille cron de 5 min sur le Pi, qui relance la boucle détachée si aucun client `ssh -R` n'existe. Le soak est reparti le 22 octobre à 11:29 Paris.
