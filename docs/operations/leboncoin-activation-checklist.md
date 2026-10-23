@@ -54,6 +54,7 @@ colonne opérationnelle est longue et datée.
 | 36 | — | ☐ **Supervision par `flock`** constatée : une seule instance relais et tunnel, `@reboot` et `*/5` en place — date : |
 | 37 | — | ☐ **Sonde de santé** exécutée pour de vrai, journal minimal et plafonné, aucun démarrage de relais par la sonde — date : |
 | 38 | — | ☐ **Ancienne clé du Pi supprimée** après 24–48 h sans incident (désactivée aujourd'hui) — date : |
+| 39 | — | ☐ **Premier contact supervisé** : #168 et sa [procédure](leboncoin-first-contact.md) en préalable, exécution unique sous mandat nominatif, compte rendu rendu — date : |
 
 ## Précisions sur trois lignes sensibles
 
