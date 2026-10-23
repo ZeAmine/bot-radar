@@ -341,3 +341,25 @@ def test_preflight_rejects_invalid_target_compose_without_echoing_its_output(
     assert "config --no-env-resolution --quiet" in scripts[0]
     assert "POSTGRES_PASSWORD" in scripts[0]  # Modèle cible envoyé, pas celui du serveur.
     assert "synthetic-sensitive" not in capsys.readouterr().out
+
+
+def test_ssh_verifie_la_cle_d_hote(monkeypatch):
+    """La commande distante du pré-vol refuse un hôte dont la clé a changé."""
+    vus: list[list[str]] = []
+
+    def faux_run(argv, **_kwargs):
+        vus.append(list(argv))
+
+        class _Fini:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Fini()
+
+    monkeypatch.setattr(pf.subprocess, "run", faux_run)
+    pf.Remote(host="exemple", key="cle").run("true")
+
+    argv = vus[0]
+    assert "StrictHostKeyChecking=yes" in argv
+    assert "StrictHostKeyChecking=no" not in argv
