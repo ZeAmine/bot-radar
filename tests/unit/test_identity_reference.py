@@ -392,3 +392,64 @@ def test_volume_notation_preserves_single_volume_positives(title, number):
 
     assert requested_volume(title) == number
     assert not is_volume_composition(title)
+
+
+@pytest.mark.parametrize(
+    "description",
+    ["Livre d'occasion en bon état", "Livre d’or", "vol d'oiseau", "t c'est"],
+)
+def test_prose_in_the_description_is_not_a_roman_volume(description):
+    pair = Pair.model_validate({
+        "alert": {"name": "Blacksad tome 1", "category_slug": "bd_comics",
+                  "include_keywords": ["blacksad"]},
+        "listing": {"title": "Blacksad tome 1", "description": description,
+                    "category_slug": "bd_comics", "item_price_cents": 100},
+    })
+    assert explain_pair(pair)["decision"] == "accepter"
+
+
+@pytest.mark.parametrize("phrase", ["livre d'occasion", "livre d'or", "vol d'oiseau", "t c'est"])
+def test_normalized_french_contractions_do_not_declare_roman_volumes(phrase):
+    from app.domain.rules.book_volume import volume_numbers
+    from app.utils.text import normalize_text
+
+    assert volume_numbers(phrase) == set()
+    assert volume_numbers(normalize_text(phrase)) == set()
+
+
+@pytest.mark.parametrize(
+    ("wanted", "candidate", "number"),
+    [("Le livre d’or", "Le livre d’occasion", 500),
+     ("Le vol d’oiseau", "Le vol d’argent", 500),
+     ("Le t c’est ici", "Le t c’est ailleurs", 100)],
+)
+def test_title_identity_does_not_split_french_contractions_as_roman_volumes(
+    wanted, candidate, number,
+):
+    from app.domain.rules.bibliographic_identity import series_association
+
+    result = series_association(
+        requested_title=wanted, title=candidate, author="Auteur connu",
+        author_hint="Auteur connu", language="fr", number=number,
+    )
+    assert result.outcome != "accept"
+
+
+def test_the_listing_domain_does_not_import_a_service():
+    import ast
+
+    path = Path(__file__).resolve().parents[2] / "app/domain/rules/listing_match.py"
+    tree = ast.parse(path.read_text())
+    imports = [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    assert not any(name and name.startswith("app.services") for name in imports)
+
+
+@pytest.mark.parametrize(
+    ("title", "number"),
+    [("Blacksad tome d", 500), ("Blacksad tome c : le retour", 100),
+     ("Blacksad tome liv", 54), ("Blacksad tome D - Le retour", 500)],
+)
+def test_unambiguous_roman_markers_still_declare_a_volume(title, number):
+    from app.domain.rules.book_volume import requested_volume
+
+    assert requested_volume(title) == number

@@ -44,6 +44,7 @@ from app.services.market_price_service import (
     cote_absence_line,
 )
 from app.services.telegram_service import DeliveryResult, send_listing_alert, usable_receipt
+from app.services.tome_extractor import TomeExtractor
 from app.use_cases.link_bd_catalog import resolve_bd_catalog_book
 from app.use_cases.listing_ingestion_gate import listing_ingestion_gate
 from app.use_cases.notification_admission import record_result, reserve
@@ -340,6 +341,9 @@ class ProcessListingUseCase:
                 listing_category_slug=listing.category_slug,
                 listing_normalized_title=listing.normalized_title,
                 listing_raw_title=listing.title,
+                listing_volume=(TomeExtractor.extract(
+                    listing.title, listing.description, series_key=alert.name,
+                ) if listing.category_slug == CategorySlug.BD_COMICS.value else None),
                 listing_normalized_description=listing.description,
                 listing_condition=listing.condition,
                 listing_item_price_cents=listing.item_price_cents,

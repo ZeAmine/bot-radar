@@ -1,6 +1,7 @@
 """Identité d'un volume individuel demandé, indépendante du moteur IA."""
 
 import re
+from typing import Protocol
 
 from app.utils.text import normalize_text
 
@@ -9,16 +10,33 @@ _COLLECTION = re.compile(
     r"\b(?:lots?|integrales?|coffrets?|omnibus|collection complete|collections completes)\b"
 )
 
+_NUMERAL = (
+    r"(?:\d{1,3}|[IVXLCDM]+|[ivx]+|"
+    r"[ivxlcdm]+(?=\s*(?:$|[^\w\s'’‘`ʼ])))\b(?!['’‘`ʼ])"
+)
+_VOLUME_MARKER = rf"(?i:\b(?:tomes?|t|livres?|volumes?|vols?)\.?\s*)({_NUMERAL})"
+
+
+class ListingVolumeEvidence(Protocol):
+    tome_number: int | None
+    lot_tomes: list[int]
+    is_lot: bool
+
+
+def volume_base_title(text: str) -> str:
+    for match in re.finditer(_VOLUME_MARKER, text):
+        if _volume_number(match.group(1)) is not None:
+            return normalize_text(text[:match.start()])
+    return normalize_text(text)
+
 
 def volume_numbers(text: str) -> set[int]:
-    numeral = r"(?:\d{1,3}|[ivxlcdm]+)\b"
-    marker = r"\b(?:tomes?|t|livres?|volumes?|vols?)\.?\s*"
+    marker = r"(?i:\b(?:tomes?|t|livres?|volumes?|vols?)\.?\s*)"
     continuation = re.compile(
-        rf"(\s*(?:[-–—]|à|a|au|et|&|[,+])\s*|\s+)(?:{marker})?({numeral})",
-        re.IGNORECASE,
+        rf"(\s*(?i:[-–—]|à|a|au|et|&|[,+])\s*|\s+)(?:{marker})?({_NUMERAL})",
     )
     numbers: set[int] = set()
-    for match in re.finditer(rf"{marker}({numeral})", text, re.IGNORECASE):
+    for match in re.finditer(_VOLUME_MARKER, text):
         value = _volume_number(match.group(1))
         if value is None:
             continue

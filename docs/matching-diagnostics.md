@@ -181,3 +181,7 @@ Son corpus `identity-reference-v1.json` a un schéma spécialisé ; il est rejou
 `tests/unit/test_identity_reference.py`, pas par la commande `evaluate` F10.
 Ses étiquettes ont été préparées par l’agent depuis les preuves conservées ; elles
 ne sont pas une validation humaine ni une mesure représentative de production.
+
+Le diagnostic fournit au domaine le titre brut et l’extraction locale de tome en
+amont, comme l’ingestion. Aucun historique notifié n’est disponible dans les exports
+accessibles du mandat ; ce corpus connu ne constitue pas un contrôle indépendant.

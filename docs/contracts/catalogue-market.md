@@ -51,7 +51,10 @@ composition d’une annonce. Un code vendeur valide contradictoire ne se rabat p
 sur une autre édition en cache. Pour une demande individuelle, une composition
 explicite ne prouve pas ce tome seul ; une demande multi-tomes exige leur couverture
 complète. Les alertes sans livre restent envoyables ; la confirmation de livre,
-après les envois, s’abstient si auteur ou langue ne sont pas établis. Aucun appel
+après les envois, s’abstient si les preuves d’identité ou de langue manquent. Un ISBN
+explicitement attendu par l’alerte et confirmé concordant dispense de l’égalité
+des titres et de la présence d’un auteur ; les contrôles de langue française,
+de tome et de composition restent applicables. Aucun appel
 catalogue n’est ajouté avant Telegram. Mesures et limites :
 [bilan d’identité](../evaluations/matching-discovery-2026-10-23.md).
 

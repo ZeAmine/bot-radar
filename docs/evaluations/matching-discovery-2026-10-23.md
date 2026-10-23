@@ -127,7 +127,7 @@ Les résultats de la tête qui inclut ces accords figurent dans la PR et le suiv
 unique, avec le SHA et la sélection exacte des contrôles. Ils ne certifient aucune
 production ; les exceptions de test autorisées restent tracées ci-dessus.
 
-### Validation finale après les accords ciblés
+### Validation historique après les accords ciblés (`ba13a83`)
 
 - `ruff check .` et mypy isolé : verts (169 fichiers applicatifs et 8 d’outillage).
 - `make test-isolated PYTHON=<venv>/bin/python` : **3089 succès, 124 ignorés**, quatre avertissements ; aucun test nouvellement ignoré.
@@ -136,8 +136,89 @@ production ; les exceptions de test autorisées restent tracées ci-dessus.
 - Rejeu des 451 cas et audit des règles : métriques inchangées, aucune règle utilisateur modifiée.
 - Revue distincte du dernier diff : aucun défaut trouvé dans le périmètre autorisé ; revue statique d’agent, sans validation humaine.
 
-La seule exception d’assertion autorisée est celle décrite ci-dessus. Aucun changement
+L’exception d’assertion finale du benchmark est décrite ci-dessus. L’assertion
+des appels BNF modifiée dans la PR est déclarée dans la revue ci-dessous. Aucun changement
 applicatif n’est introduit par la proposition abandonnée depuis préparation.
 Les résultats CI du commit exact sont suivis dans la PR ; un résultat local ne
 certifie pas la production. L’inventaire non exécutable reste le seul blocage de
 préparation des écritures métier, qui ne sont pas appliquées.
+
+
+## Corrections de la revue de PR #170
+
+### Apostrophes, tomes et couches
+
+La reproduction « Blacksad tome 1 » avec « Livre d'occasion en bon état »
+échoue avant correction et passe après. « vol d'oiseau », « livre d'or » et
+« t c'est » ne doivent pas produire les tomes romains 500 ou 100. La détection
+partagée préserve les marqueurs romains non ambigus, les compositions, listes et
+plages existantes. Le découpage des titres dans `series_association` utilise cette
+même détection avant normalisation ; les contractions ne rendent plus deux titres
+différents artificiellement égaux.
+
+Le domaine ne dépend plus de `app.services.tome_extractor`. L’ingestion et le
+diagnostic lui fournissent l’extraction CPU locale en amont, sans déplacer ce service.
+Aucun accès réseau ou base supplémentaire n’est ajouté avant Telegram.
+
+### Assertion BNF explicitement déclarée
+
+Dans `test_google_completes_the_series_after_bnf_and_openlibrary`, la séquence
+`['bnf', 'openlibrary', 'google_books']` devient
+`['bnf', 'bnf', 'openlibrary', 'google_books']`. L’auteur attendu désormais explicite
+active le repli BNF `bib.anywhere` après un `bib.title` vide. Ce repli existe déjà
+sur la base `0b119ff` ; les deux requêtes ne sont pas identiques. Le supprimer
+retirerait un comportement existant. L’assertion renforcée conserve la preuve de
+l’ordre des autorités et déclare le repli supplémentaire au lieu de le masquer.
+Ce test exerce la création en pause, distincte de l’ingestion : aucun de ces appels
+n’est ajouté au chemin précédant Telegram. Les contrôles d’ordre, idempotence,
+reprise et budgets sont conservés et rejoués.
+
+### ISBN exact de l’alerte
+
+Un ISBN explicitement attendu, confirmé par une notice concordante, dispense de
+l’égalité des titres, y compris si l’édition existe déjà avec un titre plus court.
+Huit cas d’intégration couvrent édition absente ou en cache, notice française au
+titre plus long, langue étrangère ou absente et tome contradictoire. Le cas français
+sans auteur est lié ; les cas sans preuve de langue ou au mauvais tome restent
+non liés. Les contrôles d’ISBN, langue, tome, composition, version et session restent
+en place. Ces tests passent aussi sur PostgreSQL isolé.
+
+### Mesures disponibles et limites
+
+Le rejeu final des 451 cas conserve les métriques du tableau, dont les 22 positifs
+perdus sans auteur attendu. Tous ces cas ont déjà servi au développement ou à la
+validation : un découpage réalisé maintenant ne constituerait pas un contrôle
+indépendant. Aucune précision ou rappel sur un jeu réservé indépendant n’est attesté.
+
+La recherche bornée aux chemins de stockage/export documentés et aux artefacts
+déjà accessibles n’a trouvé aucun historique de couples annonce/alerte notifiés.
+Les neuf instantanés accessibles contiennent alertes, livres, liens et cotes, mais
+ni annonces, ni notifications, ni critères figés au moment de l’envoi. Le répertoire
+`artifacts/` mentionné par l’ancien diagnostic F03 n’est pas disponible localement.
+Les sauvegardes décrites par la procédure ne constituent pas un export métier
+accessible dans ce mandat ; aucune production n’a été consultée.
+
+Le nombre de notifications devenues rejetées, sa ventilation par motif et un
+échantillon historique relisible sont donc **non calculables avec les données
+actuelles**, et non nuls. Les observations de prix ne sont pas des notifications.
+Les critères actuels ne sont pas substitués aux critères à l’envoi. Aucune collecte,
+lecture de `.env` ou consultation de production n’a été effectuée pour combler ce manque.
+
+Acquisition minimale à proposer ultérieurement : paires annonce/alerte avec contenu,
+critères et version figés à l’envoi, état de livraison, puis étiquetage distinct et
+jeu réservé gelé avant tout nouvel ajustement. Des exemples admissibles et rejetés
+sont nécessaires au rappel ; les seules notifications ne suffisent pas. Cette
+acquisition n’est ni autorisée ni exécutée ici.
+
+### Validation finale des corrections de revue
+
+- `ruff check .` : vert ; mypy isolé : 169 fichiers applicatifs et 8 d’outillage, vert.
+- `make test-isolated PYTHON=<venv>/bin/python` : **3113 succès, 124 ignorés**, quatre avertissements ; aucun nouvel ignoré.
+- PostgreSQL jetable, 11 fichiers identité/ingestion/notifications : **226 succès**, migrations et suppression de la ressource vérifiées.
+- Rejeu des métriques et audit des règles : deux contrôles réussis, métriques inchangées.
+- Revue statique distincte d’agent : aucun défaut démontré restant après correction du titre en cache ; ce n’est pas une validation humaine.
+
+Seule la documentation descriptive a été éditée après ces exécutions. La PR lie
+les résultats au SHA final et rapporte la CI. Aucun merge ni déploiement demandé.
+Le principe export puis suppression des 28 observations après recalcul des références
+annuelles reste une proposition à valider, sans opération métier exécutée.

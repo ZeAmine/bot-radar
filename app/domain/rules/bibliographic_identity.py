@@ -2,7 +2,12 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from app.domain.rules.book_volume import is_collection, is_volume_composition, requested_volume
+from app.domain.rules.book_volume import (
+    is_collection,
+    is_volume_composition,
+    requested_volume,
+    volume_base_title,
+)
 from app.utils.text import normalize_text
 
 
@@ -25,6 +30,7 @@ def series_association(
     author_hint: str | None,
     language: str | None,
     number: int | None,
+    exact_isbn: bool = False,
 ) -> AssociationDecision:
     if language and language.lower() not in {"fr", "fra", "fre", "und"}:
         return AssociationDecision("reject", "foreign_language")
@@ -41,9 +47,10 @@ def series_association(
             return AssociationDecision("reject", "volume_conflict")
         if number is None:
             return AssociationDecision("abstain", "volume_unproven")
-    volume_marker = r"\b(?:tomes?|t|livres?|volumes?|vols?)\s*(?:\d+|[ivxlcdm]+)\b"
-    expected_title = re.split(volume_marker, normalize_text(requested_title), maxsplit=1)[0].strip()
-    actual_title = re.split(volume_marker, normalize_text(title), maxsplit=1)[0].strip()
+    if exact_isbn:
+        return AssociationDecision("accept", "exact_isbn_evidence")
+    expected_title = volume_base_title(requested_title)
+    actual_title = volume_base_title(title)
     if not expected_title or actual_title != expected_title:
         return AssociationDecision("abstain", "work_title_unproven")
     if author_hint:

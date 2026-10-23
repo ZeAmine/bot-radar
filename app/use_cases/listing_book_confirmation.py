@@ -53,9 +53,12 @@ async def confirm_listing_book(
             extra={"event": "listing_isbn_unconfirmed", "status": result.status.value},
         )
         return
+    expected_isbn = normalize_listing_isbn(alert_isbn)
+    exact_isbn = bool(expected_isbn and expected_isbn == listing_isbn)
     if (
         normalize_listing_isbn(reference.isbn13) != listing_isbn
-        or title_similarity(confirmed.title, alert_name) < TITLE_SIMILARITY_MIN
+        or (not exact_isbn
+            and title_similarity(confirmed.title, alert_name) < TITLE_SIMILARITY_MIN)
         or (alert_isbn is not None and normalize_listing_isbn(alert_isbn) != listing_isbn)
     ):
         logger.info(
@@ -102,6 +105,7 @@ async def confirm_listing_book(
             author=confirmed.author,
             author_hint=confirmed.author if current.isbn else author_hint,
             language=confirmed.language, number=confirmed.volume_number,
+            exact_isbn=exact_isbn,
         )
         if identity.outcome != "accept":
             logger.info("Association vendeur non retenue", extra={
@@ -136,7 +140,8 @@ async def confirm_listing_book(
         if (
             normalize_edition_language(book.language) != "fr"
             or (stored_tome is not None and notice_tome is not None and stored_tome != notice_tome)
-            or title_similarity(book.title, confirmed.title) < TITLE_SIMILARITY_MIN
+            or (not exact_isbn
+                and title_similarity(book.title, confirmed.title) < TITLE_SIMILARITY_MIN)
             or (book.author and confirmed.author and not same_author(book.author, confirmed.author))
         ):
             logger.warning(

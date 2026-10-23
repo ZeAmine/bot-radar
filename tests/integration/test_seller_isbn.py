@@ -476,3 +476,43 @@ async def test_a_stored_foreign_edition_is_not_linked_from_a_french_notice(journ
     assert len(books) == 1
     assert books[0].language == "en"
     assert links == []
+
+
+@pytest.mark.parametrize(
+    ("language", "volume"), [("fr", None), ("en", None), (None, None), ("fr", 2)],
+)
+@pytest.mark.parametrize("cached", [False, True])
+async def test_an_exact_alert_isbn_allows_a_longer_notice_title_but_keeps_language_and_tome(
+    journey, language, volume, cached,
+):
+    name = "Cible BD" if volume is None else "Cible BD Tome 1"
+    notice_title = "Cible BD : une aventure dessinée dans une édition illustrée"
+    if volume is not None:
+        notice_title += " Tome 2"
+    async with journey.db.maker() as session:
+        alert = await AlertRepository(session).get_by_id(journey.alert.id)
+        alert.isbn = ISBN
+        alert.name = name
+        if cached:
+            session.add(Book(
+                title=name, normalized_title=name.lower(), isbn13=ISBN,
+                author=None, language="fr",
+            ))
+        await session.commit()
+    notice = journey.report.verdict.notice
+    notice.title = notice_title
+    notice.language = language
+    notice.volume_number = volume
+    notice.author = None
+    await confirmation.confirm_listing_book(
+        alert_id=journey.alert.id, alert_name=name, alert_isbn=ISBN,
+        expected_preparation=None, listing_isbn=ISBN, listing_title=notice_title,
+        listing_description=None,
+    )
+    books, links = await books_and_links(journey)
+    if language == "fr" and volume is None:
+        assert len(links) == 1
+        assert [book.isbn13 for book in books] == [ISBN]
+    else:
+        assert links == []
+        assert len(books) == int(cached)
