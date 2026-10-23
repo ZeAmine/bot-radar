@@ -210,7 +210,7 @@ jeu réservé gelé avant tout nouvel ajustement. Des exemples admissibles et re
 sont nécessaires au rappel ; les seules notifications ne suffisent pas. Cette
 acquisition n’est ni autorisée ni exécutée ici.
 
-### Validation finale des corrections de revue
+### Validation des corrections avant intégration de `main` (`3b3095d`)
 
 - `ruff check .` : vert ; mypy isolé : 169 fichiers applicatifs et 8 d’outillage, vert.
 - `make test-isolated PYTHON=<venv>/bin/python` : **3113 succès, 124 ignorés**, quatre avertissements ; aucun nouvel ignoré.
@@ -218,7 +218,7 @@ acquisition n’est ni autorisée ni exécutée ici.
 - Rejeu des métriques et audit des règles : deux contrôles réussis, métriques inchangées.
 - Revue statique distincte d’agent : aucun défaut démontré restant après correction du titre en cache ; ce n’est pas une validation humaine.
 
-Seule la documentation descriptive a été éditée après ces exécutions. La PR lie
-les résultats au SHA final et rapporte la CI. Aucun merge ni déploiement demandé.
+Ces résultats précèdent l’intégration de `main` `9acbfe3` (PR #171). La PR lie
+la nouvelle validation complète et PostgreSQL au SHA final et rapporte la CI. Aucun merge ni déploiement demandé.
 Le principe export puis suppression des 28 observations après recalcul des références
 annuelles reste une proposition à valider, sans opération métier exécutée.
