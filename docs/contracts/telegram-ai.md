@@ -21,6 +21,15 @@ ne suit cette ligne.
 Le récap de création et sa confirmation utilisent la même carte ; alternatives
 d'édition proposées uniquement à partir de deux éditions exploitables.
 
+La création `/add` avec une demande exploitable mène directement au récapitulatif.
+Sans résultat IA utilisable, le catalogue bibliographique partagé est essayé avant
+la sélection manuelle de catégorie. Un ouvrage identifié, ou des candidats nommés,
+ouvrent la carte Livres ; sans candidat exploitable, la catégorie reste à choisir.
+Les homonymes restent distincts et les notices de repli gardent leur statut non confirmé.
+Le prix maximum absent reste « Non renseigné », modifiable depuis le récapitulatif,
+comme la catégorie. Un prix explicitement saisi est conservé. `/add` sans argument
+conserve le choix de catégorie. Ce parcours de création ne change pas l'ingestion.
+
 Le titre du panneau « Prix du marché » renvoie à une URL CAL déjà enregistrée
 pour l'ISBN affiché, si elle est sûre et compatible ; sinon il reste sans lien.
 L'ISBN est copiable en `<code>`. L'action d'ouverture du panneau garde son callback.

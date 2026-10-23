@@ -32,7 +32,9 @@ from app.core.constants import (
 from app.db.models.alert import Alert
 from app.db.models.category import Category
 from app.db.models.user import User
+from app.domain.enums import BookSearchStatus
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
+from app.use_cases.book_search import BookSearchResult
 
 
 @pytest.mark.asyncio
@@ -182,7 +184,7 @@ async def test_gaming_query_input_sets_defaults():
     assert state_data["exclude_keywords"] == DEFAULT_GAMING_EXCLUSIONS
     assert state_data["selected_conditions"] == DEFAULT_GAMING_CONDITIONS
     assert state_data["isbn"] is None
-    state.set_state.assert_called_once_with(AlertCreationState.waiting_for_max_price)
+    state.set_state.assert_called_once_with(AlertCreationState.confirm_creation)
     message.answer.assert_called_once()
     assert "Mario Kart 8 Deluxe Switch" in message.answer.call_args[0][0]
 
@@ -230,7 +232,7 @@ async def test_tech_query_input_sets_defaults():
     assert state_data["exclude_keywords"] == DEFAULT_TECH_EXCLUSIONS
     assert state_data["selected_conditions"] == DEFAULT_TECH_CONDITIONS
     assert state_data["isbn"] is None
-    state.set_state.assert_called_once_with(AlertCreationState.waiting_for_max_price)
+    state.set_state.assert_called_once_with(AlertCreationState.confirm_creation)
     message.answer.assert_called_once()
     assert "Raspberry Pi 4" in message.answer.call_args[0][0]
 
@@ -396,6 +398,7 @@ async def test_edit_menu_labels_are_bare_for_a_bd_with_an_isbn():
     buttons = [button for row in kb.inline_keyboard for button in row]
     assert [button.text for button in buttons] == [
         "Nom / Titre",
+        "Catégorie",
         "ISBN",
         "Prix maximum",
         "Mots-clés inclus",
@@ -955,6 +958,12 @@ async def test_start_add_alert_natural_add_fallback_on_parse_failure():
             "app.bot.handlers.alerts_create.natural_add_module.parse_prompt",
             new_callable=AsyncMock,
             return_value=None,
+        ),
+        patch(
+            "app.bot.handlers.alerts_helpers.BookSearchUseCase",
+            return_value=MagicMock(search_by_title=AsyncMock(return_value=BookSearchResult(
+                status=BookSearchStatus.NOT_FOUND,
+            ))),
         ),
         patch("app.bot.handlers.alerts.AlertRepository", return_value=mock_alert_repo),
     ):
