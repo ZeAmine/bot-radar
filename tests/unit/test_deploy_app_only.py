@@ -17,14 +17,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
-from deploy import (  # noqa: E402
-    APP_ONLY_UP,
-    ROLLBACK_TAG_PREFIX,
-    Context,
-    step_rebuild,
-    step_start,
-    step_stop,
-)
 from deploy_dependencies import (  # noqa: E402
     DEPENDENT_SERVICES,
     DependencyError,
@@ -33,6 +25,15 @@ from deploy_dependencies import (  # noqa: E402
     capture_script,
     compare,
     decode_capture,
+)
+
+from deploy import (  # noqa: E402
+    APP_ONLY_UP,
+    ROLLBACK_TAG_PREFIX,
+    Context,
+    step_rebuild,
+    step_start,
+    step_stop,
 )
 
 POSTGRES_ID = "179105aa2890d53b2c258d0512450d7a8261fa131658f509ccfc1320851b997e"

@@ -13,6 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
+from deploy_dependencies import ServiceIdentity  # noqa: E402
+from notify_deploy import send_telegram_notification  # noqa: E402
+
 from deploy import (  # noqa: E402
     HEALTH_ATTEMPTS,
     RETIRED_MAINTENANCE,
@@ -30,8 +33,6 @@ from deploy import (  # noqa: E402
     step_stop,
     step_sync,
 )
-from deploy_dependencies import ServiceIdentity  # noqa: E402
-from notify_deploy import send_telegram_notification  # noqa: E402
 
 
 def _ctx(**overrides) -> Context:
