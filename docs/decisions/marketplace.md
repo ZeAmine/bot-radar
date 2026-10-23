@@ -67,6 +67,14 @@ Date : 2026-10-19 · Statut : **accepté**.
 - Contexte : les alertes BD ne scrutaient que Vinted. L'utilisateur veut les mêmes alertes sur Leboncoin, sans compte payant, sans SaaS et sans exécution continue sur son Mac. DataDome protège le site et son `robots.txt` interdit `/recherche` ainsi que l'usage de robots. Le collecteur Leboncoin bénéficie d'une exception explicite à la clause anti-contournement d'`AGENTS.md`, dans le périmètre défini par ADR-054. La clause générale et les autres interdictions restent en vigueur.
 - Décision et raison : collecteur dans le processus unique, `source_name="leboncoin"`, une page de recherche Livres filtrée BD/manga (`category=27&leisure_book_genre=comics%26mangas`), triée par nouveauté. Parsing de `__NEXT_DATA__` sans navigateur, empreinte TLS Chrome via `curl_cffi`, et sortie résidentielle gratuite : SOCKS5 en espace utilisateur sur le Raspberry Pi du domicile, joignable par tunnel SSH inverse (`ssh -R 127.0.0.1:1080:127.0.0.1:8080`) ; ni root, ni port entrant, ni fournisseur tiers. Cadence 10 min ±, collecteur désactivé par défaut.
 - Conséquences : dédoublonnage inchangé `(source_name, external_id)` ; une annonce Leboncoin est nouvelle si `published_at > alert.created_at`, sans empreinte de premier scan ni migration ; le premier cycle réussi pose une référence silencieuse (aucune alerte rétroactive) ; une page entièrement plus récente que le cycle précédent déclenche la lecture bornée de la page 2 ; aucun frais Vinted n'est appliqué et aucun port n'est inventé (`estimated_total_cents` reste `NULL`, pas de ligne d'écart livré) ; la légende porte « Plateforme : Leboncoin ». Vinted — collecteur, parsing, poller, barème — reste inchangé. Un blocage DataDome met le collecteur en pause croissante et le signale sur Telegram ; un tunnel coupé suspend la collecte sans toucher aux autres sources.
+- Révision du 23 octobre 2026 : la forme d'écoute du tunnel décrite ci-dessus
+  (`ssh -R 127.0.0.1:1080:…`) n'est plus la topologie retenue. Le tunnel écoute sur
+  l'adresse de la gateway du réseau applicatif, et le collecteur s'y connecte en
+  `socks5h://` depuis son conteneur ; `127.0.0.1` y désigne le loopback du conteneur.
+  La décision elle-même — sortie résidentielle auto-hébergée — est inchangée ; seule
+  la forme de jonction est corrigée. Voir
+  [déploiement](../operations/deployment.md) et
+  [fenêtre Redis et sous-réseau](../operations/redis-subnet-maintenance.md).
 - Limites : 35 annonces par page, soit une fenêtre de quelques dizaines de minutes à cette cadence ; une page saturée est rattrapée par une seconde page, jamais au-delà ; aucune collecte si le Pi ou le tunnel est indisponible ; `robots.txt` reste en contradiction avec cette décision, assumée par l'utilisateur et bornée à ce flux.
 
 <a id="adr-053"></a>
