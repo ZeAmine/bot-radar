@@ -191,20 +191,57 @@ servir est ainsi réparé par le mécanisme qui garantit l'unicité.
   relais ferme la connexion sans réponse SOCKS5.
 - Aucun de ces mécanismes ne prouve la sortie résidentielle.
 
-### Contrôle depuis l'hôte VPS
+### Contrôle d'accessibilité depuis le conteneur
 
-Sur l'hôte lui-même, `127.0.0.1` convient — c'est le cas du dépannage ci-dessous,
-et **seulement** de lui.
+Le contrôle de dépannage utile porte sur **ce que le collecteur joint réellement**,
+depuis `radar_app` et vers la gateway — pas sur le loopback de l'hôte.
+
+**(a) Le relais répond-il sur la gateway ?** Un salut SOCKS5 seul, sans `CONNECT` :
+il prouve que la socket accepte et que le protocole répond, sans contacter aucune
+destination et sans solliciter la résolution.
 
 ```sh
-curl -sS --socks5-hostname 127.0.0.1:1080 https://api.ipify.org; echo
-python3 -m venv /tmp/lbc && /tmp/lbc/bin/pip -q install curl_cffi==0.16.3
-/tmp/lbc/bin/python -c "from curl_cffi import requests as r; print(r.get('https://www.leboncoin.fr/recherche?category=27&leisure_book_genre=comics%26mangas', impersonate='chrome', proxy='socks5://127.0.0.1:1080', timeout=30).status_code)"
+GW=$(docker network inspect bot-radar_default \
+  -f '{{(index .IPAM.Config 0).Gateway}}')
+docker exec radar_app python3 -c "
+import socket, sys
+s = socket.create_connection((sys.argv[1], 1080), timeout=3)
+s.sendall(bytes([5, 1, 0]))
+print('salut:', s.recv(2).hex())
+s.close()
+" "$GW"
 ```
 
-Attendu : l'IP publique du domicile, puis `200`. Un `curl` nu renvoie `403` : c'est
-l'empreinte TLS, pas le tunnel. Un `403` avec `curl_cffi`, ou une IP de datacenter,
-signifie que le tunnel est tombé ou que la sortie n'est plus résidentielle.
+Attendu : `salut: 0500`. Toute autre valeur — ou une erreur de connexion — signifie
+que la jonction est rompue : voir la section « Dérive de la passerelle » de
+[la fenêtre Redis](redis-subnet-maintenance.md). Ce test **ne prouve pas** la sortie.
+
+**(b) Un domaine non listé est-il refusé ?** Envoie une demande `CONNECT` vers un
+domaine volontairement absent de la liste autorisée. Le relais doit répondre
+`0x02` (`NOT_ALLOWED`), sans contacter la destination. Ce test n'émet aucune
+requête vers le domaine visé : il vérifie le refus, pas l'accès.
+
+```sh
+docker exec radar_app python3 -c "
+import socket, sys
+s = socket.create_connection((sys.argv[1], 1080), timeout=3)
+s.sendall(bytes([5, 1, 0]))
+assert s.recv(2) == bytes([5, 0])
+hote = b'example.invalid'
+s.sendall(bytes([5, 1, 0, 3, len(hote)]) + hote + (443).to_bytes(2, 'big'))
+print('refus:', s.recv(10)[:2].hex())
+s.close()
+" "$GW"
+```
+
+Attendu : `refus: 0502`. Un `0500` signalerait une **liste trop large** ; une
+absence de réponse, un relais saturé ou bloqué.
+
+**(c) La sortie résidentielle** ne se prouve pas ici : elle exige une requête
+réelle vers un domaine autorisé, donc un mandat et une destination ajoutée
+explicitement et **temporairement**. La procédure est
+[§4.5 « Contrôle volontaire de sortie »](leboncoin-relay-update.md#45-contrôle-volontaire-de-sortie),
+avec retrait du domaine de contrôle à la fin.
 
 ### Depuis le conteneur `radar_app` : étape supplémentaire obligatoire
 
