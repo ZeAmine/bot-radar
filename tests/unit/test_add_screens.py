@@ -22,9 +22,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from app.bot.handlers.alerts_create import (
     handle_category_selected,
     handle_query_input,
-    process_max_price_input,
     save_alert,
     start_add_alert,
+)
+from app.bot.handlers.alerts_create_confirm import (
+    handle_create_edit_choice,
+    process_creation_edit_input,
 )
 from app.db.models.user import User
 from app.domain.enums import BookSearchStatus
@@ -240,8 +243,11 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     assert f"<i>{UNIDENTIFIED_WORK_NOTE}</i>" in ecran_prix
     assert "<b>Auteur :</b> Non renseigné" in ecran_prix
 
+    edit_callback, _ = confirm_press()
+    edit_callback.data = "al_create_edit:price"
+    await handle_create_edit_choice(edit_callback, state)
     prix_saisi = incoming_message("30")
-    await process_max_price_input(prix_saisi, state, db_session)
+    await process_creation_edit_input(prix_saisi, state)
 
     recap = prix_saisi.answer.call_args[0][0]
     lines = recap.splitlines()

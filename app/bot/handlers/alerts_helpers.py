@@ -93,11 +93,6 @@ UNIDENTIFIED_WORK_NOTE = (
 )
 
 
-PRICE_PROMPT_FOOTER = (
-    "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
-)
-
-
 def series_indication_block() -> list[str]:
     """L'indication de série telle qu'un écran la colle : en italique, puis sa ligne vide.
 
@@ -1286,8 +1281,7 @@ async def _apply_search_draft(
         if price is not None:
             updates["max_item_price_cents"] = price
         await state.update_data(**updates)
-        await state.set_state(AlertCreationState.confirm_creation if price is not None
-                              else AlertCreationState.waiting_for_max_price)
+        await state.set_state(AlertCreationState.confirm_creation)
         return await state.get_data()
 
 
@@ -1299,20 +1293,25 @@ async def process_bd_query_lookup(
     db_user: User | None = None,
     expected_creation_token: str | None = None,
     expected_search_token: int | None = None,
-) -> None:
+    query_is_title: bool = False,
+    require_catalogue_match: bool = False,
+    status_message: Any = None,
+) -> bool:
     """Recherche l'œuvre via BookMetadataService et propose la configuration automatique."""
     target_msg = event if isinstance(event, Message) else event.message
     if not target_msg:
-        return
+        return True
 
-    clean_query, inline_price_cents = extract_inline_price_and_clean_query(query_str)
+    clean_query, inline_price_cents = (
+        (query_str, None) if query_is_title else extract_inline_price_and_clean_query(query_str)
+    )
 
     token = await _begin_bibliographic_search(
         state, expected_creation_token=expected_creation_token,
         expected_search_token=expected_search_token,
     )
     if token is None:
-        return
+        return True
 
     if db_user:
         alert_repo = _get_alert_repo(db_session)
@@ -1328,9 +1327,9 @@ async def process_bd_query_lookup(
                 new_price_cents=inline_price_cents,
                 expected_search_token=token,
             )
-            return
+            return True
 
-    status_msg = await target_msg.answer("🔍 Recherche automatique de l'œuvre...")
+    status_msg = status_message or await target_msg.answer("🔍 Recherche automatique de l'œuvre...")
 
     raw_digits = re.sub(r"[^0-9X]", "", clean_query.upper())
     is_isbn_form = bool(extract_clean_isbn(clean_query)) or len(raw_digits) in (10, 13) and (
@@ -1352,7 +1351,14 @@ async def process_bd_query_lookup(
 
     if not await _search_still_current(state, token):
         logger.info("Recherche bibliographique « %s » périmée : écran inchangé.", clean_query)
-        return
+        return True
+
+    if require_catalogue_match and (
+        result is None
+        or result.status in (BookSearchStatus.NOT_FOUND, BookSearchStatus.UNAVAILABLE)
+        or (result.status == BookSearchStatus.PARTIAL and not result.works)
+    ):
+        return False
 
     if result is None or result.status == BookSearchStatus.NOT_FOUND:
         query_title = parse_query_title_and_author(clean_query)[0]
@@ -1366,15 +1372,11 @@ async def process_bd_query_lookup(
         updates.update(original_input=query_str, search_queries=[clean_query])
         draft = await _apply_search_draft(state, token, updates, inline_price_cents)
         if draft is None:
-            return
+            return True
 
-        if inline_price_cents is not None:
-            recap_text, keyboard = build_creation_recap(draft)
-            await status_msg.edit_text(recap_text, reply_markup=keyboard)
-            return
-
-        await status_msg.edit_text(creation_card(draft, footer=PRICE_PROMPT_FOOTER))
-        return
+        recap_text, keyboard = build_creation_recap(draft)
+        await status_msg.edit_text(recap_text, reply_markup=keyboard)
+        return True
 
     if db_user and result.status != BookSearchStatus.AMBIGUOUS:
         alert_repo = _get_alert_repo(db_session)
@@ -1398,7 +1400,7 @@ async def process_bd_query_lookup(
                 expected_search_token=token,
                 target_msg=status_msg,
             )
-            return
+            return True
 
     category_repo = _get_category_repo(db_session)
     category = await category_repo.get_by_slug(CategorySlug.BD_COMICS.value)
@@ -1416,14 +1418,11 @@ async def process_bd_query_lookup(
     updates.update(original_input=query_str, search_queries=[clean_query])
     draft = await _apply_search_draft(state, token, updates, inline_price_cents)
     if draft is None:
-        return
+        return True
 
-    if inline_price_cents is not None:
-        recap_text, keyboard = build_creation_recap(draft)
-        await status_msg.edit_text(recap_text, reply_markup=keyboard)
-        return
-
-    await status_msg.edit_text(creation_card(draft, footer=PRICE_PROMPT_FOOTER))
+    recap_text, keyboard = build_creation_recap(draft)
+    await status_msg.edit_text(recap_text, reply_markup=keyboard)
+    return True
 
 
 async def process_tech_or_clothes_query(
@@ -1435,6 +1434,7 @@ async def process_tech_or_clothes_query(
     db_user: User | None = None,
     expected_creation_token: str | None = None,
     expected_search_token: int | None = None,
+    query_is_title: bool = False,
 ) -> None:
     """Traite la recherche pour un produit high-tech ou vêtement sans passer par la BNF."""
     target_msg = event.message if isinstance(event, CallbackQuery) else event
@@ -1448,7 +1448,9 @@ async def process_tech_or_clothes_query(
     if token is None:
         return
 
-    clean_query, inline_price_cents = extract_inline_price_and_clean_query(query_str)
+    clean_query, inline_price_cents = (
+        (query_str, None) if query_is_title else extract_inline_price_and_clean_query(query_str)
+    )
 
     cat_slug_enum = CategorySlug(category_slug)
 
@@ -1498,20 +1500,8 @@ async def process_tech_or_clothes_query(
     draft = await _apply_search_draft(state, token, updates, inline_price_cents)
     if draft is None:
         return
-    if inline_price_cents is not None:
-        recap_text, keyboard = build_creation_recap(draft)
-        if (
-            isinstance(event, CallbackQuery)
-            and event.message
-            and hasattr(event.message, "edit_text")
-        ):
-            await event.message.edit_text(recap_text, reply_markup=keyboard)
-        else:
-            await target_msg.answer(recap_text, reply_markup=keyboard)
-        return
-
-    prompt = creation_card(draft, footer=PRICE_PROMPT_FOOTER)
+    recap_text, keyboard = build_creation_recap(draft)
     if isinstance(event, CallbackQuery) and event.message and hasattr(event.message, "edit_text"):
-        await event.message.edit_text(prompt)
+        await event.message.edit_text(recap_text, reply_markup=keyboard)
     else:
-        await target_msg.answer(prompt)
+        await target_msg.answer(recap_text, reply_markup=keyboard)
