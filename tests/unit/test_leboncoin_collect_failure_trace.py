@@ -38,11 +38,16 @@ def _session_qui_leve(exception: BaseException) -> Any:
     return _Session()
 
 
-def test_phase_deduite_du_nom_de_classe():
-    """La phase vient du type levé, jamais du texte du message."""
-    assert scraper.collection_phase(_FakeTimeout("peu importe")) == "ReadTimeout"
-    assert scraper.collection_phase(_FakeProxy("peu importe")) == "ProxyError"
-    assert scraper.collection_phase(ValueError("peu importe")) == "autre"
+def test_un_timeout_generique_reste_de_phase_inconnue():
+    """Un `Timeout` sans type précis ne dit pas si la connexion ou la réponse a expiré."""
+    assert scraper.collection_phase(_FakeTimeout("peu importe")) == "inconnue"
+    assert scraper.collection_phase(ValueError("peu importe")) == "inconnue"
+
+
+def test_la_phase_ne_se_deduit_jamais_du_message():
+    """Un message qui parle de proxy ne doit pas fabriquer une phase ProxyError."""
+    classe = type("Timeout", (Exception,), {})
+    assert scraper.collection_phase(classe("proxy connect failed")) == "inconnue"
 
 
 class ConnectTimeout(Exception):  # noqa: N818
@@ -72,7 +77,7 @@ def test_echec_journalise_phase_duree_et_session(monkeypatch: pytest.MonkeyPatch
         scraper.fetch_search_page("https://exemple/recherche", None)
 
     erreur = captured.value
-    assert erreur.phase == "ReadTimeout"
+    assert erreur.phase == "inconnue"
     assert erreur.exception_class.endswith("_FakeTimeout")
     assert erreur.duration_ms is not None
     assert erreur.duration_ms >= 0
@@ -83,16 +88,16 @@ def test_echec_journalise_phase_duree_et_session(monkeypatch: pytest.MonkeyPatch
         r for r in caplog.records if getattr(r, "event", "") == "leboncoin_collect_failed"
     ]
     assert len(enregistrements) == 1
-    assert enregistrements[0].phase == "ReadTimeout"
+    assert enregistrements[0].phase == "inconnue"
     assert "secret interne" not in caplog.text
 
 
 def test_session_reutilisee_signalee(monkeypatch: pytest.MonkeyPatch):
     """Une session déjà ouverte pour ce proxy est signalée comme réutilisée."""
-    monkeypatch.setattr(scraper, "_session", _session_qui_leve(_FakeProxy("x")))
+    monkeypatch.setattr(scraper, "_session", _session_qui_leve(ProxyError("x")))
     monkeypatch.setattr(scraper, "_session_proxy", "socks5h://exemple:1080")
     monkeypatch.setattr(
-        scraper, "_get_session", lambda _p: _session_qui_leve(_FakeProxy("x"))
+        scraper, "_get_session", lambda _p: _session_qui_leve(ProxyError("x"))
     )
 
     with pytest.raises(scraper.LeboncoinCollectionError) as captured:
@@ -120,3 +125,50 @@ def test_message_metier_inchange_pour_un_statut_http(monkeypatch: pytest.MonkeyP
 
     assert str(captured.value) == "HTTP 500"
     assert captured.value.exception_class is None
+
+
+def test_la_ligne_reellement_ecrite_par_le_formateur_de_l_application(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Les `extra` ne valent que s'ils sortent du formateur que l'application installe.
+
+    Ce test passe par `JSONFormatter`, celui de `setup_logging`, et lit la ligne
+    produite : un champ présent dans l'enregistrement mais absent de la sortie
+    serait invisible en production.
+    """
+    import io
+    import json
+
+    from app.core.logging import JSONFormatter
+
+    flux = io.StringIO()
+    gestionnaire = logging.StreamHandler(flux)
+    gestionnaire.setFormatter(JSONFormatter())
+    journal = logging.getLogger("radar.leboncoin")
+    journal.addHandler(gestionnaire)
+    journal.setLevel(logging.WARNING)
+    monkeypatch.setattr(
+        scraper, "_get_session", lambda _p: _session_qui_leve(_FakeTimeout("adresse interne"))
+    )
+
+    try:
+        with pytest.raises(scraper.LeboncoinCollectionError):
+            scraper.fetch_search_page("https://exemple/recherche", None, page=2)
+    finally:
+        journal.removeHandler(gestionnaire)
+
+    lignes = [
+        json.loads(ligne_brute)
+        for ligne_brute in flux.getvalue().splitlines()
+        if ligne_brute.strip()
+    ]
+    ecrit = [entree for entree in lignes if entree.get("event") == "leboncoin_collect_failed"]
+    assert len(ecrit) == 1
+    ligne = ecrit[0]
+
+    assert ligne["exception_class"].endswith("_FakeTimeout")
+    assert ligne["phase"] == "inconnue"
+    assert isinstance(ligne["duration_ms"], int)
+    assert ligne["session_reused"] is False
+    assert ligne["page"] == 2
+    assert "adresse interne" not in flux.getvalue()

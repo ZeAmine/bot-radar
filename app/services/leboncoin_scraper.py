@@ -33,19 +33,23 @@ class LeboncoinBlockError(RuntimeError):
     """DataDome a refusé la requête (ou renvoyé un captcha)."""
 
 
-COLLECT_PHASES = frozenset({"ProxyError", "ConnectTimeout", "ReadTimeout", "autre"})
+COLLECT_PHASES = frozenset({"ProxyError", "ConnectTimeout", "ReadTimeout", "inconnue"})
+
+KNOWN_COLLECT_PHASES = {
+    "ProxyError": "ProxyError",
+    "ConnectTimeout": "ConnectTimeout",
+    "ReadTimeout": "ReadTimeout",
+}
 
 
 def collection_phase(exc: BaseException) -> str:
-    """Phase approchée d'un échec, déduite du nom de la classe levée par curl_cffi."""
-    name = type(exc).__name__
-    if name in {"ProxyError", "ConnectTimeout", "ReadTimeout"}:
-        return name
-    if "Timeout" in name:
-        return "ReadTimeout"
-    if "Proxy" in name:
-        return "ProxyError"
-    return "autre"
+    """Phase nommée seulement si le type levé la nomme lui-même ; sinon inconnue.
+
+    `curl_cffi` ne rend pas la phase séparément : un `Timeout` ne dit pas s'il
+    porte sur la connexion ou sur la réponse. Deviner depuis le nom du message
+    inventerait une information que la bibliothèque n'a pas fournie.
+    """
+    return KNOWN_COLLECT_PHASES.get(type(exc).__name__, "inconnue")
 
 
 class LeboncoinCollectionError(RuntimeError):
@@ -55,13 +59,13 @@ class LeboncoinCollectionError(RuntimeError):
         self,
         motif: str,
         *,
-        phase: str = "autre",
+        phase: str = "inconnue",
         exception_class: str | None = None,
         duration_ms: int | None = None,
         session_reused: bool | None = None,
     ) -> None:
         super().__init__(motif)
-        self.phase = phase if phase in COLLECT_PHASES else "autre"
+        self.phase = phase if phase in COLLECT_PHASES else "inconnue"
         self.exception_class = exception_class
         self.duration_ms = duration_ms
         self.session_reused = session_reused
