@@ -62,9 +62,6 @@ services:
 
 networks:
   default:
-    ipam:
-      config:
-        - subnet: ${RADAR_NETWORK_SUBNET:?RADAR_NETWORK_SUBNET requis et non vide}
   web_gateway:
     external: true
 

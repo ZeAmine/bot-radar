@@ -33,21 +33,6 @@ from dataclasses import dataclass
 # jamais, donc tout changement de leur part est un effet de bord.
 DEPENDENT_SERVICES: tuple[str, ...] = ("postgres", "redis")
 
-# Services qu'une fenêtre de maintenance a explicitement le droit de recréer.
-# Ce n'est pas une tolérance générale : la liste est nominative, elle doit rester
-# vide en temps normal, et `postgres` n'y figure jamais. Une recréation autorisée
-# est **annoncée** par le contrôle, pas tue : l'opérateur doit savoir que son
-# déploiement a recréé le service, même quand c'est attendu. Un redémarrage sans
-# recréation reste un écart, même autorisé : c'est un comportement imprévu.
-AUTHORIZED_RECREATION: tuple[str, ...] = ()
-
-# Services qu'aucune autorisation ne peut couvrir. Une recréation y perd des
-# données qu'une fenêtre de maintenance ne rend pas, donc la garantie ne doit pas
-# dépendre du contenu d'une liste : elle est inscrite ici, et `compare` la fait
-# primer sur `authorized_recreation`. Une liste mal remplie reste ainsi sans
-# effet plutôt que dangereuse.
-NEVER_RECREATED: tuple[str, ...] = ("postgres",)
-
 
 class DependencyError(Exception):
     """Une dépendance n'a pas pu être inspectée : le déploiement doit s'arrêter."""
@@ -66,26 +51,11 @@ class InvarianceVerdict:
     verifiee: bool
     ecarts: tuple[str, ...] = ()
     detail: str = ""
-    autorisees: tuple[str, ...] = ()
 
     @classmethod
-    def concluante(
-        cls,
-        ecarts: list[str],
-        autorisees: list[str] | None = None,
-    ) -> InvarianceVerdict:
-        """L'inspection a abouti : les écarts constatés font foi.
-
-        `autorisees` porte les recréations qu'une fenêtre de maintenance a
-        demandées. Elles ne bloquent pas le déploiement, mais elles restent
-        visibles : une recréation attendue qui n'est pas annoncée redeviendrait
-        un changement silencieux.
-        """
-        return cls(
-            verifiee=True,
-            ecarts=tuple(ecarts),
-            autorisees=tuple(autorisees or ()),
-        )
+    def concluante(cls, ecarts: list[str]) -> InvarianceVerdict:
+        """L'inspection a abouti : les écarts constatés font foi."""
+        return cls(verifiee=True, ecarts=tuple(ecarts))
 
     @classmethod
     def non_verifiee(cls, detail: str) -> InvarianceVerdict:
@@ -202,24 +172,16 @@ def compare(
     before: dict[str, ServiceIdentity | None],
     after: dict[str, ServiceIdentity | None],
     services: tuple[str, ...] = DEPENDENT_SERVICES,
-    authorized_recreation: tuple[str, ...] = AUTHORIZED_RECREATION,
-) -> tuple[list[str], list[str]]:
-    """Rend les écarts constatés entre deux relevés, séparés en deux listes.
+) -> list[str]:
+    """Rend les écarts constatés entre deux relevés, service par service.
 
     Trois cas sont distingués parce qu'ils n'appellent pas la même lecture : un
     identifiant différent est une **recréation**, un identifiant identique avec
     un `StartedAt` différent est un **redémarrage**, et une disparition est une
     **suppression**. Les confondre en un seul « a changé » priverait l'opérateur
     de l'information qui lui dit quoi regarder.
-
-    La première liste bloque le déploiement. La seconde porte les recréations
-    qu'une fenêtre de maintenance a demandées : elles ne bloquent pas, mais elles
-    sont rendues pour être annoncées. Seule la recréation est couverte par
-    l'autorisation — un redémarrage, une disparition ou une apparition du même
-    service restent des écarts, donc bloquants.
     """
     ecarts: list[str] = []
-    autorisees: list[str] = []
     for service in services:
         avant = before.get(service)
         apres = after.get(service)
@@ -233,16 +195,10 @@ def compare(
             ecarts.append(f"{service} : conteneur apparu, inexistant avant le déploiement")
             continue
         if avant.container_id != apres.container_id:
-            if service in authorized_recreation and service not in NEVER_RECREATED:
-                autorisees.append(
-                    f"{service} : conteneur RECRÉÉ par la fenêtre de maintenance "
-                    f"({avant.container_id[:12]} → {apres.container_id[:12]})"
-                )
-            else:
-                ecarts.append(
-                    f"{service} : conteneur RECRÉÉ "
-                    f"({avant.container_id[:12]} → {apres.container_id[:12]})"
-                )
+            ecarts.append(
+                f"{service} : conteneur RECRÉÉ "
+                f"({avant.container_id[:12]} → {apres.container_id[:12]})"
+            )
             continue
         if avant.started_at != apres.started_at:
             ecarts.append(
@@ -254,4 +210,4 @@ def compare(
             ecarts.append(
                 f"{service} : état d'exécution modifié ({avant.running} → {apres.running})"
             )
-    return ecarts, autorisees
+    return ecarts

@@ -162,7 +162,7 @@ def test_unchanged_dependencies_are_accepted():
     avant = _releve(INCHANGE_POSTGRES, INCHANGE_REDIS)
     apres = _releve(INCHANGE_POSTGRES, INCHANGE_REDIS)
 
-    assert compare(avant, apres) == ([], [])
+    assert compare(avant, apres) == []
 
 
 def test_step_start_succeeds_when_dependencies_are_unchanged():
@@ -273,9 +273,7 @@ def test_a_recreated_dependency_is_a_failure():
     recréation ne doit jamais passer pour un succès.
     """
     recree = _identite("postgres", "a" * 64, "2026-10-16T09:00:00.000000000Z")
-    ecarts, _ = compare(
-        _releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(recree, INCHANGE_REDIS)
-    )
+    ecarts = compare(_releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(recree, INCHANGE_REDIS))
 
     assert len(ecarts) == 1
     assert "RECRÉÉ" in ecarts[0]
@@ -298,7 +296,7 @@ def test_a_restarted_dependency_is_a_failure_even_with_the_same_id():
     seul le laisserait passer, puisque le conteneur redémarré tourne aussi.
     """
     redemarre = _identite("redis", REDIS_ID, "2026-10-16T09:00:00.000000000Z")
-    ecarts, _ = compare(
+    ecarts = compare(
         _releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(INCHANGE_POSTGRES, redemarre)
     )
 
@@ -320,9 +318,7 @@ def test_a_restarted_dependency_fails_the_start_step():
 
 def test_a_disappeared_dependency_is_reported_as_such():
     """Un service disparu est nommé « disparu », pas confondu avec un autre écart."""
-    ecarts, _ = compare(
-        _releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(INCHANGE_POSTGRES, None)
-    )
+    ecarts = compare(_releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(INCHANGE_POSTGRES, None))
 
     assert len(ecarts) == 1
     assert "disparu" in ecarts[0]
@@ -331,9 +327,7 @@ def test_a_disappeared_dependency_is_reported_as_such():
 def test_an_execution_state_change_is_reported():
     """Un conteneur arrêté pendant le déploiement est un écart, même à id constant."""
     arrete = _identite("redis", REDIS_ID, REDIS_STARTED, running=False)
-    ecarts, _ = compare(
-        _releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(INCHANGE_POSTGRES, arrete)
-    )
+    ecarts = compare(_releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(INCHANGE_POSTGRES, arrete))
 
     assert len(ecarts) == 1
     assert "état d'exécution" in ecarts[0]
@@ -343,9 +337,7 @@ def test_both_dependencies_can_drift_at_once():
     """Deux écarts sont rendus ensemble : l'opérateur voit tout, pas le premier."""
     recree = _identite("postgres", "c" * 64, POSTGRES_STARTED)
     redemarre = _identite("redis", REDIS_ID, "2026-10-16T09:00:00.000000000Z")
-    ecarts, _ = compare(
-        _releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(recree, redemarre)
-    )
+    ecarts = compare(_releve(INCHANGE_POSTGRES, INCHANGE_REDIS), _releve(recree, redemarre))
 
     assert len(ecarts) == 2
 
@@ -565,59 +557,3 @@ def test_the_build_still_builds_when_no_rollback_tag_is_known():
 
     build = next(s for s in remote.scripts if "compose build app" in s)
     assert "docker inspect" not in build
-
-
-def test_authorized_recreation_of_redis_is_reported_but_not_blocking():
-    """Une fenêtre de maintenance peut recréer Redis : ce n'est pas un écart.
-
-    La recréation reste annoncée. La rendre silencieuse reviendrait à ne plus
-    savoir qu'un déploiement a touché une dépendance — précisément ce que ce
-    contrôle existe pour empêcher.
-    """
-    recree = _identite("redis", "d" * 64, "2026-10-23T10:00:00.000000000Z")
-    ecarts, autorisees = compare(
-        _releve(INCHANGE_POSTGRES, INCHANGE_REDIS),
-        _releve(INCHANGE_POSTGRES, recree),
-        authorized_recreation=("redis",),
-    )
-
-    assert ecarts == []
-    assert len(autorisees) == 1
-    assert "redis" in autorisees[0]
-
-
-def test_authorization_never_covers_postgres():
-    """`postgres` reste protégé même si une autorisation le nommait par erreur.
-
-    Une recréation de PostgreSQL perd des données qu'aucune fenêtre de
-    maintenance ne rend ; le contrôle ne doit pas pouvoir être neutralisé par
-    une liste d'autorisation mal remplie.
-    """
-    recree = _identite("postgres", "c" * 64, POSTGRES_STARTED)
-    ecarts, autorisees = compare(
-        _releve(INCHANGE_POSTGRES, INCHANGE_REDIS),
-        _releve(recree, INCHANGE_REDIS),
-        authorized_recreation=("postgres",),
-    )
-
-    assert len(ecarts) == 1
-    assert "postgres" in ecarts[0]
-    assert autorisees == []
-
-
-def test_authorized_recreation_still_flags_a_restart():
-    """Autoriser une recréation n'autorise pas un redémarrage inexpliqué.
-
-    Un conteneur redémarré sans recréation est un comportement imprévu : la
-    configuration n'a pas changé, donc rien n'explique le redémarrage.
-    """
-    redemarre = _identite("redis", REDIS_ID, "2026-10-23T10:00:00.000000000Z")
-    ecarts, autorisees = compare(
-        _releve(INCHANGE_POSTGRES, INCHANGE_REDIS),
-        _releve(INCHANGE_POSTGRES, redemarre),
-        authorized_recreation=("redis",),
-    )
-
-    assert len(ecarts) == 1
-    assert "REDÉMARRÉ" in ecarts[0]
-    assert autorisees == []
