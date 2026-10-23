@@ -539,3 +539,12 @@ def test_send_telegram_notification_http_post(monkeypatch):
     assert posted_payloads[0]["chat_id"] == 123456789
     assert posted_payloads[0]["text"] == "<b>Message</b>"
     assert posted_payloads[0]["parse_mode"] == "HTML"
+
+
+def test_rsync_verifie_la_cle_d_hote():
+    """Une clé d'hôte non vérifiée laisse un intermédiaire se faire passer pour le VPS."""
+    argv = rsync_argv(_ctx())
+
+    transport = argv[argv.index("-e") + 1]
+    assert "StrictHostKeyChecking=yes" in transport
+    assert "StrictHostKeyChecking=no" not in transport
