@@ -16,9 +16,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from leboncoin_first_contact import (
+    EXIT_NO_MANDATE,
     EXIT_OK,
     EXIT_REFUSED,
     EXIT_USAGE,
+    MANDATE_ENV,
+    MISSING_DEPENDENCY_MESSAGE,
     PROXY_ENV,
     ProxyRefusalError,
     categorie_depuis_erreur,
@@ -110,14 +113,62 @@ def test_une_page_sans_annonce_est_un_succes_parse_mais_zero_annonce():
     assert rapport.annonces == 0
 
 
-def test_un_challenge_est_detecte_sans_parser():
-    """Le marqueur de challenge suffit : inutile d'aller plus loin."""
-    html = "<html><script src='/captcha-delivery/x.js'></script></html>"
+def test_un_challenge_servi_en_200_est_un_challenge():
+    """`fetch_search_page` lève `HTTP 200` quand le corps porte le marqueur.
 
-    rapport = executer(PROXY, fetch=_fetch_ok(html), parse=_parse(0))
+    Le scraper teste le marqueur **et** le statut ; un challenge servi en 200
+    arrive donc comme une `LeboncoinBlockError("HTTP 200")`. La lire comme un
+    blocage rangerait un captcha dans la mauvaise ligne de la grille.
+    """
+    from app.services.leboncoin_scraper import LeboncoinBlockError
 
-    assert rapport.challenge is True
+    def fetch(proxy_url: str | None = None) -> str:  # noqa: ARG001
+        raise LeboncoinBlockError("HTTP 200")
+
+    rapport = executer(PROXY, fetch=fetch, parse=_parse(0))
+
     assert rapport.categorie == "challenge"
+    assert rapport.challenge is True
+    assert rapport.code_http == 200
+
+
+@pytest.mark.parametrize("statut", [403, 429])
+def test_les_codes_de_blocage_restent_des_blocages(statut: int):
+    from app.services.leboncoin_scraper import LeboncoinBlockError
+
+    def fetch(proxy_url: str | None = None) -> str:  # noqa: ARG001
+        raise LeboncoinBlockError(f"HTTP {statut}")
+
+    rapport = executer(PROXY, fetch=fetch, parse=_parse(0))
+
+    assert rapport.categorie == "blocage"
+    assert rapport.challenge is False
+    assert rapport.code_http == statut
+
+
+def test_curl_cffi_indisponible_a_sa_propre_categorie():
+    """Dépendance absente n'est pas un échec réseau : la cause est locale."""
+    from app.services.leboncoin_scraper import LeboncoinCollectionError
+
+    def fetch(proxy_url: str | None = None) -> str:  # noqa: ARG001
+        raise LeboncoinCollectionError(MISSING_DEPENDENCY_MESSAGE)
+
+    rapport = executer(PROXY, fetch=fetch, parse=_parse(0))
+
+    assert rapport.categorie == "dependance_absente"
+    assert rapport.categorie != "echec_reseau"
+
+
+def test_un_echec_reseau_n_est_pas_deduit_d_un_message_libre():
+    """Seul le message fixe de dépendance est reconnu ; le reste est réseau."""
+    from app.services.leboncoin_scraper import LeboncoinCollectionError
+
+    def fetch(proxy_url: str | None = None) -> str:  # noqa: ARG001
+        raise LeboncoinCollectionError("curl_cffi indisponible, mais autre chose")
+
+    rapport = executer(PROXY, fetch=fetch, parse=_parse(0))
+
+    assert rapport.categorie == "echec_reseau"
 
 
 def test_un_403_est_classe_blocage_avec_son_code():
@@ -220,11 +271,52 @@ def test_le_mode_simulation_affiche_le_proxy_masque(monkeypatch, capsys):
 
 def test_le_proxy_vient_de_l_environnement(monkeypatch):
     monkeypatch.setenv(PROXY_ENV, PROXY)
+    monkeypatch.setenv(MANDATE_ENV, "mandat-de-test")
     fetch = _fetch_ok()
 
     main(["--execute-once"], fetch=fetch, parse=_parse(2))
 
     assert fetch.appels == [PROXY]
+
+
+def test_l_option_proxy_est_refusee():
+    """Le proxy ne passe que par l'environnement : pas d'argument visible en `ps`."""
+    with pytest.raises(SystemExit):
+        main(["--execute-once", "--proxy", PROXY], fetch=_fetch_ok(), parse=_parse(1))
+
+
+def test_sans_mandat_execution_refusee_sans_aucun_appel(monkeypatch, capsys):
+    """Seconde garde : `--execute-once` seul ne suffit pas."""
+    monkeypatch.setenv(PROXY_ENV, PROXY)
+    monkeypatch.delenv(MANDATE_ENV, raising=False)
+    fetch = _fetch_ok()
+
+    code = main(["--execute-once"], fetch=fetch, parse=_parse(1))
+
+    assert code == EXIT_NO_MANDATE
+    assert code != EXIT_OK
+    assert fetch.appels == []
+    assert MANDATE_ENV in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("valeur", ["", "   "])
+def test_un_mandat_vide_est_traite_comme_absent(monkeypatch, valeur: str):
+    monkeypatch.setenv(PROXY_ENV, PROXY)
+    monkeypatch.setenv(MANDATE_ENV, valeur)
+    fetch = _fetch_ok()
+
+    assert main(["--execute-once"], fetch=fetch, parse=_parse(1)) == EXIT_NO_MANDATE
+    assert fetch.appels == []
+
+
+def test_la_simulation_ne_demande_pas_de_mandat(monkeypatch):
+    """La simulation n'émet rien : elle n'a pas à exiger de mandat."""
+    monkeypatch.setenv(PROXY_ENV, PROXY)
+    monkeypatch.delenv(MANDATE_ENV, raising=False)
+    fetch = _fetch_ok()
+
+    assert main([], fetch=fetch, parse=_parse(1)) == EXIT_OK
+    assert fetch.appels == []
 
 
 def test_sans_variable_l_execution_est_refusee(monkeypatch, capsys):
@@ -250,6 +342,7 @@ def test_un_blocage_rend_un_code_de_refus(monkeypatch, capsys):
     from app.services.leboncoin_scraper import LeboncoinBlockError
 
     monkeypatch.setenv(PROXY_ENV, PROXY)
+    monkeypatch.setenv(MANDATE_ENV, "mandat-de-test")
 
     def fetch(proxy_url: str | None = None) -> str:  # noqa: ARG001
         raise LeboncoinBlockError("HTTP 403")
@@ -265,6 +358,7 @@ def test_un_blocage_rend_un_code_de_refus(monkeypatch, capsys):
 def test_la_sortie_ne_contient_aucun_contenu_de_page(monkeypatch, capsys):
     """Ni titre, ni prix, ni URL d'annonce : seuls des compteurs sortent."""
     monkeypatch.setenv(PROXY_ENV, PROXY)
+    monkeypatch.setenv(MANDATE_ENV, "mandat-de-test")
     html = (
         "<html><body><a href='https://www.leboncoin.fr/ad/livres/123'>"
         "<p>Titre secret 12,50 €</p></a></body></html>"

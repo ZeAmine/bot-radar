@@ -36,6 +36,7 @@ n'imprime que des compteurs et des catégories.
 | P4 | Mandat nominatif | Une exécution, une cible, une fenêtre — écrit noir sur blanc |
 | P5 | Fenêtre d'observation | Créneau où le compte rendu peut être écrit **le jour même** |
 | P6 | API présente dans l'image | Vérification ci-dessous |
+| P7 | Aucune variable `*proxy*` parasite dans le conteneur | Comptage seul, ci-dessous |
 
 Un prérequis manquant **annule** le contact : il ne se rattrape pas après coup.
 
@@ -58,6 +59,22 @@ Attendu : `fetch_search_page(url, proxy_url=None, page=1)` et
 `parse_search_page(html)`. Un `ImportError` ou une signature différente interdit
 le contact — le code du dépôt ne serait pas celui de l'image.
 
+### Compter les variables d'environnement « proxy » du conteneur
+
+`libcurl` **lit automatiquement** les variables `http_proxy`, `https_proxy`,
+`all_proxy` et leurs variantes en majuscules, même quand un proxy est passé
+explicitement. Une telle variable dans le conteneur détournerait la requête et le
+contact ne prouverait plus rien.
+
+On les **compte**, on n'affiche **aucune valeur** :
+
+```sh
+docker exec radar_app sh -c 'env | cut -d= -f1 | grep -ci proxy'
+```
+
+Attendu : `0`. Toute autre valeur se traite **avant** le contact — on identifie le
+nom de la variable, jamais son contenu.
+
 Le script lui-même n'importe que la bibliothèque standard au chargement
 (`argparse`, `os`, `sys`, `time`, `dataclasses`, `urllib.parse`) ; les modules
 applicatifs sont importés au moment de l'exécution réelle. Il peut donc être
@@ -79,12 +96,22 @@ docker exec -i -e LEBONCOIN_FIRST_CONTACT_PROXY_URL="socks5h://<gateway>:1080" \
   radar_app python3 - < scripts/leboncoin_first_contact.py
 ```
 
-Exécution réelle — l'option `--execute-once` est explicite et sans ambiguïté :
+Exécution réelle — **deux** gardes sont exigées : l'option `--execute-once` **et**
+la variable de mandat, non vide :
 
 ```sh
-docker exec -i -e LEBONCOIN_FIRST_CONTACT_PROXY_URL="socks5h://<gateway>:1080" \
+docker exec -i \
+  -e LEBONCOIN_FIRST_CONTACT_PROXY_URL="socks5h://<gateway>:1080" \
+  -e LEBONCOIN_FIRST_CONTACT_MANDATE="<référence du mandat nominatif>" \
   radar_app python3 - --execute-once < scripts/leboncoin_first_contact.py
 ```
+
+Le proxy **ne se passe pas en argument** (`--proxy` est refusé) : une ligne de
+commande est visible dans la liste des processus. Il ne vient que de
+l'environnement.
+
+Sans `LEBONCOIN_FIRST_CONTACT_MANDATE`, le script rend un code distinct (**3**),
+n'émet aucune requête, et le dit sur la sortie d'erreur.
 
 Le schéma doit être **`socks5h://`** : `socks5://` ferait résoudre le nom par le
 client, donc depuis le conteneur, et la requête ne sortirait plus par le relais
@@ -96,15 +123,29 @@ de la même façon. Le script refuse tout autre schéma.
 | --- | --- | --- | --- |
 | R1 | `categorie=reponse`, `parsing=reussi`, `annonces>0` | Le chemin aboutit | **On s'arrête là.** Le contact est concluant ; rien de plus n'est tiré de la réponse |
 | R2 | `categorie=zero_annonce`, `parsing=reussi`, `annonces=0` | Page servie, liste vide | **On s'arrête et on rend compte.** Un zéro peut être réel ou une coquille de requête : on ne relance pas pour vérifier |
-| R3 | `code_http=403`, `categorie=blocage` | Refus explicite | **On s'arrête.** Règle ferme ci-dessous |
-| R4 | `challenge=true`, `categorie=challenge` | Captcha servi | **On s'arrête.** Règle ferme ci-dessous |
-| R5 | `categorie=echec_reseau` | Le relay n'a pas abouti | **On s'arrête.** On constate la jonction (P1) avant toute conclusion sur la place de marché |
+| R3 | `code_http=403` **ou** `429`, `categorie=blocage` | Refus explicite | **On s'arrête.** Règle ferme ci-dessous |
+| R4 | `code_http=200`, `challenge=true`, `categorie=challenge` | Captcha servi sous un statut 200 | **On s'arrête.** Règle ferme ci-dessous |
+| R5 | `categorie=echec_reseau` | Le relais n'a pas abouti | **On s'arrête.** On constate la jonction (P1) avant toute conclusion sur la place de marché |
 | R6 | `parsing=echoue` | Réponse servie, non lue | **On s'arrête.** Le parseur ne connaît pas cette page ; cela se corrige, mais pas ici |
+| R7 | `categorie=dependance_absente` | `curl_cffi` manque dans l'image | **On s'arrête.** Rien n'a quitté la machine : le problème est local, pas côté place de marché. Aucune conclusion n'est tirée sur la sortie résidentielle |
 
-### Règle ferme pour 403 et challenge
+**Pourquoi R4 et R3 sont distincts.** `fetch_search_page` lève
+`LeboncoinBlockError("HTTP <statut>")` dès que le statut vaut 403 ou 429 **ou**
+que le corps porte le marqueur de challenge. Un captcha servi avec un statut 200
+arrive donc sous la forme `LeboncoinBlockError("HTTP 200")`. Le script le range en
+`challenge`, jamais en `blocage` : ce sont deux constats différents, et les
+confondre fausserait la lecture du terrain.
 
-**En cas de 403 ou de challenge depuis la sortie résidentielle, on s'arrête et on
-rend compte.** Aucune modification d'empreinte, de cadence, de proxy ou de
+**Pourquoi R7 est distinct.** Une dépendance absente produit le message fixe
+`curl_cffi indisponible`. Le script le compare à l'identique, sans interpréter de
+message libre : un échec réseau n'est jamais déduit d'un texte. Une
+`LeboncoinBlockError` ou une `LeboncoinCollectionError` d'une autre forme reste
+classée en `echec_reseau` ou `blocage`.
+
+### Règle ferme pour 403, 429 et challenge
+
+**En cas de 403, 429 ou de challenge depuis la sortie résidentielle, on s'arrête
+et on rend compte.** Aucune modification d'empreinte, de cadence, de proxy ou de
 périmètre n'est décidée seule. Aucune seconde tentative, aucun changement de
 schéma, aucun contournement n'est tenté pour « voir si ça passe ».
 
@@ -139,6 +180,13 @@ escalade. C'est une contrainte de conception, pas une bonne intention.
 
 Le compte rendu vit hors du dépôt s'il contient l'une de ces valeurs. Le dépôt
 n'accueille que des compteurs et des catégories.
+
+## Interdiction faite à l'agent
+
+**Cette exécution réelle est interdite à l'agent sans mandat nominatif de
+l'utilisateur.** Aucun assistant ne l'émet de sa propre initiative, pas même avec
+un proxy fictif, un hôte inexistant ou « pour vérifier la forme de la commande » :
+la forme se vérifie par des tests unitaires à doubles, jamais par une invocation.
 
 ## Arrêts
 

@@ -23,12 +23,14 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 PROXY_ENV = "LEBONCOIN_FIRST_CONTACT_PROXY_URL"
+MANDATE_ENV = "LEBONCOIN_FIRST_CONTACT_MANDATE"
 EXPECTED_SCHEME = "socks5h"
-CHALLENGE_MARKER = "captcha-delivery"
+MISSING_DEPENDENCY_MESSAGE = "curl_cffi indisponible"
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_USAGE = 2
+EXIT_NO_MANDATE = 3
 
 
 class ProxyRefusalError(ValueError):
@@ -93,11 +95,24 @@ def code_http_depuis_erreur(exc: BaseException) -> int | None:
 
 
 def categorie_depuis_erreur(exc: BaseException) -> str:
-    """Classe l'échec sans reprendre un message qui pourrait contenir du contenu."""
+    """Classe l'échec sans reprendre un message qui pourrait contenir du contenu.
+
+    `fetch_search_page` lève `LeboncoinBlockError(f"HTTP {status}")` dès que le
+    statut est 403/429 **ou** que le corps porte le marqueur de challenge. Un
+    challenge servi avec un statut 200 arrive donc sous la forme
+    `LeboncoinBlockError("HTTP 200")` : c'est un challenge, pas un blocage.
+
+    Un `ImportError` sur `curl_cffi` produit le message fixe
+    `curl_cffi indisponible`. Il est comparé à l'identique : aucun message libre
+    n'est interprété, un échec réseau n'est donc pas déduit d'un texte.
+    """
     nom = type(exc).__name__
     if nom == "LeboncoinBlockError":
-        return "blocage"
+        code = code_http_depuis_erreur(exc)
+        return "challenge" if code == 200 else "blocage"
     if nom == "LeboncoinCollectionError":
+        if str(exc) == MISSING_DEPENDENCY_MESSAGE:
+            return "dependance_absente"
         return "echec_reseau"
     return "echec_inattendu"
 
@@ -113,15 +128,12 @@ def executer(proxy_url: str, *, fetch: object, parse: object) -> Rapport:
         rapport.categorie = categorie_depuis_erreur(exc)
         rapport.code_http = code_http_depuis_erreur(exc)
         rapport.detail = type(exc).__name__
+        rapport.challenge = rapport.categorie == "challenge"
         return rapport
     rapport.duree_s = round(time.monotonic() - debut, 2)
     rapport.categorie = "reponse"
     rapport.code_http = 200
-
-    head = html[:2000] if isinstance(html, str) else ""
-    rapport.challenge = CHALLENGE_MARKER in head
-    if rapport.challenge:
-        rapport.categorie = "challenge"
+    rapport.challenge = False
 
     try:
         annonces = parse(html)  # type: ignore[operator]
@@ -168,14 +180,9 @@ def main(argv: list[str] | None = None, *, fetch: object = None, parse: object =
         action="store_true",
         help="émet réellement l'unique requête ; sans cette option, rien ne sort.",
     )
-    parser.add_argument(
-        "--proxy",
-        default=None,
-        help=f"URL de proxy socks5h:// (défaut : ${PROXY_ENV}).",
-    )
     args = parser.parse_args(argv)
 
-    brut = args.proxy if args.proxy is not None else os.environ.get(PROXY_ENV)
+    brut = os.environ.get(PROXY_ENV)
     try:
         proxy_url = valider_proxy(brut)
     except ProxyRefusalError as exc:
@@ -187,8 +194,17 @@ def main(argv: list[str] | None = None, *, fetch: object = None, parse: object =
         print(f"proxy={decrire_proxy(proxy_url)}")
         print("cible=URL de recherche par défaut du collecteur")
         print("action=une requête, sans boucle, sans nouvelle tentative")
-        print("il faut --execute-once pour émettre la requête.")
+        print(f"il faut --execute-once et {MANDATE_ENV} pour émettre la requête.")
         return EXIT_OK
+
+    mandat = os.environ.get(MANDATE_ENV, "")
+    if not mandat.strip():
+        print(
+            f"refus: {MANDATE_ENV} absent ou vide. L'exécution réelle exige un "
+            "mandat nominatif ; aucune requête n'a été émise.",
+            file=sys.stderr,
+        )
+        return EXIT_NO_MANDATE
 
     if fetch is None or parse is None:
         from app.services.leboncoin_parsing import parse_search_page
@@ -201,7 +217,7 @@ def main(argv: list[str] | None = None, *, fetch: object = None, parse: object =
     for ligne in rendre(rapport, dry_run=False):
         print(ligne)
 
-    if rapport.categorie in {"blocage", "challenge"}:
+    if rapport.categorie in {"blocage", "challenge", "dependance_absente"}:
         return EXIT_REFUSED
     return EXIT_OK
 
