@@ -736,7 +736,7 @@ async def _price_screen_text(kind: str) -> tuple[str, AsyncMock]:
 
 
 @pytest.mark.asyncio
-async def test_the_price_screen_of_a_book_is_the_creation_card_without_the_price():
+async def test_a_book_without_price_opens_the_creation_recap():
     """L'ecran de prix lit la carte : memes lignes, memes libelles, un seul manque.
 
     Il ecrivait `<b>Auteur :</b>`, `<b>ISBN :</b>` et les criteres a la main, avec ses
@@ -754,9 +754,8 @@ async def test_the_price_screen_of_a_book_is_the_creation_card_without_the_price
     assert "<b>Éditeur :</b> Çà et là" in lines
     assert "<b>Mots-clés inclus :</b> couleur des choses" in lines
     assert "<b>Mots-clés exclus :</b> roman, poche, anglais, english, dvd" in lines
-    assert lines[-1] == (
-        "💶 <i>Indique ton prix maximum pour cette alerte (en €) (ou /cancel) :</i>"
-    )
+    assert "<b>Prix maximum :</b> Non renseigné" in lines
+    assert lines[-1] == "<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"
     # Hors serie et ouvrage identifie : la seule indication en italique est la consigne.
     assert "série" not in rendered.lower()
     assert rendered.count("<i>") == 1

@@ -24,7 +24,10 @@ from app.bot.handlers.alerts_helpers import (
     build_creation_recap,
     realign_draft_to_isbn,
 )
-from app.bot.keyboards.alerts import get_conditions_toggle_keyboard
+from app.bot.keyboards.alerts import (
+    get_category_selection_keyboard,
+    get_conditions_toggle_keyboard,
+)
 from app.bot.labels import (
     BTN_BACK_TO_MENU,
     BTN_BACK_TO_RECAP,
@@ -301,6 +304,7 @@ async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext)
     # Libellés nus : la valeur courante s'affiche après la saisie.
     buttons = [
         [InlineKeyboardButton(text="Nom / Titre", callback_data="al_create_edit:name")],
+        [InlineKeyboardButton(text="Catégorie", callback_data="al_create_edit:category")],
     ]
 
     if category_slug == CategorySlug.BD_COMICS.value or isbn:
@@ -361,6 +365,28 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
         return
     if field == "menu":
         await edit_alert_creation_prompt(callback, state)
+        return
+    if field == "category":
+        await callback.answer()
+        async with draft_guard(state):
+            data = await state.get_data()
+            if not data.get("category_slug"):
+                await _end_draft_without_recap(callback)
+                return
+            await state.update_data(
+                editing_category=True, inline_query=data["name"],
+                draft_revision=int(data.get("draft_revision") or 0) + 1,
+                search_token=uuid.uuid4().int,
+            )
+            await state.set_state(AlertCreationState.waiting_for_category)
+        keyboard = bind_creation_keyboard(
+            get_category_selection_keyboard(), data.get("creation_token"),
+        )
+        if callback.message and hasattr(callback.message, "edit_text"):
+            await callback.message.edit_text(
+                "✏️ <b>Catégorie</b>\n\n<i>Choisis la catégorie de ce produit.</i>",
+                reply_markup=keyboard,
+            )
         return
     if field == "conditions":
         await callback.answer()
