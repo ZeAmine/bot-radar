@@ -79,10 +79,16 @@ du tunnel reste hors de ce répertoire, avec les droits de `ssh`.
 **Source de vérité unique** : cette section. `docs/operations/deployment.md` y
 renvoie et n'en tient pas de copie.
 
-`cron` n'hérite d'aucune variable d'environnement : `$RELAY_DIR` **n'est pas
-développé** par `cron`, il doit être écrit en clair dans chaque ligne. Les quatre
-variables exigées sont donc définies en tête de crontab, avec des valeurs à
-remplacer, et reportées littéralement dans les lignes.
+Deux mécanismes distincts, souvent confondus :
+
+- les lignes **`nom=valeur`** sont lues par `cron` lui-même et deviennent
+  l'environnement de la commande ; **cron ne développe pas de variable dans une
+  valeur**, `RELAY_DIR=$HOME/x` resterait littéral ;
+- le **reste de la ligne** est exécuté par le shell de `SHELL` (ici `/bin/sh`),
+  qui, lui, **développe `$RELAY_DIR`** dans la commande.
+
+C'est pourquoi les variables sont définies en tête, puis utilisées sous forme
+`$RELAY_DIR` dans les commandes : c'est le shell qui les développe, pas cron.
 
 ```sh
 SHELL=/bin/sh
@@ -94,23 +100,25 @@ TUNNEL_LISTEN_ADDRESS=<ADRESSE_GATEWAY>
 RELAY_PORT=8080
 TUNNEL_PORT=1080
 PROBE_HOST=127.0.0.1
-HOTE_VPS=
-COMPTE_TUNNEL=
-CLE_TUNNEL=
-UTILISATEUR=
+
+# Valeurs à ne jamais écrire dans le dépôt, reportées ici après installation :
+#   UTILISATEUR           compte du Pi qui exécute le relais
+#   CLE_TUNNEL            nom de la clé dédiée au tunnel, sans son préfixe de chemin
+#   COMPTE_TUNNEL         compte de tunnel sur le VPS
+#   HOTE_VPS              hôte du VPS
+#   ADRESSE_GATEWAY       gateway du réseau Docker applicatif
 ```
 
-Les quatre dernières lignes sont des **espaces réservés** : `cron` ne les lit
-pas, elles rappellent qu'aucune valeur réelle ne doit être écrite dans le dépôt.
-Renseigner les variables avant d'installer, puis reporter leur valeur dans les
-lignes ci-dessous.
+Chaque ligne `nom=valeur` est lue par cron : **aucune ne doit rester vide ni
+commentée en fin de ligne**, un commentaire y serait pris pour une partie de la
+valeur.
 
 ```sh
-@reboot sleep 20; /usr/bin/flock -n /home/<UTILISATEUR>/bot-radar-relay/locks/relay.lock /home/<UTILISATEUR>/bot-radar-relay/run_relay.sh
-*/5 * * * * /usr/bin/flock -n /home/<UTILISATEUR>/bot-radar-relay/locks/relay.lock /home/<UTILISATEUR>/bot-radar-relay/run_relay.sh
-@reboot sleep 25; /usr/bin/flock -n /home/<UTILISATEUR>/bot-radar-relay/locks/tunnel.lock /home/<UTILISATEUR>/bot-radar-relay/run_tunnel.sh
-*/5 * * * * /usr/bin/flock -n /home/<UTILISATEUR>/bot-radar-relay/locks/tunnel.lock /home/<UTILISATEUR>/bot-radar-relay/run_tunnel.sh
-*/5 * * * * /bin/sh /home/<UTILISATEUR>/bot-radar-relay/relay_probe.sh
+@reboot sleep 20; /usr/bin/flock -n $RELAY_DIR/locks/relay.lock $RELAY_DIR/run_relay.sh
+*/5 * * * * /usr/bin/flock -n $RELAY_DIR/locks/relay.lock $RELAY_DIR/run_relay.sh
+@reboot sleep 25; /usr/bin/flock -n $RELAY_DIR/locks/tunnel.lock $RELAY_DIR/run_tunnel.sh
+*/5 * * * * /usr/bin/flock -n $RELAY_DIR/locks/tunnel.lock $RELAY_DIR/run_tunnel.sh
+*/5 * * * * /bin/sh $RELAY_DIR/relay_probe.sh
 ```
 
 Trois points que ces lignes portent :
@@ -118,12 +126,11 @@ Trois points que ces lignes portent :
 - **Les deux `@reboot` sont décalés** (20 s pour le relais, 25 s pour le tunnel) :
   le tunnel ne doit pas partir avant que le relais n'écoute.
 - **Aucune redirection de journal dans les lignes `cron`.** Les scripts
-  redirigent déjà vers `$RELAY_DIR/logs/` ; une seconde redirection dans `cron`
-  créerait deux écritures concurrentes sur le même fichier — le journal
-  deviendrait illisible et sa troncature par la sonde pourrait couper une ligne.
-- **La sonde a sa propre ligne**, et `RELAY_DIR` lui est fourni par
-  l'environnement hérité des variables de tête. Elle ne prend aucun verrou : elle
-  ne modifie pas le relais, elle l'arrête pour que le superviseur le relance.
+  redirigent déjà vers `$RELAY_DIR/logs/` ; une seconde redirection créerait deux
+  écritures concurrentes sur le même fichier, rendrait le journal illisible et
+  pourrait couper en deux une ligne que la sonde tronque.
+- **La sonde a sa propre ligne** et ne prend aucun verrou : elle ne modifie pas le
+  relais, elle l'arrête pour que le superviseur le relance.
 
 ## Vérification après installation
 

@@ -8,6 +8,11 @@ saine sur un relevé qui n'a pas eu lieu.
 
 from __future__ import annotations
 
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from scripts.check_junction_topology import (
@@ -19,6 +24,7 @@ from scripts.check_junction_topology import (
     PrivilegeError,
     ProbeError,
     check,
+    default_runner,
     firewall_rule_present,
     main,
     read_key_permitlisten,
@@ -371,13 +377,59 @@ def test_les_quatre_codes_de_sortie_sont_distincts():
 
 
 def test_le_compte_peut_venir_de_lenvironnement(monkeypatch):
-    """`TUNNEL_USER` évite de répéter le compte sur la ligne de commande."""
-    monkeypatch.setenv("TUNNEL_USER", "compte-env")
-    monkeypatch.setattr(
-        "scripts.check_junction_topology.default_runner", _run_complet()
-    )
+    """Sans argument, le compte est celui de `TUNNEL_USER`, et lui seul.
+
+    Le double répond pour un compte différent du compte de test : si
+    l'environnement n'était pas lu, `getent` ne serait jamais appelé avec le bon
+    nom et le contrôle échouerait sur un compte introuvable.
+    """
+    monkeypatch.setenv("TUNNEL_USER", COMPTE)
+    vus: list[str] = []
+
+    def run(script: str) -> tuple[int, str, str]:
+        vus.append(script)
+        if script.startswith("docker network inspect"):
+            return 0, f"{SUBNET} {GATEWAY}\n", ""
+        if script.startswith("sshd -T"):
+            return 0, f"permitlisten {GATEWAY}:1080\n", ""
+        if script.startswith("getent passwd"):
+            return 0, "/home/compte-tunnel\n", ""
+        if script.startswith("cat "):
+            return 0, f'permitlisten="{GATEWAY}:1080" ssh-ed25519 AAAA\n', ""
+        return 0, "", ""
+
+    monkeypatch.setattr("scripts.check_junction_topology.default_runner", run)
+
+    code = main([])
+
+    assert code == EXIT_OK
+    assert any(f"getent passwd {COMPTE}" in s for s in vus)
+    assert any(f"user={COMPTE}," in s for s in vus)
+    assert not any("user=," in s for s in vus)
+
+
+def test_l_argument_prime_sur_lenvironnement(monkeypatch):
+    """L'argument explicite gagne : l'environnement ne peut pas le contredire."""
+    monkeypatch.setenv("TUNNEL_USER", "compte-de-l-environnement")
+    vus: list[str] = []
+
+    def run(script: str) -> tuple[int, str, str]:
+        vus.append(script)
+        if script.startswith("docker network inspect"):
+            return 0, f"{SUBNET} {GATEWAY}\n", ""
+        if script.startswith("sshd -T"):
+            return 0, f"permitlisten {GATEWAY}:1080\n", ""
+        if script.startswith("getent passwd"):
+            return 0, "/home/compte-tunnel\n", ""
+        if script.startswith("cat "):
+            return 0, f'permitlisten="{GATEWAY}:1080" ssh-ed25519 AAAA\n', ""
+        return 0, "", ""
+
+    monkeypatch.setattr("scripts.check_junction_topology.default_runner", run)
 
     assert main(["--tunnel-user", COMPTE]) == EXIT_OK
+    assert any(f"getent passwd {COMPTE}" in s for s in vus)
+    assert not any("compte-de-l-environnement" in s for s in vus)
 
 
 def test_sans_compte_le_controle_refuse_de_conclure(monkeypatch, capsys):
@@ -408,3 +460,104 @@ def test_un_compte_vide_est_traite_comme_absent(monkeypatch):
 
 def test_les_cinq_codes_de_sortie_sont_distincts():
     assert len({EXIT_OK, EXIT_MISMATCH, EXIT_UNKNOWN, EXIT_PRIVILEGE, EXIT_USAGE}) == 5
+
+
+# --- Exécution réelle par bash, faux binaires dans un PATH temporaire ---------
+#
+# Les tests précédents doublent `run` : ils ne voient donc pas le code de sortie
+# des pipelines. Ceux-ci passent par le vrai `default_runner`, donc par bash, et
+# n'utilisent que de faux binaires locaux : ni réseau, ni système réel.
+
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check_junction_topology.py"
+
+
+def _faux_binaire(dossier: Path, nom: str, code: int, sortie: str = "", erreur: str = "") -> None:
+    chemin = dossier / nom
+    corps = "#!/bin/sh\n"
+    if sortie:
+        corps += f"printf '%s\\n' {_shq(sortie)}\n"
+    if erreur:
+        corps += f"printf '%s\\n' {_shq(erreur)} >&2\n"
+    corps += f"exit {code}\n"
+    chemin.write_text(corps)
+    chemin.chmod(chemin.stat().st_mode | stat.S_IEXEC)
+
+
+def _shq(texte: str) -> str:
+    return "'" + texte.replace("'", "'\\''") + "'"
+
+
+def _env_avec(dossier: Path) -> dict[str, str]:
+    return {
+        "PATH": f"{dossier}:/usr/bin:/bin",
+        "TUNNEL_USER": "compte-test",
+    }
+
+
+def _lancer(dossier: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "--tunnel-user", "compte-test"],
+        capture_output=True,
+        text=True,
+        env=_env_avec(dossier),
+        check=False,
+    )
+
+
+def _faux_sain(dossier: Path) -> None:
+    _faux_binaire(dossier, "docker", 0, f"{SUBNET} {GATEWAY}")
+    _faux_binaire(dossier, "sshd", 0, f"permitlisten {GATEWAY}:1080")
+    _faux_binaire(dossier, "getent", 0, "compte-test:x:1000:1000::/home/compte-test:/bin/sh")
+    _faux_binaire(dossier, "iptables", 0)
+    _faux_binaire(dossier, "cat", 0, f'permitlisten="{GATEWAY}:1080" ssh-ed25519 AAAA')
+
+
+def test_le_runner_active_pipefail(tmp_path: Path):
+    """Un échec en tête de pipeline doit remonter, `head` réussissant."""
+    dossier = tmp_path
+    _faux_binaire(dossier, "faux", 3, "", "Permission denied")
+
+    code, _, err = default_runner(f"PATH={dossier}:/usr/bin:/bin faux | head -1")
+
+    assert code == 3
+    assert "Permission denied" in err
+
+
+def test_bash_reel_sshd_refuse_donne_le_code_des_droits(tmp_path: Path):
+    """`sshd -T` refusé : le pipeline ne doit pas masquer le code 255."""
+    _faux_sain(tmp_path)
+    _faux_binaire(tmp_path, "sshd", 255, "", "Permission denied")
+    (tmp_path / "authorized_keys").write_text(f'permitlisten="{GATEWAY}:1080" ssh-ed25519 AAAA\n')
+
+    resultat = _lancer(tmp_path)
+
+    assert resultat.returncode == EXIT_PRIVILEGE
+
+
+def test_bash_reel_getent_echoue_donne_le_code_du_releve(tmp_path: Path):
+    """Compte introuvable : code 2, jamais lu comme un refus de droits."""
+    _faux_sain(tmp_path)
+    _faux_binaire(tmp_path, "getent", 2, "", "getent: no such user")
+
+    resultat = _lancer(tmp_path)
+
+    assert resultat.returncode == EXIT_UNKNOWN
+
+
+def test_bash_reel_iptables_code_inconnu_avec_message_de_droits(tmp_path: Path):
+    """`iptables -C` en code 4 + message de droits : code 3, pas « absente »."""
+    _faux_sain(tmp_path)
+    _faux_binaire(tmp_path, "iptables", 4, "", "iptables: Permission denied (you must be root)")
+
+    resultat = _lancer(tmp_path)
+
+    assert resultat.returncode == EXIT_PRIVILEGE
+
+
+def test_bash_reel_jonction_conforme_donne_zero(tmp_path: Path):
+    """Contrôle de sanité du double complet : sans lui, les autres ne prouvent rien."""
+    _faux_sain(tmp_path)
+
+    resultat = _lancer(tmp_path)
+
+    assert resultat.returncode == EXIT_OK, resultat.stdout + resultat.stderr

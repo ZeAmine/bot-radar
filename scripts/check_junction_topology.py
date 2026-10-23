@@ -61,11 +61,21 @@ class PrivilegeError(ProbeError):
 
 
 def default_runner(script: str) -> tuple[int, str, str]:
-    """Exécute un script local ; remplacé par un double dans les tests."""
+    """Exécute un script local ; remplacé par un double dans les tests.
+
+    `pipefail` est indispensable : les relevés sont des pipelines
+    (`sshd -T … | grep | head`), dont le code de sortie est celui de la
+    **dernière** commande. Sans lui, un `sshd -T` refusé sortirait en 0 parce que
+    `head` a réussi, et un refus de droits serait lu comme un `permitlisten`
+    absent — deux conclusions opposées.
+    """
     import subprocess
 
     resultat = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, check=False
+        ["bash", "-o", "pipefail", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return resultat.returncode, resultat.stdout, resultat.stderr
 

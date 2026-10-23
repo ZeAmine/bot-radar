@@ -19,6 +19,20 @@ par un `command:` dans `compose.yml`.
 du conteneur. Or l'arrêt sur blocage durable repose sur une clé sans expiration :
 un redémarrage **lèverait de fait** ce garde-fou, sans décision humaine.
 
+## Interdiction jusqu'à la fin de la fenêtre
+
+**Ne pas exécuter `docker compose up -d` sans `--no-deps`** sur ce projet tant que
+la fenêtre n'a pas eu lieu.
+
+Raison : le `compose.yml` de `main` contient désormais un `command:` AOF que le
+conteneur **en service** n'a pas encore. Un `up -d` complet réconcilierait donc
+`radar_redis` avec cette définition — c'est l'objet de la fenêtre — **et** les
+autres services avec un fichier que l'on n'a pas encore validé en production.
+On perdrait la maîtrise de ce qui est recréé, au moment précis où l'on cherche à
+ne recréer qu'un service.
+
+Toute recréation passe par `--no-deps redis`, dans l'ordre de cette procédure.
+
 ## Ce que cette fenêtre ne fait pas
 
 - Elle ne touche ni `postgres`, ni `radar_app`, ni le code applicatif.
@@ -152,6 +166,16 @@ Critère : `DBSIZE` **égal** au nombre de clés relevé dans l'étape 1, et
 `aof_enabled:1`. Sinon la sauvegarde n'est pas utilisable : **ne pas ouvrir la
 fenêtre**.
 
+La comparaison n'est fiable que si **les deux mesures sont prises au même état**.
+Le collecteur et l'application écrivent des clés et des expirations : entre le
+relevé de l'étape 1 et l'archive, le compte peut légitimement varier. Donc :
+
+- relever `DBSIZE` **collecteur arrêté** et **juste après** le `BGSAVE`, pas avant ;
+- si un écart subsiste, il doit être **expliqué et borné** : clés expirées
+  pendant l'opération (`DBSIZE` plus petit), ou clés du heartbeat de
+  l'application (`DBSIZE` plus grand). Un écart que l'on ne sait pas expliquer
+  n'est pas un écart acceptable.
+
 **Résultat de ce test, exécuté sur Docker local** : Redis jetable `redis:7-alpine`
 sans réseau, 2 clés écrites, `BGSAVE`, archive de 480 octets contenant
 `appendonlydir/` et `dump.rdb` ; restauration dans un volume vierge : `DBSIZE` = 2,
@@ -212,7 +236,10 @@ docker logs --since 5m radar_app 2>&1 | grep -ciE "connectionerror|redis.*(refus
 1. **Santé** : `healthy`. `starting` ou `unhealthy` interdit la reprise.
 2. **Connexions Redis** : un `PING` répond `True` depuis le conteneur applicatif.
    C'est le constat que le pool a bien repris, et non seulement que le serveur
-   écoute.
+   écoute. `REDIS_URL` vient du `.env` par `env_file` (`redis://redis:6379/0`),
+   pas de `compose.yml`, et le client `redis` **8.1.0** est verrouillé dans
+   `requirements.lock` — le client synchrone `Redis.from_url` est donc disponible
+   dans l'image `python:3.12-slim` du service.
 3. **Un cycle de poller à vide** : redémarrer le collecteur, laisser passer un
    cycle sans annonce à collecter, et vérifier qu'il se termine sans erreur de
    connexion dans les journaux. Un cycle réussi prouve la reprise ; un échec la
@@ -269,14 +296,19 @@ Le script est en **lecture seule**. Il compare la gateway du réseau, la règle
 `iptables` et `sshd -T`** : sans eux il rend « non vérifié » avec un code dédié,
 jamais « conforme ».
 
-Quatre codes de sortie, à ne pas confondre :
+Cinq codes de sortie, à ne pas confondre :
 
 | Code | Sens | Conduite |
 | --- | --- | --- |
 | 0 | Conforme | Rien à faire |
 | 1 | Écart constaté | Corriger, voir ci-dessous |
-| 2 | Relevé impossible | Le contrôle n'a pas conclu ; ne pas conclure à sa place |
+| 2 | Relevé impossible (réseau, `sshd`, `authorized_keys` absent ou vide) | Le contrôle n'a pas conclu ; ne pas conclure à sa place |
 | 3 | Droits insuffisants | Relancer avec les droits requis |
+| 4 | **Compte de tunnel non fourni** | Relancer avec `--tunnel-user` ou `TUNNEL_USER` ; ce code n'est jamais « conforme » |
+
+Le code 4 existe pour une raison précise : sans compte, la moitié du contrôle
+(les deux `permitlisten`) ne s'exécute pas. Rendre 0 ferait croire à une jonction
+vérifiée alors qu'elle ne l'est pas.
 
 ### La corriger
 
