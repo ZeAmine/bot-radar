@@ -151,7 +151,7 @@ def rsync_argv(ctx: Context) -> list[str]:
         "-avz",
         *[f"--exclude={name}" for name in RSYNC_EXCLUDES],
         "-e",
-        f"ssh -i {ctx.key} -o StrictHostKeyChecking=no",
+        f"ssh -i {ctx.key} -o StrictHostKeyChecking=yes",
         "./",
         f"{ctx.host}:{ctx.remote_dir}/",
     ]

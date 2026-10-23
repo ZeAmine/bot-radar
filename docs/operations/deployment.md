@@ -38,6 +38,13 @@ stricts. Aucun scheduler ou poller dans le conteneur de migration. Arrêt au pre
 `make preflight` et `make verify-deploy` restent disponibles pour les étapes distinctes.
 Ne pas recopier une autre séquence de commandes à côté de celle du script.
 
+Les deux transports du déploiement — `rsync` de [`deploy.py`](../../scripts/deploy.py)
+et la commande distante de [`preflight_deploy.py`](../../scripts/preflight_deploy.py) —
+imposent `StrictHostKeyChecking=yes`. Une clé d'hôte non vérifiée laisserait un
+intermédiaire se faire passer pour le VPS et recevoir le code synchronisé ; le
+premier contact avec un hôte inconnu se fait donc une fois, explicitement, et
+`known_hosts` porte ensuite la référence.
+
 Compose utilise le code embarqué dans l’image, sans montage `app/` ou `scripts/`.
 Les trois paramètres PostgreSQL sont obligatoires. Le pré-vol vérifie le modèle
 Compose cible avec la configuration distante avant arrêt ; après démarrage, les

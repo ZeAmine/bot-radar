@@ -97,7 +97,7 @@ class Remote:
             "-i",
             self.key,
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=yes",
             "-o",
             "ConnectTimeout=15",
             self.host,
