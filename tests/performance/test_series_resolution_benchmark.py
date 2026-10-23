@@ -350,7 +350,7 @@ async def test_benchmark_the_alert_is_not_delayed_by_a_slow_series_lookup(
     assert priced == []
     async with session_maker() as reader:
         linked = list((await reader.scalars(select(AlertBook))).all())
-        assert len(linked) == SERIES_NOTICES
+        assert len(linked) == 0
 
 
 def _mark_sent(events: list[str]):

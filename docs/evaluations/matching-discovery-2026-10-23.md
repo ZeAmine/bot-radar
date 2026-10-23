@@ -1,7 +1,7 @@
 # Matching et découverte — 23 octobre 2026
 
-Statut : partiel, validation finale et livraison conditionnées aux contrôles et à
-l’arbitrage des consommateurs historiques. Aucune écriture métier, règle utilisateur,
+Statut : code préparé pour revue ; contrôles finaux consignés dans la PR.
+L’inventaire de dissociation reste non exécutable avec le schéma actuel. Aucune écriture métier, règle utilisateur,
 formule, configuration, migration ou dépendance modifiée. Aucun merge ni déploiement.
 
 ## Points de décision
@@ -76,21 +76,44 @@ paramétrés couvrent casse, accents, ponctuation et alertes sans livre. Hypothe
 n’est pas installé ; aucune dépendance n’a été ajoutée. Les contre-exemples de revue
 protègent aussi les listes romaines, la notation `1/5` et les mots suivant un tome.
 
-Trois scénarios historiques exigent une association sans auteur attendu : deux E2E
-du backfill et le benchmark de recherche lente. Leur adaptation nécessiterait le
-script sensible `scripts/backfill_series_tomes.py`, explicitement protégé par
-AGENTS.md, et un arbitrage sur la portée de leurs tests. Ils restent inchangés,
-sans suppression, mock compensatoire ni baisse de seuil. Proposition bornée dans
-le dossier privé `chantier-1/arbitrage-backfill.md`. Ils empêchent d’attester une
-branche verte. Les autres fixtures positives ajoutent seulement leur preuve de
-langue ou d’auteur explicite et conservent leurs assertions.
+Les deux scénarios E2E du backfill ont été adaptés sur autorisation explicite :
+`--author UUID=AUTEUR` fournit transitoirement l’auteur attendu par alerte, transmis
+aux chemins réels de découverte et liaison. Chaque scénario distingue preuve
+explicite et abstention sans preuve. Les 10 assertions originales de première passe
+et les 3 de seconde passe, dont l’idempotence, sont conservées à l’identique.
+Les langues sont fournies par les réponses HTTP factices BNF et édition OpenLibrary.
 
-La revue distincte est une revue d’agent, sans validation humaine. Les résultats
-finaux, SHA, CI et limites de livraison sont consignés dans la PR et le suivi unique.
-La préparation du chantier prix demeure différée jusqu’à l’étape 7 ; prix actuels
-non certifiés, CAL suspendu et acquis antérieurs conservés.
+Le benchmark d’ingestion lente ne contient ni ISBN d’alerte, ni ISBN vendeur,
+ni livre lié, ni auteur attendu ; les inclusions ne désignent que « the grocery ».
+Son annonce désigne une intégrale sans identifier ses éditions. Les six notices
+numérotées, leurs auteurs et leur langue sont une réponse fournisseur simulée,
+pas une preuve de l’intention ni de la composition exacte demandée. Leurs codes
+simulés ne sont reliés à aucun ISBN attendu. Les six associations ne sont donc
+pas démontrées dans ce contexte précis.
 
-### Résultats locaux du diff final
+Sur accord explicite, **seule l’assertion finale de ce scénario passe de six à zéro
+liaison**. Les six autres assertions, l’envoi Telegram, l’ordre, les budgets et tous
+les autres benchmarks restent identiques. L’abstention ne bloque pas la notification.
+Le benchmark positif distinct passe un auteur explicite au vrai chemin de liaison
+et conserve six liaisons, six cotations, ses nettoyages entre vols et son budget.
+
+Un test ciblé additionnel exerce le vrai résolveur avec un ISBN français concordant
+en cache et aucun auteur : deux résolutions successives rendent la même édition,
+un seul lien est relu dans une nouvelle session et aucune découverte n’est autorisée.
+Il est rejoué sur SQLite et PostgreSQL. L’absence d’auteur n’implique donc pas une
+abstention lorsqu’une autre preuve suffisante, ici l’ISBN attendu exact, existe.
+
+La transmission proposée depuis la préparation a été abandonnée sans modifier
+l’application : toute préparation bloque l’envoi et elle est effacée à l’activation.
+La garde, son effacement et le chemin avant Telegram sont inchangés. Cette proposition
+n’a introduit aucune modification applicative à retirer.
+
+La revue distincte est une revue d’agent, sans validation humaine. Le plan des prix
+est préparé hors réseau ; prix actuels non certifiés, 88 livres différés et CAL
+suspendu. Les acquis précédents sont conservés. L’inventaire reste bloqué par le
+schéma, sans écriture métier, migration, merge ou déploiement.
+
+### Preuve historique du premier commit `8318011`
 
 - `ruff check .` : vert.
 - `python -B scripts/verify_consolidation.py typecheck` : vert, 169 fichiers applicatifs puis 8 fichiers d’outillage.
@@ -99,6 +122,22 @@ non certifiés, CAL suspendu et acquis antérieurs conservés.
 - PostgreSQL jetable : 150 succès sur les sept fichiers concernés (ISBN vendeur, sérialisation ingestion, préparation, totaux de série, retrait ISBN, couverture planifiée, latence). Migrations existantes et isolation vérifiées ; ressource jetable supprimée par le lanceur.
 - Liens locaux modifiés, diff et index : contrôlés ; revue distincte statique sans défaut démontré restant hors arbitrage legacy.
 
-Ces résultats ne constituent pas une validation finale verte : les trois échecs
-empêchent de déclarer le chantier terminé ou de demander le merge. Les résultats
-PostgreSQL et CI exacts du commit livré figurent dans la PR et le suivi privé.
+Ces résultats historiques décrivent le premier commit avant les accords ciblés.
+Les résultats de la tête qui inclut ces accords figurent dans la PR et le suivi
+unique, avec le SHA et la sélection exacte des contrôles. Ils ne certifient aucune
+production ; les exceptions de test autorisées restent tracées ci-dessus.
+
+### Validation finale après les accords ciblés
+
+- `ruff check .` et mypy isolé : verts (169 fichiers applicatifs et 8 d’outillage).
+- `make test-isolated PYTHON=<venv>/bin/python` : **3089 succès, 124 ignorés**, quatre avertissements ; aucun test nouvellement ignoré.
+- PostgreSQL jetable : **218 succès**, incluant le nouvel ISBN sans auteur, sérialisation, versions/sessions, idempotence, reprise des notifications et du poller, réservation concurrente, persistance de livraison et latence. Les migrations existantes passent et le lanceur supprime sa ressource.
+- Scénarios négatif, positif, ISBN et backfill ciblés : 31 succès, quatre cas nécessitant PostgreSQL ignorés sous SQLite puis couverts par la passe PostgreSQL.
+- Rejeu des 451 cas et audit des règles : métriques inchangées, aucune règle utilisateur modifiée.
+- Revue distincte du dernier diff : aucun défaut trouvé dans le périmètre autorisé ; revue statique d’agent, sans validation humaine.
+
+La seule exception d’assertion autorisée est celle décrite ci-dessus. Aucun changement
+applicatif n’est introduit par la proposition abandonnée depuis préparation.
+Les résultats CI du commit exact sont suivis dans la PR ; un résultat local ne
+certifie pas la production. L’inventaire non exécutable reste le seul blocage de
+préparation des écritures métier, qui ne sont pas appliquées.

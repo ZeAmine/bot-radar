@@ -324,3 +324,37 @@ async def test_recalculation_reads_links_after_waiting_for_mutation(journey, mon
     assert len(held_books) == len(held_caches) == 2
     expected = {"add": 6000, "remove": None, "replace": 5000, "price": 3500}
     assert await total(journey) == expected[change]
+
+
+async def test_concordant_isbn_links_the_cached_edition_without_an_author(journey, monkeypatch):
+    target = journey.books[2]
+    target.author = None
+    target.language = "fr"
+    journey.alert.name = target.title
+    journey.alert.isbn = target.isbn13
+    await BookRepository(journey.db.session).clear_alert_books(journey.alert.id)
+    await journey.db.session.commit()
+
+    def reject_discovery(coro, **_kwargs):
+        coro.close()
+        pytest.fail("L’ISBN concordant en cache ne doit pas lancer de découverte")
+
+    monkeypatch.setattr(catalog_linking, "safe_create_task", reject_discovery)
+    async with journey.db.maker() as session:
+        for _ in range(2):
+            book = await catalog_linking.resolve_bd_catalog_book(
+                session, alert_id=journey.alert.id, alert_name=target.title,
+                alert_isbn=target.isbn13, listing_title=target.title,
+                listing_description=None, author=None,
+            )
+            assert book is not None
+            assert book.id == target.id
+            assert book.isbn13 == target.isbn13
+            assert book.author is None
+            await session.commit()
+    async with journey.db.maker() as reader:
+        links = list((await reader.scalars(
+            select(AlertBook).where(AlertBook.alert_id == journey.alert.id)
+        )).all())
+        assert [link.book_id for link in links] == [target.id]
+        assert len(list((await reader.scalars(select(Book))).all())) == 3
