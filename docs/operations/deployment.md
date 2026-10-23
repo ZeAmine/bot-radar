@@ -118,13 +118,28 @@ DataDome y répond `403` même avec l'empreinte TLS de Chrome. Sur le VPS, rense
 LEBONCOIN_POLLER_ENABLED=true
 LEBONCOIN_POLL_INTERVAL_SECONDS=600
 LEBONCOIN_PROXY_ENABLED=true
-LEBONCOIN_PROXY_URL=socks5://127.0.0.1:1080
+LEBONCOIN_PROXY_URL=socks5h://<gateway-du-reseau-applicatif>:1080
 LEBONCOIN_CATCHUP_MAX_PAGES=2
 ```
 
 Le port `1080` est un tunnel SSH inverse ouvert par le Raspberry Pi du domicile,
 derrière un SOCKS5 en espace utilisateur. Ni root, ni port entrant, ni fournisseur
 tiers ne sont nécessaires.
+
+Deux détails de cette URL décident du succès, et aucun des deux ne se lit dans le
+code applicatif :
+
+- **`socks5h` et non `socks5`.** Avec `socks5://`, libcurl résout le nom
+  lui-même et transmet une **adresse** dans la demande CONNECT ; avec
+  `socks5h://`, il transmet le **nom** et laisse le relais résoudre
+  ([documentation libcurl](https://curl.se/libcurl/c/CURLOPT_PROXY.html)). Le
+  relais refuse toute adresse littérale : la sortie résidentielle serait de
+  toute façon court-circuitée, puisque la résolution aurait lieu sur le VPS.
+  `socks5://` échoue donc systématiquement, même avec un tunnel sain.
+- **L'adresse de la gateway du réseau applicatif, pas `127.0.0.1`.** Dans le
+  conteneur, `127.0.0.1` est son propre loopback. La gateway se lit par
+  `docker network inspect bot-radar_default -f '{{(index .IPAM.Config 0).Gateway}}'`
+  et n'est **pas** versionnée : elle est propre à l'installation.
 
 ### Pi, sans sudo
 
@@ -137,49 +152,127 @@ ssh-keyscan -p 22 "$VPS_HOST" >> ~/.ssh/known_hosts
 crontab -e
 ```
 
-Deux boucles supervisées, avec chemins absolus, pour survivre au redémarrage et aux
-crashs. `cron` n'hérite pas de l'environnement du shell : les valeurs de
-`$VPS_USER` et `$VPS_HOST` y sont écrites **au moment de l'installation**, depuis
-l'environnement de l'opérateur, et ne sont jamais stockées dans ce dépôt :
+Supervision par `flock`, avec chemins absolus, pour survivre au redémarrage et
+aux crashs **sans jamais créer de doublon**. `cron` n'hérite pas de l'environnement
+du shell : `PATH` y est réduit, et les valeurs de `$VPS_USER` et `$VPS_HOST` y sont
+écrites **au moment de l'installation**, depuis l'environnement de l'opérateur.
+Elles ne sont jamais stockées dans ce dépôt.
+
+Trois scripts sous `~/bot-radar-relay/` : `run_relay.sh`, `run_tunnel.sh` et
+`relay_probe.sh`. Chacun prend son verrou puis `exec` le processus qu'il protège :
+le verrou tient aussi longtemps que le processus, et une invocation concurrente
+sort en code `1` sans rien démarrer.
 
 ```sh
-: "${VPS_USER:?définir VPS_USER}" "${VPS_HOST:?définir VPS_HOST}"
-( crontab -l 2>/dev/null; cat <<CRON
-@reboot sleep 20; mkdir -p \$HOME/bot-radar-relay/logs; while true; do /usr/bin/python3 \$HOME/bot-radar-relay/leboncoin_residential_relay.py --port 8080 >> \$HOME/bot-radar-relay/logs/relay.log 2>&1; sleep 5; done
-@reboot sleep 30; while true; do /usr/bin/ssh -N -T -i \$HOME/.ssh/id_ed25519_tunnel -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:1080:127.0.0.1:8080 ${VPS_USER}@${VPS_HOST} >> \$HOME/bot-radar-relay/logs/tunnel.log 2>&1; sleep 10; done
-CRON
-) | crontab -
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin
+@reboot sleep 20; /usr/bin/flock -n $HOME/bot-radar-relay/locks/relay.lock $HOME/bot-radar-relay/run_relay.sh >> $HOME/bot-radar-relay/logs/relay.log 2>&1
+@reboot sleep 30; /usr/bin/flock -n $HOME/bot-radar-relay/locks/tunnel.lock $HOME/bot-radar-relay/run_tunnel.sh >> $HOME/bot-radar-relay/logs/tunnel.log 2>&1
+*/5 * * * * /usr/bin/flock -n $HOME/bot-radar-relay/locks/relay.lock $HOME/bot-radar-relay/run_relay.sh >> $HOME/bot-radar-relay/logs/relay.log 2>&1
+*/5 * * * * /usr/bin/flock -n $HOME/bot-radar-relay/locks/tunnel.lock $HOME/bot-radar-relay/run_tunnel.sh >> $HOME/bot-radar-relay/logs/tunnel.log 2>&1
+*/5 * * * * $HOME/bot-radar-relay/relay_probe.sh >> $HOME/bot-radar-relay/logs/probe.log 2>&1
 ```
 
-### Contrôle depuis l'hôte VPS
+Le tunnel porte `ExitOnForwardFailure=yes`, `ServerAliveInterval=30`,
+`ServerAliveCountMax=3` et `StrictHostKeyChecking=yes` : il se ferme plutôt que de
+rester ouvert sans redirection, et un hôte inconnu n'est jamais accepté.
+
+La sonde est **séparée** du relais et ne démarre jamais de seconde instance : sur
+deux échecs consécutifs d'une poignée de main SOCKS5 (`05 01 00` → `05 00`), elle
+arrête le relais pour que `flock` le relance. Un relais vivant mais incapable de
+servir est ainsi réparé par le mécanisme qui garantit l'unicité.
+
+### Ce que la supervision ne couvre pas
+
+- **Une résolution DNS bloquée** n'est pas interrompable : huit résolutions
+  bloquées saturent les huit emplacements et le relais cesse d'accepter. La sonde
+  le détecte et le redémarre, mais le délai de réparation est celui de `flock`.
+- **La saturation est immédiate** : au-delà de huit connexions simultanées, le
+  relais ferme la connexion sans réponse SOCKS5.
+- Aucun de ces mécanismes ne prouve la sortie résidentielle.
+
+### Contrôle d'accessibilité depuis le conteneur
+
+Le contrôle de dépannage utile porte sur **ce que le collecteur joint réellement**,
+depuis `radar_app` et vers la gateway — pas sur le loopback de l'hôte.
+
+**(a) Le relais répond-il sur la gateway ?** Un salut SOCKS5 seul, sans `CONNECT` :
+il prouve que la socket accepte et que le protocole répond, sans contacter aucune
+destination et sans solliciter la résolution.
 
 ```sh
-curl -sS --socks5-hostname 127.0.0.1:1080 https://api.ipify.org; echo
-python3 -m venv /tmp/lbc && /tmp/lbc/bin/pip -q install curl_cffi==0.16.3
-/tmp/lbc/bin/python -c "from curl_cffi import requests as r; print(r.get('https://www.leboncoin.fr/recherche?category=27&leisure_book_genre=comics%26mangas', impersonate='chrome', proxy='socks5://127.0.0.1:1080', timeout=30).status_code)"
+GW=$(docker network inspect bot-radar_default \
+  -f '{{(index .IPAM.Config 0).Gateway}}')
+docker exec radar_app python3 -c "
+import socket, sys
+s = socket.create_connection((sys.argv[1], 1080), timeout=3)
+s.sendall(bytes([5, 1, 0]))
+print('salut:', s.recv(2).hex())
+s.close()
+" "$GW"
 ```
 
-Attendu : l'IP publique du domicile, puis `200`. Un `curl` nu renvoie `403` : c'est
-l'empreinte TLS, pas le tunnel. Un `403` avec `curl_cffi`, ou une IP de datacenter,
-signifie que le tunnel est tombé ou que la sortie n'est plus résidentielle.
+Attendu : `salut: 0500`. Toute autre valeur — ou une erreur de connexion — signifie
+que la jonction est rompue : voir la section « Dérive de la passerelle » de
+[la fenêtre Redis](redis-subnet-maintenance.md). Ce test **ne prouve pas** la sortie.
+
+**(b) Un domaine non listé est-il refusé ?** Envoie une demande `CONNECT` vers un
+domaine volontairement absent de la liste autorisée. Le relais doit répondre
+`0x02` (`NOT_ALLOWED`), sans contacter la destination. Ce test n'émet aucune
+requête vers le domaine visé : il vérifie le refus, pas l'accès.
+
+```sh
+docker exec radar_app python3 -c "
+import socket, sys
+s = socket.create_connection((sys.argv[1], 1080), timeout=3)
+s.sendall(bytes([5, 1, 0]))
+assert s.recv(2) == bytes([5, 0])
+hote = b'example.invalid'
+s.sendall(bytes([5, 1, 0, 3, len(hote)]) + hote + (443).to_bytes(2, 'big'))
+print('refus:', s.recv(10)[:2].hex())
+s.close()
+" "$GW"
+```
+
+Attendu : `refus: 0502`. Un `0500` signalerait une **liste trop large** ; une
+absence de réponse, un relais saturé ou bloqué.
+
+**(c) La sortie résidentielle** ne se prouve pas ici : elle exige une requête
+réelle vers un domaine autorisé, donc un mandat et une destination ajoutée
+explicitement et **temporairement**. La procédure est
+[§4.5 « Contrôle volontaire de sortie »](leboncoin-relay-update.md#45-contrôle-volontaire-de-sortie),
+avec retrait du domaine de contrôle à la fin.
 
 ### Depuis le conteneur `radar_app` : étape supplémentaire obligatoire
 
-Dans le conteneur, `127.0.0.1` désigne son propre loopback, et aucun port de l'hôte
-n'est joignable : la chaîne `INPUT` du VPS n'accepte que `22` avant un
-`REJECT --reject-with icmp-host-prohibited` (mesuré : `172.21.0.1:1080` renvoie
-`EHOSTUNREACH`). `LEBONCOIN_PROXY_URL=socks5://127.0.0.1:1080` ne joint donc rien
-depuis `radar_app`. Avant activation, choisir et autoriser une variante :
+Dans le conteneur, `127.0.0.1` désigne son propre loopback : le proxy doit viser
+une adresse **joignable depuis le conteneur**, et cette adresse est la gateway du
+réseau applicatif.
 
-1. écouter le tunnel sur l'IP du bridge (`GatewayPorts clientspecified` puis
-   `-R 172.21.0.1:1080:127.0.0.1:8080`) et ouvrir ce port aux conteneurs par une
-   règle `iptables` insérée avant le `REJECT`, persistée ;
-2. ou faire porter la sortie résidentielle par un conteneur dédié du même réseau.
+La chaîne `INPUT` du VPS n'accepte que `22` avant un
+`REJECT --reject-with icmp-host-prohibited` : la jonction exige donc une règle
+dédiée. La topologie retenue est celle-ci, et c'est elle que
+`scripts/check_junction_topology.py` vérifie :
 
-L'IP du bridge se lit par `docker network inspect bot-radar_default -f '{{(index .IPAM.Config 0).Gateway}}'`.
-Ces variantes touchent le pare-feu ou `sshd` : elles exigent un mandat d'exploitation
-explicite. Sans elles, la collecte échoue en `LeboncoinCollectionError` et alerte
-après cinq cycles.
+| Élément | Rôle |
+| --- | --- |
+| `GatewayPorts clientspecified` sur le compte de tunnel | Autorise le tunnel à écouter sur une adresse choisie par le client |
+| `-R <gateway>:1080:127.0.0.1:8080` | La redirection vise la gateway du réseau applicatif |
+| `permitlisten="<gateway>:1080"` sur la clé | `sshd` n'accepte cette redirection que pour cette adresse |
+| Une règle `INPUT` `-s <sous-réseau> -d <gateway> -p tcp --dport 1080 -j ACCEPT` avant le `REJECT` | Les conteneurs du réseau atteignent ce port |
+| `LEBONCOIN_PROXY_URL=socks5h://<gateway>:1080` | Le collecteur l'utilise avec résolution côté relais |
+
+Deux invariants à ne pas perdre :
+
+- **L'adresse est celle de la gateway, pas `127.0.0.1`** ni l'IP publique.
+- **Le sous-réseau doit être épinglé.** Sans épinglage, une recréation du réseau
+  peut changer la gateway, et la règle de pare-feu comme le `permitlisten`
+  viseraient une adresse morte. Voir
+  [fenêtre de maintenance Redis et sous-réseau](redis-subnet-maintenance.md).
+
+Sans cette jonction, la collecte échoue en `LeboncoinCollectionError` et alerte
+après plusieurs cycles. Ces éléments touchent le pare-feu ou `sshd` : les mettre
+en place exige un mandat d'exploitation explicite.
 
 ## Échec et retour
 

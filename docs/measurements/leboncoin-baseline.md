@@ -5,7 +5,11 @@ Elles bornent la conception, elles ne l'attestent pas. Décision liée : [ADR-05
 
 ## Méthode
 
-- Client : `curl_cffi` 0.16.3, `impersonate="chrome"`, depuis le VPS, à travers le tunnel SSH (`socks5://127.0.0.1:1080`) et le relais du Raspberry Pi : sortie résidentielle.
+- Client : `curl_cffi` 0.16.3, `impersonate="chrome"`, depuis le VPS, à travers le tunnel SSH
+  et le relais du Raspberry Pi : sortie résidentielle. **Montage depuis remplacé** : le
+  contrôle se fait désormais depuis le conteneur, en `socks5h://` vers la gateway du
+  réseau applicatif (voir [déploiement](../operations/deployment.md)). La présente
+  mesure reste l'enregistrement de ce qui a été fait ce soir-là, pas un mode opératoire.
 - URL : `https://www.leboncoin.fr/recherche?category=27&leisure_book_genre=comics%26mangas`.
 - Heure : 20 octobre 2026, 01:38–01:44 (Europe/Paris).
 - Pages capturées : page 1 et page 2, une requête chacune.

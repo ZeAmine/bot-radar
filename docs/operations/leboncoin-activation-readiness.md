@@ -26,6 +26,7 @@ et la [procédure d'arrêt sur blocage](leboncoin-block-stop.md).
 | [Activation et désactivation](leboncoin-activation-and-rollback.md) | Variables concernées, ordre imposé, redémarrage, vérifications, retour arrière |
 | [Validation après activation](leboncoin-activation-validation.md) | Référence initiale, cycle réel, latences exactes, soak, tunnel tombé, blocage durable |
 | [Checklist d'activation](leboncoin-activation-checklist.md) | Deux colonnes : dépôt / prérequis opérationnels datés |
+| [Fenêtre Redis et sous-réseau](redis-subnet-maintenance.md) | Procédure et rollback de la persistance Redis et de l'épinglage du sous-réseau applicatif |
 | [Mandats requis](#opérations-exigeant-un-mandat-séparé) | Les **13** opérations hors de ce dossier |
 
 Les documents ont les dépendances suivantes :
@@ -97,6 +98,45 @@ couvre jamais deux lignes.
 
 Les mandats M1 à M9 concernent l'exploitation ; M10 à M12 concernent la
 validation ; M13 est hors périmètre de ce dossier.
+
+## Suppression différée de l'ancienne clé
+
+L'ancienne clé du Pi a été **désactivée, pas supprimée** : sa ligne reste dans
+`authorized_keys` côté VPS, commentée avec la date et le motif. Elle n'accorde
+donc plus aucun accès, et sa restauration reste possible en décommentant une
+ligne.
+
+Motif de la désactivation : la clé de tunnel est désormais **dédiée**, et son
+entrée porte les restrictions qui bornent ce que le compte de tunnel peut faire.
+
+Suppression **différée de 24 à 48 h**, sous mandat M5, quand les trois conditions
+sont réunies :
+
+1. la collecte a tourné un cycle complet avec la clé dédiée ;
+2. le soak n'a montré aucune reconnexion manquée du tunnel ;
+3. aucune reprise n'a eu à utiliser l'ancienne clé.
+
+La copie de sauvegarde de `authorized_keys` prise avant modification reste la
+référence de retour. Supprimer la ligne **et** la copie avant ces trois
+conditions retirerait le filet sans avoir prouvé que le nouveau tient.
+
+## Risques résiduels
+
+Ce que les mesures ont établi, et ce qui reste ouvert :
+
+| Risque | État | Conséquence |
+| --- | --- | --- |
+| Sortie résidentielle non prouvée | **Ouvert** | La jonction répond, mais aucune requête réelle vers la place de marché n'a été faite : la sortie pourrait être bloquée |
+| Résolution DNS non bornée dans le relais | **Ouvert** | Huit résolutions bloquées saturent le relais ; la sonde le redétecte et le répare, avec le délai de `flock` |
+| Passerelle réseau non épinglée en production | **Traité au dépôt, non déployé** | Sans le déploiement de l'épinglage, une recréation du réseau casse la jonction |
+| AOF Redis non permanent | **Traité au dépôt, non déployé** | Sans `command:`, la clé d'alerte de silence ne survit pas à un redémarrage |
+| Rotation de la clé d'administration du VPS | **Ouvert** | Non traitée par ce dossier |
+| Secret historique sur disque | **Non qualifié** | Candidat repéré, non confirmé ; ne pas présumer son absence |
+| Latence de réception utilisateur | **Non mesurable** | Le produit mesure `notified_at`, pas la réception |
+| Restauration du volume Redis | **Non testée** | Le rollback existe, il n'a jamais été exercé |
+
+Ces lignes ne sont pas des cases à cocher : elles disent ce qu'un soak peut encore
+révéler, et ce qu'aucun test de dépôt ne révélera.
 
 ## Rappel : ce que ce dossier ne donne pas
 
