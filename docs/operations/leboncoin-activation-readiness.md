@@ -26,7 +26,7 @@ et la [procédure d'arrêt sur blocage](leboncoin-block-stop.md).
 | [Activation et désactivation](leboncoin-activation-and-rollback.md) | Variables concernées, ordre imposé, redémarrage, vérifications, retour arrière |
 | [Validation après activation](leboncoin-activation-validation.md) | Référence initiale, cycle réel, latences exactes, soak, tunnel tombé, blocage durable |
 | [Checklist d'activation](leboncoin-activation-checklist.md) | Deux colonnes : dépôt / prérequis opérationnels datés |
-| [Fenêtre Redis et sous-réseau](redis-subnet-maintenance.md) | Procédure et rollback de la persistance Redis et de l'épinglage du sous-réseau applicatif |
+| [Fenêtre de persistance Redis](redis-persistence-window.md) | Procédure et rollback de la persistance Redis, et dérive de la passerelle |
 | [Mandats requis](#opérations-exigeant-un-mandat-séparé) | Les **13** opérations hors de ce dossier |
 
 Les documents ont les dépendances suivantes :
@@ -128,7 +128,7 @@ Ce que les mesures ont établi, et ce qui reste ouvert :
 | --- | --- | --- |
 | Sortie résidentielle non prouvée | **Ouvert** | La jonction répond, mais aucune requête réelle vers la place de marché n'a été faite : la sortie pourrait être bloquée |
 | Résolution DNS non bornée dans le relais | **Ouvert** | Huit résolutions bloquées saturent le relais ; la sonde le redétecte et le répare, avec le délai de `flock` |
-| Passerelle réseau non épinglée en production | **Traité au dépôt, non déployé** | Sans le déploiement de l'épinglage, une recréation du réseau casse la jonction |
+| Dérive de la passerelle | **Détectée, non corrigée automatiquement** | Une recréation du réseau peut changer la gateway et casser la jonction ; `check_junction_topology.py` le montre, la correction est manuelle et documentée |
 | AOF Redis non permanent | **Traité au dépôt, non déployé** | Sans `command:`, la clé d'alerte de silence ne survit pas à un redémarrage |
 | Rotation de la clé d'administration du VPS | **Ouvert** | Non traitée par ce dossier |
 | Secret historique sur disque | **Non qualifié** | Candidat repéré, non confirmé ; ne pas présumer son absence |

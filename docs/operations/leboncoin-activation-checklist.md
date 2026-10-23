@@ -48,9 +48,9 @@ colonne opérationnelle est longue et datée.
 | 30 | — | ☐ **IP de l'hôte dans l'historique Git** : décision prise (accepter et documenter, ou mandat de réécriture séparé) — date : |
 | 31 | — | ☐ **Candidat de secret historique** qualifié (présent ou non, puis neutralisé ou accepté) — date : |
 | 32 | — | ☐ **Schéma du proxy en `socks5h://`** vers la gateway du réseau applicatif (jamais `socks5://`, jamais `127.0.0.1`) — date : |
-| 33 | — | ☐ **Sous-réseau applicatif épinglé** et `RADAR_NETWORK_SUBNET` renseignée en production — date : |
+| 33 | — | ☐ **Dérive de la passerelle** : détectée par `scripts/check_junction_topology.py` lors du prochain contrôle, et règle « jamais de `docker compose down` sans le document » connue de l'exploitant — date : |
 | 34 | — | ☐ **Jonction vérifiée** par `scripts/check_junction_topology.py` : conforme (ni en écart, ni non vérifiée) — date : |
-| 35 | — | ☐ **Fenêtre de maintenance Redis / sous-réseau** exécutée ou explicitement reportée (doc. fenêtre) — date : |
+| 35 | — | ☐ **Fenêtre de persistance Redis** exécutée ou explicitement reportée (doc. fenêtre) — date : |
 | 36 | — | ☐ **Supervision par `flock`** constatée : une seule instance relais et tunnel, `@reboot` et `*/5` en place — date : |
 | 37 | — | ☐ **Sonde de santé** exécutée pour de vrai, journal minimal et plafonné, aucun démarrage de relais par la sonde — date : |
 | 38 | — | ☐ **Ancienne clé du Pi supprimée** après 24–48 h sans incident (désactivée aujourd'hui) — date : |
