@@ -85,7 +85,15 @@ async def test_late_keyword_result_does_not_change_new_draft_for_same_title(monk
 
     storage = MemoryStorage()
     state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=42, user_id=42))
-    draft = {"creation_token": "old", "name": "Console", "category_slug": "tech"}
+    from tests.add_journey import defer_task, drain
+
+    draft = {"creation_token": "old", "name": "Console", "category_slug": "tech",
+             "keyword_analysis_status": "failed"}
+    await state.set_state("AlertCreationState:confirm_creation")
+    tasks = []
+    monkeypatch.setattr("app.bot.handlers.alerts_create.safe_create_task", defer_task(tasks))
+    monkeypatch.setattr(type(keyword_variants_module), "is_enabled", property(lambda _self: True))
+    monkeypatch.setattr(keyword_variants_module, "client", MagicMock(is_configured=True))
     await state.set_data(draft)
 
     async def delayed(*_args, **_kwargs):
@@ -97,6 +105,7 @@ async def test_late_keyword_result_does_not_change_new_draft_for_same_title(monk
     callback.answer = AsyncMock()
     callback.message.edit_text = AsyncMock()
     await handle_create_ai_variants(callback, state)
+    await drain(tasks)
     assert await state.get_data() == {**draft, "creation_token": "new"}
     await storage.close()
 

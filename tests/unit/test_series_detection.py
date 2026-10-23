@@ -277,7 +277,9 @@ async def test_creation_builds_a_series_alert_without_isbn():
     assert lines[1] == ""
     assert lines[2] == "<i>Série multi-tomes (veille sur tous les tomes)</i>"
     assert lines[3] == ""
-    assert lines[4].startswith("<b>Titre :</b>")
+    assert lines[4] == "<i>Analyse IA indisponible : aucune proposition ajoutée.</i>"
+    assert lines[5] == ""
+    assert lines[6].startswith("<b>Titre :</b>")
     assert "<b>ISBN :</b>" not in recap
     assert "introuvable" not in recap
     assert "<code>" not in recap, "aucun ISBN ne doit être rendu"

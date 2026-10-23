@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import httpx
 import pytest
@@ -190,6 +190,8 @@ async def test_keyword_result_renders_the_current_conditions(mode):
         "name": "Jours de sable", "category_slug": "bd_comics",
         "include_keywords": ["jours de sable"], "selected_conditions": ["Très bon état"],
     }
+    await state.set_state("AlertCreationState:confirm_creation")
+    await state.update_data(keyword_analysis_status="failed")
     snapshot = await state.get_data()
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -203,9 +205,20 @@ async def test_keyword_result_renders_the_current_conditions(mode):
     callback = MagicMock()
     callback.answer = AsyncMock()
     callback.message = loading
-    with patch(
-        "app.bot.handlers.alerts_create.keyword_variants_module.generate_variants_and_exclusions",
-        new=generate,
+    tasks = []
+    def schedule(coro, **_kwargs):
+        task = asyncio.create_task(coro)
+        tasks.append(task)
+        return task
+
+    with (
+        patch("app.bot.handlers.alerts_create.keyword_variants_module.generate_variants_and_exclusions",
+              new=generate),
+        patch("app.services.ai.modules.keyword_variants.KeywordVariantsModule.is_enabled",
+              new_callable=PropertyMock, return_value=True),
+        patch("app.bot.handlers.alerts_create.keyword_variants_module.client",
+              MagicMock(is_configured=True)),
+        patch("app.bot.handlers.alerts_create.safe_create_task", schedule),
     ):
         operation = (
             _search_keywords_in_background(
@@ -215,10 +228,11 @@ async def test_keyword_result_renders_the_current_conditions(mode):
             ) if mode == "background" else handle_create_ai_variants(callback, state)
         )
         task = asyncio.create_task(operation)
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 1)
         await state.update_data(selected_conditions=["Bon état"])
         release.set()
         await task
+        await asyncio.gather(*tasks)
     assert state.data["selected_conditions"] == ["Bon état"]
     text = loading.edit_text.call_args.args[0]
     assert ":</b> BE" in text

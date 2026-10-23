@@ -160,6 +160,7 @@ async def test_gaming_query_input_sets_defaults():
     state.get_data = mock_get_data
     state.update_data = mock_update_data
     state.set_state = AsyncMock()
+    state.get_state.return_value = AlertCreationState.confirm_creation.state
 
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
@@ -208,6 +209,7 @@ async def test_tech_query_input_sets_defaults():
     state.get_data = mock_get_data
     state.update_data = mock_update_data
     state.set_state = AsyncMock()
+    state.get_state.return_value = AlertCreationState.confirm_creation.state
 
     db_user = User(id=uuid.uuid4(), telegram_user_id=123)
     db_session = AsyncMock()
@@ -327,6 +329,7 @@ async def test_edit_alert_creation_prompt_and_sub_options():
     state = AsyncMock()
     state.get_data = AsyncMock(return_value=state_data)
     state.set_state = AsyncMock()
+    state.get_state.return_value = AlertCreationState.confirm_creation.state
     state.clear = AsyncMock()
 
     await edit_alert_creation_prompt(callback, state)
@@ -441,6 +444,9 @@ class DraftState:
     async def set_state(self, state) -> None:
         self.state = state
 
+    async def get_state(self):
+        return getattr(self.state, "state", self.state)
+
     async def update_data(self, data=None, **kwargs) -> None:
         if data:
             kwargs.update(data)
@@ -499,6 +505,14 @@ def _natural_add_patches(parsed, outcome, existing_alert=None):
             new_callable=AsyncMock,
             return_value=outcome,
         ),
+        patch(
+            "app.services.ai.modules.keyword_variants.KeywordVariantsModule.is_enabled",
+            new_callable=PropertyMock, return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.keyword_variants_module.client",
+            MagicMock(is_configured=True),
+        ),
         patch("app.bot.handlers.alerts.AlertRepository", return_value=alert_repo),
         patch("app.bot.handlers.alerts_create.safe_create_task", new=_defer_task(tasks)),
     ):
@@ -551,7 +565,8 @@ async def test_start_add_alert_natural_add_shows_loading_and_edits_to_recap():
 
     assert loading_message.edit_text.await_count == 2
     milestone = loading_message.edit_text.await_args_list[0][0][0]
-    assert "🔎 <b>Asterix tome 1</b> identifié" in milestone
+    assert "<b>Titre :</b> Asterix tome 1" in milestone
+    assert "Analyse des variantes et exclusions en cours" in milestone
 
     edited_text = loading_message.edit_text.call_args[0][0]
     assert edited_text.startswith(f"{RECAP_TITLE}\n\n")
@@ -784,6 +799,14 @@ async def test_start_add_alert_natural_add_merges_grounded_keywords_and_isbn_not
             ".generate_variants_and_exclusions",
             new=keywords_mock,
         ),
+        patch(
+            "app.services.ai.modules.keyword_variants.KeywordVariantsModule.is_enabled",
+            new_callable=PropertyMock, return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.keyword_variants_module.client",
+            MagicMock(is_configured=True),
+        ),
         patch("app.bot.handlers.alerts.AlertRepository", return_value=alert_repo),
         patch("app.bot.handlers.alerts_create.safe_create_task", new=_defer_task(tasks)),
     ):
@@ -872,7 +895,7 @@ async def test_start_add_alert_natural_add_reports_engine_had_nothing_to_say():
         await _drain(tasks)
 
     edited_text = loading_message.edit_text.call_args[0][0]
-    assert "L'IA n'a trouvé aucune variante ni exclusion pertinente" in edited_text
+    assert "Aucune proposition supplémentaire pertinente retenue." in edited_text
     assert "pas répondu à temps" not in edited_text
     assert state.data["variants"] == []
     assert state.data["exclude_keywords"] == []
@@ -1151,7 +1174,7 @@ async def test_finalize_loading_message_falls_back_to_plain_text():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     loading_msg = AsyncMock()
     loading_msg.edit_text = AsyncMock(side_effect=TelegramBadRequest(
-        method=None, message="message is not modified"
+        method=None, message="message cannot be edited"
     ))
 
     event = AsyncMock()

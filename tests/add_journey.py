@@ -139,6 +139,14 @@ def patched(
         ),
         patch("app.services.ai.modules.natural_add.natural_add_module.client", client),
         patch(
+            "app.services.ai.modules.keyword_variants.KeywordVariantsModule.is_enabled",
+            new_callable=PropertyMock, return_value=True,
+        ),
+        patch(
+            "app.bot.handlers.alerts_create.keyword_variants_module.client",
+            MagicMock(is_configured=True),
+        ),
+        patch(
             "app.services.ai.modules.natural_add.BookSearchUseCase",
             fake_book_search(bnf),
         ),

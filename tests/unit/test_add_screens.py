@@ -62,126 +62,70 @@ class DraftState(_DraftState):
 
 
 @pytest.mark.asyncio
-async def test_the_two_warnings_arrive_side_by_side_on_the_recap_and_the_confirmation():
-    """Capture 1, demande d'origine : les deux avertissements en tête, côte à côte.
-
-    « Le message “L'IA n'a trouvé aucune variante de frappe” le mets donc en dessous de
-    l'information de la BNF » et « un emoji warning plutôt qu'une loupe ». Le parcours
-    est celui d'un premier utilisateur — `/add` en langage naturel, la recherche de
-    mots-clés part en arrière-plan et le récap se complète sur place — et l'écran
-    « Alerte créée » relit la même carte. Ce qui est comparé ici est **le message
-    envoyé**, dans l'ordre exact de ses lignes.
-    """
-    from app.bot.handlers.alerts_helpers import RECAP_TITLE
+async def test_homonym_warning_precedes_analysis_and_selected_recap_matches_confirmation():
+    """Le choix d'œuvre précède l'analyse et les critères confirmés restent identiques."""
+    from app.bot.handlers.alerts_create_confirm import select_alert_creation_work
 
     roman = BookMetadata(
-        title="Les Enfants perdus",
-        author="Nadine Diamant",
-        publisher="La Pensée universelle",
-        isbn13="9782214080627",
-        publication_year=1992,
-        recommended_includes=["les enfants perdus"],
-        recommended_excludes=[],
-        recommended_variants=[],
+        title="Les Enfants perdus", author="Nadine Diamant", publisher="La Pensée universelle",
+        isbn13="9782214080627", publication_year=1992,
     )
     bande = BookMetadata(
-        title="Les Enfants perdus",
-        author="Nef",
-        publisher="Éditions du Chêne",
-        isbn13="9782810206087",
-        publication_year=2025,
+        title="Les Enfants perdus", author="Nef", publisher="Éditions du Chêne",
+        isbn13="9782810206087", publication_year=2025,
     )
-    homonyme = BookResolution(best=roman, other_works=[bande])
-    client = fake_deepseek(
-        {
-            "name": "Les Enfants perdus",
-            "category_slug": "bd_comics",
-            "isbn13": None,
-            "author": "Neyef",
-            "include_keywords": ["Les Enfants perdus"],
-            "max_items": None,
-            "max_price_cents": 1200,
-            "is_series": False,
-        }
-    )
-    repos = repositories(ISBN_INCONNU)
-    message, loading_message = message_with_recap("/add les enfants perdus neyef, 12€")
+    resolution = BookResolution(best=roman, other_works=[bande])
+    client = fake_deepseek({
+        "name": "Les Enfants perdus", "category_slug": "bd_comics", "isbn13": None,
+        "author": "Neyef", "include_keywords": ["Les Enfants perdus"],
+        "max_price_cents": 1200, "is_series": False,
+    })
+    repos = repositories("9782810206087")
+    message, screen = message_with_recap("/add les enfants perdus neyef, 12€")
     state = DraftState()
-
-    note_bnf = "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre."
-    note_ia = "⚠️ L'IA n'a trouvé aucune variante de frappe pour cet ouvrage."
-
-    patches = patched(repos, fake_bnf(homonyme), client)
-    keywords = patch(
-        "app.bot.handlers.alerts_create.keyword_variants_module."
-        "generate_variants_and_exclusions",
-        new_callable=AsyncMock,
-        return_value=KeywordVariantsOutcome(
-            variants=[], exclusions=["coffret"], answered=True
-        ),
-    )
-    for entered in patches:
-        entered.start()
-    keywords.start()
+    patches = patched(repos, fake_bnf(resolution), client)
+    for boundary in patches:
+        boundary.start()
     try:
         await start_add_alert(message, state)
+        initial = screen.edit_text.call_args.args[0]
+        note = "⚠️ « Les Enfants perdus » : un autre ouvrage porte ce titre."
+        assert f"<i>{html.escape(note)}</i>" in initial
+        assert "<b>Auteur :</b> Non renseigné" in initial
+        assert "<b>Langue :</b> Non renseigné" in initial
+        assert "<b>Année :</b> Non renseigné" in initial
+        assert not repos["tasks"]
+        callback, selected_screen = confirm_press()
+        callback.data = "al_create_work:1"
+        with patch(
+            "app.bot.handlers.alerts_create.keyword_variants_module.generate_variants_and_exclusions",
+            AsyncMock(return_value=KeywordVariantsOutcome(exclusions=["coffret"], answered=True)),
+        ):
+            await select_alert_creation_work(callback, state)
+            await drain(repos["tasks"])
+        recap = selected_screen.edit_text.call_args.args[0]
+        assert "Exclusions supplémentaires retenues : 1." in recap
+        assert "<b>Auteur :</b> Nef" in recap
+        assert "<b>ISBN :</b> <code>9782810206087</code>" in recap
+        assert "<b>Éditeur :</b> Éditions du Chêne" in recap
+        assert note not in recap
+        lines = recap.splitlines()
+        price = index_of_line(lines, "<b>Prix maximum :</b>")
+        assert lines[price - 1].startswith("<b>")
+        assert lines[price - 1] != ""
+        confirm, final_screen = confirm_press()
+        await save_alert(confirm, state, User(id=uuid.uuid4(), telegram_user_id=123), AsyncMock())
         await drain(repos["tasks"])
+        confirmation = final_screen.edit_text.call_args.args[0]
+        for line in lines:
+            if line.startswith("<b>") or "supplémentaires retenues" in line:
+                assert line in confirmation
+        assert "🔎" not in recap
+        assert "🔎" not in confirmation
+        assert repos["alert_repo"].create.call_args.kwargs["exclude_keywords"] == ["coffret"]
     finally:
-        keywords.stop()
-        for entered in reversed(patches):
-            entered.stop()
-
-    ecrans = [appel[0][0] for appel in loading_message.edit_text.call_args_list]
-    recap = ecrans[-1]
-    lines = recap.splitlines()
-
-    assert lines[0] == RECAP_TITLE
-    assert lines[1] == ""
-    assert lines[2] == f"<i>{html.escape(note_bnf)}</i>"
-    assert lines[3] == f"<i>{note_ia}</i>"
-    assert recap.count(f"<i>{html.escape(note_bnf)}</i>") == 1
-    assert recap.count(f"<i>{note_ia}</i>") == 1
-    assert lines[4] == ""
-    assert lines[5].startswith("<b>ISBN :</b>")
-    assert "<b>Auteur :</b> Non renseigné" in lines
-    assert "<b>Langue :</b> Non renseigné" in recap
-    assert "<b>Année :</b> Non renseigné" in recap
-
-    prix = index_of_line(lines, "<b>Prix maximum :</b>")
-    assert lines[prix - 1] != "", "aucune ligne vide avant « Prix maximum »"
-    assert lines[prix - 1].startswith("<b>")
-
-    assert "🔎" not in recap
-    assert any("🔎" in ecran for ecran in ecrans[:-1]), "le jalon garde sa loupe"
-
-    confirm_callback, confirm_message = confirm_press()
-    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
-    confirmation_repos = repositories(ISBN_INCONNU)
-    patches = patched(confirmation_repos, MagicMock(), MagicMock())
-    for entered in patches:
-        entered.start()
-    try:
-        await save_alert(confirm_callback, state, db_user, AsyncMock())
-        await drain(confirmation_repos["tasks"])
-    finally:
-        for entered in reversed(patches):
-            entered.stop()
-
-    confirmation = confirm_message.edit_text.call_args[0][0]
-    confirm_lines = confirmation.splitlines()
-    assert confirm_lines[0] == "✅ <b>Alerte créée</b>"
-    assert confirm_lines[1] == ""
-    # Le même bloc de notes, dans le même ordre, séparé de la liste par un seul blanc.
-    assert confirm_lines[2] == f"<i>{html.escape(note_bnf)}</i>"
-    assert confirm_lines[3] == f"<i>{note_ia}</i>"
-    assert confirmation.count(f"<i>{html.escape(note_bnf)}</i>") == 1
-    assert confirmation.count(f"<i>{note_ia}</i>") == 1
-    assert confirm_lines[4] == ""
-    assert confirm_lines[5].startswith("<b>ISBN :</b>")
-    assert "<b>Langue :</b> Non renseigné" in confirmation
-    prix = index_of_line(confirm_lines, "<b>Prix maximum :</b>")
-    assert confirm_lines[prix - 1] != "", "aucune ligne vide avant « Prix maximum »"
-    assert "🔎" not in confirmation
+        for boundary in reversed(patches):
+            boundary.stop()
 
 
 @pytest.mark.asyncio
@@ -252,16 +196,17 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
     recap = prix_saisi.answer.call_args[0][0]
     lines = recap.splitlines()
     assert lines[2] == f"<i>{UNIDENTIFIED_WORK_NOTE}</i>"
-    assert lines[3] == ""
-    assert lines[4] == "<b>ISBN :</b> introuvable"
-    assert lines[5] == "<b>Titre :</b> whoogys dailycieux"
-    assert lines[6] == "<b>Langue :</b> Non renseigné"
-    assert lines[7] == "<b>Auteur :</b> Non renseigné"
-    assert lines[8] == "<b>Éditeur :</b> Non renseigné"
-    assert lines[9] == "<b>Année :</b> Non renseigné"
-    assert lines[10] == "<b>Format :</b> Non renseigné"
-    assert lines[11] == "<b>Source :</b> Non renseigné"
-    assert lines[12] == "<b>Prix maximum :</b> 30,00 €"
+    assert lines[3] == "<i>Analyse IA indisponible : aucune proposition ajoutée.</i>"
+    assert lines[4] == ""
+    assert lines[5] == "<b>ISBN :</b> introuvable"
+    assert lines[6] == "<b>Titre :</b> whoogys dailycieux"
+    assert lines[7] == "<b>Langue :</b> Non renseigné"
+    assert lines[8] == "<b>Auteur :</b> Non renseigné"
+    assert lines[9] == "<b>Éditeur :</b> Non renseigné"
+    assert lines[10] == "<b>Année :</b> Non renseigné"
+    assert lines[11] == "<b>Format :</b> Non renseigné"
+    assert lines[12] == "<b>Source :</b> Non renseigné"
+    assert lines[13] == "<b>Prix maximum :</b> 30,00 €"
     assert "🔎" not in recap
 
     confirm_callback, confirm_message = confirm_press()
@@ -305,15 +250,15 @@ async def test_the_three_keyword_verdicts_warn_instead_of_observing():
     attendus = [
         (
             KeywordVariantsOutcome(variants=[], exclusions=[], answered=True),
-            "⚠️ L'IA n'a trouvé aucune variante ni exclusion pertinente",
+            "Aucune proposition supplémentaire pertinente retenue.",
         ),
         (
             KeywordVariantsOutcome(variants=["x"], exclusions=[], answered=True),
-            "⚠️ L'IA n'a trouvé aucune exclusion pertinente pour cet ouvrage.",
+            "Aucune proposition supplémentaire pertinente retenue.",
         ),
         (
             KeywordVariantsOutcome(variants=[], exclusions=["coffret"], answered=True),
-            "⚠️ L'IA n'a trouvé aucune variante de frappe pour cet ouvrage.",
+            "Exclusions supplémentaires retenues : 1.",
         ),
     ]
 
@@ -329,6 +274,7 @@ async def test_the_three_keyword_verdicts_warn_instead_of_observing():
             "max_item_price_cents": 1200,
         }
         await state.update_data(brouillon)
+        await state.set_state("AlertCreationState:confirm_creation")
 
         loading_message = MagicMock()
         loading_message.edit_text = AsyncMock()
@@ -357,7 +303,7 @@ async def test_the_three_keyword_verdicts_warn_instead_of_observing():
         # L'avertissement est en tête, au-dessus de l'ISBN qu'il commente.
         lines = recap.splitlines()
         index_note = next(i for i, line in enumerate(lines) if attendu in line)
-        assert lines[index_note].startswith("<i>⚠️")
+        assert lines[index_note].startswith("<i>")
         assert index_note < index_of_line(lines, "<b>ISBN :</b>")
 
 

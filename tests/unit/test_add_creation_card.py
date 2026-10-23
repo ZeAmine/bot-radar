@@ -104,7 +104,7 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
         ))
 
         assert loading_message.edit_text.await_count == 1
-        assert "🔎 <b>La couleur des choses</b> identifié" in (
+        assert "<b>Titre :</b> La couleur des choses" in (
             loading_message.edit_text.await_args[0][0]
         )
 
@@ -112,17 +112,22 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
 
         assert loading_message.edit_text.await_count == 2
         milestone = loading_message.edit_text.await_args_list[0][0][0]
-        assert "🔎 <b>La couleur des choses</b> identifié" in milestone
-        assert "<i>Martin Panchaud · Çà et là</i>" in milestone
-        assert "Recherche des variantes de frappe et des exclusions" in milestone
+        assert "<b>Titre :</b> La couleur des choses" in milestone
+        assert "<b>Auteur :</b> Martin Panchaud" in milestone
+        assert "<b>Éditeur :</b> Çà et là" in milestone
+        assert "Analyse des variantes et exclusions en cours" in milestone
 
         milestone_kb = loading_message.edit_text.await_args_list[0][1]["reply_markup"]
-        assert [
-            button.text for row in milestone_kb.inline_keyboard for button in row
-        ] == ["🔍 Variantes & exclusions en cours..."]
+        actions = [button.callback_data.split("@")[0]
+                   for row in milestone_kb.inline_keyboard for button in row]
+        assert "alert_create_confirm" not in actions
+        assert "alert_create_ai_variants" not in actions
+        assert "alert_create_edit" in actions
+        assert "alert_create_cancel" in actions
 
         recap = recap_text(loading_message)
-        assert recap.startswith(f"{RECAP_TITLE}\n\n<b>ISBN :</b> <code>9782369903086</code>")
+        assert recap.startswith(f"{RECAP_TITLE}\n\n")
+        assert "<b>ISBN :</b> <code>9782369903086</code>" in recap
         assert not any(banner in recap for banner in ROUTE_BANNERS)
     finally:
         for entered in reversed(patches):

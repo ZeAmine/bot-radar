@@ -1,5 +1,6 @@
 """Flux de création et d'ajout d'alertes (/add, /addisbn, /addurl)."""
 
+import asyncio
 import contextlib
 import html
 import logging
@@ -27,6 +28,7 @@ from app.bot.handlers.alerts_helpers import (
     build_creation_recap,
     creation_card,
     creation_volume_issue,
+    creation_work_choice_required,
     draft_updates_from_search,
     extract_inline_price_and_clean_query,
     keyword_note,
@@ -56,7 +58,7 @@ from app.db.repositories.category_repo import CategoryRepository
 from app.domain.entities.alert_preparation import PreparationRequest
 from app.domain.enums import BookSearchStatus
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
-from app.services.ai.modules.keyword_variants import keyword_variants_module
+from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome, keyword_variants_module
 from app.services.ai.modules.natural_add import natural_add_module
 from app.services.ai.schemas import BookContext
 from app.services.alert_service import (
@@ -123,7 +125,7 @@ async def _finalize_loading_message(
     event: Message | CallbackQuery,
     text: str,
     keyboard: InlineKeyboardMarkup,
-) -> None:
+) -> Any:
     """Édite le message d'attente si possible, sinon envoie une nouvelle réponse.
 
     Reste tolérant aux messages non éditables (réponse de callback renvoyant un bool).
@@ -132,139 +134,183 @@ async def _finalize_loading_message(
         edit_text = getattr(loading_msg, "edit_text", None)
         if callable(edit_text):
             await edit_text(text, reply_markup=keyboard)
-            return
+            return loading_msg
+    except TelegramBadRequest as exc:
+        if "message is not modified" in exc.message.lower():
+            return loading_msg
     except Exception:
         pass
 
+    target: Any = event.message if isinstance(event, CallbackQuery) else event
+    if target is None:
+        return None
     try:
-        await event.answer(text, reply_markup=keyboard)
+        return await target.answer(text, reply_markup=keyboard)
     except TelegramBadRequest as exc:
         logger.warning("Réponse Telegram refusée (%s), renvoi du récap en texte brut.", exc)
-        await event.answer(strip_html_tags(text), reply_markup=keyboard, parse_mode=None)
-
-
-async def _show_step(
-    loading_msg: Message | bool,
-    text: str,
-    keyboard: InlineKeyboardMarkup,
-) -> None:
-    """Fait avancer le jalon affiché, sans jamais rien bloquer.
-
-    Contrairement à `_finalize_loading_message`, un échec est silencieux : un jalon
-    est une information de confort, pas un résultat. On n'envoie surtout pas de second
-    message de repli — l'utilisateur verrait deux messages au lieu d'un qui progresse.
-    """
-    edit_text = getattr(loading_msg, "edit_text", None)
-    if not callable(edit_text):
-        return
-    try:
-        await edit_text(text, reply_markup=keyboard)
-    except Exception as exc:
-        logger.debug("Jalon non affiché : %s", exc)
+        return await target.answer(strip_html_tags(text), reply_markup=keyboard, parse_mode=None)
 
 
 def _draft_matches(current: dict[str, Any], snapshot: dict[str, Any]) -> bool:
-    """Le brouillon affiché est-il encore celui sur lequel on travaille ?
-
-    La recherche des variantes part en arrière-plan : entre le jalon et la réponse du
-    moteur, l'utilisateur a pu annuler, modifier un champ ou relancer une commande.
-    Écrire le récap dans ces cas reviendrait à afficher des mots-clés qui ne
-    correspondent plus à l'état, ou à ressusciter une fiche abandonnée.
-
-    L'ISBN et l'auteur en font partie : changer d'ouvrage change la fiche sur laquelle
-    le moteur raisonne, et ses mots-clés seraient alors ceux d'un autre livre.
-    """
-    if not current:
-        return False
-    return all(
+    """Compare l'identité de l'article et la génération de son analyse."""
+    return bool(current) and not current.get("creation_outcome") and all(
         current.get(key) == snapshot.get(key)
-        for key in ("name", "category_slug", "isbn", "author", "creation_token", "draft_revision")
+        for key in (
+            "name", "category_slug", "isbn", "author", "publisher", "language",
+            "requested_volume", "is_series", "book_context", "creation_token",
+            "keyword_analysis_token",
+        )
     )
 
 
-def relaunch_keyword_search(
-    *,
-    event: Message | CallbackQuery,
-    loading_msg: Message | bool,
-    state: FSMContext,
-    draft: dict[str, Any],
+def _creation_message_values(message: Any) -> dict[str, Any]:
+    message_id = getattr(message, "message_id", None)
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    if isinstance(message_id, int) and isinstance(chat_id, int):
+        return {"keyword_message_id": message_id, "keyword_chat_id": chat_id}
+    return {}
+
+
+async def show_creation_recap(
+    *, event: Message | CallbackQuery, state: FSMContext, target: Any = None,
+    expected_token: str | None = None,
 ) -> None:
-    """Relance la recherche de mots-clés après un changement d'identité.
+    async with draft_guard(state):
+        current = await state.get_data()
+        if (not current or current.get("creation_outcome")
+                or current.get("creation_token") != expected_token
+                or await state.get_state() != AlertCreationState.confirm_creation.state):
+            return
+        recap, keyboard = build_creation_recap(current)
+        if target is not None and callable(getattr(target, "edit_text", None)):
+            sent = await _finalize_loading_message(target, event, recap, keyboard)
+        else:
+            sent = await event.answer(recap, reply_markup=keyboard)
+        await state.update_data(keyword_recap_visible=True, **_creation_message_values(sent))
 
-    Le même chemin que le départ de `/add` : la tâche part en arrière-plan et c'est elle
-    qui publie le récap, avec le verdict du moteur ou l'échec nommé. Les variantes et
-    exclusions de l'ouvrage précédent ne survivent pas à son remplacement.
-    """
-    book_context = (
-        BookContext(**draft["book_context"]) if draft.get("book_context") else None
-    )
-    safe_create_task(
-        _search_keywords_in_background(
-            loading_msg=loading_msg,
-            event=event,
-            state=state,
-            snapshot=draft,
-            name=str(draft.get("name") or ""),
-            category_slug=str(draft.get("category_slug") or CategorySlug.BD_COMICS.value),
-            book_context=book_context,
-        ),
-        name="add-variantes-realignement",
-    )
+
+async def present_creation_recap(
+    *, event: Message | CallbackQuery, state: FSMContext, draft: dict[str, Any],
+    target: Any = None, retry: bool = False,
+) -> None:
+    async with draft_guard(state):
+        current = await state.get_data()
+        if retry and current.get("keyword_analysis_status") != "failed":
+            return
+        if not _draft_matches(current, draft):
+            return
+        token = uuid.uuid4().hex
+        available = bool(keyword_variants_module.is_enabled
+                         and keyword_variants_module.client.is_configured)
+        if creation_work_choice_required(current):
+            status, note = None, "Choisis l’œuvre avant l’analyse des variantes et exclusions."
+        elif available:
+            status, note = "pending", "Analyse des variantes et exclusions en cours…"
+        else:
+            status, note = "unavailable", "Analyse IA indisponible : aucune proposition ajoutée."
+        await state.update_data(
+            keyword_analysis_status=status, keyword_analysis_token=token,
+            keyword_note=note, keywords_finalized=False, keyword_retry_available=False,
+        )
+        snapshot = await state.get_data()
+    try:
+        await show_creation_recap(
+            event=event, state=state, target=target, expected_token=snapshot.get("creation_token"),
+        )
+    finally:
+        if status == "pending":
+            context = snapshot.get("book_context")
+            safe_create_task(
+                _search_keywords_in_background(
+                    loading_msg=target, event=event, state=state, snapshot=snapshot,
+                    name=str(snapshot.get("name") or ""),
+                    category_slug=str(
+                        snapshot.get("category_slug") or CategorySlug.BD_COMICS.value
+                    ),
+                    book_context=BookContext(**context) if context else None,
+                ),
+                name="add-variantes",
+            )
+
+
+async def relaunch_keyword_search(
+    *, event: Message | CallbackQuery, loading_msg: Message | bool,
+    state: FSMContext, draft: dict[str, Any],
+) -> None:
+    """Affiche le récapitulatif et relance l'analyse de l'article retenu."""
+    await present_creation_recap(event=event, state=state, draft=draft, target=loading_msg)
 
 
 async def _search_keywords_in_background(
-    *,
-    loading_msg: Message | bool,
-    event: Message | CallbackQuery,
-    state: FSMContext,
-    snapshot: dict[str, Any],
-    name: str,
-    category_slug: str,
-    book_context: Any,
+    *, loading_msg: Any, event: Message | CallbackQuery, state: FSMContext,
+    snapshot: dict[str, Any], name: str, category_slug: str, book_context: Any,
 ) -> None:
-    """Cherche les variantes et exclusions hors du chemin de l'utilisateur.
-
-    Le jalon « ouvrage trouvé » est déjà parti, mais le récap n'existe pas encore : c'est
-    cette tâche qui le publie, quand la réponse arrive — ou quand elle ne vient pas, avec
-    l'échec nommé. L'utilisateur attend donc le moteur, et c'est **assumé** : l'alerte
-    naît avec ses mots-clés plutôt qu'amputée, et un échec laisse le bouton de relance
-    sous la carte au lieu de faire passer un silence pour un avis rendu.
-    """
-    outcome = await keyword_variants_module.generate_variants_and_exclusions(
-        name,
-        category_slug=category_slug,
-        context=book_context,
-    )
+    """Complète uniquement le brouillon et la génération encore applicables."""
+    async with draft_guard(state):
+        if not _draft_matches(await state.get_data(), snapshot):
+            return
+    cancelled = False
+    try:
+        outcome = await keyword_variants_module.generate_variants_and_exclusions(
+            name, category_slug=category_slug, context=book_context,
+        )
+    except asyncio.CancelledError:
+        cancelled = True
+        outcome = KeywordVariantsOutcome.unanswered()
+    except Exception as exc:
+        logger.warning("Analyse de mots-clés interrompue : %s", type(exc).__name__)
+        outcome = KeywordVariantsOutcome.unanswered()
 
     async with draft_guard(state):
         current = await state.get_data()
         if not _draft_matches(current, snapshot):
-            logger.info("Brouillon modifié pendant la recherche IA : %s", name)
+            if cancelled:
+                raise asyncio.CancelledError
             return
-
-        finalized = outcome.answered
-
-        updated = {
-            **current,
-            "variants": _variants_for_category(
-                outcome.variants, name, current.get("include_keywords")
-            ),
-            "exclude_keywords": sanitize_exclusions(
-                _merge_keywords(current.get("exclude_keywords"), outcome.exclusions), name,
-                author=current.get("author"), publisher=current.get("publisher")
-            ),
-            "keyword_note": keyword_note(outcome),
-            "keywords_finalized": finalized,
-        }
+        manual = current.get("keyword_manual_fields") or []
+        variants = list(current.get("variants") or [])
+        exclusions = list(current.get("exclude_keywords") or [])
+        accepted_variants = _variants_for_category(
+            _merge_keywords(variants, outcome.variants), name, current.get("include_keywords"),
+        ) if outcome.answered and "variants" not in manual else variants
+        accepted_exclusions = sanitize_exclusions(
+            _merge_keywords(exclusions, outcome.exclusions), name,
+            author=current.get("author"), publisher=current.get("publisher"),
+        ) if outcome.answered and "exclude_keywords" not in manual else exclusions
+        added_variants = [v for v in accepted_variants if v not in variants]
+        added_exclusions = [v for v in accepted_exclusions if v not in exclusions]
+        retry = bool(not outcome.answered and keyword_variants_module.is_enabled
+                     and keyword_variants_module.client.is_configured)
+        note: str | None
+        if outcome.answered:
+            parts = []
+            if added_variants:
+                parts.append(f"Variantes supplémentaires retenues : {len(added_variants)}.")
+            if added_exclusions:
+                parts.append(f"Exclusions supplémentaires retenues : {len(added_exclusions)}.")
+            note = " ".join(parts) or "Aucune proposition supplémentaire pertinente retenue."
+        else:
+            note = keyword_note(outcome, retry_label=None)
         await state.update_data(
-            variants=updated["variants"],
-            exclude_keywords=updated["exclude_keywords"],
-            keyword_note=updated["keyword_note"],
-            keywords_finalized=finalized,
+            variants=accepted_variants, exclude_keywords=accepted_exclusions,
+            keyword_note=note, keywords_finalized=outcome.answered,
+            keyword_analysis_status="completed" if outcome.answered else "failed",
+            keyword_retry_available=retry,
         )
-
-    recap, keyboard = build_creation_recap(updated)
-    await _finalize_loading_message(loading_msg, event, recap, keyboard)
+        updated = await state.get_data()
+        if (not cancelled and updated.get("keyword_recap_visible", True)
+                and await state.get_state() == AlertCreationState.confirm_creation.state):
+            recap, keyboard = build_creation_recap(updated)
+            message_id = updated.get("keyword_message_id")
+            chat_id = updated.get("keyword_chat_id")
+            if message_id is not None and chat_id is not None and event.bot is not None:
+                await event.bot.edit_message_text(
+                    chat_id=chat_id, message_id=message_id, text=recap, reply_markup=keyboard,
+                )
+            else:
+                await _finalize_loading_message(loading_msg, event, recap, keyboard)
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _get_category_repo(session: Any) -> Any:
@@ -407,43 +453,8 @@ async def start_add_alert(
                 await state.update_data(data=state_data)
                 await state.set_state(AlertCreationState.confirm_creation)
 
-            found_details = " · ".join(
-                html.escape(bit) for bit in (parsed.author, parsed.publisher) if bit
-            )
-            step_text = f"🔎 <b>{html.escape(parsed.name)}</b> identifié"
-            if found_details:
-                step_text += f"\n\n<i>{found_details}</i>"
-
-            step_text += (
-                "\n\n⏳ <i>Recherche des variantes de frappe et des exclusions "
-                "propres à ce produit...</i>"
-            )
-            await _show_step(
-                loading_msg,
-                step_text,
-                InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="🔍 Variantes & exclusions en cours...",
-                                callback_data="noop",
-                            )
-                        ]
-                    ]
-                ),
-            )
-
-            safe_create_task(
-                _search_keywords_in_background(
-                    loading_msg=loading_msg,
-                    event=event,
-                    state=state,
-                    snapshot=state_data,
-                    name=parsed.name,
-                    category_slug=parsed.category_slug,
-                    book_context=parsed.book_context,
-                ),
-                name="add-variantes",
+            await present_creation_recap(
+                event=event, state=state, draft=await state.get_data(), target=loading_msg,
             )
             return
 
@@ -560,9 +571,10 @@ async def handle_category_selected(
                 await state.set_state(AlertCreationState.waiting_for_query)
 
     if unchanged_draft is not None:
-        recap, keyboard = build_creation_recap(unchanged_draft)
-        if callback.message and hasattr(callback.message, "edit_text"):
-            await callback.message.edit_text(recap, reply_markup=keyboard)
+        await show_creation_recap(
+            event=callback, state=state, target=callback.message,
+            expected_token=unchanged_draft.get("creation_token"),
+        )
         return
 
     if inline_query:
@@ -726,64 +738,11 @@ async def process_max_price_input(
 @router.callback_query(AlertCreationState.confirm_creation, F.data == "alert_create_ai_variants")
 async def handle_create_ai_variants(callback: CallbackQuery, state: FSMContext) -> None:
     """Génère et ajoute les variantes orthographiques et exclusions au brouillon d'alerte."""
-    data = await state.get_data()
-    name = data.get("name") or data.get("inline_query") or ""
-    if not name:
-        await callback.answer("Aucun titre disponible pour générer des variantes.", show_alert=True)
-        return
-
-    category_slug = data.get("category_slug", CategorySlug.BD_COMICS.value)
     await callback.answer()
-
-    loading_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⏳ Recherche IA en cours...", callback_data="noop")]
-        ]
+    await present_creation_recap(
+        event=callback, state=state, draft=await state.get_data(),
+        target=callback.message, retry=True,
     )
-    if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(
-            f"⏳ <b>Recherche des variantes et exclusions IA...</b>\n\n"
-            f"Analyse de « <b>{html.escape(name)}</b> » en cours.",
-            reply_markup=loading_kb,
-        )
-
-    book_context = (
-        BookContext(**data["book_context"]) if data.get("book_context") else None
-    )
-    outcome = await keyword_variants_module.generate_variants_and_exclusions(
-        name, category_slug=category_slug, context=book_context
-    )
-    async with draft_guard(state):
-        current = await state.get_data()
-        if not _draft_matches(current, data):
-            return
-        data = current
-
-        finalized = outcome.answered
-        updated_draft = {
-            **data,
-            "variants": _variants_for_category(
-                _merge_keywords(data.get("variants"), outcome.variants),
-                name,
-                data.get("include_keywords"),
-            ),
-            "exclude_keywords": sanitize_exclusions(
-                _merge_keywords(data.get("exclude_keywords"), outcome.exclusions), name,
-                author=data.get("author"), publisher=data.get("publisher")
-            ),
-            "keyword_note": keyword_note(outcome),
-            "keywords_finalized": finalized,
-        }
-        await state.update_data(
-            variants=updated_draft["variants"],
-            exclude_keywords=updated_draft["exclude_keywords"],
-            keyword_note=updated_draft["keyword_note"],
-            keywords_finalized=finalized,
-        )
-
-    recap, keyboard = build_creation_recap(updated_draft)
-    if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(recap, reply_markup=keyboard)
 
 
 @router.callback_query(AlertCreationState.confirm_creation, F.data == "alert_create_confirm")
@@ -823,6 +782,12 @@ async def _save_alert(
 ) -> None:
     """Écrit l'alerte sous protection, puis prépare et présente hors de celle-ci."""
     data = await state.get_data()
+    if data.get("keyword_analysis_status") == "pending" or creation_work_choice_required(data):
+        creation_attempt.release()
+        await callback.answer(
+            "Attends la fin de l’analyse et le choix de l’œuvre.", show_alert=True,
+        )
+        return
     if creation_volume_issue(data):
         creation_attempt.release()
         recap_text, keyboard = build_creation_recap(data)

@@ -96,6 +96,7 @@ async def test_catalogue_candidates_keep_unconfirmed_identity_and_author_choices
             return_value=BookSearchResult(status=status, works=works)
         )
         await start_add_alert(message, state)
+        await drain(repos["tasks"])
     assert state.state == AlertCreationState.confirm_creation
     assert not state.data.get("isbn")
     assert not state.data.get("book_context")
@@ -144,10 +145,12 @@ async def test_category_can_be_changed_from_recap_without_retaining_book_identit
         await handle_category_selected(
             callback, state, None, User(id=uuid.uuid4(), telegram_user_id=42)
         )
+        await drain(repos["tasks"])
     assert state.state == AlertCreationState.confirm_creation
     assert state.data["category_slug"] == "gaming"
     assert state.data["max_item_price_cents"] == 12000
     assert state.data["name"] == title
+    assert state.data.get("keyword_note") != "Ancienne note"
     for field in (
         "isbn",
         "author",
@@ -155,7 +158,6 @@ async def test_category_can_be_changed_from_recap_without_retaining_book_identit
         "series_volumes",
         "edition_alternatives",
         "work_choices",
-        "keyword_note",
         "is_series",
     ):
         assert not state.data.get(field), field
@@ -189,6 +191,7 @@ async def test_optional_price_is_editable_and_persisted_without_an_imposed_defau
             assert state.state == AlertCreationState.waiting_for_edit_field
             await process_creation_edit_input(incoming_message(price), state)
             assert state.state == AlertCreationState.confirm_creation
+        await drain(repos["tasks"])
         callback.data = "alert_create_confirm"
         await save_alert(callback, state, user, session)
         await drain(repos["tasks"])

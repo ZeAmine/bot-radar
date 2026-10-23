@@ -1,6 +1,6 @@
 import uuid
 from itertools import permutations
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aiogram.types import Message
@@ -178,7 +178,8 @@ async def test_frankenstein_homonyms_keep_their_author_and_isbn_through_creation
         patch("app.bot.handlers.alerts_create_confirm.BookSearchUseCase") as search,
         patch("app.bot.handlers.alerts_create_confirm._resolve_edition_choices",
               new=AsyncMock(return_value=[])),
-        patch("app.bot.handlers.alerts_create_confirm.relaunch_keyword_search"),
+        patch("app.services.ai.modules.keyword_variants.KeywordVariantsModule.is_enabled",
+              new_callable=PropertyMock, return_value=False),
     ):
         search.return_value.search_by_isbn = AsyncMock(return_value=confirmed)
         await select_alert_creation_work(callback, state)

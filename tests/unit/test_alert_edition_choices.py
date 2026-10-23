@@ -55,6 +55,7 @@ async def test_process_bd_query_lookup_stores_competing_editions():
     state.get_data = AsyncMock(side_effect=_get)
     state.update_data = AsyncMock(side_effect=_update)
     state.set_state = AsyncMock()
+    state.get_state.return_value = "AlertCreationState:confirm_creation"
     message = MagicMock(spec=Message)
     message.answer = AsyncMock(return_value=MagicMock(spec=Message))
     message.answer.return_value.edit_text = AsyncMock()
@@ -121,6 +122,7 @@ async def test_process_bd_query_lookup_refuses_to_attach_a_homonym():
     state.get_data = AsyncMock(side_effect=lambda: dict(stored))
     state.update_data = _update_data
     state.set_state = AsyncMock()
+    state.get_state.return_value = "AlertCreationState:confirm_creation"
     message = MagicMock(spec=Message)
     message.answer = AsyncMock(return_value=MagicMock(spec=Message))
     message.answer.return_value.edit_text = AsyncMock()
@@ -187,6 +189,7 @@ async def test_process_bd_query_lookup_opens_the_card_when_nothing_is_known():
     state.update_data = _update_data
     state.get_data = _get_data
     state.set_state = AsyncMock()
+    state.get_state.return_value = "AlertCreationState:confirm_creation"
     message = MagicMock(spec=Message)
     status = MagicMock(spec=Message)
     status.edit_text = AsyncMock()

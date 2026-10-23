@@ -30,6 +30,26 @@ Le prix maximum absent reste « Non renseigné », modifiable depuis le récapit
 comme la catégorie. Un prix explicitement saisi est conservé. `/add` sans argument
 conserve le choix de catégorie. Ce parcours de création ne change pas l'ingestion.
 
+Chaque parcours de création affiche le récapitulatif avant l'analyse des variantes
+et exclusions personnalisées. L'analyse automatique part une fois l'article identifié
+et les homonymes départagés ; elle utilise le contexte confirmé, langue et tome compris.
+Pendant l'analyse, la modification et l'annulation restent accessibles ; la création
+est masquée et refusée côté serveur. Elle redevient disponible après réussite, résultat
+sans apport, échec ou indisponibilité, sous réserve des autres contrôles d'identité.
+La relance IA n'est proposée qu'après un échec et si le module est disponible.
+
+Le bilan décrit les propositions supplémentaires effectivement retenues après filtrage,
+sans attribuer à l'IA une décision des filtres. Il distingue un résultat sans apport
+d'une absence de réponse. Les inclusions restent inchangées. Les variantes et exclusions
+éditées manuellement sont protégées séparément ; les filtres de sauvegarde sont
+appliqués dès leur récapitulatif pour afficher les valeurs réellement enregistrables.
+Modifier le prix ou les conditions
+ne relance pas l'analyse. Un changement d'identité invalide l'ancienne génération.
+Une réponse tardive ne rétablit pas un brouillon annulé ou remplacé et ne modifie jamais
+une alerte enregistrée. Si un écran de saisie ou un menu est ouvert, le résultat rejoint
+le brouillon sans remplacer cet écran ; le prochain récapitulatif lit les valeurs courantes.
+Ces tâches de création restent en mémoire, sans reprise durable après un arrêt du processus.
+
 Le titre du panneau « Prix du marché » renvoie à une URL CAL déjà enregistrée
 pour l'ISBN affiché, si elle est sûre et compatible ; sinon il reste sans lien.
 L'ISBN est copiable en `<code>`. L'action d'ouverture du panneau garde son callback.
