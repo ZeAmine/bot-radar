@@ -15,6 +15,7 @@ from scripts.check_junction_topology import (
     EXIT_OK,
     EXIT_PRIVILEGE,
     EXIT_UNKNOWN,
+    EXIT_USAGE,
     PrivilegeError,
     ProbeError,
     check,
@@ -96,25 +97,82 @@ def test_permitlisten_calcule_sans_droits_leve_privilege():
 
 
 def test_cle_conforme_rend_son_permitlisten():
-    assert read_key_permitlisten(_run_complet(), COMPTE) == f"{GATEWAY}:1080"
+    assert read_key_permitlisten(_run_complet(), COMPTE) == (f"{GATEWAY}:1080", 1)
 
 
-def test_cle_sans_permitlisten_rend_none():
+def test_cle_sans_permitlisten_rend_none_et_zero_ligne():
     """Absence d'option : la clé n'est pas restreinte, ce n'est pas « conforme »."""
     run = _run_complet(cle="ssh-ed25519 AAAAfake")
 
-    assert read_key_permitlisten(run, COMPTE) is None
+    assert read_key_permitlisten(run, COMPTE) == (None, 0)
+
+
+def test_plusieurs_cles_portant_permitlisten_sont_comptees():
+    run = _run_complet(
+        cle=f'permitlisten="{GATEWAY}:1080" ssh-ed25519 AAAA1\n'
+        f'permitlisten="{AUTRE_GATEWAY}:1080" ssh-ed25519 AAAA2'
+    )
+
+    option, nombre = read_key_permitlisten(run, COMPTE)
+
+    assert nombre == 2
+    assert option == f"{GATEWAY}:1080"
+
+
+def test_les_lignes_commentees_ne_comptent_pas():
+    run = _run_complet(
+        cle=f'# permitlisten="{AUTRE_GATEWAY}:1080" commentaire\n'
+        f'permitlisten="{GATEWAY}:1080" ssh-ed25519 AAAA1'
+    )
+
+    assert read_key_permitlisten(run, COMPTE) == (f"{GATEWAY}:1080", 1)
 
 
 def test_cle_illisible_leve_une_erreur():
     run = _runner(
         {
             "getent passwd": (0, "/home/compte-tunnel\n", ""),
-            "cat ": (1, "", ""),
+            "cat ": (1, "", "cat: lecture impossible"),
         }
     )
 
     with pytest.raises(ProbeError):
+        read_key_permitlisten(run, COMPTE)
+
+
+def test_cle_illisible_sans_droits_leve_privilege():
+    """Un refus de droits ne doit pas être confondu avec un fichier absent.
+
+    Le fichier peut exister, être correct, et n'être simplement pas lisible par
+    l'opérateur : conclure « clé absente » ferait poser une seconde clé.
+    """
+    run = _runner(
+        {
+            "getent passwd": (0, "/home/compte-tunnel\n", ""),
+            "cat ": (1, "", "cat: Permission denied"),
+        }
+    )
+
+    with pytest.raises(PrivilegeError):
+        read_key_permitlisten(run, COMPTE)
+
+
+def test_cle_absente_est_un_releve_impossible_pas_un_privilege():
+    run = _runner(
+        {
+            "getent passwd": (0, "/home/compte-tunnel\n", ""),
+            "cat ": (1, "", "cat: No such file or directory"),
+        }
+    )
+
+    with pytest.raises(ProbeError):
+        read_key_permitlisten(run, COMPTE)
+
+
+def test_cle_vide_est_un_releve_impossible():
+    run = _run_complet(cle="")
+
+    with pytest.raises(ProbeError, match="vide"):
         read_key_permitlisten(run, COMPTE)
 
 
@@ -178,6 +236,22 @@ def test_cle_non_conforme_est_un_ecart():
 
     assert len(ecarts) == 1
     assert "clé" in ecarts[0]
+
+
+def test_aucune_cle_porteuse_est_un_ecart():
+    """Absence de restriction : ce n'est pas neutre, c'est un écart."""
+    ecarts = check(GATEWAY, GATEWAY, True, None, 0)
+
+    assert len(ecarts) == 1
+    assert "aucune clé" in ecarts[0]
+
+
+def test_plusieurs_cles_porteuses_est_un_ecart_non_tranche():
+    """Plusieurs options : le script ne choisit pas en silence."""
+    ecarts = check(GATEWAY, GATEWAY, True, f"{GATEWAY}:1080", 2)
+
+    assert len(ecarts) == 1
+    assert "2 clés" in ecarts[0]
 
 
 def test_les_trois_ecarts_sont_rendus_ensemble():
@@ -261,7 +335,7 @@ def test_main_rend_le_code_de_l_ecart(monkeypatch, capsys):
         _run_complet(permitlisten=AUTRE_GATEWAY),
     )
 
-    assert main([]) == EXIT_MISMATCH
+    assert main(["--tunnel-user", COMPTE]) == EXIT_MISMATCH
     assert "EN ÉCART" in capsys.readouterr().out
 
 
@@ -270,7 +344,7 @@ def test_main_rend_zero_quand_tout_concorde(monkeypatch):
         "scripts.check_junction_topology.default_runner", _run_complet()
     )
 
-    assert main([]) == EXIT_OK
+    assert main(["--tunnel-user", COMPTE]) == EXIT_OK
 
 
 def test_main_rend_le_code_des_droits(monkeypatch, capsys):
@@ -279,7 +353,7 @@ def test_main_rend_le_code_des_droits(monkeypatch, capsys):
         _run_complet(regle=(4, "", "Permission denied")),
     )
 
-    assert main([]) == EXIT_PRIVILEGE
+    assert main(["--tunnel-user", COMPTE]) == EXIT_PRIVILEGE
     assert "droits insuffisants" in capsys.readouterr().out
 
 
@@ -289,7 +363,7 @@ def test_main_rend_le_code_du_releve_impossible(monkeypatch):
         _runner({"docker network inspect": (1, "", "docker indisponible")}),
     )
 
-    assert main([]) == EXIT_UNKNOWN
+    assert main(["--tunnel-user", COMPTE]) == EXIT_UNKNOWN
 
 
 def test_les_quatre_codes_de_sortie_sont_distincts():
@@ -303,14 +377,14 @@ def test_le_compte_peut_venir_de_lenvironnement(monkeypatch):
         "scripts.check_junction_topology.default_runner", _run_complet()
     )
 
-    assert main([]) == EXIT_OK
+    assert main(["--tunnel-user", COMPTE]) == EXIT_OK
 
 
-def test_sans_compte_le_controle_reste_possible_mais_partiell(monkeypatch, capsys):
-    """Sans compte, gateway et règle INPUT sont contrôlés ; le reste ne l'est pas.
+def test_sans_compte_le_controle_refuse_de_conclure(monkeypatch, capsys):
+    """Sans compte, jamais 0 : le contrôle ne peut pas porter sur les clés.
 
-    Le compte n'est ni choisi ni deviné : un nom par défaut figé dans le script
-    ferait croire à un contrôle complet sur une installation qui ne le prévoit pas.
+    Un code 0 ferait croire à une jonction vérifiée alors que la moitié du
+    contrôle n'a pas eu lieu.
     """
     monkeypatch.delenv("TUNNEL_USER", raising=False)
     monkeypatch.setattr(
@@ -319,6 +393,18 @@ def test_sans_compte_le_controle_reste_possible_mais_partiell(monkeypatch, capsy
 
     code = main([])
 
-    err = capsys.readouterr().err
-    assert "compte de tunnel non fourni" in err
-    assert code == EXIT_OK
+    assert code == EXIT_USAGE
+    assert code != EXIT_OK
+    assert "compte de tunnel requis" in capsys.readouterr().err
+
+
+def test_un_compte_vide_est_traite_comme_absent(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.check_junction_topology.default_runner", _run_complet()
+    )
+
+    assert main(["--tunnel-user", "   "]) == EXIT_USAGE
+
+
+def test_les_cinq_codes_de_sortie_sont_distincts():
+    assert len({EXIT_OK, EXIT_MISMATCH, EXIT_UNKNOWN, EXIT_PRIVILEGE, EXIT_USAGE}) == 5

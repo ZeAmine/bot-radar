@@ -54,13 +54,26 @@ cette fenêtre** : c'est une décision distincte, non prise.
 - Elle ne mesure aucune perte de données : les volumes du test étaient vides.
 - Elle ne dit rien des autres versions de Compose, ni de `docker compose down`.
 
+## État du volume de production
+
+Le volume de production contient **déjà** l'AOF activé à chaud (`aof_enabled:1`,
+posé par `CONFIG SET`), alors que `compose.yml` ne le déclare pas. Conséquences
+pour la **première** recréation :
+
+- `appendonlydir/` existe déjà sur le volume ; la recréation ne le crée pas, elle
+  le **relit**.
+- L'activation à chaud n'était **pas permanente** : un redémarrage du conteneur
+  l'aurait perdue. C'est précisément ce que la fenêtre corrige.
+- La sauvegarde d'avant doit donc contenir `appendonlydir/`, sinon elle ne décrit
+  pas l'état réel.
+
 ## Prérequis
 
 | # | Prérequis | Vérification |
 | --- | --- | --- |
 | P1 | Fenêtre annoncée, aucun autre opérateur | — |
 | P2 | Collecteur arrêté ou inactif | Aucun cycle pendant la recréation |
-| P3 | Sauvegarde du volume Redis, vérifiée non vide et restaurable | Taille > 0, horodatage récent |
+| P3 | Sauvegarde du volume Redis, non vide **et restauration vérifiée sur un Redis jetable** (§2 bis) | Taille > 0, clés retrouvées |
 | P4 | Sauvegarde de `compose.yml` en service | Empreinte relevée |
 | P5 | Accès aux droits nécessaires au constat de jonction | Voir [dérive](#dérive-de-la-passerelle) |
 
@@ -94,10 +107,10 @@ docker exec radar_redis redis-cli INFO persistence | grep rdb_bgsave_in_progress
 
 Le `BGSAVE` est **explicite** : sans lui, l'archive serait prise au milieu d'une
 écriture. Attendre `rdb_bgsave_in_progress:0`, puis archiver le volume avec
-l'image Redis elle-même :
+l'image Redis elle-même, **sans réseau** :
 
 ```sh
-docker run --rm \
+docker run --rm --network none \
   -v bot-radar_redis_data:/data \
   -v "$PWD":/backup \
   redis:7-alpine \
@@ -105,8 +118,50 @@ docker run --rm \
 ls -l redis-data-<horodatage>.tar.gz
 ```
 
-Vérifier que l'archive n'est pas vide et contient bien `appendonly.aof` ou
-`dump.rdb` selon l'état d'avant.
+**Ce que contient réellement le répertoire, mesuré sur `redis:7-alpine`** avec
+l'AOF actif : un répertoire `appendonlydir/` (manifeste, fichier `.incr.aof` et
+`.base.rdb`) **et** un `dump.rdb`. Il n'y a **pas** de fichier `appendonly.aof` à
+la racine — Redis 7 range l'AOF dans `appendonlydir/`. Une archive qui ne
+contiendrait qu'un `dump.rdb` sur un Redis à AOF actif serait incomplète.
+
+### 2 bis. Vérifier la restauration avant la fenêtre
+
+Ce test se fait **avant** la fenêtre, sur un Redis jetable, jamais sur la
+production. Il prouve que l'archive est exploitable, ce qu'une simple taille > 0
+ne prouve pas.
+
+```sh
+# volume vierge, aucun réseau
+mkdir -p /tmp/restore-check
+docker run --rm --network none \
+  -v bot-radar_redis_data:/data -v "$PWD":/backup \
+  redis:7-alpine tar czf /backup/redis-data-<horodatage>.tar.gz -C /data .
+docker run --rm --network none \
+  -v /tmp/restore-check:/data -v "$PWD":/backup \
+  redis:7-alpine sh -c 'tar xzf /backup/redis-data-<horodatage>.tar.gz -C /data && ls /data'
+docker run -d --name restore_check --network none \
+  -v /tmp/restore-check:/data redis:7-alpine \
+  redis-server --appendonly yes --appendfsync everysec
+sleep 4
+docker exec restore_check redis-cli DBSIZE
+docker exec restore_check redis-cli INFO persistence | grep '^aof_enabled'
+docker rm -f restore_check
+```
+
+Critère : `DBSIZE` **égal** au nombre de clés relevé dans l'étape 1, et
+`aof_enabled:1`. Sinon la sauvegarde n'est pas utilisable : **ne pas ouvrir la
+fenêtre**.
+
+**Résultat de ce test, exécuté sur Docker local** : Redis jetable `redis:7-alpine`
+sans réseau, 2 clés écrites, `BGSAVE`, archive de 480 octets contenant
+`appendonlydir/` et `dump.rdb` ; restauration dans un volume vierge : `DBSIZE` = 2,
+valeurs identiques, `aof_enabled:1`.
+
+**Limites de ce résultat** : deux clés seulement, sur une image locale et un
+volume local. Il prouve que **la mécanique** archive → volume vierge → clés
+retrouvées fonctionne, pas qu'un volume de production volumineux se restaure
+dans le délai de la fenêtre. Il ne mesure ni la durée, ni l'espace disque requis
+pour une archive réelle.
 
 ### 3. Arrêt du collecteur
 
@@ -143,9 +198,32 @@ Les identifiants de `radar_postgres` et `radar_app`, relevés à l'étape 1, doi
 être **inchangés**. Un changement signale que `--no-deps` n'a pas été respecté :
 arrêter et examiner avant de reprendre.
 
-### 7. Reprise de la collecte
+### 7. Santé de l'application après la recréation
 
-Redémarrer le collecteur, vérifier un cycle complet, constater les annonces.
+Redis a été recréé : le pool de connexions de `radar_app` a vu sa cible
+disparaître puis revenir. Trois constats, dans cet ordre :
+
+```sh
+docker inspect radar_app -f '{{.State.Health.Status}}'
+docker exec radar_app python3 -c "import redis, os; r=redis.Redis.from_url(os.environ['REDIS_URL']); print('ping', r.ping())"
+docker logs --since 5m radar_app 2>&1 | grep -ciE "connectionerror|redis.*(refused|down)"
+```
+
+1. **Santé** : `healthy`. `starting` ou `unhealthy` interdit la reprise.
+2. **Connexions Redis** : un `PING` répond `True` depuis le conteneur applicatif.
+   C'est le constat que le pool a bien repris, et non seulement que le serveur
+   écoute.
+3. **Un cycle de poller à vide** : redémarrer le collecteur, laisser passer un
+   cycle sans annonce à collecter, et vérifier qu'il se termine sans erreur de
+   connexion dans les journaux. Un cycle réussi prouve la reprise ; un échec la
+   contredit.
+
+Un cycle « à vide » **n'appelle pas la place de marché** : c'est un cycle sans
+annonce à traiter, pas un cycle qui interroge le site.
+
+### 8. Reprise de la collecte
+
+Réactiver le collecteur et constater les annonces.
 
 ## Critères d'échec
 
@@ -157,6 +235,7 @@ Redémarrer le collecteur, vérifier un cycle complet, constater les annonces.
 | F4 | `aof_last_bgrewrite_status` en `err` | **Échec** : la réécriture AOF ne aboutit pas. Rollback. |
 | F5 | Jonction « en écart » après la fenêtre | **Arrêt** : voir [dérive](#dérive-de-la-passerelle) avant toute reprise. |
 | F6 | Le collecteur ne reprend pas un cycle | **Échec d'exploitation** : examiner avant d'activer quoi que ce soit. |
+| F7 | `radar_app` n'est pas `healthy`, ou le `PING` Redis échoue, ou les journaux montrent des erreurs de connexion après la recréation | **Échec** : le pool n'a pas repris. Ne pas activer ; examiner, puis rollback si nécessaire. |
 
 ## Rollback complet
 

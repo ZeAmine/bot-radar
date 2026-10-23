@@ -41,6 +41,7 @@ EXIT_OK = 0
 EXIT_MISMATCH = 1
 EXIT_UNKNOWN = 2
 EXIT_PRIVILEGE = 3
+EXIT_USAGE = 4
 
 Runner = Callable[[str], tuple[int, str, str]]
 
@@ -130,37 +131,51 @@ def _address_only(value: str) -> str:
     return adresse if port.isdigit() else value
 
 
-def read_key_permitlisten(run: Runner, user: str) -> str | None:
-    """Rend le `permitlisten=` porté par la clé du compte, ou None si absent.
+def read_key_permitlisten(
+    run: Runner, user: str
+) -> tuple[str | None, int]:
+    """Rend `(option, nombre de lignes porteuses)` de `authorized_keys`.
 
     Lecture seule. Seule l'option est extraite : ni la clé publique, ni son
     empreinte, ni le commentaire ne sont rendus, donc rien de sensible ne peut
     fuir par la sortie ou par un journal.
+
+    Trois états sont distingués explicitement, parce qu'ils n'ont pas le même
+    sens : aucune ligne ne porte l'option (`(None, 0)`), une seule la porte
+    (`(option, 1)`), plusieurs la portent (`(option, n>1)`) — ce dernier cas est
+    ambigu et ne doit pas être tranché en silence.
     """
-    script = (
-        "getent passwd " + shlex.quote(user) + " | cut -d: -f6"
-    )
-    code, out, err = run(script)
+    home = run(f"getent passwd {shlex.quote(user)} | cut -d: -f6")
+    code, out, err = home
     if code != 0:
+        if _looks_like_privilege_error(err):
+            raise PrivilegeError(f"getent refusé (droits) : {err.strip()}")
         raise ProbeError(f"compte introuvable (code {code}) : {err.strip()}")
-    home = out.strip()
-    if not home:
+    repertoire = out.strip()
+    if not repertoire:
         raise ProbeError("répertoire du compte illisible")
 
-    lecture = f"cat {shlex.quote(home)}/.ssh/authorized_keys 2>/dev/null"
-    code, out, _ = run(lecture)
-    if code != 0 or not out.strip():
-        if _looks_like_privilege_error(out):
-            raise PrivilegeError("authorized_keys illisible (droits)")
-        raise ProbeError("authorized_keys illisible ou vide")
+    chemin = f"{repertoire}/.ssh/authorized_keys"
+    code, out, err = run(f"cat {shlex.quote(chemin)}")
+    if code != 0:
+        if _looks_like_privilege_error(err):
+            raise PrivilegeError(f"authorized_keys illisible (droits) : {err.strip()}")
+        if "no such file" in err.lower():
+            raise ProbeError(f"authorized_keys absent : {chemin}")
+        raise ProbeError(f"authorized_keys illisible (code {code}) : {err.strip()}")
+    if not out.strip():
+        raise ProbeError(f"authorized_keys vide : {chemin}")
 
-    for ligne in out.splitlines():
-        if ligne.lstrip().startswith("#"):
-            continue
-        correspondance = PERMITLISTEN_IN_KEY.search(ligne)
-        if correspondance:
-            return correspondance.group(1)
-    return None
+    options = [
+        m.group(1)
+        for ligne in out.splitlines()
+        if not ligne.lstrip().startswith("#")
+        for m in [PERMITLISTEN_IN_KEY.search(ligne)]
+        if m
+    ]
+    if not options:
+        return None, 0
+    return options[0], len(options)
 
 
 def firewall_rule_present(run: Runner, subnet: str, gateway: str) -> bool:
@@ -190,6 +205,7 @@ def check(
     permitlisten: str,
     rule_present: bool,
     key_permitlisten: str | None = None,
+    key_lines: int = 1,
 ) -> list[str]:
     """Rend les écarts entre la gateway et les valeurs qui la visent."""
     ecarts: list[str] = []
@@ -202,7 +218,17 @@ def check(
         ecarts.append(
             f"règle de pare-feu absente : {PORT}/tcp du sous-réseau vers la gateway"
         )
-    if key_permitlisten is not None and _address_only(key_permitlisten) != gateway:
+    if key_lines > 1:
+        ecarts.append(
+            f"{key_lines} clés du compte portent permitlisten : laquelle sshd "
+            "applique n'est pas déterminable, à trancher à la main"
+        )
+    elif key_permitlisten is None:
+        ecarts.append(
+            "aucune clé du compte de tunnel ne porte permitlisten : "
+            "la restriction n'est pas posée"
+        )
+    elif _address_only(key_permitlisten) != gateway:
         ecarts.append(
             "permitlisten de la clé du compte de tunnel ne vise pas la gateway : "
             f"{key_permitlisten} ≠ {gateway}"
@@ -211,7 +237,7 @@ def check(
 
 
 def verify(
-    run: Runner, tunnel_user: str | None = None
+    run: Runner, tunnel_user: str
 ) -> tuple[bool | None, list[str], bool]:
     """Rend `(conforme, écarts, droits_insuffisants)`.
 
@@ -219,10 +245,8 @@ def verify(
     """
     try:
         subnet, gateway = read_network(run)
-        permitlisten = read_permitlisten(run, tunnel_user or "")
-        key_permitlisten = (
-            read_key_permitlisten(run, tunnel_user) if tunnel_user else None
-        )
+        permitlisten = read_permitlisten(run, tunnel_user)
+        key_permitlisten, key_lines = read_key_permitlisten(run, tunnel_user)
     except PrivilegeError as exc:
         return None, [str(exc)], True
     except ProbeError as exc:
@@ -235,7 +259,7 @@ def verify(
     except ProbeError as exc:
         return None, [str(exc)], False
 
-    ecarts = check(gateway, permitlisten, present, key_permitlisten)
+    ecarts = check(gateway, permitlisten, present, key_permitlisten, key_lines)
     return not ecarts, ecarts, False
 
 
@@ -251,12 +275,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="rend le verdict en JSON.")
     args = parser.parse_args(argv)
 
-    if not args.tunnel_user:
+    if not args.tunnel_user or not args.tunnel_user.strip():
         print(
-            "compte de tunnel non fourni : --tunnel-user ou TUNNEL_USER requis.\n"
-            "Sans lui, seuls la gateway et la règle INPUT sont contrôlés.",
+            "compte de tunnel requis : --tunnel-user ou TUNNEL_USER.\n"
+            "Le contrôle porte sur les clés de ce compte ; sans lui il ne peut "
+            "pas conclure, et ne rend donc jamais « conforme ».",
             file=sys.stderr,
         )
+        return EXIT_USAGE
     conforme, ecarts, droits = verify(default_runner, args.tunnel_user)
     if args.json:
         print(
