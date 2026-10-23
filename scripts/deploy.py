@@ -137,6 +137,10 @@ class Context:
     # bilan du déploiement nomme la référence de retour réellement disponible
     # plutôt qu'un nom supposé.
     rollback_image: str = ""
+    # Services qu'une fenêtre de maintenance autorise explicitement à recréer.
+    # Vide en temps normal : le déploiement applicatif ne touche aucune
+    # dépendance. Renseigné seulement par un déploiement de maintenance annoncé.
+    authorized_recreation: tuple[str, ...] = ()
 
     def remote_or_default(self) -> Remote:
         if self.remote is None:
@@ -388,6 +392,14 @@ echo "conteneur cible sain après migration"
             f"entièrement validé ; aucune réparation ni retour arrière automatique.{RESET}"
         )
         return 1
+    for autorisee in verdict.autorisees:
+        print(f"{YELLOW}recréation autorisée : {autorisee}{RESET}")
+    if verdict.autorisees:
+        print(
+            f"{YELLOW}Une fenêtre de maintenance a demandé cette recréation. Vérifier "
+            f"le volume de données et les pollers avant de déclarer le déploiement "
+            f"terminé.{RESET}"
+        )
     print(f"{GREEN}dépendances inchangées ({', '.join(DEPENDENT_SERVICES)}){RESET}")
     return int(code)
 
@@ -413,7 +425,14 @@ def _verify_dependencies_unchanged(ctx: Context) -> InvarianceVerdict:
         apres = decode_capture(out)
     except DependencyError as exc:
         return InvarianceVerdict.non_verifiee(f"relevé illisible : {exc}")
-    return InvarianceVerdict.concluante(compare(ctx.dependencies_before, apres, DEPENDENT_SERVICES))
+    return InvarianceVerdict.concluante(
+        *compare(
+            ctx.dependencies_before,
+            apres,
+            DEPENDENT_SERVICES,
+            authorized_recreation=ctx.authorized_recreation,
+        )
+    )
 
 
 def step_verify(ctx: Context) -> int:
