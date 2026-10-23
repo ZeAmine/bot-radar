@@ -152,26 +152,10 @@ ssh-keyscan -p 22 "$VPS_HOST" >> ~/.ssh/known_hosts
 crontab -e
 ```
 
-Supervision par `flock`, avec chemins absolus, pour survivre au redémarrage et
-aux crashs **sans jamais créer de doublon**. `cron` n'hérite pas de l'environnement
-du shell : `PATH` y est réduit, et les valeurs de `$VPS_USER` et `$VPS_HOST` y sont
-écrites **au moment de l'installation**, depuis l'environnement de l'opérateur.
-Elles ne sont jamais stockées dans ce dépôt.
-
-Trois scripts sous `~/bot-radar-relay/` : `run_relay.sh`, `run_tunnel.sh` et
-`relay_probe.sh`. Chacun prend son verrou puis `exec` le processus qu'il protège :
-le verrou tient aussi longtemps que le processus, et une invocation concurrente
-sort en code `1` sans rien démarrer.
-
-```sh
-SHELL=/bin/sh
-PATH=/usr/local/bin:/usr/bin:/bin
-@reboot sleep 20; /usr/bin/flock -n $HOME/bot-radar-relay/locks/relay.lock $HOME/bot-radar-relay/run_relay.sh >> $HOME/bot-radar-relay/logs/relay.log 2>&1
-@reboot sleep 30; /usr/bin/flock -n $HOME/bot-radar-relay/locks/tunnel.lock $HOME/bot-radar-relay/run_tunnel.sh >> $HOME/bot-radar-relay/logs/tunnel.log 2>&1
-*/5 * * * * /usr/bin/flock -n $HOME/bot-radar-relay/locks/relay.lock $HOME/bot-radar-relay/run_relay.sh >> $HOME/bot-radar-relay/logs/relay.log 2>&1
-*/5 * * * * /usr/bin/flock -n $HOME/bot-radar-relay/locks/tunnel.lock $HOME/bot-radar-relay/run_tunnel.sh >> $HOME/bot-radar-relay/logs/tunnel.log 2>&1
-*/5 * * * * $HOME/bot-radar-relay/relay_probe.sh >> $HOME/bot-radar-relay/logs/probe.log 2>&1
-```
+Les trois scripts sont versionnés en gabarits dans `deploy/pi-relay/`, avec leur
+**crontab de référence, leurs paramètres et leur procédure d'installation**. Cette
+section n'en tient pas de copie : voir
+[les gabarits du Pi](../../deploy/pi-relay/README.md).
 
 Le tunnel porte `ExitOnForwardFailure=yes`, `ServerAliveInterval=30`,
 `ServerAliveCountMax=3` et `StrictHostKeyChecking=yes` : il se ferme plutôt que de
@@ -214,7 +198,7 @@ s.close()
 
 Attendu : `salut: 0500`. Toute autre valeur — ou une erreur de connexion — signifie
 que la jonction est rompue : voir la section « Dérive de la passerelle » de
-[la fenêtre Redis](redis-subnet-maintenance.md). Ce test **ne prouve pas** la sortie.
+[la fenêtre Redis](redis-persistence-window.md). Ce test **ne prouve pas** la sortie.
 
 **(b) Un domaine non listé est-il refusé ?** Envoie une demande `CONNECT` vers un
 domaine volontairement absent de la liste autorisée. Le relais doit répondre
@@ -265,10 +249,16 @@ dédiée. La topologie retenue est celle-ci, et c'est elle que
 Deux invariants à ne pas perdre :
 
 - **L'adresse est celle de la gateway, pas `127.0.0.1`** ni l'IP publique.
-- **Le sous-réseau doit être épinglé.** Sans épinglage, une recréation du réseau
-  peut changer la gateway, et la règle de pare-feu comme le `permitlisten`
-  viseraient une adresse morte. Voir
-  [fenêtre de maintenance Redis et sous-réseau](redis-subnet-maintenance.md).
+- **La gateway n'est pas épinglée.** Une recréation du réseau peut la changer, et
+  la règle de pare-feu comme les deux `permitlisten` viseraient alors une adresse
+  morte. La dérive est **détectée** par `scripts/check_junction_topology.py`, et
+  corrigée selon la section « Dérive de la passerelle » de
+  [la fenêtre de persistance Redis](redis-persistence-window.md).
+
+> **Ne jamais exécuter `docker compose down` sur ce projet sans passer par ce
+> document.** Un `down` suivi d'un `up` recrée le réseau, donc peut changer la
+> gateway — et laisse la jonction cassée si la correction ne suit pas
+> immédiatement.
 
 Sans cette jonction, la collecte échoue en `LeboncoinCollectionError` et alerte
 après plusieurs cycles. Ces éléments touchent le pare-feu ou `sshd` : les mettre

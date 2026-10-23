@@ -50,7 +50,7 @@ Lus depuis l'environnement. Les valeurs sont fournies au déploiement, jamais
 | `PROBE_KEEP_LINES` | `relay_probe.sh` | Lignes conservées après troncature (défaut 200) |
 
 `TUNNEL_LISTEN_ADDRESS` est l'adresse de la gateway du réseau applicatif du VPS,
-pas `127.0.0.1` : voir [la fenêtre Redis et sous-réseau](../docs/operations/redis-subnet-maintenance.md)
+pas `127.0.0.1` : voir [la fenêtre Redis et sous-réseau](../../docs/operations/redis-persistence-window.md)
 pour la dérive de cette valeur.
 
 ## Installation
@@ -76,12 +76,44 @@ du tunnel reste hors de ce répertoire, avec les droits de `ssh`.
 
 ## Crontab
 
-Les variables sont **écrites au moment de l'installation**, depuis
-l'environnement de l'opérateur, puisque `cron` n'hérite de rien :
+**Source de vérité unique** : cette section. `docs/operations/deployment.md` y
+renvoie et n'en tient pas de copie.
+
+Deux mécanismes distincts, souvent confondus :
+
+- les lignes **`nom=valeur`** sont lues par `cron` lui-même et deviennent
+  l'environnement de la commande ; **cron ne développe pas de variable dans une
+  valeur**, `RELAY_DIR=$HOME/x` resterait littéral ;
+- le **reste de la ligne** est exécuté par le shell de `SHELL` (ici `/bin/sh`),
+  qui, lui, **développe `$RELAY_DIR`** dans la commande.
+
+C'est pourquoi les variables sont définies en tête, puis utilisées sous forme
+`$RELAY_DIR` dans les commandes : c'est le shell qui les développe, pas cron.
 
 ```sh
 SHELL=/bin/sh
 PATH=/usr/local/bin:/usr/bin:/bin
+RELAY_DIR=/home/<UTILISATEUR>/bot-radar-relay
+TUNNEL_KEY=/home/<UTILISATEUR>/.ssh/<CLE_TUNNEL>
+TUNNEL_REMOTE=<COMPTE_TUNNEL>@<HOTE_VPS>
+TUNNEL_LISTEN_ADDRESS=<ADRESSE_GATEWAY>
+RELAY_PORT=8080
+TUNNEL_PORT=1080
+PROBE_HOST=127.0.0.1
+
+# Valeurs à ne jamais écrire dans le dépôt, reportées ici après installation :
+#   UTILISATEUR           compte du Pi qui exécute le relais
+#   CLE_TUNNEL            nom de la clé dédiée au tunnel, sans son préfixe de chemin
+#   COMPTE_TUNNEL         compte de tunnel sur le VPS
+#   HOTE_VPS              hôte du VPS
+#   ADRESSE_GATEWAY       gateway du réseau Docker applicatif
+```
+
+Chaque ligne `nom=valeur` est lue par cron : **aucune ne doit rester vide ni
+commentée en fin de ligne**, un commentaire y serait pris pour une partie de la
+valeur.
+
+```sh
 @reboot sleep 20; /usr/bin/flock -n $RELAY_DIR/locks/relay.lock $RELAY_DIR/run_relay.sh
 */5 * * * * /usr/bin/flock -n $RELAY_DIR/locks/relay.lock $RELAY_DIR/run_relay.sh
 @reboot sleep 25; /usr/bin/flock -n $RELAY_DIR/locks/tunnel.lock $RELAY_DIR/run_tunnel.sh
@@ -89,8 +121,16 @@ PATH=/usr/local/bin:/usr/bin:/bin
 */5 * * * * /bin/sh $RELAY_DIR/relay_probe.sh
 ```
 
-Le décalage des deux `@reboot` évite que le tunnel parte avant que le relais
-n'écoute.
+Trois points que ces lignes portent :
+
+- **Les deux `@reboot` sont décalés** (20 s pour le relais, 25 s pour le tunnel) :
+  le tunnel ne doit pas partir avant que le relais n'écoute.
+- **Aucune redirection de journal dans les lignes `cron`.** Les scripts
+  redirigent déjà vers `$RELAY_DIR/logs/` ; une seconde redirection créerait deux
+  écritures concurrentes sur le même fichier, rendrait le journal illisible et
+  pourrait couper en deux une ligne que la sonde tronque.
+- **La sonde a sa propre ligne** et ne prend aucun verrou : elle ne modifie pas le
+  relais, elle l'arrête pour que le superviseur le relance.
 
 ## Vérification après installation
 
@@ -114,9 +154,29 @@ flock -n "$RELAY_DIR/locks/relay.lock" "$RELAY_DIR/run_relay.sh"; echo "code=$?"
   grossissent.
 - Ils ne remplacent pas la rotation de la clé ni la vérification du pare-feu.
 
-## Écart possible entre le gabarit et le déploiement
+## Comparaison avec le déploiement
 
-Ces fichiers reproduisent la logique déployée telle qu'elle a été constatée.
+Ces fichiers reproduisent la logique déployée **telle qu'elle a été constatée**.
 Aucune comparaison automatique n'est faite entre le dépôt et le Pi : un écart est
-possible et ne serait pas détecté. Après toute modification d'un côté, comparer
-les deux.
+possible et ne serait pas détecté. **Aucune valeur n'est affirmée ici** : chaque
+ligne se vérifie au prochain accès autorisé, et le relevé se note dans le compte
+rendu de cet accès, pas dans ce fichier.
+
+Liste de contrôle, à refaire après toute modification d'un côté ou de l'autre :
+
+| # | À comparer | Où regarder | Écart = |
+| --- | --- | --- | --- |
+| C1 | Empreinte de chaque script | `sha256sum` côté Pi, `git hash-object` côté dépôt | Le dépôt ne décrit plus le terrain |
+| C2 | Contenu du verrou et chemins | `locks/relay.lock`, `locks/tunnel.lock` | Verrous différents = deux superviseurs |
+| C3 | Décalages `@reboot` | `crontab -l`, deux premières lignes | Tunnel parti avant le relais |
+| C4 | Chemin et interpréteur de la sonde | `crontab -l`, dernière ligne | Sonde non exécutée |
+| C5 | Redirection de journal dans les lignes cron | `crontab -l` | Double écriture sur le même fichier |
+| C6 | Variables de tunnel effectives | `ps -eo args` sur le processus `ssh` | `-R` visant une autre adresse que la gateway |
+| C7 | Options de durcissement de `ssh` | mêmes arguments | `StrictHostKeyChecking` ou `ExitOnForwardFailure` absents |
+| C8 | Port d'écoute du relais | `ss -H -ltn` | Relais et tunnel sur des ports différents |
+| C9 | Nombre d'instances | `ss` et `ps` comptés | Doublon |
+| C10 | Taille des journaux | `logs/` | Journal non borné qui grossit |
+
+Ce que cette liste **ne** fait pas : elle ne prouve pas que le relais sort par une
+adresse résidentielle, ni que la place de marché répond. Ces deux points relèvent
+du premier contact supervisé, pas d'une comparaison de fichiers.

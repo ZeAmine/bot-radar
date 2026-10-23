@@ -74,7 +74,7 @@ Date : 2026-10-19 · Statut : **accepté**.
   La décision elle-même — sortie résidentielle auto-hébergée — est inchangée ; seule
   la forme de jonction est corrigée. Voir
   [déploiement](../operations/deployment.md) et
-  [fenêtre Redis et sous-réseau](../operations/redis-subnet-maintenance.md).
+  [fenêtre Redis et sous-réseau](../operations/redis-persistence-window.md).
 - Limites : 35 annonces par page, soit une fenêtre de quelques dizaines de minutes à cette cadence ; une page saturée est rattrapée par une seconde page, jamais au-delà ; aucune collecte si le Pi ou le tunnel est indisponible ; `robots.txt` reste en contradiction avec cette décision, assumée par l'utilisateur et bornée à ce flux.
 
 <a id="adr-053"></a>
