@@ -43,6 +43,10 @@ class BookContext(BaseModel):
             facts.append(f"format : {self.format_detail}")
         if self.isbn13:
             facts.append(f"ISBN de référence : {self.isbn13}")
+        if self.language:
+            facts.append(f"langue : {self.language}")
+        if self.volume_number is not None:
+            facts.append(f"tome : {self.volume_number}")
         facts.append("nature : série multi-tomes" if self.is_series else "ouvrage unique")
         return facts
 

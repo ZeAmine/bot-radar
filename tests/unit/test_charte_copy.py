@@ -687,6 +687,7 @@ async def _price_screen_text(kind: str) -> tuple[str, AsyncMock]:
     state.update_data = _update_data
     state.get_data = _get_data
     state.set_state = AsyncMock()
+    state.get_state.return_value = "AlertCreationState:confirm_creation"
 
     message = MagicMock(spec=Message)
     status = MagicMock(spec=Message)
@@ -758,7 +759,8 @@ async def test_a_book_without_price_opens_the_creation_recap():
     assert lines[-1] == "<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"
     # Hors serie et ouvrage identifie : la seule indication en italique est la consigne.
     assert "série" not in rendered.lower()
-    assert rendered.count("<i>") == 1
+    assert rendered.count("<i>") == 2
+    assert "Analyse IA indisponible : aucune proposition ajoutée." in rendered
     assert "✍️" not in rendered
     assert "🔢" not in rendered
     assert "🔑 <b>Inclus :</b>" not in rendered

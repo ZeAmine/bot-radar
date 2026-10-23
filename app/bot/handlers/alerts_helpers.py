@@ -645,25 +645,25 @@ def creation_volume_issue(data: dict[str, Any]) -> str | None:
     )
 
 
-def creation_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
-    """Clavier du récap : œuvres homonymes, éditions numérotées, puis validation.
+def creation_work_choice_required(data: dict[str, Any]) -> bool:
+    return not data.get("isbn") and len(data.get("work_choices") or []) > 1
 
-    « ✨ Variantes & Exclusions IA » n'apparaît que tant que la recherche
-    automatique n'a pas été menée. Une fois les mots-clés posés, le bouton ne
-    pourrait rien ajouter que le brouillon ne contienne déjà, et il douterait de
-    l'automatisme. L'état du brouillon décide donc, pas le chemin qui affiche.
-    """
+
+def creation_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
+    """Clavier de sélection et validation, avec relance d'une analyse échouée."""
     alternatives = data.get("edition_alternatives")
     works = data.get("work_choices")
     keyboard = get_alert_confirmation_keyboard(
-        show_variants_btn=not data.get("keywords_finalized"),
+        show_variants_btn=(data.get("keyword_analysis_status") == "failed"
+                           and bool(data.get("keyword_retry_available"))),
         edition_alternatives=alternatives,
         edition_labels=build_edition_labels(alternatives),
         work_choices=works,
         work_labels=build_work_labels(works),
     )
 
-    if creation_volume_issue(data):
+    if (creation_volume_issue(data) or creation_work_choice_required(data)
+            or data.get("keyword_analysis_status") == "pending"):
         keyboard.inline_keyboard = [
             [button for button in row if button.callback_data != "alert_create_confirm"]
             for row in keyboard.inline_keyboard
@@ -980,6 +980,10 @@ class IsbnRealignment:
 
 
 KEYWORDS_FROM_PREVIOUS_WORK: dict[str, Any] = {
+    "keyword_analysis_status": None,
+    "keyword_analysis_token": None,
+    "keyword_manual_fields": [],
+    "keyword_retry_available": False,
     "variants": [],
     "exclude_keywords": [],
     "keyword_note": None,
@@ -1280,7 +1284,7 @@ async def _apply_search_draft(
             return None
         if price is not None:
             updates["max_item_price_cents"] = price
-        await state.update_data(**updates)
+        await state.update_data(**{**KEYWORDS_FROM_PREVIOUS_WORK, **updates})
         await state.set_state(AlertCreationState.confirm_creation)
         return await state.get_data()
 
@@ -1374,8 +1378,9 @@ async def process_bd_query_lookup(
         if draft is None:
             return True
 
-        recap_text, keyboard = build_creation_recap(draft)
-        await status_msg.edit_text(recap_text, reply_markup=keyboard)
+        from app.bot.handlers.alerts_create import present_creation_recap
+
+        await present_creation_recap(event=event, state=state, draft=draft, target=status_msg)
         return True
 
     if db_user and result.status != BookSearchStatus.AMBIGUOUS:
@@ -1420,8 +1425,9 @@ async def process_bd_query_lookup(
     if draft is None:
         return True
 
-    recap_text, keyboard = build_creation_recap(draft)
-    await status_msg.edit_text(recap_text, reply_markup=keyboard)
+    from app.bot.handlers.alerts_create import present_creation_recap
+
+    await present_creation_recap(event=event, state=state, draft=draft, target=status_msg)
     return True
 
 
@@ -1500,8 +1506,9 @@ async def process_tech_or_clothes_query(
     draft = await _apply_search_draft(state, token, updates, inline_price_cents)
     if draft is None:
         return
-    recap_text, keyboard = build_creation_recap(draft)
-    if isinstance(event, CallbackQuery) and event.message and hasattr(event.message, "edit_text"):
-        await event.message.edit_text(recap_text, reply_markup=keyboard)
-    else:
-        await target_msg.answer(recap_text, reply_markup=keyboard)
+    from app.bot.handlers.alerts_create import present_creation_recap
+
+    await present_creation_recap(
+        event=event, state=state, draft=draft,
+        target=event.message if isinstance(event, CallbackQuery) else None,
+    )

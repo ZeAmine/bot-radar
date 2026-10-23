@@ -17,7 +17,12 @@ from app.bot.handlers._alerts_router import (
     bind_creation_keyboard,
     router,
 )
-from app.bot.handlers.alerts_create import relaunch_keyword_search
+from app.bot.handlers.alerts_create import (
+    _variants_for_category,
+    present_creation_recap,
+    relaunch_keyword_search,
+    show_creation_recap,
+)
 from app.bot.handlers.alerts_helpers import (
     KEYWORDS_FROM_PREVIOUS_WORK,
     _resolve_edition_choices,
@@ -45,6 +50,7 @@ from app.core.constants import (
 )
 from app.domain.enums import BookSearchStatus
 from app.domain.rules.book_volume import requested_volume, volume_title
+from app.domain.rules.keyword_hygiene import sanitize_exclusions
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import (
     AlertServiceError,
@@ -270,10 +276,8 @@ async def select_alert_creation_work(
     await callback.answer("✅ Œuvre retenue")
 
     if callback.message and hasattr(callback.message, "edit_text"):
-        recap_text, keyboard = build_creation_recap(updated_data)
         target = cast(Message, callback.message)
-        await target.edit_text(recap_text, reply_markup=keyboard)
-        relaunch_keyword_search(
+        await relaunch_keyword_search(
             event=target,
             loading_msg=target,
             state=state,
@@ -287,6 +291,7 @@ async def select_alert_creation_work(
 async def edit_alert_creation_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     """Affiche le menu complet de modification des informations d'alerte."""
     await callback.answer()
+    await state.update_data(keyword_recap_visible=False)
     data = await state.get_data()
     if not data.get("category_slug"):
         await _end_draft_without_recap(callback)
@@ -368,6 +373,7 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
         return
     if field == "category":
         await callback.answer()
+        await state.update_data(keyword_recap_visible=False)
         async with draft_guard(state):
             data = await state.get_data()
             if not data.get("category_slug"):
@@ -390,6 +396,7 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
         return
     if field == "conditions":
         await callback.answer()
+        await state.update_data(keyword_recap_visible=False)
         data = await state.get_data()
         selected = list(data.get("selected_conditions") or STANDARD_CONDITIONS)
         text = (
@@ -408,7 +415,7 @@ async def handle_create_edit_choice(callback: CallbackQuery, state: FSMContext) 
     await callback.answer()
     data = await state.get_data()
     await state.set_state(AlertCreationState.waiting_for_edit_field)
-    await state.update_data(current_edit_field=field)
+    await state.update_data(current_edit_field=field, keyword_recap_visible=False)
 
     field_labels = {
         "name": ("Nom / Titre", data.get("name", ""), "Envoie le nouveau nom / titre :"),
@@ -523,15 +530,31 @@ async def _publish_edited_draft(
     async with draft_guard(state):
         if not _same_draft(await state.get_data(), snapshot):
             return
+        current = {**await state.get_data(), **updates}
+        updates = {
+            **updates,
+            "variants": _variants_for_category(
+                current.get("variants"), current.get("name") or "", current.get("include_keywords"),
+            ),
+            "exclude_keywords": sanitize_exclusions(
+                current.get("exclude_keywords") or [], current.get("name") or "",
+                author=current.get("author"), publisher=current.get("publisher"),
+            ),
+        }
+        if (snapshot.get("keyword_analysis_status") == "completed"
+                and snapshot.get("current_edit_field") in ("variants", "exclude_keywords")):
+            updates["keyword_note"] = None
         await state.update_data(**updates, pending_identity=None,
                                 draft_revision=int(snapshot.get("draft_revision") or 0) + 1,
                                 search_token=uuid.uuid4().int)
         await state.set_state(AlertCreationState.confirm_creation)
         current = await state.get_data()
-    recap, keyboard = build_creation_recap(current)
-    sent = await message.answer(recap, reply_markup=keyboard)
     if identity_changed:
-        relaunch_keyword_search(event=message, loading_msg=sent, state=state, draft=current)
+        await present_creation_recap(event=message, state=state, draft=current)
+    else:
+        await show_creation_recap(
+            event=message, state=state, expected_token=current.get("creation_token"),
+        )
 
 
 @router.message(AlertCreationState.waiting_for_edit_field)
@@ -547,7 +570,9 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
             await message.answer("⚠️ Le nom doit comporter au moins 2 caractères. Réessaie :")
             return
         number = requested_volume(raw_text) or data.get("requested_volume")
-        updates = {"name": volume_title(raw_text, number) if number else raw_text,
+        identity_changed = raw_text != data.get("name")
+        updates = {**(KEYWORDS_FROM_PREVIOUS_WORK if identity_changed else {}),
+                   "name": volume_title(raw_text, number) if number else raw_text,
                    "requested_volume": number}
     elif field == "isbn":
         identity_changed = True
@@ -592,6 +617,10 @@ async def process_creation_edit_input(message: Message, state: FSMContext) -> No
             await message.answer("⚠️ Au moins un mot-clé requis. Réessaie :")
             return
         updates = {field: parsed}
+        if field in ("variants", "exclude_keywords"):
+            updates["keyword_manual_fields"] = list(dict.fromkeys([
+                *(data.get("keyword_manual_fields") or []), field,
+            ]))
     await _publish_edited_draft(message, state, data, updates, identity_changed=identity_changed)
 
 
@@ -628,7 +657,8 @@ async def back_to_recap(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(AlertCreationState.confirm_creation)
 
-    recap_text, keyboard = build_creation_recap(data)
-    if callback.message and hasattr(callback.message, "edit_text"):
-        await callback.message.edit_text(recap_text, reply_markup=keyboard)
+    await show_creation_recap(
+        event=callback, state=state, target=callback.message,
+        expected_token=data.get("creation_token"),
+    )
 

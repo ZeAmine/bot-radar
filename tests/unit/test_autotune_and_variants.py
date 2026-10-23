@@ -1,7 +1,7 @@
 """Tests unitaires pour l'Auto-Tuning, les variantes orthographiques et le bouton dressing."""
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aiogram.fsm.context import FSMContext
@@ -49,6 +49,21 @@ _GEN_PATH = (
 )
 
 
+async def _run_creation_keyword_retry(callback, state, *, client=None):
+    from tests.add_journey import defer_task, drain
+
+    tasks = []
+    with (
+        patch("app.services.ai.modules.keyword_variants.KeywordVariantsModule.is_enabled",
+              new_callable=PropertyMock, return_value=True),
+        patch("app.services.ai.modules.keyword_variants.keyword_variants_module.client",
+              client or MagicMock(is_configured=True)),
+        patch("app.bot.handlers.alerts_create.safe_create_task", defer_task(tasks)),
+    ):
+        await handle_create_ai_variants(callback, state)
+        await drain(tasks)
+
+
 @pytest.mark.asyncio
 async def test_handle_create_ai_variants():
     """Vérifie l'ajout de variantes et d'exclusions dans le flow /add avec indicateur."""
@@ -57,18 +72,14 @@ async def test_handle_create_ai_variants():
     callback.message = MagicMock()
     callback.message.edit_text = AsyncMock()
 
-    state = MagicMock(spec=FSMContext)
-    state.storage = MemoryStorage()
-    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
-    state.get_data = AsyncMock(
-        return_value={
-            "name": "One Piece",
-            "include_keywords": ["One Piece"],
-            "max_item_price_cents": 3500,
-            "category_slug": "bd_comics",
-        }
+    from tests.add_fakes import DraftState
+
+    state = DraftState()
+    await state.update_data(
+        name="One Piece", include_keywords=["One Piece"], max_item_price_cents=3500,
+        category_slug="bd_comics", keyword_analysis_status="failed",
     )
-    state.update_data = AsyncMock()
+    await state.set_state("AlertCreationState:confirm_creation")
 
     with patch(
         _GEN_PATH,
@@ -79,10 +90,9 @@ async def test_handle_create_ai_variants():
             answered=True,
         ),
     ):
-        await handle_create_ai_variants(callback, state)
+        await _run_creation_keyword_retry(callback, state)
 
-        state.update_data.assert_called_once()
-        updated_data = state.update_data.call_args[1]
+        updated_data = state.data
         assert "onepiece" in updated_data["variants"]
         # « one piece tomes » répète le titre : le nettoyeur l'écarte, comme en amont.
         assert "one piece tomes" not in updated_data["variants"]
@@ -104,29 +114,24 @@ async def test_handle_create_ai_variants_reports_engine_decision_when_nothing_fo
     callback.message = MagicMock()
     callback.message.edit_text = AsyncMock()
 
-    state = MagicMock(spec=FSMContext)
-    state.storage = MemoryStorage()
-    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
-    state.get_data = AsyncMock(
-        return_value={
-            "name": "One Piece",
-            "include_keywords": ["One Piece"],
-            "max_item_price_cents": 3500,
-            "category_slug": "bd_comics",
-        }
+    from tests.add_fakes import DraftState
+
+    state = DraftState()
+    await state.update_data(
+        name="One Piece", include_keywords=["One Piece"], max_item_price_cents=3500,
+        category_slug="bd_comics", keyword_analysis_status="failed",
     )
-    state.update_data = AsyncMock()
+    await state.set_state("AlertCreationState:confirm_creation")
 
     with patch(
         _GEN_PATH,
         new_callable=AsyncMock,
         return_value=KeywordVariantsOutcome(answered=True),
     ):
-        await handle_create_ai_variants(callback, state)
+        await _run_creation_keyword_retry(callback, state)
 
-    state.update_data.assert_called_once()
-    stored = state.update_data.call_args.kwargs
-    assert "n'a trouvé aucune variante ni exclusion pertinente" in stored["keyword_note"]
+    stored = state.data
+    assert "Aucune proposition supplémentaire pertinente retenue." in stored["keyword_note"]
     # Un avis du moteur ne se confond pas avec une panne.
     assert "pas répondu" not in stored["keyword_note"]
     callback.answer.assert_awaited_once()
@@ -134,7 +139,7 @@ async def test_handle_create_ai_variants_reports_engine_decision_when_nothing_fo
     last_text = callback.message.edit_text.call_args[0][0]
     # La carte garde un titre unique et porte la note, sans en-tête de cas particulier.
     assert last_text.startswith(RECAP_TITLE)
-    assert "n'a trouvé aucune variante ni exclusion pertinente" in last_text
+    assert "Aucune proposition supplémentaire pertinente retenue." in last_text
 
 
 @pytest.mark.asyncio
@@ -145,27 +150,23 @@ async def test_handle_create_ai_variants_reports_silence_when_engine_failed():
     callback.message = MagicMock()
     callback.message.edit_text = AsyncMock()
 
-    state = MagicMock(spec=FSMContext)
-    state.storage = MemoryStorage()
-    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
-    state.get_data = AsyncMock(
-        return_value={
-            "name": "One Piece",
-            "include_keywords": ["One Piece"],
-            "max_item_price_cents": 3500,
-            "category_slug": "bd_comics",
-        }
+    from tests.add_fakes import DraftState
+
+    state = DraftState()
+    await state.update_data(
+        name="One Piece", include_keywords=["One Piece"], max_item_price_cents=3500,
+        category_slug="bd_comics", keyword_analysis_status="failed",
     )
-    state.update_data = AsyncMock()
+    await state.set_state("AlertCreationState:confirm_creation")
 
     with patch(
         _GEN_PATH,
         new_callable=AsyncMock,
         return_value=KeywordVariantsOutcome.unanswered(),
     ):
-        await handle_create_ai_variants(callback, state)
+        await _run_creation_keyword_retry(callback, state)
 
-    stored = state.update_data.call_args.kwargs
+    stored = state.data
     assert "L'IA n'a pas répondu" in stored["keyword_note"]
     # Le conseil nomme le bouton sous la carte, pas un détour par le menu de modification.
     assert "via « Modifier »" not in stored["keyword_note"]
@@ -996,18 +997,14 @@ async def test_handle_create_ai_variants_reports_one_failed_attempt():
     callback.message = MagicMock()
     callback.message.edit_text = AsyncMock()
 
-    state = MagicMock(spec=FSMContext)
-    state.storage = MemoryStorage()
-    state.key = StorageKey(bot_id=1, chat_id=42, user_id=42)
-    state.get_data = AsyncMock(
-        return_value={
-            "name": "One Piece",
-            "include_keywords": ["One Piece"],
-            "max_item_price_cents": 3500,
-            "category_slug": "bd_comics",
-        }
+    from tests.add_fakes import DraftState
+
+    state = DraftState()
+    await state.update_data(
+        name="One Piece", include_keywords=["One Piece"], max_item_price_cents=3500,
+        category_slug="bd_comics", keyword_analysis_status="failed",
     )
-    state.update_data = AsyncMock()
+    await state.set_state("AlertCreationState:confirm_creation")
 
     engine = FlakyLLM(
         None,
@@ -1019,10 +1016,10 @@ async def test_handle_create_ai_variants_reports_one_failed_attempt():
     )
 
     with patch.object(keyword_variants_module, "client", engine):
-        await handle_create_ai_variants(callback, state)
+        await _run_creation_keyword_retry(callback, state, client=engine)
 
     assert engine.calls == 1
-    stored = state.update_data.call_args.kwargs
+    stored = state.data
     assert stored["keywords_finalized"] is False
     assert "L'IA n'a pas répondu" in stored["keyword_note"]
 
