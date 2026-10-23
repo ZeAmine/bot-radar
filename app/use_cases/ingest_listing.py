@@ -66,6 +66,10 @@ def comparison_line_from_loaded_books(
         expected = normalize_listing_isbn(expected_isbn)
         books = [book for book in books if expected
                  and normalize_listing_isbn(book.isbn13) == expected]
+    declared_isbn = normalize_listing_isbn(listing.isbn13)
+    if declared_isbn:
+        books = [book for book in books
+                 if normalize_listing_isbn(book.isbn13) == declared_isbn]
     if not books:
         return None, False, None
     book, series, tome_result = resolve_loaded_books(
@@ -335,6 +339,7 @@ class ProcessListingUseCase:
                 alert=alert,
                 listing_category_slug=listing.category_slug,
                 listing_normalized_title=listing.normalized_title,
+                listing_raw_title=listing.title,
                 listing_normalized_description=listing.description,
                 listing_condition=listing.condition,
                 listing_item_price_cents=listing.item_price_cents,

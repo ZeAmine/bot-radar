@@ -45,7 +45,10 @@ def is_catalogue_exhausted(verdict: CatalogueVerdictLike) -> bool:
     rien dit), aucune autorité en échec (un silence ne prouve rien), aucune
     notice retenue (sinon l'ouvrage est identifié, et la question ne se pose plus).
     """
-    return bool(verdict.consulted) and not verdict.unavailable and not verdict.notices
+    return (
+        bool(verdict.consulted) and not verdict.unavailable and not verdict.notices
+        and not getattr(verdict, "identity_unresolved", False)
+    )
 
 
 def is_uncatalogued(alert: object) -> bool:

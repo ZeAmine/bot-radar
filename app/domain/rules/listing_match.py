@@ -9,12 +9,20 @@ from app.core.constants import (
     AlertStatus,
 )
 from app.db.models.alert import Alert
+from app.domain.rules.book_volume import (
+    is_collection,
+    is_volume_composition,
+    requested_volume,
+    volume_numbers,
+)
 from app.domain.rules.keyword_hygiene import (
     is_degenerate_exclusion,
     is_degenerate_variant,
     names_only_a_volume,
     variant_identity_verdict,
 )
+from app.services.tome_extractor import TomeExtractor
+from app.utils.isbn import normalize_listing_isbn
 from app.utils.text import contains_keyword, contains_normalized_keyword, normalize_text
 
 MATCH_STEPS = (
@@ -409,6 +417,7 @@ def evaluate_listing_against_alert(
     listing_item_price_cents: int,
     listing_isbn13: str | None = None,
     listing_raw_url: str | None = None,
+    listing_raw_title: str | None = None,
 ) -> MatchResult:
     """Évalue si une annonce correspond aux critères d'une alerte."""
     if alert.status != AlertStatus.ACTIVE:
@@ -446,6 +455,43 @@ def evaluate_listing_against_alert(
     searchable_text = normalize_text(
         f"{listing_normalized_title} {listing_normalized_description or ''}"
     )
+
+    expected_volume = (
+        requested_volume(alert.name) if listing_category_slug == "bd_comics" else None
+    )
+    volume_scope = listing_raw_title or listing_normalized_title
+    if expected_volume is not None:
+        announced = TomeExtractor.extract(
+            volume_scope, listing_normalized_description, series_key=alert.name,
+        )
+        if (
+            is_collection(searchable_text) or is_volume_composition(searchable_text)
+            or announced.is_lot
+            or (announced.tome_number is not None and announced.tome_number != expected_volume)
+        ):
+            return MatchResult(
+                is_match=False, reason="Le tome ou la composition contredit l'alerte",
+                reason_code="volume_conflict", evaluated_count=4,
+            )
+    elif listing_category_slug == "bd_comics" and is_volume_composition(alert.name):
+        requested = volume_numbers(alert.name)
+        announced = TomeExtractor.extract(
+            volume_scope, listing_normalized_description, series_key=alert.name,
+        )
+        covered = set(announced.lot_tomes) | volume_numbers(volume_scope)
+        if not requested or not requested <= covered:
+            return MatchResult(
+                is_match=False, reason="La couverture des tomes demandés n'est pas établie",
+                reason_code="volume_coverage_missing", evaluated_count=4,
+            )
+
+    expected_isbn = normalize_listing_isbn(getattr(alert, "isbn", None))
+    declared_isbn = normalize_listing_isbn(listing_isbn13)
+    if expected_isbn and declared_isbn and expected_isbn != declared_isbn:
+        return MatchResult(
+            is_match=False, reason="L'ISBN déclaré désigne une autre édition",
+            reason_code="isbn_conflict", evaluated_count=4,
+        )
 
     hybrid_matched = False
     isbn_route = ""

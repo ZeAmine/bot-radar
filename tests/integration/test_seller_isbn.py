@@ -84,7 +84,9 @@ async def journey(monkeypatch):
             captions.append(kwargs["market_comparison_line"])
             return acknowledged_delivery(**kwargs)
 
-        notice = BookMetadata(title="Cible BD", author="Auteur A", publisher="Éditeur", isbn13=ISBN)
+        notice = BookMetadata(
+            title="Cible BD", author="Auteur A", publisher="Éditeur", isbn13=ISBN, language="fr",
+        )
         report = BibliographicReport(
             kind="isbn", verdict=IsbnVerdict(outcome="confirme", notice=notice, consulted=("bnf",))
         )
@@ -126,6 +128,14 @@ async def journey(monkeypatch):
         context.ingest = ingest
         yield context
         await tasks.wait_all_background_tasks(timeout=0)
+
+
+async def provide_expected_author(journey):
+    async with journey.db.maker() as session:
+        alert = await AlertRepository(session).get_by_id(journey.alert.id)
+        alert.include_keywords = ["cible", "Auteur A"]
+        alert.variants = ["cible bd"]
+        await session.commit()
 
 
 async def books_and_links(journey):
@@ -181,15 +191,16 @@ async def test_normalized_seller_code_is_not_confirmation(journey, code, canonic
 
 
 async def test_confirmation_follows_all_deliveries_and_uses_notice(journey):
+    await provide_expected_author(journey)
     async with journey.db.maker() as session:
         source = await AlertRepository(session).get_by_id(journey.alert.id)
         second = Alert(
             user_id=source.user_id,
             category_id=source.category_id,
             name=source.name,
-            include_keywords=["cible"],
+            include_keywords=source.include_keywords,
             exclude_keywords=[],
-            variants=[],
+            variants=source.variants,
             max_item_price_cents=5000,
             status=AlertStatus.ACTIVE,
         )
@@ -301,6 +312,7 @@ async def test_late_confirmation_cannot_link_after_user_change(journey, change):
 
 @pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"), reason="Verrou PostgreSQL réel requis")
 async def test_concurrent_confirmations_same_alert_are_idempotent(journey):
+    await provide_expected_author(journey)
     entered, release = asyncio.Event(), asyncio.Event()
     calls = 0
 
@@ -379,6 +391,7 @@ async def test_notice_wrong_tome_for_alert_is_not_linked(journey):
 
 
 async def test_existing_coherent_book_metadata_is_preserved(journey):
+    await provide_expected_author(journey)
     async with journey.db.maker() as session:
         session.add(
             Book(
@@ -430,3 +443,36 @@ async def test_legacy_invalid_isbn_is_ignored_without_rewriting_listing(journey,
     async with journey.db.maker() as session:
         assert (await session.execute(select(Listing))).scalar_one().isbn13 == "invalide"
     journey.consult.assert_not_awaited()
+
+
+async def test_a_confirmed_seller_isbn_without_expected_author_stays_unassociated(journey):
+    await journey.ingest(payload())
+    await tasks.wait_all_background_tasks()
+    assert journey.order[0] == "telegram"
+    assert await books_and_links(journey) == ([], [])
+
+
+@pytest.mark.parametrize("language", ["en", None])
+async def test_a_seller_notice_without_french_edition_evidence_stays_unassociated(
+    journey, language,
+):
+    await provide_expected_author(journey)
+    journey.report.verdict.notice.language = language
+    await journey.ingest(payload())
+    await tasks.wait_all_background_tasks()
+    assert journey.order[0] == "telegram"
+    assert await books_and_links(journey) == ([], [])
+
+
+async def test_a_stored_foreign_edition_is_not_linked_from_a_french_notice(journey):
+    await provide_expected_author(journey)
+    async with journey.db.maker() as session:
+        session.add(Book(title="Cible BD", normalized_title="cible bd", author="Auteur A",
+                         isbn13=ISBN, language="en"))
+        await session.commit()
+    await journey.ingest(payload())
+    await tasks.wait_all_background_tasks()
+    books, links = await books_and_links(journey)
+    assert len(books) == 1
+    assert books[0].language == "en"
+    assert links == []

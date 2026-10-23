@@ -112,6 +112,7 @@ def explain_pair(pair: Pair) -> dict[str, Any]:
         alert=alert,
         listing_category_slug=CategorySlug(listing.category_slug).value,
         listing_normalized_title=normalize_text(listing.title),
+        listing_raw_title=listing.title,
         listing_normalized_description=listing.description,
         listing_condition=listing.condition,
         listing_item_price_cents=listing.item_price_cents,

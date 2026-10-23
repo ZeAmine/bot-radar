@@ -9,11 +9,18 @@ from app.db.repositories.alert_repo import AlertRepository, BibliographicSnapsho
 from app.db.repositories.book_repo import BookRepository, resolve_loaded_books
 from app.db.session import AsyncSessionLocal
 from app.domain.entities.alert_preparation import preparation_request
+from app.domain.rules.bibliographic_identity import series_association
 from app.services.book_market_pricing import recalculate_invalidated_series
-from app.services.book_metadata_service import TITLE_SIMILARITY_MIN, same_author, title_similarity
+from app.services.book_metadata_service import (
+    TITLE_SIMILARITY_MIN,
+    normalize_edition_language,
+    same_author,
+    title_similarity,
+)
 from app.services.tome_extractor import TomeExtractor
 from app.use_cases.book_search import BookSearchUseCase
 from app.utils.isbn import normalize_listing_isbn
+from app.utils.text import normalize_text
 
 logger = logging.getLogger("radar.use_cases.ingest_listing")
 
@@ -84,6 +91,24 @@ async def confirm_listing_book(
             and (not confirmed.author or not same_author(request.author_hint, confirmed.author))
         ):
             return
+        author_hint = request.author_hint if request else None
+        if not author_hint and confirmed.author and any(
+            normalize_text(term) == normalize_text(confirmed.author)
+            for term in (current.include_keywords or [])
+        ):
+            author_hint = confirmed.author
+        identity = series_association(
+            requested_title=current.name, title=confirmed.title,
+            author=confirmed.author,
+            author_hint=confirmed.author if current.isbn else author_hint,
+            language=confirmed.language, number=confirmed.volume_number,
+        )
+        if identity.outcome != "accept":
+            logger.info("Association vendeur non retenue", extra={
+                "event": "listing_isbn_identity", "outcome": identity.outcome,
+                "reason_code": identity.reason,
+            })
+            return
         # Objet transitoire pour les règles de tome/lot existantes, sans SQL.
         from app.db.models.book import Book
 
@@ -109,7 +134,8 @@ async def confirm_listing_book(
             )
         stored_tome = TomeExtractor.extract(book.title, series_key=alert_name).tome_number
         if (
-            (stored_tome is not None and notice_tome is not None and stored_tome != notice_tome)
+            normalize_edition_language(book.language) != "fr"
+            or (stored_tome is not None and notice_tome is not None and stored_tome != notice_tome)
             or title_similarity(book.title, confirmed.title) < TITLE_SIMILARITY_MIN
             or (book.author and confirmed.author and not same_author(book.author, confirmed.author))
         ):

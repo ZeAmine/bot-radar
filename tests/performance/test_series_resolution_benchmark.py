@@ -111,7 +111,7 @@ def _series_notices(count: int = SERIES_NOTICES) -> list[BookMetadata]:
     return [
         BookMetadata(
             title=f"{SERIES_NAME} — Tome {i}",
-            author="Tyler Johnson",
+            author="Tyler Johnson", language="fr",
             publisher="Soleil US Comics",
             isbn13=f"978235{i:04d}0",
         )

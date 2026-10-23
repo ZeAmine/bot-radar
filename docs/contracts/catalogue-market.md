@@ -27,7 +27,8 @@ La composition par tomes est bornée à 12, BNF complétée par OpenLibrary sans
 
 Le [verdict catalogue](../../app/domain/rules/catalogue_search.py) conclut à l'absence
 de catalogue seulement si une autorité au moins a été consultée, aucune n'a échoué
-et aucune notice n'a été trouvée. Une panne n'est pas une œuvre non cataloguée.
+et aucune notice n'a été trouvée. Des résultats écartés faute de preuve d’identité
+ne prouvent pas cette absence (`identity_unresolved`). Une panne n'est pas une œuvre non cataloguée.
 
 Une création BD persiste sa pause avant les attentes, termine le FSM puis prépare
 catalogue et cotes ; les prix sont relus dans sa session avant activation. Une
@@ -36,6 +37,23 @@ préparation finie ne garantit pas un prix. Intention durable, version et repris
 volontairement saisi non confirmé ; ce n'est pas la règle des nouvelles créations.
 Le [retrait ISBN](../isbn-removal.md) conserve les critères manuels et invalide les
 résultats tardifs. Il précise les amendements F06 à ADR-044.
+
+La découverte automatique exige un titre d’œuvre cohérent, un auteur attendu
+explicitement établi et une langue française prouvée. Un prénom partagé ne suffit
+pas ; une langue absente ou indéterminée entraîne une abstention. Une autre langue,
+un auteur contradictoire ou un autre tome entraînent un rejet. Les candidats de
+création peuvent rester présentés sans ISBN confirmé ; une confirmation exige la
+preuve BNF correspondante. Les métadonnées d’une œuvre OpenLibrary ne prouvent pas
+la langue de son édition : celle-ci doit être lue sur l’édition.
+
+Un ISBN identifie une édition, sans établir seul l’intention d’une alerte ni la
+composition d’une annonce. Un code vendeur valide contradictoire ne se rabat pas
+sur une autre édition en cache. Pour une demande individuelle, une composition
+explicite ne prouve pas ce tome seul ; une demande multi-tomes exige leur couverture
+complète. Les alertes sans livre restent envoyables ; la confirmation de livre,
+après les envois, s’abstient si auteur ou langue ne sont pas établis. Aucun appel
+catalogue n’est ajouté avant Telegram. Mesures et limites :
+[bilan d’identité](../evaluations/matching-discovery-2026-10-23.md).
 
 ## Une collecte et une politique de comparabilité
 

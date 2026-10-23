@@ -127,7 +127,7 @@ async def test_lookup_by_title_and_author_mocked():
         author="Ismaël Legrand",
         publisher="Guy Delcourt Productions",
         isbn13="9782413078128",
-        source="bnf",
+        source="bnf", language="fr",
     )
 
     with _mock_bnf_typed(service, [fake_record]):
@@ -155,23 +155,23 @@ async def test_lookup_series_notices_keeps_the_tomes_and_drops_the_lookalikes():
     records = [
         BookMetadata(
             title="Blacksad", author="Juan Díaz Canales",
-            isbn13="9782205049504", source=AUTORITE_BNF,
+            isbn13="9782205049504", source=AUTORITE_BNF, language="fr",
         ),
         BookMetadata(
             title="Blacksad Tome 2", author="Juan Díaz Canales",
-            isbn13="9782205049696", source=AUTORITE_BNF,
+            isbn13="9782205049696", source=AUTORITE_BNF, language="fr",
         ),
         BookMetadata(
             title="Blacksad Tome 3", author="Juan Díaz Canales",
-            isbn13="9782205051484", source=AUTORITE_BNF,
+            isbn13="9782205051484", source=AUTORITE_BNF, language="fr",
         ),
         BookMetadata(
             title="Blacksad : la bande dessinée noire", author="Un Autre",
-            isbn13="9780000000002", source=AUTORITE_BNF,
+            isbn13="9780000000002", source=AUTORITE_BNF, language="fr",
         ),
         BookMetadata(
             title="Une tout autre série", author="Un Autre",
-            isbn13="9780000000019", source=AUTORITE_BNF,
+            isbn13="9780000000019", source=AUTORITE_BNF, language="fr",
         ),
     ]
     with _mock_bnf_typed(service, records):
@@ -192,14 +192,16 @@ async def test_lookup_series_notices_is_bounded_and_deduplicates_isbns():
     records = [
         BookMetadata(
             title=f"Blacksad Tome {index}", author="Juan Díaz Canales",
-            isbn13=f"97822050514{index:02d}", source=AUTORITE_BNF,
+            isbn13=f"97822050514{index:02d}", source=AUTORITE_BNF, language="fr",
         )
         for index in range(1, 9)
     ]
     records.append(records[0])  # doublon d'ISBN
 
     with _mock_bnf_typed(service, records):
-        verdict = await service.lookup_series_notices("Blacksad", limit=3)
+        verdict = await service.lookup_series_notices(
+            "Blacksad", author_hint="Juan Diaz Canales", limit=3,
+        )
         empty = await service.lookup_series_notices("   ")
 
     assert len(verdict.notices) == 3
@@ -223,7 +225,7 @@ async def test_lookup_series_notices_dit_qui_a_repondu_et_qui_s_est_tu():
     tomes = [
         BookMetadata(
             title="Blacksad Tome 1", author="Juan Díaz Canales",
-            isbn13="9782205049504", source=AUTORITE_BNF,
+            isbn13="9782205049504", source=AUTORITE_BNF, language="fr",
         ),
     ]
 
@@ -253,7 +255,7 @@ async def test_lookup_series_notices_dit_qui_a_repondu_et_qui_s_est_tu():
     assert is_catalogue_exhausted(silent) is False
 
     with _mock_bnf_typed(service, tomes):
-        found = await service.lookup_series_notices("Blacksad")
+        found = await service.lookup_series_notices("Blacksad", author_hint="Juan Diaz Canales")
     assert found.unavailable == ()
     assert [notice.isbn13 for notice in found.notices] == ["9782205049504"]
     assert is_catalogue_exhausted(found) is False
@@ -308,7 +310,7 @@ async def test_lookup_by_title_and_author_dit_qui_a_repondu_et_qui_s_est_tu():
 
     notice = BookMetadata(
         title="Absolute Martian Manhunter", author="Deniz Camp",
-        isbn13="9782369904151", source=AUTORITE_BNF,
+        isbn13="9782369904151", source=AUTORITE_BNF, language="fr",
     )
     with _mock_bnf_typed(service, [notice]):
         found = await service.lookup_by_title_and_author(
@@ -347,12 +349,23 @@ async def test_lookup_series_notices_completes_with_openlibrary_when_bnf_is_shor
     BNF, écarte un tome porté par un autre auteur et un titre étranger à la série,
     et ses notices portent leur provenance — elles ne se lisent pas comme du BNF.
     """
-    service = BookMetadataService()
+    import httpx
+
+    def edition(request):
+        code = request.url.path.rsplit("/", 1)[-1].removesuffix(".json")
+        title = {"9782205051407": "Blacksad Tome 5", "9782205051506": "Blacksad Tome 6",
+                 "9782205051605": "Une tout autre série"}.get(code, "Blacksad Tome 2")
+        return httpx.Response(200, json={"title": title, "isbn_13": [code],
+                                         "languages": [{"key": "/languages/fre"}]})
+
+    service = BookMetadataService(http_client=httpx.AsyncClient(
+        transport=httpx.MockTransport(edition)
+    ))
     bnf = BookMetadata(
         title="Blacksad Tome 2",
         author="Juan Díaz Canales",
         isbn13="9782369903086",
-        source=AUTORITE_BNF,
+        source=AUTORITE_BNF, language="fr",
     )
     openlibrary = AsyncMock(
         return_value=_openlibrary_result(
@@ -385,12 +398,23 @@ async def test_lookup_series_notices_completes_with_openlibrary_when_bnf_is_shor
 @pytest.mark.asyncio
 async def test_lookup_series_notices_openlibrary_fallback_respects_the_cap():
     """Le complément OpenLibrary est borné par ce qui reste sous `limit`."""
-    service = BookMetadataService()
+    import httpx
+
+    def edition(request):
+        code = request.url.path.rsplit("/", 1)[-1].removesuffix(".json")
+        title = {"9782205051407": "Blacksad Tome 2", "9782205051506": "Blacksad Tome 3",
+                 "9782205051605": "Blacksad Tome 4"}.get(code, "Blacksad Tome 1")
+        return httpx.Response(200, json={"title": title, "isbn_13": [code],
+                                         "languages": [{"key": "/languages/fre"}]})
+
+    service = BookMetadataService(http_client=httpx.AsyncClient(
+        transport=httpx.MockTransport(edition)
+    ))
     bnf = BookMetadata(
         title="Blacksad Tome 1",
         author="Juan Díaz Canales",
         isbn13="9782205049504",
-        source=AUTORITE_BNF,
+        source=AUTORITE_BNF, language="fr",
     )
     openlibrary = AsyncMock(
         return_value=_openlibrary_result(
@@ -424,7 +448,7 @@ async def test_lookup_series_notices_never_replaces_a_bnf_notice():
         title="Blacksad Tome 2",
         author="Juan Díaz Canales",
         isbn13="9782205051407",
-        source=AUTORITE_BNF,
+        source=AUTORITE_BNF, language="fr",
     )
     openlibrary = AsyncMock(
         return_value=_openlibrary_result(
@@ -455,7 +479,7 @@ async def test_lookup_series_notices_skips_openlibrary_when_bnf_is_complete():
             title=f"Blacksad Tome {index}",
             author="Juan Díaz Canales",
             isbn13=f"97822050514{index:02d}",
-            source=AUTORITE_BNF,
+            source=AUTORITE_BNF, language="fr",
         )
         for index in range(1, 4)
     ]
@@ -466,7 +490,9 @@ async def test_lookup_series_notices_skips_openlibrary_when_bnf_is_complete():
         ),
         patch.object(service, "_query_openlibrary_result", new=openlibrary),
     ):
-        verdict = await service.lookup_series_notices("Blacksad", limit=3)
+        verdict = await service.lookup_series_notices(
+            "Blacksad", author_hint="Juan Diaz Canales", limit=3,
+        )
         assert len(verdict.notices) == 3
         openlibrary.assert_not_awaited()
 
@@ -1614,12 +1640,12 @@ async def test_the_third_source_fires_only_after_both_others_in_the_same_resolut
 async def test_series_keeps_the_volume_title_from_the_bnf_notice():
     service = BookMetadataService()
     record = BookMetadata(
-        title="Série",
+        title="Série", author="Auteur test", language="fr",
         volume_title="Série Tome 1",
         isbn13="9782205049504",
     )
     with _mock_bnf_typed(service, [record]):
-        verdict = await service.lookup_series_notices("Série", limit=1)
+        verdict = await service.lookup_series_notices("Série", author_hint="Auteur test", limit=1)
     assert verdict.notices[0].title == "Série Tome 1"
 
 

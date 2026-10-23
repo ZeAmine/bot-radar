@@ -46,7 +46,7 @@ async def test_skipped_one_shot_is_linked_and_priced_from_its_durable_request(
     p = preparation
     meta = BookMetadata(
         title="Jours de sable", author="Aimée de Jongh", publisher="Dargaud Benelux",
-        isbn13="9782505082545",
+        isbn13="9782505082545", language="fr",
     )
     monkeypatch.setattr(BookMetadataService, "_bnf_records_result", AsyncMock(return_value=(
         ProviderQueryResult(status=ProviderQueryStatus.SUCCESS, items=[meta]), None,
