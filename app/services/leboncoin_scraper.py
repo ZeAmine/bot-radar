@@ -7,6 +7,7 @@ et passe ; la sortie doit rester résidentielle, donc un proxy SOCKS local
 """
 
 import logging
+import time
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -32,8 +33,38 @@ class LeboncoinBlockError(RuntimeError):
     """DataDome a refusé la requête (ou renvoyé un captcha)."""
 
 
+COLLECT_PHASES = frozenset({"ProxyError", "ConnectTimeout", "ReadTimeout", "autre"})
+
+
+def collection_phase(exc: BaseException) -> str:
+    """Phase approchée d'un échec, déduite du nom de la classe levée par curl_cffi."""
+    name = type(exc).__name__
+    if name in {"ProxyError", "ConnectTimeout", "ReadTimeout"}:
+        return name
+    if "Timeout" in name:
+        return "ReadTimeout"
+    if "Proxy" in name:
+        return "ProxyError"
+    return "autre"
+
+
 class LeboncoinCollectionError(RuntimeError):
     """La page de recherche n'a pas pu être obtenue."""
+
+    def __init__(
+        self,
+        motif: str,
+        *,
+        phase: str = "autre",
+        exception_class: str | None = None,
+        duration_ms: int | None = None,
+        session_reused: bool | None = None,
+    ) -> None:
+        super().__init__(motif)
+        self.phase = phase if phase in COLLECT_PHASES else "autre"
+        self.exception_class = exception_class
+        self.duration_ms = duration_ms
+        self.session_reused = session_reused
 
 
 def _get_session(proxy_url: str | None) -> Any:
@@ -79,16 +110,37 @@ def fetch_search_page(
 ) -> str:
     """Récupère le HTML d'une page de recherche, ou lève une erreur typée."""
     target = _with_page(url, page)
+    session_reused = _session is not None and _session_proxy == proxy_url
     try:
         session = _get_session(proxy_url)
     except ImportError as exc:
         raise LeboncoinCollectionError("curl_cffi indisponible") from exc
 
+    started = time.monotonic()
     try:
         response = session.get(target, headers=REQUEST_HEADERS)
     except Exception as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        phase = collection_phase(exc)
         reset_session()
-        raise LeboncoinCollectionError(type(exc).__name__) from None
+        logger.warning(
+            "Échec de collecte Leboncoin",
+            extra={
+                "event": "leboncoin_collect_failed",
+                "exception_class": f"{type(exc).__module__}.{type(exc).__qualname__}",
+                "phase": phase,
+                "duration_ms": duration_ms,
+                "session_reused": session_reused,
+                "page": page,
+            },
+        )
+        raise LeboncoinCollectionError(
+            type(exc).__name__,
+            phase=phase,
+            exception_class=f"{type(exc).__module__}.{type(exc).__qualname__}",
+            duration_ms=duration_ms,
+            session_reused=session_reused,
+        ) from None
 
     body_head = response.text[:2000]
     if response.status_code in BLOCK_STATUS_CODES or "captcha-delivery" in body_head:
