@@ -27,6 +27,7 @@ from app.bot.handlers.alerts_helpers import (
     build_creation_recap,
     creation_card,
     creation_volume_issue,
+    draft_updates_from_search,
     extract_inline_price_and_clean_query,
     keyword_note,
     populate_creation_prices,
@@ -53,6 +54,7 @@ from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.category_repo import CategoryRepository
 from app.domain.entities.alert_preparation import PreparationRequest
+from app.domain.enums import BookSearchStatus
 from app.domain.rules.keyword_hygiene import sanitize_exclusions, sanitize_variants
 from app.services.ai.modules.keyword_variants import keyword_variants_module
 from app.services.ai.modules.natural_add import natural_add_module
@@ -62,6 +64,7 @@ from app.services.alert_service import (
     parse_price_to_cents,
 )
 from app.services.market_price_service import MarketPriceService
+from app.use_cases.book_search import BookSearchResult
 from app.use_cases.prepare_bd_alert import prepare_bd_alert
 from app.utils.isbn import extract_clean_isbn
 from app.utils.text import normalize_text, strip_html_tags
@@ -325,6 +328,7 @@ async def start_add_alert(
         )
         return
 
+    loading_msg = None
     if inline_query and natural_add_module.is_enabled:
         if isinstance(event, Message) and event.bot:
             with contextlib.suppress(Exception):
@@ -443,6 +447,13 @@ async def start_add_alert(
             )
             return
 
+        if await process_bd_query_lookup(
+            event, state, inline_query, db_session, db_user=db_user,
+            expected_creation_token=token, require_catalogue_match=True,
+            status_message=loading_msg,
+        ):
+            return
+
         async with draft_guard(state):
             if (await state.get_data()).get("creation_token") != token:
                 return
@@ -456,6 +467,15 @@ async def start_add_alert(
         keyboard = bind_creation_keyboard(get_category_selection_keyboard(), token)
         await _finalize_loading_message(loading_msg, event, prompt_text, keyboard)
         return
+
+    if inline_query:
+        loading_msg = await event.answer("🔍 Recherche automatique de l'œuvre...")
+        if await process_bd_query_lookup(
+            event, state, inline_query, db_session, db_user=db_user,
+            expected_creation_token=token, require_catalogue_match=True,
+            status_message=loading_msg,
+        ):
+            return
 
     async with draft_guard(state):
         if (await state.get_data()).get("creation_token") != token:
@@ -477,7 +497,9 @@ async def start_add_alert(
 
     keyboard = bind_creation_keyboard(get_category_selection_keyboard(), token)
 
-    if isinstance(event, CallbackQuery):
+    if loading_msg is not None:
+        await _finalize_loading_message(loading_msg, event, prompt_text, keyboard)
+    elif isinstance(event, CallbackQuery):
         await event.answer()
         if event.message:
             await event.message.answer(prompt_text, reply_markup=keyboard)
@@ -508,6 +530,7 @@ async def handle_category_selected(
         return
     category_slug = interaction.partition("@")[0].split(":")[1]
 
+    unchanged_draft = None
     async with draft_guard(state):
         data = await state.get_data()
         if (
@@ -518,9 +541,29 @@ async def handle_category_selected(
             return
         search_token = await _bump_search_token(state)
         inline_query = data.get("inline_query")
-        if not inline_query:
-            await state.update_data(category_slug=category_slug)
-            await state.set_state(AlertCreationState.waiting_for_query)
+        if data.get("editing_category") and data.get("category_slug") == category_slug:
+            await state.update_data(editing_category=False)
+            await state.set_state(AlertCreationState.confirm_creation)
+            unchanged_draft = await state.get_data()
+        else:
+            if data.get("editing_category"):
+                updates = draft_updates_from_search(
+                    BookSearchResult(status=BookSearchStatus.NOT_FOUND),
+                    query_title=data["name"], category_slug=category_slug,
+                )
+                await state.update_data(
+                    **updates, editing_category=False, keyword_note=None, keywords_finalized=False,
+                    identification_sources=[],
+                )
+            if not inline_query:
+                await state.update_data(category_slug=category_slug)
+                await state.set_state(AlertCreationState.waiting_for_query)
+
+    if unchanged_draft is not None:
+        recap, keyboard = build_creation_recap(unchanged_draft)
+        if callback.message and hasattr(callback.message, "edit_text"):
+            await callback.message.edit_text(recap, reply_markup=keyboard)
+        return
 
     if inline_query:
         if category_slug == CategorySlug.BD_COMICS.value:
@@ -528,12 +571,14 @@ async def handle_category_selected(
                 callback, state, inline_query, db_session, db_user=db_user,
                 expected_creation_token=data.get("creation_token"),
                 expected_search_token=search_token,
+                query_is_title=bool(data.get("editing_category")),
             )
         else:
             await process_tech_or_clothes_query(
                 callback, state, inline_query, category_slug, db_session, db_user=db_user,
                 expected_creation_token=data.get("creation_token"),
                 expected_search_token=search_token,
+                query_is_title=bool(data.get("editing_category")),
             )
         return
 
