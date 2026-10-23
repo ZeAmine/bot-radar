@@ -49,8 +49,14 @@ la langue de son édition : celle-ci doit être lue sur l’édition.
 Un ISBN identifie une édition, sans établir seul l’intention d’une alerte ni la
 composition d’une annonce. Un code vendeur valide contradictoire ne se rabat pas
 sur une autre édition en cache. Pour une demande individuelle, une composition
-explicite ne prouve pas ce tome seul ; une demande multi-tomes exige leur couverture
-complète. Les alertes sans livre restent envoyables ; la confirmation de livre,
+explicite ne prouve pas ce tome seul. Une sélection de plusieurs tomes peut notifier
+n’importe lequel des tomes ciblés, y compris dans un lot ; le seul nom « tomes 1 et 2 »
+n’impose pas leur présence simultanée. La couverture complète est requise uniquement
+pour une intention explicite enregistrée dans le nom ou les inclusions : « lot complet »,
+« coffret complet », « collection complète », « série complète » ou « intégrale ».
+Un mot « lot » isolé ne suffit pas à imposer cette intention. Cette pertinence de
+notification ne prouve ni l’identité d’un livre seul ni la référence de prix du lot.
+Les alertes sans livre restent envoyables ; la confirmation de livre,
 après les envois, s’abstient si les preuves d’identité ou de langue manquent. Un ISBN
 explicitement attendu par l’alerte et confirmé concordant dispense de l’égalité
 des titres et de la présence d’un auteur ; les contrôles de langue française,

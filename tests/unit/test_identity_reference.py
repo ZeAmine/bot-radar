@@ -321,11 +321,13 @@ def test_proven_french_author_does_not_override_volume_conflicts(title, number, 
 @pytest.mark.parametrize(
     ("title", "accepted"),
     [
-        ("Blacksad tome 1", False),
+        ("Blacksad tome 1", True),
+        ("Blacksad tome 2", True),
+        ("Blacksad tome 3", False),
         ("Blacksad tomes 1 et 2", True),
     ],
 )
-def test_every_requested_volume_requires_listing_coverage(title, accepted):
+def test_a_volume_selection_matches_any_targeted_volume(title, accepted):
     pair = Pair.model_validate(
         {
             "alert": {
@@ -354,9 +356,10 @@ def test_a_shared_first_name_does_not_merge_distinct_works(first, second):
 
 @pytest.mark.parametrize(
     ("title", "accepted"),
-    [("Blacksad tome I", False), ("Blacksad tomes I et II", True)],
+    [("Blacksad tome I", True), ("Blacksad tome II", True),
+     ("Blacksad tome III", False), ("Blacksad tomes I et II", True)],
 )
-def test_roman_volume_requests_require_complete_coverage(title, accepted):
+def test_roman_volume_selections_match_any_targeted_volume(title, accepted):
     pair = Pair.model_validate({
         "alert": {
             "name": "Blacksad tomes I et II",
@@ -453,3 +456,48 @@ def test_unambiguous_roman_markers_still_declare_a_volume(title, number):
     from app.domain.rules.book_volume import requested_volume
 
     assert requested_volume(title) == number
+
+
+@pytest.mark.parametrize(
+    ("name", "title", "accepted"),
+    [("Islander, tomes 1 et 2", "Islander tome 1", True),
+     ("Islander, tomes 1 et 2", "Islander tome 2", True),
+     ("Islander, tomes 1 et 2", "Islander tome 3", False),
+     ("Slava, tomes 1 à 3", "Slava tome 1", True),
+     ("Slava, tomes 1 à 3", "Slava tome 2", True),
+     ("Slava, tomes 1 à 3", "Slava tome 3", True),
+     ("Slava, tomes 1 à 3", "Slava tome 4", False),
+     ("Islander, tomes 1 et 2", "Lot Islander tomes 1 et 3", True),
+     ("Islander, tomes 1 et 2", "Islander", False),
+     ("Islander lot complet tomes 1 et 2", "Islander tome 1", False),
+     ("Islander lot complet tomes 1 et 2", "Lot Islander tomes 1 et 2", True)],
+)
+def test_volume_selection_and_explicit_complete_lot_have_distinct_notification_intents(
+    name, title, accepted,
+):
+    pair = Pair.model_validate({
+        "alert": {"name": name, "category_slug": "bd_comics",
+                  "include_keywords": [name.split()[0].lower().rstrip(",")]},
+        "listing": {"title": title, "category_slug": "bd_comics", "item_price_cents": 100},
+    })
+    assert (explain_pair(pair)["decision"] == "accepter") is accepted
+
+
+@pytest.mark.parametrize("title", ["Lot Islander tome 1", "Lot complet Islander tomes 1 et 2"])
+def test_an_explicit_complete_lot_include_requires_all_targeted_volumes(title):
+    pair = Pair.model_validate({
+        "alert": {"name": "Islander tomes 1 et 2", "category_slug": "bd_comics",
+                  "include_keywords": ["islander", "lot complet"], "variants": ["islander"]},
+        "listing": {"title": title, "category_slug": "bd_comics", "item_price_cents": 100},
+    })
+    assert (explain_pair(pair)["decision"] == "accepter") is ("tomes 1 et 2" in title)
+
+
+def test_a_targeted_volume_does_not_override_a_contradictory_isbn():
+    pair = Pair.model_validate({
+        "alert": {"name": "Islander tomes 1 et 2", "category_slug": "bd_comics",
+                  "isbn": "9782205049657", "include_keywords": ["islander"]},
+        "listing": {"title": "Islander tome 1", "isbn13": "9782205051995",
+                    "category_slug": "bd_comics", "item_price_cents": 100},
+    })
+    assert explain_pair(pair)["reason_code"] == "isbn_conflict"

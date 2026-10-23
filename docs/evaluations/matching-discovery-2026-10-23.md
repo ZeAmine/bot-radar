@@ -8,7 +8,7 @@ formule, configuration, migration ou dépendance modifiée. Aucun merge ni dépl
 
 | Entrée | Niveau comparé | Preuve et limite |
 | --- | --- | --- |
-| Matcher et diagnostic | Exemplaire annoncé / demande, tome et manifestation | ISBN vendeur contradictoire rejeté ; titre brut conserve les compositions ; couverture complète multi-tomes |
+| Matcher et diagnostic | Exemplaire annoncé / demande, tome et manifestation | ISBN vendeur contradictoire rejeté ; titre brut conserve les compositions ; tome ciblé suffisant pour une sélection ; couverture complète si lot complet explicite |
 | Catalogue par titre/auteur et découverte de série | Œuvre, expression et tome | Titre cohérent + auteur attendu complet + langue française ; homonymie non résolue = abstention |
 | Vérification ISBN | Manifestation | Autorité bibliographique ; ne prouve ni l’intention utilisateur ni le contenu réel de l’annonce |
 | Cache et confirmation après Telegram | Manifestation liée à l’alerte courante | ISBN déclaré filtre le cache ; identité et version revalidées dans une autre session ; aucune liaison sans preuve |
@@ -222,3 +222,45 @@ Ces résultats précèdent l’intégration de `main` `9acbfe3` (PR #171). La PR
 la nouvelle validation complète et PostgreSQL au SHA final et rapporte la CI. Aucun merge ni déploiement demandé.
 Le principe export puis suppression des 28 observations après recalcul des références
 annuelles reste une proposition à valider, sans opération métier exécutée.
+
+
+## Décision utilisateur : sélection de tomes et lot complet
+
+Une alerte « Islander tomes 1 et 2 » accepte le tome 1 ou le tome 2 ; « Slava tomes
+1 à 3 » accepte chacun des trois tomes séparément. Les tests historiques exigeant
+la couverture complète pour une simple énumération, arabes et romains, sont adaptés
+sur autorisation explicite. Un tome hors sélection ou non identifié reste rejeté.
+
+Le nom et les inclusions existants peuvent enregistrer une intention de lot complet
+(phrases du contrat catalogue-marché). Aucun champ ou paramètre persistant, migration
+ou changement des règles utilisateur n’est ajouté. Un simple mot « lot » n’impose
+pas un lot complet. Les critères d’inclusion/exclusion continuent de s’appliquer.
+
+Un lot contenant un tome ciblé est pertinent pour la notification, sans être assimilé
+à ce tome pour la liaison ou la cote. Le nouveau test d’intégration envoie le lot
+1+3 à une sélection 1+2 sans Écart ni total de lot injustifié, sans changement des
+liaisons ni du total existant. Les gardes ISBN contradictoire, mauvais tome et
+composition incompatible avec un livre individuel sont conservées.
+
+La revue distincte statique d’agent ne démontre pas de défaut dans ce lot ; elle a
+demandé la mise à jour des anciennes formulations de couverture complète, effectuée ici.
+Les résultats finaux et leur SHA sont inscrits dans la PR après validation.
+
+Pour les 28 observations, la nouvelle demande autorise uniquement la préparation
+d’une option réversible. Les identifiants, dépendances et effets dans l’instantané
+disponible sont documentés hors dépôt. La présence au 23 octobre et une sauvegarde
+complète restaurable ne sont pas établies par ces exports partiels du 21 octobre.
+La comparaison des options ne vaut ni autorisation ni application d’un transfert,
+d’une suppression ou d’un recalcul ; les minima source CAL restent distincts des
+projections annuelles calculées depuis les observations.
+
+
+Validation finale de cette décision : Ruff et mypy isolé verts (169 + 8 fichiers),
+suite complète isolée **3134 succès / 124 ignorés**, PostgreSQL jetable **161 succès**
+sur les huit fichiers du pipeline affecté (matching/envoi, ISBN, sessions/versions,
+latence, reprise, réservation, persistance). Les contrôles PostgreSQL de préparation,
+retrait ISBN et couverture planifiée, inchangés et hors de ce diff, ne sont pas
+rejoués ; leurs résultats précédents restent historiques. Ressource jetable supprimée.
+Rejeu des 451 cas et audit des règles : métriques inchangées. Seule cette prose de
+résultats et sa mise en forme ont été éditées après les contrôles ; code et tests
+sont inchangés. Diff/index et liens locaux modifiés contrôlés avant livraison.

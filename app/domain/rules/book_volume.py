@@ -10,6 +10,10 @@ _COLLECTION = re.compile(
     r"\b(?:lots?|integrales?|coffrets?|omnibus|collection complete|collections completes)\b"
 )
 
+_COMPLETE_COLLECTION = re.compile(
+    r"\b(?:(?:lots?|coffrets?|collections?|series?)\s+complet(?:e|s|es)?|integrales?)\b"
+)
+
 _NUMERAL = (
     r"(?:\d{1,3}|[IVXLCDM]+|[ivx]+|"
     r"[ivxlcdm]+(?=\s*(?:$|[^\w\s'’‘`ʼ])))\b(?!['’‘`ʼ])"
@@ -72,6 +76,10 @@ def _volume_number(value: str) -> int | None:
         -digits[c] if i + 1 < len(value) and digits[c] < digits[value[i + 1]] else digits[c]
         for i, c in enumerate(value)
     )
+
+
+def requests_complete_collection(text: str) -> bool:
+    return bool(_COMPLETE_COLLECTION.search(normalize_text(text)))
 
 
 def is_volume_composition(text: str) -> bool:

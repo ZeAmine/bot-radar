@@ -358,3 +358,48 @@ async def test_concordant_isbn_links_the_cached_edition_without_an_author(journe
         )).all())
         assert [link.book_id for link in links] == [target.id]
         assert len(list((await reader.scalars(select(Book))).all())) == 3
+
+
+async def test_a_partial_targeted_lot_is_notified_without_a_single_volume_comparison(
+    journey, monkeypatch,
+):
+    monkeypatch.setattr(settings, "AI_ENABLED", False)
+    monkeypatch.setattr(tasks, "_background_tasks", set())
+    monkeypatch.setattr(tasks, "_cleanup_tasks", set())
+    monkeypatch.setattr(ingestion, "record_sent_cote_state", AsyncMock())
+    monkeypatch.setattr(
+        "app.services.book_market_pricing.schedule_book_pricing",
+        lambda *_args, **_kwargs: None,
+    )
+    journey.alert.name = "Cible BD tomes 1 et 2"
+    await journey.db.session.commit()
+    payload = ListingIngestPayload(
+        source_name="synthetic", external_id="partial-targeted-lot",
+        title="Lot Cible BD tomes 1 et 3", category_slug="bd_comics",
+        url="https://example.invalid/partial-targeted-lot", item_price_cents=100,
+    )
+    bot = AsyncMock()
+    bot.id = 123456789
+    bot.send_message.return_value = telegram_message()
+    async with journey.db.maker() as session:
+        result = await ingestion.ProcessListingUseCase(session, bot).execute(payload, {})
+        assert result.matches[0].notification_sent
+    caption = bot.send_message.call_args.kwargs["text"]
+    assert "Écart" not in caption
+    assert "indisponible" in caption.lower()
+    await tasks.wait_all_background_tasks(timeout=0)
+    async with journey.db.maker() as session:
+        panel = await ViewMarketDetailsUseCase(session).execute(result.listing_id, refresh=False)
+        assert panel is not None
+        text = MarketPriceService.format_market_details_card(
+            panel.listing, panel.book, panel.books_in_series, panel.tome_result,
+            series_total_cents=panel.series_total_cents,
+        )
+        assert "Total du lot" not in text
+        assert "Écart" not in text
+        assert "indisponible" in text.lower()
+        links = (await session.scalars(
+            select(AlertBook.book_id).where(AlertBook.alert_id == journey.alert.id)
+        )).all()
+        assert set(links) == {book.id for book in journey.books[:2]}
+    assert await total(journey) == 3000

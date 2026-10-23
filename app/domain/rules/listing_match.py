@@ -14,6 +14,7 @@ from app.domain.rules.book_volume import (
     is_collection,
     is_volume_composition,
     requested_volume,
+    requests_complete_collection,
     volume_numbers,
 )
 from app.domain.rules.keyword_hygiene import (
@@ -480,7 +481,14 @@ def evaluate_listing_against_alert(
         covered = volume_numbers(volume_scope)
         if listing_volume is not None:
             covered.update(listing_volume.lot_tomes)
-        if not requested or not requested <= covered:
+            if listing_volume.tome_number is not None:
+                covered.add(listing_volume.tome_number)
+        complete_required = any(
+            requests_complete_collection(criterion)
+            for criterion in [alert.name, *(alert.include_keywords or [])]
+        )
+        volumes_match = requested <= covered if complete_required else bool(requested & covered)
+        if not requested or not volumes_match:
             return MatchResult(
                 is_match=False, reason="La couverture des tomes demandés n'est pas établie",
                 reason_code="volume_coverage_missing", evaluated_count=4,
