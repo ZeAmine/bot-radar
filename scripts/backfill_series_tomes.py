@@ -47,7 +47,7 @@ import logging
 import sys
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -82,6 +82,7 @@ class SeriesAlert:
 
     alert_id: str
     name: str
+    author_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -142,7 +143,7 @@ async def discover_tomes(alert: SeriesAlert) -> list[BookMetadata]:
     liste nue itérerait un verdict, et le mode rapport tomberait sur un `TypeError`.
     """
     verdict = await BookMetadataService().lookup_series_notices(
-        alert.name, author_hint=None
+        alert.name, author_hint=alert.author_hint
     )
     return list(verdict.notices)
 
@@ -152,7 +153,7 @@ async def link_series(alert: SeriesAlert) -> None:
     await link_books_from_bnf(
         alert.name,
         uuid.UUID(alert.alert_id),
-        author=None,
+        author=alert.author_hint,
         series=True,
     )
 
@@ -325,6 +326,17 @@ def exit_code(reports: Sequence[BackfillReport], *, dry_run: bool) -> int:
     return EXIT_CLEAN
 
 
+def parse_alert_author(value: str) -> tuple[str, str]:
+    alert_id, separator, author = value.partition("=")
+    try:
+        normalized_id = str(uuid.UUID(alert_id))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Identifiant d’alerte invalide") from exc
+    if not separator or not author.strip():
+        raise argparse.ArgumentTypeError("Format attendu : ALERT_ID=AUTEUR")
+    return normalized_id, author.strip()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -336,6 +348,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="rapporte les tomes à lier sans rien écrire",
+    )
+    parser.add_argument(
+        "--author", action="append", type=parse_alert_author, metavar="ALERT_ID=AUTEUR",
+        help="auteur attendu explicitement fourni pour cette alerte ; répétable",
     )
     parser.add_argument("--json", action="store_true", help="sortie JSON")
     parser.add_argument("--limit", type=int, help="nombre maximal de séries traitées")
@@ -351,6 +367,8 @@ async def run(args: argparse.Namespace) -> int:
         print(f"{RED}Lecture des alertes impossible : {exc}{RESET}", file=sys.stderr)
         return EXIT_ERROR
 
+    authors = dict(getattr(args, "author", None) or [])
+    alerts = [replace(alert, author_hint=authors.get(alert.alert_id)) for alert in alerts]
     reports = await backfill(alerts, dry_run=args.dry_run) if alerts else []
 
     # Les cotations courent encore en tâche de fond : sortir maintenant les annulerait
