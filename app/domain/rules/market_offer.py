@@ -43,7 +43,7 @@ _INFERIOR_KEYWORDS = (
 _LIKE_NEW_PATTERN = re.compile(
     r"\b(comme\s*neuf|like\s*new|near\s*mint|parfait|neuf\s*sous\s*blister)\b"
 )
-_VERY_GOOD_PATTERN = re.compile(r"\b(tr[eè]s\s*bon|very\s*good|tb\+?)\b")
+_VERY_GOOD_PATTERN = re.compile(r"\b(tr[eè]s\s*bon|very\s*good|tb\+?|excellent\s+[eé]tat)\b")
 
 
 def is_merchant_excluded(merchant_name: str | None) -> bool:
