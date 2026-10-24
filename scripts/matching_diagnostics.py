@@ -24,6 +24,7 @@ from app.db.models.alert import Alert  # noqa: E402
 from app.db.models.category import Category  # noqa: E402
 from app.domain.enums import AlertStatus, CategorySlug  # noqa: E402
 from app.domain.rules.listing_match import evaluate_listing_against_alert  # noqa: E402
+from app.services.tome_extractor import TomeExtractor  # noqa: E402
 from app.utils.text import normalize_text  # noqa: E402
 
 Text = Annotated[str, Field(max_length=4096)]
@@ -112,6 +113,10 @@ def explain_pair(pair: Pair) -> dict[str, Any]:
         alert=alert,
         listing_category_slug=CategorySlug(listing.category_slug).value,
         listing_normalized_title=normalize_text(listing.title),
+        listing_raw_title=listing.title,
+        listing_volume=(TomeExtractor.extract(
+            listing.title, listing.description, series_key=a.name,
+        ) if listing.category_slug == CategorySlug.BD_COMICS.value else None),
         listing_normalized_description=listing.description,
         listing_condition=listing.condition,
         listing_item_price_cents=listing.item_price_cents,

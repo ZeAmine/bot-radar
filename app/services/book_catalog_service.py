@@ -75,6 +75,9 @@ class BookCatalogService:
                 if book:
                     return book, MatchConfidence.HIGH
 
+        if isbn13 or isbn10:
+            return None, None
+
         normalized_query_title = normalize_text(title)
         candidate_books = await self.book_repo.get_by_normalized_title(normalized_query_title)
 

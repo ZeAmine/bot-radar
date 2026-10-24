@@ -324,3 +324,82 @@ async def test_recalculation_reads_links_after_waiting_for_mutation(journey, mon
     assert len(held_books) == len(held_caches) == 2
     expected = {"add": 6000, "remove": None, "replace": 5000, "price": 3500}
     assert await total(journey) == expected[change]
+
+
+async def test_concordant_isbn_links_the_cached_edition_without_an_author(journey, monkeypatch):
+    target = journey.books[2]
+    target.author = None
+    target.language = "fr"
+    journey.alert.name = target.title
+    journey.alert.isbn = target.isbn13
+    await BookRepository(journey.db.session).clear_alert_books(journey.alert.id)
+    await journey.db.session.commit()
+
+    def reject_discovery(coro, **_kwargs):
+        coro.close()
+        pytest.fail("L’ISBN concordant en cache ne doit pas lancer de découverte")
+
+    monkeypatch.setattr(catalog_linking, "safe_create_task", reject_discovery)
+    async with journey.db.maker() as session:
+        for _ in range(2):
+            book = await catalog_linking.resolve_bd_catalog_book(
+                session, alert_id=journey.alert.id, alert_name=target.title,
+                alert_isbn=target.isbn13, listing_title=target.title,
+                listing_description=None, author=None,
+            )
+            assert book is not None
+            assert book.id == target.id
+            assert book.isbn13 == target.isbn13
+            assert book.author is None
+            await session.commit()
+    async with journey.db.maker() as reader:
+        links = list((await reader.scalars(
+            select(AlertBook).where(AlertBook.alert_id == journey.alert.id)
+        )).all())
+        assert [link.book_id for link in links] == [target.id]
+        assert len(list((await reader.scalars(select(Book))).all())) == 3
+
+
+async def test_a_partial_targeted_lot_is_notified_without_a_single_volume_comparison(
+    journey, monkeypatch,
+):
+    monkeypatch.setattr(settings, "AI_ENABLED", False)
+    monkeypatch.setattr(tasks, "_background_tasks", set())
+    monkeypatch.setattr(tasks, "_cleanup_tasks", set())
+    monkeypatch.setattr(ingestion, "record_sent_cote_state", AsyncMock())
+    monkeypatch.setattr(
+        "app.services.book_market_pricing.schedule_book_pricing",
+        lambda *_args, **_kwargs: None,
+    )
+    journey.alert.name = "Cible BD tomes 1 et 2"
+    await journey.db.session.commit()
+    payload = ListingIngestPayload(
+        source_name="synthetic", external_id="partial-targeted-lot",
+        title="Lot Cible BD tomes 1 et 3", category_slug="bd_comics",
+        url="https://example.invalid/partial-targeted-lot", item_price_cents=100,
+    )
+    bot = AsyncMock()
+    bot.id = 123456789
+    bot.send_message.return_value = telegram_message()
+    async with journey.db.maker() as session:
+        result = await ingestion.ProcessListingUseCase(session, bot).execute(payload, {})
+        assert result.matches[0].notification_sent
+    caption = bot.send_message.call_args.kwargs["text"]
+    assert "Écart" not in caption
+    assert "indisponible" in caption.lower()
+    await tasks.wait_all_background_tasks(timeout=0)
+    async with journey.db.maker() as session:
+        panel = await ViewMarketDetailsUseCase(session).execute(result.listing_id, refresh=False)
+        assert panel is not None
+        text = MarketPriceService.format_market_details_card(
+            panel.listing, panel.book, panel.books_in_series, panel.tome_result,
+            series_total_cents=panel.series_total_cents,
+        )
+        assert "Total du lot" not in text
+        assert "Écart" not in text
+        assert "indisponible" in text.lower()
+        links = (await session.scalars(
+            select(AlertBook.book_id).where(AlertBook.alert_id == journey.alert.id)
+        )).all()
+        assert set(links) == {book.id for book in journey.books[:2]}
+    assert await total(journey) == 3000

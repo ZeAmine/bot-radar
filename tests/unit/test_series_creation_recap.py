@@ -50,7 +50,9 @@ async def test_catalogue_keeps_four_volumes_without_isbn_and_sorts():
     ))), patch.object(service, '_openlibrary_works', AsyncMock(return_value=(
         [], ProviderQueryResult()
     ))):
-        verdict = await service.lookup_series_notices('Birdking', for_creation=True)
+        verdict = await service.lookup_series_notices(
+            'Birdking', author_hint='Daniel Freedman', for_creation=True,
+        )
     assert [v.number for v in verdict.volumes] == [1, 2, 3, 4]
     assert verdict.volumes[-1].isbn13 is None
 
@@ -129,7 +131,9 @@ async def test_declared_total_keeps_missing_number_without_inventing_isbn():
     ))), patch.object(service, '_openlibrary_works', AsyncMock(return_value=(
         [], ProviderQueryResult()
     ))), patch.object(service, 'verify_isbn', AsyncMock(return_value=notice)):
-        verdict = await service.lookup_series_notices('Birdking', for_creation=True)
+        verdict = await service.lookup_series_notices(
+            'Birdking', author_hint='Daniel Freedman', for_creation=True,
+        )
     assert verdict.declared_volume_count == 4
     assert [v.number for v in verdict.volumes] == [1, 2, 3, 4]
     assert [v.isbn13 for v in verdict.volumes] == [CODES[0], None, None, None]
@@ -151,7 +155,9 @@ async def test_unconfirmed_replacement_never_becomes_confirmed_isbn(verified):
     ))), patch.object(service, '_openlibrary_works', AsyncMock(return_value=(
         [SimpleNamespace(meta=fourth, edition_isbns=[CODES[3]])], ProviderQueryResult()
     ))), patch.object(service, 'verify_isbn', AsyncMock(return_value=verified)):
-        verdict = await service.lookup_series_notices('Birdking', for_creation=True)
+        verdict = await service.lookup_series_notices(
+            'Birdking', author_hint='Daniel Freedman', for_creation=True,
+        )
     assert [v.number for v in verdict.volumes] == [4]
     assert verdict.volumes[0].isbn13 is None
     assert verdict.notices == ()
@@ -325,7 +331,9 @@ async def test_openlibrary_multiple_editions_do_not_hide_other_volumes():
     ))), patch.object(service, '_openlibrary_works', AsyncMock(return_value=(
         works, ProviderQueryResult()
     ))), patch.object(service, 'verify_isbn', AsyncMock(return_value=None)):
-        verdict = await service.lookup_series_notices('Birdking', for_creation=True)
+        verdict = await service.lookup_series_notices(
+            'Birdking', author_hint='Daniel Freedman', for_creation=True,
+        )
     assert [v.number for v in verdict.volumes] == [1, 2, 3, 4]
 
 
@@ -382,8 +390,10 @@ async def test_google_completes_the_series_after_bnf_and_openlibrary():
             patch.object(service, '_openlibrary_works', ol), \
             patch.object(service, '_google_books_client', return_value=client), \
             patch.object(service, 'verify_isbn', AsyncMock(return_value=bird(4, isbn=CODES[3]))):
-        verdict = await service.lookup_series_notices('Birdking', for_creation=True)
-    assert calls == ['bnf', 'openlibrary', 'google_books']
+        verdict = await service.lookup_series_notices(
+            'Birdking', author_hint='Daniel Freedman', for_creation=True,
+        )
+    assert calls == ['bnf', 'bnf', 'openlibrary', 'google_books']
     assert [v.number for v in verdict.volumes] == [4]
     assert verdict.volumes[0].isbn13 == CODES[3]
     assert verdict.volumes[0].notice.source == 'google_books'
@@ -497,7 +507,8 @@ async def test_series_selection_uses_the_reference_publisher_at_equal_priority()
         [], ProviderQueryResult()
     ))), patch.object(service, 'verify_isbn', verified):
         verdict = await service.lookup_series_notices(
-            'Birdking', for_creation=True, reference_publisher='Éditeur test',
+            'Birdking', author_hint='Daniel Freedman', for_creation=True,
+            reference_publisher='Éditeur test',
         )
     assert [v.isbn13 for v in verdict.volumes] == [CODES[0]]
 
@@ -520,7 +531,7 @@ async def test_explicit_bnf_contradiction_is_reported_for_initial_proof_invalida
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
         catalogue = await BookMetadataService(http_client=client).lookup_series_notices(
-            'Birdking', for_creation=True,
+            'Birdking', author_hint='Daniel Freedman', for_creation=True,
         )
     assert catalogue.rejected_isbns == (CODES[0],)
     assert catalogue.volumes[0].isbn13 is None

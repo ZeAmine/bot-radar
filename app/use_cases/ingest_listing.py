@@ -44,6 +44,7 @@ from app.services.market_price_service import (
     cote_absence_line,
 )
 from app.services.telegram_service import DeliveryResult, send_listing_alert, usable_receipt
+from app.services.tome_extractor import TomeExtractor
 from app.use_cases.link_bd_catalog import resolve_bd_catalog_book
 from app.use_cases.listing_ingestion_gate import listing_ingestion_gate
 from app.use_cases.notification_admission import record_result, reserve
@@ -66,6 +67,10 @@ def comparison_line_from_loaded_books(
         expected = normalize_listing_isbn(expected_isbn)
         books = [book for book in books if expected
                  and normalize_listing_isbn(book.isbn13) == expected]
+    declared_isbn = normalize_listing_isbn(listing.isbn13)
+    if declared_isbn:
+        books = [book for book in books
+                 if normalize_listing_isbn(book.isbn13) == declared_isbn]
     if not books:
         return None, False, None
     book, series, tome_result = resolve_loaded_books(
@@ -335,6 +340,10 @@ class ProcessListingUseCase:
                 alert=alert,
                 listing_category_slug=listing.category_slug,
                 listing_normalized_title=listing.normalized_title,
+                listing_raw_title=listing.title,
+                listing_volume=(TomeExtractor.extract(
+                    listing.title, listing.description, series_key=alert.name,
+                ) if listing.category_slug == CategorySlug.BD_COMICS.value else None),
                 listing_normalized_description=listing.description,
                 listing_condition=listing.condition,
                 listing_item_price_cents=listing.item_price_cents,
