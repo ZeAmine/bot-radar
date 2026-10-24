@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.constants import MatchConfidence, ProviderQueryStatus
 from app.core.http_client import get_shared_http_client
+from app.domain.rules.bibliographic_identity import author_tokens, series_association
 from app.domain.rules.book_volume import is_collection, notice_volume, requested_volume
 from app.domain.rules.series_detection import SeriesSignal, detect_series
 from app.providers.google_books import (
@@ -381,6 +382,7 @@ class CatalogueVerdict:
     declared_volume_count: int | None = None
     inconsistent_counts: bool = False
     rejected_isbns: tuple[str, ...] = ()
+    identity_unresolved: bool = False
 
     @property
     def notice(self) -> BookMetadata | None:
@@ -426,6 +428,7 @@ def _verdict(
         consulted=consulted_authorities(tuple(attempts)),
         unavailable=failed_authorities(tuple(attempts)),
         notices=tuple(notice for notice in notices if notice is not None),
+        identity_unresolved=not any(notices) and any(a.has_results for a in attempts),
     )
 
 
@@ -567,9 +570,9 @@ def same_author(first: str | None, second: str | None) -> bool:
     (« Panchaud, Martin », « Martin Panchaud », rôles inclus) : on compare donc
     les mots significatifs plutot que les chaînes brutes.
     """
-    tokens_a = {token for token in normalize_text(first).split() if len(token) >= 3}
-    tokens_b = {token for token in normalize_text(second).split() if len(token) >= 3}
-    return bool(tokens_a & tokens_b)
+    tokens_a = author_tokens(first)
+    tokens_b = author_tokens(second)
+    return bool(tokens_a and tokens_b and (tokens_a <= tokens_b or tokens_b <= tokens_a))
 
 
 def authors_conflict(first: str | None, second: str | None) -> bool:
@@ -1234,6 +1237,23 @@ class BookMetadataService:
         meta.recommended_variants = variants
         return meta
 
+    @staticmethod
+    def _catalogue_notice_is_accepted(
+        meta: BookMetadata, title: str, author: str | None,
+    ) -> bool:
+        decision = series_association(
+            requested_title=title, title=meta.volume_title or meta.title,
+            author=meta.author, author_hint=author, language=meta.language,
+            number=meta.volume_number,
+        )
+        if decision.outcome != "accept":
+            logger.info("Association catalogue non retenue", extra={
+                "event": "catalogue_association", "outcome": decision.outcome,
+                "reason_code": decision.reason,
+            })
+            return False
+        return title_similarity(meta.title, title) >= TITLE_SIMILARITY_MIN
+
     async def lookup_by_title_and_author(self, user_input: str) -> CatalogueVerdict:
         """Recherche par titre et indice d'auteur, avec le verdict qui l'accompagne.
 
@@ -1264,15 +1284,28 @@ class BookMetadataService:
             records = list(broad.items)
 
         if records:
-            return _verdict(attempts, self._attach_recommendations(records[0]))
+            accepted_record = next((
+                record for record in records
+                if self._catalogue_notice_is_accepted(record, title_cand, author_cand)
+            ), None)
+            return _verdict(
+                attempts,
+                self._attach_recommendations(accepted_record) if accepted_record else None,
+            )
 
         fallback, ol_attempt = await self._resolve_via_openlibrary(clean_title_q, author_cand)
         attempts.append(ol_attempt)
         if fallback is not None:
-            return _verdict(attempts, fallback.best)
+            accepted = not fallback.is_ambiguous and self._catalogue_notice_is_accepted(
+                fallback.best, title_cand, author_cand,
+            )
+            return _verdict(attempts, fallback.best if accepted else None)
         google, google_attempts = await self._resolve_via_google_books(clean_title_q, author_cand)
         attempts.extend(google_attempts)
-        return _verdict(attempts, google.best if google else None)
+        accepted = google is not None and not google.is_ambiguous and (
+            self._catalogue_notice_is_accepted(google.best, title_cand, author_cand)
+        )
+        return _verdict(attempts, google.best if google and accepted else None)
 
     async def lookup_series_notices(
         self,
@@ -1342,7 +1375,18 @@ class BookMetadataService:
             )
             if not is_series_member:
                 continue
-            if author_hint and record.author and not same_author(record.author, author_hint):
+            decision = series_association(
+                requested_title=series_title, title=record.volume_title or record.title,
+                author=record.author, author_hint=author_hint, language=record.language,
+                number=record.volume_number,
+            )
+            if decision.outcome == "reject" or (
+                decision.outcome == "abstain" and not for_creation
+            ):
+                logger.info("Association catalogue non retenue", extra={
+                    "event": "catalogue_association", "outcome": decision.outcome,
+                    "reason_code": decision.reason,
+                })
                 continue
             if record.isbn13:
                 seen.add(record.isbn13)
@@ -1370,10 +1414,14 @@ class BookMetadataService:
                 attempts.append(_attempt(AUTORITE_GOOGLE_BOOKS, "title", google_result))
                 for item in google_result.items:
                     meta = self._google_volume_notice(item)
+                    decision = series_association(
+                        requested_title=series_title, title=meta.volume_title or meta.title,
+                        author=meta.author, author_hint=author_hint, language=meta.language,
+                        number=meta.volume_number,
+                    )
                     if (
                         title_similarity(meta.title, series_title) >= TITLE_SIMILARITY_MIN
-                        and (not author_hint or not meta.author
-                             or same_author(meta.author, author_hint))
+                        and decision.outcome != "reject"
                     ):
                         selected.append(meta)
             for meta in selected:
@@ -1391,8 +1439,19 @@ class BookMetadataService:
                     and verdict.notice.source == AUTORITE_BNF for verdict in outcomes
                 ):
                     rejected.append(code)
+                identity = series_association(
+                    requested_title=series_title,
+                    title=(verified.volume_title or verified.title) if verified else meta.title,
+                    author=verified.author if verified else None, author_hint=author_hint,
+                    language=verified.language if verified else None,
+                    number=verified.volume_number if verified else None,
+                )
+                if (code and verified is not None and verified.source == AUTORITE_BNF
+                        and identity.outcome == "reject"):
+                    rejected.append(code)
                 confirmed = (
-                    code if verified is not None and verified.source == AUTORITE_BNF
+                    code if identity.outcome == "accept" and verified is not None
+                    and verified.source == AUTORITE_BNF
                     and isbn_from_identifier(verified.isbn13) == code
                     and verified.volume_number == number
                     and (not author_hint or not verified.author
@@ -1479,11 +1538,23 @@ class BookMetadataService:
             )
             if not is_series_member:
                 continue
-            if author_hint and meta.author and not same_author(meta.author, author_hint):
+            meta = await self._openlibrary_series_volume(meta)
+            decision = series_association(
+                requested_title=series_title, title=meta.volume_title or meta.title,
+                author=meta.author, author_hint=author_hint, language=meta.language,
+                number=meta.volume_number,
+            )
+            if decision.outcome == "reject" or (
+                decision.outcome == "abstain" and not include_unidentified
+            ):
+                logger.info("Association catalogue non retenue", extra={
+                    "event": "catalogue_association", "outcome": decision.outcome,
+                    "reason_code": decision.reason,
+                })
                 continue
             if meta.isbn13:
                 seen.add(meta.isbn13)
-            found.append(await self._openlibrary_series_volume(meta))
+            found.append(meta)
             if len(found) >= limit and not include_unidentified:
                 break
         return found, result
@@ -1495,7 +1566,9 @@ class BookMetadataService:
         l'édition du même ISBN porte parfois « Vol. 1 ». Une panne conserve la
         notice initiale, et un ISBN différent ne peut jamais la réécrire.
         """
-        if not meta.isbn13 or extract_tome_number_from_title(meta.title) is not None:
+        if not meta.isbn13 or (
+            extract_tome_number_from_title(meta.title) is not None and meta.language is not None
+        ):
             return meta
         return await self._openlibrary_edition_metadata(meta)
 

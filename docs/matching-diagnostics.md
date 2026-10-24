@@ -5,7 +5,7 @@ Statut : contrat actuel du diagnostic et du corpus, avec mesures historiques. P�
 Le diagnostic explique le comportement du code. L'attendu métier indique ce que
 l'utilisateur souhaite. Un test protège un comportement convenu ; une étiquette
 humaine valide un exemple indépendamment du code. Ces quatre objets restent séparés.
-Aucune règle, seuil, politique ISBN/langue ou cote n'est modifiée (ADR-003, ADR-021,
+Le lot historique F10 ne modifie aucune règle, seuil, politique ISBN/langue ou cote (ADR-003, ADR-021,
 ADR-029 et exception d'édition ADR-038 conservés).
 
 ## Explication dans le résultat réel
@@ -20,6 +20,9 @@ Il n'y a ni journal par paire dans l'ingestion, ni stockage supplémentaire.
 | `alert_inactive` | Statut |
 | `category_mismatch` | Catégorie |
 | `price_above_max` | Prix |
+| `volume_conflict` | Tome individuel contredit par le tome ou la composition annoncée |
+| `volume_coverage_missing` | Couverture complète des tomes demandés non établie |
+| `isbn_conflict` | ISBN vendeur valide différent de celui demandé |
 | `isbn_keywords_missing` | ISBN absent et critères du repli manquants |
 | `isbn_fallback_rejected` | Repli ISBN/titre non satisfait |
 | `default_exclusion` | Exclusion de catégorie |
@@ -61,7 +64,8 @@ python scripts/matching_diagnostics.py evaluate docs/evaluations/matching-synthe
 Un couple explicite comporte `alert` et `listing`. Leurs champs sont ceux du corpus
 ci-dessous ; un objet `cases[0].pair` extrait manuellement peut servir d'entrée.
 Chaque couple reçoit un seul appel au matcher réel. Le titre est normalisé avec
-le helper existant, les autres critères sont fournis explicitement. Il n'y a aucune
+le helper existant ; le titre brut est aussi transmis pour préserver les plages
+de tomes avant normalisation. Les autres critères sont fournis explicitement. Il n'y a aucune
 lecture DB, collecte, confirmation ISBN, découverte de fichier `.env` ou chargement
 de configuration. L'URL d'entrée est consultable par la règle ISBN existante, sans
 requête réseau. Les données doivent représenter l'instantané voulu, pas seulement
@@ -168,3 +172,16 @@ Les p95 du cas d'usage complet F10 varient de 7,92 à 12,61 ms, contre 7,55 à
 19,18 ms. Ces exécutions décrivent le coût observé et sa variabilité, sans isoler
 une cause pour les écarts ni promettre un surcoût nul. Elles ne mesurent aucune
 livraison Telegram réelle ni performance de production.
+
+## Référence d’identité du 23 octobre 2026
+
+[Le bilan matching/découverte](evaluations/matching-discovery-2026-10-23.md)
+distingue les rejouements d’annonces contrefactuels des décisions de catalogue.
+Son corpus `identity-reference-v1.json` a un schéma spécialisé ; il est rejoué par
+`tests/unit/test_identity_reference.py`, pas par la commande `evaluate` F10.
+Ses étiquettes ont été préparées par l’agent depuis les preuves conservées ; elles
+ne sont pas une validation humaine ni une mesure représentative de production.
+
+Le diagnostic fournit au domaine le titre brut et l’extraction locale de tome en
+amont, comme l’ingestion. Aucun historique notifié n’est disponible dans les exports
+accessibles du mandat ; ce corpus connu ne constitue pas un contrôle indépendant.

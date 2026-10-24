@@ -440,17 +440,47 @@ def _write_pass_patches(fresh: Any) -> tuple[ExitStack, FakeCatalogueClient]:
 
 
 @pytest.mark.asyncio
-async def test_a_write_pass_links_and_prices_every_tome_of_the_series() -> None:
+@pytest.mark.parametrize("author_proven", [True, False])
+async def test_a_write_pass_links_and_prices_every_tome_of_the_series(author_proven: bool) -> None:
     """La passe réelle : tomes liés, cotes écrites, total de série somme de ces cotes."""
     async with sqlite_only_database() as fresh:
         await _seed_alerts(fresh.session)
-        args = argparse.Namespace(dry_run=False, json=False, limit=None)
+        alert_id = await fresh.session.scalar(select(Alert.id).where(Alert.name == "Blacksad"))
+        supplied = ["--author", f"{alert_id}=Juan Díaz Canales"] if author_proven else []
+        args = bf.build_parser().parse_args(supplied)
         stack, fake_http = _write_pass_patches(fresh)
+        fake_http.bnf_records = [
+            row.replace("</oai_dc:dc>", "<dc:language>fre</dc:language></oai_dc:dc>")
+            for row in fake_http.bnf_records
+        ]
+        original_get = fake_http.get
+
+        async def edition_get(url: str, **kwargs: Any):
+            from tests.fakes_catalogue import FakeResponse
+
+            if "/isbn/" in url:
+                code = url.rsplit("/", 1)[1].removesuffix(".json")
+                number = OPENLIBRARY_ISBNS.index(code) + 4
+                fake_http.queries.append(url)
+                return FakeResponse(payload={
+                    "isbn_13": [code], "title": f"Blacksad Tome {number}",
+                    "languages": [{"key": "/languages/fre"}],
+                })
+            return await original_get(url, **kwargs)
+
+        fake_http.get = edition_get
         with stack:
             code = await bf.run(args)
         written = await _written_state(fresh.session)
 
     assert code == bf.EXIT_CLEAN
+    if not author_proven:
+        assert written["books"] == written["links"] == 0
+        assert written["isbns"] == written["market_cents"] == written["lowest_cents"] == []
+        assert written["annual_cents"] == []
+        assert written["series_total_cents"] is None
+        assert _FakeRegistry.calls == []
+        return
     assert written["isbns"] == EXPECTED_ISBNS
     assert written["links"] == len(EXPECTED_ISBNS)
     assert written["market_cents"] == sorted(MARKET_CENTS.values())
@@ -467,12 +497,35 @@ async def test_a_write_pass_links_and_prices_every_tome_of_the_series() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_second_write_pass_adds_neither_book_link_nor_total() -> None:
+@pytest.mark.parametrize("author_proven", [True, False])
+async def test_a_second_write_pass_adds_neither_book_link_nor_total(author_proven: bool) -> None:
     """Rejouer la passe ne duplique rien et laisse le total de série où il est."""
     async with sqlite_only_database() as fresh:
         await _seed_alerts(fresh.session)
-        args = argparse.Namespace(dry_run=False, json=False, limit=None)
-        stack, _fake_http = _write_pass_patches(fresh)
+        alert_id = await fresh.session.scalar(select(Alert.id).where(Alert.name == "Blacksad"))
+        supplied = ["--author", f"{alert_id}=Juan Díaz Canales"] if author_proven else []
+        args = bf.build_parser().parse_args(supplied)
+        stack, fake_http = _write_pass_patches(fresh)
+        fake_http.bnf_records = [
+            row.replace("</oai_dc:dc>", "<dc:language>fre</dc:language></oai_dc:dc>")
+            for row in fake_http.bnf_records
+        ]
+        original_get = fake_http.get
+
+        async def edition_get(url: str, **kwargs: Any):
+            from tests.fakes_catalogue import FakeResponse
+
+            if "/isbn/" in url:
+                code = url.rsplit("/", 1)[1].removesuffix(".json")
+                number = OPENLIBRARY_ISBNS.index(code) + 4
+                fake_http.queries.append(url)
+                return FakeResponse(payload={
+                    "isbn_13": [code], "title": f"Blacksad Tome {number}",
+                    "languages": [{"key": "/languages/fre"}],
+                })
+            return await original_get(url, **kwargs)
+
+        fake_http.get = edition_get
         with stack:
             first_code = await bf.run(args)
             first = await _written_state(fresh.session)
@@ -480,5 +533,11 @@ async def test_a_second_write_pass_adds_neither_book_link_nor_total() -> None:
             second = await _written_state(fresh.session)
 
     assert (first_code, second_code) == (bf.EXIT_CLEAN, bf.EXIT_CLEAN)
-    assert first["series_total_cents"] == sum(MARKET_CENTS.values())
+    if author_proven:
+        assert first["series_total_cents"] == sum(MARKET_CENTS.values())
+    else:
+        assert first["books"] == first["links"] == 0
+        assert first["series_total_cents"] is None
+        assert first["market_cents"] == first["annual_cents"] == []
+        assert _FakeRegistry.calls == []
     assert second == first

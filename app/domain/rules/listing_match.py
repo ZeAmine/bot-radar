@@ -9,12 +9,21 @@ from app.core.constants import (
     AlertStatus,
 )
 from app.db.models.alert import Alert
+from app.domain.rules.book_volume import (
+    ListingVolumeEvidence,
+    is_collection,
+    is_volume_composition,
+    requested_volume,
+    requests_complete_collection,
+    volume_numbers,
+)
 from app.domain.rules.keyword_hygiene import (
     is_degenerate_exclusion,
     is_degenerate_variant,
     names_only_a_volume,
     variant_identity_verdict,
 )
+from app.utils.isbn import normalize_listing_isbn
 from app.utils.text import contains_keyword, contains_normalized_keyword, normalize_text
 
 MATCH_STEPS = (
@@ -409,6 +418,8 @@ def evaluate_listing_against_alert(
     listing_item_price_cents: int,
     listing_isbn13: str | None = None,
     listing_raw_url: str | None = None,
+    listing_raw_title: str | None = None,
+    listing_volume: ListingVolumeEvidence | None = None,
 ) -> MatchResult:
     """Évalue si une annonce correspond aux critères d'une alerte."""
     if alert.status != AlertStatus.ACTIVE:
@@ -446,6 +457,50 @@ def evaluate_listing_against_alert(
     searchable_text = normalize_text(
         f"{listing_normalized_title} {listing_normalized_description or ''}"
     )
+
+    expected_volume = (
+        requested_volume(alert.name) if listing_category_slug == "bd_comics" else None
+    )
+    volume_scope = listing_raw_title or listing_normalized_title
+    volume_text = f"{volume_scope} {listing_normalized_description or ''}"
+    if expected_volume is not None:
+        announced_number = (listing_volume.tome_number if listing_volume else None)
+        if announced_number is None:
+            announced_number = requested_volume(volume_text)
+        if (
+            is_collection(searchable_text) or is_volume_composition(volume_text)
+            or (listing_volume is not None and listing_volume.is_lot)
+            or (announced_number is not None and announced_number != expected_volume)
+        ):
+            return MatchResult(
+                is_match=False, reason="Le tome ou la composition contredit l'alerte",
+                reason_code="volume_conflict", evaluated_count=4,
+            )
+    elif listing_category_slug == "bd_comics" and is_volume_composition(alert.name):
+        requested = volume_numbers(alert.name)
+        covered = volume_numbers(volume_scope)
+        if listing_volume is not None:
+            covered.update(listing_volume.lot_tomes)
+            if listing_volume.tome_number is not None:
+                covered.add(listing_volume.tome_number)
+        complete_required = any(
+            requests_complete_collection(criterion)
+            for criterion in [alert.name, *(alert.include_keywords or [])]
+        )
+        volumes_match = requested <= covered if complete_required else bool(requested & covered)
+        if not requested or not volumes_match:
+            return MatchResult(
+                is_match=False, reason="La couverture des tomes demandés n'est pas établie",
+                reason_code="volume_coverage_missing", evaluated_count=4,
+            )
+
+    expected_isbn = normalize_listing_isbn(getattr(alert, "isbn", None))
+    declared_isbn = normalize_listing_isbn(listing_isbn13)
+    if expected_isbn and declared_isbn and expected_isbn != declared_isbn:
+        return MatchResult(
+            is_match=False, reason="L'ISBN déclaré désigne une autre édition",
+            reason_code="isbn_conflict", evaluated_count=4,
+        )
 
     hybrid_matched = False
     isbn_route = ""
