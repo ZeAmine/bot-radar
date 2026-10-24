@@ -31,6 +31,11 @@ est autre chose.
 - **Rien n'est inventé au démarrage.** Aucun paramètre critique n'a de valeur par
   défaut : une installation incomplète échoue avec un code non nul, au lieu de
   viser une adresse supposée.
+- **Chaque lancement de tunnel est daté.** `run_tunnel.sh` écrit une ligne
+  `<horodatage UTC> tunnel_start` dans le journal du tunnel **avant** l'`exec`.
+  `ssh` n'horodate pas sa sortie d'erreur : sans cette ligne, un échec de
+  connexion reste impossible à situer dans le temps. L'horodatage est en UTC et
+  au format ISO 8601, comme le reste de l'exploitation.
 
 ## Paramètres
 
@@ -115,11 +120,19 @@ valeur.
 
 ```sh
 @reboot sleep 20; /usr/bin/flock -n $RELAY_DIR/locks/relay.lock $RELAY_DIR/run_relay.sh
-*/5 * * * * /usr/bin/flock -n $RELAY_DIR/locks/relay.lock $RELAY_DIR/run_relay.sh
+* * * * * /usr/bin/flock -n $RELAY_DIR/locks/relay.lock $RELAY_DIR/run_relay.sh
 @reboot sleep 25; /usr/bin/flock -n $RELAY_DIR/locks/tunnel.lock $RELAY_DIR/run_tunnel.sh
-*/5 * * * * /usr/bin/flock -n $RELAY_DIR/locks/tunnel.lock $RELAY_DIR/run_tunnel.sh
+* * * * * /usr/bin/flock -n $RELAY_DIR/locks/tunnel.lock $RELAY_DIR/run_tunnel.sh
 */5 * * * * /bin/sh $RELAY_DIR/relay_probe.sh
 ```
+
+**Les deux lignes de supervision tournent chaque minute** ; la sonde reste à
+`*/5`. Une relance ne peut aboutir que si le verrou est libre, donc si le
+processus précédent est mort : le tir à la minute borne l'indisponibilité d'un
+tunnel mort à environ une minute, au lieu de cinq. Ce délai est **déduit de la
+périodicité**, pas mesuré sur une panne réelle. Il ne couvre pas le cas d'un
+tunnel vivant mais bloqué : son verrou reste tenu, et seule la mort du processus
+déclenche une relance.
 
 Trois points que ces lignes portent :
 

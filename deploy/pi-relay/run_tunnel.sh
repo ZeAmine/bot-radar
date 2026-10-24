@@ -20,6 +20,8 @@ set -eu
 : "${RELAY_PORT:=8080}"
 : "${TUNNEL_PORT:=1080}"
 
+printf '%s tunnel_start\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RELAY_DIR/logs/tunnel.log"
+
 exec /usr/bin/ssh -N -T \
     -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes \
