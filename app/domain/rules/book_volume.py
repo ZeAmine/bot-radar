@@ -18,7 +18,10 @@ _NUMERAL = (
     r"(?:\d{1,3}|[IVXLCDM]+|[ivx]+|"
     r"[ivxlcdm]+(?=\s*(?:$|[^\w\s'’‘`ʼ])))\b(?!['’‘`ʼ])"
 )
-_VOLUME_MARKER = rf"(?i:\b(?:tomes?|t|livres?|volumes?|vols?)\.?\s*)({_NUMERAL})"
+_VOLUME_MARKER = (
+    r"(?!(?i:\b(?:livres?|vols?)\.?\s*)[ivxlcdm]\s*$)"
+    rf"(?i:\b(?:tomes?|t|livres?|volumes?|vols?)\.?\s*)({_NUMERAL})"
+)
 
 
 class ListingVolumeEvidence(Protocol):

@@ -264,3 +264,43 @@ rejoués ; leurs résultats précédents restent historiques. Ressource jetable 
 Rejeu des 451 cas et audit des règles : métriques inchangées. Seule cette prose de
 résultats et sa mise en forme ont été éditées après les contrôles ; code et tests
 sont inchangés. Diff/index et liens locaux modifiés contrôlés avant livraison.
+
+
+## Intégration de main du 24 octobre 2026
+
+La branche `fix/matching-discovery` fusionne `main` au commit
+`933a0c4f718d281ba0e2eeb14ec4a113876ab85a`, par le commit de fusion
+`5239eaaafb37faae6ffbbeba2e837bee5bbfb065`. Aucun rebase, force-push ou conflit :
+aucune résolution manuelle ni adaptation d’invariant. Les deux fichiers Leboncoin
+apportés par main restent identiques à main ; ils ne figurent pas dans le diff de PR.
+Le diff conserve les 22 fichiers du chantier, sans export privé ou fichier étranger.
+Les validations antérieures ci-dessus restent historiques ; les nouveaux résultats
+Ruff, mypy isolé, suite isolée et PostgreSQL sont liés à la tête finale dans la PR.
+
+Le résidu « livre c » / « vol d » en fin de texte est reproduit avant correction :
+14 extractions pures échouent ; les nouveaux scénarios du pipeline donnent au total
+26 échecs et 298 succès avant correction. Une lettre romaine minuscule isolée après
+livre/vol ne déclare plus un numéro de volume en fin de texte. La garde partagée
+protège aussi le découpage du titre pour l’association de série. Les majuscules,
+les nombres romains de plusieurs lettres, les marqueurs `tome` explicites, les listes
+et les plages conservent leurs gardes ; aucune assertion existante n’est modifiée,
+aucun test ignoré ou supprimé. Les 324 tests du fichier d’identité passent après correction.
+
+Les limites demeurent : mesure historique impossible faute de couples notifiés
+avec critères figés ; aucun jeu de contrôle indépendant ; rappel mesuré à **84,93 %**
+sur le corpus connu, sans promesse de rappel réel. Après un éventuel déploiement,
+prévoir une surveillance bornée des journaux `catalogue_association` et
+`volume_conflict`, sans assimiler ces journaux à un jeu étiqueté indépendant.
+Aucun déploiement ni accès de surveillance de production n’est exécuté ici.
+
+Les paragraphes antérieurs sur les 28 observations décrivent les étapes historiques.
+Sur mandat distinct ultérieur, 16 rattachements démontrés et deux projections
+annuelles locales ont été appliqués puis relus le 24 octobre ; les 12 destinations
+non démontrées restent inchangées. Cette intégration Git ne rejoue aucune écriture
+métier. Preuves et restauration sont conservées hors dépôt privé de code ; aucun
+minimum source CAL n’a été reconstruit depuis les observations locales.
+
+Le plan du chantier 2 reste une préparation hors réseau, sans exécution : trois
+priorités (Hélène de Wyndhorn, Cauchon, 1629 T2), preuves actuelles livrées à obtenir
+sur mandat séparé, sans confondre les 135 minima source avec les prix actuels.
+Les 88 livres différés et le diagnostic CAL suspendu restent explicités dans le suivi.

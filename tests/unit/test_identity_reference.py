@@ -501,3 +501,37 @@ def test_a_targeted_volume_does_not_override_a_contradictory_isbn():
                     "category_slug": "bd_comics", "item_price_cents": 100},
     })
     assert explain_pair(pair)["reason_code"] == "isbn_conflict"
+
+
+@pytest.mark.parametrize("marker", ["livre", "vol"])
+@pytest.mark.parametrize("letter", list("ivxlcdm"))
+def test_a_terminal_lowercase_roman_letter_after_prose_is_not_a_volume(marker, letter):
+    from app.domain.rules.book_volume import volume_base_title, volume_numbers
+    from app.utils.text import normalize_text
+
+    text = f"Blacksad {marker} {letter}"
+    assert volume_numbers(text) == set()
+    assert volume_base_title(text) == normalize_text(text)
+
+
+@pytest.mark.parametrize("marker", ["livre", "vol"])
+@pytest.mark.parametrize("letter", list("ivxlcdm"))
+def test_a_terminal_lowercase_roman_letter_preserves_a_matching_listing(marker, letter):
+    pair = Pair.model_validate({
+        "alert": {"name": "Blacksad tome 1", "category_slug": "bd_comics",
+                  "include_keywords": ["blacksad"]},
+        "listing": {"title": "Blacksad tome 1", "description": f"État {marker} {letter}",
+                    "category_slug": "bd_comics", "item_price_cents": 100},
+    })
+    assert explain_pair(pair)["decision"] == "accepter"
+
+
+@pytest.mark.parametrize(
+    ("text", "number"),
+    [("Blacksad livre IV", 4), ("Blacksad vol V", 5), ("Blacksad livre iv", 4),
+     ("Blacksad vol xiv", 14), ("Blacksad tome d", 500), ("Blacksad livre c : suite", 100)],
+)
+def test_explicit_roman_volumes_remain_identified(text, number):
+    from app.domain.rules.book_volume import requested_volume
+
+    assert requested_volume(text) == number
