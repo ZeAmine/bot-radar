@@ -147,6 +147,88 @@ def test_help_never_exclaims():
     assert "!" not in HELP_TEXT
 
 
+def test_help_lines_use_a_plain_hyphen():
+    """Un titre et sa description se séparent d'un tiret normal, jamais d'un cadratin."""
+    assert "—" not in HELP_TEXT
+    assert "/add - Créer une alerte" in HELP_TEXT
+
+
+def test_displayed_cards_use_plain_hyphens_and_keep_the_stored_title():
+    """Les cartes affichent un tiret normal sans réécrire la donnée source.
+
+    Un titre de catalogue ou un nom d'alerte peut porter un cadratin ; le stockage le
+    garde tel quel — le matching s'appuie dessus — et seule la lecture le normalise.
+    """
+    from app.bot.formatter import format_alert_card
+    from app.bot.handlers.alerts_helpers import creation_card, format_alerts_list_text
+    from app.core.constants import AlertStatus
+    from app.db.models.alert import Alert
+
+    alert = Alert(
+        name="Blacksad — Intégrale",
+        include_keywords=["blacksad"],
+        exclude_keywords=["coffret"],
+        variants=[],
+        max_item_price_cents=1200,
+        accepted_conditions=[],
+        status=AlertStatus.ACTIVE,
+    )
+
+    card = format_alert_card(alert)
+    assert alert.name == "Blacksad — Intégrale"
+    assert "📚 <b>Blacksad - Intégrale</b>" in card
+    assert "—" not in card
+
+    liste = format_alerts_list_text([alert], current_page=0, total_count=1,
+                                    category_label="📚 Livres")
+    assert "Mes alertes - 📚 Livres" in liste
+    assert "Page 1/1 - 1 alerte" in liste
+    assert "—" not in liste
+
+    brouillon = {
+        "name": "Blacksad — Intégrale",
+        "author": "Díaz Canales — Guarnido",
+        "publisher": "Dargaud — Éditions",
+        "include_keywords": ["blacksad"],
+        "exclude_keywords": ["artbook"],
+        "max_item_price_cents": 1200,
+        "category_slug": "bd_comics",
+    }
+    recap = creation_card(brouillon)
+    assert brouillon["name"] == "Blacksad — Intégrale"
+    assert "<b>Titre :</b> Blacksad - Intégrale" in recap
+    assert "<b>Auteur :</b> Díaz Canales - Guarnido" in recap
+    assert "—" not in recap
+
+
+@pytest.mark.parametrize(
+    ("state", "activate"),
+    [("pending", True), ("pending", False), ("blocked", True)],
+)
+def test_preparation_status_lines_use_plain_hyphens(state, activate):
+    """Les statuts de préparation et la ligne d'absence de catalogue aussi.
+
+    Un statut est un texte que l'utilisateur lit dans la carte d'une alerte : le tiret
+    qui sépare l'état de son explication reste un tiret normal.
+    """
+    from app.bot.formatter import alert_status_text
+    from app.db.models.alert import Alert
+    from app.domain.entities.alert_preparation import PreparationRequest
+    from app.domain.enums import AlertStatus
+    from app.services.market_price_service import NO_CATALOGUE_LINE
+
+    alert = Alert(id=uuid.uuid4(), status=AlertStatus.PAUSED)
+    alert.preparation = PreparationRequest(
+        state=state, activation_requested=activate
+    ).stored()
+
+    texte = alert_status_text(alert)
+    assert "—" not in texte
+    if activate is False or state == "blocked":
+        assert " - " in texte
+    assert "—" not in NO_CATALOGUE_LINE
+
+
 def test_period_button_marks_only_the_current_period():
     """Une période cochée, l'autre neutre : deux boutons ne doivent pas se confondre."""
     assert period_button("7 jours", True) == "✅ 7 jours"
@@ -331,6 +413,9 @@ def test_charte_documents_its_three_rendering_rules():
     assert "avertissement est en italique et isolé" in docstring
     # L'indication suit la même règle, et dit pourquoi elle n'est pas une information.
     assert "hors de la liste des informations" in docstring
+    # Le tiret normal, et la frontière qui distingue donnée stockée et rendu.
+    assert "jamais le cadratin" in docstring
+    assert "escape_display" in docstring
 
 
 def test_field_labels_are_bold_and_values_stay_roman():
@@ -854,7 +939,7 @@ async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
     assert "<i>⚠️ Cote indisponible</i>" in confirmation
     # Chaque ecran garde son propre pied : la consigne n'est pas la meme.
     assert confirmation.endswith(
-        "\n\n<i>Les annonces correspondant à ces critères déclencheront une alerte Telegram.</i>"
+        "\n\n<i>Tu seras prévenu des annonces correspondantes.</i>"
     )
 
 

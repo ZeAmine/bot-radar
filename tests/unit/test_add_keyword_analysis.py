@@ -262,7 +262,11 @@ async def test_raw_answer_is_validated_filtered_and_reported_as_retained_values(
     assert state.data["exclude_keywords"] == before["exclude_keywords"]
     assert state.data["keyword_analysis_status"] == ("completed" if success else "failed")
     text = screen.edit_text.call_args.args[0]
-    assert ("Aucune proposition supplémentaire pertinente retenue." in text) == success
+    if success:
+        assert "Critères enrichis." not in text
+        assert "L'IA n'a pas répondu" not in text
+    else:
+        assert "L'IA n'a pas répondu" in text
     assert "alert_create_confirm" in buttons(screen)
     assert ("alert_create_ai_variants" in buttons(screen)) != success
 

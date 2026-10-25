@@ -703,7 +703,7 @@ async def test_market_panel_reads_the_cache_and_keeps_the_selected_tome(driver, 
             user,
         )
         selected = _texts(bot)[-1]
-        assert "<b>Blacksad — Tome 2</b>" in selected
+        assert "<b>Blacksad - Tome 2</b>" in selected
         assert "8,99 €" in selected
         assert "Dernière MAJ :" in selected
         fetch.assert_not_awaited()

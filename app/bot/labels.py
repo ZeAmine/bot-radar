@@ -9,7 +9,7 @@ Les statuts (`Active`, `En pause`) et les mentions d'absence (« Non renseigné 
 « Indisponible », « À confirmer ») sont des constantes : la présentation ne
 réinvente pas la donnée, elle la nomme. Les enums restent dans `app.domain`.
 
-Cinq règles de présentation, valables sur **tous** les écrans :
+Six règles de présentation, valables sur **tous** les écrans :
 
 1. **Un libellé de champ est gras, sa valeur reste en romain.**
    `**Prix maximum :** 15,00 €` — jamais `**Prix maximum : 15,00 €**`. La valeur
@@ -41,6 +41,10 @@ Cinq règles de présentation, valables sur **tous** les écrans :
 5. **Les actions d’une annonce « Voir l’annonce », « Prix du marché »,
    « Faux positif » et « Négocier » restent sans émoji**, y compris lorsque leur
    clavier est reconstruit.
+6. **Un texte affiché écrit le tiret normal, jamais le cadratin.**
+   Messages, boutons, aides et confirmations utilisent « - ». Un titre ou une
+   notice source garde sa forme stockée : `escape_display` normalise son rendu à
+   la frontière d'affichage, sans toucher aux données ni aux règles de matching.
 """
 
 import html
@@ -57,6 +61,10 @@ TO_CONFIRM = "À confirmer"
 
 STATUS_ACTIVE = "Active"
 STATUS_PAUSED = "En pause"
+
+# Indication courte du récap de création : les détails restent dans les lignes
+# « Variantes » et « Mots-clés exclus ».
+CRITERIA_ENRICHED_NOTE = "Critères enrichis."
 
 # Titres d'écrans : un seul emoji de fonction, en tête de message.
 
@@ -88,7 +96,6 @@ FIELD_PUBLISHER = "Éditeur"
 FIELD_EDITION = "Édition"
 FIELD_PERIOD = "Période"
 FIELD_PRICE = "Prix"
-FIELD_PLATFORM = "Plateforme"
 # Pas de libellé détaillé : « TTC » suffit et garde la ligne lisible sur téléphone.
 TOTAL_SUFFIX_TTC = "TTC"
 FIELD_FALSE_POSITIVES = "Faux positifs"
@@ -210,20 +217,16 @@ def escape_html(value: str | None) -> str:
     return html.escape(value or "", quote=False)
 
 
-# Une source hors Vinted se nomme dans le message ; Vinted reste implicite pour
-# que les alertes existantes gardent exactement leur rendu.
-SOURCE_DISPLAY = {
-    "vinted": "Vinted",
-    "leboncoin": "Leboncoin",
-}
+def escape_display(value: str | None) -> str:
+    """Échappe un titre ou un nom source pour l'affichage, sans tiret cadratin.
 
-
-def platform_line(source_name: str | None) -> str | None:
-    """Ligne « Plateforme : … », absente pour Vinted."""
-    if not source_name or source_name == "vinted":
-        return None
-    display = SOURCE_DISPLAY.get(source_name, source_name)
-    return f"<b>{FIELD_PLATFORM} :</b> {escape_html(display)}"
+    Un titre de catalogue, un nom d'alerte, un titre d'annonce ou un critère affiché
+    garde sa forme stockée : seule sa lecture change, et le tiret cadratin y devient
+    un tiret normal. Les écrans qui réaffichent une saisie pour la modifier passent
+    par `escape_html` : ce que l'utilisateur relit pour le corriger reste exactement
+    ce qu'il a écrit.
+    """
+    return html.escape((value or "").replace("—", "-"), quote=False)
 
 
 # Au-delà, la liste devient illisible sur un téléphone ; le reste est compté, jamais

@@ -895,7 +895,8 @@ async def test_start_add_alert_natural_add_reports_engine_had_nothing_to_say():
         await _drain(tasks)
 
     edited_text = loading_message.edit_text.call_args[0][0]
-    assert "Aucune proposition supplémentaire pertinente retenue." in edited_text
+    assert "Critères enrichis." not in edited_text
+    assert "L'IA n'a pas répondu" not in edited_text
     assert "pas répondu à temps" not in edited_text
     assert state.data["variants"] == []
     assert state.data["exclude_keywords"] == []

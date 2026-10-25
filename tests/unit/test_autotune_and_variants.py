@@ -107,8 +107,13 @@ async def test_handle_create_ai_variants():
 
 
 @pytest.mark.asyncio
-async def test_handle_create_ai_variants_reports_engine_decision_when_nothing_found():
-    """Le moteur a répondu « rien de pertinent » : le récap le dit, et ne change rien."""
+async def test_handle_create_ai_variants_announces_nothing_when_engine_has_nothing_new():
+    """Le moteur a répondu « rien de pertinent » : la carte ne revendique aucun apport.
+
+    Un avis du moteur ne se confond ni avec une panne (aucune note d'échec) ni avec un
+    enrichissement (aucune indication courte) : rien n'a été ajouté aux critères, donc
+    rien ne s'annonce.
+    """
     callback = MagicMock(spec=CallbackQuery)
     callback.answer = AsyncMock()
     callback.message = MagicMock()
@@ -131,15 +136,15 @@ async def test_handle_create_ai_variants_reports_engine_decision_when_nothing_fo
         await _run_creation_keyword_retry(callback, state)
 
     stored = state.data
-    assert "Aucune proposition supplémentaire pertinente retenue." in stored["keyword_note"]
-    # Un avis du moteur ne se confond pas avec une panne.
-    assert "pas répondu" not in stored["keyword_note"]
+    assert stored["keyword_note"] is None
+    assert stored["keywords_finalized"] is True
     callback.answer.assert_awaited_once()
     assert callback.message.edit_text.call_count == 2
     last_text = callback.message.edit_text.call_args[0][0]
-    # La carte garde un titre unique et porte la note, sans en-tête de cas particulier.
+    # La carte garde un titre unique et ne porte aucune note d'apport ni d'échec.
     assert last_text.startswith(RECAP_TITLE)
-    assert "Aucune proposition supplémentaire pertinente retenue." in last_text
+    assert "Critères enrichis." not in last_text
+    assert "L'IA n'a pas répondu" not in last_text
 
 
 @pytest.mark.asyncio

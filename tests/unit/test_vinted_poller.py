@@ -468,6 +468,9 @@ async def test_consecutive_collection_failures_alert_once_and_recover(
     assert len(texts) == 2
     assert "dégradée" in texts[0]
     assert "rétablie" in texts[1]
+    # Un titre d'alerte se lit avec un tiret normal, sans cadratin.
+    for text in texts:
+        assert "—" not in text
 
 
 @pytest.mark.asyncio
@@ -514,6 +517,8 @@ async def test_block_cycle_reports_the_origin_hint_and_keeps_observability(
     assert isinstance(statuses[0]["availability"], dict)
     texts = [call.kwargs["text"] for call in notify.await_args_list]
     assert any("Pause de sécurité" in text for text in texts)
+    for text in texts:
+        assert "—" not in text
 
 
 @pytest.mark.asyncio
