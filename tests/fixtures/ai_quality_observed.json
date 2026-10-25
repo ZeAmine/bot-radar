@@ -1,0 +1,220 @@
+{
+  "observed_at": "2026-10-25T00:47:44.498885+02:00",
+  "cases": [
+    {
+      "label": "série numérotée non annoncée",
+      "module": "natural_add",
+      "input": {
+        "prompt": "Absolute Martian Manhunter, 10€"
+      },
+      "output": {
+        "category_slug": "bd_comics",
+        "conditions": null,
+        "name": "Absolute Martian Manhunter",
+        "include_keywords": [
+          "absolute martian manhunter"
+        ],
+        "exclude_keywords": [],
+        "is_series": false,
+        "isbn13": null,
+        "author": null,
+        "publisher": null,
+        "max_price_cents": 1000,
+        "explanation": "Recherche du comic Absolute Martian Manhunter à 10€ maximum."
+      }
+    },
+    {
+      "label": "tome explicitement demandé",
+      "module": "natural_add",
+      "input": {
+        "prompt": "One Piece tome 12, 8€"
+      },
+      "output": {
+        "category_slug": "bd_comics",
+        "conditions": null,
+        "name": "One Piece tome 12",
+        "include_keywords": [
+          "one piece",
+          "12"
+        ],
+        "exclude_keywords": [],
+        "is_series": false,
+        "isbn13": null,
+        "author": "Eiichiro Oda",
+        "publisher": null,
+        "max_price_cents": 800,
+        "explanation": "Recherche du tome 12 de One Piece à 8€ maximum."
+      }
+    },
+    {
+      "label": "one-shot",
+      "module": "natural_add",
+      "input": {
+        "prompt": "Le Monde sans fin, 25€"
+      },
+      "output": {
+        "category_slug": "bd_comics",
+        "conditions": null,
+        "name": "Le Monde sans fin",
+        "include_keywords": [
+          "monde sans fin"
+        ],
+        "exclude_keywords": [],
+        "is_series": false,
+        "isbn13": null,
+        "author": null,
+        "publisher": null,
+        "max_price_cents": 2500,
+        "explanation": "Recherche de la BD « Le Monde sans fin » avec un prix maximum de 25€."
+      }
+    },
+    {
+      "label": "titre de série nu",
+      "module": "keyword_variants",
+      "input": {
+        "title": "Absolute Martian Manhunter",
+        "category": "bd_comics",
+        "context": {
+          "title": "Absolute Martian Manhunter",
+          "author": "Deniz Camp",
+          "publisher": "DC Comics",
+          "publication_year": 2025,
+          "is_series": true
+        }
+      },
+      "output": {
+        "variants": [
+          "Absolute Martian Manhunter",
+          "Absolute Martian Manhunters",
+          "Absolute Martian Manhunter",
+          "Absolute Martian Manhunter",
+          "Absolute Martian Manhunter",
+          "Absolute Martian Manhunter"
+        ],
+        "exclusions": [
+          "figurine",
+          "poster",
+          "statue"
+        ],
+        "rationale": "Le titre est déjà correct ; les variantes visent les fautes de frappe courantes (Manhunter/Manhunters, Martian/Martien) et les exclusions écartent les produits dérivés (figurine, poster, statue) souvent confondus avec le comic."
+      }
+    },
+    {
+      "label": "œuvre à confusions réelles",
+      "module": "keyword_variants",
+      "input": {
+        "title": "Blacksad",
+        "category": "bd_comics",
+        "context": {
+          "title": "Blacksad",
+          "author": "Juan Díaz Canales",
+          "publisher": "Dargaud",
+          "is_series": true
+        }
+      },
+      "output": {
+        "variants": [
+          "Black Sad",
+          "Blacksade",
+          "Blacksad",
+          "BlackSad",
+          "Blacksad."
+        ],
+        "exclusions": [
+          "peluche",
+          "affiche",
+          "figurine"
+        ],
+        "rationale": "Les variantes couvrent les erreurs d'espacement et de frappe courantes sur Blacksad, tandis que les exclusions visent les produits dérivés (peluche, affiche, figurine) souvent associés à la série et qui ne sont pas des albums."
+      }
+    },
+    {
+      "label": "offre sur article à petit prix",
+      "module": "negotiation",
+      "input": {
+        "title": "Jeu de société complet",
+        "price_cents": 500,
+        "category": "gaming",
+        "condition": "Bon état",
+        "description": null
+      },
+      "output": {
+        "suggested_offer_cents": 400,
+        "message": "Bonjour ! Votre jeu de société complet en bon état m'intéresse beaucoup. Accepteriez-vous 4 € ? Je suis prêt à acheter immédiatement. Merci et bonne journée !"
+      }
+    },
+    {
+      "label": "offre sur console",
+      "module": "negotiation",
+      "input": {
+        "title": "Console portable complète, bon état",
+        "price_cents": 10000,
+        "category": "gaming",
+        "condition": "Bon état",
+        "description": null
+      },
+      "output": {
+        "suggested_offer_cents": 8000,
+        "message": "Bonjour ! Votre console portable complète en bon état m'intéresse beaucoup. Accepteriez-vous 80 € ? Je suis prêt à finaliser l'achat immédiatement si cela vous convient. Merci et bonne journée !"
+      }
+    },
+    {
+      "label": "score sur console",
+      "module": "post_alert",
+      "input": {
+        "title": "Console portable complète, bon état",
+        "price_cents": 10000,
+        "category": "gaming",
+        "condition": "Bon état",
+        "description": null
+      },
+      "output": {
+        "profit_scoring": {
+          "estimated_resale_cents": 12000,
+          "net_profit_cents": 2000,
+          "pepite_score": 3.5,
+          "verdict": "Marge faible et incertaine : modèle non identifié, description vide, risque de revente difficile."
+        }
+      }
+    },
+    {
+      "label": "score sur appareil incomplet",
+      "module": "post_alert",
+      "input": {
+        "title": "Appareil photo pour pièces",
+        "price_cents": 10000,
+        "category": "tech",
+        "condition": "Bon état",
+        "description": null
+      },
+      "output": {
+        "profit_scoring": {
+          "estimated_resale_cents": 8000,
+          "net_profit_cents": -2000,
+          "pepite_score": 1.5,
+          "verdict": "Annonce trop vague et risquée : 'pour pièces' sans modèle ni description, marge négative probable, à éviter."
+        }
+      }
+    },
+    {
+      "label": "confusions de titre",
+      "module": "auto_tuning",
+      "input": {
+        "title": "Blacksad",
+        "false_positive_titles": [
+          "Affiche Blacksad",
+          "Ex-libris Blacksad",
+          "Figurine Blacksad"
+        ]
+      },
+      "output": {
+        "suggested_exclusions": [
+          "affiche",
+          "ex-libris",
+          "figurine"
+        ],
+        "explanation": "Ces termes correspondent à des formats de produits dérivés (affiche, ex-libris, figurine) qui ne sont pas des albums de la série Blacksad et génèrent des faux positifs."
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@ Ce fichier définit le schéma et la validation des variables d'environnement.
 Toutes les valeurs réelles et secrètes sont chargées dynamiquement depuis le fichier .env.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BeforeValidator, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -114,11 +114,13 @@ class Settings(BaseSettings):
         return random.choice(proxies)
 
     # Moteur IA interchangeable via l'environnement (voir `app/providers/llm/`).
-    AI_PROVIDER: str = "openai-compatible"
+    AI_PROVIDER: str = "river"
     AI_API_KEY: SecretStr = SecretStr("")
-    AI_BASE_URL: str = "https://api.deepseek.com/v1"
-    AI_MODEL: str = "deepseek-flash"
-    AI_TIMEOUT_SECONDS: float = 12.0
+    AI_BASE_URL: str = "https://api.river.ai/v1"
+    AI_MODEL: str = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+    AI_TIMEOUT_SECONDS: float = Field(default=12.0, gt=0, allow_inf_nan=False)
+    AI_MAX_TOKENS: int = Field(default=2048, gt=0)
+    AI_REASONING_EFFORT: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
     AI_ENABLED: bool = True
     AI_FEATURE_NATURAL_ADD: bool = True
     AI_FEATURE_PROFIT_SCORING: bool = True

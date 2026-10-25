@@ -14,10 +14,16 @@ from __future__ import annotations
 from app.core.config import settings
 from app.providers.llm.anthropic import AnthropicClient
 from app.providers.llm.base import LLMClient
+from app.providers.llm.deepseek import DeepSeekClient
+from app.providers.llm.openai import OpenAIClient
 from app.providers.llm.openai_compatible import OpenAICompatibleClient
+from app.providers.llm.river import RiverClient
 
 # Clé = valeur de `AI_PROVIDER`.
 LLM_ADAPTERS: dict[str, type[OpenAICompatibleClient | AnthropicClient]] = {
+    "river": RiverClient,
+    "openai": OpenAIClient,
+    "deepseek": DeepSeekClient,
     "openai-compatible": OpenAICompatibleClient,
     "anthropic": AnthropicClient,
 }

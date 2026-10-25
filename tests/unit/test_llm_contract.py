@@ -32,9 +32,13 @@ from app.providers.llm.base import (
 from app.providers.llm.registry import LLM_ADAPTERS, build_llm_client
 
 ADAPTER_NAMES = sorted(LLM_ADAPTERS)
+NETWORK_HEALTH_NAMES = [name for name in ADAPTER_NAMES if name != "river"]
 
 # Réponse brute de chaque adaptateur, dans son propre format filaire.
 RAW_RESPONSES: dict[str, dict[str, Any]] = {
+    "river": {"choices": [{"message": {"content": '{"prix": 12}'}}]},
+    "openai": {"choices": [{"message": {"content": '{"prix": 12}'}}]},
+    "deepseek": {"choices": [{"message": {"content": '{"prix": 12}'}}]},
     "openai-compatible": {"choices": [{"message": {"content": '{"prix": 12}'}}]},
     "anthropic": {"content": [{"type": "text", "text": '{"prix": 12}'}]},
 }
@@ -179,7 +183,7 @@ async def test_http_error_never_logs_external_body(name, network, caplog):
     assert "synthetic-private-body" not in caplog.text
 
 
-@pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize("name", NETWORK_HEALTH_NAMES)
 async def test_health_message_only_attests_the_http_probe(name, network):
     health = await make_client(network, name).check_health(force=True)
     assert health.status == "active"
@@ -209,7 +213,7 @@ async def test_unconfigured_client_never_calls_network(
     assert network.captured == []
 
 
-@pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize("name", NETWORK_HEALTH_NAMES)
 @pytest.mark.asyncio
 async def test_health_reports_active_then_caches(name: str, network: FakeNetwork) -> None:
     """La sonde répond, puis se met en cache pour ne pas frapper à chaque `/status`."""
@@ -232,7 +236,7 @@ async def test_health_reports_active_then_caches(name: str, network: FakeNetwork
     assert len(network.captured) == 1, "la sonde ne doit pas être rejouée dans les 30 secondes"
 
 
-@pytest.mark.parametrize("name", ADAPTER_NAMES)
+@pytest.mark.parametrize("name", NETWORK_HEALTH_NAMES)
 @pytest.mark.asyncio
 async def test_health_states(
     name: str, network: FakeNetwork, monkeypatch: pytest.MonkeyPatch
@@ -350,7 +354,7 @@ async def test_transport_failures_are_classified_without_retry(
 
 
 @pytest.mark.parametrize("name", ADAPTER_NAMES)
-@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
+@pytest.mark.parametrize("status", [400, 401, 403, 408, 429, 500, 503])
 async def test_http_status_has_one_attempt_and_safe_diagnostics(name, status, network, caplog):
     network.status_code = status
     client = make_client(network, name)
@@ -416,7 +420,7 @@ async def test_openai_compatible_request_preserves_current_settings(network, cap
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.3,
-        "thinking": {"type": "disabled"},
+        "max_tokens": settings.AI_MAX_TOKENS,
     }
     assert request.extensions["timeout"]["read"] == 3.5
     records = [r for r in caplog.records if getattr(r, "event", None) == "llm_request"]

@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from pydantic import BaseModel
+
 from app.providers.llm.base import clean_and_parse_json
 
 
@@ -48,6 +50,8 @@ class FakeLLM:
         temperature: float = 0.2,
         image_urls: list[str] | None = None,
         timeout: float | None = None,
+        response_model: type[BaseModel] | None = None,
+        ai_module: str = "unspecified",
     ) -> str | None:
         self.calls.append(
             {
@@ -56,6 +60,8 @@ class FakeLLM:
                 "temperature": temperature,
                 "image_urls": image_urls,
                 "timeout": timeout,
+                "response_model": response_model,
+                "ai_module": ai_module,
             }
         )
         if self.error is not None:
@@ -69,11 +75,16 @@ class FakeLLM:
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.2,
+        *,
+        response_model: type[BaseModel] | None = None,
+        ai_module: str = "unspecified",
     ) -> dict[str, object] | None:
         raw = await self.complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
+            response_model=response_model,
+            ai_module=ai_module,
         )
         return clean_and_parse_json(raw) if raw else None
 

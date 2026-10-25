@@ -75,6 +75,12 @@ Date : 2026-10-19 · Statut : **accepté**.
   la forme de jonction est corrigée. Voir
   [déploiement](../operations/deployment.md) et
   [fenêtre Redis et sous-réseau](../operations/redis-persistence-window.md).
+- Révision du 25 octobre 2026 : la légende d'annonce ne porte plus de ligne
+  « Plateforme ». Le lien de l'annonce et la marketplace de l'alerte la nomment
+  déjà ; la confirmation de création réduit aussi son pied à « Tu seras prévenu des
+  annonces correspondantes. ». `source_name` reste inchangé comme donnée interne :
+  il gouverne le dédoublonnage, le routage et la règle de frais (aucun total livré
+  inventé pour Leboncoin).
 - Limites : 35 annonces par page, soit une fenêtre de quelques dizaines de minutes à cette cadence ; une page saturée est rattrapée par une seconde page, jamais au-delà ; aucune collecte si le Pi ou le tunnel est indisponible ; `robots.txt` reste en contradiction avec cette décision, assumée par l'utilisateur et bornée à ce flux.
 
 <a id="adr-053"></a>

@@ -675,7 +675,7 @@ def test_profit_scoring_module(sample_listing):
     html = profit_scoring_module.format_telegram_html(result)
     assert "<b>Prix d'achat TTC :</b>" in html
     assert "<b>Revente estimée :</b> ~55,00 €" in html
-    assert "<b>Marge nette :</b> +25,50 €" in html
+    assert "<b>Marge brute estimée (hors frais de revente) :</b> +25,50 €" in html
     assert "<b>Indice pépite :</b> 8,5/10" in html
     assert "Excellente marge nette" in html
 

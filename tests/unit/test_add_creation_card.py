@@ -28,9 +28,9 @@ from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
     ROUTE_BANNERS,
-    deepseek_payload,
     fake_bnf,
-    fake_deepseek,
+    fake_llm,
+    llm_payload,
 )
 from tests.add_fakes import (
     DraftState as _SharedDraftState,
@@ -89,7 +89,7 @@ async def test_add_natural_add_shows_the_book_found_before_looking_for_variants(
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
     bnf = fake_bnf(resolution)
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_EDITION.isbn13)
 
     message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
@@ -143,7 +143,7 @@ async def test_add_natural_add_applies_variants_without_asking_for_a_click():
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
     bnf = fake_bnf(resolution)
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_EDITION.isbn13)
 
     message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
@@ -190,7 +190,7 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
     bnf = fake_bnf(resolution)
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_EDITION.isbn13, already_catalogued=True)
 
     message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
@@ -217,10 +217,7 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         assert "Chasse" not in confirmation
         assert "Surveillance active" not in confirmation
         assert "24/24" not in confirmation
-        assert confirmation.endswith(
-            "<i>Les annonces correspondant à ces critères déclencheront une alerte "
-            "Telegram.</i>"
-        )
+        assert confirmation.endswith("<i>Tu seras prévenu des annonces correspondantes.</i>")
 
         assert confirmation.startswith("✅ <b>Alerte créée</b>")
         assert "<b>Titre :</b> La couleur des choses" in confirmation
@@ -244,7 +241,7 @@ async def test_add_natural_add_persists_variants_and_exclusions_with_the_alert()
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
     bnf = fake_bnf(resolution)
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_EDITION.isbn13)
 
     message, _loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
@@ -297,7 +294,7 @@ async def test_add_recap_is_the_same_card_whatever_the_route():
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
     bnf = fake_bnf(resolution)
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_EDITION.isbn13)
 
     message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")

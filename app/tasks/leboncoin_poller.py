@@ -437,7 +437,7 @@ async def _alert_silence_once(
         silent_seconds,
     )
     message = (
-        "🚨 <b>BotRadar — Collecte Leboncoin muette</b>\n\n"
+        "🚨 <b>BotRadar - Collecte Leboncoin muette</b>\n\n"
         f"🚨 Aucun cycle exploitable depuis {silent_seconds // 60} min.\n"
         "Vérifier le tunnel résidentiel du Pi et son relais SOCKS5."
     )
@@ -452,7 +452,7 @@ async def notify_durable_stop(
     elapsed_min = int(max(0.0, (observed_at or _now()) - episode.started_at) // 60)
     threshold_min = int(settings.LEBONCOIN_BLOCK_STOP_SECONDS // 60)
     message = (
-        "🛑 <b>BotRadar — Collecte Leboncoin arrêtée</b>\n\n"
+        "🛑 <b>BotRadar - Collecte Leboncoin arrêtée</b>\n\n"
         f"⛔ Aucune collecte exploitable depuis <b>{elapsed_min} min</b> "
         f"(seuil d'arrêt : {threshold_min} min).\n"
         "Le collecteur Leboncoin est <b>arrêté</b> ; Vinted, l'API et le bot continuent.\n\n"
@@ -460,7 +460,7 @@ async def notify_durable_stop(
     )
     if not persisted:
         message = (
-            "🛑 <b>BotRadar — Collecte Leboncoin arrêtée</b>\n\n"
+            "🛑 <b>BotRadar - Collecte Leboncoin arrêtée</b>\n\n"
             f"⛔ Aucune collecte exploitable depuis <b>{elapsed_min} min</b> "
             f"(seuil d'arrêt : {threshold_min} min).\n"
             "Le collecteur Leboncoin est <b>arrêté pour ce processus</b> ; Vinted, l'API et "
@@ -503,7 +503,7 @@ async def notify_persistence_suspension() -> None:
     safe_create_task(
         notify_admins(
             text=(
-                "⚠️ <b>BotRadar — Collecte Leboncoin suspendue</b>\n\n"
+                "⚠️ <b>BotRadar - Collecte Leboncoin suspendue</b>\n\n"
                 "🔒 L'état de blocage n'a pas pu être enregistré : la collecte Leboncoin "
                 "est <b>suspendue pour ce processus</b>. Vinted, l'API et le bot continuent.\n\n"
                 "⚠️ La non-reprise <b>après redémarrage n'est pas garantie</b> : le collecteur "
@@ -686,7 +686,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 safe_create_task(
                     notify_admins(
                         text=(
-                            "✅ <b>BotRadar — Collecte Leboncoin rétablie</b>\n\n"
+                            "✅ <b>BotRadar - Collecte Leboncoin rétablie</b>\n\n"
                             "🟢 Les pages de recherche sont de nouveau accessibles."
                         )
                     ),
@@ -702,7 +702,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 safe_create_task(
                     notify_admins(
                         text=(
-                            "✅ <b>BotRadar — Collecte Leboncoin rétablie</b>\n\n"
+                            "✅ <b>BotRadar - Collecte Leboncoin rétablie</b>\n\n"
                             "🟢 La page de recherche a de nouveau une structure connue."
                         )
                     ),
@@ -713,7 +713,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 safe_create_task(
                     notify_admins(
                         text=(
-                            "✅ <b>BotRadar — Collecte Leboncoin rétablie</b>\n\n"
+                            "✅ <b>BotRadar - Collecte Leboncoin rétablie</b>\n\n"
                             "🟢 Les cycles de collecte aboutissent de nouveau."
                         )
                     ),
@@ -766,7 +766,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
             safe_create_task(
                 notify_admins(
                     text=(
-                        "🛡️ <b>Alerte BotRadar — Leboncoin bloqué</b>\n\n"
+                        "🛡️ <b>Alerte BotRadar - Leboncoin bloqué</b>\n\n"
                         f"⚠️ DataDome a refusé la collecte ({block_exc}).\n"
                         f"Mise en pause : <b>palier #{consecutive_blocks} "
                         f"({cooldown // 60} min)</b>.\n\n"
@@ -798,7 +798,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 safe_create_task(
                     notify_admins(
                         text=(
-                            "⚠️ <b>BotRadar — Collecte Leboncoin dégradée</b>\n\n"
+                            "⚠️ <b>BotRadar - Collecte Leboncoin dégradée</b>\n\n"
                             f"⚠️ {consecutive_collection_failures} cycles consécutifs "
                             "sans collecte (réseau, tunnel ou structure de page)."
                         )
@@ -830,7 +830,7 @@ async def run_leboncoin_poller(stop_event: asyncio.Event) -> None:
                 safe_create_task(
                     notify_admins(
                         text=(
-                            "⚠️ <b>BotRadar — Structure de page Leboncoin inattendue</b>\n\n"
+                            "⚠️ <b>BotRadar - Structure de page Leboncoin inattendue</b>\n\n"
                             f"⚠️ {consecutive_parse_failures} cycles consécutifs sans "
                             "annonce exploitable : structure inattendue ou page de "
                             "challenge non reconnue.\n\n"

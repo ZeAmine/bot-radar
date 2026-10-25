@@ -15,6 +15,7 @@ from time import monotonic
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.bot.labels import escape_display
 from app.core.alert_latency import observe_background
 from app.core.redis import get_redis_client
 from app.db.repositories.market_price_repo import MarketPriceRepository
@@ -320,7 +321,7 @@ async def notify_silent_providers(session: Any) -> int:
             return 0
 
         lines = "\n".join(
-            f"• <b>{name}</b> — {_provider_age_line(last_seen, now)}"
+            f"• <b>{escape_display(name)}</b> - {_provider_age_line(last_seen, now)}"
             for name, last_seen in rows
         )
         message = (

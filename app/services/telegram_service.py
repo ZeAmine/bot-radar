@@ -16,7 +16,7 @@ from aiogram.exceptions import (
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.bot.keyboards.listings import listing_alert_keyboard
-from app.bot.labels import abbreviate_condition, escape_html, join_list, platform_line
+from app.bot.labels import abbreviate_condition, escape_display, escape_html, join_list
 from app.core import alert_latency as latency
 from app.core.config import settings
 from app.core.constants import LEBONCOIN_SOURCE_NAME
@@ -93,7 +93,8 @@ def build_listing_caption(
 
     Ordre : titre, prix et total estimé, état, bloc de comparaison si applicable,
     mots-clés déclencheurs si disponibles. Les informations absentes ne produisent
-    pas de bloc vide.
+    pas de bloc vide. La plateforme n'a pas de ligne : le lien de l'annonce la
+    nomme, et une alerte appartient déjà à sa marketplace.
 
     Chaque libellé de champ est gras, sa valeur reste en romain (charte,
     `app.bot.labels`) : la donnée se lit d'un coup d'œil sans que la ligne entière
@@ -107,15 +108,12 @@ def build_listing_caption(
         fallback_to_default_fees=listing.source_name != LEBONCOIN_SOURCE_NAME,
     )
 
-    safe_title = escape_html(listing.title)
+    safe_title = escape_display(listing.title)
     safe_condition = escape_html(abbreviate_condition(condition_text))
 
     lines: list[str] = [
         f"🆕 <b>{safe_title}</b>",
     ]
-    source_line = platform_line(listing.source_name)
-    if source_line is not None:
-        lines.append(source_line)
     lines.extend([
         price_line,
         f"<b>État :</b> {safe_condition}",

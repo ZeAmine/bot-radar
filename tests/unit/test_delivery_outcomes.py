@@ -234,9 +234,28 @@ async def test_rejected_fallback_does_not_erase_earlier_uncertainty(monkeypatch,
 
 
 async def test_initial_receipt_does_not_wait_for_generation(monkeypatch):
+    await _assert_initial_receipt(monkeypatch, "ok")
+
+
+@pytest.mark.parametrize("scenario", [
+    "timeout", "http_error", "invalid_json", "validation_error", "empty", "interrupted",
+])
+async def test_initial_receipt_survives_generation_failure(monkeypatch, scenario):
+    await _assert_initial_receipt(monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("scenario", [
+    "ok", "timeout", "http_error", "invalid_json", "validation_error", "empty", "interrupted",
+])
+async def test_alternate_adapter_preserves_initial_receipt(monkeypatch, scenario):
+    monkeypatch.setattr(settings, "AI_PROVIDER", "openai")
+    await _assert_initial_receipt(monkeypatch, scenario)
+
+
+async def _assert_initial_receipt(monkeypatch, scenario):
     from app.core.tasks import safe_create_task
     from app.providers.llm import base as llm_base
-    from app.providers.llm.openai_compatible import OpenAICompatibleClient
+    from app.providers.llm.registry import build_llm_client
     from app.services.ai.pipeline import AIPostAlertPipeline
 
     monkeypatch.setattr(settings, "AI_ENABLED", True)
@@ -250,11 +269,22 @@ async def test_initial_receipt_does_not_wait_for_generation(monkeypatch):
         requests.append(request)
         entered.set()
         await release.wait()
+        if scenario == "timeout":
+            raise httpx.ReadTimeout("synthetic")
+        if scenario == "http_error":
+            return httpx.Response(429)
+        content = json.dumps({"profit_scoring": {
+            "pepite_score": 8, "estimated_resale_cents": 1000, "net_profit_cents": 500,
+        }})
+        if scenario == "invalid_json":
+            content = "not-json"
+        elif scenario == "validation_error":
+            content = '{"profit_scoring":{"pepite_score":99}}'
+        elif scenario == "empty":
+            content = ""
         return httpx.Response(200, json={"choices": [{
-            "finish_reason": "stop",
-            "message": {"content": json.dumps({"profit_scoring": {
-                "pepite_score": 8, "estimated_resale_cents": 1000, "net_profit_cents": 500,
-            }})},
+            "finish_reason": "length" if scenario == "interrupted" else "stop",
+            "message": {"content": content},
         }]})
 
     def schedule(coro, name):
@@ -262,7 +292,9 @@ async def test_initial_receipt_does_not_wait_for_generation(monkeypatch):
         tasks.append(task)
         return task
 
-    client = OpenAICompatibleClient(api_key="synthetic", base_url="https://example.invalid")
+    client = build_llm_client()
+    client.api_key = "synthetic"
+    client.base_url = "https://example.invalid"
     monkeypatch.setattr(
         "app.services.telegram_service.ai_post_alert_pipeline", AIPostAlertPipeline(client),
     )
@@ -283,8 +315,9 @@ async def test_initial_receipt_does_not_wait_for_generation(monkeypatch):
             release.set()
             await asyncio.wait_for(tasks[0], timeout=1)
             assert len(requests) == 1
-            assert bot.send_message.await_count == 2
-            assert bot.send_message.call_args.kwargs["reply_to_message_id"] == 876
+            assert bot.send_message.await_count == (2 if scenario == "ok" else 1)
+            if scenario == "ok":
+                assert bot.send_message.call_args.kwargs["reply_to_message_id"] == 876
         finally:
             release.set()
             for task in tasks:

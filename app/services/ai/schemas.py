@@ -10,7 +10,7 @@ from app.services.book_metadata_service import BookMetadata, EditionAlternative,
 class _LoosePayload(BaseModel):
     """JSON LLM : champs absents prennent le défaut, le surplus est ignoré."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", strict=True)
 
 
 class BookContext(BaseModel):
@@ -129,19 +129,30 @@ class ProfitScoringResult(BaseModel):
         default=None, description="Prix d'achat total estimé en centimes"
     )
     estimated_resale_cents: int | None = Field(default=None, description="Revente estimée")
-    net_profit_cents: int | None = Field(default=None, description="Bénéfice net estimé")
+    net_profit_cents: int | None = Field(
+        default=None, description="Marge brute estimée avant frais de revente"
+    )
     pepite_score: float | None = Field(default=None, description="Indice pépite de 1.0 à 10.0")
     verdict: str | None = Field(default=None, description="Conseil d'achat rapide")
+
+    @property
+    def is_abstention(self) -> bool:
+        return (
+            self.estimated_resale_cents is None
+            and self.net_profit_cents is None
+            and self.pepite_score is None
+            and bool(self.verdict and self.verdict.strip())
+        )
 
 
 class NaturalAddPayload(_LoosePayload):
     """Réponse brute de /add avant nettoyage."""
 
     category_slug: str = "bd_comics"
-    conditions: list[Any] | None = None
+    conditions: list[str] | None = None
     name: str | None = None
-    include_keywords: list[Any] | None = None
-    exclude_keywords: list[Any] | None = None
+    include_keywords: list[str] | None = None
+    exclude_keywords: list[str] | None = None
     is_series: bool = False
     isbn13: str | None = None
     author: str | None = None
@@ -169,16 +180,20 @@ class NegotiationPayload(_LoosePayload):
 class KeywordVariantsPayload(_LoosePayload):
     """Variantes et exclusions suggérées."""
 
-    variants: list[Any] | None = None
-    exclusions: list[Any] | None = None
+    variants: list[str] | None = None
+    exclusions: list[str] | None = None
     rationale: str | None = None
 
 
 class AutoTuningPayload(_LoosePayload):
     """Exclusions suggérées après des faux positifs."""
 
-    suggested_exclusions: list[Any] | None = None
+    suggested_exclusions: list[str] | None = None
     explanation: str | None = None
+
+
+class PostAlertPayload(_LoosePayload):
+    profit_scoring: ProfitScoringPayload | None = None
 
 
 class NegotiationResult(BaseModel):

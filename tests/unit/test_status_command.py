@@ -258,6 +258,35 @@ async def test_notify_admins_failure_is_not_accepted():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("state", "label"), [
+    ("unverified", "Configuré, non vérifié"),
+    ("last_call_ok", "Dernier appel réel réussi"),
+    ("last_call_error", "Dernier appel réel échoué"),
+])
+async def test_handle_status_reports_passive_observations_without_a_network_probe(
+    state, label,
+):
+    message = MagicMock(spec=Message)
+    message.answer = AsyncMock()
+    health = LLMHealth(
+        status=state, model="synthetic-model", configured=True,
+        last_call=None if state == "unverified" else {"error_category": "http_error"},
+    )
+    with (
+        patch("app.bot.handlers.status.is_night_time", return_value=False),
+        patch("app.bot.handlers.status.get_poller_status", AsyncMock(return_value=None)),
+        patch("app.bot.handlers.status.llm_client.check_health", AsyncMock(return_value=health)),
+    ):
+        await handle_status(message, _two_query_db(latency_rows=[], category_rows=[]))
+    text = message.answer.call_args[0][0]
+    assert "<b>Moteur IA</b> (état passif)" in text
+    assert label in text
+    assert "Sonde accessible" not in text
+    if state == "last_call_error":
+        assert "http_error" in text
+
+
+@pytest.mark.asyncio
 async def test_handle_status_ai_active():
     """Vérifie l'affichage du statut IA actif dans /status."""
     message = MagicMock(spec=Message)

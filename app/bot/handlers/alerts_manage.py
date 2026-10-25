@@ -41,6 +41,7 @@ from app.bot.labels import (
     FIELD_PUBLISHER,
     FIELD_VARIANTS,
     NOT_PROVIDED,
+    escape_display,
 )
 from app.bot.states.alert_creation import AlertEditState
 from app.core.constants import STANDARD_CONDITIONS, AlertStatus, CategorySlug
@@ -232,7 +233,7 @@ async def select_edit_field(
     emoji_prefix = f"{cat_emoji} " if cat_emoji else ""
     text = (
         f"✏️ <b>Modifier l'alerte</b>\n\n"
-        f"{emoji_prefix}« <b>{html.escape(alert.name)}</b> »\n"
+        f"{emoji_prefix}« <b>{escape_display(alert.name)}</b> »\n"
         "Choisis le critère à mettre à jour :"
     )
     keyboard = get_alert_edit_fields_keyboard(alert.id, category_slug=cat_slug)
@@ -247,7 +248,7 @@ async def _show_conditions_menu(
     """Affiche le menu de bascule des conditions acceptées."""
     text = (
         f"✏️ <b>États acceptés</b>\n\n"
-        f"Alerte : « {html.escape(alert.name)} »\n"
+        f"Alerte : « {escape_display(alert.name)} »\n"
         "Coche ou décoche les états autorisés pour cette alerte."
     )
     keyboard = get_edit_conditions_keyboard(alert.id, alert.accepted_conditions)
@@ -350,7 +351,7 @@ async def prompt_new_field_value(
                 if callback.message and hasattr(callback.message, "edit_text"):
                     await callback.message.edit_text(
                         "Aucune variante trouvée : le moteur n'a pas identifié "
-                        f"de variante pertinente pour « {html.escape(alert.name)} ».",
+                        f"de variante pertinente pour « {escape_display(alert.name)} ».",
                         reply_markup=empty_keyboard,
                     )
                 return
@@ -380,7 +381,7 @@ async def prompt_new_field_value(
             var_str = ", ".join(new_variants)
             text = (
                 f"✏️ <b>Variantes suggérées</b>\n\n"
-                f"Alerte : « {html.escape(alert.name)} »\n"
+                f"Alerte : « {escape_display(alert.name)} »\n"
                 f"<code>{html.escape(var_str)}</code>\n\n"
                 f"Ces termes permettront de matcher les variantes orthographiques. "
                 f"Ajouter ces {len(new_variants)} variante(s) à l'alerte ?"
@@ -418,7 +419,7 @@ async def prompt_new_field_value(
             if callback.message and hasattr(callback.message, "edit_text"):
                 err_msg = (
                     f"⚠️ Erreur lors de la recherche des variantes pour "
-                    f"« {html.escape(alert.name)} ».\nRéessaie dans un instant."
+                    f"« {escape_display(alert.name)} ».\nRéessaie dans un instant."
                 )
                 await callback.message.edit_text(
                     err_msg,
@@ -956,9 +957,9 @@ async def _save_edited_field_value(
                         if notice:
                             identity = (
                                 f"\n<b>{FIELD_AUTHOR} :</b> "
-                                f"{html.escape(notice.author or NOT_PROVIDED)}"
+                                f"{escape_display(notice.author or NOT_PROVIDED)}"
                                 f"\n<b>{FIELD_PUBLISHER} :</b> "
-                                f"{html.escape(notice.publisher or NOT_PROVIDED)}"
+                                f"{escape_display(notice.publisher or NOT_PROVIDED)}"
                                 f"\n<b>{FIELD_ISBN} :</b> <code>{clean_isbn}</code>"
                             )
                         await message.answer(
@@ -1258,7 +1259,7 @@ async def prompt_delete_confirmation(
         await callback.answer("Alerte introuvable.", show_alert=True)
         return
 
-    msg = f"Supprimer définitivement l'alerte « <b>{html.escape(alert.name)}</b> » ?"
+    msg = f"Supprimer définitivement l'alerte « <b>{escape_display(alert.name)}</b> » ?"
     keyboard = get_delete_confirmation_keyboard(alert.id)
     if isinstance(callback.message, Message):
         await callback.message.edit_text(msg, reply_markup=keyboard)
@@ -1286,7 +1287,7 @@ async def confirm_soft_delete_alert(
     await db_session.commit()
     if isinstance(callback.message, Message):
         await callback.message.edit_text(
-            f"L'alerte « <b>{html.escape(alert_name)}</b> » et toutes ses données associées "
+            f"L'alerte « <b>{escape_display(alert_name)}</b> » et toutes ses données associées "
             "ont été supprimées définitivement.",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[

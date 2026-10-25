@@ -29,6 +29,7 @@ from app.bot.labels import (
     FIELD_VARIANTS,
     NOT_PROVIDED,
     TITLE_ALERT_EXISTS,
+    escape_display,
     format_conditions,
     format_price_cents,
 )
@@ -177,7 +178,7 @@ def _join_escaped(values: list[str]) -> str:
     « can't parse entities ». L'utilisateur reste alors bloqué sur
     « Recherche IA en cours » parce que Telegram rejoue l'update.
     """
-    return ", ".join(html.escape(str(value)) for value in values)
+    return ", ".join(escape_display(str(value)) for value in values)
 
 
 def keyword_note(
@@ -285,7 +286,7 @@ def creation_card(
     if book_unidentified:
         notes.append(UNIDENTIFIED_WORK_NOTE)
     if isbn_note:
-        notes.append(html.escape(isbn_note))
+        notes.append(escape_display(isbn_note))
     if keyword_note:
         notes.append(keyword_note)
     if notes:
@@ -303,7 +304,7 @@ def creation_card(
     volume_issue = creation_volume_issue(data)
     if volume_issue:
         lines.extend([f"<i>{html.escape(volume_issue)}</i>", ""])
-    lines.append(f"<b>{FIELD_TITLE} :</b> {html.escape(title)}")
+    lines.append(f"<b>{FIELD_TITLE} :</b> {escape_display(title)}")
     if expects_isbn:
         language = str(data.get("language") or "")
         language_label = {"en": "Anglais", "fr": "Français", "de": "Allemand",
@@ -317,12 +318,12 @@ def creation_card(
             ("Année", data.get("publication_year")), ("Format", data.get("format_detail")),
             ("Source", provenance or sources.get(data.get("source") or "")),
         ):
-            lines.append(f"<b>{label} :</b> {html.escape(str(value or NOT_PROVIDED))}")
+            lines.append(f"<b>{label} :</b> {escape_display(str(value or NOT_PROVIDED))}")
     else:
         if author:
-            lines.append(f"<b>{FIELD_AUTHOR} :</b> {html.escape(author)}")
+            lines.append(f"<b>{FIELD_AUTHOR} :</b> {escape_display(author)}")
         if publisher:
-            lines.append(f"<b>{FIELD_PUBLISHER} :</b> {html.escape(publisher)}")
+            lines.append(f"<b>{FIELD_PUBLISHER} :</b> {escape_display(publisher)}")
     lines.extend(format_edition_line(edition_alternatives, isbn))
 
     lines.append(f"<b>{FIELD_MAX_PRICE} :</b> {price_str}")
@@ -619,7 +620,7 @@ def format_edition_line(
     ):
         return []
     return [
-        f"<b>{FIELD_EDITION} :</b> {html.escape(_edition_identity(edition))}"
+        f"<b>{FIELD_EDITION} :</b> {escape_display(_edition_identity(edition))}"
     ]
 
 
@@ -698,10 +699,10 @@ def format_alerts_list_text(
     dans la fiche détaillée, chaque valeur dynamique est échappée.
     """
     total_pages = max(1, (total_count + 9) // 10)
-    title_suffix = f" — {category_label}" if category_label else ""
+    title_suffix = f" - {category_label}" if category_label else ""
     lines = [f"📚 <b>Mes alertes{title_suffix}</b>"]
     lines.append(
-        f"Page {current_page + 1}/{total_pages} — "
+        f"Page {current_page + 1}/{total_pages} - "
         f"{total_count} alerte{'s' if total_count > 1 else ''}"
     )
     lines.append("")
@@ -719,7 +720,7 @@ def format_alerts_list_text(
             if a.max_item_price_cents is not None else format_cents_to_euros(None)
         )
         lines.append(
-            f"{i}. {cat_icon}<b>{html.escape(a.name)}</b> : {price_str} ({status_text})"
+            f"{i}. {cat_icon}<b>{escape_display(a.name)}</b> : {price_str} ({status_text})"
         )
     return "\n".join(lines)
 
@@ -1203,7 +1204,7 @@ async def render_existing_alert_response(
         warn_text = (
             f"⚠️ <b>{TITLE_ALERT_EXISTS[2:].strip()}</b>\n\n"
             f"<i>{item_label} est déjà surveillé{agreement} dans tes alertes.</i>\n\n"
-            f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
+            f"{cat_emoji} <b>{escape_display(existing.name)}</b>\n"
             f"{isbn_line}"
             f"<b>Prix maximum actuel :</b> {price_str}\n"
             f"<b>{FIELD_STATUS} :</b> {status_text}\n\n"
@@ -1232,7 +1233,7 @@ async def render_existing_alert_response(
         warn_text = (
             f"⚠️ <b>{TITLE_ALERT_EXISTS[2:].strip()}</b>\n\n"
             f"<i>{item_label} est déjà surveillé{agreement} dans tes alertes.</i>\n\n"
-            f"{cat_emoji} <b>{html.escape(existing.name)}</b>\n"
+            f"{cat_emoji} <b>{escape_display(existing.name)}</b>\n"
             f"{isbn_line}"
             f"<b>Prix maximum actuel :</b> {price_str}\n"
             f"<b>{FIELD_STATUS} :</b> {status_text}\n\n"

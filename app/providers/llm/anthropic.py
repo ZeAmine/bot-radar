@@ -11,16 +11,15 @@ qu'une ligne au-dessus change, la frontière est au bon endroit.
 
 from __future__ import annotations
 
-import logging
+import json
 from typing import Any
 
-from app.core.config import settings
-from app.providers.llm.base import BaseLLMClient
+from pydantic import BaseModel
 
-logger = logging.getLogger(__name__)
+from app.core.config import settings
+from app.providers.llm.base import BaseLLMClient, LLMResponseError, usage_count
 
 API_VERSION = "2023-06-01"
-DEFAULT_MAX_TOKENS = 2048
 MAX_IMAGES = 5
 # L'API Messages n'a pas de mode JSON : la contrainte vient du prompt.
 JSON_INSTRUCTION = "Réponds uniquement par un objet JSON valide, sans texte autour."
@@ -37,7 +36,7 @@ class AnthropicClient(BaseLLMClient):
         base_url: str | None = None,
         model: str | None = None,
         timeout_seconds: float | None = None,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_tokens: int | None = None,
     ) -> None:
         super().__init__(
             model=model or settings.AI_MODEL,
@@ -47,7 +46,7 @@ class AnthropicClient(BaseLLMClient):
             base_url=base_url or settings.AI_BASE_URL,
             timeout_seconds=timeout_seconds,
         )
-        self.max_tokens = max_tokens
+        self.max_tokens = max_tokens if max_tokens is not None else settings.AI_MAX_TOKENS
 
     def chat_endpoint(self) -> str:
         return f"{self.base_url}/v1/messages"
@@ -66,8 +65,14 @@ class AnthropicClient(BaseLLMClient):
         user_prompt: str,
         temperature: float,
         image_urls: list[str] | None,
+        *,
+        response_model: type[BaseModel] | None = None,
     ) -> dict[str, Any]:
         """Le système sort du tableau `messages`, l'image devient une source explicite."""
+        if response_model is not None:
+            system_prompt += "\n\nSchéma JSON attendu : " + json.dumps(
+                response_model.model_json_schema(), ensure_ascii=False,
+            )
         if image_urls:
             content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
             for url in image_urls[:MAX_IMAGES]:
@@ -91,18 +96,23 @@ class AnthropicClient(BaseLLMClient):
             or (block.get("type") == "text" and not isinstance(block.get("text"), str))
             for block in blocks
         ):
-            logger.warning(
-                "Enveloppe LLM inexploitable.",
-                extra={"event": "llm_response", "outcome": "invalid_envelope"},
-            )
-            return None
+            raise LLMResponseError("invalid_envelope")
+        if data.get("stop_reason") in ("max_tokens", "refusal", "pause_turn"):
+            raise LLMResponseError("interrupted")
         text = "\n".join(block["text"] for block in blocks if block.get("type") == "text").strip()
         if not text:
-            logger.warning(
-                "Réponse LLM sans contenu.",
-                extra={"event": "llm_response", "outcome": "empty_content"},
-            )
-        return text or None
+            raise LLMResponseError("empty_content")
+        return text
+
+    def extract_usage(self, data: Any) -> dict[str, int | None]:
+        usage = data.get("usage") if isinstance(data, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        return {
+            "input": usage_count(usage.get("input_tokens")),
+            "output": usage_count(usage.get("output_tokens")),
+            "cached": usage_count(usage.get("cache_read_input_tokens")),
+            "reasoning": None,
+        }
 
     def health_request(self) -> tuple[str, dict[str, str]]:
         return f"{self.base_url}/v1/models", {

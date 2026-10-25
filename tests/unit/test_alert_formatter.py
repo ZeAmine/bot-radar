@@ -90,8 +90,8 @@ def test_format_alerts_list_text():
         category_label="📚 Livres",
     )
 
-    assert "Mes alertes — 📚 Livres" in text
-    assert "Page 1/1 — 2 alertes" in text
+    assert "Mes alertes - 📚 Livres" in text
+    assert "Page 1/1 - 2 alertes" in text
     # Chaque entrée : numéro, titre, statut, prix maximum — l'ISBN reste dans la fiche
     assert "1. 📚 <b>Astérix - Tome 40</b> : 8€ (Active)" in text
     assert "2. 💻 <b>Switch Mario Kart 8</b> : 30€ (Active)" in text
@@ -260,5 +260,5 @@ def test_list_preserves_numbering_and_escapes_paused_titles():
                   max_item_price_cents=1250,
                   category=Category(slug="bd_comics", emoji="📚"))
     text = format_alerts_list_text([alert], current_page=2, total_count=141)
-    assert "Page 3/15 — 141 alertes" in text
+    assert "Page 3/15 - 141 alertes" in text
     assert "21. 📚 <b>Livre &lt;rare&gt;</b> : 12,50€ (En pause)" in text

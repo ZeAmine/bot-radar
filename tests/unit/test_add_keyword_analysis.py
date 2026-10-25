@@ -15,7 +15,7 @@ from app.db.models.user import User
 from app.services.ai.modules.keyword_variants import KeywordVariantsModule, KeywordVariantsOutcome
 from app.services.ai.schemas import BookContext
 from app.services.book_metadata_service import BookResolution
-from tests.add_fakes import BNF_EDITION, DraftState, deepseek_payload, fake_bnf, fake_deepseek
+from tests.add_fakes import BNF_EDITION, DraftState, fake_bnf, fake_llm, llm_payload
 from tests.add_journey import drain, patched, repositories
 from tests.screens import confirm_press, incoming_message, message_with_recap
 
@@ -27,7 +27,7 @@ def keyword_journey(*, natural=True, enabled=True, configured=True, book=None):
         for boundary in patched(
             repos,
             fake_bnf(BookResolution(best=book or BNF_EDITION)),
-            fake_deepseek(deepseek_payload()),
+            fake_llm(llm_payload()),
             natural_enabled=natural,
         ):
             stack.enter_context(boundary)
@@ -262,7 +262,11 @@ async def test_raw_answer_is_validated_filtered_and_reported_as_retained_values(
     assert state.data["exclude_keywords"] == before["exclude_keywords"]
     assert state.data["keyword_analysis_status"] == ("completed" if success else "failed")
     text = screen.edit_text.call_args.args[0]
-    assert ("Aucune proposition supplémentaire pertinente retenue." in text) == success
+    if success:
+        assert "Critères enrichis." not in text
+        assert "L'IA n'a pas répondu" not in text
+    else:
+        assert "L'IA n'a pas répondu" in text
     assert "alert_create_confirm" in buttons(screen)
     assert ("alert_create_ai_variants" in buttons(screen)) != success
 

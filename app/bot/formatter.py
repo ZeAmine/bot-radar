@@ -15,6 +15,7 @@ from app.bot.labels import (
     NOT_PROVIDED,
     STATUS_ACTIVE,
     STATUS_PAUSED,
+    escape_display,
     format_conditions,
 )
 from app.core.constants import AlertStatus
@@ -42,9 +43,9 @@ def alert_status_text(alert: Alert) -> str:
     if request is None:
         return STATUS_PAUSED
     if not request.activation_requested:
-        return "⏸ Pause volontaire — préparation inachevée"
+        return "⏸ Pause volontaire - préparation inachevée"
     if request.state == "blocked":
-        return "⚠️ Préparation bloquée — relance disponible"
+        return "⚠️ Préparation bloquée - relance disponible"
     return "⏳ Préparation en cours ou en attente de reprise"
 
 
@@ -62,7 +63,7 @@ def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1
     status_text = alert_status_text(alert)
     category_emoji = alert.category.emoji if alert.category else "📚"
 
-    header = f"{category_emoji} <b>{html.escape(alert.name)}</b>"
+    header = f"{category_emoji} <b>{escape_display(alert.name)}</b>"
     if total_count > 1:
         header += f" ({current_index + 1}/{total_count})"
 
@@ -86,7 +87,8 @@ def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1
                 (FIELD_EDITION, book.edition),
             ):
                 lines.append(
-                    f"<b>{label} :</b> {html.escape(str(value)) if value else NOT_PROVIDED}"
+                    f"<b>{label} :</b> "
+                    f"{escape_display(str(value)) if value else NOT_PROVIDED}"
                 )
 
     lines.extend(
@@ -95,15 +97,15 @@ def format_alert_card(alert: Alert, current_index: int = 0, total_count: int = 1
             f"<b>{FIELD_MAX_PRICE} :</b> {format_cents_to_euros(alert.max_item_price_cents)}",
             f"<b>{FIELD_CONDITIONS} :</b> {format_conditions(alert.accepted_conditions)}",
             f"<b>{FIELD_INCLUDE_KEYWORDS} :</b> "
-            f"{', '.join(html.escape(kw) for kw in alert.include_keywords)}",
+            f"{', '.join(escape_display(kw) for kw in alert.include_keywords)}",
         ]
     )
     if alert.exclude_keywords:
-        excluded = ", ".join(html.escape(kw) for kw in alert.exclude_keywords)
+        excluded = ", ".join(escape_display(kw) for kw in alert.exclude_keywords)
         lines.append(f"<b>{FIELD_EXCLUDE_KEYWORDS} :</b> {excluded}")
     if alert.variants:
         lines.append(
-            f"<b>{FIELD_VARIANTS} :</b> {', '.join(html.escape(v) for v in alert.variants)}"
+            f"<b>{FIELD_VARIANTS} :</b> {', '.join(escape_display(v) for v in alert.variants)}"
         )
 
     if alert.vinted_search_url:

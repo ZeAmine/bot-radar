@@ -7,8 +7,9 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.domain.rules.keyword_hygiene import (
+    SanitizedValues,
+    assess_variants,
     sanitize_exclusions,
-    sanitize_variants,
 )
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import BookContext, KeywordVariantsPayload
@@ -23,31 +24,48 @@ OPTIMIZE_SYSTEM_PROMPT = (
     "1. « variants » : les orthographes alternatives avec lesquelles un vendeur "
     "saisit réellement ce même produit (fautes de frappe, oublis d'espace, "
     "d'accent ou d'apostrophe, variantes phonétiques, abréviations courantes).\n"
+    "Zéro variante est une réponse valide : si aucune autre écriture utile ne vient, "
+    "réponds variants=[]. Ne cherche jamais à remplir un quota. "
+    "Écarte les doublons et les écritures qui ne changent que la casse, les accents, "
+    "la ponctuation ou les espaces superflus. Le code applique ensuite sa normalisation "
+    "et ses filtres ; tu n'as pas à en reproduire l'algorithme.\n"
     "Une variante est une autre écriture du MÊME produit, jamais un produit voisin : "
     "ni un autre modèle (« s24 » pour « S23 »), ni un autre tome, ni une autre édition, "
     "ni un accessoire. L'application vérifie cette identité de façon déterministe — une "
     "variante qui change un nombre du titre, ou qui s'en écarte trop, est refusée. "
     "Inutile donc de la proposer : elle coûte un aller-retour et ne sera pas retenue.\n"
-    "2. « exclusions » : 0 à 3 mots-clés présents dans le TITRE d'une annonce "
-    "Vinted qui doivent faire rejeter cette annonce.\n"
+    "2. « exclusions » : 0 à 3 mots-clés dont la présence dans une annonce révèle "
+    "une confusion plausible avec ce que l'utilisateur cherche. Zéro est une "
+    "réponse fréquente, et souvent la bonne.\n"
     "\n"
-    "Règle essentielle pour « exclusions » : une exclusion vaut uniquement si elle "
-    "correspond à une confusion RÉELLE pour CETTE œuvre précise. Raisonne à partir de "
-    "ce que tu sais de l'ouvrage : ce qui porte le même titre sans être ce livre "
-    "(homonymes, autres auteurs, adaptation), ce qui l'accompagne "
-    "(goodies, produits dérivés, matérialisation d'un objet de l'histoire), ce qui "
-    "signale une annonce sans le livre (coffret ou boîte vide, pièce seule, "
-    "photo d'un autre tome), et ce qui contredit la recherche (autre édition "
-    "imprimée quand l'utilisateur vise un exemplaire précis).\n"
+    "Règle essentielle pour « exclusions » : l'application cherche chaque terme en "
+    "mots entiers dans le TITRE et dans la DESCRIPTION de l'annonce. Un seul mot "
+    "suffit donc à rejeter l'annonce entière, y compris un lot qui contient "
+    "l'ouvrage ou une description qui cite un autre objet. Une exclusion n'est "
+    "donc utile que si ce mot, à lui seul, désigne une annonce qui n'est pas le "
+    "produit recherché : un homonyme qui porte le même titre sans être cet "
+    "ouvrage (autre auteur, adaptation, autre sujet), ou un objet vendu à la place "
+    "du produit.\n"
+    "Tout ce qui n'est pas le produit lui-même (emballage, conditionnement, "
+    "produit dérivé, goodies, objet qui l'accompagne) ne dépend pas de l'œuvre : "
+    "le filtrage de la catégorie en couvre déjà une partie, et une exclusion ne "
+    "doit pas les répéter. N'exclus aucun mot qui puisse apparaître dans un lot ou "
+    "dans une description à côté du produit recherché.\n"
     "Une liste VIDE est une réponse attendue : elle dit qu'aucune confusion n'est "
-    "nommable pour cet ouvrage, et c'est mieux qu'une exclusion de remplissage. "
-    "N'invente jamais une exclusion pour atteindre un nombre.\n"
+    "nommable pour cette recherche, et c'est mieux qu'une exclusion de remplissage. "
+    "N'invente jamais une exclusion pour atteindre un nombre, et n'en propose pas "
+    "une simplement parce que le produit est d'un type courant (un livre, un jeu, "
+    "un appareil).\n"
+    "INTERDIT : nommer un autre titre, un autre tome, un autre volume ou un autre "
+    "ouvrage de la même collection : l'alerte se tairait sur ce que l'utilisateur "
+    "veut suivre.\n"
     "INTERDIT : une exclusion obtenue en collant un numéro au titre "
     "(« … #2 », « … 2 »). Le numéro d'un tome n'est pas un mot du titre : ce n'est "
     "pas une confusion, et l'alerte se tairait alors sur ce tome. Si le titre ne "
     "porte aucun numéro, ne nomme aucun numéro de tome.\n"
     "INTERDIT : rendre une liste générique valable pour n'importe quelle œuvre "
-    "(par exemple des mots de goodies qui n'ont aucun rapport avec l'ouvrage).\n"
+    "(des mots de goodies, de conditionnement ou d'usage qui n'ont aucun rapport "
+    "avec cette recherche).\n"
     "INTERDIT : tout ISBN, code-barres, éditeur ou année dans les variantes : une "
     "variante est une façon d'écrire le TITRE, pas une référence d'un autre ouvrage. "
     "Une variante ne répète jamais le titre, elle en est une autre écriture.\n"
@@ -62,7 +80,7 @@ OPTIMIZE_SYSTEM_PROMPT = (
     "\n"
     "Retourne STRICTEMENT un objet JSON :\n"
     "{\n"
-    '  "variants": ["variante1"],\n'
+    '  "variants": [],\n'
     '  "exclusions": ["exclusion1"],\n'
     '  "rationale": "une phrase expliquant les confusions visées"\n'
     "}"
@@ -98,6 +116,8 @@ class KeywordVariantsOutcome:
     variants: list[str] = field(default_factory=list)
     exclusions: list[str] = field(default_factory=list)
     answered: bool = False
+    proposed_variants: tuple[str, ...] | None = None
+    variant_assessment: SanitizedValues | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -147,19 +167,15 @@ class KeywordVariantsModule(BaseAIModule):
         if payload is None:
             return KeywordVariantsOutcome.unanswered()
 
-        variants = sanitize_variants(payload.variants or [], title)
+        variant_assessment = assess_variants(payload.variants or [], title)
         exclusions = sanitize_exclusions(payload.exclusions or [], title)
 
-        if payload.rationale:
-            logger.info(
-                "Mots-clés IA pour « %s » : %s",
-                title,
-                str(payload.rationale)[:200],
-            )
         return KeywordVariantsOutcome(
-            variants=variants,
+            variants=variant_assessment.values,
             exclusions=exclusions,
             answered=True,
+            proposed_variants=tuple(payload.variants or []),
+            variant_assessment=variant_assessment,
         )
 
     async def _request_payload(
@@ -170,6 +186,8 @@ class KeywordVariantsModule(BaseAIModule):
             system_prompt=OPTIMIZE_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             temperature=0.3,
+            response_model=KeywordVariantsPayload,
+            ai_module=self.name,
         )
         if not isinstance(data, dict):
             logger.info("Recherche de mots-clés pour « %s » : aucune réponse exploitable.", title)
@@ -208,9 +226,16 @@ class KeywordVariantsModule(BaseAIModule):
             )
         else:
             lines.append(
-                "Aucune fiche vérifiée n'est disponible : déduis les exclusions de ce que "
-                "tu sais du produit et des usages du marché de l'occasion."
+                "Aucune fiche vérifiée n'est disponible : ne nomme une exclusion que "
+                "si une confusion précise est nommable pour ce titre, sinon réponds "
+                "exclusions=[]. Les usages du marché et les objets d'accompagnement "
+                "ne suffisent pas à en justifier une."
             )
+        lines.append(
+            "Le matching cherche une exclusion en mots entiers dans le titre et la "
+            "description : un mot présent dans un lot contenant le produit rejetterait "
+            "l'annonce."
+        )
         return "\n".join(lines)
 
     async def generate_variants(self, keyword: str) -> list[str]:

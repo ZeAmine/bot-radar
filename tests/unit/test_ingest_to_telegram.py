@@ -111,7 +111,7 @@ EXPECTED_CAPTION = "\n".join(
 # BD : ancien minimum non vérifiable exclu, repli sur le prix courant frais.
 EXPECTED_CAPTION_BD = "\n".join(
     [
-        "🆕 <b>Blacksad — Intégrale</b>",
+        "🆕 <b>Blacksad - Intégrale</b>",
         "<b>Prix :</b> 9,00 € (13,03 € TTC)",
         "<b>État :</b> TBE",
         "",

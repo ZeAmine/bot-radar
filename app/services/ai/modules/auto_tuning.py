@@ -58,6 +58,8 @@ class AutoTuningModule(BaseAIModule):
             system_prompt=TUNING_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             temperature=0.2,
+            response_model=AutoTuningPayload,
+            ai_module=self.name,
         )
         if not isinstance(data, dict):
             return None
@@ -76,7 +78,7 @@ class AutoTuningModule(BaseAIModule):
         if not payload.suggested_exclusions:
             return [], None
 
-        exclusions = [str(e).strip().lower() for e in payload.suggested_exclusions if e]
+        exclusions = [e.strip().lower() for e in payload.suggested_exclusions if e.strip()]
         return exclusions, payload.explanation
 
 
