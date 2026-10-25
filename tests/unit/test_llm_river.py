@@ -145,21 +145,180 @@ async def test_river_failure_never_retries_or_falls_back_to_another_provider(
         assert private not in output
 
 
-async def test_river_health_is_one_models_get_without_generation(river, monkeypatch):
+async def test_river_health_is_unverified_without_any_network_request(river, monkeypatch):
+    def forbidden():
+        pytest.fail("Une lecture de santé passive ne doit pas ouvrir de transport.")
+
+    monkeypatch.setattr(llm_base, "get_shared_http_client", forbidden)
+    for force in (False, True):
+        health = await river.check_health(force=force)
+        assert health.status == "unverified"
+        assert health.as_dict()["configured"] is True
+        assert health.as_dict()["last_call"] is None
+
+
+@pytest.mark.parametrize("status", [200, 401, 403])
+async def test_river_passive_health_records_real_completion_and_exact_status(
+    river, status, monkeypatch, caplog,
+):
     requests = []
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(200, json={"data": [{"id": RIVER_MODEL}]})
+        assert request.method == "POST"
+        body = {"choices": [{"message": {"content": '{"variants":[]}'},
+                             "finish_reason": "stop"}]} if status == 200 else {
+            "error": {"code": "invalid_api_key", "type": "authentication_error",
+                      "message": "PRIVATE_ERROR_BODY"},
+        }
+        return httpx.Response(status, json=body, headers={"x-request-id": "req_synthetic_123"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
         monkeypatch.setattr(llm_base, "get_shared_http_client", lambda: http)
-        assert (await river.check_health()).status == "active"
-        assert (await river.check_health()).status == "active"
+        with caplog.at_level(logging.INFO):
+            result = await river.generate_json("JSON", "u", response_model=KeywordVariantsPayload)
+
+    def forbidden():
+        pytest.fail("Aucun transport après la complétion réelle.")
+
+    monkeypatch.setattr(llm_base, "get_shared_http_client", forbidden)
+    health = await river.check_health(force=True)
     assert len(requests) == 1
-    assert requests[0].method == "GET"
-    assert str(requests[0].url) == "https://api.river.ai/v1/models"
-    assert requests[0].headers["authorization"] == "Bearer synthetic-river-key"
+    assert (result is not None) is (status == 200)
+    assert health.status == ("last_call_ok" if status == 200 else "last_call_error")
+    last = health.as_dict()["last_call"]
+    assert last["http_status"] == status
+    assert last["error_category"] == (None if status == 200 else "http_error")
+    assert last["x_request_id"] == "req_synthetic_123"
+    assert last["observed_at"].endswith("+00:00")
+    record = next(r for r in caplog.records if getattr(r, "event", None) == "llm_request")
+    output = json.loads(JSONFormatter().format(record))
+    assert output["http_status"] == status
+    if status != 200:
+        assert last["provider_code"] == "invalid_api_key"
+        assert last["provider_type"] == "authentication_error"
+        assert output["provider_code"] == "invalid_api_key"
+        assert output["provider_type"] == "authentication_error"
+    assert "PRIVATE_ERROR_BODY" not in json.dumps(health.as_dict())
+    assert "PRIVATE_ERROR_BODY" not in json.dumps(output)
+
+
+@pytest.mark.parametrize(("error", "category"), [
+    (httpx.ConnectError, "transport_error"), (httpx.ReadTimeout, "timeout"),
+])
+async def test_river_passive_health_keeps_network_failure_without_retry(
+    river, error, category, monkeypatch,
+):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        raise error("PRIVATE_TRANSPORT_ERROR")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        monkeypatch.setattr(llm_base, "get_shared_http_client", lambda: http)
+        assert await river.generate_json("JSON", "u") is None
+    health = await river.check_health()
+    assert health.status == "last_call_error"
+    assert health.as_dict()["last_call"]["error_category"] == category
+    assert health.as_dict()["last_call"]["http_status"] is None
+    assert len(requests) == 1
+    assert "PRIVATE_TRANSPORT_ERROR" not in json.dumps(health.as_dict())
+
+
+@pytest.mark.parametrize("private", ["synthetic-river-key", "rv_PARTIAL_PRIVATE", "Bearer PRIVATE"])
+async def test_river_error_identifiers_never_expose_credentials(
+    river, private, monkeypatch, caplog,
+):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(
+        401, json={"error": {"code": private, "type": private, "message": private}},
+        headers={"x-request-id": private},
+    ))) as http:
+        monkeypatch.setattr(llm_base, "get_shared_http_client", lambda: http)
+        await river.generate_json("JSON", "u")
+    last = (await river.check_health()).as_dict()["last_call"]
+    assert last["provider_code"] is None
+    assert last["provider_type"] is None
+    assert last["x_request_id"] is None
+    serialized = json.dumps(last) + "".join(JSONFormatter().format(r) for r in caplog.records)
+    assert private not in serialized
+
+
+async def test_river_passive_health_is_local_and_keeps_application_liveness_separate(
+    river, monkeypatch,
+):
+    from fastapi import FastAPI
+
+    from app.api.routes import health
+
+    def forbidden():
+        pytest.fail("Aucun accès distant pendant /health.")
+
+    monkeypatch.setattr(llm_base, "get_shared_http_client", forbidden)
+    monkeypatch.setattr(health, "llm_client", river)
+    app = FastAPI()
+    app.include_router(health.router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as http:
+        response = await http.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["scope"] == "http_liveness"
+    assert body["unchecked"] == ["database", "redis", "scheduler", "poller"]
+    assert body["ai"]["status"] == "unverified"
+    assert body["ai"]["configured"] is True
+
+
+async def test_river_passive_health_disabled_and_unconfigured_do_not_call_transport(
+    river, monkeypatch,
+):
+    def forbidden():
+        pytest.fail("Aucun transport pour une IA désactivée ou non configurée.")
+
+    monkeypatch.setattr(llm_base, "get_shared_http_client", forbidden)
+    monkeypatch.setattr(settings, "AI_ENABLED", False)
+    assert (await river.check_health()).status == "disabled"
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+    river.api_key = ""
+    assert (await river.check_health()).status == "unconfigured"
+
+
+async def test_river_passive_health_replaces_failure_with_new_real_success(river, monkeypatch):
+    statuses = iter([403, 200])
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(next(statuses), json={"choices": [{"message": {"content": "{}"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        monkeypatch.setattr(llm_base, "get_shared_http_client", lambda: http)
+        assert await river.generate_json("JSON", "u") is None
+        failed = await river.check_health()
+        assert failed.status == "last_call_error"
+        assert await river.generate_json("JSON", "u") == {}
+        succeeded = await river.check_health()
+    assert succeeded.status == "last_call_ok"
+    assert succeeded.last_call["http_status"] == 200
+    assert failed.last_call["http_status"] == 403
+    assert len(requests) == 2
+    fresh = build_llm_client("river")
+    fresh.api_key = "synthetic-river-key"
+    assert (await fresh.check_health()).status == "unverified"
+
+
+@pytest.mark.parametrize("content", ["invalid JSON", '{"variants":[42]}'])
+async def test_river_passive_health_does_not_count_rejected_content_as_success(
+    river, content, monkeypatch,
+):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(
+        200, json={"choices": [{"message": {"content": content}}]},
+    ))) as http:
+        monkeypatch.setattr(llm_base, "get_shared_http_client", lambda: http)
+        assert await river.generate_json("JSON", "u", response_model=KeywordVariantsPayload) is None
+    assert (await river.check_health()).status == "last_call_error"
 
 
 async def test_river_failure_preserves_deterministic_offer(river, monkeypatch):

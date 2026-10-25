@@ -95,7 +95,8 @@ cette branche accessible demande un arbitrage distinct, pas un simple nettoyage.
 ## Frontière IA et absence de réponse
 
 [LLMClient / BaseLLMClient](../../app/providers/llm/base.py) possèdent activation,
-HTTP partagé, repli `None`, erreurs et sonde de santé en cache 30 secondes. Les
+HTTP partagé, repli `None`, erreurs et santé. River utilise un état passif ; les
+autres adaptateurs gardent leur sonde réseau en cache 30 secondes. Les
 adaptateurs traduisent le dialecte ; le registre refuse un fournisseur inconnu au
 démarrage. Variables : `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`,
 `AI_TIMEOUT_SECONDS`, `AI_MAX_TOKENS`, `AI_REASONING_EFFORT`. Aucun shim historique
@@ -147,12 +148,28 @@ Contrat River consulté le 24 octobre 2026 :
 [raisonnement et sorties structurées](https://docs.river.ai/guides/inference-controls/),
 [erreurs HTTP](https://docs.river.ai/guides/inference-limits/).
 Le mode strict est fixé avant le POST, sans repli réseau vers `json_object` ni
-OpenAI. `GET /v1/models` reste la seule sonde, en cache, sans génération ni
-négociation de capacités. La table de raisonnement River nomme la famille Flash
+OpenAI. River n'utilise plus `GET /v1/models` pour déduire la santé : cet endpoint
+a été refusé alors qu'un POST réel avec la clé courante a réussi. `check_health`,
+y compris avec `force=True`, ne contacte aucun fournisseur. Les états passifs
+sont `unverified`, `last_call_ok` et `last_call_error`, en plus des états désactivé
+et non configuré. `configured` indique la présence d'une clé, jamais un accès
+confirmé. `last_call` contient l'horodatage UTC, la catégorie, le statut HTTP exact,
+le code/type fournisseur expurgés et le `x-request-id` disponibles. Les messages
+fournisseur libres et corps bruts sont exclus. Ces observations restent locales
+au client dans le processus ; un redémarrage revient à `unverified`. Une réponse
+refusée par la validation n'est pas un succès. Aucun POST automatique de santé.
+
+`/health` conserve sa portée de vivacité HTTP : le statut applicatif reste distinct
+de l'état IA, et la base, Redis, le scheduler et le poller restent explicitement
+non vérifiés. `/status` distingue les observations passives d'une sonde accessible.
+Les sondes et le cache des autres fournisseurs sont inchangés.
+
+La table de raisonnement River nomme la famille Flash
 sans détailler la révision `1017` ; `none` est retenu selon ce contrat de famille,
 à confirmer lors de la vérification manuelle autorisée. Les pages documentent
 les statuts d'erreur, pas un schéma exhaustif de leurs corps : le traitement
-s'appuie sur HTTP sans journaliser ou dépendre du corps d'erreur.
+s'appuie sur HTTP. Seuls les identifiants d'erreur structurés autorisés sont
+extraits ; aucun corps d'erreur n'est journalisé.
 
 Références OpenAI consultées le 24 octobre 2026 :
 [modèle Luna](https://developers.openai.com/api/docs/models/gpt-6-luna),

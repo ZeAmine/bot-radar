@@ -1,6 +1,7 @@
 """Handler pour la commande /status."""
 
 from datetime import datetime
+from html import escape
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -249,6 +250,15 @@ async def handle_status(message: Message, db_session: Any) -> None:
     ai_info = await llm_client.check_health()
     if ai_info.status == "active":
         ai_status = "🟢 <b>Sonde accessible</b>"
+    elif ai_info.status == "unverified":
+        ai_status = "⚪ <b>Configuré, non vérifié</b> (aucun appel réel observé)"
+    elif ai_info.status == "last_call_ok":
+        ai_status = "🟢 <b>Dernier appel réel réussi</b>"
+    elif ai_info.status == "last_call_error":
+        ai_status = "🔴 <b>Dernier appel réel échoué</b>"
+        category = (ai_info.last_call or {}).get("error_category")
+        if isinstance(category, str):
+            ai_status += f" ({escape(category)})"
     elif ai_info.status == "disabled":
         ai_status = "<b>Désactivé</b>"
     elif ai_info.status == "unconfigured":
@@ -256,12 +266,13 @@ async def handle_status(message: Message, db_session: Any) -> None:
     else:
         ai_status = f"🔴 <b>Indisponible</b> ({ai_info.message})"
 
+    ai_scope = "état passif" if ai_info.configured is not None else "sonde"
     text = (
         "<b>État du service</b>\n\n"
         f"<b>Heure locale :</b> {time_str} ({tz_label})\n"
         f"<b>Scanner Vinted :</b> {poller_status}\n"
         f"<b>Scanner Leboncoin :</b> {leboncoin_status}\n"
-        f"<b>Moteur IA</b> (sonde) : {ai_status}\n"
+        f"<b>Moteur IA</b> ({ai_scope}) : {ai_status}\n"
         f"<b>Plage de veille :</b> {night_hours_info}\n\n"
         "<b>Latence</b>\n"
         f"{scan_detail}\n\n"

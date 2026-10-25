@@ -52,15 +52,20 @@ class LLMHealth(BaseModel):
     model: str
     latency_ms: int | None = None
     message: str = ""
+    configured: bool | None = None
+    last_call: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Retourne la forme JSON publique, telle que `/health` l'exposait déjà."""
-        return {
+        result: dict[str, object] = {
             "status": self.status,
             "model": self.model,
             "latency_ms": self.latency_ms,
             "message": self.message,
         }
+        if self.configured is not None:
+            result.update(configured=self.configured, last_call=self.last_call)
+        return result
 
 
 @runtime_checkable
@@ -187,6 +192,12 @@ class BaseLLMClient(ABC):
     def extract_usage(self, _data: Any) -> dict[str, int | None]:
         return {"input": None, "output": None, "cached": None, "reasoning": None}
 
+    def response_diagnostics(self, _response: httpx.Response) -> dict[str, object]:
+        return {}
+
+    def record_completion(self, _diagnostics: dict[str, Any]) -> None:
+        return None
+
     async def complete(
         self,
         *,
@@ -230,6 +241,7 @@ class BaseLLMClient(ABC):
                 follow_redirects=False,
             )
             diagnostics["http_status"] = response.status_code
+            diagnostics.update(self.response_diagnostics(response))
             response.raise_for_status()
             envelope = response.json()
             diagnostics["usage"] = self.extract_usage(envelope)
@@ -282,6 +294,7 @@ class BaseLLMClient(ABC):
             return None
         finally:
             diagnostics["duration_ms"] = round((time.monotonic() - started) * 1000)
+            self.record_completion(diagnostics)
             logger.log(
                 logging.INFO if diagnostics["status"] == "ok" else logging.WARNING,
                 "Requête LLM terminée.",

@@ -81,7 +81,7 @@ Consultation le 24 octobre 2026, sans appel d'inférence ni sonde réseau réell
 | Sortie structurée | `json_object` et `json_schema` avec `strict=true` sont documentés pour Chat Completions. Les cinq usages gardent le schéma strict avant le POST, puis Pydantic : [contrôles](https://docs.river.ai/guides/inference-controls/) |
 | Génération | `max_tokens`, `temperature` entre 0 et 2 ; effort `none`, `high`, `max` pour la famille Flash : [contrôles](https://docs.river.ai/guides/inference-controls/) |
 | Réponse | Texte `choices[0].message.content`, compteurs dans `usage` : [quickstart](https://docs.river.ai/guides/inference/) |
-| Santé | GET `/v1/models` documenté ; sonde existante en cache 30 s, sans génération, découverte de capacités ou vérification de crédits : [quickstart](https://docs.river.ai/guides/inference/) |
+| Santé | GET `/v1/models` documenté mais abandonné pour déduire l'état IA River : accès à l'inférence observé malgré le refus de cette sonde. État passif sans requête supplémentaire ; détails dans le contrat Telegram/IA |
 | Erreurs | 400/422 requête, 401/403 accès, 402 solde, 404 endpoint/modèle, 413 taille, 429/503 capacité, 500/502/504 service : [limites](https://docs.river.ai/guides/inference-limits/) |
 
 Le tableau de raisonnement nomme `DeepSeek-V4.1-Flash` sans détailler séparément la
@@ -748,14 +748,35 @@ opérationnel et la procédure de [déploiement](deployment.md).
    Telegram depuis le compte autorisé. `/status` est une commande du bot, pas
    une route HTTP. Examiner le bloc IA ; un HTTP 200 de `/health` ne valide ni
    génération, ni disponibilité du modèle, ni capacité métier complète. Ces
-   consultations peuvent déclencher la sonde GET `/models`, mise en cache 30 s,
-   sans complétion. Vérifier aussi la continuité des alertes Telegram.
-6. Observer les cinq usages disponibles, les accusés Telegram et les diagnostics
+   consultations ne déclenchent aucune requête River. L'état initial attendu est
+   `unverified` avec `configured=true` ; il ne signifie pas « actif » et ne bloque
+   pas à lui seul la validation d'inférence. Vérifier aussi la continuité des
+   alertes Telegram.
+6. Confirmer la conformité des 232 fichiers embarqués au nouveau SHA, HTTP 200 de
+   `/health` avec statut applicatif `ok`, puis `/status`, un `/add` console et une
+   négociation. Les preuves réelles sont les diagnostics de succès validé des
+   trois POST au maximum : extraction, variantes et négociation, sans retry ni
+   repli compté comme succès. La négociation est exercée par le module réel puis
+   envoyée au compte Telegram autorisé, sans contact vendeur ; le callback du
+   bouton n'est pas couvert par cet exercice. Le brouillon `/add` n'est pas activé.
+   Observer les accusés Telegram et les diagnostics
    `llm_request` : fournisseur `river`, modèle exact avec suffixe `1017`, tentative 1,
    statuts, durée, consommation. Vérifier l'acceptation du schéma strict et de
    `reasoning_effort=none` ; un 400/422 ne déclenche aucune autre requête.
-7. En cas de refus d'accès, schéma rejeté, troncatures récurrentes ou résultat
-   métier inacceptable, effectuer le rollback. Ne pas activer un moteur secondaire.
+7. Avant toute tentative, vérifier l'ancienne configuration et l'ancienne image,
+   conserver un tag de retour vérifié et l'ancienne configuration en mémoire
+   pendant l'opération. Au premier contrôle ou POST échoué, capturer les preuves
+   expurgées avant suppression du conteneur, puis restaurer l'état précédent et
+   vérifier la santé du service et l'invariance PostgreSQL/Redis. Ne pas activer
+   un moteur secondaire ni relancer une deuxième tentative.
+
+L'exigence ancienne `ai.status="active"` est retirée du critère de bascule River.
+Elle ne prouvait que l'accès à `/models`. Le budget opératoire préparé reste de
+huit minutes, dont 150 secondes réservées au diagnostic et au retour ; le
+démarrage applicatif est attendu au plus 90 secondes. L'attente utilise uniquement
+la vivacité applicative, pas une nouvelle inférence. Les sondes de qualité/latence
+ne sont pas lancées. Les éventuels appels métier sont comptés séparément des
+trois POST de test. Toute exécution de ce plan nécessite une autorisation distincte.
 
 Pendant les premiers jours, examiner chaque jour les événements `llm_request` :
 répartition des statuts HTTP, tout 401, fréquence des 429, timeouts, latences
@@ -1259,3 +1280,50 @@ Les quatre avertissements sont les dépréciations préexistantes Starlette/HTTP
 FastAPI 422 et Alembic. Les 124 tests ignorés n'attestent pas PostgreSQL réel.
 Aucun réseau, secret lu, `.env` réel consulté ou modifié, commit, push ou déploiement
 pendant cet ajustement. **Statut : terminé localement ; bascule non exécutée.**
+
+## Correctif de santé passive du 25 octobre 2026
+
+Le POST discriminant autorisé du 25 octobre à 19:22:05 UTC+01 a reçu HTTP 200
+avec `NegotiationPayload` validé : un seul POST, 1 674 ms, 275 tokens d'entrée,
+69 de sortie, aucun token caché ou de raisonnement. Il a été exécuté dans un
+processus isolé, sans recréation du service. Les tentatives de bascule précédentes
+avaient été restaurées après refus de `/models` ; le statut exact de ces refus,
+regroupé alors en 401/403, reste inconnu. Le succès d'inférence avec la clé courante
+justifie de retirer ce GET du diagnostic River, pas de déclarer le bot migré.
+
+Le correctif conserve la transport HTTP, les schémas, les prompts et le contrat
+d'un seul POST. Une notification interne de fin de complétion alimente uniquement
+l'état passif River. Le diagnostic initial est `unverified`, puis `last_call_ok`
+ou `last_call_error`, avec horodatage et catégorie. Aucun cache de santé réseau
+ni requête supplémentaire pour River ; les autres fournisseurs sont inchangés.
+Un redémarrage ou un nouveau client remet l'observation à zéro. Ce dernier état
+ne garantit pas une disponibilité future et n'est pas une mesure de DB/Redis.
+
+Les erreurs gardent désormais `http_status` exact, `provider_code`, `provider_type`
+et `x_request_id` quand ces identifiants sont présents et acceptés par le filtre.
+Les champs non scalaires, formats non autorisés, préfixes de clés et valeurs
+contenant la clé configurée sont omis. Aucun message fournisseur libre, corps
+brut ou en-tête d'authentification n'est copié dans la santé ou les journaux.
+
+Validation locale du correctif, avant commit, depuis le worktree :
+
+| Commande | Résultat |
+| --- | --- |
+| `python -B scripts/verify_consolidation.py unit --target tests/unit/test_llm_river.py` avant correctif | 9 échecs attendus, 22 réussites, 0,21 s |
+| `python -B scripts/verify_consolidation.py unit --target tests/unit/test_llm_river.py --target tests/unit/test_llm_contract.py --target tests/unit/test_status_command.py` | 216 passed, 0,39 s |
+| `ruff check --no-cache .` | Réussi |
+| `python -B scripts/verify_consolidation.py typecheck` | 172 fichiers et 8 scripts sans erreur |
+| `make test-isolated PYTHON=/Users/aminezegmou/Projets/bot-radar/.venv/bin/python` | 3 476 passed, 124 skipped, 4 warnings, 97,19 s, sortie 0 |
+
+Le lanceur constate `allowed=0`, aucun appel fournisseur réel. Les avertissements
+sont les dépréciations préexistantes ; aucun contrôle PostgreSQL réel n'est
+revendiqué. Les tests HTTP de santé réseau retirés du seul paramètre River sont
+remplacés par ses états passifs, sans suppression des contrats des autres
+adaptateurs. Les tests des échecs, du repli métier et d'un seul POST sont conservés.
+Les messages `/status` sont testés pour chacun des trois états passifs.
+
+L'image du nouveau commit sera construite depuis son archive Git, sans `.env`,
+cache ou rapport local. La conformité attendue porte toujours sur les 232 fichiers
+de `app/`, `scripts/`, `alembic/` et `alembic.ini`. Construction et comparaison
+locales n'autorisent ni transfert ni bascule. La tentative révisée ci-dessus reste
+à autoriser ; aucune nouvelle requête River pendant ce correctif.

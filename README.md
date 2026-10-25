@@ -92,6 +92,8 @@ sortie plafonnée à 2 048 tokens. OpenAI/Luna reste disponible mais inactif.
 Changer de fournisseur enregistré ne nécessite pas de changer les handlers.
 [Bascule, évaluation et rollback](docs/operations/llm-migration.md).
 La réponse de `/health` ne garantit pas une génération IA ni la capacité métier.
+Pour River, l'état IA est passif : non vérifié avant le premier appel réel, puis
+dernier appel réussi ou échoué. La santé ne déclenche aucune requête River.
 OpenAPI (`/docs`, `/redoc`, `/openapi.json`) est désactivé en production seulement.
 
 ## Vérification et commandes
