@@ -307,3 +307,400 @@ async def test_confirmed_absence_still_attempts_history_before_returning(monkeyp
         ("history", "failed"),
     ]
     assert result.historical_checked is False
+
+
+async def _diagnostic_replay(
+    monkeypatch, replies, *, latency=0.05, oversleep=0.0, nbeng=3, product_reply=None,
+):
+    from types import SimpleNamespace
+
+    from app.providers import chasse_aux_livres as cal
+
+    ticks = [0.0]
+    clock_reads = []
+    requests = []
+    waits = []
+
+    def monotonic():
+        clock_reads.append(ticks[0])
+        return ticks[0]
+
+    async def sleep(delay):
+        waits.append(delay)
+        ticks[0] += delay + oversleep
+
+    def respond(request):
+        requests.append((
+            str(request.url), request.extensions.get("timeout"),
+            request.method, dict(request.headers),
+        ))
+        if request.url.path.startswith("/prix/"):
+            if isinstance(product_reply, BaseException):
+                raise product_reply
+            if product_reply is not None:
+                return product_reply
+            return httpx.Response(200, text=_product_page(JEAN_DOUX["item_id"], nbeng))
+        index = sum("/rest/lookup/results" in entry[0] for entry in requests) - 1
+        ticks[0] += latency
+        reply = replies[min(index, len(replies) - 1)]
+        if isinstance(reply, BaseException):
+            raise reply
+        if isinstance(reply, httpx.Response):
+            return reply
+        return httpx.Response(200, json=reply)
+
+    monkeypatch.setattr(cal, "time", SimpleNamespace(monotonic=monotonic))
+    monkeypatch.setattr(cal, "perf_counter", lambda: ticks[0])
+    scope = requested_components.set(frozenset({"current"}))
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            result = await cal.ChasseAuxLivresProvider(
+                http_client=client, sleep=sleep,
+            ).get_offers(
+                isbn13=JEAN_DOUX["isbn13"], title="Ouvrage",
+                source_url=BASE + JEAN_DOUX["path"],
+            )
+    finally:
+        requested_components.reset(scope)
+    return result, requests, waits, clock_reads
+
+
+def _lookup_records(caplog):
+    return [r for r in caplog.records if getattr(r, "event", None) == "cal_lookup_response"]
+
+
+@pytest.mark.asyncio
+async def test_lookup_trace_records_progress_and_client_completion(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    result, requests, waits, _ = await _diagnostic_replay(monkeypatch, [
+        {"offers": {"0": []}}, {"offers": {"1": []}}, {"offers": {"2": []}},
+    ])
+    records = _lookup_records(caplog)
+    assert len(records) == 3
+    assert len({r.trace_id for r in records}) == 1
+    assert [r.poll_index for r in records] == [0, 1, 2]
+    assert [r.client_received_groups for r in records] == [["0"], ["0", "1"], ["0", "1", "2"]]
+    assert [r.new_group_ids for r in records] == [["0"], ["1"], ["2"]]
+    assert [r.client_decision for r in records] == ["continue", "continue", "stop"]
+    assert [r.client_reason for r in records] == [
+        "pending_groups", "pending_groups", "client_groups_present",
+    ]
+    assert all(r.source_metadata == {} for r in records)
+    assert all(r.payload_shape == "object" for r in records)
+    assert all(r.source_nbeng == 3 and r.client_expected_groups == ["0", "1", "2"]
+               for r in records)
+    assert [round(r.response_elapsed_ms) for r in records] == [50, 300, 550]
+    assert waits == [0.2, 0.2]
+    assert len(requests) == 4
+    assert result.attempts[0].status == "success"
+    assert result.attempts[0].poll_count == 2
+
+
+@pytest.mark.asyncio
+async def test_lookup_trace_poll_limit_is_not_source_completion(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    result, requests, waits, _ = await _diagnostic_replay(monkeypatch, [
+        {"offers": {}},
+        *[{"offers": {str(i): []}} for i in range(LOOKUP_POLL_MAX)],
+    ], nbeng=40)
+    records = _lookup_records(caplog)
+    assert len(records) == LOOKUP_POLL_MAX + 1
+    assert records[-1].new_group_ids == [str(LOOKUP_POLL_MAX - 1)]
+    assert records[-1].client_decision == "stop"
+    assert records[-1].client_reason == "poll_limit"
+    assert records[-1].source_nbeng == 40
+    assert len(records[-1].client_expected_groups) == 32
+    assert records[-1].source_metadata == {}
+    assert waits == [0.2] * LOOKUP_POLL_MAX
+    assert len(requests) == LOOKUP_POLL_MAX + 2
+    assert result.attempts[0].status == "partial"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("latency", "oversleep", "reason", "waits"), [
+    (4.9, 0.0, "budget_before_sleep", []),
+    (0.05, 4.8, "budget_after_sleep", [0.2]),
+])
+async def test_lookup_trace_budget_branch_is_the_executed_branch(
+    monkeypatch, caplog, latency, oversleep, reason, waits,
+):
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    result, requests, actual_waits, _ = await _diagnostic_replay(
+        monkeypatch, [{"offers": {}}], latency=latency, oversleep=oversleep,
+    )
+    records = _lookup_records(caplog)
+    assert len(records) == 1
+    assert records[0].client_decision == "stop"
+    assert records[0].client_reason == reason
+    assert len(requests) == 2
+    assert actual_waits == waits
+    assert result.attempts[0].status == "partial"
+    assert result.attempts[0].poll_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reply", "reason", "status"), [
+    (httpx.Response(200, content=b""), "empty_poll_body", "partial"),
+    ({"offers": []}, "poll_offers_not_object", "partial"),
+    ([], "poll_offers_not_object", "partial"),
+    (httpx.Response(200, content=b"not json"), "poll_exception", "partial"),
+    (httpx.ReadTimeout("private detail"), "poll_exception", "partial"),
+    (httpx.Response(500), "poll_response_failure", "partial"),
+    (httpx.Response(429), "poll_source_restriction", "failed"),
+    (httpx.Response(200, headers={"cf-mitigated": "challenge"}),
+     "poll_source_restriction", "failed"),
+])
+async def test_lookup_trace_preserves_poll_failure_outcomes(
+    monkeypatch, caplog, reply, reason, status,
+):
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    result, requests, waits, _ = await _diagnostic_replay(
+        monkeypatch, [{"offers": {"0": []}}, reply],
+    )
+    records = _lookup_records(caplog)
+    assert len(records) == 2
+    assert records[0].client_decision == "continue"
+    assert records[-1].client_reason == reason
+    assert records[-1].client_decision == "stop"
+    assert records[-1].response_received is not isinstance(reply, Exception)
+    if isinstance(reply, (httpx.Response, Exception)):
+        assert records[-1].payload_shape == "not_parsed"
+        assert not hasattr(records[-1], "source_offer_group_ids")
+    assert records[-1].client_received_groups == ["0"]
+    assert len(requests) == 3
+    assert waits == [0.2]
+    assert result.attempts[0].status == status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reply", "reason"), [
+    ([], "initial_payload_not_object"),
+    ({"offers": []}, "initial_offers_not_object"),
+    (httpx.Response(200, content=b"not json"), "initial_json_error"),
+    (httpx.ReadTimeout("private detail"), "initial_request_exception"),
+    (httpx.Response(500), "initial_http_error"),
+    (httpx.Response(429), "initial_source_restriction"),
+    (httpx.Response(200, headers={"cf-mitigated": "challenge"}),
+     "initial_source_restriction"),
+])
+async def test_lookup_trace_preserves_initial_failure_outcomes(monkeypatch, caplog, reply, reason):
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    result, requests, waits, _ = await _diagnostic_replay(monkeypatch, [reply])
+    records = _lookup_records(caplog)
+    assert len(records) == 1
+    assert records[0].client_reason == reason
+    assert records[0].client_decision == "stop"
+    assert records[0].response_received is not isinstance(reply, Exception)
+    assert records[0].payload_shape == ("non_object" if isinstance(reply, list) else (
+        "object" if isinstance(reply, dict) else "not_parsed"
+    ))
+    assert len(requests) == 2
+    assert waits == []
+    assert result.attempts[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_lookup_trace_does_not_interpret_or_publish_source_metadata(monkeypatch, caplog):
+    from app.core.logging import JSONFormatter
+
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    payload = {
+        "offers": {"0": [], "PRIVATE_ACCOUNT_GROUP": []},
+        "done": True, "pending": None,
+        "status": "PRIVATE_COOKIE_VALUE", "progress": {"account": "PRIVATE_PERSON"},
+        "Authorization": "PRIVATE_BEARER", "PRIVATE_PERSON@example.invalid": True,
+    }
+    result, _, _, _ = await _diagnostic_replay(monkeypatch, [payload])
+    records = _lookup_records(caplog)
+    assert len(records) == LOOKUP_POLL_MAX + 1
+    for row in records:
+        assert row.source_metadata == {
+            "done": {"type": "boolean", "interpretation": "unknown", "value": True},
+            "pending": {"type": "null", "interpretation": "unknown", "value": None},
+            "status": {"type": "string", "interpretation": "unknown"},
+            "progress": {"type": "object", "interpretation": "unknown"},
+        }
+        assert row.source_offer_group_ids == ["0"]
+        assert row.unrequested_groups_count == 1
+        assert row.source_metadata_unreported_count == 2
+    assert records[-1].new_group_ids == []
+    assert records[-1].client_reason == "poll_limit"
+    assert result.attempts[0].status == "partial"
+    formatter = JSONFormatter()
+    for row in caplog.records:
+        if getattr(row, "event", None) in {"cal_product_response", "cal_lookup_response"}:
+            encoded = formatter.format(row)
+            assert "PRIVATE_" not in encoded
+            assert "example.invalid" not in encoded
+            assert "synthetic" not in encoded
+            assert "9782756079332" not in encoded
+            assert len(encoded) < 8000
+
+
+@pytest.mark.asyncio
+async def test_lookup_trace_logging_failure_does_not_change_collection(monkeypatch):
+    from app.providers import chasse_aux_livres as cal
+
+    def fail_log(*_args, **_kwargs):
+        raise RuntimeError("logging unavailable")
+
+    monkeypatch.setattr(cal.logger, "info", fail_log)
+    result, requests, waits, _ = await _diagnostic_replay(
+        monkeypatch, [{"offers": {"0": [], "1": [], "2": []}}],
+    )
+    assert result.attempts[0].status == "success"
+    assert result.attempts[0].poll_count == 0
+    assert len(requests) == 2
+    assert waits == []
+
+
+@pytest.mark.asyncio
+async def test_lookup_trace_does_not_change_cancellation(monkeypatch, caplog):
+    import asyncio
+
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    with pytest.raises(asyncio.CancelledError):
+        await _diagnostic_replay(monkeypatch, [asyncio.CancelledError()])
+    records = _lookup_records(caplog)
+    assert len(records) == 1
+    assert not records[0].response_received
+    assert records[0].client_decision == "stop"
+    assert records[0].client_reason == "propagated_exception"
+
+
+@pytest.mark.asyncio
+async def test_lookup_trace_does_not_turn_source_metadata_into_a_completion_rule(
+    monkeypatch, caplog,
+):
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    result, requests, waits, _ = await _diagnostic_replay(monkeypatch, [{
+        "offers": {"0": [], "1": [], "2": []}, "done": False,
+    }])
+    records = _lookup_records(caplog)
+    assert len(records) == 1
+    assert records[0].source_metadata["done"] == {
+        "type": "boolean", "interpretation": "unknown", "value": False,
+    }
+    assert records[0].client_reason == "client_groups_present"
+    assert result.attempts[0].status == "success"
+    assert len(requests) == 2
+    assert waits == []
+
+
+@pytest.mark.asyncio
+async def test_lookup_trace_product_and_lookup_share_only_a_local_id(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    await _diagnostic_replay(monkeypatch, [{"offers": {}}])
+    records = [r for r in caplog.records if getattr(r, "event", None) in {
+        "cal_product_response", "cal_lookup_response",
+    }]
+    assert len(records) == LOOKUP_POLL_MAX + 2
+    assert len({r.trace_id for r in records}) == 1
+    assert len(records[0].trace_id) == 16
+    assert records[0].event == "cal_product_response"
+    assert records[0].poll_index is None
+    assert records[0].client_reason == "product_metadata_accepted"
+    assert records[0].client_decision == "continue"
+    assert all(r.response_received for r in records)
+    caplog.clear()
+    await _diagnostic_replay(monkeypatch, [{"offers": {"0": [], "1": [], "2": []}}])
+    assert _lookup_records(caplog)[0].trace_id != records[0].trace_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reply", "nbeng", "reason"), [
+    (httpx.Response(500), 3, "product_response_failure"),
+    (httpx.Response(200, text="<div></div>"), 3, "product_metadata_missing"),
+    (httpx.Response(200, text=_product_page(NANBANJIN["item_id"], 3)),
+     3, "product_identity_mismatch"),
+    (httpx.ReadTimeout("private detail"), 3, "product_request_exception"),
+    (None, 0, "no_requested_groups"),
+])
+async def test_lookup_trace_product_failure_never_claims_a_lookup(
+    monkeypatch, caplog, reply, nbeng, reason,
+):
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    result, requests, waits, _ = await _diagnostic_replay(
+        monkeypatch, [{"offers": {}}], product_reply=reply, nbeng=nbeng,
+    )
+    records = [r for r in caplog.records if getattr(r, "event", None) == "cal_product_response"]
+    assert len(records) == 1
+    assert records[0].poll_index is None
+    assert records[0].client_reason == reason
+    assert records[0].client_decision == "stop"
+    assert records[0].response_received is not isinstance(reply, Exception)
+    assert _lookup_records(caplog) == []
+    assert len(requests) == 1
+    assert waits == []
+    assert result.attempts[0].status == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("during_poll", [False, True])
+async def test_lookup_trace_preserves_the_existing_suspension_path(
+    monkeypatch, caplog, during_poll,
+):
+    from app.providers.cal_governor import CalSuspendedError
+
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    replies = [CalSuspendedError("synthetic")]
+    if during_poll:
+        replies.insert(0, {"offers": {}})
+    result, requests, waits, _ = await _diagnostic_replay(monkeypatch, replies)
+    records = _lookup_records(caplog)
+    assert records[-1].client_decision == "stop"
+    assert not records[-1].response_received
+    assert records[-1].client_reason == ("poll_exception" if during_poll else "initial_suspended")
+    assert result.attempts[0].status == ("partial" if during_poll else "skipped")
+    assert len(requests) == (3 if during_poll else 2)
+    assert waits == ([0.2] if during_poll else [])
+
+
+@pytest.mark.asyncio
+async def test_lookup_trace_never_enters_the_market_payload_or_certifies_partial(monkeypatch):
+    from app.providers.registry import ProviderRegistry
+    from app.services.book_market_pricing import BookPricingResult
+
+    row = {
+        "logo": {"name": "SYNTHETIC_SHOP"}, "condition": {"_name": "USED"},
+        "subCondition": {"name": "Très bon"}, "price": {"amount": 1200},
+        "shippingCost": {"amount": 250}, "totalPrice": {"amount": 1450},
+        "affiliateUrl": "https://example.invalid/offer",
+    }
+    offers, _, _, _ = await _diagnostic_replay(monkeypatch, [{
+        "offers": {"0": [row]}, "done": True,
+    }])
+    assert len(offers) == 1
+    assert offers[0].delivered_price_cents == 1450
+    assert offers[0].raw_payload["collection_status"] == "partial"
+    assert {"trace_id", "source_metadata", "client_reason", "client_decision"}.isdisjoint(
+        offers[0].raw_payload,
+    )
+    result = BookPricingResult.from_offers(
+        offers, ProviderRegistry.select_best_offer(offers), None,
+    )
+    assert result.lowest_delivered_price_cents is None
+    assert not result.price_confirmed
+    assert not result.current_collection_usable
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("during_poll", [False, True])
+async def test_lookup_trace_identifies_collection_budget_without_changing_outcome(
+    monkeypatch, caplog, during_poll,
+):
+    from app.providers.cal_governor import CalSuspendedError
+
+    caplog.set_level("INFO", logger="radar.providers.chasse_aux_livres")
+    replies = [CalSuspendedError("collection_budget")]
+    if during_poll:
+        replies.insert(0, {"offers": {"0": []}})
+    result, requests, waits, _ = await _diagnostic_replay(monkeypatch, replies)
+    record = _lookup_records(caplog)[-1]
+    assert record.governor_reason == "collection_budget"
+    assert record.client_reason == ("poll_exception" if during_poll else "initial_suspended")
+    assert record.client_decision == "stop"
+    assert record.response_received is False
+    assert len(requests) == (3 if during_poll else 2)
+    assert waits == ([0.2] if during_poll else [])
+    assert result.attempts[0].status == ("partial" if during_poll else "skipped")
