@@ -7,13 +7,13 @@ parle pas ce dialecte a son propre adaptateur.
 
 from __future__ import annotations
 
-import logging
+import json
 from typing import Any
 
-from app.core.config import settings
-from app.providers.llm.base import BaseLLMClient
+from pydantic import BaseModel
 
-logger = logging.getLogger(__name__)
+from app.core.config import settings
+from app.providers.llm.base import BaseLLMClient, LLMResponseError, usage_count
 
 # Nombre maximal d'images envoyées : au-delà, le coût explose sans gain de décision.
 MAX_IMAGES = 5
@@ -24,16 +24,13 @@ class OpenAICompatibleClient(BaseLLMClient):
 
     vendor = "openai-compatible"
 
-    # DeepSeek active le raisonnement (« high ») par défaut : il neutralise
-    # `temperature` et creuse la latence. Champ de dialecte, `None` si refusé.
-    reasoning_disabled: dict[str, Any] | None = {"type": "disabled"}
-
     def __init__(
         self,
         api_key: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
         timeout_seconds: float | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         super().__init__(
             model=model or settings.AI_MODEL,
@@ -43,6 +40,8 @@ class OpenAICompatibleClient(BaseLLMClient):
             base_url=base_url or settings.AI_BASE_URL,
             timeout_seconds=timeout_seconds,
         )
+
+        self.max_tokens = max_tokens if max_tokens is not None else settings.AI_MAX_TOKENS
 
     def chat_endpoint(self) -> str:
         return f"{self.base_url}/chat/completions"
@@ -59,8 +58,14 @@ class OpenAICompatibleClient(BaseLLMClient):
         user_prompt: str,
         temperature: float,
         image_urls: list[str] | None,
+        *,
+        response_model: type[BaseModel] | None = None,
     ) -> dict[str, Any]:
         """`response_format` impose le JSON, l'image passe en bloc `image_url`."""
+        if response_model is not None:
+            system_prompt += "\n\nSchéma JSON attendu : " + json.dumps(
+                response_model.model_json_schema(), ensure_ascii=False,
+            )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         if image_urls:
             content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
@@ -75,9 +80,8 @@ class OpenAICompatibleClient(BaseLLMClient):
             "messages": messages,
             "response_format": {"type": "json_object"},
             "temperature": temperature,
+            "max_tokens": self.max_tokens,
         }
-        if self.reasoning_disabled is not None:
-            payload["thinking"] = self.reasoning_disabled
         return payload
 
     def extract_text(self, data: Any) -> str | None:
@@ -86,33 +90,34 @@ class OpenAICompatibleClient(BaseLLMClient):
         choice = choices[0] if isinstance(choices, list) and choices else None
         message = choice.get("message") if isinstance(choice, dict) else None
         if not isinstance(choice, dict) or not isinstance(message, dict):
-            logger.warning(
-                "Enveloppe LLM inexploitable.",
-                extra={"event": "llm_response", "outcome": "invalid_envelope"},
-            )
-            return None
+            raise LLMResponseError("invalid_envelope")
+        if message.get("refusal"):
+            raise LLMResponseError("refused")
         if choice.get("finish_reason") in (
             "length", "content_filter", "insufficient_system_resource", "aborted",
         ):
-            logger.warning(
-                "Génération LLM interrompue.",
-                extra={"event": "llm_response", "outcome": "interrupted"},
-            )
-            return None
+            raise LLMResponseError("interrupted")
         content = message.get("content")
         if content is not None and not isinstance(content, str):
-            logger.warning(
-                "Enveloppe LLM inexploitable.",
-                extra={"event": "llm_response", "outcome": "invalid_envelope"},
-            )
-            return None
+            raise LLMResponseError("invalid_envelope")
         text = content.strip() if isinstance(content, str) else ""
         if not text:
-            logger.warning(
-                "Réponse LLM sans contenu.",
-                extra={"event": "llm_response", "outcome": "empty_content"},
-            )
-        return text or None
+            raise LLMResponseError("empty_content")
+        return text
+
+    def extract_usage(self, data: Any) -> dict[str, int | None]:
+        usage = data.get("usage") if isinstance(data, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        prompt = usage.get("prompt_tokens_details")
+        completion = usage.get("completion_tokens_details")
+        return {
+            "input": usage_count(usage.get("prompt_tokens")),
+            "output": usage_count(usage.get("completion_tokens")),
+            "cached": usage_count(prompt.get("cached_tokens"))
+            if isinstance(prompt, dict) else None,
+            "reasoning": usage_count(completion.get("reasoning_tokens"))
+            if isinstance(completion, dict) else None,
+        }
 
     def health_request(self) -> tuple[str, dict[str, str]]:
         return f"{self.base_url}/models", {"Authorization": f"Bearer {self.api_key}"}

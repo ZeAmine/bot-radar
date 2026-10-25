@@ -11,13 +11,19 @@ from pydantic import SecretStr
 
 from app.core.config import settings
 from app.providers.llm.anthropic import AnthropicClient
+from app.providers.llm.deepseek import DeepSeekClient
+from app.providers.llm.openai import OpenAIClient
 from app.providers.llm.openai_compatible import OpenAICompatibleClient
 from app.providers.llm.registry import LLM_ADAPTERS, build_llm_client, llm_client
+from app.providers.llm.river import RiverClient
 
 
 def test_shipped_adapters_are_registered() -> None:
     """Les deux adaptateurs livrés sont dans le registre, avec leur classe."""
     assert {
+        "river": RiverClient,
+        "openai": OpenAIClient,
+        "deepseek": DeepSeekClient,
         "openai-compatible": OpenAICompatibleClient,
         "anthropic": AnthropicClient,
     } == LLM_ADAPTERS

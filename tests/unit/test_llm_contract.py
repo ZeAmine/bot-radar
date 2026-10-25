@@ -35,6 +35,9 @@ ADAPTER_NAMES = sorted(LLM_ADAPTERS)
 
 # Réponse brute de chaque adaptateur, dans son propre format filaire.
 RAW_RESPONSES: dict[str, dict[str, Any]] = {
+    "river": {"choices": [{"message": {"content": '{"prix": 12}'}}]},
+    "openai": {"choices": [{"message": {"content": '{"prix": 12}'}}]},
+    "deepseek": {"choices": [{"message": {"content": '{"prix": 12}'}}]},
     "openai-compatible": {"choices": [{"message": {"content": '{"prix": 12}'}}]},
     "anthropic": {"content": [{"type": "text", "text": '{"prix": 12}'}]},
 }
@@ -350,7 +353,7 @@ async def test_transport_failures_are_classified_without_retry(
 
 
 @pytest.mark.parametrize("name", ADAPTER_NAMES)
-@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
+@pytest.mark.parametrize("status", [400, 401, 403, 408, 429, 500, 503])
 async def test_http_status_has_one_attempt_and_safe_diagnostics(name, status, network, caplog):
     network.status_code = status
     client = make_client(network, name)
@@ -416,7 +419,7 @@ async def test_openai_compatible_request_preserves_current_settings(network, cap
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.3,
-        "thinking": {"type": "disabled"},
+        "max_tokens": settings.AI_MAX_TOKENS,
     }
     assert request.extensions["timeout"]["read"] == 3.5
     records = [r for r in caplog.records if getattr(r, "event", None) == "llm_request"]

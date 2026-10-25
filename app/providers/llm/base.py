@@ -17,11 +17,12 @@ import json
 import logging
 import re
 import time
+import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NoReturn, Protocol, runtime_checkable
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.core.config import settings
 from app.core.http_client import get_shared_http_client
@@ -89,6 +90,8 @@ class LLMClient(Protocol):
         temperature: float = 0.2,
         image_urls: list[str] | None = None,
         timeout: float | None = None,
+        response_model: type[BaseModel] | None = None,
+        ai_module: str = "unspecified",
     ) -> str | None:
         """Envoie un prompt et rend le texte produit, ou ``None`` si l'appel échoue.
 
@@ -103,6 +106,9 @@ class LLMClient(Protocol):
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.2,
+        *,
+        response_model: type[BaseModel] | None = None,
+        ai_module: str = "unspecified",
     ) -> dict[str, object] | None:
         """Rend un objet JSON, ou ``None`` si la réponse est vide, invalide ou l'appel a échoué."""
         ...
@@ -110,6 +116,12 @@ class LLMClient(Protocol):
     async def check_health(self, force: bool = False) -> LLMHealth:
         """Sonde le moteur, avec cache court pour ne pas frapper à chaque `/status`."""
         ...
+
+
+class LLMResponseError(ValueError):
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status
 
 
 class BaseLLMClient(ABC):
@@ -159,6 +171,8 @@ class BaseLLMClient(ABC):
         user_prompt: str,
         temperature: float,
         image_urls: list[str] | None,
+        *,
+        response_model: type[BaseModel] | None = None,
     ) -> dict[str, Any]:
         """Traduit le contrat du projet vers le corps de requête du fournisseur."""
 
@@ -170,6 +184,9 @@ class BaseLLMClient(ABC):
     def health_request(self) -> tuple[str, dict[str, str]]:
         """URL et en-têtes de la sonde de santé, spécifique du fournisseur."""
 
+    def extract_usage(self, _data: Any) -> dict[str, int | None]:
+        return {"input": None, "output": None, "cached": None, "reasoning": None}
+
     async def complete(
         self,
         *,
@@ -178,6 +195,9 @@ class BaseLLMClient(ABC):
         temperature: float = 0.2,
         image_urls: list[str] | None = None,
         timeout: float | None = None,
+        response_model: type[BaseModel] | None = None,
+        ai_module: str = "unspecified",
+        _json: bool = False,
     ) -> str | None:
         """Un POST, une réponse, aucun lever : l'échec vaut `None`, jamais une exception."""
         if not self.is_configured:
@@ -186,42 +206,84 @@ class BaseLLMClient(ABC):
 
         effective_timeout = self.timeout if timeout is None else timeout
         started = time.monotonic()
-        diagnostics: dict[str, object] = {
+        diagnostics: dict[str, Any] = {
             "event": "llm_request",
+            "request_id": uuid.uuid4().hex,
+            "ai_module": ai_module,
+            "provider": self.vendor,
+            "model": self.model,
+            "attempt": 1,
             "outcome": "cancelled",
+            "status": "cancelled",
+            "usage": self.extract_usage(None),
             "timeout_seconds": effective_timeout,
         }
         try:
             response = await get_shared_http_client().post(
                 self.chat_endpoint(),
-                json=self.build_payload(system_prompt, user_prompt, temperature, image_urls),
+                json=self.build_payload(
+                    system_prompt, user_prompt, temperature, image_urls,
+                    response_model=response_model,
+                ),
                 headers=self.chat_headers(),
                 timeout=effective_timeout,
+                follow_redirects=False,
             )
             diagnostics["http_status"] = response.status_code
             response.raise_for_status()
-            text = self.extract_text(response.json())
-            diagnostics["outcome"] = "text_received" if text else "response_rejected"
+            envelope = response.json()
+            diagnostics["usage"] = self.extract_usage(envelope)
+            text = self.extract_text(envelope)
+            if not text:
+                raise LLMResponseError("empty_content")
+            diagnostics["outcome"] = "text_received"
+            if _json or response_model is not None:
+                parsed = clean_and_parse_json(text)
+                if parsed is None:
+                    raise LLMResponseError("invalid_json")
+                if response_model is not None:
+                    response_model.model_validate(parsed)
+            diagnostics["status"] = "ok"
             return text
+        except LLMResponseError as exc:
+            diagnostics.update(status=exc.status, outcome=exc.status)
+            logger.warning(
+                "Réponse LLM refusée.",
+                extra={**diagnostics, "event": "llm_response"},
+            )
+            return None
+        except ValidationError:
+            diagnostics.update(status="validation_error", outcome="validation_error")
+            return None
         except httpx.TimeoutException as exc:
-            diagnostics.update(outcome="timeout", error_type=type(exc).__name__)
+            diagnostics.update(status="timeout", outcome="timeout", error_type=type(exc).__name__)
             return None
         except httpx.HTTPStatusError as exc:
-            diagnostics.update(outcome="http_error", error_type=type(exc).__name__)
+            diagnostics.update(
+                status="http_error", outcome="http_error", error_type=type(exc).__name__,
+            )
             return None
         except httpx.RequestError as exc:
-            diagnostics.update(outcome="transport_error", error_type=type(exc).__name__)
+            diagnostics.update(
+                status="transport_error", outcome="transport_error", error_type=type(exc).__name__,
+            )
             return None
         except json.JSONDecodeError as exc:
-            diagnostics.update(outcome="invalid_envelope", error_type=type(exc).__name__)
+            diagnostics.update(
+                status="invalid_envelope", outcome="invalid_envelope",
+                error_type=type(exc).__name__,
+            )
             return None
         except Exception as exc:
-            diagnostics.update(outcome="unexpected_error", error_type=type(exc).__name__)
+            diagnostics.update(
+                status="unexpected_error", outcome="unexpected_error",
+                error_type=type(exc).__name__,
+            )
             return None
         finally:
             diagnostics["duration_ms"] = round((time.monotonic() - started) * 1000)
             logger.log(
-                logging.INFO if diagnostics["outcome"] == "text_received" else logging.WARNING,
+                logging.INFO if diagnostics["status"] == "ok" else logging.WARNING,
                 "Requête LLM terminée.",
                 extra=diagnostics,
             )
@@ -231,15 +293,18 @@ class BaseLLMClient(ABC):
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.2,
+        *,
+        response_model: type[BaseModel] | None = None,
+        ai_module: str = "unspecified",
     ) -> dict[str, object] | None:
         """Rend un objet JSON, ou ``None``. Ne lève jamais : l'IA ne bloque jamais le bot."""
-        if not self.is_configured:
-            logger.debug("Appel LLM ignoré : clé API absente ou IA désactivée.")
-            return None
         raw_text = await self.complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
+            response_model=response_model,
+            ai_module=ai_module,
+            _json=True,
         )
         return clean_and_parse_json(raw_text) if raw_text else None
 
@@ -328,8 +393,8 @@ def clean_and_parse_json(raw_text: str) -> dict[str, object] | None:
         cleaned = cleaned.strip()
 
     try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
+        parsed = json.loads(cleaned, parse_constant=reject_json_constant)
+    except ValueError:
         logger.warning(
             "Réponse LLM non décodable en JSON.",
             extra={"event": "llm_json", "outcome": "invalid_json"},
@@ -342,3 +407,11 @@ def clean_and_parse_json(raw_text: str) -> dict[str, object] | None:
         )
         return None
     return parsed
+
+
+def usage_count(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def reject_json_constant(_value: str) -> NoReturn:
+    raise ValueError("invalid_json")
