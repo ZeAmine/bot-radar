@@ -81,6 +81,14 @@ les variantes des écritures alternatives, les exclusions des rejets.
 Une exclusion ne peut avaler le produit ou le titre suivi d'un numéro ; la suppression
 d'une variante répétant le titre n'a pas la même sémantique qu'une exclusion.
 
+Une exclusion proposée par le moteur est jugée sur sa pertinence, que le nettoyeur ne
+peut pas établir : il filtre, il ne décide pas du sens. Le prompt porte donc cette
+règle — zéro exclusion est une réponse attendue, un mot d'accompagnement ou de
+conditionnement reste générique, et un autre titre de la collection ne s'exclut jamais.
+La portée réelle du matching la motive : un terme est cherché en mots entiers dans le
+titre **et** la description, si bien qu'un mot présent dans un lot contenant l'ouvrage
+rejette l'annonce.
+
 La garde d'identité des variantes prend le titre et les inclusions comme références :
 nombres compatibles à l'écriture **et** en lecture ; au moins un mot reconnaissable
 à l'écriture seulement. Préserver cette asymétrie. La qualification par numéro doit

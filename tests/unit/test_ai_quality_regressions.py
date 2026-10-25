@@ -62,6 +62,49 @@ def test_variant_prompt_example_matches_permission_to_propose_no_variants():
     assert payload.exclusions == ["exclusion1"]
 
 
+def test_exclusion_instructions_name_the_real_matching_scope_and_an_empty_answer():
+    """Le prompt des exclusions décrit ce que le code fait vraiment, sans quota.
+
+    Le matching cherche un terme en mots entiers dans le titre **et** la description :
+    une exclusion générique y rejette donc aussi un lot qui contient l'ouvrage. Le
+    prompt doit le dire, accepter explicitement une liste vide, et ne jamais nommer un
+    autre titre de la collection comme cible.
+    """
+    instruction, _ = OPTIMIZE_SYSTEM_PROMPT.rsplit(
+        "Retourne STRICTEMENT un objet JSON :\n", 1
+    )
+    assert "0 à 3" in instruction
+    assert "liste VIDE est une réponse attendue" in instruction
+    assert "N'invente jamais une exclusion pour atteindre un nombre" in instruction
+    assert "TITRE et dans la DESCRIPTION" in instruction
+    assert "même collection" in instruction
+    # Le prompt interdit la classe, pas une liste d'objets prête à recopier.
+    assert "produit dérivé" in instruction
+    assert "conditionnement" in instruction
+    assert "ne doit pas les répéter" in instruction
+
+
+async def test_an_empty_exclusion_answer_is_an_answer_and_the_context_says_where_it_matches():
+    """Zéro exclusion est un avis du moteur, et le contexte transmis reste honnête.
+
+    Les filtres déterministes refusent un chiffre nu ou un terme qui avale le titre ;
+    ils ne jugent pas la pertinence sémantique. Ce test tient donc les deux choses que
+    le code garantit : une liste vide est une réponse exploitable, et le modèle reçoit
+    la portée réelle du matching au lieu de la deviner.
+    """
+    client = FakeLLM({"variants": [], "exclusions": [], "rationale": "aucune confusion"})
+    outcome = await KeywordVariantsModule(client=client).generate_variants_and_exclusions(
+        "Downlands", category_slug="bd_comics"
+    )
+
+    assert outcome.answered is True
+    assert outcome.is_empty is True
+    assert outcome.exclusions == []
+    contexte = client.calls[-1]["user_prompt"]
+    assert "Downlands" in contexte
+    assert "titre et la description" in contexte.lower()
+
+
 async def test_observed_unidentified_title_does_not_become_a_confirmed_one_shot(monkeypatch):
     search = AsyncMock(return_value=BookSearchResult(status=BookSearchStatus.UNAVAILABLE))
     monkeypatch.setattr(
