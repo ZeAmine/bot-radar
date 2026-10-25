@@ -13,11 +13,16 @@ ou « Dressing / Lot ». Le bot ne paie jamais.
 
 La charte canonique est [labels](../../app/bot/labels.py), dont la docstring est
 consommée par [test_charte_copy](../../tests/unit/test_charte_copy.py) : libellés de
-champs gras, valeurs romaines, consignes en italique, avertissements isolés en italique.
-La série est une indication hors de la liste d'informations. Le prix livré est
+champs gras, valeurs romaines, consignes en italique, avertissements isolés en italique,
+tiret normal dans tout texte affiché. Un titre ou un nom source garde sa forme stockée ;
+seul son rendu est normalisé. La série est une indication hors de la liste d'informations. Le prix livré est
 qualifié TTC ; « Écart estimé » affiche uniquement un montant signé : négatif sous
 la référence, positif au-dessus, zéro sans signe. Aucun suffixe ni note de frais
 ne suit cette ligne.
+La légende d'annonce ne porte pas de ligne « Plateforme » : le lien de l'annonce et
+la marketplace de l'alerte la nomment déjà. La source reste une donnée interne, qui
+gouverne le routage et la règle de frais — un prix Leboncoin n'invente pas de total
+livré.
 Le récap de création et sa confirmation utilisent la même carte ; alternatives
 d'édition proposées uniquement à partir de deux éditions exploitables.
 
@@ -38,9 +43,13 @@ est masquée et refusée côté serveur. Elle redevient disponible après réuss
 sans apport, échec ou indisponibilité, sous réserve des autres contrôles d'identité.
 La relance IA n'est proposée qu'après un échec et si le module est disponible.
 
-Le bilan décrit les propositions supplémentaires effectivement retenues après filtrage,
-sans attribuer à l'IA une décision des filtres. Il distingue un résultat sans apport
-d'une absence de réponse. Les inclusions restent inchangées. Les variantes et exclusions
+Le bilan tient en une indication courte, « Critères enrichis. », affichée seulement
+lorsqu'au moins une variante ou une exclusion supplémentaire est réellement conservée
+après validation et filtrage. Un moteur qui a répondu sans apport n'annonce rien ; une
+absence de réponse garde sa note d'échec, distincte d'un avis du moteur. Les détails
+restent dans les lignes « Variantes » et « Mots-clés exclus », jamais comptés dans
+l'indication, et les mises à jour du brouillon ne la répètent pas. Les inclusions restent
+inchangées. Les variantes et exclusions
 éditées manuellement sont protégées séparément ; les filtres de sauvegarde sont
 appliqués dès leur récapitulatif pour afficher les valeurs réellement enregistrables.
 Modifier le prix ou les conditions
@@ -80,6 +89,14 @@ produites par la même passe que la décision. Les inclusions restent des critè
 les variantes des écritures alternatives, les exclusions des rejets.
 Une exclusion ne peut avaler le produit ou le titre suivi d'un numéro ; la suppression
 d'une variante répétant le titre n'a pas la même sémantique qu'une exclusion.
+
+Une exclusion proposée par le moteur est jugée sur sa pertinence, que le nettoyeur ne
+peut pas établir : il filtre, il ne décide pas du sens. Le prompt porte donc cette
+règle — zéro exclusion est une réponse attendue, un mot d'accompagnement ou de
+conditionnement reste générique, et un autre titre de la collection ne s'exclut jamais.
+La portée réelle du matching la motive : un terme est cherché en mots entiers dans le
+titre **et** la description, si bien qu'un mot présent dans un lot contenant l'ouvrage
+rejette l'annonce.
 
 La garde d'identité des variantes prend le titre et les inclusions comme références :
 nombres compatibles à l'écriture **et** en lecture ; au moins un mot reconnaissable

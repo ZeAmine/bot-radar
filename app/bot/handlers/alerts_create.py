@@ -39,7 +39,7 @@ from app.bot.handlers.alerts_helpers import (
     render_existing_alert_response,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
-from app.bot.labels import format_price_cents
+from app.bot.labels import CRITERIA_ENRICHED_NOTE, escape_display, format_price_cents
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
     DEFAULT_BD_CONDITIONS,
@@ -73,9 +73,7 @@ from app.utils.text import normalize_text, strip_html_tags
 
 logger = logging.getLogger(__name__)
 
-_CONFIRMATION_FOOTER = (
-    "<i>Les annonces correspondant à ces critères déclencheront une alerte Telegram.</i>"
-)
+_CONFIRMATION_FOOTER = "<i>Tu seras prévenu des annonces correspondantes.</i>"
 
 
 def _get_alert_repo(session: Any) -> Any:
@@ -282,15 +280,11 @@ async def _search_keywords_in_background(
         retry = bool(not outcome.answered and keyword_variants_module.is_enabled
                      and keyword_variants_module.client.is_configured)
         note: str | None
-        if outcome.answered:
-            parts = []
-            if added_variants:
-                parts.append(f"Variantes supplémentaires retenues : {len(added_variants)}.")
-            if added_exclusions:
-                parts.append(f"Exclusions supplémentaires retenues : {len(added_exclusions)}.")
-            note = " ".join(parts) or "Aucune proposition supplémentaire pertinente retenue."
-        else:
+        enriched = bool(added_variants or added_exclusions)
+        if not outcome.answered:
             note = keyword_note(outcome, retry_label=None)
+        else:
+            note = CRITERIA_ENRICHED_NOTE if enriched else None
         await state.update_data(
             variants=accepted_variants, exclude_keywords=accepted_exclusions,
             keyword_note=note, keywords_finalized=outcome.answered,
@@ -687,7 +681,7 @@ async def handle_update_existing_alert_price(
         if isinstance(callback.message, Message):
             await callback.message.edit_text(
                 f"✅ <b>Prix maximum mis à jour</b>\n\n"
-                f"📚 <b>{html.escape(existing.name)}</b>\n"
+                f"📚 <b>{escape_display(existing.name)}</b>\n"
                 f"<b>Nouveau prix maximum :</b> {new_price_str}\n\n"
                 "L'alerte existante a été actualisée sans créer de doublon."
             )
@@ -721,7 +715,7 @@ async def process_max_price_input(
             new_price_str = format_price_cents(price_cents)
             await message.answer(
                 f"✅ <b>Prix maximum mis à jour</b>\n\n"
-                f"📚 <b>{html.escape(existing.name)}</b>\n"
+                f"📚 <b>{escape_display(existing.name)}</b>\n"
                 f"<b>Nouveau prix maximum :</b> {new_price_str}\n\n"
                 "L'alerte existante a été actualisée sans créer de doublon."
             )

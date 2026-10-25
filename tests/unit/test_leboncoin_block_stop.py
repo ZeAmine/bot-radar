@@ -671,6 +671,7 @@ async def test_suspension_on_episode_opening_alerts_once(monkeypatch: pytest.Mon
     assert len(suspensions) == 1, "une seule alerte par suspension"
     assert "suspendue pour ce processus" in suspensions[0]
     assert "n'est pas garantie" in suspensions[0]
+    assert "—" not in suspensions[0]
 
 
 @pytest.mark.asyncio

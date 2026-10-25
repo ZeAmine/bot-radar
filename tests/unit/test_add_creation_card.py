@@ -217,10 +217,7 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         assert "Chasse" not in confirmation
         assert "Surveillance active" not in confirmation
         assert "24/24" not in confirmation
-        assert confirmation.endswith(
-            "<i>Les annonces correspondant à ces critères déclencheront une alerte "
-            "Telegram.</i>"
-        )
+        assert confirmation.endswith("<i>Tu seras prévenu des annonces correspondantes.</i>")
 
         assert confirmation.startswith("✅ <b>Alerte créée</b>")
         assert "<b>Titre :</b> La couleur des choses" in confirmation

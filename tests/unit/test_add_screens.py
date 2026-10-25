@@ -104,7 +104,8 @@ async def test_homonym_warning_precedes_analysis_and_selected_recap_matches_conf
             await select_alert_creation_work(callback, state)
             await drain(repos["tasks"])
         recap = selected_screen.edit_text.call_args.args[0]
-        assert "Exclusions supplémentaires retenues : 1." in recap
+        assert "<i>Critères enrichis.</i>" in recap
+        assert "<b>Mots-clés exclus :</b> coffret" in recap
         assert "<b>Auteur :</b> Nef" in recap
         assert "<b>ISBN :</b> <code>9782810206087</code>" in recap
         assert "<b>Éditeur :</b> Éditions du Chêne" in recap
@@ -118,7 +119,7 @@ async def test_homonym_warning_precedes_analysis_and_selected_recap_matches_conf
         await drain(repos["tasks"])
         confirmation = final_screen.edit_text.call_args.args[0]
         for line in lines:
-            if line.startswith("<b>") or "supplémentaires retenues" in line:
+            if line.startswith("<b>") or "Critères enrichis." in line:
                 assert line in confirmation
         assert "🔎" not in recap
         assert "🔎" not in confirmation
@@ -237,32 +238,31 @@ async def test_the_manual_journey_creates_the_alert_when_no_source_knows_the_wor
 
 
 @pytest.mark.asyncio
-async def test_the_three_keyword_verdicts_warn_instead_of_observing():
-    """Le ⚠️ des trois libellés du moteur, observé sur le récap qui part vraiment.
+async def test_the_recap_announces_a_short_enrichment_only_when_something_is_kept():
+    """L'indication courte du récap, observée sur le récap qui part vraiment.
 
-    Trois fins possibles — rien du tout, aucune exclusion, aucune variante — et une
-    seule demande : « change l'emoji par un emoji warning plutôt qu'une loupe ». Le
-    rendu est celui du parcours réel (`_search_keywords_in_background`), pas celui
+    Trois fins possibles — rien du tout, aucune proposition retenue par les filtres,
+    une exclusion réellement conservée — et une seule règle : la carte ne dit
+    « Critères enrichis. » que si un critère a réellement été ajouté, et ne dit rien
+    d'autre quand le moteur a répondu sans apport. Les détails restent dans les
+    lignes « Variantes » et « Mots-clés exclus », jamais répétés dans la note.
+    Le rendu est celui du parcours réel (`_search_keywords_in_background`), pas celui
     d'une fonction de formatage appelée à la main.
     """
     from app.bot.handlers.alerts_create import _search_keywords_in_background
+    from app.bot.labels import CRITERIA_ENRICHED_NOTE
 
-    attendus = [
+    cas = [
+        (KeywordVariantsOutcome(variants=[], exclusions=[], answered=True), False),
+        (KeywordVariantsOutcome(variants=["x"], exclusions=[], answered=True), False),
+        (KeywordVariantsOutcome(variants=[], exclusions=["coffret"], answered=True), True),
         (
-            KeywordVariantsOutcome(variants=[], exclusions=[], answered=True),
-            "Aucune proposition supplémentaire pertinente retenue.",
-        ),
-        (
-            KeywordVariantsOutcome(variants=["x"], exclusions=[], answered=True),
-            "Aucune proposition supplémentaire pertinente retenue.",
-        ),
-        (
-            KeywordVariantsOutcome(variants=[], exclusions=["coffret"], answered=True),
-            "Exclusions supplémentaires retenues : 1.",
+            KeywordVariantsOutcome(variants=["la couleur de chose"], exclusions=[], answered=True),
+            True,
         ),
     ]
 
-    for outcome, attendu in attendus:
+    for outcome, enrichi in cas:
         state = DraftState()
         brouillon = {
             "name": "La couleur des choses",
@@ -298,13 +298,135 @@ async def test_the_three_keyword_verdicts_warn_instead_of_observing():
             )
 
         recap = loading_message.edit_text.call_args[0][0]
-        assert attendu in recap, outcome
-        assert "🔎" not in recap, outcome
-        # L'avertissement est en tête, au-dessus de l'ISBN qu'il commente.
-        lines = recap.splitlines()
-        index_note = next(i for i, line in enumerate(lines) if attendu in line)
-        assert lines[index_note].startswith("<i>")
-        assert index_note < index_of_line(lines, "<b>ISBN :</b>")
+        assert ("<i>" + CRITERIA_ENRICHED_NOTE + "</i>" in recap) == enrichi, outcome
+        assert recap.count(CRITERIA_ENRICHED_NOTE) == (1 if enrichi else 0), outcome
+        # Aucun compte de propositions : les détails vivent dans les lignes de critères.
+        assert "supplémentaires retenues" not in recap, outcome
+        if enrichi:
+            lines = recap.splitlines()
+            index_note = next(
+                index for index, line in enumerate(lines) if CRITERIA_ENRICHED_NOTE in line
+            )
+            # L'indication est en tête, au-dessus de la première information de fiche.
+            assert index_note < index_of_line(lines, "<b>ISBN :</b>")
+            assert lines[index_note] == f"<i>{CRITERIA_ENRICHED_NOTE}</i>"
+            if outcome.exclusions:
+                assert "<b>Mots-clés exclus :</b> coffret" in recap
+        else:
+            assert "L'IA n'a pas répondu" not in recap, outcome
+
+
+async def _run_keyword_analysis(state, outcome, *, snapshot=None):
+    """Joue l'analyse différée sur un brouillon et rend le récap édité."""
+    from app.bot.handlers.alerts_create import _search_keywords_in_background
+
+    brouillon = snapshot or dict(state.data)
+    loading_message = MagicMock()
+    loading_message.edit_text = AsyncMock()
+    event = MagicMock()
+    event.answer = AsyncMock()
+    with patch(
+        "app.bot.handlers.alerts_create.keyword_variants_module."
+        "generate_variants_and_exclusions",
+        new_callable=AsyncMock,
+        return_value=outcome,
+    ):
+        await _search_keywords_in_background(
+            loading_msg=loading_message,
+            event=event,
+            state=state,
+            snapshot=dict(brouillon),
+            name=str(brouillon.get("name") or ""),
+            category_slug=str(brouillon.get("category_slug") or "bd_comics"),
+            book_context=None,
+        )
+    return loading_message.edit_text.call_args[0][0]
+
+
+def _keyword_draft(**overrides):
+    return {
+        "name": "La couleur des choses",
+        "category_slug": "bd_comics",
+        "isbn": "9782369903086",
+        "author": "Martin Panchaud",
+        "include_keywords": ["la couleur des choses"],
+        "exclude_keywords": [],
+        "max_item_price_cents": 1200,
+        **overrides,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_later_analysis_completes_the_criteria_without_repeating_the_note():
+    """Deux analyses successives fusionnent les exclusions et n'annoncent qu'une fois.
+
+    L'indication décrit l'état des critères, pas chaque passage du moteur : elle reste
+    unique quand une analyse tardive complète la liste déjà retenue.
+    """
+    from app.bot.labels import CRITERIA_ENRICHED_NOTE
+
+    state = DraftState()
+    brouillon = _keyword_draft()
+    await state.update_data(brouillon)
+    await state.set_state("AlertCreationState:confirm_creation")
+
+    await _run_keyword_analysis(
+        state, KeywordVariantsOutcome(exclusions=["coffret"], answered=True)
+    )
+    recap = await _run_keyword_analysis(
+        state,
+        KeywordVariantsOutcome(exclusions=["coffret", "artbook"], answered=True),
+        snapshot={**brouillon, "exclude_keywords": ["coffret"]},
+    )
+
+    assert state.data["exclude_keywords"] == ["coffret", "artbook"]
+    assert recap.count(CRITERIA_ENRICHED_NOTE) == 1
+    assert "<b>Mots-clés exclus :</b> coffret, artbook" in recap
+
+
+@pytest.mark.asyncio
+async def test_exclusions_written_by_the_user_survive_the_analysis():
+    """Une liste écrite à la main n'est ni remplacée ni comptée comme un apport du moteur."""
+    from app.bot.labels import CRITERIA_ENRICHED_NOTE
+
+    state = DraftState()
+    brouillon = _keyword_draft(
+        exclude_keywords=["artbook"], keyword_manual_fields=["exclude_keywords"],
+    )
+    await state.update_data(brouillon)
+    await state.set_state("AlertCreationState:confirm_creation")
+
+    recap = await _run_keyword_analysis(
+        state,
+        KeywordVariantsOutcome(exclusions=["coffret", "boite vide"], answered=True),
+        snapshot=brouillon,
+    )
+
+    assert state.data["exclude_keywords"] == ["artbook"]
+    assert "<b>Mots-clés exclus :</b> artbook" in recap
+    assert "coffret" not in recap
+    assert CRITERIA_ENRICHED_NOTE not in recap
+
+
+@pytest.mark.asyncio
+async def test_an_empty_exclusion_list_is_an_expected_answer():
+    """Zéro exclusion acceptée : le brouillon reste intact et rien ne s'annonce."""
+    from app.bot.labels import CRITERIA_ENRICHED_NOTE
+
+    state = DraftState()
+    brouillon = _keyword_draft()
+    await state.update_data(brouillon)
+    await state.set_state("AlertCreationState:confirm_creation")
+
+    recap = await _run_keyword_analysis(
+        state, KeywordVariantsOutcome(variants=[], exclusions=[], answered=True),
+        snapshot=brouillon,
+    )
+
+    assert state.data["exclude_keywords"] == []
+    assert state.data["keywords_finalized"] is True
+    assert CRITERIA_ENRICHED_NOTE not in recap
+    assert "Mots-clés exclus" not in recap
 
 
 @pytest.mark.asyncio

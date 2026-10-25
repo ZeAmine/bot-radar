@@ -723,7 +723,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     safe_create_task(
                         notify_admins(
                             text=(
-                                "✅ <b>BotRadar — Surveillance Vinted rétablie</b>\n\n"
+                                "✅ <b>BotRadar - Surveillance Vinted rétablie</b>\n\n"
                                 "🟢 La connexion à Vinted est de nouveau opérationnelle !\n"
                                 "Le scan des nouvelles annonces a repris normalement."
                             )
@@ -737,7 +737,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     safe_create_task(
                         notify_admins(
                             text=(
-                                "✅ <b>BotRadar — Collecte Vinted rétablie</b>\n\n"
+                                "✅ <b>BotRadar - Collecte Vinted rétablie</b>\n\n"
                                 "🟢 Les cycles de scrutation aboutissent de nouveau."
                             )
                         ),
@@ -811,7 +811,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 safe_create_task(
                     notify_admins(
                         text=(
-                            f"🛡️ <b>Alerte BotRadar — Pause de sécurité</b>\n\n"
+                            f"🛡️ <b>Alerte BotRadar - Pause de sécurité</b>\n\n"
                             f"⚠️ <b>{reason_str}</b> détecté sur Vinted.\n"
                             "Mise en pause de protection de l'IP : "
                             f"<b>Palier #{consecutive_blocks} "
@@ -860,7 +860,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                         safe_create_task(
                             notify_admins(
                                 text=(
-                                    "⚠️ <b>BotRadar — Collecte Vinted dégradée</b>\n\n"
+                                    "⚠️ <b>BotRadar - Collecte Vinted dégradée</b>\n\n"
                                     f"⚠️ {consecutive_collection_failures} cycles consécutifs "
                                     "sans collecte du flux Livres (réseau ou API).\n"
                                     "Le bot poursuit ses cycles sans pause anti-blocage."

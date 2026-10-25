@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
+from app.bot.labels import escape_display
 from app.core.constants import (
     CATEGORY_EMOJIS,
     LEBONCOIN_SOURCE_NAME,
@@ -49,7 +50,7 @@ SEARCHING_BOOK_LINE = "🔎 Recherche de l'ouvrage en cours…"
 # Livre coté sans marchand : absence d'offre, relevé daté par `cote_absence_line`.
 NO_OFFER_LINE = "🔍 Aucune offre d'occasion trouvée"
 # Recherche conclue sans catalogue : verdict persisté sur l'alerte (ADR-041).
-NO_CATALOGUE_LINE = "🚫 Aucune source ne catalogue cet ouvrage — la veille reste par titre."
+NO_CATALOGUE_LINE = "🚫 Aucune source ne catalogue cet ouvrage - la veille reste par titre."
 try:
     _PARIS_TZ: ZoneInfo = ZoneInfo("Europe/Paris")
 except Exception:  # pragma: no cover - fuseau absent sur l'image de prod
@@ -1116,7 +1117,7 @@ class MarketPriceService:
 
         if book is not None:
             lines.append(
-                f"{CATEGORY_EMOJIS[CategorySlug.BD_COMICS]} <b>{html.escape(book.title)}</b>"
+                f"{CATEGORY_EMOJIS[CategorySlug.BD_COMICS]} <b>{escape_display(book.title)}</b>"
             )
         if book is not None and book.isbn13:
             lines.append(f"<b>ISBN :</b> <code>{html.escape(book.isbn13)}</code>")
@@ -1169,7 +1170,7 @@ class MarketPriceService:
         if listing is not None:
             lines.append(
                 f"{CATEGORY_EMOJIS[CategorySlug.BD_COMICS]} "
-                f"<b>{html.escape(listing.title)}</b>"
+                f"<b>{escape_display(listing.title)}</b>"
             )
         lines.append(f"🔍 Tome {tome_number} détecté : cote indisponible pour ce tome.")
         return "\n".join(lines)
@@ -1261,7 +1262,7 @@ class MarketPriceService:
             if is_no_offer_line(absence):
                 absence = NO_OFFER_LINE
         title = (
-            f"{CATEGORY_EMOJIS[CategorySlug.BD_COMICS]} <b>{html.escape(book.title)}</b>\n\n"
+            f"{CATEGORY_EMOJIS[CategorySlug.BD_COMICS]} <b>{escape_display(book.title)}</b>\n\n"
 
             if book
             else ""

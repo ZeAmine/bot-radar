@@ -213,10 +213,17 @@ def _listing(source_name: str) -> Listing:
     )
 
 
-def test_leboncoin_caption_shows_platform_without_invented_fees():
-    caption = build_listing_caption(_listing("leboncoin"))
+def test_leboncoin_caption_has_no_platform_line_and_no_invented_fees():
+    """La plateforme n'a plus de ligne : le lien de l'annonce la nomme déjà.
 
-    assert "<b>Plateforme :</b> Leboncoin" in caption
+    La règle de frais reste propre à chaque source — un prix Leboncoin n'invente
+    pas de total livré — mais elle ne s'annonce pas par un libellé redondant.
+    """
+    listing = _listing("leboncoin")
+    caption = build_listing_caption(listing)
+
+    assert "Plateforme" not in caption
+    assert listing.source_name == "leboncoin"
     assert "<b>Prix :</b> 25,00 €" in caption
     assert "TTC" not in caption
     assert "<b>État :</b> TBE" in caption
