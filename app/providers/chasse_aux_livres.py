@@ -17,6 +17,7 @@ import httpx
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
 from app.domain.rules.market_offer import (
+    is_acceptable_secondhand_condition,
     is_brand_new_partner,
     is_merchant_excluded,
     is_very_good_or_better,
@@ -800,21 +801,29 @@ class ChasseAuxLivresProvider:
                     if is_merchant_excluded(merchant_raw) or is_merchant_excluded(merchant_clean):
                         continue
 
-                    is_used = off.get("condition", {}).get("_name") != "NEW"
-                    sub_cond = off.get("subCondition", {}).get("name") or (
-                        "Occasion" if is_used else "Neuf"
-                    )
+                    sale_condition = off.get("condition")
+                    if (
+                        not isinstance(sale_condition, dict)
+                        or sale_condition.get("_name") != "USED"
+                    ):
+                        continue
+                    sub_condition = off.get("subCondition")
+                    if sub_condition is not None and not isinstance(sub_condition, dict):
+                        continue
+                    sub_cond = sub_condition.get("name") if sub_condition else None
+                    if sub_cond is not None and not isinstance(sub_cond, str):
+                        continue
                     tot = off.get("totalPrice", {}).get("amount", 0)
                     aff_url = off.get("affiliateUrl") or product_url
 
                     if tot <= 0:
                         continue
 
-                    if is_brand_new_partner({"is_used": is_used, "condition": sub_cond}):
+                    if is_brand_new_partner({"is_used": True, "condition": sub_cond}):
                         continue
 
-                    # États retenus : Très bon et Comme neuf (Bon, Correct rejetés).
-                    if not is_very_good_or_better(sub_cond):
+                    # États d'occasion admissibles selon la règle commune.
+                    if not is_acceptable_secondhand_condition(sub_cond):
                         continue
 
                     item_cents = off.get("price", {}).get("amount")
@@ -834,13 +843,18 @@ class ChasseAuxLivresProvider:
                         "url": aff_url,
                     }
 
-                    if (
-                        merchant_clean not in partners
-                        or partners[merchant_clean]["total_cents"] > tot
+                    rank = (tot, not is_very_good_or_better(sub_cond))
+                    previous = partners.get(merchant_clean)
+                    if previous is None or rank < (
+                        previous["total_cents"],
+                        not is_very_good_or_better(previous["condition"]),
                     ):
                         partners[merchant_clean] = entry
 
-                    if best_used is None or tot < best_used["total_cents"]:
+                    if best_used is None or rank < (
+                        best_used["total_cents"],
+                        not is_very_good_or_better(best_used["condition"]),
+                    ):
                         best_used = entry
 
             # Plus bas historique sur 1 an via l'API /rest/jcd.
@@ -953,7 +967,9 @@ class ChasseAuxLivresProvider:
                                     emitted_requests=self._emitted_requests())
 
             primary = best_used
-            cond_str = f"{primary['condition']} ({primary['merchant']})"
+            cond_str = primary["condition"]
+            if cond_str and cond_str.strip():
+                cond_str = f"{cond_str} ({primary['merchant']})"
 
             return MarketOffers(
                 [*historical_points,

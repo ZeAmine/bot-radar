@@ -26,9 +26,9 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
 from app.domain.rules.book_volume import notice_volume
 from app.domain.rules.market_offer import (
+    is_acceptable_secondhand_condition,
     is_brand_new_partner,
     is_merchant_excluded,
-    is_very_good_or_better,
 )
 from app.services.price_calculator import calculate_estimated_total
 from app.utils.isbn import isbn_from_identifier
@@ -641,7 +641,7 @@ def _extract_partners(
 
 
 def _select_secondhand_partners(partners: dict[str, Any]) -> dict[str, Any]:
-    """Filtre STRICT le comparatif : occasion, état au moins « Très bon », prix connu.
+    """Filtre le comparatif : occasion admissible, état qualifié ou absent, prix connu.
 
     Le Neuf et les états inférieurs ne doivent jamais apparaître comme cote.
     """
@@ -655,7 +655,7 @@ def _select_secondhand_partners(partners: dict[str, Any]) -> dict[str, Any]:
             continue
         total_cents = _positive(data.get("total_cents"))
 
-        if total_cents is None or not is_very_good_or_better(data.get("condition")):
+        if total_cents is None or not is_acceptable_secondhand_condition(data.get("condition")):
             continue
         selected[merchant] = data
     return selected

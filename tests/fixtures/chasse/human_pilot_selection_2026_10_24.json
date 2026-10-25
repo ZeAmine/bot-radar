@@ -1,0 +1,220 @@
+{
+  "origin": "human_screenshot_transcription",
+  "observed_date": "2026-10-24",
+  "scope": "Valeurs des lignes visibles des captures, pas des prix actuels ni une réponse HTTP CAL ; enveloppe de transport construite synthétiquement dans les tests.",
+  "cases": [
+    {
+      "isbn": "9782344069554",
+      "title": "Helen de Wyndhorn",
+      "expected_minimum_cents": 1699,
+      "expected_offer_id": "H-01",
+      "offers": [
+        {
+          "id": "H-01",
+          "merchant": "BDfugue",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 1200,
+          "shipping_cents": 499,
+          "total_cents": 1699
+        },
+        {
+          "id": "H-02",
+          "merchant": "recyclivre",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 1808,
+          "shipping_cents": 0,
+          "total_cents": 1808
+        },
+        {
+          "id": "H-03",
+          "merchant": "amazon.de",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 1541,
+          "shipping_cents": 500,
+          "total_cents": 2041
+        },
+        {
+          "id": "H-04",
+          "merchant": "fnac",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 2070,
+          "shipping_cents": 0,
+          "total_cents": 2070
+        },
+        {
+          "id": "H-05",
+          "merchant": "la bourse aux livres",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 2145,
+          "shipping_cents": 0,
+          "total_cents": 2145
+        },
+        {
+          "id": "H-06",
+          "merchant": "AbeBooks",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 2230,
+          "shipping_cents": 0,
+          "total_cents": 2230
+        },
+        {
+          "id": "H-07",
+          "merchant": "AbeBooks",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 1278,
+          "shipping_cents": 990,
+          "total_cents": 2268
+        }
+      ]
+    },
+    {
+      "isbn": "9782505120018",
+      "title": "Cauchon... ou l'homme qui tua Jeanne d'Arc",
+      "expected_minimum_cents": 2984,
+      "expected_offer_id": "C-01",
+      "offers": [
+        {
+          "id": "C-01",
+          "merchant": "momox SHOP",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 2984,
+          "shipping_cents": 0,
+          "total_cents": 2984
+        },
+        {
+          "id": "C-02",
+          "merchant": "la bourse aux livres",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 3295,
+          "shipping_cents": 0,
+          "total_cents": 3295
+        },
+        {
+          "id": "C-03",
+          "merchant": "fnac",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 2880,
+          "shipping_cents": 499,
+          "total_cents": 3379
+        },
+        {
+          "id": "C-04",
+          "merchant": "Lireka",
+          "sale_kind": "NEW",
+          "condition": "Neuf",
+          "item_cents": 3500,
+          "shipping_cents": 1,
+          "total_cents": 3501
+        },
+        {
+          "id": "C-05",
+          "merchant": "Librairie EYROLLES",
+          "sale_kind": "NEW",
+          "condition": "Neuf",
+          "item_cents": 3500,
+          "shipping_cents": 1,
+          "total_cents": 3501
+        },
+        {
+          "id": "C-06",
+          "merchant": "amazon.fr",
+          "sale_kind": "NEW",
+          "condition": "Neuf",
+          "item_cents": 3500,
+          "shipping_cents": 1,
+          "total_cents": 3501
+        },
+        {
+          "id": "C-07",
+          "merchant": "BDfugue",
+          "sale_kind": "NEW",
+          "condition": "Neuf",
+          "item_cents": 3500,
+          "shipping_cents": 10,
+          "total_cents": 3510
+        }
+      ]
+    },
+    {
+      "isbn": "9782344058138",
+      "title": "1629, ou l'effrayante histoire des naufragés du Jakarta - Tome 2 - Chapitre 2 - L’Île rouge",
+      "expected_minimum_cents": 3414,
+      "expected_offer_id": "T2-04",
+      "offers": [
+        {
+          "id": "T2-01",
+          "merchant": "la bourse aux livres",
+          "sale_kind": "USED",
+          "condition": "Bon",
+          "item_cents": 3295,
+          "shipping_cents": 0,
+          "total_cents": 3295
+        },
+        {
+          "id": "T2-02",
+          "merchant": "BDfugue",
+          "sale_kind": "NEW",
+          "condition": "Neuf",
+          "item_cents": 2999,
+          "shipping_cents": 300,
+          "total_cents": 3299
+        },
+        {
+          "id": "T2-03",
+          "merchant": "amazon.de",
+          "sale_kind": "USED",
+          "condition": "Très bon",
+          "item_cents": 2799,
+          "shipping_cents": 500,
+          "total_cents": 3299
+        },
+        {
+          "id": "T2-04",
+          "merchant": "AbeBooks",
+          "sale_kind": "USED",
+          "condition": "Occasion",
+          "item_cents": 2424,
+          "shipping_cents": 990,
+          "total_cents": 3414
+        },
+        {
+          "id": "T2-05",
+          "merchant": "AbeBooks",
+          "sale_kind": "USED",
+          "condition": "Bon",
+          "item_cents": 2499,
+          "shipping_cents": 990,
+          "total_cents": 3489
+        },
+        {
+          "id": "T2-06",
+          "merchant": "Librairie EYROLLES",
+          "sale_kind": "NEW",
+          "condition": "Neuf",
+          "item_cents": 3500,
+          "shipping_cents": 1,
+          "total_cents": 3501
+        },
+        {
+          "id": "T2-07",
+          "merchant": "Lireka",
+          "sale_kind": "NEW",
+          "condition": "Neuf",
+          "item_cents": 3500,
+          "shipping_cents": 1,
+          "total_cents": 3501
+        }
+      ]
+    }
+  ]
+}
