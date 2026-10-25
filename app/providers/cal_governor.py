@@ -22,6 +22,7 @@ import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 from typing import Any, Protocol, cast
 
 import httpx
@@ -473,40 +474,49 @@ class CalGovernor:
         return str(raw[0])
 
     async def _acquire_slot(self, collection: "CalCollectionBudget") -> str:
-        deadline = self.wall_now() + self.max_wait_seconds
-        token = uuid.uuid4().hex
-        while True:
-            if collection.used >= self.max_requests_per_collection:
-                self.denied += 1
-                raise CalSuspendedError("collection_budget", None)
-            raw = await self._run(
-                ACQUIRE_SCRIPT,
-                str(self.wall_now()), token, str(self.max_concurrent),
-                str(self.min_interval_seconds), str(self.max_requests_per_window),
-                str(self.window_seconds), str(self.lease_ttl_seconds),
-                "1" if collection.opening_request else "0",
-                collection.probe_token or "",
-                keys=[self.key, self.lease_key, self.window_key],
-            )
-            if not isinstance(raw, list):
-                self.denied += 1
-                self.storage_unavailable = True
-                raise CalSuspendedError("storage_unavailable", None)
-            if raw[0] == "admitted":
-                collection.used += 1
-                self.emitted += 1
-                return token
-            if raw[0] == "denied":
-                self.denied += 1
-                raise CalSuspendedError(str(raw[1] or "rest"), None)
-            wait_for = 0.1
-            if len(raw) > 2 and raw[2]:
-                wait_for = max(0.05, min(1.0, float(raw[2]) - self.wall_now()))
-            if self.wall_now() + wait_for > deadline:
-                self.denied += 1
-                raise CalSuspendedError(str(raw[1] or "spacing"), None)
-            self.throttled += 1
-            await self.sleep(wait_for)
+        if not collection._reserve(self.max_requests_per_collection):
+            self.denied += 1
+            raise CalSuspendedError("collection_budget", None)
+        reservation_pending = True
+        try:
+            deadline = self.wall_now() + self.max_wait_seconds
+            token = uuid.uuid4().hex
+            while True:
+                if collection.used >= self.max_requests_per_collection:
+                    self.denied += 1
+                    raise CalSuspendedError("collection_budget", None)
+                raw = await self._run(
+                    ACQUIRE_SCRIPT,
+                    str(self.wall_now()), token, str(self.max_concurrent),
+                    str(self.min_interval_seconds), str(self.max_requests_per_window),
+                    str(self.window_seconds), str(self.lease_ttl_seconds),
+                    "1" if collection.opening_request else "0",
+                    collection.probe_token or "",
+                    keys=[self.key, self.lease_key, self.window_key],
+                )
+                if not isinstance(raw, list):
+                    self.denied += 1
+                    self.storage_unavailable = True
+                    raise CalSuspendedError("storage_unavailable", None)
+                if raw[0] == "admitted":
+                    collection._finish_reservation(emitted=True)
+                    reservation_pending = False
+                    self.emitted += 1
+                    return token
+                if raw[0] == "denied":
+                    self.denied += 1
+                    raise CalSuspendedError(str(raw[1] or "rest"), None)
+                wait_for = 0.1
+                if len(raw) > 2 and raw[2]:
+                    wait_for = max(0.05, min(1.0, float(raw[2]) - self.wall_now()))
+                if self.wall_now() + wait_for > deadline:
+                    self.denied += 1
+                    raise CalSuspendedError(str(raw[1] or "spacing"), None)
+                self.throttled += 1
+                await self.sleep(wait_for)
+        finally:
+            if reservation_pending:
+                collection._finish_reservation(emitted=False)
 
     async def _release(self, token: str) -> None:
         await self._run(
@@ -517,13 +527,31 @@ class CalGovernor:
         self, client: "CalHttpClient", collection: "CalCollectionBudget",
         *args: Any, _method: str = "get", **kwargs: Any,
     ) -> httpx.Response:
-        token = await self._acquire_slot(collection)
-        try:
-            response = cast(httpx.Response, await getattr(client, _method)(*args, **kwargs))
-            await self.observe(response)
-            return response
-        finally:
-            await self._release(token)
+        follow_redirects = kwargs.pop(
+            "follow_redirects", getattr(client, "follow_redirects", False),
+        )
+        max_redirects = getattr(client, "max_redirects", 20)
+        kwargs["follow_redirects"] = False
+        history: list[httpx.Response] = []
+        while True:
+            if len(history) > max_redirects:
+                raise httpx.TooManyRedirects(
+                    "Trop de redirections CAL", request=history[-1].request,
+                )
+            token = await self._acquire_slot(collection)
+            try:
+                response = cast(httpx.Response, await getattr(client, _method)(*args, **kwargs))
+                await self.observe(response)
+            finally:
+                await self._release(token)
+            response.history = list(history)
+            if (not follow_redirects or response.next_request is None
+                    or response.status_code == 429 or challenged(response)):
+                return response
+            history.append(response)
+            args = (response.next_request,)
+            kwargs = {"follow_redirects": False, "auth": None}
+            _method = "send"
 
     async def observe(self, response: httpx.Response) -> None:
         if response.status_code == 429:
@@ -540,6 +568,8 @@ class CalHttpClient(Protocol):
     async def get(self, *args: Any, **kwargs: Any) -> httpx.Response: ...
 
     async def post(self, *args: Any, **kwargs: Any) -> httpx.Response: ...
+
+    async def send(self, *args: Any, **kwargs: Any) -> httpx.Response: ...
 
 
 def challenged(response: httpx.Response) -> bool:
@@ -564,8 +594,23 @@ class CalCollectionBudget:
         self.governor = governor
         self.limit = limit or governor.max_requests_per_collection
         self.used = 0
+        self._reserved = 0
+        self._reservation_lock = Lock()
         self.probe_token: str | None = None
         self.suspension: CalSuspendedError | None = None
+
+    def _reserve(self, limit: int) -> bool:
+        with self._reservation_lock:
+            if self.used + self._reserved >= min(self.limit, limit):
+                return False
+            self._reserved += 1
+            return True
+
+    def _finish_reservation(self, *, emitted: bool) -> None:
+        with self._reservation_lock:
+            self._reserved -= 1
+            if emitted:
+                self.used += 1
 
     @property
     def opening_request(self) -> bool:
