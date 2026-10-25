@@ -324,14 +324,17 @@ async def test_polling_a_collection_is_not_spaced_by_the_inter_collection_interv
     elapsed = time.monotonic() - started
 
     attempt = offers.attempts[0]
-    assert attempt.poll_count == LOOKUP_POLL_MAX
+    emitted_polls = min(LOOKUP_POLL_MAX, governor.max_requests_per_collection - 2)
+    attempted_polls = emitted_polls + int(emitted_polls < LOOKUP_POLL_MAX)
+    assert attempt.poll_count == attempted_polls
     assert attempt.status == "partial"
     assert attempt.engines_received < attempt.engines_requested
-    assert governor.emitted == 2 + LOOKUP_POLL_MAX
+    assert governor.emitted == 2 + emitted_polls
     assert governor.emitted <= governor.max_requests_per_collection
-    assert elapsed >= LOOKUP_POLL_MAX * LOOKUP_POLL_DELAY_SECONDS
+    assert governor.emitted == 12
+    assert elapsed >= attempted_polls * LOOKUP_POLL_DELAY_SECONDS
     assert elapsed < LOOKUP_POLL_BUDGET_SECONDS * 2
-    assert len(seen) == 2 + LOOKUP_POLL_MAX
+    assert len(seen) == 2 + emitted_polls
 
 
 @pytest.mark.asyncio

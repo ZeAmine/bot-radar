@@ -140,8 +140,13 @@ async def test_natural_add_cleaning_price_suffix():
         }
     )
 
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(return_value=None)
+
     module = natural_add_module
-    with patch.object(module, "client", mock_client):
+    with patch.object(module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookSearchUseCase", fake_book_search(bnf),
+    ):
         res = await module.parse_prompt("Arabe du futur max 7€")
         assert res is not None
         assert res.name == "Arabe du futur"
@@ -149,6 +154,38 @@ async def test_natural_add_cleaning_price_suffix():
         assert "figurine" in res.exclude_keywords
         assert "coffret vide" in res.exclude_keywords
         assert res.max_price_cents == 700
+
+    bnf.resolve_for_alert.assert_awaited_once_with("Arabe du futur", None)
+
+
+@pytest.mark.asyncio
+async def test_natural_add_confirmed_notice_replaces_cleaned_title():
+    mock_client = FakeLLM(
+        text={
+            "name": "Arabe du futur - max 7€",
+            "category_slug": "bd_comics",
+            "include_keywords": ["Arabe du futur - max 7€"],
+            "max_price_cents": 700,
+        }
+    )
+    notice = BookMetadata(
+        title="L'Arabe du futur", author="Auteur de test", isbn13="9780000000002",
+    )
+    bnf = MagicMock(spec=BookMetadataService)
+    bnf.resolve_for_alert = AsyncMock(return_value=BookResolution(best=notice))
+
+    with patch.object(natural_add_module, "client", mock_client), patch(
+        "app.services.ai.modules.natural_add.BookSearchUseCase", fake_book_search(bnf),
+    ):
+        res = await natural_add_module.parse_prompt("Arabe du futur max 7€")
+
+    assert res is not None
+    assert res.name == notice.title
+    assert res.isbn13 == notice.isbn13
+    assert res.book_context is not None
+    assert res.book_context.title == notice.title
+    assert res.max_price_cents == 700
+    bnf.resolve_for_alert.assert_awaited_once_with("Arabe du futur", None)
 
 
 @pytest.mark.asyncio

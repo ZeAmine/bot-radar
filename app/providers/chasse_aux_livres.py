@@ -4,12 +4,15 @@ import asyncio
 import html
 import logging
 import re
+import secrets
 import time
 import urllib.parse
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -17,6 +20,7 @@ import httpx
 from app.core.constants import MatchConfidence
 from app.core.http_client import get_shared_http_client
 from app.domain.rules.market_offer import (
+    is_acceptable_secondhand_condition,
     is_brand_new_partner,
     is_merchant_excluded,
     is_very_good_or_better,
@@ -54,9 +58,38 @@ Sleeper = Callable[[float], Awaitable[None]]
 
 TITLE_COHERENCE_MIN = 0.72
 
-LOOKUP_POLL_MAX = 3
-LOOKUP_POLL_BUDGET_SECONDS = 1.5
+LOOKUP_POLL_MAX = 12
+LOOKUP_POLL_BUDGET_SECONDS = 5.0
 LOOKUP_POLL_DELAY_SECONDS = 0.2
+
+
+_LOOKUP_METADATA_FIELDS = (
+    "resumeMap", "offersWS", "progress", "status", "complete", "completed",
+    "done", "finished", "pending", "running", "engines", "enginesCount", "nbeng",
+)
+
+
+def _lookup_source_metadata(data: Any) -> dict[str, dict[str, Any]]:
+    metadata: dict[str, dict[str, Any]] = {}
+    if not isinstance(data, dict):
+        return metadata
+    for name in _LOOKUP_METADATA_FIELDS:
+        if name not in data:
+            continue
+        value = data[name]
+        kind = {type(None): "null", bool: "boolean", int: "number", float: "number",
+                str: "string", list: "array", dict: "object"}.get(type(value), "other")
+        field: dict[str, Any] = {"type": kind, "interpretation": "unknown"}
+        if value is None or type(value) is bool:
+            field["value"] = value
+        metadata[name] = field
+    return metadata
+
+
+def _emit_lookup_trace(fields: dict[str, Any]) -> None:
+    with suppress(Exception):
+        logger.info("Diagnostic de collecte CAL", extra=fields)
+
 
 _TITLE_STOP_WORDS = frozenset(
     {
@@ -631,10 +664,34 @@ class ChasseAuxLivresProvider:
                     found_title,
                 )
 
+            trace_id = secrets.token_hex(8)
+            product_trace_started = perf_counter()
+            product_trace: dict[str, Any] = {
+                "event": "cal_product_response", "trace_id": trace_id,
+                "poll_index": None, "client_decision": "stop",
+            }
             stage = "product_page"
-            resp_prod = await client.get(product_url, headers=CHASSE_BROWSER_HEADERS, timeout=4)
+            try:
+                resp_prod = await client.get(product_url, headers=CHASSE_BROWSER_HEADERS, timeout=4)
+            except BaseException:
+                _emit_lookup_trace({
+                    **product_trace, "response_received": False,
+                    "response_elapsed_ms": round(
+                        (perf_counter() - product_trace_started) * 1000, 3,
+                    ),
+                    "client_reason": "product_request_exception",
+                })
+                raise
+            product_trace.update({
+                "response_received": True, "http_status": resp_prod.status_code,
+                "response_bytes": len(resp_prod.content),
+                "response_elapsed_ms": round(
+                    (perf_counter() - product_trace_started) * 1000, 3,
+                ),
+            })
             failure = _response_failure(resp_prod, stage=stage)
             if failure is not None:
+                _emit_lookup_trace({**product_trace, "client_reason": "product_response_failure"})
                 return failure
 
             p_html = resp_prod.text
@@ -642,6 +699,7 @@ class ChasseAuxLivresProvider:
             lvs_m = re.search(r'data-lvs="([^"]+)"', p_html)
             nbeng_m = re.search(r'data-nbeng="(\d+)"', p_html)
             if not (asin_m and lvs_m and nbeng_m):
+                _emit_lookup_trace({**product_trace, "client_reason": "product_metadata_missing"})
                 return failed_offers(self.name, response=resp_prod, reason="invalid_response",
                                      stage="product_metadata")
 
@@ -649,14 +707,21 @@ class ChasseAuxLivresProvider:
             product_isbn = isbn_from_identifier(asin)
             if (expected_isbn and product_isbn
                     and product_isbn != isbn_from_identifier(expected_isbn)):
+                _emit_lookup_trace({**product_trace, "client_reason": "product_identity_mismatch"})
                 return failed_offers(self.name, reason="identity_mismatch")
             lvs = lvs_m.group(1)
             nbeng = int(nbeng_m.group(1))
             requested_engines = [str(i) for i in range(min(nbeng, 32))]
+            product_trace.update({"source_nbeng": nbeng if nbeng <= 10000 else None,
+                                  "source_nbeng_out_of_range": nbeng > 10000,
+                                  "client_expected_groups": requested_engines})
             if not requested_engines:
+                _emit_lookup_trace({**product_trace, "client_reason": "no_requested_groups"})
                 return failed_offers(self.name, response=resp_prod,
                                      reason="invalid_response", stage="product_metadata")
 
+            _emit_lookup_trace({**product_trace, "client_decision": "continue",
+                                "client_reason": "product_metadata_accepted"})
             ajax_headers = _build_ajax_headers(product_url)
             lookup_url = (
                 f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
@@ -672,40 +737,99 @@ class ChasseAuxLivresProvider:
                 self.name, "current", "success" if "current" in requested_components.get()
                 else "skipped",
             )
+            lookup_traces: list[dict[str, Any]] = []
+            trace_started = perf_counter()
+            trace_phase = "initial_request_exception"
+
+            def trace_response(response: httpx.Response | None) -> None:
+                lookup_traces.append({
+                    "event": "cal_lookup_response", "trace_id": trace_id,
+                    "poll_index": poll_count, "response_received": response is not None,
+                    "response_elapsed_ms": round((perf_counter() - trace_started) * 1000, 3),
+                    "http_status": response.status_code if response is not None else None,
+                    "response_bytes": len(response.content) if response is not None else None,
+                    "source_nbeng": nbeng if nbeng <= 10000 else None,
+                    "source_nbeng_out_of_range": nbeng > 10000,
+                    "client_expected_groups": list(requested_engines),
+                    "client_received_groups": [e for e in requested_engines if e in raw_offers],
+                    "new_group_ids": [], "source_metadata": {}, "payload_shape": "not_parsed",
+                })
+
+            def trace_payload(payload: Any) -> None:
+                row = lookup_traces[-1]
+                row["payload_shape"] = "object" if isinstance(payload, dict) else "non_object"
+                row["source_metadata"] = _lookup_source_metadata(payload)
+                if isinstance(payload, dict):
+                    row["source_metadata_unreported_count"] = (
+                        len(payload) - int("offers" in payload) - len(row["source_metadata"])
+                    )
+                    groups = payload.get("offers")
+                    if isinstance(groups, dict):
+                        row["source_offer_group_ids"] = [
+                            e for e in requested_engines if e in groups
+                        ]
+                        row["source_offer_group_count"] = len(groups)
+                        row["unrequested_groups_count"] = (
+                            len(groups) - len(row["source_offer_group_ids"])
+                        )
+                before = row["client_received_groups"]
+                received = [e for e in requested_engines if e in raw_offers]
+                row["client_received_groups"] = received
+                row["new_group_ids"] = [e for e in received if e not in before]
+
+            def trace_decision(decision: str, reason: str) -> None:
+                if len(lookup_traces) <= poll_count:
+                    trace_response(None)
+                lookup_traces[-1].update({
+                    "client_decision": decision, "client_reason": reason,
+                    "decision_elapsed_ms": round((perf_counter() - trace_started) * 1000, 3),
+                })
+
             try:
                 if "current" in requested_components.get():
                     stage = "current_offers"
                     lookup_started = time.monotonic()
                     resp_lookup = await client.get(lookup_url, headers=ajax_headers, timeout=4)
+                    trace_response(resp_lookup)
                     failure = _response_failure(resp_lookup, stage=stage)
                     if failure is not None:
                         if any(a.reason in {"rate_limited", "bot_challenge"}
                                for a in failure.attempts):
+                            trace_decision("stop", "initial_source_restriction")
                             return failure
+                        trace_phase = "initial_http_error"
                         resp_lookup.raise_for_status()
+                    trace_phase = "initial_json_error"
                     data = resp_lookup.json()
+                    trace_payload(data)
                 else:
                     data = {"offers": {}}
                 if not isinstance(data, dict):
+                    trace_decision("stop", "initial_payload_not_object")
                     raise ValueError("Réponse courante invalide")
                 parsed_offers = data.get("offers")
                 if not isinstance(parsed_offers, dict):
+                    trace_decision("stop", "initial_offers_not_object")
                     raise ValueError("Offres courantes invalides")
                 raw_offers = parsed_offers
 
                 if "current" in requested_components.get():
+                    trace_payload(data)
                     pending = [engine for engine in requested_engines
                                if engine not in raw_offers]
                     while pending and poll_count < LOOKUP_POLL_MAX:
                         elapsed = time.monotonic() - lookup_started
                         if elapsed + LOOKUP_POLL_DELAY_SECONDS >= LOOKUP_POLL_BUDGET_SECONDS:
+                            trace_decision("stop", "budget_before_sleep")
                             break
                         await self._sleep(LOOKUP_POLL_DELAY_SECONDS)
                         remaining = LOOKUP_POLL_BUDGET_SECONDS - (
                             time.monotonic() - lookup_started
                         )
                         if remaining <= 0:
+                            trace_decision("stop", "budget_after_sleep")
                             break
+                        trace_decision("continue", "pending_groups")
                         poll_count += 1
                         poll_url = (
                             f"{self.BASE_URL}/rest/lookup/results?calls=offers&itemId={asin}"
@@ -717,6 +841,7 @@ class ChasseAuxLivresProvider:
                                 poll_url, headers=ajax_headers,
                                 timeout=max(0.5, min(3.5, remaining)),
                             )
+                            trace_response(resp_poll)
                             failure = _response_failure(resp_poll,
                                                         stage="current_offers_retry")
                             if failure is not None:
@@ -724,15 +849,22 @@ class ChasseAuxLivresProvider:
                                        for a in failure.attempts):
                                     current_attempt = failure.attempts[0]
                                     source_blocked = True
+                                trace_decision(
+                                    "stop", "poll_source_restriction" if source_blocked
+                                    else "poll_response_failure",
+                                )
                                 break
                             if not resp_poll.content:
+                                trace_decision("stop", "empty_poll_body")
                                 break
                             poll_data = resp_poll.json()
+                            trace_payload(poll_data)
                             poll_offers = (
                                 poll_data.get("offers")
                                 if isinstance(poll_data, dict) else None
                             )
                             if not isinstance(poll_offers, dict):
+                                trace_decision("stop", "poll_offers_not_object")
                                 break
                             for key, value in poll_offers.items():
                                 if key not in raw_offers:
@@ -740,7 +872,12 @@ class ChasseAuxLivresProvider:
                                 elif (isinstance(value, list)
                                       and isinstance(raw_offers[key], list)):
                                     raw_offers[key].extend(value)
+                            trace_payload(poll_data)
                         except Exception as exc:
+                            trace_decision("stop", "poll_exception")
+                            if (isinstance(exc, CalSuspendedError)
+                                    and exc.reason == "collection_budget"):
+                                lookup_traces[-1]["governor_reason"] = "collection_budget"
                             logger.debug("Sondage lookup interrompu : %s",
                                          type(exc).__name__)
                             break
@@ -750,6 +887,10 @@ class ChasseAuxLivresProvider:
                     received_engines = [engine for engine in requested_engines
                                         if engine in raw_offers]
                     lookup_seconds = round(time.monotonic() - lookup_started, 3)
+                    if "client_decision" not in lookup_traces[-1]:
+                        trace_decision(
+                            "stop", "client_groups_present" if not pending else "poll_limit",
+                        )
                     if current_attempt.status == "success":
                         complete = not pending
                         current_attempt = CollectionAttempt(
@@ -766,13 +907,24 @@ class ChasseAuxLivresProvider:
                         )
 
             except CalSuspendedError as exc:
+                trace_decision("stop", "initial_suspended")
+                if exc.reason == "collection_budget":
+                    lookup_traces[-1]["governor_reason"] = "collection_budget"
                 return deferred_offers(
                     self.name, reason=exc.reason, retry_at=exc.retry_at,
                     emitted_requests=self._emitted_requests(),
                 )
             except (httpx.HTTPError, ValueError, TypeError) as exc:
+                if not lookup_traces or "client_decision" not in lookup_traces[-1]:
+                    trace_decision("stop", trace_phase)
                 current_attempt = failed_offers(self.name, error=exc,
                                                 stage="current_offers").attempts[0]
+            except BaseException:
+                trace_decision("stop", "propagated_exception")
+                raise
+            finally:
+                for trace in lookup_traces:
+                    _emit_lookup_trace(trace)
 
             partners: dict[str, dict[str, Any]] = {}
             best_used: dict[str, Any] | None = None
@@ -800,21 +952,29 @@ class ChasseAuxLivresProvider:
                     if is_merchant_excluded(merchant_raw) or is_merchant_excluded(merchant_clean):
                         continue
 
-                    is_used = off.get("condition", {}).get("_name") != "NEW"
-                    sub_cond = off.get("subCondition", {}).get("name") or (
-                        "Occasion" if is_used else "Neuf"
-                    )
+                    sale_condition = off.get("condition")
+                    if (
+                        not isinstance(sale_condition, dict)
+                        or sale_condition.get("_name") != "USED"
+                    ):
+                        continue
+                    sub_condition = off.get("subCondition")
+                    if sub_condition is not None and not isinstance(sub_condition, dict):
+                        continue
+                    sub_cond = sub_condition.get("name") if sub_condition else None
+                    if sub_cond is not None and not isinstance(sub_cond, str):
+                        continue
                     tot = off.get("totalPrice", {}).get("amount", 0)
                     aff_url = off.get("affiliateUrl") or product_url
 
                     if tot <= 0:
                         continue
 
-                    if is_brand_new_partner({"is_used": is_used, "condition": sub_cond}):
+                    if is_brand_new_partner({"is_used": True, "condition": sub_cond}):
                         continue
 
-                    # États retenus : Très bon et Comme neuf (Bon, Correct rejetés).
-                    if not is_very_good_or_better(sub_cond):
+                    # États d'occasion admissibles selon la règle commune.
+                    if not is_acceptable_secondhand_condition(sub_cond):
                         continue
 
                     item_cents = off.get("price", {}).get("amount")
@@ -834,13 +994,18 @@ class ChasseAuxLivresProvider:
                         "url": aff_url,
                     }
 
-                    if (
-                        merchant_clean not in partners
-                        or partners[merchant_clean]["total_cents"] > tot
+                    rank = (tot, not is_very_good_or_better(sub_cond))
+                    previous = partners.get(merchant_clean)
+                    if previous is None or rank < (
+                        previous["total_cents"],
+                        not is_very_good_or_better(previous["condition"]),
                     ):
                         partners[merchant_clean] = entry
 
-                    if best_used is None or tot < best_used["total_cents"]:
+                    if best_used is None or rank < (
+                        best_used["total_cents"],
+                        not is_very_good_or_better(best_used["condition"]),
+                    ):
                         best_used = entry
 
             # Plus bas historique sur 1 an via l'API /rest/jcd.
@@ -953,7 +1118,9 @@ class ChasseAuxLivresProvider:
                                     emitted_requests=self._emitted_requests())
 
             primary = best_used
-            cond_str = f"{primary['condition']} ({primary['merchant']})"
+            cond_str = primary["condition"]
+            if cond_str and cond_str.strip():
+                cond_str = f"{cond_str} ({primary['merchant']})"
 
             return MarketOffers(
                 [*historical_points,

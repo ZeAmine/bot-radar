@@ -92,6 +92,8 @@ async def _persist(cache: BookMarketCache, result: BookPricingResult, _now: date
         "app.services.book_market_pricing._refresh_series_totals", AsyncMock(),
     ), patch(
         "app.services.book_market_pricing.AsyncSessionLocal", MagicMock(),
+    ), patch(
+        "app.services.book_market_pricing._reserve_next_refresh", AsyncMock(),
     ):
         return await persist_market_result(AsyncMock(), cache.book_id, result)
 
