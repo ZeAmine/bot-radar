@@ -85,8 +85,12 @@ non vides et cohérents avec `DATABASE_URL` et la base existante.
 `TELEGRAM_WEBHOOK_URL`, `EBAY_ENVIRONMENT` et `DOMAIN_NAME` ne sont pas lus par
 l'application ; eBay utilise `EBAY_ENV`.
 
-Le moteur IA est choisi par `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`
-et `AI_TIMEOUT_SECONDS`. Changer de modèle ne nécessite pas de changer les handlers.
+Le moteur IA est choisi par `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`,
+`AI_TIMEOUT_SECONDS`, `AI_MAX_TOKENS` et `AI_REASONING_EFFORT`.
+Par défaut : River, `deepseek-ai/DeepSeek-V4.1-Flash-1017`, raisonnement `none`,
+sortie plafonnée à 2 048 tokens. OpenAI/Luna reste disponible mais inactif.
+Changer de fournisseur enregistré ne nécessite pas de changer les handlers.
+[Bascule, évaluation et rollback](docs/operations/llm-migration.md).
 La réponse de `/health` ne garantit pas une génération IA ni la capacité métier.
 OpenAPI (`/docs`, `/redoc`, `/openapi.json`) est désactivé en production seulement.
 

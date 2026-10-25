@@ -98,41 +98,127 @@ cette branche accessible demande un arbitrage distinct, pas un simple nettoyage.
 HTTP partagé, repli `None`, erreurs et sonde de santé en cache 30 secondes. Les
 adaptateurs traduisent le dialecte ; le registre refuse un fournisseur inconnu au
 démarrage. Variables : `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`,
-`AI_TIMEOUT_SECONDS`. Aucun shim historique `DEEPSEEK_*`.
+`AI_TIMEOUT_SECONDS`, `AI_MAX_TOKENS`, `AI_REASONING_EFFORT`. Aucun shim historique
+`DEEPSEEK_*`. Le défaut est River avec `deepseek-ai/DeepSeek-V4.1-Flash-1017`,
+12 secondes par phase HTTP, 2 048 tokens de sortie et raisonnement `none`.
+OpenAI/Luna est conservé mais inactif. Le plafond est un réglage initial,
+pas une preuve de qualité ni de consommation optimale.
 
 Le chemin vivant est `AIPostAlertPipeline.enrich_alert` dans `app/services/ai/`.
-Avant appel, conserver `data = None` si le client n’est pas configuré.
+Avant appel, conserver `data = None` si le client n'est pas configuré.
+La construction du prompt post-alerte est partagée avec la sonde de qualité ;
+chaque fragment reste associé à son module.
 
 Injecter le client via `BaseAIModule(client=...)`, pas le singleton dans un handler.
-Un flag `AI_FEATURE_*` correspond à un module. Chaque JSON est validé avec champs
-optionnels et défauts ; pas d'HTTP direct dans les modules.
-La sonde HTTP n'atteste pas une génération.
+Un flag `AI_FEATURE_*` correspond à un module. Chaque appel métier transmet son
+identifiant et son payload Pydantic ; les types sont stricts, les champs absents
+autorisés prennent leur défaut, les champs supplémentaires sont ignorés localement.
+Les listes autorisent `null`, mais leurs éléments doivent être des chaînes : un
+objet ou nombre ne devient pas un mot-clé par conversion implicite.
+Aucun HTTP direct dans les modules. La sonde HTTP n'atteste pas une génération.
 
-Une complétion émet un seul POST, sans relance automatique ; les variantes suivent
-la même limite et conservent leur repli sans réponse. Le timeout reste celui du
-client HTTP, avec une éventuelle surcharge par appel, sans échéance globale ajoutée.
-L'adaptateur compatible conserve le plafond de sortie implicite du fournisseur ;
-aucune optimisation de consommation n'est attestée. Les interruptions explicites
-`length`, `content_filter`, `insufficient_system_resource` et `aborted` sont refusées,
-même si leur contenu forme un JSON valide. L'absence de ce champ reste compatible.
-Référence du dialecte : [API DeepSeek](https://api-docs.deepseek.com/api/create-chat-completion/),
-consultée le 18 octobre 2026.
+Une complétion émet un seul POST, sans relance automatique, y compris sur 429.
+Les redirections du POST sont refusées, même si le client partagé les autorise.
+Le timeout reste celui du client HTTP, avec une éventuelle surcharge par appel,
+sans échéance globale ajoutée. Une annulation asyncio reste une annulation.
 
-Les logs distinguent la fin de requête (`llm_request`, durée, timeout effectif,
-statut HTTP et classe d'erreur), le rejet d'enveloppe ou de contenu (`llm_response`),
-le JSON refusé (`llm_json`) et la validation métier refusée (`ai_validation`).
-`text_received` atteste seulement la réception d'un texte, pas sa validité métier.
-Les diagnostics de rejet ne contiennent ni réponse brute ni valeurs Pydantic.
-Les tokens consommés ne sont pas relevés dans ce lot.
+River emploie Chat Completions avec `max_tokens`, `reasoning_effort` et les
+schémas stricts documentés par son API. Le protocole est compatible OpenAI ;
+le fournisseur d'inférence et de facturation journalisé est `river`, distinct du
+modèle DeepSeek exécuté. Les compteurs cachés et de raisonnement sont des
+sous-ensembles des totaux, jamais additionnés une seconde fois. Aucun coût calculé.
+
+L'adaptateur OpenAI emploie Chat Completions avec `max_completion_tokens`,
+`reasoning_effort` et, pour les cinq usages métier, `response_format=json_schema`
+en mode strict. Il génère le schéma depuis Pydantic, rend les propriétés requises,
+conserve leurs unions avec `null`, ferme les objets et retire les valeurs par défaut
+filaires. La validation locale garde les réponses partielles autorisées pour les
+adaptateurs et doubles existants. Une réponse structurée n'est pas une autorité métier.
+Les prompts, filtres et replis restent communs aux fournisseurs.
+
+Le dialecte `thinking` appartient uniquement à l'adaptateur DeepSeek. L'adaptateur
+compatible générique utilise le mode objet JSON et le schéma dans les instructions ;
+Anthropic garde son API Messages et reçoit aussi ces instructions. Tous passent
+la même validation locale. Les tokens de sortie sont plafonnés par configuration.
+
+Contrat River consulté le 24 octobre 2026 :
+[endpoint et authentification](https://docs.river.ai/guides/inference/),
+[modèle et compteurs](https://docs.river.ai/guides/inference-models/),
+[raisonnement et sorties structurées](https://docs.river.ai/guides/inference-controls/),
+[erreurs HTTP](https://docs.river.ai/guides/inference-limits/).
+Le mode strict est fixé avant le POST, sans repli réseau vers `json_object` ni
+OpenAI. `GET /v1/models` reste la seule sonde, en cache, sans génération ni
+négociation de capacités. La table de raisonnement River nomme la famille Flash
+sans détailler la révision `1017` ; `none` est retenu selon ce contrat de famille,
+à confirmer lors de la vérification manuelle autorisée. Les pages documentent
+les statuts d'erreur, pas un schéma exhaustif de leurs corps : le traitement
+s'appuie sur HTTP sans journaliser ou dépendre du corps d'erreur.
+
+Références OpenAI consultées le 24 octobre 2026 :
+[modèle Luna](https://developers.openai.com/api/docs/models/gpt-6-luna),
+[Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs),
+[Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+Les interruptions explicites `length`, `content_filter`, `insufficient_system_resource`
+et `aborted`, ainsi que les refus explicites, sont rejetés même avec un JSON valide.
+L'absence historique de `finish_reason` reste compatible. Les constantes `NaN` et
+`Infinity` ne sont pas acceptées comme JSON.
+
+Chaque requête terminée émet `llm_request` avec `request_id`, `ai_module`, `provider`,
+`model`, `attempt=1`, `duration_ms`, timeout effectif, code HTTP éventuel et `status`.
+Le statut distingue `ok`, `timeout`, `http_error`, `invalid_json`, `empty_content`,
+`validation_error`, `invalid_envelope`, `transport_error`, `refused`, `interrupted`,
+`unexpected_error` et `cancelled`. `outcome` conserve le diagnostic de transport.
+Pour `generate_json`, `ok` inclut parsing et validation du payload transmis ; pour
+`complete` sans payload, il atteste seulement un texte reçu.
+
+`usage.input`, `usage.output`, `usage.cached`, `usage.reasoning` relèvent les compteurs
+fournis par l'API ; une absence reste `null`. Les compteurs suivent la sémantique du
+fournisseur, sans estimation de coût. Ces clés préservent le masquage des noms sensibles
+par `JSONFormatter`. Les logs de rejet (`llm_response`, `llm_json`, `ai_validation`)
+ne contiennent ni réponse brute ni valeurs Pydantic. Le rationale des variantes
+n'est pas journalisé. Les fournisseurs et modèles sont journalisés dans la frontière
+LLM seulement. Une réception `text_received` n'atteste pas la validité métier.
+
+La [procédure de migration](../operations/llm-migration.md) distingue validation locale,
+qualité réelle hors production et bascule opérationnelle.
+
+`is_series` désigne le périmètre de surveillance, pas une preuve d'identité.
+L'absence de numéro ne suffit pas à prouver une série. Un tome explicitement demandé
+reste un tome ; une résolution de notices numérotées peut établir une série.
+Sans preuve bibliographique, `book_unidentified` conserve l'incertitude ; des
+`work_choices` conservent une ambiguïté entre œuvres sans ISBN arbitraire. Un `false`
+isolé ne permet donc pas d'affirmer « one-shot confirmé ». La résolution ne garantit
+pas un rattrapage de toute erreur du moteur.
 
 Les offres IA doivent avoir un montant positif et un message non vide après
 nettoyage ; sinon le repli déterministe s'applique. Les scores doivent être finis,
 compris entre 1 et 10, avec une revente non négative ; une charge refusée ne produit
 aucune note. Les champs optionnels et les marges négatives restent acceptés.
 
+Une estimation insuffisamment étayée s'abstient avec les trois champs numériques
+à `null` (`estimated_resale_cents`, `net_profit_cents`, `pepite_score`) et une raison
+non vide dans `verdict`. Ce résultat valide est distinct d'une panne et d'une sortie
+vide ; il produit en arrière-plan une explication non chiffrée, sans indice pépite.
+Le diagnostic `ai_scoring` distingue `abstained`, `incomplete` et `estimated`, sans
+journaliser le verdict. Une réponse partielle ne produit aucune opportunité chiffrée.
+
+Le nom filaire historique `net_profit_cents` est conservé pour compatibilité, mais
+sa valeur et son affichage représentent une **marge brute estimée avant frais de
+revente**, pas un bénéfice net. La marge est calculée localement comme revente
+moins coût d'achat connu ; un montant fourni incohérent est refusé. Un coût inconnu
+reste inconnu. Sur une source sans frais acheteur, le prix article connu sert de
+coût quand le total estimé manque ; aucune formule de frais n'est modifiée.
+
 Pour les variantes/exclusions, un chargement précède l'attente ; verrou anti-double
 clic. `answered` distingue un avis vide d'une panne. Une réponse ne produisant aucun
-terme utilisable reste une réponse, filtrée avec ses raisons. Le récap dit le verdict
+terme utilisable reste une réponse, filtrée avec ses raisons. Les variantes peuvent être absentes sans
+remplissage artificiel. Les propositions initiales et le résultat motivé du filtre
+restent disponibles dans le résultat de module pour la sonde ; les filtres du domaine
+et la normalisation de `app/utils/text.py` gardent la décision finale. La sonde distingue
+absence de proposition, liste entièrement ou partiellement filtrée, répétitions
+normalisées et variantes conservées. Une liste vide ne prouve pas à elle seule sa
+pertinence ; une exclusion générique s'évalue dans son contexte, sans interdiction
+lexicale générale. Le récap dit le verdict
 et n'annonce un bouton de relance que si le clavier l'offre. L'IA n'est jamais une
 autorité ISBN ; le contexte confirmé ancre ses propositions. Les suggestions tardives
 restent soumises aux gardes de saisie et d'identité avant écriture.
