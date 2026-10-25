@@ -320,7 +320,7 @@ async def test_add_sand_days_paths_share_the_canonical_identity(query, ai_enable
     from app.bot.handlers.alerts_create import handle_category_selected, start_add_alert
     from app.core.config import settings
     from app.services.book_metadata_service import BookResolution
-    from tests.add_fakes import fake_bnf, fake_deepseek
+    from tests.add_fakes import fake_bnf, fake_llm
     from tests.add_journey import drain, patched, repositories
     from tests.screens import message_with_recap
 
@@ -332,7 +332,7 @@ async def test_add_sand_days_paths_share_the_canonical_identity(query, ai_enable
         source="bnf",
     )
     bnf = fake_bnf(BookResolution(best=notice), verified_isbn=ISBN)
-    client = fake_deepseek(
+    client = fake_llm(
         {
             "name": "Le jour de sable",
             "category_slug": "bd_comics",

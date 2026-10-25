@@ -58,9 +58,9 @@ from app.use_cases.book_search import result_from_report
 from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
-    deepseek_payload,
     fake_bnf,
-    fake_deepseek,
+    fake_llm,
+    llm_payload,
 )
 from tests.add_fakes import (
     DraftState as _SharedDraftState,
@@ -808,7 +808,7 @@ async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
     message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
     state = DraftState()
 
-    patches = patched(repos, fake_bnf(resolution), fake_deepseek(deepseek_payload()))
+    patches = patched(repos, fake_bnf(resolution), fake_llm(llm_payload()))
     for entered in patches:
         entered.start()
     try:

@@ -14,7 +14,7 @@ from app.db.models.user import User
 from app.domain.enums import BookSearchStatus
 from app.services.book_metadata_service import BookResolution
 from app.use_cases.book_search import BookSearchResult, BookWorkChoice
-from tests.add_fakes import BNF_EDITION, DraftState, fake_bnf, fake_deepseek
+from tests.add_fakes import BNF_EDITION, DraftState, fake_bnf, fake_llm
 from tests.add_journey import drain, patched, repositories
 from tests.screens import confirm_press, message_with_recap, work_buttons
 
@@ -28,7 +28,7 @@ async def test_catalogue_fallback_opens_recap_without_manual_category_or_price(e
     repos = repositories(BNF_EDITION.isbn13)
     bnf = fake_bnf(BookResolution(best=BNF_EDITION))
     with ExitStack() as stack:
-        for boundary in patched(repos, bnf, fake_deepseek({}), natural_enabled=enabled):
+        for boundary in patched(repos, bnf, fake_llm({}), natural_enabled=enabled):
             stack.enter_context(boundary)
         parser = stack.enter_context(
             patch(
@@ -59,7 +59,7 @@ async def test_catalogue_without_candidate_keeps_category_choice(status):
     message, screen = message_with_recap("/add Raspberry Pi 4")
     repos = repositories(BNF_EDITION.isbn13)
     with ExitStack() as stack:
-        for boundary in patched(repos, fake_bnf(None), fake_deepseek({}), natural_enabled=False):
+        for boundary in patched(repos, fake_bnf(None), fake_llm({}), natural_enabled=False):
             stack.enter_context(boundary)
         search = stack.enter_context(patch("app.bot.handlers.alerts_helpers.BookSearchUseCase"))
         search.return_value.search_by_title = AsyncMock(
@@ -89,7 +89,7 @@ async def test_catalogue_candidates_keep_unconfirmed_identity_and_author_choices
         BookWorkChoice(title="Frankenstein", author="George Bess", isbn13="9782344039229"),
     )
     with ExitStack() as stack:
-        for boundary in patched(repos, fake_bnf(None), fake_deepseek({}), natural_enabled=False):
+        for boundary in patched(repos, fake_bnf(None), fake_llm({}), natural_enabled=False):
             stack.enter_context(boundary)
         search = stack.enter_context(patch("app.bot.handlers.alerts_helpers.BookSearchUseCase"))
         search.return_value.search_by_title = AsyncMock(
@@ -140,7 +140,7 @@ async def test_category_can_be_changed_from_recap_without_retaining_book_identit
     callback.data = "add_cat:gaming"
     repos = repositories(BNF_EDITION.isbn13)
     with ExitStack() as stack:
-        for boundary in patched(repos, fake_bnf(None), fake_deepseek({})):
+        for boundary in patched(repos, fake_bnf(None), fake_llm({})):
             stack.enter_context(boundary)
         await handle_category_selected(
             callback, state, None, User(id=uuid.uuid4(), telegram_user_id=42)
@@ -179,7 +179,7 @@ async def test_optional_price_is_editable_and_persisted_without_an_imposed_defau
         for boundary in patched(
             repos,
             fake_bnf(BookResolution(best=BNF_EDITION)),
-            fake_deepseek({}),
+            fake_llm({}),
             natural_enabled=False,
         ):
             stack.enter_context(boundary)
@@ -217,7 +217,7 @@ async def test_late_fallback_cannot_restore_cancelled_or_replaced_draft(stage, r
         return None if stage == "parser" else BookSearchResult(status=BookSearchStatus.NOT_FOUND)
 
     with ExitStack() as stack:
-        for boundary in patched(repos, fake_bnf(None), fake_deepseek({})):
+        for boundary in patched(repos, fake_bnf(None), fake_llm({})):
             stack.enter_context(boundary)
         parser = stack.enter_context(
             patch(

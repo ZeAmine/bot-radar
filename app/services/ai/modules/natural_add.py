@@ -54,6 +54,13 @@ SYSTEM_PROMPT = (
     'false s\'il s\'agit d\'un livre unique / one-shot ex: "Le Monde sans fin", '
     '"Sapiens" ou d\'un tome spécifique ex: "L\'Arabe du futur tome 2", '
     '"Daredevil Deluxe 1").\n'
+    "  Ce champ décrit le périmètre de surveillance, pas une identité bibliographique "
+    "confirmée. Ne déduis jamais une série de la seule absence de numéro. "
+    "Une demande explicite de suivre toute une série se distingue d'un tome précis. "
+    "Si tu ne reconnais pas l'œuvre et que la demande ne tranche pas, n'affirme pas "
+    "qu'il s'agit d'un one-shot : explique l'incertitude dans explanation. "
+    "La résolution catalogue peut établir une série à partir de notices numérotées ; "
+    "son silence n'est pas une preuve d'œuvre unique.\n"
     '- "isbn13": string ou null. Règle stricte : un ISBN est un code de 13 '
     "chiffres identifiant un ouvrage précis. N'invente jamais un ISBN et ne le "
     'devine pas à partir d\'un éditeur ou d\'une année : réponds null sauf si '
@@ -175,6 +182,8 @@ class NaturalAddModule(BaseAIModule):
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
             temperature=0.1,
+            response_model=NaturalAddPayload,
+            ai_module=self.name,
         )
         if not data:
             return None
@@ -205,14 +214,14 @@ class NaturalAddModule(BaseAIModule):
             raw_includes = payload.include_keywords or [clean_name]
             clean_includes = []
             for k in raw_includes:
-                k_clean = normalize_text(price_suffix_regex.sub("", str(k).strip()))
+                k_clean = normalize_text(price_suffix_regex.sub("", k.strip()))
                 if k_clean and k_clean not in clean_includes:
                     clean_includes.append(k_clean)
 
             clean_excludes = [
-                str(k).strip()
+                k.strip()
                 for k in (payload.exclude_keywords or [])
-                if k and str(k).strip()
+                if k and k.strip()
             ]
 
             number = (

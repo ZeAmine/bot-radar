@@ -7,8 +7,9 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.domain.rules.keyword_hygiene import (
+    SanitizedValues,
+    assess_variants,
     sanitize_exclusions,
-    sanitize_variants,
 )
 from app.services.ai.modules.base import BaseAIModule
 from app.services.ai.schemas import BookContext, KeywordVariantsPayload
@@ -23,6 +24,11 @@ OPTIMIZE_SYSTEM_PROMPT = (
     "1. « variants » : les orthographes alternatives avec lesquelles un vendeur "
     "saisit réellement ce même produit (fautes de frappe, oublis d'espace, "
     "d'accent ou d'apostrophe, variantes phonétiques, abréviations courantes).\n"
+    "Zéro variante est une réponse valide : si aucune autre écriture utile ne vient, "
+    "réponds variants=[]. Ne cherche jamais à remplir un quota. "
+    "Écarte les doublons et les écritures qui ne changent que la casse, les accents, "
+    "la ponctuation ou les espaces superflus. Le code applique ensuite sa normalisation "
+    "et ses filtres ; tu n'as pas à en reproduire l'algorithme.\n"
     "Une variante est une autre écriture du MÊME produit, jamais un produit voisin : "
     "ni un autre modèle (« s24 » pour « S23 »), ni un autre tome, ni une autre édition, "
     "ni un accessoire. L'application vérifie cette identité de façon déterministe — une "
@@ -62,7 +68,7 @@ OPTIMIZE_SYSTEM_PROMPT = (
     "\n"
     "Retourne STRICTEMENT un objet JSON :\n"
     "{\n"
-    '  "variants": ["variante1"],\n'
+    '  "variants": [],\n'
     '  "exclusions": ["exclusion1"],\n'
     '  "rationale": "une phrase expliquant les confusions visées"\n'
     "}"
@@ -98,6 +104,8 @@ class KeywordVariantsOutcome:
     variants: list[str] = field(default_factory=list)
     exclusions: list[str] = field(default_factory=list)
     answered: bool = False
+    proposed_variants: tuple[str, ...] | None = None
+    variant_assessment: SanitizedValues | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -147,19 +155,15 @@ class KeywordVariantsModule(BaseAIModule):
         if payload is None:
             return KeywordVariantsOutcome.unanswered()
 
-        variants = sanitize_variants(payload.variants or [], title)
+        variant_assessment = assess_variants(payload.variants or [], title)
         exclusions = sanitize_exclusions(payload.exclusions or [], title)
 
-        if payload.rationale:
-            logger.info(
-                "Mots-clés IA pour « %s » : %s",
-                title,
-                str(payload.rationale)[:200],
-            )
         return KeywordVariantsOutcome(
-            variants=variants,
+            variants=variant_assessment.values,
             exclusions=exclusions,
             answered=True,
+            proposed_variants=tuple(payload.variants or []),
+            variant_assessment=variant_assessment,
         )
 
     async def _request_payload(
@@ -170,6 +174,8 @@ class KeywordVariantsModule(BaseAIModule):
             system_prompt=OPTIMIZE_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             temperature=0.3,
+            response_model=KeywordVariantsPayload,
+            ai_module=self.name,
         )
         if not isinstance(data, dict):
             logger.info("Recherche de mots-clés pour « %s » : aucune réponse exploitable.", title)

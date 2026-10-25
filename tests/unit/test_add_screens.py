@@ -38,9 +38,9 @@ from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
     ISBN_INCONNU,
-    deepseek_payload,
     fake_bnf,
-    fake_deepseek,
+    fake_llm,
+    llm_payload,
 )
 from tests.add_fakes import DraftState as _DraftState
 from tests.add_journey import drain, patched, repositories
@@ -75,7 +75,7 @@ async def test_homonym_warning_precedes_analysis_and_selected_recap_matches_conf
         isbn13="9782810206087", publication_year=2025,
     )
     resolution = BookResolution(best=roman, other_works=[bande])
-    client = fake_deepseek({
+    client = fake_llm({
         "name": "Les Enfants perdus", "category_slug": "bd_comics", "isbn13": None,
         "author": "Neyef", "include_keywords": ["Les Enfants perdus"],
         "max_price_cents": 1200, "is_series": False,
@@ -319,7 +319,7 @@ async def test_the_confirmation_drops_the_engines_plea_but_keeps_its_verdict():
     un verdict rendu, lui, se relit partout. Ce test tient la frontière entre les deux.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_EDITION.isbn13)
 
     message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")

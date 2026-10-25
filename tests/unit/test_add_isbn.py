@@ -34,10 +34,10 @@ from tests.add_fakes import (
     BNF_EDITION,
     ISBN_AUTRE_LIVRE,
     ISBN_INCONNU,
-    deepseek_payload,
     fake_bnf,
     fake_book_search,
-    fake_deepseek,
+    fake_llm,
+    llm_payload,
 )
 from tests.add_fakes import DraftState as _DraftState
 from tests.add_journey import drain, patched, repositories
@@ -69,7 +69,7 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
     bnf = fake_bnf(resolution)
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_ALTERNATIVE.isbn13)
 
     message, loading_message = message_with_recap(
@@ -167,7 +167,7 @@ async def test_add_user_types_correct_isbn_when_model_is_wrong():
     récap à jour → création sur cet ISBN.
     """
     bnf = fake_bnf(resolution=None)
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_EDITION.isbn13)
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
 
@@ -258,7 +258,7 @@ async def test_add_typed_isbn_unknown_to_bnf_keeps_it_and_drops_the_previous_wor
     le code que l'utilisateur vient de saisir.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(ISBN_INCONNU)
 
     message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
@@ -302,7 +302,7 @@ async def test_add_typed_isbn_of_another_book_is_refused():
     celui-ci à la place de l'autre.
     """
     resolution = BookResolution(best=BNF_EDITION, alternatives=[BNF_ALTERNATIVE])
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_EDITION.isbn13)
 
     message, loading_message = message_with_recap("/add la couleur des choses. Max 12 €")
@@ -342,7 +342,7 @@ async def test_add_typed_isbn_beats_model_proposal():
     """Un ISBN saisi dans la commande prime sur celui proposé par le modèle."""
     resolution = BookResolution(best=BNF_ALTERNATIVE)
     bnf = fake_bnf(resolution, verified_isbn=BNF_EDITION.isbn13)
-    client = fake_deepseek(deepseek_payload())
+    client = fake_llm(llm_payload())
     repos = repositories(BNF_EDITION.isbn13)
 
     message, loading_message = message_with_recap(

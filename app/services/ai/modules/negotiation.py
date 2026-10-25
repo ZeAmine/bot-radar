@@ -74,6 +74,8 @@ class NegotiationModule(BaseAIModule):
                 system_prompt=NEGOTIATION_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 temperature=0.3,
+                response_model=NegotiationPayload,
+                ai_module=self.name,
             )
             if isinstance(data, dict):
                 try:
@@ -94,6 +96,14 @@ class NegotiationModule(BaseAIModule):
                         suggested_offer_cents=offer_cents,
                         suggested_offer_euros=offer_cents / 100.0,
                         message=payload.message.strip(),
+                    )
+                if payload is not None:
+                    logger.warning(
+                        "Offre IA incomplète ; repli déterministe.",
+                        extra={
+                            "event": "ai_validation", "ai_module": self.name,
+                            "status": "validation_error", "error_category": "incomplete_output",
+                        },
                     )
 
         # Repli déterministe si le moteur est indisponible ou non configuré.

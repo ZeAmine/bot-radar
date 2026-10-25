@@ -115,7 +115,7 @@ class UnloadedBook:
         raise MissingGreenlet("greenlet_spawn has not been called")
 
 
-def deepseek_payload(**overrides) -> dict:
+def llm_payload(**overrides) -> dict:
     """Réponse du moteur IA pour `/add` : elle propose l'ISBN d'un autre livre."""
     payload = {
         "name": "La couleur des choses",
@@ -132,7 +132,7 @@ def deepseek_payload(**overrides) -> dict:
     return payload
 
 
-def fake_deepseek(payload: dict) -> MagicMock:
+def fake_llm(payload: dict) -> MagicMock:
     """Moteur IA simulé : il rend le JSON fourni, sans ouvrir de connexion."""
     client = MagicMock()
     client.is_configured = True

@@ -11,7 +11,9 @@ from app.core.alert_latency import observe_background
 from app.db.models.listing import Listing
 from app.providers.llm.base import LLMClient
 from app.providers.llm.registry import llm_client
+from app.services.ai.modules.base import BasePostAlertModule
 from app.services.ai.registry import ai_registry
+from app.services.ai.schemas import PostAlertPayload
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,31 @@ class AIPostAlertPipeline:
     def __init__(self, client: LLMClient | None = None) -> None:
         self.client: LLMClient = client or llm_client
 
+    def build_request(
+        self, listing: Listing, alert: Any,
+    ) -> tuple[str, dict[str, BasePostAlertModule]]:
+        chunks: dict[str, str] = {}
+        owners: dict[str, BasePostAlertModule] = {}
+        for module in ai_registry.get_active_post_alert_modules():
+            chunk = module.build_prompt_chunk(listing, alert)
+            if chunk:
+                key, instruction = chunk
+                chunks[key] = instruction
+                owners[key] = module
+        if not owners:
+            return "", {}
+        user_prompt = (
+            f"Article : '{listing.title}'\n"
+            f"Catégorie : {listing.category_slug}\n"
+            f"Prix : {listing.item_price_cents / 100:.2f} €\n"
+            f"État déclaré : {listing.condition or 'Non précisé'}\n"
+            f"Description : '{listing.description or 'Aucune'}'\n\n"
+            "INSTRUCTIONS D'ANALYSE :\n"
+        )
+        for key, instruction in chunks.items():
+            user_prompt += f"\n--- {key} ---\n{instruction}\n"
+        return user_prompt, owners
+
     @observe_background("ai_post_alert")
     async def enrich_alert(
         self,
@@ -45,41 +72,24 @@ class AIPostAlertPipeline:
 
             lines_to_notify: list[str] = []
 
-            active_modules = ai_registry.get_active_post_alert_modules()
-            chunks: dict[str, str] = {}
-            for module in active_modules:
-                chunk = module.build_prompt_chunk(listing, alert)
-                if chunk:
-                    key, instruction = chunk
-                    chunks[key] = instruction
-
+            user_prompt, owners = self.build_request(listing, alert)
             data: dict[str, Any] | None = None
-            if chunks and self.client.is_configured:
-                user_prompt = (
-                    f"Article : '{listing.title}'\n"
-                    f"Catégorie : {listing.category_slug}\n"
-                    f"Prix : {listing.item_price_cents / 100:.2f} €\n"
-                    f"État déclaré : {listing.condition or 'Non précisé'}\n"
-                    f"Description : '{listing.description or 'Aucune'}'\n\n"
-                    "INSTRUCTIONS D'ANALYSE :\n"
-                )
-                for key, instruction in chunks.items():
-                    user_prompt += f"\n--- {key} ---\n{instruction}\n"
-
+            if owners and self.client.is_configured:
                 data = await self.client.generate_json(
                     system_prompt=COMBINED_SYSTEM_PROMPT,
                     user_prompt=user_prompt,
                     temperature=0.2,
+                    response_model=PostAlertPayload,
+                    ai_module="post_alert",
                 )
 
                 if data:
-                    for module in active_modules:
-                        for key in chunks:
-                            if key in data:
-                                parsed = module.parse_chunk_result(data[key], listing, alert)
-                                html_line = module.format_telegram_html(parsed)
-                                if html_line:
-                                    lines_to_notify.append(html_line)
+                    for key, module in owners.items():
+                        if key in data:
+                            parsed = module.parse_chunk_result(data[key], listing, alert)
+                            html_line = module.format_telegram_html(parsed)
+                            if html_line:
+                                lines_to_notify.append(html_line)
 
             if lines_to_notify:
                 full_text = "\n\n".join(lines_to_notify)

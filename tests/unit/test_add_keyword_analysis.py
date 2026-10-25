@@ -15,7 +15,7 @@ from app.db.models.user import User
 from app.services.ai.modules.keyword_variants import KeywordVariantsModule, KeywordVariantsOutcome
 from app.services.ai.schemas import BookContext
 from app.services.book_metadata_service import BookResolution
-from tests.add_fakes import BNF_EDITION, DraftState, deepseek_payload, fake_bnf, fake_deepseek
+from tests.add_fakes import BNF_EDITION, DraftState, fake_bnf, fake_llm, llm_payload
 from tests.add_journey import drain, patched, repositories
 from tests.screens import confirm_press, incoming_message, message_with_recap
 
@@ -27,7 +27,7 @@ def keyword_journey(*, natural=True, enabled=True, configured=True, book=None):
         for boundary in patched(
             repos,
             fake_bnf(BookResolution(best=book or BNF_EDITION)),
-            fake_deepseek(deepseek_payload()),
+            fake_llm(llm_payload()),
             natural_enabled=natural,
         ):
             stack.enter_context(boundary)

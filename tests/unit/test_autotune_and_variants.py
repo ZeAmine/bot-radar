@@ -210,7 +210,7 @@ async def test_handle_autotune_no_dislikes():
 
 @pytest.mark.asyncio
 async def test_handle_autotune_with_dislikes():
-    """Vérifie la suggestion d'exclusions par DeepSeek pour une alerte avec dislikes."""
+    """Vérifie la suggestion d'exclusions par le moteur pour une alerte avec dislikes."""
     message = MagicMock(spec=Message)
     message.text = "/autotune"
     message.answer = AsyncMock()
