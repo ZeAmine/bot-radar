@@ -105,7 +105,7 @@ async def test_nanbanjin_capture_polls_only_the_missing_engines():
     assert attempt.status == "success"
     assert attempt.engines_requested == 32
     assert attempt.engines_received == 32
-    assert attempt.poll_count == LOOKUP_POLL_MAX
+    assert attempt.poll_count == 3
     assert attempt.reason is None
 
     assert [(r.url.params["retry"], r.url.params["engines"]) for r in lookups] == [
