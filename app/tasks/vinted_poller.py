@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import random
@@ -508,6 +509,11 @@ async def _ingest_scraped_item(
             raise
 
 
+def _target_hash(target_url: str) -> str:
+    """Empreinte courte d'une URL cible : de quoi distinguer deux catalogues sans les écrire."""
+    return hashlib.sha256(target_url.encode("utf-8")).hexdigest()[:8]
+
+
 def _log_window_coverage(received: int, category_slug: str, cycle_index: int) -> None:
     """Journalise la fenêtre réellement obtenue, pour qu'on puisse la mesurer.
 
@@ -552,79 +558,106 @@ async def poll_vinted_once(
     collection_timing = latency.AlertTiming(collection_id=uuid.uuid4())
     scan_started_at = datetime.now(UTC)
     collection_started = latency.clock()
+    target_hash = _target_hash(target_url)
+    read_result = "returned"
+    discovered_at: float | None = None
+    received_count: int | None = None
+    new_count: int | None = None
+    batch_frontier_id: str | None = None
+    previous_frontier_id: str | None = None
     try:
-        items = await fetch_vinted_page(target_url, vinted_client)
-    except BaseException as exc:
-        latency.emit(collection_timing, "collection", collection_started, latency.clock(),
-                     result="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
-                     error_type=type(exc).__name__)
-        raise
-    discovered_at = latency.clock()
-    latency.emit(collection_timing, "collection", collection_started, discovered_at,
-                 result="returned", item_count=len(items))
-    batch_frontier_id = _max_external_id(items)
-    previous_frontier_id = None if frontier is None else frontier.previous(target_url)
-    if frontier is not None:
-        frontier.record(target_url, batch_frontier_id)
-    cycle_started_monotonic = None if frontier is None else frontier.started_monotonic
-    async with AsyncSessionLocal() as baseline_session:
-        await AlertRepository(baseline_session).initialize_listing_baselines(
-            category_slug, target_url, [item.external_id for item in items], scan_started_at,
-        )
-        await baseline_session.commit()
-    _log_window_coverage(len(items), category_slug, cycle_index)
-    if not items:
-        return 0
-
-    new_items = [item for item in items if item.external_id not in seen_ids]
-    if not new_items:
-        return 0
-
-    logger.info(
-        "Vinted poller : %d nouvelles annonces détectées sur %s (%s)",
-        len(new_items),
-        target_url[:60],
-        category_slug,
-    )
-    for item in new_items:
-        seen_ids.add(item.external_id)
-
-    with latency.discovery_context(discovered_at, collection_timing.collection_id):
-        results = await asyncio.gather(
-            *(
-                _ingest_scraped_item(
-                    item,
-                    category_slug,
-                    frontier_id=batch_frontier_id,
-                    previous_frontier_id=previous_frontier_id,
-                    cycle_started_monotonic=cycle_started_monotonic,
-                )
-                for item in new_items
-            ),
-            return_exceptions=True,
-        )
-    ingested_count = 0
-    for item, result in zip(new_items, results, strict=True):
-        if isinstance(result, BaseException):
-            seen_ids.discard(item.external_id)
-            if not isinstance(result, asyncio.CancelledError):
-                logger.warning(
-                    "Erreur lors de l'ingestion de l'annonce %s : %s",
-                    item.external_id,
-                    result,
-                )
-            continue
-        if result.needs_retry:
-            seen_ids.discard(item.external_id)
-        ingested_count += 1
-        if result.notified_count:
-            logger.info(
-                "MATCH VINTED ! Titre: '%s' (Prix: %.2f €) -> %d alertes notifiées !",
-                item.title,
-                item.item_price_cents / 100,
-                result.notified_count,
+        try:
+            items = await fetch_vinted_page(target_url, vinted_client)
+        except BaseException as exc:
+            read_result = "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
+            latency.emit(collection_timing, "collection", collection_started, latency.clock(),
+                         result=read_result, error_type=type(exc).__name__)
+            raise
+        discovered_at = latency.clock()
+        latency.emit(collection_timing, "collection", collection_started, discovered_at,
+                     result="returned", item_count=len(items))
+        received_count = len(items)
+        batch_frontier_id = _max_external_id(items)
+        previous_frontier_id = None if frontier is None else frontier.previous(target_url)
+        if frontier is not None:
+            frontier.record(target_url, batch_frontier_id)
+        cycle_started_monotonic = None if frontier is None else frontier.started_monotonic
+        async with AsyncSessionLocal() as baseline_session:
+            await AlertRepository(baseline_session).initialize_listing_baselines(
+                category_slug, target_url, [item.external_id for item in items], scan_started_at,
             )
-    return ingested_count
+            await baseline_session.commit()
+        _log_window_coverage(len(items), category_slug, cycle_index)
+        new_items = [item for item in items if item.external_id not in seen_ids]
+        new_count = len(new_items)
+        if not new_items:
+            return 0
+
+        logger.info(
+            "Vinted poller : %d nouvelles annonces détectées sur %s (%s)",
+            len(new_items),
+            target_url[:60],
+            category_slug,
+        )
+        for item in new_items:
+            seen_ids.add(item.external_id)
+
+        with latency.discovery_context(discovered_at, collection_timing.collection_id):
+            results = await asyncio.gather(
+                *(
+                    _ingest_scraped_item(
+                        item,
+                        category_slug,
+                        frontier_id=batch_frontier_id,
+                        previous_frontier_id=previous_frontier_id,
+                        cycle_started_monotonic=cycle_started_monotonic,
+                    )
+                    for item in new_items
+                ),
+                return_exceptions=True,
+            )
+        ingested_count = 0
+        for item, result in zip(new_items, results, strict=True):
+            if isinstance(result, BaseException):
+                seen_ids.discard(item.external_id)
+                if not isinstance(result, asyncio.CancelledError):
+                    logger.warning(
+                        "Erreur lors de l'ingestion de l'annonce %s : %s",
+                        item.external_id,
+                        result,
+                    )
+                continue
+            if result.needs_retry:
+                seen_ids.discard(item.external_id)
+            ingested_count += 1
+            if result.notified_count:
+                logger.info(
+                    "MATCH VINTED ! Titre: '%s' (Prix: %.2f €) -> %d alertes notifiées !",
+                    item.title,
+                    item.item_price_cents / 100,
+                    result.notified_count,
+                )
+        return ingested_count
+    finally:
+        # Une ligne par lecture, à la fin du passage : elle décrit ce que la lecture a
+        # ramené, pas l'instant où elle a eu lieu. Cet instant reste la ligne `collection`
+        # (même `collection_id`) ; `discovered_monotonic` le redonne sur l'horloge monotone,
+        # ce qui situe la lecture sans dépendre de l'heure de l'ingestion du lot.
+        latency.emit(
+            collection_timing,
+            "catalogue_read",
+            None,
+            None,
+            result=read_result,
+            cycle=cycle_index,
+            category=category_slug,
+            target_hash=target_hash,
+            discovered_monotonic=discovered_at,
+            items_received=received_count,
+            items_new=new_count,
+            frontier_id=batch_frontier_id,
+            previous_frontier_id=previous_frontier_id,
+        )
 
 
 async def run_vinted_poller(stop_event: asyncio.Event) -> None:

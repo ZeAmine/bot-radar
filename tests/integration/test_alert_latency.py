@@ -1,6 +1,7 @@
 """Frontières de la chaîne réelle ; PostgreSQL rejoue les écritures avec lecteur indépendant."""
 
 import asyncio
+import hashlib
 import logging
 import sys
 from types import SimpleNamespace
@@ -366,6 +367,80 @@ async def test_frontier_fields_leave_with_the_terminal_after_the_ack(journey, mo
     ]
     assert phases.count("entry_to_ack") == 2
     assert phases.index("ingestion_terminal") > phases.index("entry_to_ack")
+
+
+async def test_catalogue_read_is_emitted_after_the_ingestion_and_the_send(
+    journey, monkeypatch, caplog
+):
+    """La lecture d'un catalogue se conclut par une ligne, après l'ingestion et l'envoi."""
+    from app.services.vinted_parsing import ScrapedVintedItem
+    from app.tasks import vinted_poller as poller
+
+    url = "https://www.vinted.fr/catalog?search_text=console&category_id=1234"
+
+    async def fetch(*_args):
+        return [
+            ScrapedVintedItem(
+                external_id=identifier,
+                title="Console",
+                condition="Très bon état",
+                item_price_cents=100,
+                url=f"https://example.invalid/{identifier}",
+                photo_url=None,
+            )
+            for identifier in ("999", "2700")
+        ]
+
+    ingest_slot = asyncio.Semaphore(1)
+    monkeypatch.setattr(poller, "fetch_vinted_page", fetch)
+    monkeypatch.setattr(poller, "AsyncSessionLocal", journey.db.maker)
+    monkeypatch.setattr(poller, "_get_ingest_semaphore", lambda: ingest_slot)
+    monkeypatch.setattr(ingestion, "default_bot", journey.bot)
+    with caplog.at_level(logging.INFO):
+        ingested = await poller.poll_vinted_once(
+            seen_ids=set(),
+            vinted_client=AsyncMock(),
+            target_url=url,
+            category_slug="tech",
+            cycle_index=5,
+            frontier=poller.CycleFrontier(started_monotonic=42.0),
+        )
+
+    assert ingested == 2
+    assert journey.bot.send_message.await_count == 2
+    reads = events(caplog, "catalogue_read")
+    assert len(reads) == 1
+    read = reads[0]
+    assert read.result == "returned"
+    assert read.cycle == 5
+    assert read.category == "tech"
+    assert read.items_received == 2
+    assert read.items_new == 2
+    assert read.frontier_id == "2700"
+    assert read.previous_frontier_id is None
+    assert read.target_hash == hashlib.sha256(url.encode()).hexdigest()[:8]
+    assert not hasattr(read, "target_url")
+    assert isinstance(read.discovered_monotonic, float)
+    assert {record.collection_id for record in events(caplog, "ingestion_terminal")} == {
+        read.collection_id
+    }
+    # La ligne `collection` de la même lecture porte la durée qui mène à cet instant :
+    # c'est elle qui date la lecture, `catalogue_read` ne fait que le redonner.
+    collections = events(caplog, "collection")
+    assert len(collections) == 1
+    assert collections[0].collection_id == read.collection_id
+    assert collections[0].duration_ms is not None
+    phases = [
+        getattr(record, "phase", "")
+        for record in caplog.records
+        if getattr(record, "event", "") == "alert_latency"
+    ]
+    last_ack = max(index for index, phase in enumerate(phases) if phase == "entry_to_ack")
+    last_terminal = max(
+        index for index, phase in enumerate(phases) if phase == "ingestion_terminal"
+    )
+    assert phases[-1] == "catalogue_read"
+    assert phases.index("catalogue_read") > last_terminal > last_ack
 
 
 async def test_guard_wait_is_separate_and_measured_before_reads(journey, monkeypatch, caplog):
