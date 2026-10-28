@@ -10,7 +10,7 @@ from app.domain.enums import ProviderQueryStatus
 from app.providers.google_books import ProviderQueryResult
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
 from app.use_cases.book_search import result_from_resolution
-from tests.fakes_catalogue import patch_bnf_admission
+from tests.fakes_catalogue import MARCXCHANGE_SCHEMAS, patch_bnf_admission
 from tests.fakes_market_source import source_history_values
 
 CODES = ('9782369904151', '9782369903086', '9782205051407', '9781444977387')
@@ -62,7 +62,7 @@ def test_recap_four_rows_one_vocabulary_and_named_rejection():
     """Quatre tomes détectés : trois retenus avec leur cote, un refusé et nommé."""
     rows = [
         {'number': n, 'title': f'Birdking Livre {n}', 'isbn13': CODES[n-1],
-         'language': 'fr', 'source': 'bnf', 'confirmed': True, 'publication_date': '2024-05-02',
+         'language': 'fr', 'source': 'bnf', 'confirmed': True, 'publication_year': 2024,
          'price_lines': [
              '<b>Cote :</b> 18,00 € - Momox, très bon état, port inclus',
              '<b>Prix bas constaté (1 an) :</b> 16,50 € - très bon état +, port inclus',
@@ -78,7 +78,7 @@ def test_recap_four_rows_one_vocabulary_and_named_rejection():
         assert text.count(code) == 1
     assert text.count('18,00 €') == 3
     assert text.count('16,50 €') == 3
-    assert '<b>Parution :</b> 02/05/2024 (BNF) - paru' in text
+    assert '<b>Parution :</b> 2024 (BNF, année prouvée)' in text
     assert 'ISBN-13' not in text
     assert 'Cote indisponible' not in text
     # Le tome écarté n'a pas de fiche : il est nommé une fois, avec son motif.
@@ -119,7 +119,7 @@ async def test_bnf_pagination_and_verified_french_edition_reach_volume_four():
             start = int(request.url.params.get("startRecord", "1"))
             selected = entries[start-1:start+2]
         rendered = [record(entry) for entry in selected]
-        if request.url.params.get("recordSchema") == "marcxchange":
+        if request.url.params.get("recordSchema") in MARCXCHANGE_SCHEMAS:
             # La preuve de parution ne se lit que dans la notice MarcXchange.
             rendered = [fakes_catalogue.marcxchange_from_dc(notice) for notice in rendered]
         xml = SRU_HEADER.format(count=len(entries) if "bib.isbn" not in query else len(selected),
@@ -560,7 +560,7 @@ async def test_explicit_bnf_contradiction_is_reported_for_initial_proof_invalida
             ark='123', title=title, creator='Daniel Freedman', publisher='Éditeur test',
             date='<dc:date>2024</dc:date>', fmt='Album', isbn=CODES[0],
         )
-        if request.url.params.get('recordSchema') == 'marcxchange':
+        if request.url.params.get('recordSchema') in MARCXCHANGE_SCHEMAS:
             notice = fakes_catalogue.marcxchange_from_dc(notice)
         return httpx.Response(200, text=SRU_HEADER.format(count=1, records=notice))
 

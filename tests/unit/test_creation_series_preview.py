@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.bot.handlers.alerts_helpers import (
+    TOME_REASON_LABELS,
+    creation_card,
     creation_cote_lines,
     populate_creation_prices,
     render_series_volumes,
@@ -40,7 +42,7 @@ def row(number: int, isbn: str | None, **overrides) -> dict:
         "number": number, "title": f"La Passe-miroir {number}", "isbn13": isbn,
         "confirmed": isbn is not None, "author": "Christelle Dabos",
         "publisher": "Gallimard jeunesse", "language": "fr", "source": "bnf",
-        "publication_year": 2026, "admission": None, "publication_date": "2026-02-06",
+        "publication_year": 2026, "admission": None, "publication_date": None,
     }
     base.update(overrides)
     return base
@@ -84,7 +86,8 @@ async def test_only_the_proven_volume_is_confirmed_by_the_discovery():
 
     assert [volume.number for volume in confirmed] == [1]
     assert confirmed[0].isbn13 == CODES[0]
-    assert confirmed[0].publication_date is not None
+    assert confirmed[0].publication_year == 2024, "l'année prouvée voyage avec le tome"
+    assert confirmed[0].publication_date is None, "aucun jour de parution n'est prouvé"
     assert {volume.number for volume in refused} == {2, 4}
     assert {volume.admission for volume in refused} == {"date_unproven"}
     assert {volume.declared_isbn13 for volume in refused} == {CODES[1], CODES[2]}
@@ -116,7 +119,7 @@ def test_the_recap_shows_the_retained_volume_then_names_the_detected_ones():
     assert lines[0] == (
         f"📚 <b>Tome 1</b> - La Passe-miroir 1 · <code>{CODES[0]}</code>"
     )
-    assert lines[1] == "<b>Parution :</b> 06/02/2026 (BNF) - paru"
+    assert lines[1] == "<b>Parution :</b> 2026 (BNF, année prouvée)"
     assert lines[2].startswith("<b>Cote :</b> 23,69 € - Momox Shop")
     assert "Prix bas constaté (1 an) :</b> 19,99 € - très bon état +, port inclus" in lines[3]
     assert "Tomes 2 et 4 détectés, non ajoutés - ajout sur demande explicite" in text
@@ -312,3 +315,133 @@ def test_the_accepted_offers_are_projected_before_reaching_the_rule():
         url="https://example.invalid/0",
     )]
     assert select_cote_offer(projected).state == "cote_trouvee"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_bnf_lookup_is_not_written_as_an_unknown_book():
+    """La BNF muette et la BNF sans notice ne disent pas la même chose à l'utilisateur."""
+    service = BookMetadataService()
+
+    with patch.object(service, "_bnf_tome_notices", AsyncMock(return_value=None)):
+        admission, notice_value = await service.admit_tome_notice(
+            CODES[1], series_title="La Passe-miroir", author_hint="Christelle Dabos",
+        )
+
+    assert admission.reason == "bnf_unavailable"
+    assert notice_value is None
+    assert TOME_REASON_LABELS["bnf_unavailable"] == "vérification BNF impossible"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_bnf_answer_is_written_as_an_absent_notice():
+    service = BookMetadataService()
+
+    with patch.object(service, "_bnf_tome_notices", AsyncMock(return_value=[])):
+        admission, _ = await service.admit_tome_notice(
+            CODES[1], series_title="La Passe-miroir", author_hint="Christelle Dabos",
+        )
+
+    assert admission.reason == "no_bnf_notice"
+    assert TOME_REASON_LABELS["no_bnf_notice"] == "aucune notice BNF"
+
+
+def test_the_preview_shows_a_real_publication_day_when_the_field_has_one():
+    """Seul `214$d` peut nommer un jour : il est alors affiché tel quel."""
+    lines = render_series_volumes({"series_volumes": [
+        row(1, CODES[0], publication_date="2026-02-06", publication_year=2026),
+    ]})
+
+    assert lines[1] == "<b>Parution :</b> 06/02/2026 (BNF, jour prouvé)"
+
+
+def test_the_preview_never_names_a_tome_no_human_asked_for_as_watched():
+    """Un seul tome rattaché : la carte n'annonce pas une veille sur toute la série."""
+    rows = [
+        row(1, CODES[0], price_lines=["<b>Cote :</b> aucune offre trouvée"]),
+        row(2, CODES[1], confirmed=False, admission="date_unproven"),
+    ]
+
+    text = creation_card({
+        "name": "La Passe-miroir", "is_series": True, "series_volumes": rows,
+    })
+
+    assert "veille sur tous les tomes" not in text
+    assert "Tome 2 détecté, non ajouté" in text, "le tome écarté reste nommé"
+
+
+def test_two_attached_tomes_keep_the_series_indication():
+    """Deux tomes réellement rattachés : la veille porte bien sur la série."""
+    rows = [
+        row(1, CODES[0], price_lines=["<b>Cote :</b> aucune offre trouvée"]),
+        row(2, CODES[1], price_lines=["<b>Cote :</b> aucune offre trouvée"]),
+    ]
+
+    text = creation_card({
+        "name": "La Passe-miroir", "is_series": True, "series_volumes": rows,
+    })
+
+    assert "veille sur tous les tomes" in text
+
+
+DIAGNOSTIC_BODY = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/"'
+    ' xmlns:sd="http://www.loc.gov/zing/srw/diagnostic/">'
+    "<srw:numberOfRecords>0</srw:numberOfRecords>"
+    "<srw:diagnostics><sd:diagnostic><sd:uri>info:srw/diagnostic/1/66</sd:uri>"
+    "<sd:message>Schéma inconnu pour la récupération</sd:message>"
+    "</sd:diagnostic></srw:diagnostics></srw:searchRetrieveResponse>"
+)
+EMPTY_BODY = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/">'
+    "<srw:numberOfRecords>0</srw:numberOfRecords>"
+    "<srw:records></srw:records></srw:searchRetrieveResponse>"
+)
+
+
+def _bnf_service(body: str):
+    """Un service dont la BNF répond exactement ce corps, et qui garde la requête."""
+    import httpx
+
+    seen: list[httpx.Request] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text=body)
+
+    service = BookMetadataService(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(transport)),
+        timeout_seconds=5.0,
+    )
+    return service, seen
+
+
+@pytest.mark.asyncio
+async def test_the_note_is_read_under_the_schema_the_bnf_actually_accepts():
+    """`marcxchange` est refusé par l'API : la demande doit dire `unimarcxchange`."""
+    service, seen = _bnf_service(EMPTY_BODY)
+
+    await service._bnf_tome_notices(CODES[0])
+
+    assert seen[0].url.params["recordSchema"] == "unimarcxchange"
+
+
+@pytest.mark.asyncio
+async def test_an_sru_diagnostic_is_a_failed_verification_not_an_unknown_book():
+    """HTTP 200 + diagnostic : la question n'a pas reçu de réponse."""
+    service, _ = _bnf_service(DIAGNOSTIC_BODY)
+
+    assert await service._bnf_tome_notices(CODES[0]) is None
+
+    admission, _notice = await service.admit_tome_notice(
+        CODES[0], series_title="La Passe-miroir", author_hint="Christelle Dabos",
+    )
+    assert admission.reason == "bnf_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_a_real_empty_answer_stays_an_absent_notice():
+    service, _ = _bnf_service(EMPTY_BODY)
+
+    assert await service._bnf_tome_notices(CODES[0]) == []

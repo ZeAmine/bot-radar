@@ -146,9 +146,21 @@ une collecte réelle ; les procédures de session et leurs permissions restent d
 
 ## Admission d'un tome et cote de création
 
-Un tome de série n'est retenu qu'avec une date de parution **certaine et déjà passée**
-lue en BNF (`100$a`, type `d`). Une date annoncée (`u`) ou absente laisse le tome
-détecté, affiché avec son motif, jamais rattaché ni coté. L'[admission](../../app/domain/rules/tome_admission.py)
+Un tome de série n'est retenu qu'avec une date de parution **prouvée et déjà passée**.
+La preuve ne se lit pas n'importe où dans la zone fixe `100$a` : ses positions 0-7
+portent la **date d'entrée au catalogue**, c'est-à-dire le jour où la BNF a créé la
+notice, et les positions 9-12 la **Date 1** de parution, gouvernée par le type de
+date en position 8. Un livre catalogué hier n'est pas un livre paru hier : la date
+d'entrée n'est jamais lue comme une date de parution. Seul le type `d` (« publié en
+une seule année civile ») est admis ; `u` (inconnu), les types de ressources
+continues et les types d'édition non datés ne prouvent rien. Un jour n'est affiché
+que s'il vient d'un champ de publication (`214$d`, par exemple `DL 06/02/2026`) ;
+`DL 2026` et une année nue ne prouvent que l'année, et une année déclarée sur une
+notice de type `u` ne promeut rien. Une notice sans preuve laisse le tome détecté,
+affiché avec son motif, jamais rattaché ni coté. La BNF interrogée en MarcXchange
+l'est sous le schéma `unimarcxchange` — `marcxchange` est refusé par l'API avec un
+diagnostic SRU ; un diagnostic ou une réponse illisible est une **vérification
+impossible**, jamais une absence de notice. L'[admission](../../app/domain/rules/tome_admission.py)
 vérifie l'identité (ISBN, série, numéro, auteur, éditeur) avant la date et ne
 remplace pas la sélection, qui dédoublonne et priorise. La carte de création ne
 rattache que le tome explicitement demandé ; les autres tomes admis restent

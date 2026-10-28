@@ -111,6 +111,7 @@ class SeriesVolume:
     admission: str | None = None
     publication_date: date | None = None
     declared_isbn13: str | None = None
+    publication_year: int | None = None
 
     @classmethod
     def from_stored(cls, row: dict[str, Any]) -> "SeriesVolume":
@@ -124,7 +125,9 @@ class SeriesVolume:
         code = isbn_from_identifier(row.get("isbn13"))
         return cls(row["number"], meta, code if row.get("confirmed") else None,
                    row.get("admission"), _stored_date(row.get("publication_date")),
-                   None if row.get("confirmed") else code)
+                   None if row.get("confirmed") else code,
+                   row.get("publication_year")
+                   if isinstance(row.get("publication_year"), int) else None)
 
     def stored(self) -> dict[str, Any]:
         """Projection JSON pour le brouillon, distincte des éditions concurrentes.
@@ -134,16 +137,17 @@ class SeriesVolume:
         sans que la sélection le prenne pour confirmé.
         """
         printed = self.isbn13 or self.declared_isbn13
-        proven_on = self.publication_date or self.notice.publication_date
+        proven_year = self.publication_year
+        proven_day = self.publication_date
         return {
             "number": self.number, "title": self.notice.volume_title or self.notice.title,
             "isbn13": printed, "confirmed": self.isbn13 is not None,
             "author": self.notice.author, "publisher": self.notice.publisher,
             "language": self.notice.language, "source": self.notice.source,
-            "publication_year": self.notice.publication_year,
+            "publication_year": proven_year,
             "format_detail": self.notice.format_detail,
             "admission": self.admission,
-            "publication_date": proven_on.isoformat() if proven_on else None,
+            "publication_date": proven_day.isoformat() if proven_day else None,
         }
 
 
@@ -697,12 +701,36 @@ def _parse_year(raw_date: str) -> int | None:
 
 # Zone MarcXchange : la BNF répond en `info:lc/xmlns/marcxchange-v2`.
 _MXC = "{info:lc/xmlns/marcxchange-v2}"
+# Nom du schéma **tel que la BNF l'attend**. `marcxchange` — le nom du format —
+# est refusé par l'API (`info:srw/diagnostic/1/66`, « Schéma inconnu pour la
+# récupération ») : elle ne connaît que `unimarcxchange` et `intermarcxchange`.
+# Vérifié sur l'API le 2026-10-28 : `marcxchange` → 0 notice + diagnostic,
+# `unimarcxchange` → 2 notices pour 9782075163743.
+_MARCXCHANGE_SCHEMA = "unimarcxchange"
 # Titre du volume dans une notice : `200$a` puis son complément `200$e`.
 _TITLE_SUBFIELDS = ("a", "e")
 # Mention de série et son numéro : `225$a` / `225$v`.
 _SERIES_TAG = "225"
 # Numéro de volume dans le titre lui-même : `200$h`.
 _VOLUME_TAG = "200"
+
+
+_SRU_DIAGNOSTIC = "{http://www.loc.gov/zing/srw/diagnostic/}diagnostic"
+
+
+def _sru_diagnostic(payload: bytes) -> bool:
+    """La réponse SRU porte-t-elle un diagnostic d'erreur ?
+
+    Un `recordSchema` refusé, un index inconnu ou une requête malformée reviennent
+    en **HTTP 200** avec zéro notice : les compter comme « aucune notice » ferait
+    dire au récapitulatif que le livre n'existe pas, alors que la BNF n'a pas
+    répondu à la question posée. Le diagnostic est donc une vérification impossible.
+    """
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError:
+        return False
+    return root.find(f".//{_SRU_DIAGNOSTIC}") is not None
 
 
 def parse_tome_notices(payload: bytes) -> list[TomeNotice]:
@@ -759,6 +787,7 @@ def _tome_record(fields: dict[str, list[dict[str, str]]]) -> dict[str, Any]:
         "isbn13": first("010", "a") or first("073", "a"),
         "title": title,
         "date_code": first("100", "a"),
+        "publication_field": first("214", "d"),
         "series_statement": series.get("a"),
         "number": _subfield_number(titles.get("h")) or _subfield_number(series.get("v")),
         "publisher": first("214", "c"),
@@ -1601,12 +1630,13 @@ class BookMetadataService:
                         author=verified.author or meta.author,
                         publisher=verified.publisher, publication_year=verified.publication_year,
                         format_detail=verified.format_detail,
-                        publication_date=proven.publication_date if proven else None,
+                        publication_date=proven.proven_day if proven else None,
                     )
                 candidates.append(SeriesVolume(
                     number, meta, confirmed, admission.reason,
-                    proven.publication_date if proven else None,
+                    proven.proven_day if proven else None,
                     None if confirmed else code,
+                    proven.proven_year if proven else None,
                 ))
             volumes = select_series_volumes(candidates, publisher=reference_publisher)
             counts = {meta.declared_volume_count for meta in selected
@@ -1644,11 +1674,18 @@ class BookMetadataService:
         La notice rendue est celle du refus comme de l'acceptation : le récapitulatif
         a besoin de la date prouvée quand le tome est retenu, et d'aucune quand il ne
         l'est pas — dans les deux cas, c'est le même fait qui est transporté.
+
+        Une vérification **impossible** n'est pas une notice absente : quand la BNF
+        ne répond pas, le tome est refusé par prudence, mais le motif dit
+        `bnf_unavailable` — sans quoi l'aperçu annoncerait que le livre n'existe pas
+        alors qu'on n'a pas pu regarder.
         """
         code = isbn_from_identifier(isbn13)
         if code is None or not is_valid_isbn(code):
             return TomeAdmission("invalid_isbn"), None
         notices = await self._bnf_tome_notices(code)
+        if notices is None:
+            return TomeAdmission("bnf_unavailable"), None
         if not notices:
             return TomeAdmission("no_bnf_notice"), None
         verdicts = [
@@ -1667,18 +1704,23 @@ class BookMetadataService:
                 return admission, notice
         return verdicts[0]
 
-    async def _bnf_tome_notices(self, isbn13: str) -> list[TomeNotice]:
+    async def _bnf_tome_notices(self, isbn13: str) -> list[TomeNotice] | None:
         """Notices MarcXchange d'un ISBN, une par notice BNF le décrivant.
 
         Un même ISBN peut décrire deux notices — une réédition, une adaptation —,
         et une seule porte la preuve : les rendre toutes laisse la règle d'admission
         choisir sur des faits, plutôt que sur l'ordre de réponse de l'autorité.
+
+        `None` signifie « je n'ai pas pu regarder » (réseau, 5xx, réponse illisible),
+        la liste vide « j'ai regardé, il n'y a rien ». Les deux mènent au refus, mais
+        pas au même motif : l'utilisateur doit savoir si le livre est inconnu de la
+        BNF ou si la BNF est muette.
         """
         params = {
             "version": "1.2",
             "operation": "searchRetrieve",
             "query": f'bib.isbn all "{isbn13}"',
-            "recordSchema": "marcxchange",
+            "recordSchema": _MARCXCHANGE_SCHEMA,
             "maximumRecords": "10",
         }
         url = f"{self.BNF_SRU_URL}?{urllib.parse.urlencode(params)}"
@@ -1689,10 +1731,13 @@ class BookMetadataService:
             )
         except Exception as exc:
             logger.warning("BNF MarcXchange : requête en échec (%s)", type(exc).__name__)
-            return []
+            return None
         if resp.status_code != 200 or not resp.content:
             logger.warning("BNF MarcXchange : réponse non exploitable (%d)", resp.status_code)
-            return []
+            return None
+        if _sru_diagnostic(resp.content):
+            logger.warning("BNF MarcXchange : diagnostic SRU, vérification impossible")
+            return None
         return parse_tome_notices(resp.content)
 
     async def _complete_series_from_openlibrary(

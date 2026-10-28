@@ -110,6 +110,7 @@ TOME_REASON_LABELS: dict[str, str] = {
     "date_unproven": "date de parution non prouvée",
     "not_published_yet": "à paraître",
     "no_bnf_notice": "aucune notice BNF",
+    "bnf_unavailable": "vérification BNF impossible",
     "invalid_isbn": "ISBN invalide",
     "series_mismatch": "autre série",
     "tome_number_inconsistent": "numéro de tome incohérent",
@@ -121,6 +122,21 @@ UNIDENTIFIED_WORK_NOTE = (
     "⚠️ Ouvrage non identifié : aucune source ne catalogue ce titre. "
     "Vérifie l'orthographe, ou saisis l'ISBN."
 )
+
+
+def _watches_every_tome(data: dict[str, Any]) -> bool:
+    """La carte peut-elle annoncer une veille sur **tous** les tomes ?
+
+    Elle le pouvait tant que la création rattachait la série entière. Depuis que seul
+    le tome demandé est ajouté — les autres attendant une demande explicite —, la
+    phrase « veille sur tous les tomes » décrirait une alerte qui n'existe pas : elle
+    s'affiche donc seulement quand plusieurs tomes sont réellement rattachés, ou
+    quand le découpage n'est pas connu (la veille porte alors sur la série).
+    """
+    rows = data.get("series_volumes")
+    if not rows:
+        return True
+    return len([row for row in rows if row.get("confirmed")]) > 1
 
 
 def series_indication_block() -> list[str]:
@@ -309,7 +325,7 @@ def creation_card(
     )
 
     lines: list[str] = [header, ""]
-    if is_series:
+    if is_series and _watches_every_tome(data):
         lines.extend(series_indication_block())
     notes: list[str] = []
     if book_unidentified:
@@ -555,11 +571,20 @@ def _retained_volume_lines(row: dict[str, Any], label: str) -> list[str]:
 
 
 def _publication_line(row: dict[str, Any]) -> str:
-    """« 06/02/2026 (BNF) - paru » : la date prouvée, et ce qu'elle vaut."""
+    """Ce que la notice prouve de la parution — un jour si elle en donne un, sinon l'année.
+
+    Le jour n'est affiché que s'il vient d'une zone de **parution** (`214$d`) ; la
+    date d'entrée de la notice au catalogue n'est jamais montrée ici, parce qu'elle
+    ne dit rien de la sortie du livre. À défaut de jour, l'année prouvée s'écrit
+    seule : « 2026 (BNF, année prouvée) ».
+    """
     written = _stored_date_label(row.get("publication_date"))
-    if written is None:
-        return f"{NOT_PROVIDED} - date de parution non prouvée"
-    return f"{written} (BNF) - paru"
+    if written is not None:
+        return f"{written} (BNF, jour prouvé)"
+    year = row.get("publication_year")
+    if isinstance(year, int):
+        return f"{year} (BNF, année prouvée)"
+    return f"{NOT_PROVIDED} - date de parution non prouvée"
 
 
 def _stored_date_label(value: Any) -> str | None:

@@ -46,10 +46,10 @@ MARCXCHANGE_TEMPLATE = """<mxc:record xmlns:mxc="info:lc/xmlns/marcxchange-v2" f
   </mxc:datafield>
   <mxc:datafield tag="200" ind1="1" ind2=" ">
     <mxc:subfield code="a">{title}</mxc:subfield>{volume}{series}
-  </mxc:datafield>
+  </mxc:datafield>{series_field}
   <mxc:datafield tag="214" ind1=" " ind2=" ">
     <mxc:subfield code="a">Paris</mxc:subfield>
-    <mxc:subfield code="c">{publisher}</mxc:subfield>
+    <mxc:subfield code="c">{publisher}</mxc:subfield>{publication}
   </mxc:datafield>
   <mxc:datafield tag="700" ind1=" " ind2=" ">
     <mxc:subfield code="a">{creator}</mxc:subfield>
@@ -207,6 +207,12 @@ def _dc_field(record: str, name: str) -> str:
     return values[0] if values else ""
 
 
+# Le nom du format (`marcxchange`) et celui que l'API BNF accepte
+# (`unimarcxchange`) : les doublures répondent aux deux, comme la vraie API à
+# personne ne devrait répondre au premier.
+MARCXCHANGE_SCHEMAS = frozenset({"marcxchange", "unimarcxchange"})
+
+
 def marcxchange_from_dc(record: str, *, date_type: str = "d") -> str:
     """Notice MarcXchange déduite d'une notice Dublin Core simulée.
 
@@ -231,10 +237,53 @@ def marcxchange_from_dc(record: str, *, date_type: str = "d") -> str:
         series="",
         publisher=_dc_field(record, "publisher") or "Éditeur test",
         creator=_dc_field(record, "creator"),
+        publication="",
+        series_field="",
     )
 
 
-def tome_notice(meta, *, series=None, date_type="d", day="2024-05-02", number=None):
+def marcxchange_notice(
+    *, isbn: str, title: str, date_code: str, publisher: str, creator: str,
+    publication_field: str | None = None, number: int | None = None,
+    series: str | None = None,
+) -> str:
+    """Une notice MarcXchange brute, pour les tests qui lisent la zone elle-même.
+
+    Rien n'est interprété ici : `date_code` est le texte exact de `100$a` et
+    `publication_field` celui de `214$d`. C'est le parseur réel qui les relit, comme
+    il lirait la réponse de la BNF — c'est la seule façon de prouver qu'on ne
+    confond pas la date d'entrée au catalogue avec la date de parution.
+    """
+    return MARCXCHANGE_TEMPLATE.format(
+        isbn=isbn,
+        date_code=date_code,
+        title=title,
+        volume=f'<mxc:subfield code="h">{number}</mxc:subfield>' if number else "",
+        series="",
+        series_field=(
+            '\n  <mxc:datafield tag="225" ind1=" " ind2=" ">'
+            f'<mxc:subfield code="a">{series}</mxc:subfield></mxc:datafield>'
+            if series else ""
+        ),
+        publisher=publisher,
+        creator=creator,
+        publication=(
+            f'<mxc:subfield code="d">{publication_field}</mxc:subfield>'
+            if publication_field else ""
+        ),
+    )
+
+
+def notices_from_marcxchange(*records: str):
+    """Notices lues par le **vrai** parseur MarcXchange, comme le ferait la BNF."""
+    from app.services.book_metadata_service import parse_tome_notices
+
+    payload = SRU_HEADER.format(count=len(records), records="".join(records)).encode()
+    return parse_tome_notices(payload)
+
+
+def tome_notice(meta, *, series=None, date_type="d", day="2024-05-02", number=None,
+                publication_field=None):
     """La notice MarcXchange que la règle d'admission lirait pour ce tome.
 
     Le Dublin Core simulé ne porte pas la date **typée** : les tests qui simulent la
@@ -242,22 +291,20 @@ def tome_notice(meta, *, series=None, date_type="d", day="2024-05-02", number=No
     tome est refusé — à juste titre — faute de date prouvée. `date_type="u"` fabrique
     le cas inverse : un tome annoncé dont rien ne prouve qu'il est paru.
     """
-    from datetime import date
-
-    from app.domain.rules.tome_admission import TomeNotice
-
-    published = date.fromisoformat(day)
-    return TomeNotice(
-        isbn13=meta.isbn13,
+    published = day[:4]
+    record = marcxchange_notice(
+        isbn=meta.isbn13 or "",
         title=meta.volume_title or meta.title,
-        date_type=date_type,
-        publication_date=published if date_type == "d" else None,
-        publication_year=published.year,
-        authors=(meta.author,) if meta.author else (),
-        series_statement=series,
+        date_code=f"{published}0101{date_type}{published}    m  y0frey50      ba",
+        publisher=meta.publisher or "Éditeur test",
+        creator=meta.author or "",
+        publication_field=publication_field,
         number=number if number is not None else meta.volume_number,
-        publisher=meta.publisher,
+        series=series,
     )
+    parsed = notices_from_marcxchange(record)
+    assert parsed, "la notice simulée doit être lisible par la règle"
+    return parsed[0]
 
 
 def patch_bnf_admission(
@@ -366,7 +413,7 @@ class FakeCatalogueClient:
             for record in self.bnf_records
             if f'"{record.split("ISBN ")[1].split("<")[0]}"' in query
         ] or self.bnf_records
-        if params.get("recordSchema", ["dublincore"])[0] == "marcxchange":
+        if params.get("recordSchema", ["dublincore"])[0] in MARCXCHANGE_SCHEMAS:
             matched = [marcxchange_from_dc(record, date_type=self.bnf_date_type)
                        for record in matched]
         payload = SRU_HEADER.format(count=len(matched), records="".join(matched))

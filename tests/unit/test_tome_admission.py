@@ -15,12 +15,16 @@ from pathlib import Path
 import pytest
 
 from app.domain.rules.tome_admission import (
+    ADMITTED_DATE_TYPES,
+    TomeAdmission,
     TomeNotice,
     admit_tome,
     notice_from_bnf_record,
-    parse_notice_date,
+    parse_catalogue_entry,
+    parse_publication_field,
 )
 from app.services.book_metadata_service import parse_tome_notices
+from tests.fakes_catalogue import marcxchange_notice, notices_from_marcxchange
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "bnf"
 TODAY = date(2026, 10, 27)
@@ -35,8 +39,8 @@ def notice(**overrides: object) -> TomeNotice:
         isbn13="9782075163743",
         title="Les fiancés de l'hiver",
         date_type="d",
+        declared_year=2013,
         publication_date=date(2013, 9, 12),
-        publication_year=2013,
         authors=("Dabos Christelle",),
         series_statement=PASSE_MIROIR,
         number=1,
@@ -79,6 +83,14 @@ def test_an_unreadable_identifier_proves_nothing(isbn: str | None, expected: str
     assert verdict(notice(), isbn13=isbn).reason == expected
 
 
+def test_a_failed_verification_is_not_an_absent_notice():
+    """La BNF muette ne dit pas que le livre n'existe pas : le motif doit le dire."""
+    admission = TomeAdmission("bnf_unavailable")
+
+    assert admission.reason == "bnf_unavailable"
+    assert not admission.other_work, "on n'a pas pu regarder, on n'accuse pas l'ouvrage"
+
+
 def test_an_isbn_without_notice_is_refused_by_name():
     """Un ISBN ne prouve pas qu'un livre est sorti : seule une notice le fait."""
     admission = verdict(None)
@@ -89,13 +101,13 @@ def test_an_isbn_without_notice_is_refused_by_name():
 
 def test_an_unknown_date_type_never_becomes_a_publication_date():
     """`u` annonce une date « inconnue » : le millésime est là, la preuve non."""
-    admission = verdict(notice(date_type="u", publication_date=None, publication_year=2026))
+    admission = verdict(notice(date_type="u", publication_date=None, declared_year=2026))
 
     assert admission.reason == "date_unproven"
 
 
 def test_a_certain_date_in_the_future_is_a_tome_to_come_not_an_unproven_date():
-    admission = verdict(notice(publication_date=date(2027, 3, 5), publication_year=2027))
+    admission = verdict(notice(publication_date=date(2027, 3, 5), declared_year=2027))
 
     assert admission.reason == "not_published_yet"
     assert not admission.other_work
@@ -164,27 +176,49 @@ def test_identity_checks_come_before_the_date_otherwise_the_reason_would_lie():
     assert admission.reason == "series_mismatch"
 
 
-def test_parse_notice_date_reads_the_type_and_the_day_written_before_it():
-    stamp = parse_notice_date("20260206d2026")
+def test_the_fixed_field_reads_three_positions_with_three_meanings():
+    """0-7 : entrée au catalogue. 8 : type de date. 9-12 : Date 1, l'année déclarée."""
+    entry = parse_catalogue_entry("20260206d2026    m  y0frey50      ba")
 
-    assert stamp.date_type == "d"
-    assert stamp.publication_date == date(2026, 2, 6)
-    assert stamp.publication_year == 2026
+    assert entry.date_type == "d"
+    assert entry.entry_date == date(2026, 2, 6)
+    assert entry.declared_year == 2026
 
 
-def test_parse_notice_date_keeps_an_unknown_type_as_unknown():
-    stamp = parse_notice_date("20261013u2026")
+def test_the_catalogue_entry_day_is_never_a_publication_day():
+    """La notice du tome annoncé est entrée au catalogue en juillet : le livre, non."""
+    entry = parse_catalogue_entry("20260716u        m  y0frey50      ba")
 
-    assert stamp.date_type == "u"
-    assert stamp.publication_date == date(2026, 10, 13)
+    assert entry.entry_date == date(2026, 7, 16)
+    assert entry.date_type == "u"
+    assert entry.declared_year is None
 
 
 @pytest.mark.parametrize("code", [None, "", "d", "2026", 20260206])
-def test_parse_notice_date_never_invents_a_date(code: object):
-    stamp = parse_notice_date(code)  # type: ignore[arg-type]
+def test_the_fixed_field_never_invents_a_date(code: object):
+    entry = parse_catalogue_entry(code)  # type: ignore[arg-type]
 
-    assert stamp.date_type is None
-    assert stamp.publication_date is None
+    assert entry.date_type is None
+    assert entry.entry_date is None
+    assert entry.declared_year is None
+
+
+@pytest.mark.parametrize(
+    ("written", "expected_day", "expected_year"),
+    [
+        ("DL 2026", None, 2026),
+        ("2026", None, 2026),
+        ("[2026]", None, 2026),
+        ("DL 06/02/2026", date(2026, 2, 6), 2026),
+        ("2026-02-06", date(2026, 2, 6), 2026),
+        ("", None, None),
+        (None, None, None),
+    ],
+)
+def test_the_publication_field_gives_a_day_only_when_it_names_one(
+    written: str | None, expected_day: date | None, expected_year: int | None
+):
+    assert parse_publication_field(written) == (expected_day, expected_year)
 
 
 def test_notice_from_record_projects_only_what_it_proves():
@@ -192,6 +226,7 @@ def test_notice_from_record_projects_only_what_it_proves():
         "isbn13": "9782075163743",
         "title": "Les fiancés de l'hiver",
         "date_code": "20260206d2026",
+        "publication_field": "DL 2026",
         "authors": ("Dabos Christelle",),
         "series_statement": PASSE_MIROIR,
         "number": 1,
@@ -199,7 +234,90 @@ def test_notice_from_record_projects_only_what_it_proves():
     })
 
     assert notice_value is not None
-    assert notice_value.certain_date == date(2026, 2, 6)
+    assert notice_value.entry_date == date(2026, 2, 6)
+    assert notice_value.proven_day is None, "aucun jour de parution n'est écrit ici"
+    assert notice_value.proven_year == 2026
+
+
+def _admission_of(date_code: str, *, publication_field: str | None = None,
+                  today: date = TODAY):
+    """Admission jugée sur la zone telle qu'elle est écrite, lue par le vrai parseur."""
+    record = marcxchange_notice(
+        isbn="9782075163743", title="Les fiancés de l'hiver", date_code=date_code,
+        publisher="Gallimard bande dessinée", creator="Dabos Christelle",
+        publication_field=publication_field, number=1, series=PASSE_MIROIR,
+    )
+    (notice_value,) = notices_from_marcxchange(record)
+    admission = admit_tome(
+        isbn13="9782075163743", notice=notice_value, series_title=PASSE_MIROIR,
+        author_hint=DABOS, number=1, today=today,
+    )
+    return admission, notice_value
+
+
+def test_a_notice_entered_fifteen_days_ago_for_a_book_due_next_year_is_not_a_tome_yet():
+    """`20261013d2027` : catalogué le 13/10/2026, annoncé pour 2027.
+
+    Lire les positions 0-7 comme une date de parution ferait entrer en librairie un
+    livre qui n'y est pas — c'est exactement l'erreur corrigée ici.
+    """
+    admission, notice_value = _admission_of("20261013d2027    m  y0frey50      ba")
+
+    assert notice_value.entry_date == date(2026, 10, 13)
+    assert notice_value.proven_year == 2027
+    assert admission.reason == "not_published_yet"
+
+
+def test_an_entry_date_already_past_does_not_make_a_future_tome_published():
+    admission, _ = _admission_of("20250815d2027    m  y0frey50      ba")
+
+    assert admission.reason == "not_published_yet"
+
+
+def test_the_reference_notice_is_admitted_on_its_proven_year_not_on_its_entry_day():
+    admission, notice_value = _admission_of("20260206d2026    m  y0frey50      ba")
+
+    assert admission.accepted
+    assert notice_value.proven_day is None, "aucun jour de parution n'est prouvé"
+    assert notice_value.proven_year == 2026
+
+
+def test_a_real_publication_day_wins_over_the_year():
+    admission, notice_value = _admission_of(
+        "20260101u        m  y0frey50      ba", publication_field="DL 06/02/2026",
+    )
+
+    assert admission.accepted
+    assert notice_value.proven_day == date(2026, 2, 6)
+    assert notice_value.proven_year == 2026
+
+
+def test_a_publication_day_in_the_future_is_not_published_yet():
+    admission, _ = _admission_of(
+        "20260101d2026    m  y0frey50      ba", publication_field="DL 06/02/2027",
+    )
+
+    assert admission.reason == "not_published_yet"
+
+
+def test_a_declared_deposit_year_alone_never_proves_the_publication():
+    """`DL 2026` sur une notice de type `u` : l'éditeur a déclaré, la BNF ne sait pas.
+
+    C'est le cas des tomes 2 et 4 de « La Passe-miroir » : promouvoir cette année en
+    preuve les ferait entrer dans l'alerte alors que rien ne dit qu'ils sont sortis.
+    """
+    admission, notice_value = _admission_of(
+        "20260716u        m  y0frey50      ba", publication_field="DL 2026",
+    )
+
+    assert notice_value.declared_publication_year == 2026
+    assert notice_value.proven_year is None
+    assert admission.reason == "date_unproven"
+
+
+def test_only_the_single_year_monograph_type_is_admitted():
+    """L'ensemble admis est un choix : `d` seul affirme une année de parution."""
+    assert frozenset({"d"}) == ADMITTED_DATE_TYPES
 
 
 def test_notice_from_record_refuses_a_record_without_a_title():
@@ -243,7 +361,9 @@ def test_the_passe_miroir_volume_one_keeps_only_its_published_edition():
         for admission, notice_value in zip(verdicts, notices, strict=True)
         if admission.accepted
     ]
-    assert [notice_value.certain_date for notice_value in admitted] == [date(2026, 2, 6)]
+    assert [notice_value.proven_year for notice_value in admitted] == [2026]
+    assert [notice_value.entry_date for notice_value in admitted] == [date(2026, 2, 6)]
+    assert [notice_value.proven_day for notice_value in admitted] == [None]
 
 
 @pytest.mark.parametrize("isbn", ["9782075215510", "9782075215619"])
