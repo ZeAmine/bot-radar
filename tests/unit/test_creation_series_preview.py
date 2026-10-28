@@ -538,3 +538,37 @@ async def test_the_discovery_refuses_the_adaptation_bnf_gives_for_the_first_volu
     assert not any(volume.isbn13 for volume in discovered.volumes), (
         "aucun tome n'est rattaché, à commencer par l'adaptation en BD du tome 1"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_edition_is_journalised_by_code_and_axis_only(caplog):
+    """Chaque refus d'édition laisse une trace courte : le motif et l'axe.
+
+    Une fréquence ne se mesure que si elle se compte : le refus laisse donc une ligne
+    structurée (`event`, `reason_code`, `axis`). Elle ne porte ni ISBN, ni titre, ni
+    nom d'auteur, ni URL : le journal dit **pourquoi** une édition a été écartée, pas
+    de quel ouvrage il s'agissait — le contenu de l'annonce n'a rien à y faire.
+
+    L'axe journalisé est celui de la **première** notice refusée, dans l'ordre où la
+    BNF les sert : ici le roman de « Fétiche », dont la collection n'est pas celle que
+    les tomes 2 et 4 attestent. L'adaptation, refusée pour son `200$g`, vient ensuite.
+    """
+    with caplog.at_level("INFO", logger="radar.book_metadata"):
+        await discover_on_real_notices(
+            [tome(number, CODES[index]) for index, number in enumerate((1, 2, 4))]
+        )
+
+    refusals = [
+        record for record in caplog.records
+        if getattr(record, "event", None) == "tome_admission"
+    ]
+    assert [
+        (record.reason_code, record.axis) for record in refusals
+    ] == [("different_edition", "collection")]
+    # Les tomes 2 et 4, refusés pour leur date, ne fabriquent pas de bruit : le
+    # journal ne compte que les refus d'édition.
+    assert len(refusals) == 1
+    # Rien du contenu de l'annonce, ni adresse : ni ISBN, ni titre, ni auteur.
+    assert "9782075163743" not in caplog.text
+    assert "Dabos" not in caplog.text
+    assert "http" not in caplog.text.lower()

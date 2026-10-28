@@ -370,6 +370,8 @@ def test_the_passe_miroir_volume_one_is_not_admitted_on_its_certain_notice():
 
     assert admission.reason == "different_edition"
     assert judged is not None
+    # L'axe du refus est nommé pour le journal : ici l'adaptation de l'œuvre demandée.
+    assert admission.axis == "adaptation"
     # Le tome reste au récapitulatif, nommé avec son motif : il existe, c'est son
     # édition qui n'est pas celle de la série.
     assert not admission.other_work
@@ -396,6 +398,14 @@ def test_the_passe_miroir_volume_one_is_refused_even_against_its_collection():
         ).reason
         for notice_value in parse_tome_notices(_payload("9782075163743"))
     ] == ["different_edition", "different_edition"]
+    # Ce n'est plus l'adaptation qui parle ici mais la collection : l'axe le dit.
+    assert [
+        admit_tome(
+            isbn13="9782075163743", notice=notice_value, series_title=PASSE_MIROIR,
+            author_hint=DABOS, number=1, reference_collection=reference, today=TODAY,
+        ).axis
+        for notice_value in parse_tome_notices(_payload("9782075163743"))
+    ] == ["collection", "adaptation"]
 
 
 def test_one_volume_alone_attests_no_collection():
@@ -420,6 +430,34 @@ def test_a_collection_spelled_two_ways_is_attested_as_one():
     ])
 
     assert attested == "pole fiction"
+
+
+def test_two_equally_attested_collections_attest_none():
+    """Deux collections attestées à égalité : aucune n'est élue par son orthographe.
+
+    Départager par ordre alphabétique ferait dépendre la référence d'un détail
+    d'écriture — « Folio » l'emporterait sur « Pôle fiction » sans que rien, dans la
+    série, ne dise laquelle est la sienne — et écarterait des tomes réels sur ce seul
+    hasard. Une égalité ne tranche pas : la série n'atteste alors aucune collection,
+    comme quand chaque tome porte la sienne.
+    """
+    assert series_reference_collection([
+        [notice(series_statement="Folio")],
+        [notice(series_statement="Folio")],
+        [notice(series_statement="Pôle fiction")],
+        [notice(series_statement="Pôle fiction")],
+    ]) is None
+
+
+def test_the_best_attested_collection_wins_when_it_leads_alone():
+    """Trois tomes contre deux : la collection majoritaire reste la référence."""
+    assert series_reference_collection([
+        [notice(series_statement="Pôle fiction")],
+        [notice(series_statement="Pôle fiction")],
+        [notice(series_statement="Pöle fiction")],
+        [notice(series_statement="Folio")],
+        [notice(series_statement="Folio")],
+    ]) == "pole fiction"
 
 
 @pytest.mark.parametrize("isbn", ["9782075215510", "9782075215619"])
@@ -573,6 +611,15 @@ def _contradiction(*overrides: dict[str, object]) -> tuple[TomeNotice, ...]:
         ),
         # Une notice muette sur le format ne s'oppose pas à celle qui le décrit.
         (_contradiction({"dimensions": "18 cm"}), ()),
+        # Dimensions identiques, illustrations différentes : c'est bien le même axe
+        # matériel qui parle, et il dit deux choses.
+        (
+            _contradiction(
+                {"illustration": "ill. en coul.", "dimensions": "18 cm"},
+                {"illustration": "cartes", "dimensions": "18 cm"},
+            ),
+            ("format",),
+        ),
         (
             _contradiction(
                 {
@@ -591,6 +638,22 @@ def test_contradictions_between_notices_are_named_by_axis(
     assert notice_contradictions(notices) == expected
 
 
+def test_an_illustration_named_once_does_not_contradict_a_shared_dimension():
+    """Même dimension des deux côtés, illustration écrite par une seule : rien ne s'oppose.
+
+    C'est le piège de la clé unique : joindre illustration et dimensions donnait
+    « ill. en coul. / 18 cm » d'un côté et « 18 cm » de l'autre, deux clés différentes
+    donc une contradiction inventée. Comparés séparément, les deux notices disent la
+    même chose du format, et une seule en dit davantage de l'illustration.
+    """
+    notices = (
+        notice(dimensions="18 cm"),
+        notice(illustration="ill. en coul.", dimensions="18 cm"),
+    )
+
+    assert notice_contradictions(notices) == ()
+
+
 def test_two_notices_that_contradict_each_other_prove_nothing():
     """Chacune serait admise seule ; ensemble, elles disent deux choses différentes.
 
@@ -598,7 +661,6 @@ def test_two_notices_that_contradict_each_other_prove_nothing():
     seulement une question de date, c'est aussi une question d'identité de l'édition.
     """
     notices = _contradiction({"publisher": "Gallimard bande dessinée"})
-
     assert [verdict(notice_value).accepted for notice_value in notices] == [True, True]
 
     admission, _ = admit_tome_notices(
@@ -607,7 +669,24 @@ def test_two_notices_that_contradict_each_other_prove_nothing():
     )
 
     assert admission.reason == "notices_contradict"
+    # Les axes se lisent dans le journal, dans l'ordre de lecture d'une notice.
+    assert admission.axis == "publisher"
     assert not admission.other_work, "le tome reste au récapitulatif, avec son motif"
+
+
+def test_the_contradiction_axis_names_every_axis_that_spoke():
+    """Deux axes en désaccord : le journal les nomme tous les deux, séparés."""
+    notices = _contradiction(
+        {"publisher": "Gallimard bande dessinée", "dimensions": "29 cm"},
+        {"dimensions": "18 cm"},
+    )
+
+    admission, _ = admit_tome_notices(
+        isbn13="9782075163743", notices=notices, series_title=PASSE_MIROIR,
+        author_hint=DABOS, number=1, today=TODAY,
+    )
+
+    assert (admission.reason, admission.axis) == ("notices_contradict", "publisher,format")
 
 
 def test_notices_that_agree_are_admitted_on_the_first_one_that_proves_them():

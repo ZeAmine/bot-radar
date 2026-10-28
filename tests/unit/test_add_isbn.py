@@ -15,6 +15,7 @@ Le harnais (doubles, câblage, lecture des écrans) est partagé : `tests/add_fa
 """
 
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,7 +29,12 @@ from app.bot.handlers.alerts_create_confirm import (
     select_alert_creation_edition,
 )
 from app.db.models.user import User
-from app.services.book_metadata_service import BookResolution
+from app.services.book_metadata_service import (
+    BookMetadata,
+    BookMetadataService,
+    BookResolution,
+    parse_tome_notices,
+)
 from tests.add_fakes import (
     BNF_ALTERNATIVE,
     BNF_EDITION,
@@ -365,6 +371,99 @@ async def test_add_typed_isbn_beats_model_proposal():
         recap = recap_text(loading_message)
         assert "<b>ISBN :</b> <code>9782369903086</code>" in recap
         assert ISBN_AUTRE_LIVRE not in recap
+    finally:
+        for entered in reversed(patches):
+            entered.stop()
+
+
+BNF_FIXTURES = Path(__file__).parent.parent / "fixtures" / "bnf"
+ADAPTATION_ISBN = "9782075163743"
+
+
+def adaptation_notice() -> BookMetadata:
+    """La notice d'adaptation que la BNF rend pour l'ISBN du tome 1, lue telle quelle.
+
+    L'ISBN `9782075163743` porte deux notices : le roman de « La Passe-miroir » et la
+    bande dessinée qui l'adapte (« Gallimard bande dessinée », `ill. en coul.`,
+    `29 cm`, « d'après l'oeuvre de Christelle Dabos »). C'est la seconde que ce test
+    ajoute, et elle vient de la fixture réelle : rien n'est réécrit à la main.
+    """
+    notices = parse_tome_notices(
+        (BNF_FIXTURES / f"marcxchange_{ADAPTATION_ISBN}.xml").read_bytes()
+    )
+    adapted = next(notice for notice in notices if notice.adaptation_statement)
+    return BookMetadata(
+        title=adapted.title,
+        author=adapted.authors[0],
+        publisher=adapted.publisher,
+        isbn13=adapted.isbn13,
+        publication_year=adapted.declared_publication_year,
+        format_detail=f"1 vol. : {adapted.illustration} ; {adapted.dimensions}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_addisbn_still_adds_the_adaptation_the_series_flow_refuses():
+    """L'ajout par ISBN seul reste possible, adaptation comprise.
+
+    Le flux de série refuse désormais cet ISBN (`different_edition`) : ses deux
+    notices décrivent deux éditions, et aucune n'est celle que la série atteste. Ce
+    refus ne dit rien d'une demande explicite — `/addisbn 9782075163743` nomme
+    l'ouvrage que l'utilisateur veut suivre, et la création aboutit.
+
+    C'est un garde-fou contre nous-mêmes : l'ajout explicite ne consulte **pas** la
+    règle d'admission de tome. Si elle se remet un jour sur ce chemin, l'espion la
+    fait échouer ici au lieu de laisser le comportement changer en silence.
+    """
+    adaptation = adaptation_notice()
+    bnf = fake_bnf(BookResolution(best=adaptation))
+    client = fake_llm(llm_payload())
+    repos = repositories(adaptation.isbn13)
+
+    message, loading_message = message_with_recap(f"/addisbn {ADAPTATION_ISBN}")
+    state = DraftState()
+    db_user = User(id=uuid.uuid4(), telegram_user_id=123)
+    db_session = AsyncMock()
+
+    def _forbidden(name: str) -> MagicMock:
+        return MagicMock(side_effect=AssertionError(
+            f"{name} : l'ajout par ISBN explicite ne juge pas l'admission d'un tome"
+        ))
+
+    admission = _forbidden("admit_tome_notices")
+    series_lookup = _forbidden("lookup_series_notices")
+
+    patches = patched(repos, bnf, client) + (
+        patch("app.services.book_metadata_service.admit_tome_notices", admission),
+        patch.object(BookMetadataService, "lookup_series_notices", series_lookup),
+    )
+    for entered in patches:
+        entered.start()
+    try:
+        await start_add_alert(message, state, db_session, db_user)
+        await drain(repos["tasks"])
+
+        # L'écran décrit bien la BD, pas le roman : c'est elle que la demande nomme.
+        recap = recap_text(loading_message)
+        assert f"<b>ISBN :</b> <code>{ADAPTATION_ISBN}</code>" in recap
+        assert "<b>Éditeur :</b> Gallimard bande dessinée" in recap
+        assert state.data["isbn"] == ADAPTATION_ISBN
+
+        confirm_callback, confirm_message = confirm_press()
+        await save_alert(confirm_callback, state, db_user, db_session)
+
+        # L'ajout a eu lieu, sur cet ISBN-là, et rien n'a consulté la règle de tome.
+        assert repos["alert_repo"].create.call_args.kwargs["isbn"] == ADAPTATION_ISBN
+        assert (
+            f"search_text={ADAPTATION_ISBN}"
+            in repos["alert_repo"].create.call_args.kwargs["vinted_search_url"]
+        )
+        assert repos["book_repo"].create.call_args.kwargs["isbn13"] == ADAPTATION_ISBN
+        assert admission.call_count == 0
+        assert series_lookup.call_count == 0
+
+        confirmation = confirm_message.edit_text.call_args[0][0]
+        assert f"<b>ISBN :</b> <code>{ADAPTATION_ISBN}</code>" in confirmation
     finally:
         for entered in reversed(patches):
             entered.stop()

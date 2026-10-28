@@ -64,6 +64,11 @@ AUTORITE_BNF = "bnf"
 AUTORITE_OPENLIBRARY = "openlibrary"
 AUTORITE_GOOGLE_BOOKS = "google_books"
 
+# Refus qui disent une **autre édition** d'un tome : ce sont eux qu'on journalise,
+# pour mesurer leur fréquence — et eux seuls, parce que les autres motifs
+# s'expliquent déjà par la date ou l'identité de l'ouvrage.
+_EDITION_REFUSALS = frozenset({"different_edition", "notices_contradict"})
+
 _TITLE_QUERY_ALLOWED_CHARS = r"[^a-zA-Z0-9\sàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ-]"
 
 AuthorHintMatch = Literal["none", "matched", "conflicts"]
@@ -1733,15 +1738,26 @@ class BookMetadataService:
         `notices` à `None` signifie « on n'a pas pu regarder » — la liste vide dit
         qu'on a regardé et qu'il n'y a rien ; les deux refusent, mais pas au même
         motif.
+
+        Chaque refus d'édition est **journalisé** une fois, avec le code du motif et
+        l'axe qui l'a déclenché : de quoi mesurer la fréquence de ces refus sans rien
+        retenir du contenu de l'annonce, et sans URL.
         """
         if notices is None:
             return TomeAdmission("bnf_unavailable"), None
-        return admit_tome_notices(
+        admission, notice = admit_tome_notices(
             isbn13=isbn13, notices=notices, series_title=series_title,
             author_hint=author_hint, number=number,
             reference_publisher=reference_publisher,
             reference_collection=reference_collection, today=today,
         )
+        if admission.reason in _EDITION_REFUSALS:
+            logger.info("Admission de tome refusée", extra={
+                "event": "tome_admission",
+                "reason_code": admission.reason,
+                "axis": admission.axis,
+            })
+        return admission, notice
 
     async def _bnf_tome_notices(self, isbn13: str) -> list[TomeNotice] | None:
         """Notices MarcXchange d'un ISBN, une par notice BNF le décrivant.

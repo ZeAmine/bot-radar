@@ -76,6 +76,12 @@ choses différentes s'opposent.
 jeunesse » sont la même maison, mais « Gallimard jeunesse » et « Gallimard bande
 dessinée » sont deux départements : ne garder que le premier mot distinctif les
 rendait égaux, et la BD passait pour le roman.
+
+**Ce qu'un refus d'édition laisse au journal.** Le verdict porte, à côté du motif,
+un `axis` choisi dans une liste fermée : `adaptation` ou `collection` pour une autre
+édition, `publisher` / `format` / `date_type` pour une contradiction. L'appelant
+journalise ce couple — code du motif et axe — pour compter ces refus. Rien du
+contenu de l'annonce n'y entre : le module ne produit que des codes.
 """
 
 from __future__ import annotations
@@ -164,7 +170,7 @@ class TomeNotice:
     `series_statement` est la mention `225$a` : la collection éditoriale. Elle sert
     deux fois, et ce sont deux questions différentes — nomme-t-elle la série
     demandée (`_belongs_to_series`), et désigne-t-elle la collection que les autres
-    tomes de cette série portent (`_different_edition`) ? « Fétiche » peut nommer
+    tomes de cette série portent (`_different_edition_axis`) ? « Fétiche » peut nommer
     une collection de romans, « La passe-miroir » celle de la BD qui les adapte.
     """
 
@@ -220,9 +226,17 @@ class TomeNotice:
 
 @dataclass(frozen=True)
 class TomeAdmission:
-    """Verdict d'admission d'un tome, avec son motif quand il est refusé."""
+    """Verdict d'admission d'un tome, avec son motif quand il est refusé.
+
+    `axis` dit **sur quoi** porte le refus, quand il porte sur quelque chose de
+    nommable : l'axe de la contradiction (`publisher`, `format`, `date_type`), ou ce
+    qui trahit une autre édition (`adaptation`, `collection`). C'est un code court,
+    choisi dans une liste fermée, sans rien du contenu de l'annonce : il sert à
+    mesurer la fréquence d'un refus, pas à raconter l'ouvrage.
+    """
 
     reason: TomeRejection | None = None
+    axis: str | None = None
 
     @property
     def accepted(self) -> bool:
@@ -272,9 +286,11 @@ def admit_tome(
         return TomeAdmission("tome_number_inconsistent")
     if author_hint and not _same_author(notice.authors, author_hint):
         return TomeAdmission("author_mismatch")
-    if _different_edition(notice, author_hint=author_hint,
-                          reference_collection=reference_collection):
-        return TomeAdmission("different_edition")
+    edition_axis = _different_edition_axis(
+        notice, author_hint=author_hint, reference_collection=reference_collection,
+    )
+    if edition_axis:
+        return TomeAdmission("different_edition", edition_axis)
     if (reference_publisher and notice.publisher
             and not _same_house(notice.publisher, reference_publisher)):
         return TomeAdmission("publisher_mismatch")
@@ -320,7 +336,10 @@ def admit_tome_notices(
 
     La notice rendue accompagne le motif du refus comme l'acceptation : le
     récapitulatif n'en lit rien quand le tome est écarté, mais l'appelant garde la
-    même forme de retour dans les deux cas.
+    même forme de retour dans les deux cas. En cas de `different_edition`,
+    `TomeAdmission.axis` nomme l'axe de la **première** notice refusée, dans l'ordre
+    où la BNF les sert ; en cas de `notices_contradict`, les axes en désaccord,
+    séparés par virgule et dans l'ordre de lecture d'une notice.
     """
     code = isbn_from_identifier(isbn13)
     if code is None or not is_valid_isbn(code):
@@ -339,8 +358,9 @@ def admit_tome_notices(
     for admission, notice in judged:
         if admission.reason == "different_edition":
             return admission, notice
-    if notice_contradictions(notices):
-        return TomeAdmission("notices_contradict"), judged[0][1]
+    contradictions = notice_contradictions(notices)
+    if contradictions:
+        return TomeAdmission("notices_contradict", ",".join(contradictions)), judged[0][1]
     for admission, notice in judged:
         if admission.accepted:
             return admission, notice
@@ -358,13 +378,17 @@ def notice_contradictions(notices: Sequence[TomeNotice]) -> tuple[str, ...]:
     Une zone **absente** ne contredit rien : c'est une autre notice qui parle, pas
     un fait contraire. Une notice qui ne dit rien du format ne s'oppose donc pas à
     celle qui le décrit ; seules deux affirmations différentes s'opposent.
+
+    Illustration et dimensions se comparent **séparément**, jamais concaténées :
+    deux notices à « 18 cm » dont une seule précise l'illustration décrivent le même
+    format, alors que les joindre en une clé unique les faisait s'opposer.
     """
     axes: list[str] = []
     publishers = [notice.publisher for notice in notices if notice.publisher]
     if any(not _same_house(first, second) for first, second in combinations(publishers, 2)):
         axes.append("publisher")
-    formats = [key for key in (_format_key(notice) for notice in notices) if key]
-    if len(set(formats)) > 1:
+    if (_contradicting_mentions(notice.illustration for notice in notices)
+            or _contradicting_mentions(notice.dimensions for notice in notices)):
         axes.append("format")
     date_types = [notice.date_type for notice in notices if notice.date_type]
     if len(set(date_types)) > 1:
@@ -384,6 +408,12 @@ def series_reference_collection(groups: Iterable[Sequence[TomeNotice]]) -> str |
 
     Rend le nom **normalisé**, parce que « Pöle fiction » et « Pôle fiction » sont
     la même collection écrite deux fois.
+
+    À **égalité** entre collections également attestées, aucune n'est retenue :
+    départager par ordre alphabétique ferait dépendre la référence d'un détail
+    d'écriture, et écarterait des tomes réels sur ce seul hasard. Deux collections
+    à égalité, c'est une série dont la règle ne sait rien dire — comme celle dont
+    chaque tome porte la sienne.
     """
     attested: dict[str, set[int]] = {}
     for index, notices in enumerate(groups):
@@ -391,11 +421,14 @@ def series_reference_collection(groups: Iterable[Sequence[TomeNotice]]) -> str |
         for name in sorted(names):
             if name:
                 attested.setdefault(name, set()).add(index)
-    corroborated = sorted(
-        ((len(indices), name) for name, indices in attested.items() if len(indices) >= 2),
-        key=lambda attested_name: (-attested_name[0], attested_name[1]),
-    )
-    return corroborated[0][1] if corroborated else None
+    counts = {
+        name: len(indices) for name, indices in attested.items() if len(indices) >= 2
+    }
+    if not counts:
+        return None
+    best = max(counts.values())
+    winners = sorted(name for name, count in counts.items() if count == best)
+    return winners[0] if len(winners) == 1 else None
 
 
 _ADAPTATION_PATTERN = re.compile(
@@ -418,10 +451,10 @@ def _adapted_author(statement: str | None) -> str | None:
     return normalized[match.end():].strip() or None
 
 
-def _different_edition(
+def _different_edition_axis(
     notice: TomeNotice, *, author_hint: str | None, reference_collection: str | None,
-) -> bool:
-    """La notice décrit-elle une autre édition du même tome ?
+) -> str | None:
+    """Sur quoi la notice décrit-elle une autre édition du même tome, s'il y a lieu ?
 
     Deux repères, tous deux lus dans la notice :
 
@@ -435,27 +468,30 @@ def _different_edition(
 
     `reference_collection` ne vaut que pour une collection attestée par plusieurs
     tomes, et une collection absente ne contredit rien.
+
+    Rend l'axe du refus — `adaptation` ou `collection` — et `None` quand la notice
+    décrit bien l'édition demandée. L'axe sert au journal : il nomme ce qui a parlé,
+    jamais ce que la notice raconte.
     """
     adapted = _adapted_author(notice.adaptation_statement)
     if adapted and author_hint and _same_author((adapted,), author_hint):
-        return True
+        return "adaptation"
     collection = normalize_text(notice.series_statement)
-    return bool(
-        reference_collection and collection
-        and collection != normalize_text(reference_collection)
-    )
+    if (reference_collection and collection
+            and collection != normalize_text(reference_collection)):
+        return "collection"
+    return None
 
 
-def _format_key(notice: TomeNotice) -> str | None:
-    """Caractéristiques matérielles d'une notice : illustration et dimensions.
+def _contradicting_mentions(values: Iterable[str | None]) -> bool:
+    """Deux mentions écrites et différentes, sur un même axe matériel.
 
-    L'étendue (« 273 p. ») n'en fait pas partie : elle s'écrit de dix façons et ne
-    distingue pas deux éditions. Ce qui sépare un album d'un poche tient dans
-    l'illustration et le format en centimètres.
+    Un axe se juge seul : ce sont les illustrations entre elles et les dimensions
+    entre elles. L'étendue (« 273 p. ») n'en fait pas partie — elle s'écrit de dix
+    façons et ne distingue pas deux éditions. Une mention absente ne contredit rien.
     """
-    parts = [normalize_text(part) for part in (notice.illustration, notice.dimensions)]
-    written = [part for part in parts if part]
-    return " / ".join(written) or None
+    written = {normalize_text(value) for value in values if normalize_text(value)}
+    return len(written) > 1
 
 
 def _belongs_to_series(notice: TomeNotice, series_title: str | None) -> bool:

@@ -180,10 +180,25 @@ refuser l'ISBN en `notices_contradict` : aucune ne prouve plus l'édition demand
 zone absente ne contredit jamais rien, et deux écritures de la même maison —
 « Éditions Gallimard Jeunesse » et « Gallimard Jeunesse » — ne s'opposent pas, alors que
 deux départements d'une même maison (« Gallimard jeunesse », « Gallimard bande
-dessinée ») se distinguent. Une adaptation d'un **autre** auteur ne dit rien contre le
+dessinée ») se distinguent. Illustration et dimensions se comparent **séparément**,
+jamais concaténées : deux notices à « 18 cm » dont une seule précise l'illustration
+décrivent le même format. Une adaptation d'un **autre** auteur ne dit rien contre le
 tome : c'est le cas ordinaire d'une série de BD adaptées, veillée au nom de son
 dessinateur. Il n'existe pas d'exigence d'auteur principal : l'auteur observé reste
 celui que la recherche a demandé.
+
+La collection de référence n'est retenue que si elle **l'emporte seule** : à égalité
+entre collections également attestées, la série n'en atteste aucune, et rien n'est
+écarté pour ce motif — départager par ordre alphabétique ferait dépendre un refus d'un
+détail d'écriture.
+
+Chaque refus d'édition laisse une ligne de journal **structurellement courte** :
+`event=tome_admission`, `reason_code` (`different_edition` ou `notices_contradict`) et
+`axis` (`adaptation`, `collection`, `publisher`, `format`, `date_type` ; plusieurs axes
+séparés par virgule quand ils parlent ensemble). Ni ISBN, ni titre, ni auteur, ni URL :
+le journal compte les refus, il ne raconte pas l'annonce. L'ajout explicite par ISBN
+(`/addisbn`) n'y touche pas : il ne juge pas l'admission d'un tome et reste possible
+pour l'adaptation elle-même.
 
 Contrôles de ce paragraphe, dans [l'admission](../../tests/unit/test_tome_admission.py) :
 le cas réel du tome 1 (`test_the_passe_miroir_volume_one_is_not_admitted_on_its_certain_notice`,
@@ -198,11 +213,20 @@ cherché et celle d'un autre
 (`test_an_adaptation_of_the_watched_author_is_another_edition`,
 `test_an_adaptation_of_another_author_leaves_the_tome_alone`) et la collection attestée
 par la série (`test_a_series_whose_volumes_change_collection_attests_none`,
-`test_a_collection_spelled_two_ways_is_attested_as_one`). Bout en bout, sur les trois
+`test_a_collection_spelled_two_ways_is_attested_as_one`,
+`test_two_equally_attested_collections_attest_none`), les axes matériels comparés
+séparément (`test_an_illustration_named_once_does_not_contradict_a_shared_dimension`) et
+l'axe porté par le verdict
+(`test_the_contradiction_axis_names_every_axis_that_spoke`). Bout en bout, sur les trois
 notices réelles de l'incident : [la découverte de la
 série](../../tests/unit/test_creation_series_preview.py)
-(`test_the_discovery_refuses_the_adaptation_bnf_gives_for_the_first_volume`), et son
-affichage (`test_the_preview_names_a_different_edition_without_attaching_it`).
+(`test_the_discovery_refuses_the_adaptation_bnf_gives_for_the_first_volume`), son
+affichage (`test_the_preview_names_a_different_edition_without_attaching_it`) et la
+ligne de journal, sans contenu d'annonce
+(`test_a_refused_edition_is_journalised_by_code_and_axis_only`). L'ajout explicite de
+l'adaptation par ISBN est tenu par
+[`test_addisbn_still_adds_the_adaptation_the_series_flow_refuses`](../../tests/unit/test_add_isbn.py),
+qui vérifie que la règle d'admission n'est pas consultée sur ce chemin.
 
 Une cote de création retient la moins chère des offres livrées des états acceptés
 (neuf avec ou sans étiquette, très bon état) et nomme l'un de quatre états : trouvée,
