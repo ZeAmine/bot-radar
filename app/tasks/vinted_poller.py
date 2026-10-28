@@ -9,7 +9,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -427,10 +427,27 @@ class ScrapedIngestResult:
 
 @dataclass
 class CycleFrontier:
-    """Frontière du lot conservée d'une itération à l'autre ; None tant qu'aucune n'est connue."""
+    """Frontières de lot par URL cible, conservées d'une itération à l'autre.
 
-    frontier_id: str | None = None
+    Le flux BD et chaque recherche personnalisée sont des catalogues distincts :
+    leurs identifiants ne sont pas comparables, donc chaque `target_url` garde sa
+    propre frontière. `started_monotonic` reste commun : c'est le début du cycle.
+    """
+
+    frontier_by_url: dict[str, str | None] = field(default_factory=dict)
     started_monotonic: float | None = None
+
+    def previous(self, target_url: str) -> str | None:
+        """Frontière du dernier lot connu pour cette URL ; None si inconnue."""
+        return self.frontier_by_url.get(target_url)
+
+    def record(self, target_url: str, frontier_id: str | None) -> None:
+        self.frontier_by_url[target_url] = frontier_id
+
+    def forget_inactive(self, active_urls: set[str]) -> None:
+        """Oublie les URL qui ne sont plus interrogées : pas de frontière fantôme héritée."""
+        for inactive_url in set(self.frontier_by_url) - active_urls:
+            self.frontier_by_url.pop(inactive_url, None)
 
 
 def _max_external_id(items: Iterable[Any]) -> str | None:
@@ -546,9 +563,9 @@ async def poll_vinted_once(
     latency.emit(collection_timing, "collection", collection_started, discovered_at,
                  result="returned", item_count=len(items))
     batch_frontier_id = _max_external_id(items)
-    previous_frontier_id = None if frontier is None else frontier.frontier_id
+    previous_frontier_id = None if frontier is None else frontier.previous(target_url)
     if frontier is not None:
-        frontier.frontier_id = batch_frontier_id
+        frontier.record(target_url, batch_frontier_id)
     cycle_started_monotonic = None if frontier is None else frontier.started_monotonic
     async with AsyncSessionLocal() as baseline_session:
         await AlertRepository(baseline_session).initialize_listing_baselines(
@@ -741,6 +758,9 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                 bd_scan_ok = True
 
                 custom_searches = await get_active_custom_searches_cached()
+                cycle_frontier.forget_inactive(
+                    {DEFAULT_GLOBAL_BD_URL} | {url for url, _slug in custom_searches},
+                )
                 now_monotonic = time.monotonic()
                 current_search_keys = set(custom_searches)
                 for stale_key in set(search_first_seen) - current_search_keys:

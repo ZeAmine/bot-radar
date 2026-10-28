@@ -8,6 +8,7 @@ import pytest
 
 from app.services.vinted_parsing import CATALOG_PAGE_SIZE
 from app.services.vinted_scraper import (
+    DEFAULT_GLOBAL_BD_URL,
     ScrapedVintedItem,
     VintedBlockError,
     VintedCollectionError,
@@ -242,7 +243,7 @@ async def test_batch_frontier_is_the_numeric_maximum_without_extra_fetch() -> No
         )
 
     fetch.assert_awaited_once()
-    assert frontier.frontier_id == "2700"
+    assert frontier.previous(DEFAULT_GLOBAL_BD_URL) == "2700"
     assert {call.kwargs["frontier_id"] for call in ingest.await_args_list} == {"2700"}
     assert {call.kwargs["cycle_started_monotonic"] for call in ingest.await_args_list} == {1234.5}
 
@@ -288,6 +289,142 @@ async def test_previous_frontier_is_null_at_restart_then_carried() -> None:
     assert cold["previous_frontier_id"] is None
     assert cold["previous_frontier_id"] != 0
     assert warm["previous_frontier_id"] == "42"
+
+
+CUSTOM_SEARCH_URL = "https://www.vinted.fr/catalog?search_text=wahl+magic+clip&category_id=1234"
+
+
+async def _poll_url(
+    frontier: CycleFrontier, url: str, identifiers: list[str]
+) -> list[dict[str, object]]:
+    """Un lot ramené pour une URL, et les champs de frontière de ses ingestions."""
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            return_value=_items_with_ids(identifiers),
+        ),
+        patch(
+            "app.tasks.vinted_poller._ingest_scraped_item",
+            new_callable=AsyncMock,
+            return_value=_MockIngest(),
+        ) as ingest,
+    ):
+        await poll_vinted_once(
+            seen_ids=set(),
+            vinted_client=AsyncMock(spec=httpx.AsyncClient),
+            target_url=url,
+            frontier=frontier,
+        )
+    return [dict(call.kwargs) for call in ingest.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_each_url_keeps_its_own_frontier_across_cycles() -> None:
+    """Flux BD et recherche personnalisée sont deux catalogues : aucune frontière croisée."""
+    frontier = CycleFrontier(started_monotonic=987.0)
+
+    cold_bd = await _poll_url(frontier, DEFAULT_GLOBAL_BD_URL, ["100", "2700"])
+    cold_custom = await _poll_url(frontier, CUSTOM_SEARCH_URL, ["9000"])
+    warm_bd = await _poll_url(frontier, DEFAULT_GLOBAL_BD_URL, ["2800"])
+    warm_custom = await _poll_url(frontier, CUSTOM_SEARCH_URL, ["9100"])
+
+    assert {entry["frontier_id"] for entry in cold_bd} == {"2700"}
+    assert {entry["previous_frontier_id"] for entry in cold_bd} == {None}
+    assert {entry["frontier_id"] for entry in cold_custom} == {"9000"}
+    # La recherche personnalisée arrive après le flux BD dans le même cycle : elle ne doit
+    # jamais hériter du maximum du flux BD, ni y laisser le sien.
+    assert {entry["previous_frontier_id"] for entry in cold_custom} == {None}
+    assert {entry["frontier_id"] for entry in warm_bd} == {"2800"}
+    assert {entry["previous_frontier_id"] for entry in warm_bd} == {"2700"}
+    assert {entry["frontier_id"] for entry in warm_custom} == {"9100"}
+    assert {entry["previous_frontier_id"] for entry in warm_custom} == {"9000"}
+    assert {entry["cycle_started_monotonic"] for entry in warm_bd + warm_custom} == {987.0}
+    assert frontier.previous(DEFAULT_GLOBAL_BD_URL) == "2800"
+    assert frontier.previous(CUSTOM_SEARCH_URL) == "9100"
+
+
+@pytest.mark.asyncio
+async def test_a_url_that_disappears_and_returns_inherits_no_ghost_frontier() -> None:
+    """Une recherche désactivée puis réactivée repart sans frontière héritée."""
+    frontier = CycleFrontier(started_monotonic=555.0)
+
+    first = await _poll_url(frontier, CUSTOM_SEARCH_URL, ["9000"])
+    frontier.forget_inactive({DEFAULT_GLOBAL_BD_URL})
+    returned = await _poll_url(frontier, CUSTOM_SEARCH_URL, ["9500"])
+
+    assert {entry["previous_frontier_id"] for entry in first} == {None}
+    assert {entry["previous_frontier_id"] for entry in returned} == {None}
+    assert {entry["frontier_id"] for entry in returned} == {"9500"}
+
+
+@pytest.mark.asyncio
+async def test_poller_forgets_the_frontier_of_a_search_that_disappears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Désactivée puis réactivée, une recherche ne récupère pas la frontière d'avant."""
+    import asyncio
+    from typing import cast
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "VINTED_POLLER_ENABLED", True)
+    stop_event = asyncio.Event()
+    active_by_cycle: dict[int, list[tuple[str, str]]] = {
+        1: [(CUSTOM_SEARCH_URL, "tech")],
+        2: [],
+        3: [(CUSTOM_SEARCH_URL, "tech")],
+    }
+    polls: list[tuple[int, str, dict[str, str | None]]] = []
+    state = {"cycle": 1}
+
+    async def fake_searches() -> list[tuple[str, str]]:
+        return active_by_cycle[state["cycle"]]
+
+    async def fake_poll(*_args: object, **kwargs: object) -> int:
+        cycle_index = cast(int, kwargs["cycle_index"])
+        target_url = str(kwargs["target_url"])
+        frontier = kwargs["frontier"]
+        assert isinstance(frontier, CycleFrontier)
+        polls.append((cycle_index, target_url, dict(frontier.frontier_by_url)))
+        if target_url == DEFAULT_GLOBAL_BD_URL:
+            state["cycle"] = cycle_index
+        frontier.record(target_url, f"{cycle_index}000")
+        if cycle_index == 3 and target_url == CUSTOM_SEARCH_URL:
+            stop_event.set()
+        return 0
+
+    async def fake_save(_data: dict[str, object]) -> None:
+        return None
+
+    with (
+        patch("app.tasks.vinted_poller.is_night_time", return_value=False),
+        patch(
+            "app.tasks.vinted_poller.load_initial_seen_ids",
+            new_callable=AsyncMock,
+            return_value=FifoSet(),
+        ),
+        patch("app.tasks.vinted_poller.poll_vinted_once", side_effect=fake_poll),
+        patch(
+            "app.tasks.vinted_poller.get_active_custom_searches_cached",
+            side_effect=fake_searches,
+        ),
+        patch("app.tasks.vinted_poller.save_poller_status", side_effect=fake_save),
+        patch("app.tasks.vinted_poller.get_adaptive_poll_interval", return_value=15.0),
+        patch("app.tasks.vinted_poller.random.uniform", return_value=0.0),
+        patch("app.tasks.vinted_poller.remaining_cycle_sleep", return_value=0.0),
+    ):
+        await run_vinted_poller(stop_event)
+
+    seen_at = {(cycle, url): snapshot for cycle, url, snapshot in polls}
+    # Cycle 1 : la recherche arrive après le flux BD et ne voit que sa propre entrée vide.
+    assert set(seen_at[(1, CUSTOM_SEARCH_URL)]) == {DEFAULT_GLOBAL_BD_URL}
+    # Cycle 2 : la recherche est désactivée ; son entrée, jamais relue ce cycle-là, est oubliée
+    # après la lecture des recherches actives, donc avant tous les cycles suivants.
+    assert CUSTOM_SEARCH_URL not in seen_at[(3, DEFAULT_GLOBAL_BD_URL)]
+    # Cycle 3 : elle revient sans frontière fantôme.
+    assert CUSTOM_SEARCH_URL not in seen_at[(3, CUSTOM_SEARCH_URL)]
+    assert DEFAULT_GLOBAL_BD_URL in seen_at[(3, CUSTOM_SEARCH_URL)]
 
 
 def test_remaining_cycle_sleep_subtracts_the_work_from_the_pause() -> None:
