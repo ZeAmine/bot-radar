@@ -144,6 +144,44 @@ Contrôles existants : [offres](../../tests/unit/test_market_offer_rules.py),
 SQLite ne prouve pas les verrous PostgreSQL. Aucune lecture documentaire ne prouve
 une collecte réelle ; les procédures de session et leurs permissions restent distinctes.
 
+## Admission d'un tome et cote de création
+
+Un tome de série n'est retenu qu'avec une date de parution **prouvée et déjà passée**.
+La preuve ne se lit pas n'importe où dans la zone fixe `100$a` : ses positions 0-7
+portent la **date d'entrée au catalogue**, c'est-à-dire le jour où la BNF a créé la
+notice, et les positions 9-12 la **Date 1** de parution, gouvernée par le type de
+date en position 8. Un livre catalogué hier n'est pas un livre paru hier : la date
+d'entrée n'est jamais lue comme une date de parution. Seul le type `d` (« publié en
+une seule année civile ») est admis ; `u` (inconnu), les types de ressources
+continues et les types d'édition non datés ne prouvent rien. Un jour n'est affiché
+que s'il vient d'un champ de publication (`214$d`, par exemple `DL 06/02/2026`) ;
+`DL 2026` et une année nue ne prouvent que l'année, et une année déclarée sur une
+notice de type `u` ne promeut rien. Une notice sans preuve laisse le tome détecté,
+affiché avec son motif, jamais rattaché ni coté. La BNF interrogée en MarcXchange
+l'est sous le schéma `unimarcxchange` — `marcxchange` est refusé par l'API avec un
+diagnostic SRU ; un diagnostic ou une réponse illisible est une **vérification
+impossible**, jamais une absence de notice. La limite assumée de cette preuve — une année seule ne
+distingue pas un livre paru d'un livre prévu plus tard dans la même année civile —
+est écrite et datée dans le module de la règle, seul endroit qui la décrit. L'[admission](../../app/domain/rules/tome_admission.py)
+vérifie l'identité (ISBN, série, numéro, auteur, éditeur) avant la date et ne
+remplace pas la sélection, qui dédoublonne et priorise. La carte de création ne
+rattache que le tome explicitement demandé ; les autres tomes admis restent
+« détectés, non ajoutés » et ne s'ajoutent que sur demande explicite. Aucun tome
+sans ISBN n'est créé pour compléter un décompte annoncé.
+
+Une cote de création retient la moins chère des offres livrées des états acceptés
+(neuf avec ou sans étiquette, très bon état) et nomme l'un de quatre états : trouvée,
+aucune offre, récupération impossible, offres écartées par les filtres — avec leur
+nombre et la moins chère. Le prix maximum filtre, il n'est jamais réécrit. Un prix
+déjà connu n'est jamais présenté comme l'offre du jour : il s'accompagne de la
+mention « dernière offre connue ». Le plus bas sur douze mois est cité avec son
+libellé marchand et son port ; l'absence de relevé et l'historique illisible sont
+dits distinctement.
+
+Contrôles : [admission](../../tests/unit/test_tome_admission.py),
+[cote](../../tests/unit/test_cote_outcome.py),
+[aperçu de création](../../tests/unit/test_creation_series_preview.py).
+
 ## Minimum source et fraîcheur indépendante
 
 Le panneau conserve « Dernière offre connue » et « Prix bas constaté » quand une

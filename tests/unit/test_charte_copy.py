@@ -926,17 +926,17 @@ async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
     assert recap_lines[0] == RECAP_TITLE
     assert confirm_lines[0] == "✅ <b>Alerte créée</b>"
     # Le corps, ligne de champ par ligne de champ : le meme, dans le meme ordre.
-    price_fields = ("<b>Dernière offre connue :", "<b>Prix bas constaté :")
+    price_fields = ("<b>Cote :", "<b>Prix bas constaté (1 an) :")
     assert [line for line in recap_lines
             if line.startswith("<b>") and not line.startswith(price_fields)] == [
         line for line in confirm_lines
         if line.startswith("<b>") and not line.startswith(price_fields)
     ]
-    assert "<b>Dernière offre connue :</b> Non renseigné" in confirmation
-    assert "<b>Prix bas constaté :</b> Non renseigné" in confirmation
+    assert "<b>Cote :</b> récupération impossible, la source n'a pas répondu" in confirmation
+    assert "<b>Prix bas constaté (1 an) :</b> historique indisponible" in confirmation
     # Le bloc de cote n'appartient qu'à la confirmation : relevé produit, pas critère de veille.
     assert PENDING_COTE_LINE not in recap
-    assert "<i>⚠️ Cote indisponible</i>" in confirmation
+    assert "Non renseigné" not in confirmation.split("<b>Cote")[1]
     # Chaque ecran garde son propre pied : la consigne n'est pas la meme.
     assert confirmation.endswith(
         "\n\n<i>Tu seras prévenu des annonces correspondantes.</i>"

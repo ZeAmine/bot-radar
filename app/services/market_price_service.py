@@ -9,12 +9,13 @@ import html
 import re
 from contextlib import suppress
 from dataclasses import dataclass
+from dataclasses import fields as dataclass_fields
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
-from app.bot.labels import escape_display
+from app.bot.labels import cote_line, escape_display, low_line
 from app.core.constants import (
     CATEGORY_EMOJIS,
     LEBONCOIN_SOURCE_NAME,
@@ -26,11 +27,21 @@ from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.listing import Listing
 from app.domain.rules.book_volume import notice_volume
+from app.domain.rules.cote_outcome import (
+    ETATS_COTE_ACCEPTES,
+    CoteOutcome,
+    OffreCote,
+    PrixBasOutcome,
+    ReleveHistorique,
+    select_cote_offer,
+    select_historical_low,
+)
 from app.domain.rules.market_offer import (
     is_acceptable_secondhand_condition,
     is_brand_new_partner,
     is_merchant_excluded,
 )
+from app.providers.base import MarketOffer, MarketOffers
 from app.services.price_calculator import calculate_estimated_total
 from app.utils.isbn import isbn_from_identifier
 from app.utils.price import format_cents
@@ -355,6 +366,80 @@ def format_cote_lines(book: Book | None) -> list[str]:
     if historical and historical_cents is not None:
         lines.append(f"<b>Prix bas constaté :</b> {format_cents(historical_cents)}")
     return lines
+
+
+def cache_cote_outcomes(
+    book: Book | None, prix_max: int | None = None,
+) -> tuple[CoteOutcome, PrixBasOutcome]:
+    """Cote et plus bas sur un an d'un livre déjà coté, lus dans sa seule cote en base.
+
+    Le cache ne porte pas des « offres » au sens du module de décision : il porte
+    la dernière cote retenue par fournisseur, son état, et le relevé historique du
+    marchand. On les projette tels quels — sans relire le classement du cache, qui
+    a ses propres filtres — pour que l'écran de création applique les mêmes règles
+    que la collecte vivante : mêmes états acceptés, même plafond de prix.
+    """
+    cache = _loaded_market_cache(book) if book is not None else None
+    return (
+        select_cote_offer(
+            _cache_offres(cache), ETATS_COTE_ACCEPTES, prix_max,
+            derniere_offre_cents=_retained_offer_cents(cache),
+        ),
+        select_historical_low(_cache_releves(cache)),
+    )
+
+
+def _retained_offer_cents(cache: BookMarketCache | None) -> int | None:
+    """Prix de la dernière offre retenue par une collecte précédente.
+
+    Une cote en base garde le prix qu'elle a retenu même quand la collecte du jour
+    échoue ou ne rend rien : ce prix n'est pas la cote du jour, mais il existe, et
+    l'effacer ferait perdre une information que l'utilisateur avait déjà lue.
+    """
+    if cache is None or cache.comparison_status != ComparisonStatus.AVAILABLE:
+        return None
+    return _positive(cache.lowest_delivered_price_cents)
+
+
+def _cache_offres(cache: BookMarketCache | None) -> list[OffreCote] | None:
+    """Offres du cache projetées comme celles d'une collecte vivante.
+
+    Le cache conserve les offres retenues telles que la collecte les a rendues :
+    on les relit par la **même** projection que la collecte en direct, pour que
+    l'écran de création d'un livre déjà coté et celui d'un tome jamais coté ne
+    puissent pas diverger sur ce qu'est « la moins chère des états acceptés ».
+    """
+    if cache is None or cache.collection_status == "failed":
+        return None
+    from app.services.book_market_pricing import cote_offres_from_market
+
+    required = {"provider_name", "item_price_cents", "shipping_price_cents",
+                "delivered_price_cents", "source_url"}
+    fields = {field.name for field in dataclass_fields(MarketOffer)}
+    restored = [
+        MarketOffer(**cast(dict[str, Any], {
+            key: value for key, value in row.items() if key in fields
+        }))
+        for row in cache.current_offers or []
+        if isinstance(row, dict) and required <= set(row)
+    ]
+    return cote_offres_from_market(MarketOffers(restored))
+
+
+def _cache_releves(cache: BookMarketCache | None) -> list[ReleveHistorique] | None:
+    """Relevé historique du marchand, `None` si l'historique n'a jamais été lu."""
+    history = cache.source_history if cache is not None else None
+    if isinstance(history, dict):
+        cents = history.get("price_cents")
+        if isinstance(cents, int) and not isinstance(cents, bool):
+            observed_at = history.get("observed_at")
+            return [ReleveHistorique(
+                etat=str(history.get("condition") or ""),
+                total_cents=cents,
+                at=observed_at if isinstance(observed_at, str) else None,
+            )]
+    checked_before = cache is not None and cache.historical_checked_at is not None
+    return [] if checked_before else None
 
 
 def _aware_checked_at(moment: datetime | None) -> datetime:
@@ -687,20 +772,10 @@ class MarketPriceService:
         """Génère la ligne de comparaison épurée pour la légende Telegram."""
 
         if for_creation:
-            lines = format_cote_lines(book)
-            if not lines:
-                absence = cote_absence_line(book)
-                lines.append(absence if absence and absence.startswith(NO_OFFER_LINE)
-                             else "<i>⚠️ Cote indisponible</i>")
-            cache = _loaded_market_cache(book) if book else None
-            if (cache is not None and _current_collection_is_empty(cache)
-                    and not any(NO_OFFER_LINE in line for line in lines)):
-                lines.append(NO_OFFER_LINE + ".")
-            if not any("Dernière offre connue" in line for line in lines):
-                lines.append("<b>Dernière offre connue :</b> Non renseigné")
-            if not any("Prix bas constaté" in line for line in lines):
-                lines.append("<b>Prix bas constaté :</b> Non renseigné")
-            return "\n".join(lines)
+            # Aucun champ n'est complété par « Non renseigné » : la cote et le plus
+            # bas sur un an disent leur état réel, y compris quand il n'y a rien.
+            cote, low = cache_cote_outcomes(book)
+            return "\n".join((cote_line(cote), low_line(low)))
 
         if listing is None:
             return None

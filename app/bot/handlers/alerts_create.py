@@ -37,6 +37,7 @@ from app.bot.handlers.alerts_helpers import (
     process_tech_or_clothes_query,
     refresh_creation_series,
     render_existing_alert_response,
+    requested_series_volume,
 )
 from app.bot.keyboards.alerts import get_category_selection_keyboard
 from app.bot.labels import CRITERIA_ENRICHED_NOTE, escape_display, format_price_cents
@@ -881,9 +882,10 @@ async def _save_alert(
             )
 
         if data.get("is_series"):
-            for volume in data.get("series_volumes") or []:
-                if not volume.get("confirmed") or not volume.get("isbn13"):
-                    continue
+            # Un seul tome est rattaché : celui qui a été demandé. Les autres tomes
+            # retenus restent dans le récapitulatif, annoncés « détectés, non ajoutés ».
+            volume = requested_series_volume(data.get("series_volumes") or [], data)
+            if volume is not None:
                 identified = await book_repo.get_by_isbn13(volume["isbn13"])
                 if identified is None:
                     identified = await book_repo.create(

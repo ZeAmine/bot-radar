@@ -274,10 +274,12 @@ def test_creation_card_keeps_price_but_discloses_failed_collection():
         last_attempt_at=now,
     )
     text = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
-    assert "20,59 €" in text
-    assert "Dernière offre connue" in text
+    # La collecte du jour a échoué : la cote le dit, et le prix déjà connu survit
+    # en étant daté — « dernière offre connue », jamais promu en offre du jour.
+    assert "<b>Cote :</b> récupération impossible, la source n'a pas répondu" in text
+    assert "dernière offre connue : 20,59 €" in text
     assert "collecte échouée" not in text
-    assert "Prix bas constaté :</b> Non renseigné" in text
+    assert "<b>Prix bas constaté (1 an) :</b> historique indisponible" in text
 
 
 @pytest.mark.asyncio
@@ -522,10 +524,12 @@ def test_empty_collection_is_shown_once_and_missing_prices_are_not_retained():
         last_successful_collection_at=datetime.now(UTC),
     )
     text = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
-    assert text.count("Aucune offre d'occasion trouvée") == 1
+    assert text.count("aucune offre trouvée") == 1
     book.market_cache.collection_status = "failed"
     text = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
     assert "prix conservés" not in text
+    # Aucun prix n'a jamais été retenu : il n'y a rien à rappeler.
+    assert "dernière offre connue" not in text
 
 
 def test_history_failure_does_not_turn_a_retained_price_into_a_current_offer():
@@ -550,7 +554,8 @@ def test_history_failure_does_not_turn_a_retained_price_into_a_current_offer():
         failed_provider_names=["source"],
     )
     text = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
-    assert "Dernière offre connue" in text
-    assert "Aucune offre d'occasion trouvée" in text
+    assert "dernière offre connue : 20,59 €" in text
+    assert "aucune offre trouvée" in text
+    assert "<b>Cote :</b> 20,59 €" not in text
     panel = MarketPriceService.format_market_details_card(None, book)
     assert "Meilleure offre actuelle" not in panel

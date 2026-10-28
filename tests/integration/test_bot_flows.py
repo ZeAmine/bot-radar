@@ -476,7 +476,7 @@ async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_c
     lieu sans trouver d'offre, la confirmation doit le dire. La même cote est servie
     par plusieurs plateformes, et c'est le relevé — pas le prix — que sa date nomme.
     """
-    from app.services.market_price_service import NO_OFFER_LINE, PENDING_COTE_LINE
+    from app.services.market_price_service import PENDING_COTE_LINE
 
     bot, dispatcher = driver
     user = await _add_user(db_session)
@@ -533,7 +533,9 @@ async def test_the_confirmation_dates_a_settled_absence_instead_of_promising_a_c
 
     confirmation = [text for text in _texts(bot) if "✅ <b>Alerte créée</b>" in text]
     assert confirmation, "la confirmation de création n'a jamais été rendue"
-    assert NO_OFFER_LINE in confirmation[-1]
+    # La carte de création nomme l'absence de son côté : « aucune offre trouvée »,
+    # et non un champ vide qui laisserait croire à une cote encore attendue.
+    assert "<b>Cote :</b> aucune offre trouvée" in confirmation[-1]
     # La date est celle du relevé, lue heure de Paris.
     assert "06/10" not in confirmation[-1]
     assert PENDING_COTE_LINE not in confirmation[-1]
