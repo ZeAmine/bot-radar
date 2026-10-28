@@ -18,6 +18,25 @@ conclure ; `ADMITTED_DATE_TYPES` les énumère et le module justifie l'ensemble.
 un **jour** de parution : quand elle en porte un, il est plus précis que l'année
 et il l'emporte.
 
+**Limite assumée, en l'état du 28 octobre 2026.** Une année seule ne porte pas de
+jour, donc elle ne sait pas distinguer un livre déjà en librairie d'un livre prévu
+plus tard dans la **même** année civile : une notice de type `d` avec Date 1 = 2026
+et aucun jour dans `214$d` est admise dès aujourd'hui, y compris si le tome n'est
+annoncé que pour novembre 2026. Aujourd'hui, seuls les tomes annoncés portant le
+type `u` — la BNF disant elle-même qu'elle ne sait pas — sont écartés ; le type `d`
+n'ajoute pas cette nuance. Ce n'est pas un défaut masqué mais le bord de ce que la
+zone prouve, et il est daté pour être revu quand la règle changera :
+`tests/unit/test_tome_admission.py::test_the_reference_notice_is_admitted_on_its_proven_year_not_on_its_entry_day`
+le documente (référence `20260206d2026`, `today` au 27/10/2026, admise sur l'année
+seule, `proven_day is None`).
+
+Ce que la règle garantit déjà : aucun tome d'une autre série, d'un autre auteur ou
+d'une autre maison ; aucune date inventée (un jour ne se déduit jamais d'une année,
+ni les positions 0-7 d'une date de parution) ; aucun tome en dehors du catalogue —
+pas d'existence sans notice, pas d'admission sur une vérification impossible. Ce
+qu'elle ne garantit pas encore : le jour réel de parution d'un tome de l'année en
+cours.
+
 Le module est pur : aucun accès réseau, aucune horloge implicite (`today` est
 passé), aucun état. Il ne lève jamais et ne décide pas de l'affichage : il rend un
 fait — accepté, ou refusé pour tel motif — que le récapitulatif met en phrase.

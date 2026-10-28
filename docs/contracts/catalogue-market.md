@@ -160,7 +160,9 @@ notice de type `u` ne promeut rien. Une notice sans preuve laisse le tome détec
 affiché avec son motif, jamais rattaché ni coté. La BNF interrogée en MarcXchange
 l'est sous le schéma `unimarcxchange` — `marcxchange` est refusé par l'API avec un
 diagnostic SRU ; un diagnostic ou une réponse illisible est une **vérification
-impossible**, jamais une absence de notice. L'[admission](../../app/domain/rules/tome_admission.py)
+impossible**, jamais une absence de notice. La limite assumée de cette preuve — une année seule ne
+distingue pas un livre paru d'un livre prévu plus tard dans la même année civile —
+est écrite et datée dans le module de la règle, seul endroit qui la décrit. L'[admission](../../app/domain/rules/tome_admission.py)
 vérifie l'identité (ISBN, série, numéro, auteur, éditeur) avant la date et ne
 remplace pas la sélection, qui dédoublonne et priorise. La carte de création ne
 rattache que le tome explicitement demandé ; les autres tomes admis restent
