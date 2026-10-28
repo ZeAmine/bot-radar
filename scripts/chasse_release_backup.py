@@ -25,7 +25,7 @@ from scripts.backup_recovery import (  # noqa: E402
 
 FORMAT = 'botradar-chasse-stopped-backup-v1'
 MAX_BYTES = 512 * 1024 * 1024
-SCHEMAS = {'0014_alert_market_freshness', '0015_chasse_weekly_prices'}
+SCHEMAS = {'0014_alert_market_freshness', '0015_chasse_weekly_prices', '0016_alert_setting_changes'}
 
 
 def validate_schema(value: str) -> str:

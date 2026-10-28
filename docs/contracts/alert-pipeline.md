@@ -78,6 +78,48 @@ Un 403 est classé par les seuls en-têtes de la réponse — `cf-ray` ou
 dans la raison du statut de pause. Cinq cycles consécutifs sans collecte du flux
 Livres notifient une fois ; la reprise notifie une seconde fois.
 
+## Journal des réglages d'alerte
+
+Une table `alert_setting_changes` conserve l'historique des réglages modifiés : une
+ligne par champ, avec l'ancienne valeur, la nouvelle, l'horodatage UTC et l'origine
+du geste. Elle répond à une question que l'état courant ne peut pas : pourquoi une
+alerte ne remonte plus, alors que son plafond ou ses exclusions ont changé hier.
+
+| Colonne | Type | Rôle |
+| --- | --- | --- |
+| `id` | UUID | identifiant de la ligne |
+| `alert_id` | UUID, FK `alerts.id` `ON DELETE CASCADE` | alerte concernée ; supprimer l'alerte supprime son journal |
+| `field` | `VARCHAR(64)` | nom du champ modifié, tel que l'attribut du modèle |
+| `old_value` | JSON/JSONB nullable | valeur avant le geste, `NULL` si le champ était vide |
+| `new_value` | JSON/JSONB nullable | valeur après le geste, `NULL` si le champ a été vidé |
+| `changed_at` | `TIMESTAMP WITH TIME ZONE` | instant UTC de l'écriture |
+| `origin` | `VARCHAR(200)` | module et fonction qui ont posé la valeur |
+
+Le seul index est celui de lecture : `(alert_id, changed_at)`, soit l'histoire
+d'une alerte dans l'ordre. Le journal n'est ni un index de recherche, ni un
+journal d'audit global.
+
+Champs suivis : `max_item_price_cents`, `include_keywords`, `exclude_keywords`,
+`variants`, `accepted_conditions`, `listing_baseline`. Rien d'autre — un statut, un
+nom ou une cote de série ne sont pas des réglages de veille. Créer une alerte
+n'écrit aucune ligne : une création n'a pas d'ancienne valeur, et la ligne d'alerte
+la porte déjà. Il n'y a pas de reprise du passé : l'historique commence à la mise en
+service, et aucune valeur antérieure n'est inventée.
+
+L'écriture vit dans [un seul module](../../app/db/alert_settings_journal.py) et se
+déclenche sur le `flush` de la session SQLAlchemy, pas dans les gestionnaires :
+bot, tâche de fond et script de masse en héritent sans le savoir. `origin` est relevé
+au moment de l'affectation, ce qui distingue une action du bot d'une modification de
+masse, sans dépendre de la pile au moment du `commit`. Une affectation sans
+changement n'a pas d'historique d'attribut et n'écrit donc rien ; un geste qui
+touche trois réglages écrit trois lignes, chacune avec sa propre ancienne valeur.
+Le mécanisme ne peut pas enregistrer ce qui n'a pas changé — c'est ce qui rend
+l'absence de ligne significative.
+
+Le journal ne décide rien : ni le matching, ni la notification, ni l'affichage ne le
+lisent. Il ne participe à aucune purge applicative et une restauration de sauvegarde
+le restaure avec le reste de la base, sans le reconstruire.
+
 ## Preuves existantes et limites
 
 | Contrat | Contrôles à sélectionner |
@@ -87,6 +129,7 @@ Livres notifient une fois ; la reprise notifie une seconde fois.
 | Envoi et enrichissement | [ingest→Telegram](../../tests/unit/test_ingest_to_telegram.py), [use case](../../tests/unit/test_ingest_use_case.py) |
 | Frontières de temps et résultat | [latence](../../tests/integration/test_alert_latency.py), [mesures](../alert-latency.md) |
 | Observabilité de la scrutation | [métriques du poller](../../tests/unit/test_vinted_poller.py), [statut](../../tests/unit/test_status_command.py), [classification et compteurs](../../tests/unit/test_vinted_scraper.py) |
+| Journal des réglages, par chemin d'écriture | [journal des réglages](../../tests/integration/test_alert_settings_journal.py) |
 
 Ces contrôles sont des preuves seulement lorsqu'exécutés sur un arbre et une
 sélection identifiés. Les benchmarks ont des transports simulés. La source catalogue

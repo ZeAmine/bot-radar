@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import settings
+from app.db import alert_settings_journal as _alert_settings_journal  # noqa: F401
 
 engine: AsyncEngine = create_async_engine(
     settings.DATABASE_URL,

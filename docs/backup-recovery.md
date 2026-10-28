@@ -3,7 +3,7 @@
 Périmètre : contrat et procédure de l'outillage de sauvegarde/restauration ; les exercices datés restent historiques. Lire [pause-actions](pause-actions.md) pour le schéma courant et la quarantaine.
 
 Statut : les preuves datées ci-dessous restent celles du schéma 0014. Le code
-courant de l’outillage synthétique est aligné sur 0015. Les essais isolés CAL aux
+courant de l’outillage synthétique est aligné sur 0016. Les essais isolés CAL aux
 schémas 0014 et 0015 restent des preuves historiques. Le
 [chantier CAL](operations/chasse-normal-operation.md) exclut cet outillage de
 son parcours de livraison, sur instruction du propriétaire. Aucune sauvegarde
@@ -73,9 +73,9 @@ La cible de l'exercice est un PostgreSQL 16 neuf, sans volume existant, publié 
 port 127.0.0.1 exact. Le label, le conteneur, les ports, le stockage, l'identifiant
 système SQL, la version, la base et l'utilisateur sont attestés. Une cible non vide,
 une identité discordante ou une version incompatible sont refusées avant pg_restore.
-L’outil synthétique courant accepte exclusivement `0015_chasse_weekly_prices`, valeur de `SCHEMA`
+L’outil synthétique courant accepte exclusivement `0016_alert_setting_changes`, valeur de `SCHEMA`
 dans [`scripts/backup_recovery.py`](../scripts/backup_recovery.py), alignée sur
-l’unique tête Alembic. Les archives historiques 0012, 0013 et 0014 sont refusées par cet outil courant : ne pas changer leur
+l’unique tête Alembic. Les archives historiques 0012, 0013, 0014 et 0015 sont refusées par cet outil courant : ne pas changer leur
 manifeste ou la constante pour les faire accepter. Le test statique d’alignement
 ne remplace pas une restauration PostgreSQL vérifiée.
 Il n’y a pas de migration implicite pendant la restauration. La procédure 0010

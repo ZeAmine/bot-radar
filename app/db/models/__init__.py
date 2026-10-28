@@ -3,6 +3,7 @@
 from app.db.base import Base
 from app.db.models.alert import Alert
 from app.db.models.alert_book import AlertBook
+from app.db.models.alert_setting_change import AlertSettingChange
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
 from app.db.models.bot_event import BotEvent
@@ -19,6 +20,7 @@ __all__ = [
     "User",
     "Category",
     "Alert",
+    "AlertSettingChange",
     "Book",
     "AlertBook",
     "Listing",
