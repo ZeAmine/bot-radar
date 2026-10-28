@@ -560,6 +560,7 @@ async def poll_vinted_once(
     collection_started = latency.clock()
     target_hash = _target_hash(target_url)
     read_result = "returned"
+    discovered_at: float | None = None
     received_count: int | None = None
     new_count: int | None = None
     batch_frontier_id: str | None = None
@@ -638,6 +639,10 @@ async def poll_vinted_once(
                 )
         return ingested_count
     finally:
+        # Une ligne par lecture, à la fin du passage : elle décrit ce que la lecture a
+        # ramené, pas l'instant où elle a eu lieu. Cet instant reste la ligne `collection`
+        # (même `collection_id`) ; `discovered_monotonic` le redonne sur l'horloge monotone,
+        # ce qui situe la lecture sans dépendre de l'heure de l'ingestion du lot.
         latency.emit(
             collection_timing,
             "catalogue_read",
@@ -647,6 +652,7 @@ async def poll_vinted_once(
             cycle=cycle_index,
             category=category_slug,
             target_hash=target_hash,
+            discovered_monotonic=discovered_at,
             items_received=received_count,
             items_new=new_count,
             frontier_id=batch_frontier_id,

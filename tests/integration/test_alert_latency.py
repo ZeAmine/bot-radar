@@ -420,9 +420,16 @@ async def test_catalogue_read_is_emitted_after_the_ingestion_and_the_send(
     assert read.previous_frontier_id is None
     assert read.target_hash == hashlib.sha256(url.encode()).hexdigest()[:8]
     assert not hasattr(read, "target_url")
+    assert isinstance(read.discovered_monotonic, float)
     assert {record.collection_id for record in events(caplog, "ingestion_terminal")} == {
         read.collection_id
     }
+    # La ligne `collection` de la même lecture porte la durée qui mène à cet instant :
+    # c'est elle qui date la lecture, `catalogue_read` ne fait que le redonner.
+    collections = events(caplog, "collection")
+    assert len(collections) == 1
+    assert collections[0].collection_id == read.collection_id
+    assert collections[0].duration_ms is not None
     phases = [
         getattr(record, "phase", "")
         for record in caplog.records

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from app.core import alert_latency
 from app.services.vinted_parsing import CATALOG_PAGE_SIZE
 from app.services.vinted_scraper import (
     DEFAULT_GLOBAL_BD_URL,
@@ -431,8 +432,11 @@ async def test_poller_forgets_the_frontier_of_a_search_that_disappears(
 @pytest.mark.asyncio
 async def test_catalogue_read_leaves_its_line_on_an_early_return(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Un scan sans nouveauté sort tôt : la lecture laisse quand même sa ligne, en dernier."""
+    instants = iter([100.25, 100.75])
+    monkeypatch.setattr(alert_latency, "clock", lambda: next(instants, 200.0))
     frontier = CycleFrontier(started_monotonic=321.0)
     with (
         patch(
@@ -467,6 +471,11 @@ async def test_catalogue_read_leaves_its_line_on_an_early_return(
     assert read.previous_frontier_id is None
     assert read.target_hash == hashlib.sha256(CUSTOM_SEARCH_URL.encode()).hexdigest()[:8]
     assert CUSTOM_SEARCH_URL not in caplog.text
+    # L'instant du retour de lecture est celui que `collection` mesure (100.75), pas
+    # celui de l'émission de cette ligne, qui vient après l'ingestion et l'envoi (200.0).
+    assert read.discovered_monotonic == 100.75
+    collections = [r for r in caplog.records if getattr(r, "phase", None) == "collection"]
+    assert [record.duration_ms for record in collections] == [500.0]
     phases = [
         getattr(record, "phase", "")
         for record in caplog.records
@@ -514,6 +523,7 @@ async def test_an_unread_catalogue_claims_no_received_count(
     assert read.result == expected
     assert read.cycle == 3
     assert read.category == "tech"
+    assert read.discovered_monotonic is None
     assert read.items_received is None
     assert read.items_new is None
     assert read.frontier_id is None

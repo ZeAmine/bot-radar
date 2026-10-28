@@ -10,9 +10,10 @@ avec doubles ne sont pas des mesures de production.
 ## Événements
 
 `alert_latency` utilise `time.monotonic`, des `duration_ms` et `duration_unit=ms`.
-Les timestamps monotoniques absolus ne sont pas enregistrés, à une exception près :
-`cycle_started_monotonic`, début de cycle du poller, dont la valeur ne se lit que
-relativement à l'horloge de l'instance qui l'émet. Les événements
+Les timestamps monotoniques absolus ne sont pas enregistrés, à deux exceptions près :
+`cycle_started_monotonic`, début de cycle du poller, et `discovered_monotonic`, retour
+de lecture d'un catalogue ; leurs valeurs ne se lisent que relativement à l'horloge de
+l'instance qui les émet. Les événements
 portent les instants capturés, pas leur date d’émission : le diagnostic pré-appel
 est émis à la fin de la tentative pour ne pas entrer dans son chrono. `null` signifie une
 frontière inconnue/une horloge défaillante, jamais zéro. Pas de SQL, réseau ou
@@ -23,7 +24,7 @@ sans log récursif et ne remplacent pas les résultats ou exceptions métier.
 | phase | Début → fin |
 | --- | --- |
 | collection | Avant fetch_vinted_page → retour de la liste parsée, ou exception/annulation ; réseau de collecte et parsing inclus, aucune date de publication supposée |
-| catalogue_read | Aucune durée : une ligne par lecture de catalogue, émise en `finally` à la fin de `poll_vinted_once`, donc après l'ingestion et l'envoi Telegram du lot, y compris sur une sortie anticipée sans nouveauté ; une lecture échouée garde `result="error"`/`"cancelled"` et aucun compteur |
+| catalogue_read | Aucune durée : une ligne par lecture de catalogue, émise en `finally` à la fin de `poll_vinted_once`, donc après l'ingestion et l'envoi Telegram du lot, y compris sur une sortie anticipée sans nouveauté ; son horodatage ne date pas la lecture (`collection`, même `collection_id`, porte cet instant, redonné par `discovered_monotonic`) ; une lecture échouée garde `result="error"`/`"cancelled"` et aucun compteur |
 | discovery_to_entry | Retour de collecte local → entrée dans ProcessListingUseCase.execute ; seulement lorsque connu, conversion et queue poller incluses |
 | semaphore_wait | Avant acquisition du sémaphore poller → acquisition/abandon ; conversion du payload exclue |
 | guard_wait | Avant acquisition de la garde F03-A → acquisition/abandon ; traitement/rollback exclus |
@@ -56,32 +57,42 @@ d'exception n'est ajouté. Les IDs servent aux logs, pas à des labels de métri
 ## Lecture de catalogue
 
 `catalogue_read` est la seule phase qui décrit un **catalogue lu**, et non une annonce
-ingérée : une ligne par appel de `poll_vinted_once`, émise à sa fin, donc après
-l'ingestion du lot et après l'envoi Telegram, ou après la sortie anticipée qui suit une
-lecture sans nouveauté. Elle porte `cycle` (index du cycle déjà reçu en paramètre),
-`category` (le `category_slug` du catalogue), `target_hash` (huit premiers caractères
-hexadécimaux du SHA-256 de l'URL cible : deux catalogues se distinguent sans écrire
-l'URL ni le texte de recherche en clair), `items_received` (annonces ramenées par
-`fetch_vinted_page`), `items_new` (annonces absentes de `seen_ids`), `frontier_id` et
-`previous_frontier_id` du lot. Rien n'est collecté pour la produire : aucun appel
-supplémentaire, aucun changement de cadence. La ligne ne porte pas de durée —
-`duration_ms` reste `null` —, elle borne un instant de lecture au lieu de chronométrer
-une phase : c'est l'horodatage de la ligne qui sert de repère temporel.
+ingérée : une ligne par appel de `poll_vinted_once`. Elle porte `cycle` (index du cycle
+déjà reçu en paramètre), `category` (le `category_slug` du catalogue), `target_hash`
+(huit premiers caractères hexadécimaux du SHA-256 de l'URL cible : deux catalogues se
+distinguent sans écrire l'URL ni le texte de recherche en clair), `items_received`
+(annonces ramenées par `fetch_vinted_page`), `items_new` (annonces absentes de
+`seen_ids`), `frontier_id` et `previous_frontier_id` du lot, et `discovered_monotonic`,
+l'instant monotone du retour de cette lecture. Rien n'est collecté pour la produire :
+aucun appel supplémentaire, aucun changement de cadence. La ligne ne porte pas de durée
+(`duration_ms` reste `null`) : elle décrit ce que la lecture a ramené, pas combien de
+temps elle a pris.
+
+Où lire l'instant de la lecture. La ligne est émise en `finally`, à la fin du passage :
+après l'ingestion du lot et après l'envoi Telegram, ou après la sortie anticipée qui suit
+une lecture sans nouveauté. Son horodatage est donc décalé de tout le traitement du lot
+et ne date pas la lecture. L'instant de la lecture est celui de la ligne `collection` du
+même `collection_id`, émise au retour de `fetch_vinted_page` ; `catalogue_read` le
+redonne avec `discovered_monotonic`, sur l'horloge monotone. Un intervalle de lecture se
+calcule donc entre deux lignes `collection`, jointes à leur `catalogue_read` par
+`collection_id` — le même identifiant qui rattache l'empreinte et les compteurs à leur
+lecture —, ou entre deux `discovered_monotonic` de la même instance.
 
 Une lecture qui n'a pas eu lieu ne fabrique pas de zéros. Si `fetch_vinted_page` lève ou
 est annulé, la ligne part quand même, avec le marqueur de résultat déjà employé par
 `collection` (`result="error"` ou `"cancelled"`, le type d'exception restant sur la
-ligne `collection`) et `items_received`, `items_new` et `frontier_id` à `null` : ils sont
-inconnus, pas vides. Sans frontière précédente connue, `previous_frontier_id` vaut
-`null`, jamais `0`.
+ligne `collection`) et `items_received`, `items_new`, `frontier_id`, `previous_frontier_id`
+et `discovered_monotonic` à `null` : ils sont inconnus, pas vides. Sans frontière
+précédente connue, `previous_frontier_id` vaut `null`, jamais `0`.
 
 Ce que l'événement permet de calculer : le **débit par intervalle, par catalogue**.
-Deux `catalogue_read` successives du même `target_hash` donnent, par l'écart de leurs
-horodatages, l'intervalle de lecture de ce catalogue, et les `items_new` de la seconde ce
-que cet intervalle a apporté de neuf ; sur plusieurs lectures, la somme des `items_new`
-rapportée à l'écart entre la première et la dernière donne le débit de cette période.
-C'est ce que `poller_cycle` ne peut pas faire : sa ligne additionne le flux BD et la
-recherche personnalisée du même cycle et n'identifie que le cycle.
+Deux `catalogue_read` successives du même `target_hash` donnent, par leurs
+`discovered_monotonic` — ou par les horodatages des lignes `collection` jointes par
+`collection_id` —, l'intervalle de lecture de ce catalogue, et les `items_new` de la
+seconde ce que cet intervalle a apporté de neuf ; sur plusieurs lectures, la somme des
+`items_new` rapportée à l'écart entre la première et la dernière donne le débit de cette
+période. C'est ce que `poller_cycle` ne peut pas faire : sa ligne additionne le flux BD
+et la recherche personnalisée du même cycle et n'identifie que le cycle.
 
 Ce qu'il ne permet pas : il borne l'instant de la lecture, il ne date pas l'apparition de
 l'annonce chez Vinted, faute de source (voir plus bas) — il majore la latence
@@ -117,9 +128,11 @@ réellement ingérées : une annonce vue puis filtrée (déjà en `seen_ids`) n'
 aucune ligne terminale, et une annonce sans destinataire émet une ligne mais aucune
 alerte. Ensuite, le débit d'annonces par intervalle ne se déduit pas du nombre de
 lignes d'ingestion : il se lit sur les lignes `catalogue_read`, une par lecture de
-catalogue, avec **leurs horodatages** — jamais avec l'heure d'ingestion, qui dépend
-de la file d'ingestion et non de la scrutation ; `cycle_started_monotonic` sert
-seulement à regrouper les lignes d'ingestion d'un même cycle, et la ligne
+catalogue, avec l'instant de lecture qui va avec — `discovered_monotonic`, ou
+l'horodatage de la ligne `collection` du même `collection_id`, jamais l'horodatage de
+`catalogue_read`, émis après l'ingestion et l'envoi — et jamais avec l'heure d'ingestion,
+qui dépend de la file d'ingestion et non de la scrutation ; `cycle_started_monotonic`
+sert seulement à regrouper les lignes d'ingestion d'un même cycle, et la ligne
 `poller_cycle` additionne les deux catalogues d'un cycle sans les distinguer. Enfin,
 la frontière ne date pas l'annonce : elle borne le lot, une annonce absente du lot
 ne laissant aucune trace (ni avant, ni après).
@@ -131,9 +144,9 @@ len(custom_searches)]`). Pour une recherche donnée, `previous_frontier_id` ne
 remonte donc pas au cycle précédent mais à son dernier passage, plusieurs cycles en
 arrière. Un débit par intervalle reste calculable par catalogue — c'est ce que
 `catalogue_read` apporte — à condition de rapporter `items_new` à l'écart entre deux
-lectures **de ce catalogue** : un cycle pour le flux BD, n cycles pour une recherche
-personnalisée. Ne pas calculer de débit de recherche personnalisée en croyant lire
-un intervalle d'un cycle.
+instants de lecture **de ce catalogue** : un cycle pour le flux BD, n cycles pour une
+recherche personnalisée. Ne pas calculer de débit de recherche personnalisée en croyant
+lire un intervalle d'un cycle.
 
 ## Publication → détection : source absente
 
