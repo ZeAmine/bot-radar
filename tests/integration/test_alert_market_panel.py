@@ -12,6 +12,25 @@ from app.use_cases.view_market_details import ViewMarketDetailsUseCase
 from tests.database import postgres_replayed_database
 
 
+def serialized_offer(total_cents: int) -> dict[str, object]:
+    """Offre retenue telle que le cache la conserve (`asdict` d'un `MarketOffer`)."""
+    return {
+        "provider_name": "chasse_aux_livres",
+        "item_price_cents": total_cents - 300,
+        "shipping_price_cents": 300,
+        "delivered_price_cents": total_cents,
+        "source_url": "https://www.chasse-aux-livres.fr/prix/9782369904151",
+        "currency": "EUR",
+        "item_condition": "Très bon état",
+        "confidence": "high",
+        "is_available": True,
+        "is_historical": False,
+        "is_comparable": True,
+        "price_includes_shipping": False,
+        "raw_payload": {"best_merchant": "Momox Shop"},
+    }
+
+
 async def test_alert_market_starts_at_tome_one_without_listing_or_network(monkeypatch):
     async with postgres_replayed_database() as database:
         s = database.session
@@ -63,7 +82,9 @@ async def test_creation_reloads_a_cache_written_in_another_session(monkeypatch):
         cache = BookMarketCache(
             book_id=book.id,
             lowest_delivered_price_cents=1000,
+            current_offers=[serialized_offer(1000)],
             comparison_status=ComparisonStatus.AVAILABLE,
+            collection_status="complete",
         )
         session.add(cache)
         await session.commit()
@@ -76,6 +97,10 @@ async def test_creation_reloads_a_cache_written_in_another_session(monkeypatch):
                 changed = await MarketPriceRepository(other).get_cache_by_book_id(book_id)
                 from datetime import UTC, datetime, timedelta
                 changed.lowest_delivered_price_cents = 1500
+                # La carte de création se lit dans les offres retenues, pas dans
+                # l'agrégat : une cote fraîche écrite par une autre session doit y
+                # apparaître, sinon « rechargée » ne veut rien dire.
+                changed.current_offers = [serialized_offer(1500)]
                 changed.checked_at = datetime.now(UTC)
                 changed.expires_at = changed.checked_at + timedelta(hours=24)
                 await other.commit()
@@ -102,4 +127,7 @@ async def test_creation_reloads_a_cache_written_in_another_session(monkeypatch):
 
         created = (await session.execute(select(Alert))).scalar_one()
         assert created.status == AlertStatus.ACTIVE
-        assert "<b>Dernière offre connue :</b> 15,00 €" in message.edit_text.call_args.args[0]
+        assert (
+            "<b>Cote :</b> 15,00 € - Momox Shop, très bon état, port inclus"
+            in message.edit_text.call_args.args[0]
+        )

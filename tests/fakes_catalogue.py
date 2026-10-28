@@ -13,6 +13,7 @@ qui l'utilisent.
 from __future__ import annotations
 
 import urllib.parse
+import xml.etree.ElementTree as ET
 
 # Deux éditions BNF du même titre, et un ISBN réel attribué à un autre ouvrage
 # du même éditeur (« Keeping two ») — l'erreur typique d'un LLM.
@@ -30,6 +31,30 @@ BNF_RECORD_TEMPLATE = """<srw:record>
 </oai_dc:dc>
 </srw:recordData>
 </srw:record>"""
+
+# Réponse MarcXchange : la seule qui porte la date **typée** (`100$a`) lue par la
+# règle d'admission. Le gabarit est minimal — ISBN, date codée, titre, éditeur — et
+# se déduit de la notice Dublin Core correspondante pour qu'un même cas de test ne
+# puisse pas décrire deux ouvrages différents selon le schéma demandé.
+MARCXCHANGE_TEMPLATE = """<mxc:record xmlns:mxc="info:lc/xmlns/marcxchange-v2" format="MARC21">
+  <mxc:leader>00000cam a2200000 i 4500</mxc:leader>
+  <mxc:datafield tag="010" ind1=" " ind2=" ">
+    <mxc:subfield code="a">{isbn}</mxc:subfield>
+  </mxc:datafield>
+  <mxc:datafield tag="100" ind1=" " ind2=" ">
+    <mxc:subfield code="a">{date_code}</mxc:subfield>
+  </mxc:datafield>
+  <mxc:datafield tag="200" ind1="1" ind2=" ">
+    <mxc:subfield code="a">{title}</mxc:subfield>{volume}{series}
+  </mxc:datafield>{series_field}
+  <mxc:datafield tag="214" ind1=" " ind2=" ">
+    <mxc:subfield code="a">Paris</mxc:subfield>
+    <mxc:subfield code="c">{publisher}</mxc:subfield>{publication}
+  </mxc:datafield>
+  <mxc:datafield tag="700" ind1=" " ind2=" ">
+    <mxc:subfield code="a">{creator}</mxc:subfield>
+  </mxc:datafield>
+</mxc:record>"""
 
 SRU_HEADER = (
     '<?xml version="1.0" encoding="UTF-8"?>'
@@ -164,6 +189,150 @@ OPENLIBRARY_HOBBIT_DOC = {
 }
 
 
+_DC_NS = {"dc": "http://purl.org/dc/elements/1.1/"}
+
+
+def _dc_fields(record: str, name: str) -> list[str]:
+    """Champs Dublin Core d'une notice simulée, lus dans son propre XML."""
+    wrapped = SRU_HEADER.format(count=1, records=record)
+    try:
+        root = ET.fromstring(wrapped)
+    except ET.ParseError:
+        return []
+    return [(found.text or "").strip() for found in root.findall(f".//dc:{name}", _DC_NS)]
+
+
+def _dc_field(record: str, name: str) -> str:
+    values = _dc_fields(record, name)
+    return values[0] if values else ""
+
+
+# Le nom du format (`marcxchange`) et celui que l'API BNF accepte
+# (`unimarcxchange`) : les doublures répondent aux deux, comme la vraie API à
+# personne ne devrait répondre au premier.
+MARCXCHANGE_SCHEMAS = frozenset({"marcxchange", "unimarcxchange"})
+
+
+def marcxchange_from_dc(record: str, *, date_type: str = "d") -> str:
+    """Notice MarcXchange déduite d'une notice Dublin Core simulée.
+
+    Le Dublin Core d'une notice ne porte que l'année : la date typée est donc
+    reconstruite ici, **certaine (`d`) par défaut**, comme l'est celle d'un volume
+    déjà en librairie. Un test qui veut un tome annoncé mais non paru passe
+    `date_type="u"` — c'est la même zone, lue autrement.
+    """
+    from app.domain.rules.book_volume import notice_volume
+
+    title = _dc_field(record, "title").split(" / ")[0]
+    year = _dc_field(record, "date")[:4]
+    year = year if year.isdigit() else "2024"
+    isbn = next((value.replace("ISBN ", "") for value in _dc_fields(record, "identifier")
+                 if value.startswith("ISBN ")), "")
+    number = notice_volume(title)
+    return MARCXCHANGE_TEMPLATE.format(
+        isbn=isbn,
+        date_code=f"{year}0101{date_type}{year}    m  y0frey50      ba",
+        title=title,
+        volume=f'<mxc:subfield code="h">{number}</mxc:subfield>' if number else "",
+        series="",
+        publisher=_dc_field(record, "publisher") or "Éditeur test",
+        creator=_dc_field(record, "creator"),
+        publication="",
+        series_field="",
+    )
+
+
+def marcxchange_notice(
+    *, isbn: str, title: str, date_code: str, publisher: str, creator: str,
+    publication_field: str | None = None, number: int | None = None,
+    series: str | None = None,
+) -> str:
+    """Une notice MarcXchange brute, pour les tests qui lisent la zone elle-même.
+
+    Rien n'est interprété ici : `date_code` est le texte exact de `100$a` et
+    `publication_field` celui de `214$d`. C'est le parseur réel qui les relit, comme
+    il lirait la réponse de la BNF — c'est la seule façon de prouver qu'on ne
+    confond pas la date d'entrée au catalogue avec la date de parution.
+    """
+    return MARCXCHANGE_TEMPLATE.format(
+        isbn=isbn,
+        date_code=date_code,
+        title=title,
+        volume=f'<mxc:subfield code="h">{number}</mxc:subfield>' if number else "",
+        series="",
+        series_field=(
+            '\n  <mxc:datafield tag="225" ind1=" " ind2=" ">'
+            f'<mxc:subfield code="a">{series}</mxc:subfield></mxc:datafield>'
+            if series else ""
+        ),
+        publisher=publisher,
+        creator=creator,
+        publication=(
+            f'<mxc:subfield code="d">{publication_field}</mxc:subfield>'
+            if publication_field else ""
+        ),
+    )
+
+
+def notices_from_marcxchange(*records: str):
+    """Notices lues par le **vrai** parseur MarcXchange, comme le ferait la BNF."""
+    from app.services.book_metadata_service import parse_tome_notices
+
+    payload = SRU_HEADER.format(count=len(records), records="".join(records)).encode()
+    return parse_tome_notices(payload)
+
+
+def tome_notice(meta, *, series=None, date_type="d", day="2024-05-02", number=None,
+                publication_field=None):
+    """La notice MarcXchange que la règle d'admission lirait pour ce tome.
+
+    Le Dublin Core simulé ne porte pas la date **typée** : les tests qui simulent la
+    BNF par `_bnf_records_result` doivent fournir cette preuve à part, sinon chaque
+    tome est refusé — à juste titre — faute de date prouvée. `date_type="u"` fabrique
+    le cas inverse : un tome annoncé dont rien ne prouve qu'il est paru.
+    """
+    published = day[:4]
+    record = marcxchange_notice(
+        isbn=meta.isbn13 or "",
+        title=meta.volume_title or meta.title,
+        date_code=f"{published}0101{date_type}{published}    m  y0frey50      ba",
+        publisher=meta.publisher or "Éditeur test",
+        creator=meta.author or "",
+        publication_field=publication_field,
+        number=number if number is not None else meta.volume_number,
+        series=series,
+    )
+    parsed = notices_from_marcxchange(record)
+    assert parsed, "la notice simulée doit être lisible par la règle"
+    return parsed[0]
+
+
+def patch_bnf_admission(
+    service, metas, *, series=None, date_type="d", day="2024-05-02", date_types=None,
+):
+    """Remplace la preuve MarcXchange de la BNF par celle des notices fournies.
+
+    Une seule preuve est demandée par ISBN : la BNF répond pour l'ISBN qu'on lui
+    donne, et ne connaît que les notices que le test a déjà simulées.
+    `date_types` donne le type de date **par ISBN** : c'est ce qui distingue, dans
+    une même série, le tome paru du tome seulement annoncé.
+    """
+    from unittest.mock import patch
+
+    by_isbn = {meta.isbn13: meta for meta in metas if meta.isbn13}
+    per_isbn = dict(date_types or {})
+
+    async def _notices(isbn13):
+        meta = by_isbn.get(isbn13)
+        if meta is None:
+            return []
+        return [tome_notice(
+            meta, series=series, day=day, date_type=per_isbn.get(isbn13, date_type),
+        )]
+
+    return patch.object(service, "_bnf_tome_notices", _notices)
+
+
 class FakeResponse:
     def __init__(self, content: bytes = b"", payload: dict[str, object] | None = None,
                  status_code: int = 200) -> None:
@@ -186,6 +355,7 @@ class FakeCatalogueClient:
         bnf_panne_sur: str | None = None,
         bnf_records: list[str] | None = None,
         google_books_items: list[dict[str, object]] | None = None,
+        bnf_date_type: str = "d",
     ) -> None:
         self.queries: list[str] = []
         self.bnf_empty = bnf_empty
@@ -194,6 +364,9 @@ class FakeCatalogueClient:
         self.openlibrary_status = openlibrary_status
         self.bnf_records = BNF_RECORDS if bnf_records is None else bnf_records
         self.google_books_items = google_books_items
+        # Type de la date de parution des notices MarcXchange : `d` certaine (défaut),
+        # `u` annoncée — le cas d'un tome dont rien ne prouve qu'il est en librairie.
+        self.bnf_date_type = bnf_date_type
         self.google_books_queries: list[str] = []
 
     @property
@@ -233,12 +406,16 @@ class FakeCatalogueClient:
         if self.bnf_empty:
             return FakeResponse(SRU_HEADER.format(count=0, records="").encode("utf-8"))
 
-        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["query"][0]
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        query = params["query"][0]
         matched = [
             record
             for record in self.bnf_records
             if f'"{record.split("ISBN ")[1].split("<")[0]}"' in query
         ] or self.bnf_records
+        if params.get("recordSchema", ["dublincore"])[0] in MARCXCHANGE_SCHEMAS:
+            matched = [marcxchange_from_dc(record, date_type=self.bnf_date_type)
+                       for record in matched]
         payload = SRU_HEADER.format(count=len(matched), records="".join(matched))
         return FakeResponse(payload.encode("utf-8"))
 

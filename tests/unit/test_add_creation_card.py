@@ -210,8 +210,12 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         await save_alert(confirm_callback, state, db_user, db_session)
         confirmation = confirm_message.edit_text.call_args[0][0]
 
-        assert "<b>Dernière offre connue :</b> 18,00 €" in confirmation
-        assert "<b>Prix bas constaté :</b> 16,50 €" in confirmation
+        # Cote en base sans liste d'offres courante : le prix retenu est cité comme
+        # dernière offre connue, jamais comme l'offre du jour.
+        assert "(dernière offre connue : 18,00 €)" in confirmation
+        assert "<b>Prix bas constaté (1 an) :</b> 16,50 € - très bon état +, port inclus" in (
+            confirmation
+        )
         assert "Momox" not in confirmation
         assert "chasse_aux_livres" not in confirmation
         assert "Chasse" not in confirmation
@@ -592,7 +596,7 @@ async def test_a_just_created_book_still_gets_its_confirmation():
     confirmation = confirm_message.edit_text.call_args[0][0]
     assert "✅ <b>Alerte créée</b>" in confirmation
     assert "<b>Titre :</b> Le démon de la colline au loup" in confirmation
-    assert "<i>⚠️ Cote indisponible</i>" in confirmation
+    assert "<b>Cote :</b> récupération impossible" in confirmation
     # Deux lectures chargées : le livre créé, puis les liens actuels après préparation.
     assert repos["book_repo"].get_by_id.await_count == 1
     repos["book_repo"].get_all_books_for_alert.assert_awaited_once()
