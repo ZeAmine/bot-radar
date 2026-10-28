@@ -50,6 +50,8 @@ Six règles de présentation, valables sur **tous** les écrans :
 import html
 
 from app.domain.enums import ItemCondition
+from app.domain.rules.cote_outcome import CoteOutcome, PrixBasOutcome
+from app.utils.price import format_cents
 
 # Mentions d'absence : une donnée absente n'est jamais un zéro.
 
@@ -101,6 +103,94 @@ TOTAL_SUFFIX_TTC = "TTC"
 FIELD_FALSE_POSITIVES = "Faux positifs"
 FIELD_SUGGESTED_EXCLUDES = "Mots-clés exclus suggérés"
 FIELD_SUGGESTED_EXCLUDES_CUSTOM = "Mots-clés exclus suggérés (personnalisés)"
+
+# Cote d'un tome à la création : trois libellés, jamais un champ vide à la place.
+FIELD_COTE = "Cote"
+FIELD_PARUTION = "Parution"
+FIELD_LOW_1Y = "Prix bas constaté (1 an)"
+# Fin de phrase d'un prix de cote : le total est toujours port compris.
+COTE_SHIPPING_INCLUDED = "port inclus"
+
+# États d'offre en toutes lettres pour une ligne de cote : les codes du référentiel
+# (NAE, NSE, TBE) sont faits pour les boutons et les filtres, pas pour une phrase.
+COTE_CONDITION_LABELS: dict[str, str] = {
+    "NAE": "neuf avec étiquette",
+    "NSE": "neuf sans étiquette",
+    "TBE": "très bon état",
+}
+
+
+def cote_condition_label(code: str | None) -> str:
+    """État d'une offre retenue, en toutes lettres ; le code brut si inconnu.
+
+    Même règle qu'`abbreviate_condition`, en sens inverse : un état que le
+    référentiel de la cote ne nomme pas est rendu tel quel plutôt que perdu.
+    """
+    if not code:
+        return NOT_PROVIDED
+    return COTE_CONDITION_LABELS.get(code, code)
+
+
+def mid_sentence(label: str) -> str:
+    """Un libellé de marchand dans une phrase : « Très bon état + » → « très bon état + ».
+
+    Le libellé n'est pas traduit — c'est celui du marchand, et son « + » veut dire
+    quelque chose ; seule sa majuscule d'initiale appartient au début de ligne.
+    """
+    stripped = label.strip()
+    return stripped[:1].lower() + stripped[1:] if stripped else stripped
+
+
+def cote_line(outcome: CoteOutcome) -> str:
+    """Ligne de cote : l'offre retenue, ou l'état exact qui explique son absence.
+
+    Les quatre états du module de décision ont chacun leur phrase : « Non
+    renseigné » décrit une donnée absente de la fiche, jamais une source muette,
+    une collecte vide ou un plafond qui a filtré — trois faits différents qui se
+    réparaient autrement.
+    """
+    if outcome.state == "cote_trouvee" and outcome.offre is not None:
+        offer = outcome.offre
+        parts = [format_cents(offer.total_cents), escape_display(offer.marchand)]
+        if offer.etat:
+            # Un marchand qui ne qualifie pas l'exemplaire n'a pas d'état à citer :
+            # écrire « Non renseigné » à sa place inventerait un champ manquant.
+            parts.append(cote_condition_label(offer.etat))
+        parts.append(COTE_SHIPPING_INCLUDED)
+        return f"<b>{FIELD_COTE} :</b> {parts[0]} - {', '.join(parts[1:])}"
+    if outcome.state == "aucune_offre":
+        return _cote_absence("aucune offre trouvée", outcome)
+    if outcome.state == "erreur_recuperation":
+        return _cote_absence("récupération impossible, la source n'a pas répondu", outcome)
+    cheapest = outcome.moins_chere_ecartee_cents
+    detail = f", la moins chère à {format_cents(cheapest)}" if cheapest is not None else ""
+    return (
+        f"<b>{FIELD_COTE} :</b> offres écartées par les filtres "
+        f"({outcome.offres_examinees} offres{detail})"
+    )
+
+
+def _cote_absence(explanation: str, outcome: CoteOutcome) -> str:
+    """Une cote absente, et le prix déjà connu s'il y en a un — daté, pas promu."""
+    retained = outcome.derniere_offre_cents
+    if retained is None:
+        return f"<b>{FIELD_COTE} :</b> {explanation}"
+    return (
+        f"<b>{FIELD_COTE} :</b> {explanation} "
+        f"(dernière offre connue : {format_cents(retained)})"
+    )
+
+
+def low_line(outcome: PrixBasOutcome) -> str:
+    """Ligne du plus bas relevé sur douze mois, état marchand conservé tel quel."""
+    if outcome.state == "prix_bas_trouve" and outcome.cents is not None:
+        return (
+            f"<b>{FIELD_LOW_1Y} :</b> {format_cents(outcome.cents)} - "
+            f"{escape_display(mid_sentence(outcome.etat or ''))}, {COTE_SHIPPING_INCLUDED}"
+        )
+    if outcome.state == "aucun_releve_12_mois":
+        return f"<b>{FIELD_LOW_1Y} :</b> aucun relevé sur 12 mois"
+    return f"<b>{FIELD_LOW_1Y} :</b> historique indisponible"
 
 BTN_PREVIOUS = "Précédent"
 BTN_NEXT = "Suivant"

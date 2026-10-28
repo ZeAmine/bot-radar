@@ -298,7 +298,7 @@ def test_skipped_sources_never_become_an_empty_success_or_a_current_offer(known_
     assert "Aucune offre d'occasion trouvée" not in text
     assert "collecte échouée" not in text
     if known_price:
-        assert "Dernière offre connue" in text
-        assert "20,59 €" in text
+        assert "dernière offre connue : 20,59 €" in text
+        assert "<b>Cote :</b> 20,59 €" not in text
         panel = MarketPriceService.format_market_details_card(None, book)
         assert "Meilleure offre actuelle" not in panel

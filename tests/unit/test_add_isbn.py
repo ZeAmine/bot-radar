@@ -151,8 +151,9 @@ async def test_add_model_isbn_of_another_book_then_edition_switch():
         assert "<b>ISBN :</b> <code>9782369904151</code>" in confirmation
         # L'édition choisie se relit dans la confirmation : même carte, donc même ligne.
         assert "<b>Édition :</b> Editions çà et là · 224 p. · 19 cm" in confirmation
-        # La collecte simulée a échoué : la confirmation ne promet aucune attente.
-        assert "<i>⚠️ Cote indisponible</i>" in confirmation
+        # La collecte simulée a échoué : la confirmation nomme l'échec au lieu
+        # d'annoncer une cote à venir.
+        assert "<b>Cote :</b> récupération impossible" in confirmation
     finally:
         for entered in reversed(patches):
             entered.stop()

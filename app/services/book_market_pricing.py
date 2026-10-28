@@ -21,7 +21,8 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.db.repositories.book_repo import BookRepository
 from app.db.repositories.market_price_repo import MarketPriceRepository
 from app.db.session import AsyncSessionLocal
-from app.domain.rules.market_offer import is_comparable_secondhand_offer
+from app.domain.rules.cote_outcome import OffreCote, ReleveHistorique
+from app.domain.rules.market_offer import condition_code, is_comparable_secondhand_offer
 from app.providers.base import (
     CollectionAttempt,
     MarketOffer,
@@ -45,6 +46,7 @@ from app.services.market_refresh_policy import (
     reservation_lock,
 )
 from app.utils.price import format_cents
+from app.utils.text import normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -257,11 +259,121 @@ def pricing_stat(cache: BookMarketCache | None) -> str:
     return "unavailable"
 
 
+def cote_offres_from_market(offers: MarketOffers) -> list[OffreCote] | None:
+    """Offres comparables d'une collecte, projetées pour une décision de cote.
+
+    Deux écritures d'une même collecte coexistent et sont réunies ici, une fois :
+    un agrégateur rend **une** meilleure offre et le détail de ses marchands dans
+    `raw_payload["partners"]` ; les autres rendent une offre par source. La cote
+    d'un aperçu a besoin des offres réelles, pas de la seule gagnante — sans quoi
+    « le moins cher des états acceptés » se réduirait à « ce que la collecte a
+    déjà élu », avec son classement d'occasion et son plafond implicites.
+
+    `None` distingue une collecte qui n'a pas abouti d'une collecte vide : c'est
+    la différence entre « la source n'a pas répondu » et « il n'y a rien à
+    vendre », que l'aperçu doit nommer séparément.
+    """
+    collected = list(offers)
+    projected: list[OffreCote] = []
+    for offer in collected:
+        if offer.is_historical or not offer.is_available:
+            continue
+        payload = offer.raw_payload or {}
+        partners = payload.get("partners")
+        if isinstance(partners, dict) and partners:
+            for merchant, data in partners.items():
+                if not isinstance(data, dict):
+                    continue
+                total = data.get("total_cents")
+                if not isinstance(total, int) or isinstance(total, bool):
+                    continue
+                projected.append(OffreCote(
+                    marchand=str(data.get("merchant") or merchant),
+                    etat=condition_code(str(data.get("condition") or "")),
+                    total_cents=total,
+                    url=data.get("url") if isinstance(data.get("url"), str) else None,
+                ))
+            continue
+        total = offer.delivered_price_cents
+        if not isinstance(total, int) or isinstance(total, bool):
+            continue
+        merchant = payload.get("best_merchant")
+        projected.append(OffreCote(
+            marchand=merchant if isinstance(merchant, str) and merchant
+            else offer.provider_name.replace("_", " ").title(),
+            etat=condition_code(offer.item_condition),
+            total_cents=total,
+            url=offer.source_url,
+        ))
+    deduped = {(offre.marchand, offre.total_cents): offre for offre in projected}
+    if deduped:
+        return list(deduped.values())
+    return [] if _current_collection_succeeded(offers) else None
+
+
+def _current_collection_succeeded(offers: MarketOffers) -> bool:
+    """Vrai si la collecte des offres du jour a abouti, même sans rien rendre."""
+    attempts = tuple(getattr(offers, "attempts", ()) or ())
+    if not attempts:
+        return not getattr(offers, "failed_providers", ())
+    return any(
+        attempt.operation == "current" and attempt.status in {"complete", "partial"}
+        for attempt in attempts
+    )
+
+
+def history_points_from_market(offers: MarketOffers) -> list[ReleveHistorique] | None:
+    """Relevés d'historique d'une collecte, ou `None` si l'historique n'a pas été lu.
+
+    Les états sont ceux du marchand, conservés tels quels : c'est lui qui publie
+    « Très bon état + », et ce signe dit quelque chose de l'exemplaire qu'un code
+    du référentiel effacerait. `None` — et non une liste vide — quand la lecture a
+    échoué : « aucun relevé en douze mois » est un fait, une lecture ratée non.
+    """
+    releves = [
+        ReleveHistorique(
+            etat=offer.item_condition or "",
+            total_cents=offer.delivered_price_cents,
+        )
+        for offer in offers
+        if offer.is_historical and offer.delivered_price_cents
+    ]
+    if releves:
+        return releves
+    history_attempts = [
+        attempt for attempt in getattr(offers, "attempts", ()) or ()
+        if attempt.operation == "history"
+    ]
+    if any(attempt.status == "failed" for attempt in history_attempts):
+        return None
+    return []
+
+
+async def collect_offers_for_creation(
+    *, isbn13: str, title: str, author: str | None = None,
+) -> MarketOffers:
+    """Collecte marché d'un tome en préparation, avant toute fiche en base.
+
+    L'aperçu de création cote des tomes qui n'existent pas encore au catalogue :
+    leur demander une cote en cache revenait à demander un prix à une fiche qui
+    n'a jamais été cotée. La collecte part donc de ce que le brouillon sait déjà —
+    ISBN, titre, auteur —, par le même chemin que la cotation des alertes, pour
+    qu'un prix ne puisse pas différer selon l'écran qui l'affiche.
+    """
+    book = Book(
+        title=title,
+        normalized_title=normalize_text(title),
+        isbn13=isbn13,
+        author=author,
+    )
+    return await fetch_offers_for_book(book)
+
+
 async def fetch_offers_for_book(
     book: Book,
     registry: ProviderRegistry | None = None,
     *, retry_transient: bool = False,
-) -> list[MarketOffer]:
+) -> MarketOffers:
     """Interroge tous les fournisseurs pour un livre, ISBN valide et titre ensemble.
 
     Le titre accompagne toujours l'ISBN : un agrégateur qui ne trouve rien par

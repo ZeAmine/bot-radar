@@ -16,6 +16,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import xml.parsers.expat
 from dataclasses import dataclass, field, replace
+from datetime import date
 from typing import Any, Literal
 
 import httpx
@@ -27,6 +28,12 @@ from app.core.http_client import get_shared_http_client
 from app.domain.rules.bibliographic_identity import author_tokens, series_association
 from app.domain.rules.book_volume import is_collection, notice_volume, requested_volume
 from app.domain.rules.series_detection import SeriesSignal, detect_series
+from app.domain.rules.tome_admission import (
+    TomeAdmission,
+    TomeNotice,
+    admit_tome,
+    notice_from_bnf_record,
+)
 from app.providers.google_books import (
     GoogleBooksClient,
     GoogleVolume,
@@ -80,6 +87,7 @@ class BookMetadata:
     volume_number: int | None = None
     language: str | None = None
     declared_volume_count: int | None = None
+    publication_date: date | None = None
 
     def __post_init__(self) -> None:
         if self.volume_number is None:
@@ -88,11 +96,21 @@ class BookMetadata:
 
 @dataclass(frozen=True)
 class SeriesVolume:
-    """Un tome et l'édition qui le décrit ; un candidat n'est jamais un ISBN confirmé."""
+    """Un tome et l'édition qui le décrit ; un candidat n'est jamais un ISBN confirmé.
+
+    `admission` porte le motif du refus quand la règle d'admission n'a pas retenu le
+    tome, et `None` quand elle l'a retenu. Le motif voyage avec la ligne jusqu'au
+    récapitulatif : c'est lui qui distingue « date de parution non prouvée » d'un
+    tome simplement absent, et sans lui le brouillon ne saurait que redire un refus
+    sans le nommer.
+    """
 
     number: int
     notice: BookMetadata
     isbn13: str | None = None
+    admission: str | None = None
+    publication_date: date | None = None
+    declared_isbn13: str | None = None
 
     @classmethod
     def from_stored(cls, row: dict[str, Any]) -> "SeriesVolume":
@@ -103,19 +121,42 @@ class SeriesVolume:
             source=row.get("source") or "", publication_year=row.get("publication_year"),
             format_detail=row.get("format_detail"), volume_number=row["number"],
         )
-        code = isbn_from_identifier(row.get("isbn13")) if row.get("confirmed") else None
-        return cls(row["number"], meta, code)
+        code = isbn_from_identifier(row.get("isbn13"))
+        return cls(row["number"], meta, code if row.get("confirmed") else None,
+                   row.get("admission"), _stored_date(row.get("publication_date")),
+                   None if row.get("confirmed") else code)
 
     def stored(self) -> dict[str, Any]:
-        """Projection JSON pour le brouillon, distincte des éditions concurrentes."""
+        """Projection JSON pour le brouillon, distincte des éditions concurrentes.
+
+        `isbn13` reste la preuve : un tome refusé porte son code sous
+        `declared_isbn13`, pour que le récapitulatif puisse nommer le volume écarté
+        sans que la sélection le prenne pour confirmé.
+        """
+        printed = self.isbn13 or self.declared_isbn13
+        proven_on = self.publication_date or self.notice.publication_date
         return {
             "number": self.number, "title": self.notice.volume_title or self.notice.title,
-            "isbn13": self.isbn13, "confirmed": self.isbn13 is not None,
+            "isbn13": printed, "confirmed": self.isbn13 is not None,
             "author": self.notice.author, "publisher": self.notice.publisher,
             "language": self.notice.language, "source": self.notice.source,
             "publication_year": self.notice.publication_year,
             "format_detail": self.notice.format_detail,
+            "admission": self.admission,
+            "publication_date": proven_on.isoformat() if proven_on else None,
         }
+
+
+def _stored_date(value: Any) -> date | None:
+    """Date relue d'un brouillon JSON, tolérante à une forme inattendue."""
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _declared_series_count(title: str) -> int | None:
@@ -652,6 +693,89 @@ def _parse_year(raw_date: str) -> int | None:
     """Extrait l'année de publication d'une date BNF (ex: '2022', '2022-09', 'c2022')."""
     match = re.search(r"(1[89]\d{2}|20\d{2})", raw_date)
     return int(match.group(1)) if match else None
+
+
+# Zone MarcXchange : la BNF répond en `info:lc/xmlns/marcxchange-v2`.
+_MXC = "{info:lc/xmlns/marcxchange-v2}"
+# Titre du volume dans une notice : `200$a` puis son complément `200$e`.
+_TITLE_SUBFIELDS = ("a", "e")
+# Mention de série et son numéro : `225$a` / `225$v`.
+_SERIES_TAG = "225"
+# Numéro de volume dans le titre lui-même : `200$h`.
+_VOLUME_TAG = "200"
+
+
+def parse_tome_notices(payload: bytes) -> list[TomeNotice]:
+    """Notices MarcXchange d'une réponse SRU, projetées pour l'admission d'un tome.
+
+    Une seule lecture par notice, celle qui manquait au Dublin Core : la date typée
+    (`100$a`), la mention de série (`225`) et le numéro de volume (`200$h`). Le
+    reste de l'identité vient du Dublin Core, déjà en place et inchangé : cette
+    fonction ne remplace pas la résolution, elle lui apporte sa preuve.
+
+    Un flux illisible rend une liste vide — l'appelant conclut `no_bnf_notice`,
+    c'est-à-dire « pas de preuve », jamais « tome valide ».
+    """
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError:
+        logger.warning("Réponse MarcXchange BNF illisible")
+        return []
+    notices: list[TomeNotice] = []
+    for record in root.iter(f"{_MXC}record"):
+        fields: dict[str, list[dict[str, str]]] = {}
+        for datafield in record.findall(f"{_MXC}datafield"):
+            tag = datafield.get("tag") or ""
+            fields.setdefault(tag, []).append({
+                (subfield.get("code") or ""): (subfield.text or "").strip()
+                for subfield in datafield.findall(f"{_MXC}subfield")
+            })
+        notice = notice_from_bnf_record(_tome_record(fields))
+        if notice is not None:
+            notices.append(notice)
+    return notices
+
+
+def _tome_record(fields: dict[str, list[dict[str, str]]]) -> dict[str, Any]:
+    """Champs utiles d'une notice MarcXchange, sans leur XML."""
+    def first(tag: str, code: str) -> str | None:
+        for entry in fields.get(tag, ()):
+            value = entry.get(code)
+            if value:
+                return value
+        return None
+
+    titles = fields.get(_VOLUME_TAG, [{}])[0]
+    title = " ".join(
+        titles[code] for code in _TITLE_SUBFIELDS if titles.get(code)
+    )
+    series = fields.get(_SERIES_TAG, [{}])[0]
+    authors = [
+        " ".join(part for part in (entry.get("a"), entry.get("b")) if part)
+        for tag in ("700", "702")
+        for entry in fields.get(tag, ())
+    ]
+    return {
+        "isbn13": first("010", "a") or first("073", "a"),
+        "title": title,
+        "date_code": first("100", "a"),
+        "series_statement": series.get("a"),
+        "number": _subfield_number(titles.get("h")) or _subfield_number(series.get("v")),
+        "publisher": first("214", "c"),
+        "authors": tuple(author for author in authors if author),
+    }
+
+
+def _subfield_number(value: str | None) -> int | None:
+    """Numéro porté par un sous-champ BNF : « 1 », « 12 », « Vol. 3 ».
+
+    `notice_volume` cherche un marqueur de tome dans un titre, qu'un sous-champ
+    n'a pas : « 1 » y serait illisible alors que c'est exactement le numéro.
+    """
+    if not value:
+        return None
+    digits = re.search(r"\d{1,4}", value)
+    return int(digits.group(0)) if digits else None
 
 
 def parse_query_title_and_author(query: str) -> tuple[str, str | None]:
@@ -1380,9 +1504,12 @@ class BookMetadataService:
                 author=record.author, author_hint=author_hint, language=record.language,
                 number=record.volume_number,
             )
-            if decision.outcome == "reject" or (
-                decision.outcome == "abstain" and not for_creation
-            ):
+            # En création, un `abstain` reste une notice à montrer : c'est la règle
+            # d'admission qui décide ensuite, sur la preuve BNF, si le tome est
+            # retenu — un tome écarté s'affiche alors avec son motif, au lieu de
+            # disparaître sans que rien ne dise pourquoi.
+            if (decision.outcome == "reject"
+                    or (decision.outcome == "abstain" and not for_creation)):
                 logger.info("Association catalogue non retenue", extra={
                     "event": "catalogue_association", "outcome": decision.outcome,
                     "reason_code": decision.reason,
@@ -1449,8 +1576,19 @@ class BookMetadataService:
                 if (code and verified is not None and verified.source == AUTORITE_BNF
                         and identity.outcome == "reject"):
                     rejected.append(code)
+                if code:
+                    admission, proven = await self.admit_tome_notice(
+                        code,
+                        series_title=series_title,
+                        author_hint=author_hint,
+                        number=verified.volume_number if verified else number,
+                        reference_publisher=reference_publisher,
+                    )
+                else:
+                    admission, proven = TomeAdmission("invalid_isbn"), None
                 confirmed = (
-                    code if identity.outcome == "accept" and verified is not None
+                    code if admission.accepted and identity.outcome == "accept"
+                    and verified is not None
                     and verified.source == AUTORITE_BNF
                     and isbn_from_identifier(verified.isbn13) == code
                     and verified.volume_number == number
@@ -1463,18 +1601,17 @@ class BookMetadataService:
                         author=verified.author or meta.author,
                         publisher=verified.publisher, publication_year=verified.publication_year,
                         format_detail=verified.format_detail,
+                        publication_date=proven.publication_date if proven else None,
                     )
-                candidates.append(SeriesVolume(number, meta, confirmed))
+                candidates.append(SeriesVolume(
+                    number, meta, confirmed, admission.reason,
+                    proven.publication_date if proven else None,
+                    None if confirmed else code,
+                ))
             volumes = select_series_volumes(candidates, publisher=reference_publisher)
             counts = {meta.declared_volume_count for meta in selected
                       if meta.declared_volume_count is not None}
             total = next(iter(counts)) if len(counts) == 1 else None
-            if total is not None and 0 < total <= MAX_SERIES_BOOKS:
-                known = {v.number for v in volumes}
-                volumes = select_series_volumes([
-                    *volumes, *(SeriesVolume(n, BookMetadata(title=series_title, source=""))
-                                for n in range(1, total + 1) if n not in known),
-                ])
             verdict = _verdict(attempts, *(v.notice for v in volumes if v.isbn13))
             return replace(verdict, volumes=volumes, truncated=(
                 result.error_code == "series_limit" or ol_limited or len(volumes) > limit
@@ -1484,6 +1621,79 @@ class BookMetadataService:
                 len(counts) > 1 or (total is not None and any(v.number > total for v in volumes))
             ))
         return _verdict(attempts, *selected)
+
+    async def admit_tome_notice(
+        self,
+        isbn13: str | None,
+        *,
+        series_title: str | None,
+        author_hint: str | None = None,
+        number: int | None = None,
+        reference_publisher: str | None = None,
+        today: date | None = None,
+    ) -> tuple[TomeAdmission, TomeNotice | None]:
+        """Admet un tome sur preuve BNF, et rend la notice qui l'a prouvé.
+
+        La preuve manquait à la sélection : elle dédoublonnait et priorisait des
+        notices, y compris celles d'un tome annoncé mais pas encore paru. La BNF
+        publie la notice dès l'annonce, avec une date **prévue** ; seule une date
+        *certaine* et déjà passée (`100$a`, position 8 = `d`) prouve que le volume
+        est en librairie. La lecture de cette zone demande le schéma MarcXchange :
+        le Dublin Core, seul interrogé jusqu'ici, n'en porte que l'année.
+
+        La notice rendue est celle du refus comme de l'acceptation : le récapitulatif
+        a besoin de la date prouvée quand le tome est retenu, et d'aucune quand il ne
+        l'est pas — dans les deux cas, c'est le même fait qui est transporté.
+        """
+        code = isbn_from_identifier(isbn13)
+        if code is None or not is_valid_isbn(code):
+            return TomeAdmission("invalid_isbn"), None
+        notices = await self._bnf_tome_notices(code)
+        if not notices:
+            return TomeAdmission("no_bnf_notice"), None
+        verdicts = [
+            (
+                admit_tome(
+                    isbn13=code, notice=notice, series_title=series_title,
+                    author_hint=author_hint, number=number,
+                    reference_publisher=reference_publisher, today=today,
+                ),
+                notice,
+            )
+            for notice in notices
+        ]
+        for admission, notice in verdicts:
+            if admission.accepted:
+                return admission, notice
+        return verdicts[0]
+
+    async def _bnf_tome_notices(self, isbn13: str) -> list[TomeNotice]:
+        """Notices MarcXchange d'un ISBN, une par notice BNF le décrivant.
+
+        Un même ISBN peut décrire deux notices — une réédition, une adaptation —,
+        et une seule porte la preuve : les rendre toutes laisse la règle d'admission
+        choisir sur des faits, plutôt que sur l'ordre de réponse de l'autorité.
+        """
+        params = {
+            "version": "1.2",
+            "operation": "searchRetrieve",
+            "query": f'bib.isbn all "{isbn13}"',
+            "recordSchema": "marcxchange",
+            "maximumRecords": "10",
+        }
+        url = f"{self.BNF_SRU_URL}?{urllib.parse.urlencode(params)}"
+        try:
+            client = self.http_client or get_shared_http_client()
+            resp = await client.get(
+                url, timeout=self.timeout_seconds, headers={"User-Agent": "BotRadar/1.0"},
+            )
+        except Exception as exc:
+            logger.warning("BNF MarcXchange : requête en échec (%s)", type(exc).__name__)
+            return []
+        if resp.status_code != 200 or not resp.content:
+            logger.warning("BNF MarcXchange : réponse non exploitable (%d)", resp.status_code)
+            return []
+        return parse_tome_notices(resp.content)
 
     async def _complete_series_from_openlibrary(
         self,

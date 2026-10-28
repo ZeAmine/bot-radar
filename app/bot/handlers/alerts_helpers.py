@@ -1,10 +1,13 @@
 """Fonctions d'aide et de formatage mutualisées pour les flux d'alerte Telegram."""
 
+import asyncio
 import html
 import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from aiogram.fsm.context import FSMContext
@@ -18,20 +21,25 @@ from app.bot.labels import (
     BTN_AI_VARIANTS_CREATE,
     FIELD_AUTHOR,
     FIELD_CONDITIONS,
+    FIELD_COTE,
     FIELD_EDITION,
     FIELD_EXCLUDE_KEYWORDS,
     FIELD_INCLUDE_KEYWORDS,
     FIELD_ISBN,
+    FIELD_LOW_1Y,
     FIELD_MAX_PRICE,
+    FIELD_PARUTION,
     FIELD_PUBLISHER,
     FIELD_STATUS,
     FIELD_TITLE,
     FIELD_VARIANTS,
     NOT_PROVIDED,
     TITLE_ALERT_EXISTS,
+    cote_line,
     escape_display,
     format_conditions,
     format_price_cents,
+    low_line,
 )
 from app.bot.states.alert_creation import AlertCreationState
 from app.core.constants import (
@@ -52,6 +60,11 @@ from app.db.repositories.alert_repo import AlertRepository
 from app.db.repositories.category_repo import CategoryRepository
 from app.domain.enums import BookSearchStatus
 from app.domain.rules.book_volume import requested_volume, volume_title
+from app.domain.rules.cote_outcome import (
+    ETATS_COTE_ACCEPTES,
+    select_cote_offer,
+    select_historical_low,
+)
 from app.services.ai.modules.keyword_variants import KeywordVariantsOutcome
 from app.services.ai.schemas import book_context_from
 from app.services.alert_service import AlertServiceError, parse_price_to_cents
@@ -87,6 +100,22 @@ ALERT_CREATED_TITLE = "✅ <b>Alerte créée</b>"
 RECAP_FOOTER = "<i>Valide les critères ci-dessus avant de créer l'alerte.</i>"
 
 SERIES_INDICATION = "Série multi-tomes (veille sur tous les tomes)"
+
+# Borne de la collecte de cote d'un tome à l'aperçu : un marchand muet ne doit pas
+# retenir l'écran, et l'échec a une ligne à lui plutôt qu'un silence.
+PREVIEW_COTE_TIMEOUT_SECONDS = 12.0
+
+# Motif d'un tome écarté, en français : le code de la règle est une clé, pas une phrase.
+TOME_REASON_LABELS: dict[str, str] = {
+    "date_unproven": "date de parution non prouvée",
+    "not_published_yet": "à paraître",
+    "no_bnf_notice": "aucune notice BNF",
+    "invalid_isbn": "ISBN invalide",
+    "series_mismatch": "autre série",
+    "tome_number_inconsistent": "numéro de tome incohérent",
+    "author_mismatch": "autre auteur",
+    "publisher_mismatch": "autre éditeur",
+}
 
 UNIDENTIFIED_WORK_NOTE = (
     "⚠️ Ouvrage non identifié : aucune source ne catalogue ce titre. "
@@ -351,16 +380,92 @@ def _get_creation_book_repo(session: Any) -> Any:
     return BookRepository(session)
 
 
-async def populate_creation_prices(data: dict[str, Any], repo: Any) -> None:
-    """Lit les caches des ISBN confirmés ; un tome sans ISBN reste dans la liste."""
-    from app.services.market_price_service import MarketPriceService
+async def populate_creation_prices(
+    data: dict[str, Any],
+    repo: Any = None,
+    *,
+    collector: Callable[[dict[str, Any]], Awaitable[Any]] | None = None,
+) -> None:
+    """Cote chaque tome retenu : la cote déjà en base si elle existe, sinon collecte.
 
-    rows: list[dict[str, Any]] = data.get("series_volumes") or []
+    Deux écrans partagent cette fonction — l'aperçu avant création et la carte qui
+    suit la création. Le premier n'a **aucune** cote en base : un tome qu'on n'a
+    jamais coté n'a pas de cache, donc lire le cache répondait « Cote indisponible /
+    Dernière offre connue : Non renseigné » à chaque fois. Le second vient au
+    contraire d'être coté tome par tome, et recollecter ces prix serait deux
+    collectes pour un même écran. D'où l'ordre : cache d'abord, collecte bornée
+    ensuite — et dans les deux cas les mêmes quatre états, nommés.
+
+    `collector` reçoit la ligne du tome et rend sa collecte marché (ou `None` si
+    elle n'a pas abouti) : les tests injectent une collecte sans réseau.
+    """
+    rows = [row for row in data.get("series_volumes") or []
+            if row.get("confirmed") and row.get("isbn13")]
+    if not rows:
+        return
+    price_max = data.get("max_item_price_cents")
+    collect = collector or _collect_creation_offers
     for row in rows:
-        book = await repo.get_by_isbn13(row["isbn13"]) if row.get("confirmed") else None
-        summary = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
-        row["price_lines"] = summary.split("\n") if summary else []
+        cached = await _cached_cote_lines(row, repo, price_max)
+        if cached is not None:
+            row["price_lines"] = cached
+            continue
+        offers: Any = None
+        try:
+            async with asyncio.timeout(PREVIEW_COTE_TIMEOUT_SECONDS):
+                offers = await collect(row)
+        except Exception:  # une collecte ratée n'échoue pas l'aperçu, elle se dit
+            logger.warning("Cote d'aperçu indisponible pour le tome %s", row.get("number"))
+            offers = None
+        row["price_lines"] = creation_cote_lines(offers, price_max)
 
+
+async def _cached_cote_lines(
+    row: dict[str, Any], repo: Any, price_max: int | None,
+) -> list[str] | None:
+    """Les deux lignes lues dans la cote en base, `None` si le tome n'en a pas.
+
+    `None` — et non une ligne vide — pour que l'appelant sache qu'il lui reste à
+    collecter : une absence de cache n'est pas une absence de prix.
+    """
+    from app.services.market_price_service import cache_cote_outcomes
+
+    if repo is None:
+        return None
+    book = await repo.get_by_isbn13(row["isbn13"])
+    if book is None or book.market_cache is None:
+        return None
+    cote, low = cache_cote_outcomes(book, price_max)
+    return [cote_line(cote), low_line(low)]
+
+
+async def _collect_creation_offers(row: dict[str, Any]) -> Any:
+    """Collecte marché d'un tome, d'après sa seule ligne de brouillon."""
+    from app.services.book_market_pricing import collect_offers_for_creation
+
+    return await collect_offers_for_creation(
+        isbn13=str(row.get("isbn13")),
+        title=str(row.get("title") or ""),
+        author=row.get("author") or None,
+    )
+
+
+def creation_cote_lines(offers: Any, price_max: int | None) -> list[str]:
+    """Les deux lignes chiffrées d'un tome : sa cote, puis son plus bas sur un an.
+
+    Aucune des deux ne se tait : une cote absente s'énonce selon son état réel
+    (aucune offre, récupération impossible, offres écartées), et le plus bas sur
+    douze mois selon le sien.
+    """
+    from app.services.book_market_pricing import (
+        cote_offres_from_market,
+        history_points_from_market,
+    )
+
+    offres = None if offers is None else cote_offres_from_market(offers)
+    cote = select_cote_offer(offres, ETATS_COTE_ACCEPTES, price_max)
+    releves = None if offers is None else history_points_from_market(offers)
+    return [cote_line(cote), low_line(select_historical_low(releves))]
 
 
 def refresh_creation_series(
@@ -405,26 +510,25 @@ def series_volume_label(rows: list[dict[str, Any]]) -> str:
 
 
 def render_series_volumes(data: dict[str, Any]) -> list[str]:
-    """Rendu unique des tomes préparés ; aucun prix ni ISBN n'est inventé."""
+    """Rendu unique des tomes préparés : retenus d'abord, écartés nommés après.
+
+    Un tome retenu se lit en quatre lignes : ce qu'il est, quand il est paru, ce
+    qu'il coûte, et son plus bas sur un an. Un tome écarté ne se tait pas non plus :
+    il dit pourquoi, en une ligne, sous le titre des tomes détectés — mais il n'est
+    pas ajouté, et le récapitulatif l'annonce.
+    """
     rows = data.get("series_volumes") or []
     label = series_volume_label(rows)
+    retained = [row for row in rows if row.get("confirmed")]
+    others = [row for row in rows if not row.get("confirmed")]
     lines: list[str] = []
-    for row in rows:
-        lines.append(f"📚 <b>{label} {row['number']}</b>")
-        code = row.get("isbn13") if row.get("confirmed") else None
-        isbn_line = f"<code>{html.escape(code)}</code>" if code else NOT_PROVIDED
-        lines.append(f"<b>ISBN-13 :</b> {isbn_line}")
-        source = {"bnf": "BNF", "openlibrary": "OpenLibrary (repli BNF)",
-                  "google_books": "Google Books (repli BNF)"}.get(row.get("source"))
-        lines.append(f"<b>Source :</b> {source or NOT_PROVIDED}")
-        language = row.get("language")
-        if language and language != "fr":
-            lines.append(f"<b>Langue :</b> {html.escape(language)}")
-        lines.extend(row.get("price_lines") or [
-            "<i>⚠️ Cote indisponible</i>",
-            "<b>Dernière offre connue :</b> Non renseigné",
-            "<b>Prix bas constaté :</b> Non renseigné",
-        ])
+    for row in retained:
+        lines.extend(_retained_volume_lines(row, label))
+    if others:
+        if lines:
+            lines.append("")
+        lines.append(f"<i>{_detected_volumes_note(others, label)}</i>")
+        lines.extend(f"{_rejected_volume_line(row, label)}" for row in others)
     if data.get("series_inconsistent"):
         lines.append("<i>Complétude non confirmée : les notices se contredisent sur le total.</i>")
     elif data.get("series_total") is None:
@@ -434,6 +538,77 @@ def render_series_volumes(data: dict[str, Any]) -> list[str]:
     if data.get("series_truncated"):
         lines.append("<i>Limite de recherche atteinte : des notices peuvent manquer.</i>")
     return lines
+
+
+def _retained_volume_lines(row: dict[str, Any], label: str) -> list[str]:
+    """Les quatre lignes d'un tome retenu, dans l'ordre de lecture de la fiche."""
+    title = escape_display(row.get("title") or "")
+    code = row.get("isbn13")
+    head = f"📚 <b>{label} {row['number']}</b> - {title}"
+    if code:
+        head += f" · <code>{html.escape(code)}</code>"
+    return [
+        head,
+        f"<b>{FIELD_PARUTION} :</b> {_publication_line(row)}",
+        *(row.get("price_lines") or _missing_cote_lines()),
+    ]
+
+
+def _publication_line(row: dict[str, Any]) -> str:
+    """« 06/02/2026 (BNF) - paru » : la date prouvée, et ce qu'elle vaut."""
+    written = _stored_date_label(row.get("publication_date"))
+    if written is None:
+        return f"{NOT_PROVIDED} - date de parution non prouvée"
+    return f"{written} (BNF) - paru"
+
+
+def _stored_date_label(value: Any) -> str | None:
+    """Date d'un brouillon relue en « jj/mm/aaaa », `None` si elle manque."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value).strftime("%d/%m/%Y")
+    except ValueError:
+        return None
+
+
+def _missing_cote_lines() -> list[str]:
+    """Cote et plus bas non collectés : le dire, sans inventer de prix."""
+    return [
+        f"<b>{FIELD_COTE} :</b> non collectée pour cet aperçu",
+        f"<b>{FIELD_LOW_1Y} :</b> non collecté pour cet aperçu",
+    ]
+
+
+def _detected_volumes_note(rows: list[dict[str, Any]], label: str) -> str:
+    """« Tomes 2 et 4 détectés, non ajoutés - ajout sur demande explicite »."""
+    numbers = [str(row.get("number")) for row in rows]
+    plural = f"{label}s" if len(numbers) > 1 else label
+    return (
+        f"{plural} {_enumerate(numbers)} détecté{'s' if len(numbers) > 1 else ''}, "
+        f"non ajouté{'s' if len(numbers) > 1 else ''} - ajout sur demande explicite"
+    )
+
+
+def _enumerate(items: list[str]) -> str:
+    """« 2 et 4 », « 2, 3 et 4 » : une énumération française, sans virgule avant « et »."""
+    if len(items) <= 1:
+        return "".join(items)
+    return f"{', '.join(items[:-1])} et {items[-1]}"
+
+
+def _rejected_volume_line(row: dict[str, Any], label: str) -> str:
+    """Un tome détecté mais non ajouté, avec le motif qui l'écarte."""
+    reason = TOME_REASON_LABELS.get(
+        str(row.get("admission") or ""), "preuve insuffisante"
+    )
+    title = escape_display(row.get("title") or "")
+    code = row.get("isbn13")
+    parts = [f"<b>{label} {row['number']}</b> - {title}"]
+    if code:
+        parts.append(html.escape(code))
+    parts.append(reason)
+    return " · ".join(parts)
 
 def build_edition_choices(resolution: Any) -> list[dict[str, Any]]:
     """Éditions d'une résolution BNF, converties en brouillon stockable dans le FSM."""
@@ -622,6 +797,26 @@ def format_edition_line(
     return [
         f"<b>{FIELD_EDITION} :</b> {escape_display(_edition_identity(edition))}"
     ]
+
+
+def requested_series_volume(
+    rows: list[dict[str, Any]], data: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Le seul tome qu'un utilisateur a demandé, s'il est prouvé.
+
+    Une série multi-tomes n'attache plus ses tomes d'office : ils sont détectés,
+    annoncés comme tels au récapitulatif, et ajoutés sur demande explicite. Ce qui
+    est rattaché à l'alerte, c'est l'édition demandée — son ISBN quand il y en a
+    un, sinon le numéro de tome de la saisie.
+    """
+    confirmed = [row for row in rows if row.get("confirmed") and row.get("isbn13")]
+    wanted = data.get("isbn")
+    if wanted:
+        return next((row for row in confirmed if row.get("isbn13") == wanted), None)
+    number = data.get("requested_volume") or requested_volume(str(data.get("name") or ""))
+    if number is None:
+        return confirmed[0] if confirmed else None
+    return next((row for row in confirmed if row.get("number") == number), None)
 
 
 def creation_volume_issue(data: dict[str, Any]) -> str | None:

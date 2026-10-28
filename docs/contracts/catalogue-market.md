@@ -144,6 +144,30 @@ Contrôles existants : [offres](../../tests/unit/test_market_offer_rules.py),
 SQLite ne prouve pas les verrous PostgreSQL. Aucune lecture documentaire ne prouve
 une collecte réelle ; les procédures de session et leurs permissions restent distinctes.
 
+## Admission d'un tome et cote de création
+
+Un tome de série n'est retenu qu'avec une date de parution **certaine et déjà passée**
+lue en BNF (`100$a`, type `d`). Une date annoncée (`u`) ou absente laisse le tome
+détecté, affiché avec son motif, jamais rattaché ni coté. L'[admission](../../app/domain/rules/tome_admission.py)
+vérifie l'identité (ISBN, série, numéro, auteur, éditeur) avant la date et ne
+remplace pas la sélection, qui dédoublonne et priorise. La carte de création ne
+rattache que le tome explicitement demandé ; les autres tomes admis restent
+« détectés, non ajoutés » et ne s'ajoutent que sur demande explicite. Aucun tome
+sans ISBN n'est créé pour compléter un décompte annoncé.
+
+Une cote de création retient la moins chère des offres livrées des états acceptés
+(neuf avec ou sans étiquette, très bon état) et nomme l'un de quatre états : trouvée,
+aucune offre, récupération impossible, offres écartées par les filtres — avec leur
+nombre et la moins chère. Le prix maximum filtre, il n'est jamais réécrit. Un prix
+déjà connu n'est jamais présenté comme l'offre du jour : il s'accompagne de la
+mention « dernière offre connue ». Le plus bas sur douze mois est cité avec son
+libellé marchand et son port ; l'absence de relevé et l'historique illisible sont
+dits distinctement.
+
+Contrôles : [admission](../../tests/unit/test_tome_admission.py),
+[cote](../../tests/unit/test_cote_outcome.py),
+[aperçu de création](../../tests/unit/test_creation_series_preview.py).
+
 ## Minimum source et fraîcheur indépendante
 
 Le panneau conserve « Dernière offre connue » et « Prix bas constaté » quand une

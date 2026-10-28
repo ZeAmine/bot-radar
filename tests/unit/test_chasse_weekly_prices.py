@@ -114,8 +114,11 @@ def test_creation_and_panel_use_the_same_source_minimum_without_diagnostics(titl
     book = Book(id=uuid.uuid4(), title=title, normalized_title=title, market_cache=cache)
     creation = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
     panel = MarketPriceService.format_market_details_card(None, book)
+    # Même minimum des deux côtés ; la carte de création nomme l'état marchand qui
+    # le qualifie, la fiche de marché garde son vocabulaire historique.
+    assert "<b>Prix bas constaté (1 an) :</b> 9,21 €" in creation
+    assert "Prix bas constaté :</b> 9,21 €" in panel
     for text in (creation, panel):
-        assert "Prix bas constaté :</b> 9,21 €" in text
         for forbidden in ("tentative", "collecte échouée", "Actualisation impossible",
                           "relevé(s)", "non vérifiable", "Dernière vérif."):
             assert forbidden not in text

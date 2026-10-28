@@ -10,6 +10,13 @@ Une cote n'a de valeur que si l'exemplaire est de l'occasion en état correct :
 le Neuf est exclu, et un état déclaré inférieur à « Très bon » est refusé. Un état
 non renseigné (« Occasion », `None`) reste acceptable : on ne rejette jamais une
 offre d'occasion simplement parce que le marchand ne détaille pas l'exemplaire.
+
+**Une exception, et une seule**, nommée ici pour ne pas être prise pour un oubli :
+la cote d'un tome à la création (`app.domain.rules.cote_outcome`) accepte le neuf
+avec ou sans étiquette, parce qu'un tome récent n'existe souvent qu'en neuf et
+qu'écarter la seule offre disponible rendrait le prix introuvable. Cette exception
+ne touche pas la classification elle-même : `condition_code` nomme le neuf, les
+règles d'alerte continuent de l'écarter.
 """
 
 import re
@@ -134,6 +141,22 @@ def normalize_secondhand_condition(cond: str | None) -> str:
     if tier == "very_good":
         return "Très bon"
     return (cond or "").strip() or "Occasion"
+
+
+# État d'offre, en code du référentiel, pour une décision qui raisonne en codes.
+# `None` = l'état déclaré ne correspond à aucun code : l'offre n'est pas qualifiée.
+_TIER_CODES = {"brand_new": "NAE", "like_new": "NSE", "very_good": "TBE"}
+
+
+def condition_code(condition_str: str | None) -> str | None:
+    """Code du référentiel pour un libellé d'état marchand, ou `None`.
+
+    La classification reste celle de `condition_tier` : ce n'est pas un second
+    barème, seulement son écriture en code (NAE, NSE, TBE). Un état non qualifié
+    (« Occasion ») et un état inférieur à « Très bon » n'ont pas de code : une
+    décision qui n'accepte que des codes ne peut donc pas les retenir par erreur.
+    """
+    return _TIER_CODES.get(condition_tier(condition_str))
 
 
 def is_comparable_secondhand_offer(offer: "MarketOffer") -> bool:

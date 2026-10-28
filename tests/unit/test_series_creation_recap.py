@@ -10,6 +10,7 @@ from app.domain.enums import ProviderQueryStatus
 from app.providers.google_books import ProviderQueryResult
 from app.services.book_metadata_service import BookMetadata, BookMetadataService, BookResolution
 from app.use_cases.book_search import result_from_resolution
+from tests.fakes_catalogue import patch_bnf_admission
 from tests.fakes_market_source import source_history_values
 
 CODES = ('9782369904151', '9782369903086', '9782205051407', '9781444977387')
@@ -57,24 +58,32 @@ async def test_catalogue_keeps_four_volumes_without_isbn_and_sorts():
     assert verdict.volumes[-1].isbn13 is None
 
 
-def test_recap_four_rows_one_vocabulary_and_explicit_missing_prices():
+def test_recap_four_rows_one_vocabulary_and_named_rejection():
+    """Quatre tomes détectés : trois retenus avec leur cote, un refusé et nommé."""
     rows = [
         {'number': n, 'title': f'Birdking Livre {n}', 'isbn13': CODES[n-1],
-         'language': 'fr', 'source': 'bnf', 'confirmed': True,
-         'price_lines': ['<b>Dernière offre connue :</b> 18,00 €',
-                         '<b>Prix bas constaté :</b> 16,50 €']}
+         'language': 'fr', 'source': 'bnf', 'confirmed': True, 'publication_date': '2024-05-02',
+         'price_lines': [
+             '<b>Cote :</b> 18,00 € - Momox, très bon état, port inclus',
+             '<b>Prix bas constaté (1 an) :</b> 16,50 € - très bon état +, port inclus',
+         ]}
         for n in (1, 2, 3)
-    ] + [{'number': 4, 'title': 'Birdking Livre 4', 'isbn13': None, 'confirmed': False}]
+    ] + [{'number': 4, 'title': 'Birdking Livre 4', 'isbn13': None, 'confirmed': False,
+          'admission': 'no_bnf_notice'}]
     text = creation_card({'name': 'Birdking', 'is_series': True, 'series_volumes': rows})
-    assert re.findall(r'📚 <b>Livre (\d+)</b>', text) == ['1', '2', '3', '4']
+    assert re.findall(r'📚 <b>Livre (\d+)</b>', text) == ['1', '2', '3']
     assert 'Volume 1' not in text
     assert 'Tome 1' not in text
     for code in CODES[:3]:
         assert text.count(code) == 1
     assert text.count('18,00 €') == 3
     assert text.count('16,50 €') == 3
-    assert '<b>ISBN-13 :</b> Non renseigné' in text
-    assert 'Cote indisponible' in text
+    assert '<b>Parution :</b> 02/05/2024 (BNF) - paru' in text
+    assert 'ISBN-13' not in text
+    assert 'Cote indisponible' not in text
+    # Le tome écarté n'a pas de fiche : il est nommé une fois, avec son motif.
+    assert 'Livre 4' in text.split('sur demande explicite')[1]
+    assert 'aucune notice BNF' in text
     assert 'Complétude non confirmée' in text
 
 
@@ -83,6 +92,7 @@ async def test_bnf_pagination_and_verified_french_edition_reach_volume_four():
     import httpx
 
     from app.utils.isbn import isbn10_to_isbn13
+    from tests import fakes_catalogue
     from tests.fakes_catalogue import BNF_RECORD_TEMPLATE, SRU_HEADER
 
     codes = [isbn10_to_isbn13(f"{i:09d}0") for i in range(100, 107)]
@@ -108,8 +118,12 @@ async def test_bnf_pagination_and_verified_french_edition_reach_volume_four():
         else:
             start = int(request.url.params.get("startRecord", "1"))
             selected = entries[start-1:start+2]
+        rendered = [record(entry) for entry in selected]
+        if request.url.params.get("recordSchema") == "marcxchange":
+            # La preuve de parution ne se lit que dans la notice MarcXchange.
+            rendered = [fakes_catalogue.marcxchange_from_dc(notice) for notice in rendered]
         xml = SRU_HEADER.format(count=len(entries) if "bib.isbn" not in query else len(selected),
-                                records="".join(record(entry) for entry in selected))
+                                records="".join(rendered))
         return httpx.Response(200, text=xml)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
@@ -122,7 +136,12 @@ async def test_bnf_pagination_and_verified_french_edition_reach_volume_four():
     assert any(request.url.params.get("startRecord") == "7" for request in requests)
 
 
-async def test_declared_total_keeps_missing_number_without_inventing_isbn():
+async def test_declared_total_no_longer_fabricates_missing_volumes():
+    """« 4 tomes annoncés » n'autorise pas à inventer les tomes 2, 3 et 4.
+
+    Le total déclaré reste affiché comme une complétude non vérifiée ; il ne crée
+    plus de lignes sans ISBN, qui laissaient croire à des tomes catalogués.
+    """
     service = BookMetadataService()
     notice = bird(1, isbn=CODES[0])
     notice.declared_volume_count = 4
@@ -130,13 +149,14 @@ async def test_declared_total_keeps_missing_number_without_inventing_isbn():
         ProviderQueryResult(items=(notice,)), None
     ))), patch.object(service, '_openlibrary_works', AsyncMock(return_value=(
         [], ProviderQueryResult()
-    ))), patch.object(service, 'verify_isbn', AsyncMock(return_value=notice)):
+    ))), patch.object(service, 'verify_isbn', AsyncMock(return_value=notice)), \
+            patch_bnf_admission(service, [notice], series='Birdking'):
         verdict = await service.lookup_series_notices(
             'Birdking', author_hint='Daniel Freedman', for_creation=True,
         )
     assert verdict.declared_volume_count == 4
-    assert [v.number for v in verdict.volumes] == [1, 2, 3, 4]
-    assert [v.isbn13 for v in verdict.volumes] == [CODES[0], None, None, None]
+    assert [v.number for v in verdict.volumes] == [1]
+    assert [v.isbn13 for v in verdict.volumes] == [CODES[0]]
 
 
 @pytest.mark.parametrize('verified', [None, BookMetadata(
@@ -179,13 +199,15 @@ def test_isbn_normalization_and_french_priority_are_independent_of_input_order()
         assert [v.isbn13 for v in volumes] == [CODES[0], CODES[1]]
 
 
-async def test_summary_has_two_explicit_price_fields_when_no_cache():
+def test_summary_names_the_failure_instead_of_showing_an_empty_field():
+    """Un livre absent n'a pas « zéro offre » : sa cote n'a pas pu être lue."""
     from app.services.market_price_service import MarketPriceService
 
     summary = MarketPriceService.get_comparison_summary(None, None, for_creation=True)
-    assert '<b>Dernière offre connue :</b> Non renseigné' in summary
-    assert '<b>Prix bas constaté :</b> Non renseigné' in summary
-    assert 'Cote indisponible' in summary
+    assert '<b>Cote :</b> récupération impossible, la source n\'a pas répondu' in summary
+    assert '<b>Prix bas constaté (1 an) :</b> historique indisponible' in summary
+    for empty in ('Non renseigné', 'Cote indisponible'):
+        assert empty not in summary
 
 
 @pytest.mark.parametrize('discovery', [
@@ -292,12 +314,16 @@ async def test_birdking_creation_confirms_four_rows_from_prepared_local_caches(
         monkeypatch.setattr(link_bd_catalog, 'price_book_now', collect)
         await save_alert(callback, state, user, db.session)
         text = message.edit_text.call_args.args[0]
-        assert re.findall(r'📚 <b>Livre (\d+)</b>', text) == ['1', '2', '3', '4']
         expected_codes = CODES[1:] if discovery == 'contradiction' else CODES
+        retained = [str(n) for n, code in enumerate(CODES, 1) if code in expected_codes]
+        assert re.findall(r'📚 <b>Livre (\d+)</b>', text) == retained
         for n, code in enumerate(CODES, 1):
             if code not in expected_codes:
+                # Le tome sans notice prouvée n'est plus une fiche à prix absent :
+                # il est nommé une fois, parmi les tomes détectés et non ajoutés.
                 assert code not in text
-                assert 'Cote indisponible' in text
+                assert f'Livre {n}' in text.split('sur demande explicite')[1]
+                assert 'Cote indisponible' not in text
                 continue
             assert text.count(code) == 1
             assert f'{n}8,00 €' in text
@@ -389,7 +415,8 @@ async def test_google_completes_the_series_after_bnf_and_openlibrary():
     with patch.object(service, '_bnf_records_result', bnf), \
             patch.object(service, '_openlibrary_works', ol), \
             patch.object(service, '_google_books_client', return_value=client), \
-            patch.object(service, 'verify_isbn', AsyncMock(return_value=bird(4, isbn=CODES[3]))):
+            patch.object(service, 'verify_isbn', AsyncMock(return_value=bird(4, isbn=CODES[3]))), \
+            patch_bnf_admission(service, [bird(4, isbn=CODES[3])], series='Birdking'):
         verdict = await service.lookup_series_notices(
             'Birdking', author_hint='Daniel Freedman', for_creation=True,
         )
@@ -413,13 +440,17 @@ def test_creation_summary_dates_no_offer_without_promising_a_pending_price():
         comparison_status=ComparisonStatus.UNAVAILABLE,
         collection_status="empty",
         checked_at=datetime(2026, 10, 13, 10, 30, tzinfo=UTC),
+        # L'historique a été lu à cette date et n'a rien rendu : c'est un fait daté,
+        # pas une lecture ratée.
+        historical_checked_at=datetime(2026, 10, 13, 10, 30, tzinfo=UTC),
     )
     summary = MarketPriceService.get_comparison_summary(None, book, for_creation=True)
-    assert "Aucune offre d'occasion trouvée" in summary
+    assert '<b>Cote :</b> aucune offre trouvée' in summary
     assert '13/10' not in summary
     assert 'en cours' not in summary
-    assert '<b>Dernière offre connue :</b> Non renseigné' in summary
-    assert '<b>Prix bas constaté :</b> Non renseigné' in summary
+    assert '<b>Prix bas constaté (1 an) :</b> aucun relevé sur 12 mois' in summary
+    for empty in ('Non renseigné', 'Cote indisponible'):
+        assert empty not in summary
 
 
 async def test_resume_keeps_series_proofs_but_identity_change_discards_them():
@@ -505,7 +536,8 @@ async def test_series_selection_uses_the_reference_publisher_at_equal_priority()
         ProviderQueryResult(items=(other, preferred)), None
     ))), patch.object(service, '_openlibrary_works', AsyncMock(return_value=(
         [], ProviderQueryResult()
-    ))), patch.object(service, 'verify_isbn', verified):
+    ))), patch.object(service, 'verify_isbn', verified), \
+            patch_bnf_admission(service, [preferred, other], series='Birdking'):
         verdict = await service.lookup_series_notices(
             'Birdking', author_hint='Daniel Freedman', for_creation=True,
             reference_publisher='Éditeur test',
@@ -516,6 +548,7 @@ async def test_series_selection_uses_the_reference_publisher_at_equal_priority()
 async def test_explicit_bnf_contradiction_is_reported_for_initial_proof_invalidation():
     import httpx
 
+    from tests import fakes_catalogue
     from tests.fakes_catalogue import BNF_RECORD_TEMPLATE, SRU_HEADER
 
     def transport(request):
@@ -523,11 +556,13 @@ async def test_explicit_bnf_contradiction_is_reported_for_initial_proof_invalida
             return httpx.Response(200, json={'docs': []})
         query = request.url.params['query']
         title = 'Autre ouvrage' if 'bib.isbn' in query else 'Birdking Livre 1'
-        record = BNF_RECORD_TEMPLATE.format(
+        notice = BNF_RECORD_TEMPLATE.format(
             ark='123', title=title, creator='Daniel Freedman', publisher='Éditeur test',
             date='<dc:date>2024</dc:date>', fmt='Album', isbn=CODES[0],
         )
-        return httpx.Response(200, text=SRU_HEADER.format(count=1, records=record))
+        if request.url.params.get('recordSchema') == 'marcxchange':
+            notice = fakes_catalogue.marcxchange_from_dc(notice)
+        return httpx.Response(200, text=SRU_HEADER.format(count=1, records=notice))
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
         catalogue = await BookMetadataService(http_client=client).lookup_series_notices(
