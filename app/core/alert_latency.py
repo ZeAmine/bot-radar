@@ -30,6 +30,9 @@ class AlertTiming:
     first_call_seen: bool = False
     ack_at: float | None = None
     attempts: int = 0
+    cycle_started_monotonic: float | None = None
+    frontier_id: str | None = None
+    previous_frontier_id: str | None = None
 
 
 _current: ContextVar[AlertTiming | None] = ContextVar("alert_timing", default=None)

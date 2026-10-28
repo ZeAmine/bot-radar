@@ -269,6 +269,10 @@ class ProcessListingUseCase:
                     latency.clock(),
                     result=outcome,
                     attempts=timing.attempts,
+                    external_id=payload.external_id,
+                    frontier_id=timing.frontier_id,
+                    previous_frontier_id=timing.previous_frontier_id,
+                    cycle_started_monotonic=timing.cycle_started_monotonic,
                 )
 
     async def _rollback_before_release(self) -> None:

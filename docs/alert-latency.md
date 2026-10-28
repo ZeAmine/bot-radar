@@ -10,7 +10,9 @@ avec doubles ne sont pas des mesures de production.
 ## Événements
 
 `alert_latency` utilise `time.monotonic`, des `duration_ms` et `duration_unit=ms`.
-Les timestamps monotoniques absolus ne sont pas enregistrés. Les événements
+Les timestamps monotoniques absolus ne sont pas enregistrés, à une exception près :
+`cycle_started_monotonic`, début de cycle du poller, dont la valeur ne se lit que
+relativement à l'horloge de l'instance qui l'émet. Les événements
 portent les instants capturés, pas leur date d’émission : le diagnostic pré-appel
 est émis à la fin de la tentative pour ne pas entrer dans son chrono. `null` signifie une
 frontière inconnue/une horloge défaillante, jamais zéro. Pas de SQL, réseau ou
@@ -49,6 +51,48 @@ et dans le diagnostic. La cotation partagée utilise book_id et peut ne pas avoi
 un destinataire unique. Aucun titre, corps, payload, URL, secret ou texte libre
 d'exception n'est ajouté. Les IDs servent aux logs, pas à des labels de métriques
 à cardinalité illimitée.
+
+## Frontière du lot
+
+`ingestion_terminal` porte quatre champs de position, absents des autres phases :
+`external_id` de l'annonce, `frontier_id` (plus grand `external_id` numérique du lot
+ramené par `fetch_vinted_page` ce cycle, calculé une fois par appel sur la liste déjà
+en mémoire), `previous_frontier_id` (frontière du lot du passage précédent de la
+même URL cible) et `cycle_started_monotonic` (début du cycle portant le lot).
+Aucune requête ni cadence supplémentaire : le filtrage des
+nouveautés reste une appartenance à `seen_ids`. Sans frontière précédente connue —
+redémarrage, ou première interrogation de cette URL — le champ vaut `null`, jamais
+`0`. L'accusé `entry_to_ack` ne change pas ; ces champs partent plus tard, avec la
+phase terminale de l'ingestion.
+
+Une frontière par `target_url` : le flux BD et chaque recherche personnalisée sont
+des catalogues distincts, aux échelles d'identifiants non comparables. Un cycle
+interroge le flux BD puis, s'il y en a, une recherche personnalisée ; les deux
+écrivent leur propre entrée, et `previous_frontier_id` d'une URL ne provient jamais
+du lot d'une autre. `cycle_started_monotonic` reste commun au cycle : c'est la même
+horloge de début. Une recherche désactivée perd son entrée, donc une URL qui
+disparaît puis revient repart de `null` — aucune frontière fantôme héritée.
+
+Trois limites de lecture. D'abord, ces champs ne sont émis que pour les annonces
+réellement ingérées : une annonce vue puis filtrée (déjà en `seen_ids`) n'émet
+aucune ligne terminale, et une annonce sans destinataire émet une ligne mais aucune
+alerte. Ensuite, le débit d'annonces par intervalle ne se déduit pas du nombre de
+lignes d'ingestion : il se lit sur les lignes `poller_cycle` (`items`, `duration_s`,
+`cycle`), avec **leurs horodatages** — jamais avec l'heure d'ingestion, qui dépend
+de la file d'ingestion et non de la scrutation ; `cycle_started_monotonic` sert
+seulement à regrouper les lignes d'ingestion d'un même cycle. Enfin, la frontière ne
+date pas l'annonce : elle borne le lot, une annonce absente du lot ne laissant
+aucune trace (ni avant, ni après).
+
+Une dernière limite change la lecture de la mesure : les recherches personnalisées
+sont interrogées **en alternance, une par cycle** (`custom_searches[poll_cycle %
+len(custom_searches)]`). Pour une recherche donnée, `previous_frontier_id` ne
+remonte donc pas au cycle précédent mais à son dernier passage, plusieurs cycles en
+arrière, et son débit par intervalle **n'est pas fiable avec les champs actuels** :
+il faudrait l'identifiant du cycle de son passage d'avant, pas celui de son dernier
+passage. Seul le flux BD, lu à chaque cycle, donne un débit par intervalle
+exploitable ; ne pas calculer de débit de recherche personnalisée en croyant lire
+un intervalle d'un cycle.
 
 ## Publication → détection : source absente
 
