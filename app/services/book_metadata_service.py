@@ -31,8 +31,9 @@ from app.domain.rules.series_detection import SeriesSignal, detect_series
 from app.domain.rules.tome_admission import (
     TomeAdmission,
     TomeNotice,
-    admit_tome,
+    admit_tome_notices,
     notice_from_bnf_record,
+    series_reference_collection,
 )
 from app.providers.google_books import (
     GoogleBooksClient,
@@ -792,6 +793,9 @@ def _tome_record(fields: dict[str, list[dict[str, str]]]) -> dict[str, Any]:
         "number": _subfield_number(titles.get("h")) or _subfield_number(series.get("v")),
         "publisher": first("214", "c"),
         "authors": tuple(author for author in authors if author),
+        "adaptation_statement": titles.get("g"),
+        "illustration": first("215", "c"),
+        "dimensions": first("215", "d"),
     }
 
 
@@ -1580,6 +1584,18 @@ class BookMetadataService:
                         and decision.outcome != "reject"
                     ):
                         selected.append(meta)
+            # Les notices BNF sont demandées une fois par ISBN, avant de juger les
+            # tomes : c'est la seule façon de savoir ce que la série **atteste** — sa
+            # collection, quand plusieurs tomes la portent — et de refuser l'édition
+            # qui n'en fait pas partie. L'admission relit ensuite ce qui est en main.
+            notices_by_isbn: dict[str, list[TomeNotice] | None] = {}
+            for meta in selected:
+                code = isbn_from_identifier(meta.isbn13)
+                if code and code not in notices_by_isbn:
+                    notices_by_isbn[code] = await self._bnf_tome_notices(code)
+            reference_collection = series_reference_collection(
+                notices for notices in notices_by_isbn.values() if notices
+            )
             for meta in selected:
                 number = meta.volume_number or notice_volume(meta.volume_title or meta.title)
                 if number is None:
@@ -1606,12 +1622,13 @@ class BookMetadataService:
                         and identity.outcome == "reject"):
                     rejected.append(code)
                 if code:
-                    admission, proven = await self.admit_tome_notice(
-                        code,
+                    admission, proven = self.admit_tome_from_notices(
+                        code, notices_by_isbn.get(code),
                         series_title=series_title,
                         author_hint=author_hint,
                         number=verified.volume_number if verified else number,
                         reference_publisher=reference_publisher,
+                        reference_collection=reference_collection,
                     )
                 else:
                     admission, proven = TomeAdmission("invalid_isbn"), None
@@ -1660,6 +1677,7 @@ class BookMetadataService:
         author_hint: str | None = None,
         number: int | None = None,
         reference_publisher: str | None = None,
+        reference_collection: str | None = None,
         today: date | None = None,
     ) -> tuple[TomeAdmission, TomeNotice | None]:
         """Admet un tome sur preuve BNF, et rend la notice qui l'a prouvé.
@@ -1679,30 +1697,51 @@ class BookMetadataService:
         ne répond pas, le tome est refusé par prudence, mais le motif dit
         `bnf_unavailable` — sans quoi l'aperçu annoncerait que le livre n'existe pas
         alors qu'on n'a pas pu regarder.
+
+        Une série passe par `admit_tome_from_notices` : elle lit les notices de ses
+        ISBN une fois pour toutes, parce qu'il lui faut la collection qu'elles
+        attestent **avant** de juger chaque tome.
         """
         code = isbn_from_identifier(isbn13)
         if code is None or not is_valid_isbn(code):
             return TomeAdmission("invalid_isbn"), None
         notices = await self._bnf_tome_notices(code)
+        return self.admit_tome_from_notices(
+            code, notices, series_title=series_title, author_hint=author_hint,
+            number=number, reference_publisher=reference_publisher,
+            reference_collection=reference_collection, today=today,
+        )
+
+    def admit_tome_from_notices(
+        self,
+        isbn13: str | None,
+        notices: list[TomeNotice] | None,
+        *,
+        series_title: str | None,
+        author_hint: str | None = None,
+        number: int | None = None,
+        reference_publisher: str | None = None,
+        reference_collection: str | None = None,
+        today: date | None = None,
+    ) -> tuple[TomeAdmission, TomeNotice | None]:
+        """Admission d'un ISBN sur des notices **déjà lues** : aucun accès réseau.
+
+        Une série interroge la BNF une fois par ISBN, pour toutes ses notices comme
+        pour la collection qu'elles portent : l'admission relit ensuite ce qu'elle a
+        déjà en main, au lieu de redemander la même réponse.
+
+        `notices` à `None` signifie « on n'a pas pu regarder » — la liste vide dit
+        qu'on a regardé et qu'il n'y a rien ; les deux refusent, mais pas au même
+        motif.
+        """
         if notices is None:
             return TomeAdmission("bnf_unavailable"), None
-        if not notices:
-            return TomeAdmission("no_bnf_notice"), None
-        verdicts = [
-            (
-                admit_tome(
-                    isbn13=code, notice=notice, series_title=series_title,
-                    author_hint=author_hint, number=number,
-                    reference_publisher=reference_publisher, today=today,
-                ),
-                notice,
-            )
-            for notice in notices
-        ]
-        for admission, notice in verdicts:
-            if admission.accepted:
-                return admission, notice
-        return verdicts[0]
+        return admit_tome_notices(
+            isbn13=isbn13, notices=notices, series_title=series_title,
+            author_hint=author_hint, number=number,
+            reference_publisher=reference_publisher,
+            reference_collection=reference_collection, today=today,
+        )
 
     async def _bnf_tome_notices(self, isbn13: str) -> list[TomeNotice] | None:
         """Notices MarcXchange d'un ISBN, une par notice BNF le décrivant.

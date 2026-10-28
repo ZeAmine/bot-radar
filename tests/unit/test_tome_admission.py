@@ -19,9 +19,12 @@ from app.domain.rules.tome_admission import (
     TomeAdmission,
     TomeNotice,
     admit_tome,
+    admit_tome_notices,
+    notice_contradictions,
     notice_from_bnf_record,
     parse_catalogue_entry,
     parse_publication_field,
+    series_reference_collection,
 )
 from app.services.book_metadata_service import parse_tome_notices
 from tests.fakes_catalogue import marcxchange_notice, notices_from_marcxchange
@@ -329,41 +332,94 @@ def _payload(isbn: str) -> bytes:
     return (FIXTURES / f"marcxchange_{isbn}.xml").read_bytes()
 
 
-def test_the_passe_miroir_volume_one_keeps_only_its_published_edition():
-    """Le cas de l'incident : deux notices pour le tome 1, une seule est parue.
+def test_the_passe_miroir_volume_one_is_not_admitted_on_its_certain_notice():
+    """Le cas de l'incident : deux notices pour le tome 1, une seule est datée.
 
-    La première décrit l'adaptation en BD (parution non prouvée), la seconde
-    l'album de 2026, dont la date est certaine. L'admission doit retenir la
-    seconde et refuser l'autre pour son motif réel.
+    La première notice décrit le roman, publié dans « Fétiche », dont la date est
+    déclarée inconnue (`u`). La seconde décrit l'adaptation en BD, datée au
+    06/02/2026 (`d`) : c'est elle qui, seule, prouve une parution — et c'est
+    exactement ce qui la faisait retenir comme tome 1 d'une série dont les tomes 2
+    et 4 sont des romans de poche. Un ISBN ne s'admet donc pas sur sa notice la plus
+    favorable : l'édition différente est dite, et le tome n'est pas rattaché.
     """
     notices = parse_tome_notices(_payload("9782075163743"))
 
     assert len(notices) == 2
-    verdicts = [
+    # Le piège, reproduit : une seule notice prouve l'année, et c'est l'adaptation.
+    proving = [
+        notice_value for notice_value in notices if notice_value.proven_year is not None
+    ]
+    assert [notice_value.publisher for notice_value in proving] == [
+        "Gallimard bande dessinée"
+    ]
+    assert proving[0].adaptation_statement == "d'après l'oeuvre de Christelle Dabos"
+    # Séparément, chaque notice n'a qu'un défaut : la date pour le roman, l'édition
+    # pour la BD — et c'est bien la seconde qui portait la preuve.
+    assert [
         admit_tome(
-            isbn13="9782075163743",
-            notice=notice_value,
-            series_title=PASSE_MIROIR,
-            author_hint=DABOS,
-            number=1,
-            today=TODAY,
-        )
+            isbn13="9782075163743", notice=notice_value, series_title=PASSE_MIROIR,
+            author_hint=DABOS, number=1, today=TODAY,
+        ).reason
         for notice_value in notices
-    ]
+    ] == ["date_unproven", "different_edition"]
 
-    # Une seule notice est admise, et c'est celle dont la date est certaine : le
-    # classement de la BNF ne décide pas à la place de la preuve.
-    assert sorted(str(admission.reason) for admission in verdicts) == [
-        "None", "date_unproven",
-    ]
-    admitted = [
-        notice_value
-        for admission, notice_value in zip(verdicts, notices, strict=True)
-        if admission.accepted
-    ]
-    assert [notice_value.proven_year for notice_value in admitted] == [2026]
-    assert [notice_value.entry_date for notice_value in admitted] == [date(2026, 2, 6)]
-    assert [notice_value.proven_day for notice_value in admitted] == [None]
+    admission, judged = admit_tome_notices(
+        isbn13="9782075163743", notices=notices, series_title=PASSE_MIROIR,
+        author_hint=DABOS, number=1, today=TODAY,
+    )
+
+    assert admission.reason == "different_edition"
+    assert judged is not None
+    # Le tome reste au récapitulatif, nommé avec son motif : il existe, c'est son
+    # édition qui n'est pas celle de la série.
+    assert not admission.other_work
+
+
+def test_the_passe_miroir_volume_one_is_refused_even_against_its_collection():
+    """Les tomes 2 et 4 attestent « Pôle fiction » : aucune notice du tome 1 n'en est.
+
+    Le roman est paru dans « Fétiche », la BD dans « La passe-miroir » : deux
+    collections qu'aucun autre tome ne porte. C'est la collection attestée par la
+    série qui fait d'eux d'autres éditions du même tome.
+    """
+    reference = series_reference_collection([
+        parse_tome_notices(_payload("9782075163743")),
+        parse_tome_notices(_payload("9782075215510")),
+        parse_tome_notices(_payload("9782075215619")),
+    ])
+
+    assert reference == "pole fiction"
+    assert [
+        admit_tome(
+            isbn13="9782075163743", notice=notice_value, series_title=PASSE_MIROIR,
+            author_hint=DABOS, number=1, reference_collection=reference, today=TODAY,
+        ).reason
+        for notice_value in parse_tome_notices(_payload("9782075163743"))
+    ] == ["different_edition", "different_edition"]
+
+
+def test_one_volume_alone_attests_no_collection():
+    """Un seul tome ne fait pas la collection d'une série : le tome 1 peut différer."""
+    assert series_reference_collection([parse_tome_notices(_payload("9782075215510"))]) is None
+
+
+def test_a_series_whose_volumes_change_collection_attests_none():
+    """Chaque tome dans sa collection : rien n'est attesté, donc rien n'est écarté."""
+    assert series_reference_collection([
+        [notice(series_statement="Fétiche")],
+        [notice(series_statement="Pôle fiction")],
+        [notice(series_statement="Folio")],
+    ]) is None
+
+
+def test_a_collection_spelled_two_ways_is_attested_as_one():
+    """« Pöle fiction » et « Pôle fiction » sont la même collection, malgré le tréma."""
+    attested = series_reference_collection([
+        [notice(series_statement="Pöle fiction")],
+        [notice(series_statement="Pôle fiction")],
+    ])
+
+    assert attested == "pole fiction"
 
 
 @pytest.mark.parametrize("isbn", ["9782075215510", "9782075215619"])
@@ -385,3 +441,203 @@ def test_the_unpublished_tomes_of_the_series_are_refused_by_their_date(isbn: str
 
 def test_a_truncated_payload_renders_no_notice_rather_than_a_wrong_one():
     assert parse_tome_notices(b"<srw:searchRetrieveResponse") == []
+
+
+# --- Le garde-fou d'édition : deux notices, une seule édition -------------------
+#
+# Un ISBN peut répondre de deux notices. Les deux décrivent alors le même tome, mais
+# pas la même édition — une adaptation, une réédition, une autre collection. Les
+# confondre, c'est admettre sur la notice la plus favorable : la bande dessinée de
+# « La Passe-miroir » est entrée comme tome 1 d'une série de romans de poche.
+
+
+def test_two_departments_of_one_house_are_not_the_same_publisher():
+    """« Gallimard jeunesse » et « Gallimard bande dessinée » : deux départements.
+
+    Garder le seul premier mot distinctif les rendait égaux, et l'album passait pour
+    le roman. Le nom entier les distingue, sans rien savoir de la BNF.
+    """
+    admission = verdict(notice(publisher="Gallimard bande dessinée"),
+                        reference_publisher="Gallimard jeunesse")
+
+    assert admission.reason == "publisher_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("written", "reference"),
+    [
+        ("Gallimard Jeunesse", "Éditions Gallimard Jeunesse"),
+        ("Éditions Gallimard Jeunesse", "Gallimard jeunesse"),
+        ("  GALLIMARD   JEUNESSE ", "Gallimard jeunesse"),
+    ],
+)
+def test_the_same_house_spelled_longer_is_not_a_false_refusal(written: str, reference: str):
+    """Une mention plus longue ne contredit pas une plus courte : refuser serait faux."""
+    admission = verdict(notice(publisher=written), reference_publisher=reference)
+
+    assert admission.accepted
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "d'après l'oeuvre de Christelle Dabos",
+        "D'APRÈS L'ŒUVRE DE Christelle Dabos",
+        "d’après l’œuvre de Christelle Dabos",
+        "  D'après  l'OEUVRE de Christelle Dabos  ",
+    ],
+)
+def test_an_adaptation_of_the_watched_author_is_another_edition(statement: str):
+    """`200$g` « d'après l'œuvre de … » : la notice décrit l'adaptation, pas le roman."""
+    admission = verdict(notice(
+        adaptation_statement=statement, authors=("Vanyda", "Dabos Christelle"),
+    ))
+
+    assert admission.reason == "different_edition"
+
+
+def test_an_adaptation_of_another_author_leaves_the_tome_alone():
+    """Une série de BD adaptées adapte, tome après tome, des œuvres d'autres auteurs.
+
+    La série est veillée au nom de son dessinateur : l'adaptation ne dit alors rien
+    contre le tome, et la refuser ferait un motif de ce qui est la règle.
+    """
+    admission = verdict(
+        notice(
+            adaptation_statement="d'après l'oeuvre de Lewis Trondheim",
+            authors=("Vanyda", "Lewis Trondheim"),
+        ),
+        author_hint="Vanyda",
+    )
+
+    assert admission.accepted
+
+
+def test_a_statement_that_is_not_an_adaptation_is_not_held_against_the_tome():
+    """« texte de … » ne dit pas « d'après l'œuvre de … » : rien n'est écarté."""
+    admission = verdict(notice(adaptation_statement="texte de Christelle Dabos"))
+
+    assert admission.accepted
+
+
+def test_a_volume_from_another_collection_is_another_edition():
+    """Le roman est paru dans « Fétiche », la série est en « Pôle fiction »."""
+    admission = verdict(
+        notice(series_statement="Fétiche", title="La Passe-miroir les fiancés de l'hiver"),
+        reference_collection="pole fiction",
+    )
+
+    assert admission.reason == "different_edition"
+
+
+def test_a_collection_spelled_two_ways_is_the_same_one():
+    """« Pöle fiction » et « Pôle fiction » ne se contredisent pas."""
+    admission = verdict(
+        notice(series_statement="PôLE  fiction", title="La Passe-miroir, tome 1"),
+        reference_collection="Pôle fiction",
+    )
+
+    assert admission.accepted
+
+
+def test_a_volume_without_a_collection_is_not_accused():
+    """Une zone absente n'est pas un fait contraire : rien ne l'écarte."""
+    admission = verdict(
+        notice(series_statement=None, title="La Passe-miroir les fiancés de l'hiver"),
+        reference_collection="pole fiction",
+    )
+
+    assert admission.accepted
+
+
+def _contradiction(*overrides: dict[str, object]) -> tuple[TomeNotice, ...]:
+    return (notice(), *(replace(notice(), **values) for values in overrides))
+
+
+@pytest.mark.parametrize(
+    ("notices", "expected"),
+    [
+        # Même maison écrite deux fois : rien ne s'oppose.
+        (_contradiction({"publisher": "Éditions Gallimard Jeunesse"}), ()),
+        # Deux départements : la BNF ne décrit pas la même édition.
+        (_contradiction({"publisher": "Gallimard bande dessinée"}), ("publisher",)),
+        # Deux types de date : l'une dit « paru », l'autre « je ne sais pas ».
+        (_contradiction({"date_type": "u"}), ("date_type",)),
+        # Un album illustré en couleur de 29 cm n'est pas un poche de 18 cm.
+        (
+            _contradiction(
+                {"illustration": "ill. en coul.", "dimensions": "29 cm"},
+                {"dimensions": "18 cm"},
+            ),
+            ("format",),
+        ),
+        # Une notice muette sur le format ne s'oppose pas à celle qui le décrit.
+        (_contradiction({"dimensions": "18 cm"}), ()),
+        (
+            _contradiction(
+                {
+                    "publisher": "Gallimard bande dessinée", "date_type": "u",
+                    "illustration": "ill. en coul.", "dimensions": "29 cm",
+                },
+                {"dimensions": "18 cm"},
+            ),
+            ("publisher", "format", "date_type"),
+        ),
+    ],
+)
+def test_contradictions_between_notices_are_named_by_axis(
+    notices: tuple[TomeNotice, ...], expected: tuple[str, ...],
+):
+    assert notice_contradictions(notices) == expected
+
+
+def test_two_notices_that_contradict_each_other_prove_nothing():
+    """Chacune serait admise seule ; ensemble, elles disent deux choses différentes.
+
+    C'est le second piège de l'incident : la notice la plus favorable n'est pas
+    seulement une question de date, c'est aussi une question d'identité de l'édition.
+    """
+    notices = _contradiction({"publisher": "Gallimard bande dessinée"})
+
+    assert [verdict(notice_value).accepted for notice_value in notices] == [True, True]
+
+    admission, _ = admit_tome_notices(
+        isbn13="9782075163743", notices=notices, series_title=PASSE_MIROIR,
+        author_hint=DABOS, number=1, today=TODAY,
+    )
+
+    assert admission.reason == "notices_contradict"
+    assert not admission.other_work, "le tome reste au récapitulatif, avec son motif"
+
+
+def test_notices_that_agree_are_admitted_on_the_first_one_that_proves_them():
+    """Deux notices concordantes n'obligent pas à refuser : la preuve reste la preuve."""
+    notices = _contradiction({"publisher": "Éditions Gallimard Jeunesse"})
+
+    admission, judged = admit_tome_notices(
+        isbn13="9782075163743", notices=notices, series_title=PASSE_MIROIR,
+        author_hint=DABOS, number=1, today=TODAY,
+    )
+
+    assert admission.accepted
+    assert judged is not None
+
+
+def test_an_isbn_without_notice_is_absent_rather_than_contradictory():
+    """L'absence de notice et le désaccord des notices ne se disent pas pareil."""
+    admission, judged = admit_tome_notices(
+        isbn13="9782075163743", notices=[], series_title=PASSE_MIROIR, today=TODAY,
+    )
+
+    assert (admission.reason, judged) == ("no_bnf_notice", None)
+
+
+def test_an_other_work_notice_is_still_other_work_when_notices_are_plural():
+    """« Autre auteur » reste un autre ouvrage : la ligne quitte le récapitulatif."""
+    admission, _ = admit_tome_notices(
+        isbn13="9782075163743", notices=[notice(authors=("Vanyda",))],
+        series_title=PASSE_MIROIR, author_hint=DABOS, number=1, today=TODAY,
+    )
+
+    assert admission.reason == "author_mismatch"
+    assert admission.other_work

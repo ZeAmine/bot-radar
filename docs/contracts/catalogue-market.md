@@ -169,6 +169,41 @@ rattache que le tome explicitement demandé ; les autres tomes admis restent
 « détectés, non ajoutés » et ne s'ajoutent que sur demande explicite. Aucun tome
 sans ISBN n'est créé pour compléter un décompte annoncé.
 
+Un ISBN ne répond pas toujours d'une seule notice, et deux notices ne se valent pas :
+l'ISBN est donc jugé **entier**, jamais sur sa notice la plus favorable. Une notice qui
+décrit une autre édition — `200$g` « d'après l'œuvre de » l'auteur cherché, ou une
+collection `225$a` différente de celle que plusieurs tomes de la série attestent —
+fait refuser le tome en `different_edition`, affiché « édition différente détectée » :
+le tome reste au récapitulatif avec son motif, mais n'est jamais rattaché. Deux notices
+qui se contredisent sur l'éditeur, le format (`215$c`/`215$d`) ou le type de date font
+refuser l'ISBN en `notices_contradict` : aucune ne prouve plus l'édition demandée. Une
+zone absente ne contredit jamais rien, et deux écritures de la même maison —
+« Éditions Gallimard Jeunesse » et « Gallimard Jeunesse » — ne s'opposent pas, alors que
+deux départements d'une même maison (« Gallimard jeunesse », « Gallimard bande
+dessinée ») se distinguent. Une adaptation d'un **autre** auteur ne dit rien contre le
+tome : c'est le cas ordinaire d'une série de BD adaptées, veillée au nom de son
+dessinateur. Il n'existe pas d'exigence d'auteur principal : l'auteur observé reste
+celui que la recherche a demandé.
+
+Contrôles de ce paragraphe, dans [l'admission](../../tests/unit/test_tome_admission.py) :
+le cas réel du tome 1 (`test_the_passe_miroir_volume_one_is_not_admitted_on_its_certain_notice`,
+`test_the_passe_miroir_volume_one_is_refused_even_against_its_collection`), les axes de
+contradiction et l'absence de contradiction sur une zone absente
+(`test_contradictions_between_notices_are_named_by_axis`,
+`test_two_notices_that_contradict_each_other_prove_nothing`), les deux départements
+et les variantes d'une même maison
+(`test_two_departments_of_one_house_are_not_the_same_publisher`,
+`test_the_same_house_spelled_longer_is_not_a_false_refusal`), l'adaptation de l'auteur
+cherché et celle d'un autre
+(`test_an_adaptation_of_the_watched_author_is_another_edition`,
+`test_an_adaptation_of_another_author_leaves_the_tome_alone`) et la collection attestée
+par la série (`test_a_series_whose_volumes_change_collection_attests_none`,
+`test_a_collection_spelled_two_ways_is_attested_as_one`). Bout en bout, sur les trois
+notices réelles de l'incident : [la découverte de la
+série](../../tests/unit/test_creation_series_preview.py)
+(`test_the_discovery_refuses_the_adaptation_bnf_gives_for_the_first_volume`), et son
+affichage (`test_the_preview_names_a_different_edition_without_attaching_it`).
+
 Une cote de création retient la moins chère des offres livrées des états acceptés
 (neuf avec ou sans étiquette, très bon état) et nomme l'un de quatre états : trouvée,
 aucune offre, récupération impossible, offres écartées par les filtres — avec leur
