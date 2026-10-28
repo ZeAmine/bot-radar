@@ -57,9 +57,9 @@ d'exception n'est ajouté. Les IDs servent aux logs, pas à des labels de métri
 `ingestion_terminal` porte quatre champs de position, absents des autres phases :
 `external_id` de l'annonce, `frontier_id` (plus grand `external_id` numérique du lot
 ramené par `fetch_vinted_page` ce cycle, calculé une fois par appel sur la liste déjà
-en mémoire), `previous_frontier_id` (frontière du lot précédent pour la même URL
-cible, conservée d'une itération à l'autre) et `cycle_started_monotonic` (début du
-cycle portant le lot). Aucune requête ni cadence supplémentaire : le filtrage des
+en mémoire), `previous_frontier_id` (frontière du lot du passage précédent de la
+même URL cible) et `cycle_started_monotonic` (début du cycle portant le lot).
+Aucune requête ni cadence supplémentaire : le filtrage des
 nouveautés reste une appartenance à `seen_ids`. Sans frontière précédente connue —
 redémarrage, ou première interrogation de cette URL — le champ vaut `null`, jamais
 `0`. L'accusé `entry_to_ack` ne change pas ; ces champs partent plus tard, avec la
@@ -73,14 +73,26 @@ du lot d'une autre. `cycle_started_monotonic` reste commun au cycle : c'est la m
 horloge de début. Une recherche désactivée perd son entrée, donc une URL qui
 disparaît puis revient repart de `null` — aucune frontière fantôme héritée.
 
-Deux limites de lecture. Ces champs ne sont émis que pour les annonces réellement
-ingérées : une annonce vue puis filtrée (déjà en `seen_ids`) n'émet aucune ligne
-terminale, et une annonce sans destinataire émet une ligne mais aucune alerte. Le
-débit d'annonces par intervalle ne se déduit donc pas du nombre de lignes
-d'ingestion : il se lit sur les lignes `poller_cycle` (`items`, `duration_s`,
-`cycle`), `cycle_started_monotonic` servant seulement à regrouper les lignes
-d'ingestion d'un même cycle. Et la frontière ne date pas l'annonce : elle borne le
-lot, une annonce absente du lot ne laissant aucune trace (ni avant, ni après).
+Trois limites de lecture. D'abord, ces champs ne sont émis que pour les annonces
+réellement ingérées : une annonce vue puis filtrée (déjà en `seen_ids`) n'émet
+aucune ligne terminale, et une annonce sans destinataire émet une ligne mais aucune
+alerte. Ensuite, le débit d'annonces par intervalle ne se déduit pas du nombre de
+lignes d'ingestion : il se lit sur les lignes `poller_cycle` (`items`, `duration_s`,
+`cycle`), avec **leurs horodatages** — jamais avec l'heure d'ingestion, qui dépend
+de la file d'ingestion et non de la scrutation ; `cycle_started_monotonic` sert
+seulement à regrouper les lignes d'ingestion d'un même cycle. Enfin, la frontière ne
+date pas l'annonce : elle borne le lot, une annonce absente du lot ne laissant
+aucune trace (ni avant, ni après).
+
+Une dernière limite change la lecture de la mesure : les recherches personnalisées
+sont interrogées **en alternance, une par cycle** (`custom_searches[poll_cycle %
+len(custom_searches)]`). Pour une recherche donnée, `previous_frontier_id` ne
+remonte donc pas au cycle précédent mais à son dernier passage, plusieurs cycles en
+arrière, et son débit par intervalle **n'est pas fiable avec les champs actuels** :
+il faudrait l'identifiant du cycle de son passage d'avant, pas celui de son dernier
+passage. Seul le flux BD, lu à chaque cycle, donne un débit par intervalle
+exploitable ; ne pas calculer de débit de recherche personnalisée en croyant lire
+un intervalle d'un cycle.
 
 ## Publication → détection : source absente
 
