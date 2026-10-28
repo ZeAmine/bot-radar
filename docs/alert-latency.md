@@ -23,6 +23,7 @@ sans log récursif et ne remplacent pas les résultats ou exceptions métier.
 | phase | Début → fin |
 | --- | --- |
 | collection | Avant fetch_vinted_page → retour de la liste parsée, ou exception/annulation ; réseau de collecte et parsing inclus, aucune date de publication supposée |
+| catalogue_read | Aucune durée : une ligne par lecture de catalogue, émise en `finally` à la fin de `poll_vinted_once`, donc après l'ingestion et l'envoi Telegram du lot, y compris sur une sortie anticipée sans nouveauté ; une lecture échouée garde `result="error"`/`"cancelled"` et aucun compteur |
 | discovery_to_entry | Retour de collecte local → entrée dans ProcessListingUseCase.execute ; seulement lorsque connu, conversion et queue poller incluses |
 | semaphore_wait | Avant acquisition du sémaphore poller → acquisition/abandon ; conversion du payload exclue |
 | guard_wait | Avant acquisition de la garde F03-A → acquisition/abandon ; traitement/rollback exclus |
@@ -52,13 +53,51 @@ un destinataire unique. Aucun titre, corps, payload, URL, secret ou texte libre
 d'exception n'est ajouté. Les IDs servent aux logs, pas à des labels de métriques
 à cardinalité illimitée.
 
+## Lecture de catalogue
+
+`catalogue_read` est la seule phase qui décrit un **catalogue lu**, et non une annonce
+ingérée : une ligne par appel de `poll_vinted_once`, émise à sa fin, donc après
+l'ingestion du lot et après l'envoi Telegram, ou après la sortie anticipée qui suit une
+lecture sans nouveauté. Elle porte `cycle` (index du cycle déjà reçu en paramètre),
+`category` (le `category_slug` du catalogue), `target_hash` (huit premiers caractères
+hexadécimaux du SHA-256 de l'URL cible : deux catalogues se distinguent sans écrire
+l'URL ni le texte de recherche en clair), `items_received` (annonces ramenées par
+`fetch_vinted_page`), `items_new` (annonces absentes de `seen_ids`), `frontier_id` et
+`previous_frontier_id` du lot. Rien n'est collecté pour la produire : aucun appel
+supplémentaire, aucun changement de cadence. La ligne ne porte pas de durée —
+`duration_ms` reste `null` —, elle borne un instant de lecture au lieu de chronométrer
+une phase : c'est l'horodatage de la ligne qui sert de repère temporel.
+
+Une lecture qui n'a pas eu lieu ne fabrique pas de zéros. Si `fetch_vinted_page` lève ou
+est annulé, la ligne part quand même, avec le marqueur de résultat déjà employé par
+`collection` (`result="error"` ou `"cancelled"`, le type d'exception restant sur la
+ligne `collection`) et `items_received`, `items_new` et `frontier_id` à `null` : ils sont
+inconnus, pas vides. Sans frontière précédente connue, `previous_frontier_id` vaut
+`null`, jamais `0`.
+
+Ce que l'événement permet de calculer : le **débit par intervalle, par catalogue**.
+Deux `catalogue_read` successives du même `target_hash` donnent, par l'écart de leurs
+horodatages, l'intervalle de lecture de ce catalogue, et les `items_new` de la seconde ce
+que cet intervalle a apporté de neuf ; sur plusieurs lectures, la somme des `items_new`
+rapportée à l'écart entre la première et la dernière donne le débit de cette période.
+C'est ce que `poller_cycle` ne peut pas faire : sa ligne additionne le flux BD et la
+recherche personnalisée du même cycle et n'identifie que le cycle.
+
+Ce qu'il ne permet pas : il borne l'instant de la lecture, il ne date pas l'apparition de
+l'annonce chez Vinted, faute de source (voir plus bas) — il majore la latence
+publication → détection, il ne la mesure pas. Et l'écart entre deux lectures n'est un
+intervalle de scrutation que pour le flux BD : pour une recherche personnalisée, c'est
+son propre rythme de passage (n cycles), jamais celui d'un cycle.
+
 ## Frontière du lot
 
-`ingestion_terminal` porte quatre champs de position, absents des autres phases :
+`ingestion_terminal` porte quatre champs de position :
 `external_id` de l'annonce, `frontier_id` (plus grand `external_id` numérique du lot
 ramené par `fetch_vinted_page` ce cycle, calculé une fois par appel sur la liste déjà
 en mémoire), `previous_frontier_id` (frontière du lot du passage précédent de la
 même URL cible) et `cycle_started_monotonic` (début du cycle portant le lot).
+`catalogue_read` reprend `frontier_id` et `previous_frontier_id` pour le lot entier,
+par lecture et non par annonce.
 Aucune requête ni cadence supplémentaire : le filtrage des
 nouveautés reste une appartenance à `seen_ids`. Sans frontière précédente connue —
 redémarrage, ou première interrogation de cette URL — le champ vaut `null`, jamais
@@ -77,21 +116,23 @@ Trois limites de lecture. D'abord, ces champs ne sont émis que pour les annonce
 réellement ingérées : une annonce vue puis filtrée (déjà en `seen_ids`) n'émet
 aucune ligne terminale, et une annonce sans destinataire émet une ligne mais aucune
 alerte. Ensuite, le débit d'annonces par intervalle ne se déduit pas du nombre de
-lignes d'ingestion : il se lit sur les lignes `poller_cycle` (`items`, `duration_s`,
-`cycle`), avec **leurs horodatages** — jamais avec l'heure d'ingestion, qui dépend
+lignes d'ingestion : il se lit sur les lignes `catalogue_read`, une par lecture de
+catalogue, avec **leurs horodatages** — jamais avec l'heure d'ingestion, qui dépend
 de la file d'ingestion et non de la scrutation ; `cycle_started_monotonic` sert
-seulement à regrouper les lignes d'ingestion d'un même cycle. Enfin, la frontière ne
-date pas l'annonce : elle borne le lot, une annonce absente du lot ne laissant
-aucune trace (ni avant, ni après).
+seulement à regrouper les lignes d'ingestion d'un même cycle, et la ligne
+`poller_cycle` additionne les deux catalogues d'un cycle sans les distinguer. Enfin,
+la frontière ne date pas l'annonce : elle borne le lot, une annonce absente du lot
+ne laissant aucune trace (ni avant, ni après).
 
-Une dernière limite change la lecture de la mesure : les recherches personnalisées
-sont interrogées **en alternance, une par cycle** (`custom_searches[poll_cycle %
+Une dernière limite change la lecture de la mesure. Le flux BD est interrogé à
+**chaque** itération par le premier `poll_vinted_once` du cycle, la recherche
+personnalisée **une fois sur n**, en alternance (`custom_searches[poll_cycle %
 len(custom_searches)]`). Pour une recherche donnée, `previous_frontier_id` ne
 remonte donc pas au cycle précédent mais à son dernier passage, plusieurs cycles en
-arrière, et son débit par intervalle **n'est pas fiable avec les champs actuels** :
-il faudrait l'identifiant du cycle de son passage d'avant, pas celui de son dernier
-passage. Seul le flux BD, lu à chaque cycle, donne un débit par intervalle
-exploitable ; ne pas calculer de débit de recherche personnalisée en croyant lire
+arrière. Un débit par intervalle reste calculable par catalogue — c'est ce que
+`catalogue_read` apporte — à condition de rapporter `items_new` à l'écart entre deux
+lectures **de ce catalogue** : un cycle pour le flux BD, n cycles pour une recherche
+personnalisée. Ne pas calculer de débit de recherche personnalisée en croyant lire
 un intervalle d'un cycle.
 
 ## Publication → détection : source absente

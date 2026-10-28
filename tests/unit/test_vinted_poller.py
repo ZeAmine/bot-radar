@@ -1,5 +1,6 @@
 """Tests des métriques du poller Vinted : cadence et couverture de fenêtre."""
 
+import hashlib
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -425,6 +426,106 @@ async def test_poller_forgets_the_frontier_of_a_search_that_disappears(
     # Cycle 3 : elle revient sans frontière fantôme.
     assert CUSTOM_SEARCH_URL not in seen_at[(3, CUSTOM_SEARCH_URL)]
     assert DEFAULT_GLOBAL_BD_URL in seen_at[(3, CUSTOM_SEARCH_URL)]
+
+
+@pytest.mark.asyncio
+async def test_catalogue_read_leaves_its_line_on_an_early_return(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Un scan sans nouveauté sort tôt : la lecture laisse quand même sa ligne, en dernier."""
+    frontier = CycleFrontier(started_monotonic=321.0)
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            return_value=_items_with_ids(["2700", "9000"]),
+        ),
+        patch("app.tasks.vinted_poller._ingest_scraped_item", new_callable=AsyncMock) as ingest,
+        caplog.at_level(logging.INFO),
+    ):
+        ingested = await poll_vinted_once(
+            seen_ids={"2700", "9000"},
+            vinted_client=AsyncMock(spec=httpx.AsyncClient),
+            target_url=CUSTOM_SEARCH_URL,
+            category_slug="tech",
+            cycle_index=12,
+            frontier=frontier,
+        )
+
+    assert ingested == 0
+    ingest.assert_not_awaited()
+    reads = [r for r in caplog.records if getattr(r, "phase", None) == "catalogue_read"]
+    assert len(reads) == 1
+    read = reads[0]
+    assert read.event == "alert_latency"
+    assert read.result == "returned"
+    assert read.cycle == 12
+    assert read.category == "tech"
+    assert read.items_received == 2
+    assert read.items_new == 0
+    assert read.frontier_id == "9000"
+    assert read.previous_frontier_id is None
+    assert read.target_hash == hashlib.sha256(CUSTOM_SEARCH_URL.encode()).hexdigest()[:8]
+    assert CUSTOM_SEARCH_URL not in caplog.text
+    phases = [
+        getattr(record, "phase", "")
+        for record in caplog.records
+        if getattr(record, "event", "") == "alert_latency"
+    ]
+    assert phases.index("collection") < phases.index("catalogue_read")
+    assert phases[-1] == "catalogue_read"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [(VintedCollectionError("réseau indisponible"), "error"), (None, "cancelled")],
+)
+async def test_an_unread_catalogue_claims_no_received_count(
+    caplog: pytest.LogCaptureFixture,
+    raised: BaseException | None,
+    expected: str,
+) -> None:
+    """Une lecture échouée garde son marqueur d'erreur et ne fabrique aucun compteur."""
+    import asyncio
+
+    failure = raised if raised is not None else asyncio.CancelledError()
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            side_effect=failure,
+        ),
+        caplog.at_level(logging.INFO),
+        pytest.raises(type(failure)),
+    ):
+        await poll_vinted_once(
+            seen_ids=set(),
+            vinted_client=AsyncMock(spec=httpx.AsyncClient),
+            target_url=CUSTOM_SEARCH_URL,
+            category_slug="tech",
+            cycle_index=3,
+            frontier=CycleFrontier(started_monotonic=9.0),
+        )
+
+    reads = [r for r in caplog.records if getattr(r, "phase", None) == "catalogue_read"]
+    assert len(reads) == 1
+    read = reads[0]
+    assert read.result == expected
+    assert read.cycle == 3
+    assert read.category == "tech"
+    assert read.items_received is None
+    assert read.items_new is None
+    assert read.frontier_id is None
+    assert read.previous_frontier_id is None
+    collections = [r for r in caplog.records if getattr(r, "phase", None) == "collection"]
+    assert [record.result for record in collections] == [expected]
+    phases = [
+        getattr(record, "phase", "")
+        for record in caplog.records
+        if getattr(record, "event", "") == "alert_latency"
+    ]
+    assert phases.index("collection") < phases.index("catalogue_read")
 
 
 def test_remaining_cycle_sleep_subtracts_the_work_from_the_pause() -> None:

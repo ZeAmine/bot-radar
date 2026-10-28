@@ -56,7 +56,8 @@ Le [poller](../../app/tasks/vinted_poller.py) émet une ligne INFO par cycle via
 existantes : l'observabilité n'ajoute aucun appel réseau. La cadence ne subit aucune
 pause aléatoire ajoutée ; chaque entrée et sortie de la veille de nuit laisse une
 ligne `event="poller_night"` (`phase="start"` avec `remaining_s`, `phase="end"` avec
-`duration_s`).
+`duration_s`). Chaque lecture de catalogue laisse aussi sa ligne `catalogue_read`,
+décrite dans [les frontières de latence](../alert-latency.md#lecture-de-catalogue).
 
 Le proxy Vinted n'est utilisé que si `VINTED_PROXY_ENABLED` est vrai : une
 `VINTED_PROXY_URL` seule n'active ni le proxy des clients, ni la cadence accélérée ;
