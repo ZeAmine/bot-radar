@@ -10,7 +10,9 @@ avec doubles ne sont pas des mesures de production.
 ## Événements
 
 `alert_latency` utilise `time.monotonic`, des `duration_ms` et `duration_unit=ms`.
-Les timestamps monotoniques absolus ne sont pas enregistrés. Les événements
+Les timestamps monotoniques absolus ne sont pas enregistrés, à une exception près :
+`cycle_started_monotonic`, début de cycle du poller, dont la valeur ne se lit que
+relativement à l'horloge de l'instance qui l'émet. Les événements
 portent les instants capturés, pas leur date d’émission : le diagnostic pré-appel
 est émis à la fin de la tentative pour ne pas entrer dans son chrono. `null` signifie une
 frontière inconnue/une horloge défaillante, jamais zéro. Pas de SQL, réseau ou
@@ -49,6 +51,18 @@ et dans le diagnostic. La cotation partagée utilise book_id et peut ne pas avoi
 un destinataire unique. Aucun titre, corps, payload, URL, secret ou texte libre
 d'exception n'est ajouté. Les IDs servent aux logs, pas à des labels de métriques
 à cardinalité illimitée.
+
+## Frontière du lot
+
+`ingestion_terminal` porte quatre champs de position, absents des autres phases :
+`external_id` de l'annonce, `frontier_id` (plus grand `external_id` numérique du lot
+ramené par `fetch_vinted_page` ce cycle, calculé une fois par cycle sur la liste déjà
+en mémoire), `previous_frontier_id` (frontière du lot précédent, conservée d'une
+itération à l'autre) et `cycle_started_monotonic` (début du cycle portant le lot).
+Aucune requête ni cadence supplémentaire : le filtrage des nouveautés reste une
+appartenance à `seen_ids`. Sans frontière précédente connue — redémarrage — le champ
+vaut `null`, jamais `0`. L'accusé `entry_to_ack` ne change pas ; ces champs partent
+plus tard, avec la phase terminale de l'ingestion.
 
 ## Publication → détection : source absente
 

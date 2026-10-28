@@ -20,6 +20,7 @@ from app.tasks.vinted_poller import (
     WINDOW_LOG_EVERY_CYCLES,
     AvailabilityLedger,
     CycleCadence,
+    CycleFrontier,
     FifoSet,
     dedupe_custom_searches,
     load_active_custom_searches,
@@ -202,6 +203,91 @@ class _MockIngest:
 
     notified_count = 0
     needs_retry = False
+
+
+def _items_with_ids(identifiers: list[str]) -> list[ScrapedVintedItem]:
+    return [
+        ScrapedVintedItem(
+            external_id=identifier,
+            url=f"https://vinted.fr/items/{identifier}",
+            title="Tintin",
+            condition="Très bon état",
+            item_price_cents=1000,
+            photo_url=None,
+        )
+        for identifier in identifiers
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_frontier_is_the_numeric_maximum_without_extra_fetch() -> None:
+    """Le lot est déjà en mémoire : un seul appel catalogue, un maximum comparé en nombre."""
+    frontier = CycleFrontier(started_monotonic=1234.5)
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            return_value=_items_with_ids(["999", "2700", "100"]),
+        ) as fetch,
+        patch(
+            "app.tasks.vinted_poller._ingest_scraped_item",
+            new_callable=AsyncMock,
+            return_value=_MockIngest(),
+        ) as ingest,
+    ):
+        await poll_vinted_once(
+            seen_ids=set(),
+            vinted_client=AsyncMock(spec=httpx.AsyncClient),
+            frontier=frontier,
+        )
+
+    fetch.assert_awaited_once()
+    assert frontier.frontier_id == "2700"
+    assert {call.kwargs["frontier_id"] for call in ingest.await_args_list} == {"2700"}
+    assert {call.kwargs["cycle_started_monotonic"] for call in ingest.await_args_list} == {1234.5}
+
+
+def test_batch_frontier_ignores_identifiers_that_are_not_numbers() -> None:
+    """Un identifiant non numérique ne casse pas le cycle et ne fabrique pas de frontière."""
+    from app.tasks.vinted_poller import _max_external_id
+
+    assert _max_external_id(_items(2)) is None
+    assert _max_external_id(_items_with_ids(["9", "10"])) == "10"
+
+
+@pytest.mark.asyncio
+async def test_previous_frontier_is_null_at_restart_then_carried() -> None:
+    """Sans itération précédente, la frontière est null — jamais 0 — puis elle est portée."""
+    frontier = CycleFrontier()
+    with (
+        patch(
+            "app.tasks.vinted_poller.fetch_vinted_page",
+            new_callable=AsyncMock,
+            return_value=_items_with_ids(["42"]),
+        ),
+        patch(
+            "app.tasks.vinted_poller._ingest_scraped_item",
+            new_callable=AsyncMock,
+            return_value=_MockIngest(),
+        ) as ingest,
+    ):
+        await poll_vinted_once(
+            seen_ids=set(),
+            vinted_client=AsyncMock(spec=httpx.AsyncClient),
+            frontier=frontier,
+        )
+        cold = ingest.await_args.kwargs
+        await poll_vinted_once(
+            seen_ids=set(),
+            vinted_client=AsyncMock(spec=httpx.AsyncClient),
+            frontier=frontier,
+        )
+        warm = ingest.await_args.kwargs
+
+    assert cold["frontier_id"] == "42"
+    assert cold["previous_frontier_id"] is None
+    assert cold["previous_frontier_id"] != 0
+    assert warm["previous_frontier_id"] == "42"
 
 
 def test_remaining_cycle_sleep_subtracts_the_work_from_the_pause() -> None:

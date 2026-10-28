@@ -312,6 +312,62 @@ async def test_collection_discovery_and_semaphore_wait_are_distinct(journey, mon
     assert records[0].collection_id
 
 
+async def test_frontier_fields_leave_with_the_terminal_after_the_ack(journey, monkeypatch, caplog):
+    """La position du lot part avec la phase terminale, après l'accusé, pas avant l'envoi."""
+    from app.services.vinted_parsing import ScrapedVintedItem
+    from app.tasks import vinted_poller as poller
+
+    catalogue_calls: list[str] = []
+
+    async def fetch(url, _client):
+        catalogue_calls.append(url)
+        return [
+            ScrapedVintedItem(
+                external_id=identifier,
+                title="Console",
+                condition="Très bon état",
+                item_price_cents=100,
+                url=f"https://example.invalid/{identifier}",
+                photo_url=None,
+            )
+            for identifier in ("999", "2700")
+        ]
+
+    monkeypatch.setattr(poller, "fetch_vinted_page", fetch)
+    monkeypatch.setattr(poller, "AsyncSessionLocal", journey.db.maker)
+    ingest_slot = asyncio.Semaphore(1)
+    monkeypatch.setattr(poller, "_get_ingest_semaphore", lambda: ingest_slot)
+    monkeypatch.setattr(ingestion, "default_bot", journey.bot)
+    started_monotonic = 1234.5
+    with caplog.at_level(logging.INFO):
+        ingested = await poller.poll_vinted_once(
+            seen_ids=set(),
+            vinted_client=AsyncMock(),
+            category_slug="tech",
+            frontier=poller.CycleFrontier(started_monotonic=started_monotonic),
+        )
+
+    assert ingested == 2
+    assert len(catalogue_calls) == 1
+    terminals = events(caplog, "ingestion_terminal")
+    assert {record.external_id for record in terminals} == {"999", "2700"}
+    assert {record.frontier_id for record in terminals} == {"2700"}
+    assert all(record.previous_frontier_id is None for record in terminals)
+    assert {record.cycle_started_monotonic for record in terminals} == {started_monotonic}
+    assert all(record.duration_unit == "ms" for record in terminals)
+    acks = events(caplog, "entry_to_ack")
+    assert [record.duration_ms for record in acks] == pytest.approx([200, 200])
+    assert all(not hasattr(record, "frontier_id") for record in acks)
+    phases = [
+        getattr(record, "phase", "")
+        for record in caplog.records
+        if getattr(record, "event", "") == "alert_latency"
+        and getattr(record, "phase", "") in {"entry_to_ack", "ingestion_terminal"}
+    ]
+    assert phases.count("entry_to_ack") == 2
+    assert phases.index("ingestion_terminal") > phases.index("entry_to_ack")
+
+
 async def test_guard_wait_is_separate_and_measured_before_reads(journey, monkeypatch, caplog):
     from app.use_cases.listing_ingestion_gate import ListingIngestionGate
 

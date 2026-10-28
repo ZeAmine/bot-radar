@@ -425,14 +425,40 @@ class ScrapedIngestResult:
     needs_retry: bool
 
 
-async def _ingest_scraped_item(item: Any, category_slug: str) -> ScrapedIngestResult:
+@dataclass
+class CycleFrontier:
+    """Frontière du lot conservée d'une itération à l'autre ; None tant qu'aucune n'est connue."""
+
+    frontier_id: str | None = None
+    started_monotonic: float | None = None
+
+
+def _max_external_id(items: Iterable[Any]) -> str | None:
+    """Le plus grand identifiant numérique du lot déjà ramené, sans requête."""
+    numeric_ids = [int(item.external_id) for item in items if item.external_id.isdigit()]
+    return str(max(numeric_ids)) if numeric_ids else None
+
+
+async def _ingest_scraped_item(
+    item: Any,
+    category_slug: str,
+    *,
+    frontier_id: str | None = None,
+    previous_frontier_id: str | None = None,
+    cycle_started_monotonic: float | None = None,
+) -> ScrapedIngestResult:
     """Ingère une annonce dans le processus, sans HTTP localhost."""
     from app.schemas.listing import ListingIngestPayload
     from app.use_cases.ingest_listing import ProcessListingUseCase
 
     discovered_at, collection_id = latency.discovery()
     timing = latency.AlertTiming(
-        ingestion_id=uuid.uuid4(), collection_id=collection_id, discovered_at=discovered_at
+        ingestion_id=uuid.uuid4(),
+        collection_id=collection_id,
+        discovered_at=discovered_at,
+        frontier_id=frontier_id,
+        previous_frontier_id=previous_frontier_id,
+        cycle_started_monotonic=cycle_started_monotonic,
     )
     payload_dict = to_ingest_payload(item, category_slug=category_slug)
     payload = ListingIngestPayload.model_validate(payload_dict)
@@ -500,6 +526,7 @@ async def poll_vinted_once(
     target_url: str = DEFAULT_GLOBAL_BD_URL,
     category_slug: str = "bd_comics",
     cycle_index: int = 0,
+    frontier: CycleFrontier | None = None,
 ) -> int:
     """Exécute un cycle de scraping sur une URL cible et pousse les nouvelles annonces.
 
@@ -518,6 +545,11 @@ async def poll_vinted_once(
     discovered_at = latency.clock()
     latency.emit(collection_timing, "collection", collection_started, discovered_at,
                  result="returned", item_count=len(items))
+    batch_frontier_id = _max_external_id(items)
+    previous_frontier_id = None if frontier is None else frontier.frontier_id
+    if frontier is not None:
+        frontier.frontier_id = batch_frontier_id
+    cycle_started_monotonic = None if frontier is None else frontier.started_monotonic
     async with AsyncSessionLocal() as baseline_session:
         await AlertRepository(baseline_session).initialize_listing_baselines(
             category_slug, target_url, [item.external_id for item in items], scan_started_at,
@@ -542,7 +574,16 @@ async def poll_vinted_once(
 
     with latency.discovery_context(discovered_at, collection_timing.collection_id):
         results = await asyncio.gather(
-            *(_ingest_scraped_item(item, category_slug) for item in new_items),
+            *(
+                _ingest_scraped_item(
+                    item,
+                    category_slug,
+                    frontier_id=batch_frontier_id,
+                    previous_frontier_id=previous_frontier_id,
+                    cycle_started_monotonic=cycle_started_monotonic,
+                )
+                for item in new_items
+            ),
             return_exceptions=True,
         )
     ingested_count = 0
@@ -599,6 +640,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
         consecutive_blocks = 0
         poll_cycle = 0
         cadence = CycleCadence()
+        cycle_frontier = CycleFrontier()
         availability = AvailabilityLedger()
         consecutive_collection_failures = 0
         collection_failure_notified = False
@@ -681,6 +723,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
 
             poll_cycle += 1
             cycle_started = time.monotonic()
+            cycle_frontier.started_monotonic = latency.clock()
             outcome = "scanned"
             count_bd = 0
             count_custom = 0
@@ -693,6 +736,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                     target_url=DEFAULT_GLOBAL_BD_URL,
                     category_slug=CategorySlug.BD_COMICS.value,
                     cycle_index=poll_cycle,
+                    frontier=cycle_frontier,
                 )
                 bd_scan_ok = True
 
@@ -713,6 +757,7 @@ async def run_vinted_poller(stop_event: asyncio.Event) -> None:
                         target_url=custom_url,
                         category_slug=custom_slug,
                         cycle_index=poll_cycle,
+                        frontier=cycle_frontier,
                     )
                     search_last_success[(custom_url, custom_slug)] = time.monotonic()
 
