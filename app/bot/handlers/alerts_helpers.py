@@ -116,6 +116,11 @@ TOME_REASON_LABELS: dict[str, str] = {
     "tome_number_inconsistent": "numéro de tome incohérent",
     "author_mismatch": "autre auteur",
     "publisher_mismatch": "autre éditeur",
+    # Deux motifs distincts, parce que ce sont deux faits distincts : la notice dit
+    # qu'un autre ouvrage porte le même ISBN, ou la BNF se contredit et plus rien ne
+    # prouve l'édition. Les confondre ferait dire « autre éditeur » à une adaptation.
+    "different_edition": "édition différente détectée",
+    "notices_contradict": "notices BNF contradictoires",
 }
 
 UNIDENTIFIED_WORK_NOTE = (

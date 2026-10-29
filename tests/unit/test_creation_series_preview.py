@@ -8,6 +8,7 @@ connue : Non renseigné ». Ces tests fixent les trois maillons corrigés — l'
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,7 +23,11 @@ from app.bot.handlers.alerts_helpers import (
 )
 from app.domain.rules.cote_outcome import OffreCote
 from app.providers.base import MarketOffer, MarketOffers
-from app.services.book_metadata_service import BookMetadata, BookMetadataService
+from app.services.book_metadata_service import (
+    BookMetadata,
+    BookMetadataService,
+    parse_tome_notices,
+)
 from tests.fakes_catalogue import patch_bnf_admission
 
 CODES = ("9782075163743", "9782075215510", "9782075215619")
@@ -345,6 +350,38 @@ async def test_an_empty_bnf_answer_is_written_as_an_absent_notice():
     assert TOME_REASON_LABELS["no_bnf_notice"] == "aucune notice BNF"
 
 
+def test_the_preview_names_a_different_edition_without_attaching_it():
+    """Le tome 1 dont la BNF décrit une autre édition n'est pas rattaché, et il le dit.
+
+    « Édition différente détectée » nomme le fait : ce n'est ni une date manquante ni
+    un autre auteur, et la ligne reste au récapitulatif pour que l'utilisateur sache
+    pourquoi le tome qu'il voyait n'est pas suivi.
+    """
+    rows = [row(1, CODES[0], confirmed=False, admission="different_edition")]
+
+    lines = render_series_volumes({"series_volumes": rows, "series_total": 4})
+    text = "\n".join(lines)
+
+    assert TOME_REASON_LABELS["different_edition"] == "édition différente détectée"
+    assert (
+        f"<b>Tome 1</b> - La Passe-miroir 1 · {CODES[0]} · édition différente détectée"
+        in text
+    )
+    assert "📚" not in text, "un tome écarté n'occupe pas une fiche"
+    assert requested_series_volume(rows, {"name": "La Passe-miroir"}) is None
+    assert requested_series_volume(rows, {"name": "La Passe-miroir", "isbn": CODES[0]}) is None
+
+
+def test_contradictory_notices_are_named_as_such():
+    """La BNF qui se contredit n'est pas un autre éditeur : le motif le dit."""
+    lines = render_series_volumes({"series_volumes": [
+        row(1, CODES[0], confirmed=False, admission="notices_contradict"),
+    ]})
+
+    assert TOME_REASON_LABELS["notices_contradict"] == "notices BNF contradictoires"
+    assert "notices BNF contradictoires" in "\n".join(lines)
+
+
 def test_the_preview_shows_a_real_publication_day_when_the_field_has_one():
     """Seul `214$d` peut nommer un jour : il est alors affiché tel quel."""
     lines = render_series_volumes({"series_volumes": [
@@ -445,3 +482,93 @@ async def test_a_real_empty_answer_stays_an_absent_notice():
     service, _ = _bnf_service(EMPTY_BODY)
 
     assert await service._bnf_tome_notices(CODES[0]) == []
+
+
+BNF_FIXTURES = Path(__file__).parent.parent / "fixtures" / "bnf"
+
+
+async def discover_on_real_notices(metas: list[BookMetadata]):
+    """La découverte d'une série, sur les notices BNF réelles des ISBN fournis.
+
+    Même chemin que `discover`, mais la preuve MarcXchange n'est pas simulée : les
+    trois réponses de l'incident sont servies telles quelles, y compris les deux
+    notices que porte l'ISBN du tome 1.
+    """
+    from app.domain.enums import ProviderQueryStatus
+    from app.providers.google_books import ProviderQueryResult
+
+    by_isbn = {meta.isbn13: meta for meta in metas}
+
+    async def _notices(isbn13: str):
+        return parse_tome_notices((BNF_FIXTURES / f"marcxchange_{isbn13}.xml").read_bytes())
+
+    async def _verified(code, _title, **_options):
+        return by_isbn.get(code)
+
+    service = BookMetadataService()
+    with patch.object(service, "_bnf_records_result", AsyncMock(return_value=(
+        ProviderQueryResult(items=tuple(metas), status=ProviderQueryStatus.SUCCESS), None
+    ))), patch.object(service, "_openlibrary_works", AsyncMock(return_value=(
+        [], ProviderQueryResult()
+    ))), patch.object(service, "verify_isbn", AsyncMock(side_effect=_verified)), \
+            patch.object(service, "_bnf_tome_notices", _notices):
+        return await service.lookup_series_notices(
+            "La Passe-miroir", author_hint="Christelle Dabos", for_creation=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_discovery_refuses_the_adaptation_bnf_gives_for_the_first_volume():
+    """Le cas de l'incident, bout en bout : le tome 1 n'est pas rattaché.
+
+    La BNF répond deux fois pour l'ISBN du tome 1 — le roman dans « Fétiche », dont la
+    date est inconnue, et la BD dans « La passe-miroir », datée au 06/02/2026. Seule
+    la seconde prouvait une parution : c'est donc elle qui devenait le tome 1 d'une
+    série dont les tomes 2 et 4 sont des romans de poche. Aucun tome n'est plus
+    confirmé, et le premier dit pourquoi.
+    """
+    discovered = await discover_on_real_notices(
+        [tome(number, CODES[index]) for index, number in enumerate((1, 2, 4))]
+    )
+
+    assert [volume.number for volume in discovered.volumes] == [1, 2, 4]
+    assert [volume.admission for volume in discovered.volumes] == [
+        "different_edition", "date_unproven", "date_unproven",
+    ]
+    assert not any(volume.isbn13 for volume in discovered.volumes), (
+        "aucun tome n'est rattaché, à commencer par l'adaptation en BD du tome 1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_edition_is_journalised_by_code_and_axis_only(caplog):
+    """Chaque refus d'édition laisse une trace courte : le motif et l'axe.
+
+    Une fréquence ne se mesure que si elle se compte : le refus laisse donc une ligne
+    structurée (`event`, `reason_code`, `axis`). Elle ne porte ni ISBN, ni titre, ni
+    nom d'auteur, ni URL : le journal dit **pourquoi** une édition a été écartée, pas
+    de quel ouvrage il s'agissait — le contenu de l'annonce n'a rien à y faire.
+
+    L'axe journalisé est celui de la **première** notice refusée, dans l'ordre où la
+    BNF les sert : ici le roman de « Fétiche », dont la collection n'est pas celle que
+    les tomes 2 et 4 attestent. L'adaptation, refusée pour son `200$g`, vient ensuite.
+    """
+    with caplog.at_level("INFO", logger="radar.book_metadata"):
+        await discover_on_real_notices(
+            [tome(number, CODES[index]) for index, number in enumerate((1, 2, 4))]
+        )
+
+    refusals = [
+        record for record in caplog.records
+        if getattr(record, "event", None) == "tome_admission"
+    ]
+    assert [
+        (record.reason_code, record.axis) for record in refusals
+    ] == [("different_edition", "collection")]
+    # Les tomes 2 et 4, refusés pour leur date, ne fabriquent pas de bruit : le
+    # journal ne compte que les refus d'édition.
+    assert len(refusals) == 1
+    # Rien du contenu de l'annonce, ni adresse : ni ISBN, ni titre, ni auteur.
+    assert "9782075163743" not in caplog.text
+    assert "Dabos" not in caplog.text
+    assert "http" not in caplog.text.lower()
