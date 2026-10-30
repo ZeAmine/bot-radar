@@ -22,6 +22,19 @@ La BNF est primaire ; OpenLibrary puis Google Books configuré sont des replis
 non confirmants, de provenance déclarée, jamais un remplacement d'une notice BNF
 contradictoire. Un auteur explicitement demandé peut justifier le repli si tous
 les homonymes BNF ont un auteur connu différent (ADR-045). L'IA ne confirme aucun ISBN.
+
+Dernier recours, et pour l'ajout seulement : les [Nouveautés Éditeurs de la BnF](../../app/providers/nouveautes_editeurs.py),
+site public des annonces de parution. Il est interrogé **uniquement** quand la BNF
+n'a produit aucune notice confirmante et qu'OpenLibrary puis Google Books se sont
+tus — et pas du tout quand la BNF confirme (ADR-055). Une déclaration d'éditeur y est
+une identité *déclarée* : sa provenance et son état de dépôt légal (« Reçu par la BnF »
+ou « Annoncé éditeur ») accompagnent la réponse, et un ISBN déclaré n'est jamais
+présenté comme confirmé par le catalogue. La BNF reste la seule autorité d'identité ;
+une déclaration n'est admise que sur un ISBN-13 égal au code demandé, une date de
+parution passée, un titre au seuil de similarité du service, et des auteur et éditeur
+cohérents avec ceux fournis. Une parution future est refusée comme annonce
+(« parution annoncée, pas encore parue »), et tout doute résiduel refuse.
+La veille marché n'ouvre pas cette source : elle garde son budget HTTP.
 Une série se détecte à partir des notices réellement rendues, pas d'une liste d'œuvres.
 La composition par tomes est bornée à 12, BNF complétée par OpenLibrary sans substitution.
 

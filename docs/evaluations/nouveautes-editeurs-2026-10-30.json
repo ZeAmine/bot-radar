@@ -1,0 +1,2285 @@
+{
+  "date": "2026-10-30T17:49:24+0100",
+  "reference_commit": "bc19539396f7170dcf72b8cafce674079a3ff326",
+  "sources": [
+    "nouveautes-editeurs.bnf.fr",
+    "catalogue.bnf.fr (SRU)"
+  ],
+  "application_cache": false,
+  "google": "not_called",
+  "method": "45 déclarations lues sur les fiches publiques de Nouveautés Éditeurs, puis confrontées une à une au catalogue BNF par ISBN (bib.isbn adj) ; requêtes séquentielles espacées d'au moins 1,05 s, sans reprise ; aucune écriture, aucune clé, aucune donnée de production",
+  "protocol": {
+    "search": "GET / puis POST /accueil (refineValue, category=FULL_TEXT, action=ADD_FILTER, onRebondBySearch=true, modeAffichage=gridMode, page=1, minRange=90, maxRange=90)",
+    "session": "une session neuve par recherche : le site garde l'état de recherche en session",
+    "http_calls_per_search_max": 3,
+    "spacing_seconds": 1.05,
+    "retries": 0,
+    "pagination": false,
+    "rss": false,
+    "sru": {
+      "version": "1.2",
+      "operation": "searchRetrieve",
+      "recordSchema": "dublincore",
+      "maximumRecords": "10",
+      "query_by_isbn": "bib.isbn adj",
+      "query_by_title": "bib.title all"
+    }
+  },
+  "self_check": [
+    {
+      "value": "9782812322495",
+      "declarations": [
+        "10000001392716"
+      ],
+      "displayed_count": 1,
+      "filter_applied": true
+    },
+    {
+      "value": "Dailycieux",
+      "declarations": [
+        "10000001392716"
+      ],
+      "displayed_count": 1,
+      "filter_applied": true
+    },
+    {
+      "value": "Les Enfants perdus",
+      "declarations": [
+        "10000001407042",
+        "10000001406889",
+        "10000001370781"
+      ],
+      "displayed_count": 3,
+      "filter_applied": true
+    },
+    {
+      "value": "Neyef",
+      "declarations": [],
+      "displayed_count": 0,
+      "filter_applied": true
+    },
+    {
+      "value": "L'Enfance des ruines",
+      "declarations": [],
+      "displayed_count": 0,
+      "filter_applied": true
+    }
+  ],
+  "negative_control": {
+    "value": "9782812322495",
+    "primed": false,
+    "declarations": [
+      "10000001411729",
+      "10000001396434",
+      "10000001411727",
+      "10000001411725",
+      "10000001411726"
+    ],
+    "declaration_count": 20,
+    "displayed_count": 284,
+    "filter_applied": true
+  },
+  "summary": {
+    "reference_date": "2026-10-30",
+    "declarations_total": 45,
+    "declarations_in_window": 40,
+    "declarations_in_window_with_isbn13": 38,
+    "found_in_sru_by_isbn": 5,
+    "absent_from_sru_by_isbn": 33,
+    "in_window_by_legal_deposit": {
+      "Reçu par la BnF": 6,
+      "Annoncé éditeur": 34
+    },
+    "found_by_legal_deposit": {
+      "Reçu par la BnF": 4,
+      "Annoncé éditeur": 1
+    },
+    "in_window_bd_deduced": 5,
+    "in_window_bd_found_in_sru": 1,
+    "publication_dates_in_window": [
+      "02/10/2026",
+      "04/09/2026",
+      "07/08/2026",
+      "09/10/2026",
+      "11/09/2026",
+      "16/10/2026",
+      "18/09/2026",
+      "21/08/2026",
+      "23/10/2026",
+      "25/09/2026",
+      "28/09/2026"
+    ]
+  },
+  "declarations": [
+    {
+      "declaration_id": "10000001411237",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411237",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Fadia Ahmad. Échoes-Echoes",
+      "authors": [
+        "Le Thorel Pascale"
+      ],
+      "publisher": "Norma Éditions",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "21/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 70,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782376661207",
+      "price_ttc": "49.00",
+      "format_line": "192 pages ; 25 x 30,5 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001410765",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001410765",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Couple, communication consciente et bienveillante",
+      "authors": [
+        "Mouton-Akotiai Genevieve"
+      ],
+      "publisher": "le Lys bleu éditions",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "04/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 56,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791044044815",
+      "price_ttc": "15.00",
+      "format_line": "116 pages ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411516",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411516",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Cezanne et les peintres : Une histoire d'influence",
+      "authors": [
+        "Semmer Laure-Caroline"
+      ],
+      "publisher": "Citadelles & Mazenod",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "25/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 35,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782386111044",
+      "price_ttc": "79.00",
+      "format_line": "280 pages ; 30 x 28 cm",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411584",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411584",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Le Sac d'Ashley : Un souvenir de famille du temps de l'esclavage",
+      "authors": [
+        "Miles Tiya"
+      ],
+      "publisher": "Seuil / Olivier / Points / Nouvel Attila / Verso",
+      "collection": "Seuil L'Univers Historique",
+      "document_type": "Livre imprimé",
+      "publication_date": "02/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 28,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782021569629",
+      "price_ttc": "24.90",
+      "format_line": "400 pages ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411609",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411609",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Addictions, l'addition !",
+      "authors": [
+        "DÉCAMPS Francis"
+      ],
+      "publisher": "Association loi 1901 Francis Décamps Concept",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "09/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 21,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791098860607",
+      "price_ttc": "25.00",
+      "format_line": "252 pages ; 21 x 14,5 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001396434",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001396434",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Le silence des blessures : Quand les blessures du passé n'empêchent pas de reconstruire l'avenir",
+      "authors": [
+        ""
+      ],
+      "publisher": "Chloé Bellefontaine",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "16/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 14,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791043914263",
+      "price_ttc": "19.90",
+      "format_line": "311 pages ; 21 x 14 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": {
+        "title": "Le silence des blessures",
+        "number_of_records": 8,
+        "isbns": []
+      }
+    },
+    {
+      "declaration_id": "10000001401644",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001401644",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Cap sur la Seine en Bateau",
+      "authors": [
+        "Feray Aurélie"
+      ],
+      "publisher": "AF FLUVIAL CONSEIL - AURELIE FERAY",
+      "collection": "Constant et Clément",
+      "document_type": "Livre imprimé",
+      "publication_date": "23/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 7,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": null,
+      "price_ttc": "8.90",
+      "format_line": "44 pages ; 21 x 14,8 cm ; relié",
+      "sru_by_isbn": null,
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001409665",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001409665",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Comment survivre à une rupture amoureuse sans devenir un connard",
+      "authors": [
+        "XIONG Leng"
+      ],
+      "publisher": "Leng XIONG, Éditions du Bambou des Montagnes",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "07/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 84,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791098700958",
+      "price_ttc": "11.95",
+      "format_line": "88 pages ; x cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001410322",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001410322",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Perle de Pierre",
+      "authors": [
+        "CHALUMEAU Louis"
+      ],
+      "publisher": "Éditions Cornélius",
+      "collection": "Solange",
+      "document_type": "Livre imprimé",
+      "publication_date": "21/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 70,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782360812479",
+      "price_ttc": "25.50",
+      "format_line": "176 pages ; 29 x 21 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": {
+        "title": "Perle de Pierre",
+        "number_of_records": 22,
+        "isbns": []
+      }
+    },
+    {
+      "declaration_id": "10000001410662",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001410662",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Le déséquilibre vertueux : Pour ceux qui font tout bien et vont quand même mal",
+      "authors": [
+        "Métayer Antoine"
+      ],
+      "publisher": "le Lys bleu éditions",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "04/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 56,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791043755767",
+      "price_ttc": "18.00",
+      "format_line": "164 pages ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001410902",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001410902",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "La Cuisine de Famille et des Gourmets : Se Régaler au Gré des Saisons",
+      "authors": [
+        "Monni Raphaël"
+      ],
+      "publisher": "Books on Demand",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "18/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 42,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782322856893",
+      "price_ttc": "54.99",
+      "format_line": "188 pages ; 27,6 x 19,5 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411555",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411555",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Rodéo limace",
+      "authors": [
+        "Galoo Axelle"
+      ],
+      "publisher": "Le diplodocus",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "02/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 28,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791094908617",
+      "price_ttc": "14.00",
+      "format_line": "40 pages ; 18 x 22 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 1,
+        "isbn_found": true,
+        "identifiers": [
+          "http://catalogue.bnf.fr/ark:/12148/cb50024165t",
+          "ISBN9791094908617"
+        ],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001404165",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001404165",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "La Toute Première Enquête du Lieutenant Stagiaire : * Décret n°95-656 du 9 mai 1995",
+      "authors": [
+        "Hue Hervé"
+      ],
+      "publisher": "Librinova",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "07/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 84,
+      "in_window_90_days": true,
+      "legal_deposit": "Reçu par la BnF",
+      "isbn13": "9791043910227",
+      "price_ttc": "13.90",
+      "format_line": "98 pages ; 18 x 13 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": {
+        "title": "La Toute Première Enquête du Lieutenant Stagiaire",
+        "number_of_records": 0,
+        "isbns": []
+      }
+    },
+    {
+      "declaration_id": "10000001409528",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001409528",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Nicolas Rubinstein",
+      "authors": [
+        "Rubinstein Nicolas"
+      ],
+      "publisher": "Fage éditions",
+      "collection": "Paroles d'artiste",
+      "document_type": "Livre imprimé",
+      "publication_date": "21/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 70,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782849758465",
+      "price_ttc": "7.80",
+      "format_line": "64 pages ; 17,5 x 12 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001409533",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001409533",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Aimer hier : Notes pour une histoire du sentiment (New York 1947-1949)",
+      "authors": [
+        "Anders Günther",
+        "Kalinowski Isabelle"
+      ],
+      "publisher": "Fage éditions",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "04/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 56,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782849758410",
+      "price_ttc": "18.00",
+      "format_line": "160 pages ; 20 x 13,5 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001410910",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001410910",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Les Frappés : 10 questions à 100 (+1) femmes et hommes qui osent vivre pleinement. Un concentré d'énergie pour raviver votre flamme.",
+      "authors": [
+        "Blanchard Loïc"
+      ],
+      "publisher": "Books on Demand",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "25/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 35,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782322612819",
+      "price_ttc": "24.00",
+      "format_line": "548 pages ; 22 x 15,5 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411245",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411245",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Chapeaux pointus et coups tordus",
+      "authors": [
+        "Lehoulier Pierre",
+        "Naudinat Françoise"
+      ],
+      "publisher": "Éditions du Palémon",
+      "collection": "Beluga - Fripouille et Malicette",
+      "document_type": "Livre imprimé",
+      "publication_date": "02/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 28,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782371333796",
+      "price_ttc": "14.00",
+      "format_line": "120 pages ; 22,5 x 17 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411392",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411392",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Les Ombres de Nerion",
+      "authors": [
+        "",
+        "Klobcar Peter"
+      ],
+      "publisher": "JP Besnardi",
+      "collection": "Kessio, les chroniques d'un monde. Cycle de Valméria",
+      "document_type": "Livre imprimé",
+      "publication_date": "16/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 14,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791097997106",
+      "price_ttc": "16.99",
+      "format_line": "372 pages ; 21,6 x 14 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001404161",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001404161",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "OVNI : Divulgation",
+      "authors": [
+        "Valiela Sébastien"
+      ],
+      "publisher": "Librinova",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "07/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 84,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791043913136",
+      "price_ttc": "23.90",
+      "format_line": "372 pages ; 21,6 x 14 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001405841",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001405841",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Le Problème avec les girafes",
+      "authors": [
+        "Mantchev Lisa",
+        "Yoo Taeeun"
+      ],
+      "publisher": "les Éditions des Éléphants",
+      "collection": "Album",
+      "document_type": "Livre imprimé",
+      "publication_date": "21/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 70,
+      "in_window_90_days": true,
+      "legal_deposit": "Reçu par la BnF",
+      "isbn13": "9782372731881",
+      "price_ttc": "15.00",
+      "format_line": "40 pages ; 23 x 26 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 1,
+        "isbn_found": true,
+        "identifiers": [
+          "http://catalogue.bnf.fr/ark:/12148/cb50018799j",
+          "ISBN9782372731881"
+        ],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001409201",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001409201",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Dracaena Draco et autres histoires africaines : (Angola, Cap-Vert, Mozambique)",
+      "authors": [
+        "Fortes Erickson",
+        "Barros Gilda",
+        "N'Zualo Eliana",
+        "Langa Ique",
+        "Fula Cremilda",
+        "Lopes José"
+      ],
+      "publisher": "Editions Chandeigne & Lima",
+      "collection": "BD Lusitane",
+      "document_type": "Livre imprimé",
+      "publication_date": "04/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 56,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782367323190",
+      "price_ttc": "19.00",
+      "format_line": "136 pages ; 24 x 16,7 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001409556",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001409556",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Ana is lost",
+      "authors": [
+        "Feitelson Samantha"
+      ],
+      "publisher": "Beta Publisher",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "18/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 42,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782383921332",
+      "price_ttc": "24.00",
+      "format_line": "404 pages ; 21,5 x 13,5 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001395163",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001395163",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Lexique des réalités invisibles : Un témoignage",
+      "authors": [
+        ""
+      ],
+      "publisher": "Aelia Vela",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "25/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 35,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791098671937",
+      "price_ttc": "28.00",
+      "format_line": "140 pages ; 21 x 14,8 cm ; en feuilles",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411187",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411187",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "André Lhote : L'art de la controverse",
+      "authors": [
+        "Garcia Françoise"
+      ],
+      "publisher": "Norma Éditions",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "02/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 28,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782376661214",
+      "price_ttc": "32.00",
+      "format_line": "208 pages ; 24 x 16 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411226",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411226",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Tisser les modernités/Weaving modernities",
+      "authors": [
+        "Fontès Nathalie",
+        "Chich Elie"
+      ],
+      "publisher": "Norma Éditions",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "16/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 14,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782376661252",
+      "price_ttc": "65.00",
+      "format_line": "256 pages ; 30,5 x 23 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": {
+        "title": "Tisser les modernités/Weaving modernities",
+        "number_of_records": 0,
+        "isbns": []
+      }
+    },
+    {
+      "declaration_id": "10000001404151",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001404151",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Seule à Ibestad : Île de Rolla - Norvège",
+      "authors": [
+        "Morskaïa Sil'viya",
+        "Gollet Monika"
+      ],
+      "publisher": "Librinova",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "07/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 84,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791043910890",
+      "price_ttc": "14.90",
+      "format_line": "97 pages ; 18 x 13 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001405838",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001405838",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Zip Zap Flip & Flap",
+      "authors": [
+        "Diffee Matthew"
+      ],
+      "publisher": "les Éditions des Éléphants",
+      "collection": "Album",
+      "document_type": "Livre imprimé",
+      "publication_date": "21/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 70,
+      "in_window_90_days": true,
+      "legal_deposit": "Reçu par la BnF",
+      "isbn13": "9782372731867",
+      "price_ttc": "15.00",
+      "format_line": "56 pages ; 23 x 26 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 1,
+        "isbn_found": true,
+        "identifiers": [
+          "http://catalogue.bnf.fr/ark:/12148/cb500188018",
+          "ISBN9782372731867"
+        ],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": {
+        "title": "Zip Zap Flip & Flap",
+        "number_of_records": 1,
+        "isbns": [
+          "9782372731867"
+        ]
+      }
+    },
+    {
+      "declaration_id": "10000001405529",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001405529",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "DALLAGISTE : Rapport d'observation selon la méthode d'analyse et d'évaluation des conditions de travail",
+      "authors": [],
+      "publisher": "Organisme Professionnel de Prévention du BTP",
+      "collection": "Rapport d'étude",
+      "document_type": "Livre imprimé",
+      "publication_date": "04/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 56,
+      "in_window_90_days": true,
+      "legal_deposit": "Reçu par la BnF",
+      "isbn13": "9782735405923",
+      "price_ttc": "14.00",
+      "format_line": "72 pages ; 27 x 20 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": {
+        "title": "DALLAGISTE",
+        "number_of_records": 0,
+        "isbns": []
+      }
+    },
+    {
+      "declaration_id": "10000001409535",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001409535",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Paul Cezanne dépeint par ses contemporains",
+      "authors": [
+        "Cezanne Philippe"
+      ],
+      "publisher": "Fage éditions",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "18/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 42,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782849758427",
+      "price_ttc": "24.00",
+      "format_line": "240 pages ; 23 x 16,5 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001410908",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001410908",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Espoir d'elle : Recueil",
+      "authors": [
+        "Darmon Jean Paul"
+      ],
+      "publisher": "Books on Demand",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "02/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 28,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782322613205",
+      "price_ttc": "6.00",
+      "format_line": "76 pages ; 22 x 15,5 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411035",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411035",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "En cherchant la rosée...",
+      "authors": [
+        ""
+      ],
+      "publisher": "GWEN DO",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "16/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 14,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782959396915",
+      "price_ttc": "22.00",
+      "format_line": "198 pages ; 18 x 12 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001403541",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001403541",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Une Amitié Japonaise Particulière : 50 ans d'échanges entre la Bretagne et le Japon",
+      "authors": [
+        "Brest de Kergreac'h Anne",
+        "Schneider Pierre"
+      ],
+      "publisher": "Books on Demand",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "07/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 84,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782322843459",
+      "price_ttc": "16.99",
+      "format_line": "156 pages ; 21 x 14,8 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001403877",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001403877",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Le sel des jours",
+      "authors": [
+        "Martin Sandrine"
+      ],
+      "publisher": "Misma",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "21/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 70,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782494740259",
+      "price_ttc": "19.00",
+      "format_line": "104 pages ; 22,5 x 16,5 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001408993",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001408993",
+      "sample": "dates",
+      "sample_evidence": null,
+      "title": "Manifester l'or : l'oeuvre de manifester",
+      "authors": [
+        "SALLAHI Laure"
+      ],
+      "publisher": "Laure SALLAHI",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "18/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 42,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": null,
+      "price_ttc": "12.65",
+      "format_line": "116 pages ; 22,9 x 15,2 cm ; broché",
+      "sru_by_isbn": null,
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001407042",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001407042",
+      "sample": "titre_cible",
+      "sample_evidence": null,
+      "title": "Les enfants perdus : Les aventures de Thomas More",
+      "authors": [
+        "Sureau François"
+      ],
+      "publisher": "Éditions Gallimard",
+      "collection": "Folio",
+      "document_type": "Livre imprimé",
+      "publication_date": "05/11/2026",
+      "parution_flag": "À Paraitre",
+      "days_before_reference": -6,
+      "in_window_90_days": false,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782073143068",
+      "price_ttc": "7.60",
+      "format_line": "176 pages ; 17,8 x 10,8 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001406889",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001406889",
+      "sample": "titre_cible",
+      "sample_evidence": null,
+      "title": "Abi et les enfants perdus",
+      "authors": [
+        "Feraga Alexandre"
+      ],
+      "publisher": "Voir de Près",
+      "collection": "Corps 20",
+      "document_type": "Livre imprimé",
+      "publication_date": "28/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 32,
+      "in_window_90_days": true,
+      "legal_deposit": "Reçu par la BnF",
+      "isbn13": "9782378289089",
+      "price_ttc": "23.00",
+      "format_line": "284 pages ; 24 x 15,6 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 1,
+        "isbn_found": true,
+        "identifiers": [
+          "http://catalogue.bnf.fr/ark:/12148/cb48857490k",
+          "ISBN9782378289089"
+        ],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001370781",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001370781",
+      "sample": "titre_cible",
+      "sample_evidence": null,
+      "title": "Les enfants perdus",
+      "authors": [
+        "Guillard Cyriac"
+      ],
+      "publisher": "Noir'édition",
+      "collection": "Le Poche Noir",
+      "document_type": "Livre imprimé",
+      "publication_date": "24/07/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 98,
+      "in_window_90_days": false,
+      "legal_deposit": "Reçu par la BnF",
+      "isbn13": "9791094757819",
+      "price_ttc": "9.50",
+      "format_line": "236 pages ; 18 x 11 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 1,
+        "isbn_found": true,
+        "identifiers": [
+          "http://catalogue.bnf.fr/ark:/12148/cb48824854g",
+          "ISBN9791094757819"
+        ],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001403884",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001403884",
+      "sample": "bd_editeur",
+      "sample_evidence": "éditeur de bande dessinée : Misma",
+      "title": "Les choses de l'amour (édition 2026)",
+      "authors": [
+        "de Monfreid Dorothée",
+        "De Monfreid Dorothée"
+      ],
+      "publisher": "Misma",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "16/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 14,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782494740310",
+      "price_ttc": "14.00",
+      "format_line": "108 pages ; 16 x 14 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001403882",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001403882",
+      "sample": "bd_editeur",
+      "sample_evidence": "éditeur de bande dessinée : Misma",
+      "title": "FABLES SANS ANIMAUX",
+      "authors": [
+        "De Monfreid Dorothée",
+        "De Monfreid Dorothée"
+      ],
+      "publisher": "Misma",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "16/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 14,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782494740280",
+      "price_ttc": "15.00",
+      "format_line": "104 pages ; 19,5 x 14 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001403880",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001403880",
+      "sample": "bd_editeur",
+      "sample_evidence": "éditeur de bande dessinée : Misma",
+      "title": "HOTPOT",
+      "authors": [
+        "Cong Yan",
+        "Cong Yan",
+        "Aloisio Loïc"
+      ],
+      "publisher": "Misma",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "11/09/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 49,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782494740273",
+      "price_ttc": "22.00",
+      "format_line": "136 pages ; 22 x 15 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001379081",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001379081",
+      "sample": "bd_editeur",
+      "sample_evidence": "éditeur de bande dessinée : Misma",
+      "title": "Raíz & fe en tierra ajena : Fe, maternidad y la libertad de no renunciar a una misma",
+      "authors": [
+        "Chus Chadia"
+      ],
+      "publisher": "Dashbook",
+      "collection": "Lifestyle",
+      "document_type": "Livre imprimé",
+      "publication_date": "17/07/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 105,
+      "in_window_90_days": false,
+      "legal_deposit": "Reçu par la BnF",
+      "isbn13": "9782385896829",
+      "price_ttc": "15.00",
+      "format_line": "133 pages ; 17 x 12 cm ; broché",
+      "sru_by_isbn": {
+        "number_of_records": 1,
+        "isbn_found": true,
+        "identifiers": [
+          "http://catalogue.bnf.fr/ark:/12148/cb48840797x",
+          "ISBN9782385896829"
+        ],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001410325",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001410325",
+      "sample": "bd_editeur",
+      "sample_evidence": "éditeur de bande dessinée : Cornélius",
+      "title": "L'Insupportable Grabote : Volume 1 - 1973-1976",
+      "authors": [
+        "CLAVELOUX Nicole"
+      ],
+      "publisher": "Éditions Cornélius",
+      "collection": "Solange",
+      "document_type": "Livre imprimé",
+      "publication_date": "16/10/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 14,
+      "in_window_90_days": true,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9782360812486",
+      "price_ttc": "27.50",
+      "format_line": "152 pages ; 29 x 21,4 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001411569",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001411569",
+      "sample": "bd_editeur",
+      "sample_evidence": "éditeur de bande dessinée : Le diplodocus",
+      "title": "Dodo là",
+      "authors": [
+        "Letuffe Anne"
+      ],
+      "publisher": "Le diplodocus",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "06/11/2026",
+      "parution_flag": "À Paraitre",
+      "days_before_reference": -7,
+      "in_window_90_days": false,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791094908624",
+      "price_ttc": "14.50",
+      "format_line": "40 pages ; 22 x 18 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 0,
+        "isbn_found": false,
+        "identifiers": [],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001388549",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001388549",
+      "sample": "bd_editeur",
+      "sample_evidence": "éditeur de bande dessinée : Le diplodocus",
+      "title": "À qui est cette langue ?",
+      "authors": [
+        "Sabbagh Clémence",
+        "Schnellbach Emma"
+      ],
+      "publisher": "Le diplodocus",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "21/08/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 70,
+      "in_window_90_days": true,
+      "legal_deposit": "Reçu par la BnF",
+      "isbn13": "9791094908600",
+      "price_ttc": "14.00",
+      "format_line": "40 pages ; 20 x 20 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 2,
+        "isbn_found": true,
+        "identifiers": [
+          "http://catalogue.bnf.fr/ark:/12148/cb50017520g",
+          "ISBN9791094908600",
+          "http://catalogue.bnf.fr/ark:/12148/cb488319605",
+          "ISBN9791094908600"
+        ],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    },
+    {
+      "declaration_id": "10000001346709",
+      "url": "https://nouveautes-editeurs.bnf.fr/accueil?id_declaration=10000001346709",
+      "sample": "bd_editeur",
+      "sample_evidence": "éditeur de bande dessinée : Le diplodocus",
+      "title": "L'envol",
+      "authors": [
+        "Casteldaccia Sophie",
+        "Bellec Morgane"
+      ],
+      "publisher": "Le diplodocus",
+      "collection": null,
+      "document_type": "Livre imprimé",
+      "publication_date": "13/05/2026",
+      "parution_flag": "Paru",
+      "days_before_reference": 170,
+      "in_window_90_days": false,
+      "legal_deposit": "Annoncé éditeur",
+      "isbn13": "9791094908594",
+      "price_ttc": "14.50",
+      "format_line": "40 pages ; 22 x 22 cm ; relié",
+      "sru_by_isbn": {
+        "number_of_records": 1,
+        "isbn_found": true,
+        "identifiers": [
+          "http://catalogue.bnf.fr/ark:/12148/cb48772066n",
+          "ISBN9791094908594"
+        ],
+        "diagnostic": false
+      },
+      "sru_by_title_probe": null
+    }
+  ],
+  "public_requests": [
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2118
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.141
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2304
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.161
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1714
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1136
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1878
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1521
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1774
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.123
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1987
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1495
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1774
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1296
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1649
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.246
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1865
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1238
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.133
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1386
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1304
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1479
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1406
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2223
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1514
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.131
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1784
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1426
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2181
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1393
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1294
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1619
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1465
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1482
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1366
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1779
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1932
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2169
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2125
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1809
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1435
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2131
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1413
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2001
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1667
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1372
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2092
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2317
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1467
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1596
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1305
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2071
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1636
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1344
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1373
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2293
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1786
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1265
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1626
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1401
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1927
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1247
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1429
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1747
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1555
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.154
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1421
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0905
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0872
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0323
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0443
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0493
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0482
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0412
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0421
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0362
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0732
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.1425
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.04
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0496
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0546
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0512
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0431
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0669
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0421
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.2053
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0575
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0419
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0422
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0412
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.05
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0452
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.3572
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0623
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.057
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0392
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0544
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0423
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0403
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2056
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1899
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1785
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0604
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0515
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0356
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0567
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0437
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0362
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0461
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.054
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0487
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0419
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.8866
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0478
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0798
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0611
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0351
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0373
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0489
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0374
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 1.5902
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0499
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0636
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0456
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0507
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0442
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.1902
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 1.5685
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0638
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0421
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0433
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.1069
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0343
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0341
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0433
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 3.2992
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 1.9463
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 1.5465
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 2.4113
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.3845
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.073
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 1.0837
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0501
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1946
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0471
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.131
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0479
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.139
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0331
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1925
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.1685
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1855
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0504
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.123
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.0418
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1509
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.173
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1252
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.117
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1942
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1243
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.2463
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.0941
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1801
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1004
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1787
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.09
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.1846
+    },
+    {
+      "source": "nouveautes-editeurs.bnf.fr",
+      "status": 200,
+      "seconds": 0.0877
+    },
+    {
+      "source": "catalogue.bnf.fr",
+      "status": 200,
+      "seconds": 0.1333
+    }
+  ]
+}
