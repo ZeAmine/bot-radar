@@ -82,8 +82,9 @@ Les tests synthétiques ne nécessitent pas de démarrer l'application.
 [Settings](app/core/config.py). Ne jamais committer un fichier réel ou un export de
 session. Compose exige séparément `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
 non vides et cohérents avec `DATABASE_URL` et la base existante.
-`TELEGRAM_WEBHOOK_URL`, `EBAY_ENVIRONMENT` et `DOMAIN_NAME` ne sont pas lus par
-l'application ; eBay utilise `EBAY_ENV`.
+`TELEGRAM_WEBHOOK_URL` et `DOMAIN_NAME` ne sont pas lus par l'application.
+Aucun connecteur de prix direct n'est configurable : la seule source de cote
+est Chasse-aux-livres.
 
 Le moteur IA est choisi par `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`,
 `AI_TIMEOUT_SECONDS`, `AI_MAX_TOKENS` et `AI_REASONING_EFFORT`.

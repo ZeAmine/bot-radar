@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -70,54 +71,28 @@ async def test_unidentified_draft_adopts_isbn_identity(name):
 
 
 @pytest.mark.asyncio
-async def test_provider_http_failure_retains_status_and_empty_success():
-    import httpx
-
-    from app.providers.momox import MomoxProvider
-    from app.providers.registry import ProviderRegistry
-
-    responses = [
-        httpx.Response(429, headers={"Retry-After": "7"}),
-        httpx.Response(200, json={"data": []}),
-    ]
-    transport = httpx.MockTransport(lambda _request: responses.pop(0))
-    async with httpx.AsyncClient(transport=transport) as client:
-        registry = ProviderRegistry(providers=[MomoxProvider(http_client=client)])
-        failed = await registry.fetch_all_offers(isbn13=ISBN, title="Jours de sable")
-        empty = await registry.fetch_all_offers(isbn13=ISBN, title="Jours de sable")
-    assert failed.attempts[0].reason == "rate_limited"
-    assert failed.attempts[0].http_status == 429
-    assert failed.attempts[0].retry_after_seconds == 7
-    assert empty.attempts[0].status == "success"
-    assert not empty.failed_providers
-
-
-@pytest.mark.asyncio
 async def test_transient_retry_does_not_repeat_successful_sources():
-    from types import SimpleNamespace
-
-    import httpx
-
     from app.db.models.book import Book
-    from app.providers.momox import MomoxProvider
+    from app.providers.base import CollectionAttempt, MarketOffers
     from app.providers.registry import ProviderRegistry
     from app.services.book_market_pricing import fetch_offers_for_book
 
+    flaky = AsyncMock(side_effect=[
+        MarketOffers(failed_providers=("source_instable",), attempts=(
+            CollectionAttempt("source_instable", "current", "failed", "timeout"),
+        )),
+        MarketOffers([], attempts=(CollectionAttempt("source_instable", "current"),)),
+    ])
+    flaky_provider = SimpleNamespace(name="source_instable", get_offers=flaky)
     healthy = SimpleNamespace(name="healthy", get_offers=AsyncMock(return_value=[]))
-    calls = []
 
-    def respond(request):
-        calls.append(request.url.host)
-        return httpx.Response(503 if len(calls) == 1 else 200, json={"data": []})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        offers = await fetch_offers_for_book(
-            Book(title="Jours de sable", isbn13=ISBN),
-            registry=ProviderRegistry(providers=[MomoxProvider(http_client=client), healthy]),
-            retry_transient=True,
-        )
+    offers = await fetch_offers_for_book(
+        Book(title="Jours de sable", isbn13=ISBN),
+        registry=ProviderRegistry(providers=[flaky_provider, healthy]),
+        retry_transient=True,
+    )
     healthy.get_offers.assert_awaited_once()
-    assert len(calls) == 2
+    assert flaky.await_count == 2
     assert not offers.failed_providers
     assert offers.attempts[-1].status == "success"
 
@@ -280,24 +255,6 @@ def test_creation_card_keeps_price_but_discloses_failed_collection():
     assert "dernière offre connue : 20,59 €" in text
     assert "collecte échouée" not in text
     assert "<b>Prix bas constaté (1 an) :</b> historique indisponible" in text
-
-
-@pytest.mark.asyncio
-async def test_missing_provider_schema_is_a_failure_not_an_empty_search():
-    import httpx
-
-    from app.providers.momox import MomoxProvider
-    from app.providers.registry import ProviderRegistry
-
-    transport = httpx.MockTransport(lambda _request: httpx.Response(200, json={"unexpected": []}))
-    async with httpx.AsyncClient(transport=transport) as client:
-        registry = ProviderRegistry(providers=[MomoxProvider(http_client=client)])
-        result = await registry.fetch_all_offers(
-            isbn13=ISBN,
-            title="Jours de sable",
-        )
-    assert result.failed_providers == ("momox",)
-    assert result.attempts[0].reason == "invalid_response"
 
 
 @pytest.mark.asyncio

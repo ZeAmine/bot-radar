@@ -2,10 +2,6 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
-import pytest
-
-from app.providers.momox import MomoxProvider
 from app.providers.registry import ProviderRegistry
 from app.services import market_health
 
@@ -18,16 +14,6 @@ async def test_failed_provider_is_named_in_the_collection():
         isbn13=None, title="Livre"
     )
     assert collection.failed_providers == ("test_source",)
-
-
-@pytest.mark.parametrize("status", [403, 429, 500])
-async def test_http_error_is_not_a_successful_empty_catalogue(status):
-    client = AsyncMock()
-    client.get.return_value = httpx.Response(status, request=httpx.Request("GET", "https://test"))
-    offers = await MomoxProvider(http_client=client).get_offers(
-        isbn13="9782205078054", title="Livre"
-    )
-    assert offers.failed_providers == ("momox",)
 
 
 async def test_successful_empty_catalogue_has_no_failed_provider():
