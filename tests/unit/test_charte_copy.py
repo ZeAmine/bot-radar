@@ -926,7 +926,11 @@ async def test_the_confirmation_is_the_recap_read_back_from_the_same_card():
     assert recap_lines[0] == RECAP_TITLE
     assert confirm_lines[0] == "✅ <b>Alerte créée</b>"
     # Le corps, ligne de champ par ligne de champ : le meme, dans le meme ordre.
-    price_fields = ("<b>Cote :", "<b>Prix bas constaté (1 an) :")
+    price_fields = (
+        "<b>Cote :",
+        "<b>Prix bas :",
+        "<b>Prix bas constaté (1 an) :",
+    )
     assert [line for line in recap_lines
             if line.startswith("<b>") and not line.startswith(price_fields)] == [
         line for line in confirm_lines

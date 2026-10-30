@@ -213,9 +213,7 @@ async def test_confirmation_shows_market_price_without_the_marketplace_name():
         # Cote en base sans liste d'offres courante : le prix retenu est cité comme
         # dernière offre connue, jamais comme l'offre du jour.
         assert "(dernière offre connue : 18,00 €)" in confirmation
-        assert "<b>Prix bas constaté (1 an) :</b> 16,50 € - très bon état +, port inclus" in (
-            confirmation
-        )
+        assert "<b>Prix bas :</b> 16,50 €" in confirmation
         assert "Momox" not in confirmation
         assert "chasse_aux_livres" not in confirmation
         assert "Chasse" not in confirmation
@@ -420,7 +418,7 @@ async def test_series_alert_starts_book_resolution_at_creation():
     assert "<b>ISBN :</b>" not in confirmation
     assert PENDING_COTE_LINE not in confirmation
     assert "Prix du marché" not in confirmation
-    assert "Prix bas constaté" not in confirmation
+    assert "Prix bas" not in confirmation
 
 
 @pytest.mark.asyncio

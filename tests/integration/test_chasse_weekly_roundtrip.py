@@ -52,10 +52,10 @@ async def test_observed_jean_doux_history_is_stored_and_displayed_after_restart(
             )
             creation = MarketPriceService.get_comparison_summary(None, stored, for_creation=True)
             panel = MarketPriceService.format_market_details_card(None, stored)
-            # Même minimum, deux vocabulaires : la carte de création nomme l'état
-            # marchand du relevé, la fiche de marché garde le sien.
-            assert "Prix bas constaté (1 an) :</b> 9,36 €" in creation
-            assert "Prix bas constaté :</b> 9,36 €" in panel
+            # Même minimum, une seule forme : la carte de création et la fiche de
+            # marché rendent la même ligne de `labels`.
+            assert "<b>Prix bas :</b> 9,36 €" in creation
+            assert "<b>Prix bas :</b> 9,36 €" in panel
             successful = cache.historical_checked_at
             previous_history = dict(cache.source_history)
         failure = BookPricingResult.from_offers(MarketOffers(

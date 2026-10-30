@@ -89,7 +89,7 @@ def test_series_matching_specific_tome_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "<b>Prix bas constaté (T2) :</b> 18,50 €" in summary
+    assert "<b>Prix bas (T2) :</b> 18,50 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart estimé :</b> −6,50 €" in summary
 
@@ -143,8 +143,8 @@ def test_volume_2_selects_the_second_tome_and_its_market_price():
         tome_result=tome_result,
     )
     assert summary is not None
-    assert "<b>Prix bas constaté (T2) :</b> 18,50 €" in summary
-    assert "<b>Prix bas constaté (T2) :</b> 14,00 €" not in summary
+    assert "<b>Prix bas (T2) :</b> 18,50 €" in summary
+    assert "<b>Prix bas (T2) :</b> 14,00 €" not in summary
 
     card = MarketPriceService.format_market_details_card(
         listing=listing,
@@ -152,8 +152,8 @@ def test_volume_2_selects_the_second_tome_and_its_market_price():
         books_in_series=series,
         tome_result=tome_result,
     )
-    assert "<b>Prix bas constaté :</b> 18,50 €" in card
-    assert "<b>Prix bas constaté :</b> 14,00 €" not in card
+    assert "<b>Prix bas :</b> 18,50 €" in card
+    assert "<b>Prix bas :</b> 14,00 €" not in card
 
 
 def test_a_named_tome_absent_from_the_catalogue_is_not_replaced_by_another_tome():
@@ -227,7 +227,7 @@ def test_series_matching_lot_summary():
         tome_result=tome_res,
     )
     assert summary is not None
-    assert "<b>Prix bas constaté (Lot) :</b> ~54,50 €" in summary
+    assert "<b>Prix bas (Lot) :</b> ~54,50 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart estimé :</b> −29,50 €" in summary
 
@@ -339,17 +339,17 @@ def test_series_matching_chateau_des_animaux_lot_1_2_3():
     )
     assert summary is not None
     assert "Prix du marché" not in summary
-    assert "<b>Prix bas constaté (Lot) :</b> ~42,30 €" in summary
+    assert "<b>Prix bas (Lot) :</b> ~42,30 €" in summary
     assert "<b>Écart estimé :</b> −5,12 €" in summary
 
 
 @pytest.mark.parametrize(
     ("lot_tomes", "item_total_cents", "expected_label", "expected_icon", "expected_diff"),
     [
-        ([1, 2], 2500, "<b>Prix bas constaté (Lot) :</b> ~34,50 €", "✅", "-9,50 €"),
-        ([1, 3], 3000, "<b>Prix bas constaté (Lot) :</b> ~36,00 €", "✅", "-6,00 €"),
-        ([1, 2, 3], 6000, "<b>Prix bas constaté (Lot) :</b> ~54,50 €", "⛔️", "+5,50 €"),
-        ([2], 1500, "<b>Prix bas constaté (Lot) :</b> ~18,50 €", "✅", "-3,50 €"),
+        ([1, 2], 2500, "<b>Prix bas (Lot) :</b> ~34,50 €", "✅", "-9,50 €"),
+        ([1, 3], 3000, "<b>Prix bas (Lot) :</b> ~36,00 €", "✅", "-6,00 €"),
+        ([1, 2, 3], 6000, "<b>Prix bas (Lot) :</b> ~54,50 €", "⛔️", "+5,50 €"),
+        ([2], 1500, "<b>Prix bas (Lot) :</b> ~18,50 €", "✅", "-3,50 €"),
     ],
 )
 def test_series_matching_lot_variations_matrix(
@@ -1156,7 +1156,7 @@ def test_counted_lot_resolves_to_the_whole_series_and_prices_it():
     )
     assert summary is not None
     assert (
-        "<b>Prix bas constaté "
+        "<b>Prix bas "
         "(Lot de 4 tomes, composition déduite) :</b> ~40,77 €"
         in summary
     )

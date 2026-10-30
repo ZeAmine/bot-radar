@@ -770,7 +770,7 @@ def test_classify_sent_cote_state_names_the_five_outcomes():
         SEARCHING_BOOK_LINE,
     )
 
-    assert classify_sent_cote_state("<b>Prix bas constaté :</b> 19,98 €") == "real"
+    assert classify_sent_cote_state("<b>Prix bas :</b> 19,98 €") == "real"
     assert classify_sent_cote_state(PENDING_COTE_LINE) == "pending"
     assert classify_sent_cote_state(SEARCHING_BOOK_LINE) == "searching"
     # La ligne d'absence est datée : sa phrase l'identifie, pas toute la ligne.

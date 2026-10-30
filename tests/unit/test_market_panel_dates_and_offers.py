@@ -51,7 +51,7 @@ def test_market_panel_without_prices_explains_absence_without_empty_price_fields
     card = MarketPriceService.format_market_details_card(None, book)
     assert "Non renseigné" not in card
     assert "<b>Dernière offre connue :</b>" not in card
-    assert "<b>Prix bas constaté :</b>" not in card
+    assert "<b>Prix bas" not in card
     assert "cote" in card.lower()
 
 

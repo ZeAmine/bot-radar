@@ -89,7 +89,7 @@ def test_a_found_cote_never_quotes_a_previous_price():
     ("outcome", "expected"),
     [
         (select_cote_offer([offre("Momox Shop", 2369)]),
-         "<b>Cote :</b> 23,69 € - Momox Shop, très bon état, port inclus"),
+         "<b>Cote :</b> 23,69 € (Momox Shop)"),
         (select_cote_offer([]), "<b>Cote :</b> aucune offre trouvée"),
         (select_cote_offer(None),
          "<b>Cote :</b> récupération impossible, la source n'a pas répondu"),
@@ -113,16 +113,68 @@ def test_the_four_states_are_all_reachable_and_distinct():
     assert len(states) == 4
 
 
-def test_the_historical_low_keeps_the_merchant_wording():
+def test_the_historical_low_is_the_cheapest_observation():
+    """Le minimum sur douze mois reste la décision : la forme courte ne choisit pas."""
     outcome = select_historical_low([
         ReleveHistorique(etat="Très bon état +", total_cents=1999),
         ReleveHistorique(etat="Comme neuf +", total_cents=2450),
     ])
 
     assert outcome.state == "prix_bas_trouve"
-    assert (
-        low_line(outcome) == "<b>Prix bas constaté (1 an) :</b> 19,99 € - "
-        "très bon état +, port inclus"
+    assert outcome.cents == 1999
+    assert outcome.etat == "Très bon état +"
+
+
+def test_a_found_low_is_its_amount_alone_under_the_shared_label():
+    """« Prix bas : 19,99 € » : ni état marchand, ni port, ni fenêtre entre parenthèses.
+
+    La simplification ne retire que la mise en forme : le palier retenu reste
+    celui de la décision, et c'est lui que la ligne ne nomme plus.
+    """
+    outcome = select_historical_low([ReleveHistorique(etat="Très bon état +", total_cents=1999)])
+
+    line = low_line(outcome)
+
+    assert line == "<b>Prix bas :</b> 19,99 €"
+    assert outcome.etat == "Très bon état +"
+    for wording in ("port inclus", "très bon état", "1 an", "constaté"):
+        assert wording not in line
+
+
+def test_a_found_cote_names_the_amount_then_the_merchant_in_parentheses():
+    """« Cote : 12,34 € (Recyclivre) », et rien d'autre sur la ligne."""
+    line = cote_line(select_cote_offer([offre("Recyclivre", 1234, "TBE")]))
+
+    assert line == "<b>Cote :</b> 12,34 € (Recyclivre)"
+    for wording in ("port inclus", "très bon état"):
+        assert wording not in line
+
+
+def test_a_found_cote_escapes_the_merchant_it_puts_in_parentheses():
+    """Un nom de marchand reste une donnée : il n'écrit pas le formatage."""
+    line = cote_line(select_cote_offer([offre("<Bazar & Cie>", 900, None)]))
+
+    assert line == "<b>Cote :</b> 9,00 € (&lt;Bazar &amp; Cie&gt;)"
+
+
+def test_every_line_without_a_price_keeps_its_wording():
+    """Cas sans prix : mot pour mot, la forme courte ne les touche pas."""
+    assert cote_line(select_cote_offer([])) == "<b>Cote :</b> aucune offre trouvée"
+    assert cote_line(select_cote_offer(None)) == (
+        "<b>Cote :</b> récupération impossible, la source n'a pas répondu"
+    )
+    assert cote_line(select_cote_offer(None, derniere_offre_cents=2059)) == (
+        "<b>Cote :</b> récupération impossible, la source n'a pas répondu"
+        " (dernière offre connue : 20,59 €)"
+    )
+    assert cote_line(select_cote_offer([offre("Bouquin", 900, "BE")], prix_max=5000)) == (
+        "<b>Cote :</b> offres écartées par les filtres (1 offres, la moins chère à 9,00 €)"
+    )
+    assert low_line(select_historical_low([])) == (
+        "<b>Prix bas constaté (1 an) :</b> aucun relevé sur 12 mois"
+    )
+    assert low_line(select_historical_low(None)) == (
+        "<b>Prix bas constaté (1 an) :</b> historique indisponible"
     )
 
 
@@ -139,10 +191,7 @@ def test_a_tie_on_price_cites_the_very_good_tier_not_the_alphabetical_first():
     ])
 
     assert outcome.etat == "Très bon état +"
-    assert (
-        low_line(outcome) == "<b>Prix bas constaté (1 an) :</b> 19,99 € - "
-        "très bon état +, port inclus"
-    )
+    assert low_line(outcome) == "<b>Prix bas :</b> 19,99 €"
 
 
 def test_a_state_outside_the_accepted_history_words_is_not_a_low():
