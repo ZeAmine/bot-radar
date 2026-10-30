@@ -24,7 +24,10 @@ n'atteste pas à elle seule un accès authentifié.
 `app/providers/cal_governor.py` arbitre les requêtes ordinaires émises par le
 fournisseur CAL : recherche, fiche, lookup initial, sondages et reprises. Chaque
 requête HTTP réellement émise consomme un jeton de collecte, un quota de fenêtre
-et un espacement.
+et un espacement. CAL est la seule source de cote : le registre ne construit
+qu'elle, et les anciens connecteurs directs (Momox, Recyclivre, Gibert, eBay
+Browse) ont été retirés. La règle d'émission ci-dessous reste écrite dans les
+termes généraux qui la définissent, pas dans ceux de ces connecteurs.
 
 Cinq plafonds distincts, chacun bornant une chose différente. Aucun n'est un
 seuil garanti par CAL : ce sont des valeurs prudentes choisies localement, pas
@@ -80,12 +83,12 @@ concurrence, circuit ouvert, essai en cours, stockage indisponible — est un
 (`ADMINISTRATIVE_DEFERRAL_REASONS`) — et non au seul statut `skipped`, que
 prennent aussi les composantes non demandées — **et** à une preuve d'émission
 nulle **de la source régulée** : une tentative CAL porte le nombre de requêtes
-qu'elle a réellement émises, et ce compte ne se mélange pas à celui des
-connecteurs directs. Un refus survenu après le départ d'une requête CAL n'est
-donc pas un report administratif, c'est une interruption de collecte. Un
-connecteur direct qui émet et échoue — 403, domaine muet — ne dément pas cette
-preuve : sans réponse d'aucune source, la collecte reste un report. Une autre
-source qui répond (`success` ou `partial`) a en revanche livré quelque chose : la
+qu'elle a réellement émises, et ce compte ne se mélange pas à celui d'une autre
+source. Un refus survenu après le départ d'une requête CAL n'est donc pas un
+report administratif, c'est une interruption de collecte. Une autre source qui
+émet et échoue — 403, domaine muet — ne dément pas cette preuve : sans réponse
+d'aucune source, la collecte reste un report. Une autre source qui répond
+(`success` ou `partial`) a en revanche livré quelque chose : la
 collecte reprend son traitement normal, sans quoi sa réponse serait jetée. Ce
 report :
 
@@ -114,7 +117,7 @@ Effet sur la fraîcheur, mesuré sur `persist_market_result` :
 | Situation | Statut écrit | `last_attempt_at` | Recul |
 | --- | --- | --- | --- |
 | CAL seul, refusé avant émission | `deferred` | inchangé | aucun ; reprise bornée |
-| CAL refusé, les connecteurs directs en échec | `deferred` | inchangé | aucun ; reprise bornée |
+| CAL refusé, une autre source en échec | `deferred` | inchangé | aucun ; reprise bornée |
 | Collecte commencée puis interrompue | `partial` ou `failed` | renseigné | 6 h → 1 j → 7 j, plafonné |
 | CAL refusé, une autre source répond | `empty` | renseigné | aucun |
 

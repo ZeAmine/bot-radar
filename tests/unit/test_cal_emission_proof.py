@@ -136,11 +136,11 @@ async def test_a_refusal_before_any_request_proves_zero_emission(clean_cal_keys,
 async def test_a_degraded_source_does_not_turn_a_pass_refusal_into_a_book_failure(
     clean_cal_keys, cal_namespace,
 ):
-    """Le plafond de livres est épuisé et les autres sources sont muettes.
+    """Le plafond de livres est épuisé et une autre source échoue sans rien livrer.
 
-    Les 403 et l'échec de connexion des connecteurs directs ne disent rien de
-    l'émission CAL : la collecte CAL n'est pas partie, c'est un report, pas un
-    échec du livre — et le relevé d'une autre source n'existe pas.
+    Ses 403 et son échec de connexion ne disent rien de l'émission CAL : la
+    collecte CAL n'est pas partie, c'est un report, pas un échec du livre — et
+    le relevé de l'autre source n'existe pas.
     """
     clock = _Clock()
     governor = _governor(clock, clean_cal_keys, cal_namespace)
@@ -152,14 +152,15 @@ async def test_a_degraded_source_does_not_turn_a_pass_refusal_into_a_book_failur
     assert cal.emitted_requests == 0
 
     degraded = (
-        CollectionAttempt("gibert", "current", "failed", "http_status", 403,
+        CollectionAttempt("autre_source_a", "current", "failed", "http_status", 403,
                           emitted_requests=1),
-        CollectionAttempt("recyclivre", "current", "failed", "http_status", 403,
+        CollectionAttempt("autre_source_b", "current", "failed", "http_status", 403,
                           emitted_requests=1),
-        CollectionAttempt("momox", "current", "failed", "connection", emitted_requests=1),
+        CollectionAttempt("autre_source_c", "current", "failed", "connection",
+                          emitted_requests=1),
     )
     mixed = MarketOffers(
-        failed_providers=("gibert", "momox", "recyclivre"),
+        failed_providers=("autre_source_a", "autre_source_b", "autre_source_c"),
         attempts=tuple(cal.attempts) + degraded,
         emitted_requests=cal.emitted_requests + 3,
     )
@@ -248,7 +249,7 @@ async def test_another_source_answering_keeps_the_mixed_behaviour(clean_cal_keys
     assert cal.emitted_requests == 0
 
     other = MarketOffers(
-        attempts=(CollectionAttempt("moment", "current", "success"),),
+        attempts=(CollectionAttempt("autre_source", "current", "success"),),
     )
     mixed = MarketOffers(
         list(cal), failed_providers=cal.failed_providers,

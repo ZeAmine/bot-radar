@@ -44,10 +44,6 @@ class Settings(BaseSettings):
     INGEST_API_TOKEN: SecretStr = SecretStr("")
     INTERNAL_API_TOKEN: SecretStr = SecretStr("")
 
-    EBAY_CLIENT_ID: str = ""
-    EBAY_CLIENT_SECRET: SecretStr = SecretStr("")
-    EBAY_ENV: str = "PRODUCTION"
-
     # Session utilisateur Chasse-aux-livres (historique 1 an, API /rest/jcd)
     CHASSE_AUX_LIVRES_DUIH: str | None = None
     CHASSE_ACCOUNT_EMAIL: SecretStr = SecretStr("")

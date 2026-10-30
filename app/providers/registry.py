@@ -20,10 +20,6 @@ from app.providers.base import (
     requested_components,
 )
 from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
-from app.providers.ebay_browse import EbayBrowseProvider
-from app.providers.gibert import GibertProvider
-from app.providers.momox import MomoxProvider
-from app.providers.recyclivre import RecyclivreProvider
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +40,12 @@ class ProviderRegistry:
         if providers is not None:
             self.providers = providers
         else:
-            # Chasse-aux-livres porte l'historique 1 an (directs=filet) ; eBay si configuré.
-            default_providers: list[BookMarketProvider] = [
+            # Chasse-aux-livres est la seule source de cote : elle porte les offres
+            # courantes et l'historique 1 an, sans réglage ni identifiant à fournir.
+            self.providers = [
                 ChasseAuxLivresProvider(http_client=http_client,
                                        max_retries=0 if single_attempt else 2),
-                MomoxProvider(http_client=http_client),
-                RecyclivreProvider(http_client=http_client),
-                GibertProvider(http_client=http_client),
             ]
-            if EbayBrowseProvider.is_configured():
-                default_providers.append(EbayBrowseProvider(http_client=http_client))
-            self.providers = default_providers
         self.failed_provider_names: set[str] = set()
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
@@ -177,15 +168,6 @@ class ProviderRegistry:
         )
 
     @staticmethod
-    def _merchant_key(offer: MarketOffer) -> str:
-        """Identifie la boutique derrière une offre (l'agrégateur peut la nommer)."""
-        if offer.raw_payload:
-            merchant = offer.raw_payload.get("best_merchant")
-            if isinstance(merchant, str) and merchant.strip():
-                return merchant.strip().lower()
-        return offer.provider_name.strip().lower()
-
-    @staticmethod
     def select_best_offer(offers: list[MarketOffer]) -> MarketOffer | None:
         """Sélectionne l'offre d'occasion comparable au prix total livré le plus bas.
 
@@ -205,13 +187,6 @@ class ProviderRegistry:
         if not comparable_offers:
             return None
 
-        # Marchand remonté deux fois (agrégateur + connecteur) : garder l'offre
-        # la moins chère avant le tri final.
-        cheapest_by_merchant: dict[str, MarketOffer] = {}
-        for offer in comparable_offers:
-            key = ProviderRegistry._merchant_key(offer)
-            best = cheapest_by_merchant.get(key)
-            if best is None or offer.delivered_price_cents < best.delivered_price_cents:
-                cheapest_by_merchant[key] = offer
-
-        return min(cheapest_by_merchant.values(), key=lambda o: o.delivered_price_cents)
+        # Un marchand peut apparaître plusieurs fois : le minimum sur les prix est
+        # le même que le minimum des minima par marchand, sans regroupement à faire.
+        return min(comparable_offers, key=lambda o: o.delivered_price_cents)

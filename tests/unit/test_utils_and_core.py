@@ -305,26 +305,10 @@ def test_providers_accept_custom_http_client():
     from unittest.mock import MagicMock
 
     from app.providers.chasse_aux_livres import ChasseAuxLivresProvider
-    from app.providers.ebay_browse import EbayBrowseProvider
-    from app.providers.gibert import GibertProvider
-    from app.providers.momox import MomoxProvider
-    from app.providers.recyclivre import RecyclivreProvider
     from app.providers.registry import ProviderRegistry
     from app.services.book_metadata_service import BookMetadataService
 
     dummy_client = MagicMock()
-
-    momox = MomoxProvider(http_client=dummy_client)
-    assert momox.http_client is dummy_client
-
-    recyclivre = RecyclivreProvider(http_client=dummy_client)
-    assert recyclivre.http_client is dummy_client
-
-    gibert = GibertProvider(http_client=dummy_client)
-    assert gibert.http_client is dummy_client
-
-    ebay = EbayBrowseProvider(http_client=dummy_client)
-    assert ebay.http_client is dummy_client
 
     chasse = ChasseAuxLivresProvider(http_client=dummy_client)
     assert chasse.http_client is dummy_client
