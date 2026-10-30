@@ -57,6 +57,10 @@ vérifie l'historique certifié et la persistance de session Redis, sans prix fo
 sans écrire de prix ni bloquer le bot. Deux processus peuvent vérifier la réutilisation
 de session. Une restriction ou une perte d'accès interrompt la sonde concernée.
 
+La [relance d'une cote nommée](refresh-book-price.md) passe par la même collecte
+partagée, sous les plafonds du régulateur : elle répond à un état de
+rafraîchissement faux, pas à une envie d'interroger la source plus souvent.
+
 La [reprise par inventaire](chasse-weekly-prices.md) reste disponible sous mandat
 explicite, avec empreinte, revalidation bibliographique et petits lots. Elle ne
 nécessite aucun arrêt global. Aucun de ces outils n'est exécuté implicitement au
