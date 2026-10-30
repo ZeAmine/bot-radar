@@ -374,7 +374,9 @@ async def test_edition_switch_replaces_year_format_and_source(monkeypatch):
                           format_detail='Album', source='bnf')
     confirmed = result_from_isbn_verdict(IsbnVerdict(outcome='confirme', notice=notice))
     case = type('Case', (), {'search_by_isbn': AsyncMock(return_value=confirmed)})()
-    monkeypatch.setattr('app.bot.handlers.alerts_create_confirm.BookSearchUseCase', lambda: case)
+    monkeypatch.setattr(
+        'app.bot.handlers.alerts_create_confirm.BookSearchUseCase', lambda **_: case
+    )
     state = DraftState()
     state.data = {'name': 'Birdking', 'isbn': CODES[1], 'publication_year': 1995,
                   'format_detail': 'Poche', 'source': 'openlibrary',
@@ -515,7 +517,7 @@ async def test_typed_isbn_names_a_volume_even_if_the_model_suggests_a_series(mon
         BookResolution(best=notice, notice_titles=('Birdking Livre 2',)), 'Birdking',
     )
     case = type('Case', (), {'search_by_title': AsyncMock(return_value=found)})()
-    monkeypatch.setattr('app.services.ai.modules.natural_add.BookSearchUseCase', lambda: case)
+    monkeypatch.setattr('app.services.ai.modules.natural_add.BookSearchUseCase', lambda **_: case)
     module = NaturalAddModule(client=FakeLLM(text={
         'name': 'Birdking', 'category_slug': 'bd_comics', 'is_series': True,
     }))

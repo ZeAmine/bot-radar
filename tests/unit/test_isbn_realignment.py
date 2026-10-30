@@ -60,14 +60,18 @@ class _ClientPanneSurUnISBN:
 def autorite(monkeypatch) -> None:
     """Branche le cas d'usage sur le vrai service, avec le client qui décroche.
 
-    `realign_draft_to_isbn` consomme désormais `BookSearchUseCase` : le simuler au
-    niveau du service laisserait passer le mapping (statuts, T9). Ici le service réel
-    tourne, donc le contrat est exercé de bout en bout, sans réseau.
+    `realign_draft_to_isbn` consomme désormais `BookSearchUseCase(declared_source=True)` :
+    le simuler au niveau du service laisserait passer le mapping (statuts, T9). Ici le
+    service réel tourne, donc le contrat est exercé de bout en bout, sans réseau
+    (l'option de source déclarée est acceptée sans être honorée : seul compte ici
+    le client fourni).
     """
     monkeypatch.setattr(
         alerts_helpers,
         "BookSearchUseCase",
-        lambda: BookSearchUseCase(BookMetadataService(http_client=_ClientPanneSurUnISBN())),
+        lambda **_: BookSearchUseCase(
+            BookMetadataService(http_client=_ClientPanneSurUnISBN())
+        ),
     )
 
 

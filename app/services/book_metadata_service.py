@@ -40,6 +40,10 @@ from app.providers.google_books import (
     GoogleVolume,
     ProviderQueryResult,
 )
+from app.providers.nouveautes_editeurs import (
+    BookDeclaration,
+    NouveautesEditeursClient,
+)
 from app.services.market_price_service import extract_tome_number_from_title
 from app.utils.isbn import (
     is_valid_isbn,
@@ -63,6 +67,11 @@ FRENCH_ISBN_PREFIXES = ("9782", "979")
 AUTORITE_BNF = "bnf"
 AUTORITE_OPENLIBRARY = "openlibrary"
 AUTORITE_GOOGLE_BOOKS = "google_books"
+AUTORITE_NOUVEAUTES_EDITEURS = "nouveautes_editeurs"
+
+DECLARED_AUTHORITIES = frozenset({AUTORITE_NOUVEAUTES_EDITEURS})
+
+DECLARED_SOURCE_TIMEOUT_SECONDS = 4.0
 
 # Refus qui disent une **autre édition** d'un tome : ce sont eux qu'on journalise,
 # pour mesurer leur fréquence — et eux seuls, parce que les autres motifs
@@ -94,6 +103,8 @@ class BookMetadata:
     language: str | None = None
     declared_volume_count: int | None = None
     publication_date: date | None = None
+    # « Reçu par la BnF » décrit un dépôt, jamais une notice.
+    legal_deposit_status: str | None = None
 
     def __post_init__(self) -> None:
         if self.volume_number is None:
@@ -497,6 +508,7 @@ class BibliographicReport:
     resolution: BookResolution | None = None
     verdict: IsbnVerdict | None = None
     attempts: tuple[ProviderAttempt, ...] = ()
+    declared_refusal: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind == "title" and self.verdict is not None:
@@ -522,16 +534,45 @@ def _attempt(
 
 OPENLIBRARY_SOURCE_NOTE = "Source OpenLibrary (repli BNF)"
 GOOGLE_BOOKS_SOURCE_NOTE = "Source Google Books (repli BNF)"
+NOUVEAUTES_EDITEURS_SOURCE_NOTE = (
+    "Source Nouveautés Éditeurs BnF (déclaration d’éditeur, non confirmée par le catalogue)"
+)
 
 PROVENANCE_NOTES: dict[str, str] = {
     AUTORITE_OPENLIBRARY: OPENLIBRARY_SOURCE_NOTE,
     AUTORITE_GOOGLE_BOOKS: GOOGLE_BOOKS_SOURCE_NOTE,
+    AUTORITE_NOUVEAUTES_EDITEURS: NOUVEAUTES_EDITEURS_SOURCE_NOTE,
 }
 
 
 def provenance_note(meta: BookMetadata) -> str | None:
-    """Signale au récap une donnée d'identité issue d'une autorité secondaire."""
-    return PROVENANCE_NOTES.get(meta.source)
+    """Signale au récap une donnée d'identité issue d'une autorité secondaire.
+
+    Une déclaration d'éditeur va plus loin : elle dit aussi l'état de son dépôt
+    légal, parce que « Reçu par la BnF » n'est pas « catalogué à la BnF » et qu'un
+    lecteur doit pouvoir faire la différence.
+    """
+    note = PROVENANCE_NOTES.get(meta.source)
+    if note is None or meta.source not in DECLARED_AUTHORITIES:
+        return note
+    if not meta.legal_deposit_status:
+        return note
+    return f"{note} — dépôt légal : {meta.legal_deposit_status}"
+
+
+def decisive_failures(attempts: tuple[ProviderAttempt, ...]) -> tuple[str, ...]:
+    """Les autorités dont l'échec rend une absence indécise.
+
+    Une source qui **déclare** une identité ne fait pas pencher la balance : si elle
+    est injoignable, le catalogue a quand même parlé, et l'absence qu'il dit reste
+    une absence. La faire compter ici transformerait une panne de confort en refus
+    différent de celui d'aujourd'hui.
+    """
+    return tuple(
+        provider
+        for provider in failed_authorities(attempts)
+        if provider not in DECLARED_AUTHORITIES
+    )
 
 
 def ambiguity_note(resolution: BookResolution) -> str | None:
@@ -631,6 +672,24 @@ def authors_conflict(first: str | None, second: str | None) -> bool:
     second_words = set(normalize_text(second).split())
     return bool(first_words and second_words
                 and not (first_words <= second_words or second_words <= first_words))
+
+
+def publishers_agree(found: str | None, expected: str | None) -> bool:
+    """Deux mentions d'éditeur désignent-elles la même maison ?
+
+    Une déclaration écrit « Hachette-Livre Editions du Chêne » là où l'utilisateur
+    écrit « Editions du Chêne », et une égalité de chaînes refuserait un livre
+    correct. La comparaison reste stricte pour ne pas absoudre une vraie divergence :
+    inclusion de l'un dans l'autre, ou quasi-égalité de la chaîne normalisée. Un nom
+    commercial plus court que la raison sociale (« Le Chêne ») n'est pas deviné.
+    """
+    first = normalize_text(found)
+    second = normalize_text(expected)
+    if not first or not second:
+        return False
+    if first == second or first in second or second in first:
+        return True
+    return difflib.SequenceMatcher(None, first, second).ratio() >= 0.85
 
 
 def clean_title_query(title: str) -> str:
@@ -987,9 +1046,20 @@ class BookMetadataService:
         self,
         timeout_seconds: float = 8.0,
         http_client: httpx.AsyncClient | None = None,
+        declared_source_client: NouveautesEditeursClient | None = None,
     ) -> None:
+        """Le service des autorités, et accessoirement celui d'une source déclarée.
+
+        `declared_source_client` est `None` par défaut : sans client injecté, la
+        source des annonces de parution n'existe pas — elle n'est ni interrogée ni
+        annoncée comme consultée. C'est la règle de Google Books sans clé, reprise
+        telle quelle, et c'est `main` qui fournit cette entrée : les appelants qui
+        n'ont pas à connaître la source ne peuvent pas la déclencher par accident,
+        et aucun double de test n'a à la simuler pour rester vert.
+        """
         self.timeout_seconds = timeout_seconds
         self.http_client = http_client
+        self.declared_source_client = declared_source_client
 
     async def lookup(self, query: str) -> BookMetadata | None:
         """Identifie une œuvre BD à partir d'un titre, ISBN ou URL Vinted."""
@@ -1118,6 +1188,25 @@ class BookMetadataService:
                     attempts=tuple(attempts),
                 )
 
+        # Dernier recours quand rien n'a confirmé, et jamais une notice de catalogue.
+        declared_notice, declared_attempt, declared_refusal = await self._declared_notice_result(
+            isbn13=clean_isbn, search_type="isbn"
+        )
+        if declared_attempt is not None:
+            attempts.append(declared_attempt)
+            consulted = (*consulted, AUTORITE_NOUVEAUTES_EDITEURS)
+        if declared_notice is not None:
+            return BibliographicReport(
+                kind="isbn",
+                verdict=IsbnVerdict(
+                    outcome="silence" if panne else "confirme",
+                    notice=declared_notice,
+                    consulted=consulted,
+                    panne=panne,
+                ),
+                attempts=tuple(attempts),
+            )
+
         return BibliographicReport(
             kind="isbn",
             verdict=IsbnVerdict(
@@ -1126,6 +1215,7 @@ class BookMetadataService:
                 panne=panne,
             ),
             attempts=tuple(attempts),
+            declared_refusal=declared_refusal,
         )
 
     async def verify_isbn(
@@ -1187,7 +1277,8 @@ class BookMetadataService:
         return (await self.resolve_for_alert_report(title, author_hint)).resolution
 
     async def resolve_for_alert_report(
-        self, title: str, author_hint: str | None = None
+        self, title: str, author_hint: str | None = None, *,
+        publisher_hint: str | None = None,
     ) -> BibliographicReport:
         """Mêmes décisions que `resolve_for_alert`, tentatives réelles en plus.
 
@@ -1197,6 +1288,10 @@ class BookMetadataService:
         (`resolve_for_alert`, utilisé par Telegram dans ce lot) est inchangé
         et y délègue : seule la lecture du rapport (nouveau contrat) distingue
         un repli pendant une panne d'une identification confirmée.
+
+        `publisher_hint` n'entre dans aucune requête : c'est un critère de
+        vérification pour une déclaration d'éditeur, pas un terme de recherche.
+        Le catalogue ne s'en sert pas, et l'ajouter ferait perdre des notices.
         """
         if not title.strip():
             return BibliographicReport(kind="title")
@@ -1246,6 +1341,7 @@ class BookMetadataService:
             for candidate in candidates
         )
         fallback_resolution: BookResolution | None = None
+        declared_refusal: str | None = None
         if not candidates or only_other_authors:
             disputed_isbns = {candidate.isbn13 for candidate in candidates}
 
@@ -1271,6 +1367,16 @@ class BookMetadataService:
                 attempts.extend(google_attempts)
                 if usable_fallback(google_resolution):
                     fallback_resolution = google_resolution
+                else:
+                    declared_resolution, declared_attempt, declared_refusal = (
+                        await self._declared_resolution(
+                            title, author_hint, publisher_hint=publisher_hint
+                        )
+                    )
+                    if declared_attempt is not None:
+                        attempts.append(declared_attempt)
+                    if usable_fallback(declared_resolution):
+                        fallback_resolution = declared_resolution
 
             if fallback_resolution is not None:
                 homonyms = list(fallback_resolution.other_works)
@@ -1295,7 +1401,11 @@ class BookMetadataService:
                     attempts=tuple(attempts),
                 )
             if not candidates:
-                return BibliographicReport(kind="title", attempts=tuple(attempts))
+                return BibliographicReport(
+                    kind="title",
+                    attempts=tuple(attempts),
+                    declared_refusal=declared_refusal,
+                )
 
         candidates = self._prefer_author_hint(candidates, author_hint)
         best = self._attach_recommendations(candidates[0])
@@ -2332,6 +2442,156 @@ class BookMetadataService:
             publication_year=volume.publication_year,
             format_detail=f"{volume.page_count} p." if volume.page_count else None,
             language=normalize_edition_language(volume.language),
+        )
+
+    async def _declared_notice_result(
+        self,
+        *,
+        isbn13: str | None = None,
+        title: str | None = None,
+        author_hint: str | None = None,
+        publisher_hint: str | None = None,
+        search_type: BibliographicSearchType,
+    ) -> tuple[BookMetadata | None, ProviderAttempt | None, str | None]:
+        """La déclaration d'éditeur du livre demandé, si elle fonde une identité.
+
+        Trois issues, jamais confondues : aucune tentative (source absente, donc rien
+        à dire), une tentative sans notice (le site ne déclare rien, ou la déclaration
+        est écartée — et le motif part alors au récap), ou une notice admise.
+
+        Une identité déclarée n'est pas une identité confirmée : la notice porte sa
+        provenance, et son état de dépôt légal tel que le site l'écrit. Ce chemin ne
+        s'appelle qu'après un silence de la BNF, d'OpenLibrary et de Google Books.
+        """
+        client = self.declared_source_client
+        if client is None or not client.is_configured:
+            return None, None, None
+        if isbn13 is not None:
+            result = await client.search_by_isbn_result(isbn13)
+        elif title is not None:
+            result = await client.search_by_title_result(title)
+        else:  # pragma: no cover - appelé avec l'un ou l'autre, jamais sans
+            return None, None, None
+
+        attempt = _attempt(AUTORITE_NOUVEAUTES_EDITEURS, search_type, result)
+        if result.status != ProviderQueryStatus.SUCCESS or not result.items:
+            return None, attempt, None
+        notice, refusal = self._declared_admission(
+            result.items[0],
+            isbn13=isbn13,
+            title=title,
+            author_hint=author_hint,
+            publisher_hint=publisher_hint,
+        )
+        return notice, attempt, refusal
+
+    def _declared_admission(
+        self,
+        declaration: BookDeclaration,
+        *,
+        isbn13: str | None,
+        title: str | None,
+        author_hint: str | None,
+        publisher_hint: str | None,
+    ) -> tuple[BookMetadata | None, str | None]:
+        """Les règles d'admission d'une déclaration, dans l'ordre où elles tranchent.
+
+        Chaque refus nomme son motif : un doute résiduel se refuse, il ne s'arrondit
+        pas, et le récap a besoin du texte exact pour le dire à l'usager. Une parution
+        future a son propre motif — c'est une annonce, pas une absence de catalogue —
+        et un ISBN différent du code demandé ferme la porte avant tout le reste :
+        aucun autre champ ne rachète un code qui ne correspond pas.
+        """
+        if not declaration.is_printed_book:
+            return None, (
+                "Déclaration d'éditeur écartée : « "
+                f"{declaration.document_type or 'support inconnu'} » n'est pas un livre imprimé."
+            )
+        if declaration.isbn13 is None:
+            return None, (
+                "Déclaration d'éditeur écartée : elle ne porte pas d'ISBN-13 valide."
+            )
+        if isbn13 is not None and declaration.isbn13 != isbn13:
+            return None, (
+                "Déclaration d'éditeur écartée : elle porte l'ISBN "
+                f"{declaration.isbn13}, pas {isbn13}."
+            )
+        if declaration.publication_date > date.today():
+            return None, (
+                "Déclaration d'éditeur écartée : parution annoncée au "
+                f"{declaration.publication_date.strftime('%d/%m/%Y')}, "
+                "pas encore parue."
+            )
+        notice = self._attach_recommendations(self._declaration_notice(declaration))
+        if title is not None and (
+            title_similarity(declaration.title, title) < TITLE_SIMILARITY_MIN
+            or not matches_requested_volume(notice, title)
+        ):
+            return None, (
+                f"Déclaration d'éditeur écartée : elle nomme « {declaration.title} », "
+                f"pas « {title} »."
+            )
+        if author_hint and author_hint.strip() and not same_author(
+            declaration.author, author_hint
+        ):
+            return None, (
+                "Déclaration d'éditeur écartée : elle nomme "
+                f"{declaration.author or 'aucun auteur'}, pas {author_hint}."
+            )
+        if (
+            publisher_hint
+            and publisher_hint.strip()
+            and not publishers_agree(declaration.publisher, publisher_hint)
+        ):
+            return None, (
+                "Déclaration d'éditeur écartée : elle nomme l'éditeur "
+                f"{declaration.publisher or 'non renseigné'}, pas {publisher_hint}."
+            )
+        return notice, None
+
+    async def _declared_resolution(
+        self, title: str, author_hint: str | None = None, *,
+        publisher_hint: str | None = None,
+    ) -> tuple[BookResolution | None, ProviderAttempt | None, str | None]:
+        """Une résolution de repli bâtie sur une déclaration d'éditeur.
+
+        Même contrat que `_resolve_via_google_books` : une seule notice, confiance
+        `MEDIUM`, provenance remontée jusqu'au récap, aucune alternative proposée
+        (le site ne déclare pas les éditions d'une œuvre) et aucun autre ouvrage
+        (l'admission a déjà tranché le titre et l'auteur).
+        """
+        notice, attempt, refusal = await self._declared_notice_result(
+            title=title,
+            author_hint=author_hint,
+            publisher_hint=publisher_hint,
+            search_type="title",
+        )
+        if notice is None:
+            return None, attempt, refusal
+        return (
+            BookResolution(
+                best=notice,
+                author_hint_match=self._author_hint_match(notice, author_hint),
+                notice_titles=(notice.title,),
+            ),
+            attempt,
+            None,
+        )
+
+    @staticmethod
+    def _declaration_notice(declaration: BookDeclaration) -> BookMetadata:
+        """Une déclaration d'éditeur en notice, avec sa provenance et son dépôt."""
+        return BookMetadata(
+            title=declaration.title,
+            author=declaration.author,
+            publisher=declaration.publisher,
+            isbn13=declaration.isbn13,
+            source=AUTORITE_NOUVEAUTES_EDITEURS,
+            confidence=MatchConfidence.MEDIUM,
+            publication_year=declaration.publication_date.year,
+            publication_date=declaration.publication_date,
+            format_detail=declaration.format_detail,
+            legal_deposit_status=declaration.legal_deposit_status,
         )
 
     async def _openlibrary_works(
