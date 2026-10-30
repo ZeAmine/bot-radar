@@ -133,6 +133,53 @@ async def test_a_refusal_before_any_request_proves_zero_emission(clean_cal_keys,
 
 @pytest.mark.usefixtures("pass_token")
 @pytest.mark.asyncio
+async def test_a_degraded_source_does_not_turn_a_pass_refusal_into_a_book_failure(
+    clean_cal_keys, cal_namespace,
+):
+    """Le plafond de livres est épuisé et les autres sources sont muettes.
+
+    Les 403 et l'échec de connexion des connecteurs directs ne disent rien de
+    l'émission CAL : la collecte CAL n'est pas partie, c'est un report, pas un
+    échec du livre — et le relevé d'une autre source n'existe pas.
+    """
+    clock = _Clock()
+    governor = _governor(clock, clean_cal_keys, cal_namespace)
+    await governor.admit_book("passe-pleine")
+    await governor.admit_book("passe-pleine")
+
+    cal = await _collect(governor, _chain_handler())
+    assert cal.attempts[0].reason == "pass_budget"
+    assert cal.emitted_requests == 0
+
+    degraded = (
+        CollectionAttempt("gibert", "current", "failed", "http_status", 403,
+                          emitted_requests=1),
+        CollectionAttempt("recyclivre", "current", "failed", "http_status", 403,
+                          emitted_requests=1),
+        CollectionAttempt("momox", "current", "failed", "connection", emitted_requests=1),
+    )
+    mixed = MarketOffers(
+        failed_providers=("gibert", "momox", "recyclivre"),
+        attempts=tuple(cal.attempts) + degraded,
+        emitted_requests=cal.emitted_requests + 3,
+    )
+
+    result = BookPricingResult.from_offers(mixed, None, None)
+    assert administrative_deferral_only(result) is True
+
+    cache = BookMarketCache(book_id=uuid.uuid4())
+    cache.next_refresh_at = datetime.now(UTC)
+    written = await _persist(cache, result, datetime.now(UTC))
+
+    assert written.collection_status == "deferred"
+    assert written.last_attempt_at is None
+    assert "current" not in (written.refresh_state or {})
+    assert written.refresh_state["administrative"]["reasons"] == ["pass_budget"]
+    assert not written.failed_provider_names
+
+
+@pytest.mark.usefixtures("pass_token")
+@pytest.mark.asyncio
 async def test_a_started_search_that_is_then_refused_is_not_zero_emission(
     clean_cal_keys, cal_namespace,
 ):

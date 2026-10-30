@@ -910,6 +910,32 @@ def test_history_only_failure_preserves_current_state() -> None:
     assert _current_collection_is_empty(cache) is False
 
 
+def test_a_retried_current_does_not_back_off_the_history_it_never_asked() -> None:
+    """La reprise d'une collecte ne redemande que `current`.
+
+    Les tentatives fusionnées ne portent alors aucune composante `history` : ce
+    silence n'est pas un échec de l'historique, qui doit rester dû pour la passe
+    suivante au lieu de reculer de six heures.
+    """
+    now = datetime.now(UTC)
+    cache = _current_cache(now)
+    interesting = _offer("momox", 1000)
+    offers = MarketOffers(
+        [interesting],
+        attempts=(
+            CollectionAttempt("chasse_aux_livres", "current"),
+            CollectionAttempt("momox", "current"),
+        ),
+    )
+    result = BookPricingResult.from_offers(offers, interesting, None)
+
+    _stamp_collection(cache, replace(result, collected_at=now))
+
+    assert "history" not in (cache.refresh_state or {})
+    assert cache.historical_checked_at is None
+    assert component_due(cache, "history", now) <= now
+
+
 def test_combined_current_and_history_updates_both_components() -> None:
     now = datetime.now(UTC)
     cache = _current_cache(now)

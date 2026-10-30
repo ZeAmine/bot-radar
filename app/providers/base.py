@@ -57,6 +57,10 @@ class CollectionAttempt:
     engines_received: int | None = None
     poll_count: int | None = None
     lookup_seconds: float | None = None
+    # Requêtes réellement parties pour cette tentative, quand le fournisseur les
+    # compte lui-même : un report du régulateur n'est reconnu qu'à émission nulle
+    # **de la source concernée**, pas au total de toutes les sources.
+    emitted_requests: int = 0
 
 
 def failed_offers(
@@ -105,6 +109,7 @@ def deferred_offers(
     return MarketOffers(
         attempts=(CollectionAttempt(
             provider, operation, "skipped", reason, None, retry_after,
+            emitted_requests=emitted_requests,
         ),),
         emitted_requests=emitted_requests,
     )

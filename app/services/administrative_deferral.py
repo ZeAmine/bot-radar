@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from app.services.book_market_pricing import BookPricingResult
 
 ADMINISTRATIVE_STATUS = "deferred"
+CAL_PROVIDER = "chasse_aux_livres"
 
 
 def administrative_attempts(attempts: tuple[CollectionAttempt, ...]) -> list[CollectionAttempt]:
@@ -34,11 +35,18 @@ def administrative_deferral_only(result: "BookPricingResult") -> bool:
 
     Le refus doit être prononcé par le régulateur **et** la preuve d'émission
     doit être nulle : un refus survenu après le départ d'une requête est une
-    interruption de collecte, pas un report administratif.
+    interruption de collecte, pas un report administratif. Cette preuve porte
+    sur la seule source régulée : une autre source qui émet et échoue — un 403
+    ou un domaine muet — ne dit rien de l'émission CAL et ne doit pas la
+    démentir. En revanche, une autre source qui répond a livré quelque chose :
+    la collecte garde alors son traitement normal.
     """
-    if not result.attempts or result.emitted_requests:
+    if not result.attempts:
         return False
-    return len(administrative_attempts(result.attempts)) == len(result.attempts)
+    refused = [a for a in administrative_attempts(result.attempts) if a.provider == CAL_PROVIDER]
+    if not any(a.emitted_requests == 0 for a in refused):
+        return False
+    return not any(a.status in {"success", "partial"} for a in result.attempts)
 
 
 def administrative_retry_at(
