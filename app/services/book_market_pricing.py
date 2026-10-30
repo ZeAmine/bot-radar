@@ -652,7 +652,7 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
         return
     current_requested = _current_component_requested(result)
     current_attempted = not _history_only(result)
-    history_requested = not any(a.operation == "history" for a in result.attempts) or any(
+    history_attempted = any(
         a.operation == "history" and a.status != "skipped" for a in result.attempts
     )
     if current_attempted:
@@ -684,7 +684,7 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
                 "source_url": lowest.source_url, "condition": "Très bon état +",
                 "days": 365, "shipping_included": True,
             }
-    if history_requested:
+    if history_attempted:
         record_component(cache, "history", succeeded=result.historical_checked,
                          now=result.collected_at)
     if not current_attempted:

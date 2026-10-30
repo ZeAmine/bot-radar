@@ -263,7 +263,10 @@ restent conservés. Sans valeur, le panneau explique l'indisponibilité sans cha
 chiffré vide ni validation implicite du prix.
 
 Les offres courantes et l'historique ont des dates de réussite distinctes. Une
-réussite partielle ne rafraîchit pas la composante en échec. Une réponse vide valide
+réussite partielle ne rafraîchit pas la composante en échec. Une composante
+qu'aucune tentative n'a demandée — une reprise ne relance que les offres
+courantes — ne compte pas comme un échec : elle reste due pour la passe suivante.
+Une réponse vide valide
 peut dater la vérification sans effacer le dernier prix connu ; la date de ce prix
 reste sa collecte réelle. « Dernière MAJ » affiche seulement la date et l'heure de
 la dernière réussite connue parmi les composantes, dont les dates distinctes restent

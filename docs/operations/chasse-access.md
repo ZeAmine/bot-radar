@@ -79,10 +79,15 @@ concurrence, circuit ouvert, essai en cours, stockage indisponible — est un
 **report administratif**, reconnu à la raison du régulateur
 (`ADMINISTRATIVE_DEFERRAL_REASONS`) — et non au seul statut `skipped`, que
 prennent aussi les composantes non demandées — **et** à une preuve d'émission
-nulle : le budget de collecte compte les requêtes réellement parties, ce compte
-traverse l'agrégation des fournisseurs jusqu'au résultat que lit la persistance.
-Un refus survenu après le départ d'une requête n'est donc pas un report
-administratif, c'est une interruption de collecte. Ce report :
+nulle **de la source régulée** : une tentative CAL porte le nombre de requêtes
+qu'elle a réellement émises, et ce compte ne se mélange pas à celui des
+connecteurs directs. Un refus survenu après le départ d'une requête CAL n'est
+donc pas un report administratif, c'est une interruption de collecte. Un
+connecteur direct qui émet et échoue — 403, domaine muet — ne dément pas cette
+preuve : sans réponse d'aucune source, la collecte reste un report. Une autre
+source qui répond (`success` ou `partial`) a en revanche livré quelque chose : la
+collecte reprend son traitement normal, sans quoi sa réponse serait jetée. Ce
+report :
 
 - n'incrémente aucun échec de composante et ne fait donc pas escalader le recul ;
 - n'enregistre aucune tentative réseau : `last_attempt_at` reste inchangé ;
@@ -109,6 +114,7 @@ Effet sur la fraîcheur, mesuré sur `persist_market_result` :
 | Situation | Statut écrit | `last_attempt_at` | Recul |
 | --- | --- | --- | --- |
 | CAL seul, refusé avant émission | `deferred` | inchangé | aucun ; reprise bornée |
+| CAL refusé, les connecteurs directs en échec | `deferred` | inchangé | aucun ; reprise bornée |
 | Collecte commencée puis interrompue | `partial` ou `failed` | renseigné | 6 h → 1 j → 7 j, plafonné |
 | CAL refusé, une autre source répond | `empty` | renseigné | aucun |
 
@@ -116,6 +122,11 @@ Seule une collecte réellement commencée produit un échec : elle escalade
 `RETRY_DELAYS` — 6 h, puis 1 jour, puis 7 jours — sans dépasser trois échelons.
 Un livre servi revient à `REFRESH_INTERVAL` (7 jours) ; un livre reporté reste dû
 dès sa reprise, donc avant un livre servi.
+
+Une composante n'est comptée qu'à partir d'une tentative qui l'a réellement
+demandée : une reprise ne redemande que `current`, si bien qu'une composante
+`history` sans tentative n'est pas un échec et reste due pour la passe suivante
+au lieu de reculer de six heures.
 
 `market_refresh_policy.component_due` n'a pas été modifiée : son recul de six
 heures ne s'applique qu'aux statuts `failed`, `partial` et `skipped`. Le statut
