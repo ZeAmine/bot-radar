@@ -1,12 +1,17 @@
 """Relance la cote d'un livre nommé, par le chemin de collecte partagé.
 
-Une cote fraîche n'est pas réinterrogée : c'est la garde de fraîcheur
-(`market_refresh_policy`) qui protège la source, et elle a raison. Ce script
-existe pour le cas inverse — un livre nommé dont l'état de rafraîchissement est
-faux, daté par une passe qui ne l'a jamais interrogé, et qu'aucun geste de
+Ce script existe pour un livre nommé dont l'état de rafraîchissement est faux —
+daté par une passe qui ne l'a jamais interrogé — et qu'aucun geste de
 l'application ne sait plus relancer avant l'échéance. Il n'écrit aucune valeur à
 la main : il appelle `price_book`, la collecte partagée qui décide, persiste et
 replanifie (mêmes décisions, mêmes traces que le bouton « Prix du marché »).
+
+La garde locale de fraîcheur, elle, est écartée : le cache du livre n'est pas
+chargé, donc la collecte demande les deux composantes (« cote » et
+« historique »), comme à la création d'une alerte — un livre déjà coté n'est
+donc pas réinterrogé par ce script. C'est la seule entorse, et elle est nommée :
+elle ne touche pas au régulateur, qui reste seul juge du droit d'interroger la
+source.
 
 Trois limites sont celles de la source, pas de ce script : deux livres par
 fenêtre de quinze minutes, douze requêtes par collecte, une collecte à la fois et
@@ -67,6 +72,13 @@ async def _relance(isbn13: str) -> dict[str, Any]:
         book = await BookRepository(session).get_by_isbn13(code)
         if book is None:
             return {**result, "relance": "refus", "raison": "livre_inconnu"}
+        # La garde de fraîcheur se lit sur le cache chargé : `fetch_offers_for_book`
+        # ne demande que les composantes échues. Sans cache, la collecte demande
+        # « cote » et « historique », exactement comme à la création d'une alerte.
+        # C'est le seul contournement de ce script, et il est nommé ici : la garde
+        # locale cède, le régulateur CAL garde ses plafonds (deux livres par
+        # fenêtre, douze requêtes, une collecte à la fois).
+        book.__dict__.pop("market_cache", None)
         result.update(book_id=str(book.id), titre=book.title)
         cache = await price_book(session, book, result_sink=results)
         await session.commit()

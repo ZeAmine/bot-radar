@@ -55,6 +55,48 @@ async def test_un_livre_absent_du_catalogue_n_est_pas_collecte(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_la_relance_demande_les_deux_composantes_sans_cache_charge(monkeypatch):
+    """La garde locale de fraîcheur est écartée en ne chargeant pas le cache.
+
+    `fetch_offers_for_book` ne demande que les composantes échues : c'est le cache
+    du livre qui le dit. La relance d'exploitation part donc sans cache, comme une
+    création — sinon elle n'interrogerait rien et rapporterait un silence qui
+    n'est que le sien.
+    """
+    from types import SimpleNamespace
+
+    from app.db.repositories.book_repo import BookRepository
+
+    vus = {}
+    cache = SimpleNamespace(
+        collection_status="skipped",
+        lowest_delivered_price_cents=None,
+        best_provider_name=None,
+        best_source_url=None,
+        annual_low_cents=None,
+        last_attempt_at=None,
+        last_successful_collection_at=None,
+        next_refresh_at=None,
+        source_history=None,
+    )
+
+    async def livre_cote(_self, _isbn13):
+        livre = SimpleNamespace(id="livre-1", title="Un livre")
+        livre.market_cache = SimpleNamespace(collection_status="partial")
+        return livre
+
+    async def collecte(_session, book, **_kwargs):
+        vus["cache_charge"] = "market_cache" in book.__dict__
+        return cache
+
+    monkeypatch.setattr(BookRepository, "get_by_isbn13", livre_cote)
+    monkeypatch.setattr("app.services.book_market_pricing.price_book", collecte)
+    result = await refresh_book_prices._relance("9782857085737")
+    assert vus["cache_charge"] is False
+    assert result["relance"] == "refus_source"
+
+
+@pytest.mark.asyncio
 async def test_l_invocation_ne_depasse_pas_le_plafond_de_livres_annonce(monkeypatch):
     vus = []
 
