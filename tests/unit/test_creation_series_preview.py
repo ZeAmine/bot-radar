@@ -111,8 +111,8 @@ async def test_an_announced_volume_is_detected_without_being_confirmed():
 def test_the_recap_shows_the_retained_volume_then_names_the_detected_ones():
     rows = [
         row(1, CODES[0], price_lines=[
-            "<b>Cote :</b> 23,69 € - Momox Shop, très bon état, port inclus",
-            "<b>Prix bas constaté (1 an) :</b> 19,99 € - très bon état +, port inclus",
+            "<b>Cote :</b> 23,69 € (Momox Shop)",
+            "<b>Prix bas :</b> 19,99 €",
         ]),
         row(2, CODES[1], confirmed=False, admission="date_unproven", publication_date=None),
         row(4, CODES[2], confirmed=False, admission="date_unproven", publication_date=None),
@@ -125,8 +125,8 @@ def test_the_recap_shows_the_retained_volume_then_names_the_detected_ones():
         f"📚 <b>Tome 1</b> - La Passe-miroir 1 · <code>{CODES[0]}</code>"
     )
     assert lines[1] == "<b>Parution :</b> 2026 (BNF, année prouvée)"
-    assert lines[2].startswith("<b>Cote :</b> 23,69 € - Momox Shop")
-    assert "Prix bas constaté (1 an) :</b> 19,99 € - très bon état +, port inclus" in lines[3]
+    assert lines[2].startswith("<b>Cote :</b> 23,69 € (Momox Shop)")
+    assert "Prix bas :</b> 19,99 €" in lines[3]
     assert "Tomes 2 et 4 détectés, non ajoutés - ajout sur demande explicite" in text
     # Un tome écarté n'occupe pas une fiche : il tient en une ligne, motif compris.
     assert f"<b>Tome 2</b> - La Passe-miroir 2 · {CODES[1]} · date de parution non prouvée" in text
@@ -190,7 +190,7 @@ def offers(*prices: int) -> MarketOffers:
 def test_the_cheapest_offer_becomes_the_cote_with_shipping_included():
     lines = creation_cote_lines(offers(2990, 2369), price_max=5000)
 
-    assert lines[0] == "<b>Cote :</b> 23,69 € - Marchand 1, très bon état, port inclus"
+    assert lines[0] == "<b>Cote :</b> 23,69 € (Marchand 1)"
 
 
 def test_a_cap_below_every_offer_says_which_filter_rejected_them():
@@ -259,7 +259,7 @@ async def test_a_known_cote_is_read_from_the_database_without_collecting_again()
 
     collector.assert_not_awaited()
     assert data["series_volumes"][0]["price_lines"][0] == (
-        "<b>Cote :</b> 23,69 € - Momox Shop, très bon état, port inclus"
+        "<b>Cote :</b> 23,69 € (Momox Shop)"
     )
 
 
@@ -274,7 +274,7 @@ async def test_a_volume_never_priced_is_collected_once_for_the_preview():
 
     collector.assert_awaited_once()
     assert data["series_volumes"][0]["price_lines"] == [
-        "<b>Cote :</b> 23,69 € - Marchand 0, très bon état, port inclus",
+        "<b>Cote :</b> 23,69 € (Marchand 0)",
         "<b>Prix bas constaté (1 an) :</b> aucun relevé sur 12 mois",
     ]
 

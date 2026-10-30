@@ -64,8 +64,8 @@ def test_recap_four_rows_one_vocabulary_and_named_rejection():
         {'number': n, 'title': f'Birdking Livre {n}', 'isbn13': CODES[n-1],
          'language': 'fr', 'source': 'bnf', 'confirmed': True, 'publication_year': 2024,
          'price_lines': [
-             '<b>Cote :</b> 18,00 € - Momox, très bon état, port inclus',
-             '<b>Prix bas constaté (1 an) :</b> 16,50 € - très bon état +, port inclus',
+             '<b>Cote :</b> 18,00 € (Momox)',
+             '<b>Prix bas :</b> 16,50 €',
          ]}
         for n in (1, 2, 3)
     ] + [{'number': 4, 'title': 'Birdking Livre 4', 'isbn13': None, 'confirmed': False,

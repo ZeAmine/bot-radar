@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
-from app.bot.labels import cote_line, escape_display, low_line
+from app.bot.labels import cote_line, escape_display, low_line, low_price_line
 from app.core.constants import (
     CATEGORY_EMOJIS,
     LEBONCOIN_SOURCE_NAME,
@@ -364,7 +364,7 @@ def format_cote_lines(book: Book | None) -> list[str]:
     historical_cents, historical = reference_price(cache)
 
     if historical and historical_cents is not None:
-        lines.append(f"<b>Prix bas constaté :</b> {format_cents(historical_cents)}")
+        lines.append(low_price_line(historical_cents))
     return lines
 
 
@@ -858,7 +858,7 @@ class MarketPriceService:
             f" (T{tome_result.tome_number})" if (tome_result and tome_result.tome_number) else ""
         )
         lines = [
-            f"<b>Prix bas constaté{tome_suffix} :</b> {format_cents(reference_cents)}"
+            low_price_line(reference_cents, tome_suffix)
 
             if is_historical
             else MarketPriceService._market_price_line(cache, tome_suffix)
@@ -908,14 +908,16 @@ class MarketPriceService:
             return _lot_unavailable(reference)
         cumulated = reference.total_cents
         expected_count = len(set(lot_tomes))
-        label = "Prix bas constaté" if reference.historical else "Prix du marché"
-        label += _lot_label(
+        lot_suffix = _lot_label(
             expected_count,
             len(reference.books),
             composition_inferred=composition_inferred,
         )
 
-        lines = [f"<b>{label} :</b> ~{format_cents(cumulated)}"]
+        if reference.historical:
+            lines = [low_price_line(cumulated, lot_suffix, approximate=True)]
+        else:
+            lines = [f"<b>Prix du marché{lot_suffix} :</b> ~{format_cents(cumulated)}"]
         vinted_total = _vinted_total_cents(listing)
 
         if vinted_total is not None:
@@ -1205,9 +1207,7 @@ class MarketPriceService:
 
 
         if is_historical and reference_cents is not None:
-            lines.append(
-                f"<b>Prix bas constaté :</b> {format_cents(reference_cents)}"
-            )
+            lines.append(low_price_line(reference_cents))
         else:
             lines.append("Minimum annuel sans preuve source disponible.")
 

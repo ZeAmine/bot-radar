@@ -27,7 +27,7 @@ def test_market_card_dates_the_last_successful_check_at_the_bottom():
     card = MarketPriceService.format_market_details_card(None, book)
     assert "Actualisation" not in card
     assert "📚 <b>Blacksad" in card
-    assert "<b>Prix bas constaté :</b> 22,00 €" in card
+    assert "<b>Prix bas :</b> 22,00 €" in card
     assert "(06/10" not in card
     assert "relevé(s) conservé(s)" not in card
     assert "<b>Dernière offre connue :</b> 22,00 €" in card
@@ -134,7 +134,7 @@ def test_comparator_vinted_cheaper_than_market():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 22,00 €" in summary
+    assert "<b>Prix bas :</b> 22,00 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart estimé :</b> −8,31 €" in summary
 
@@ -145,7 +145,7 @@ def test_comparator_vinted_very_good_deal_fire_badge():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 30,00 €" in summary
+    assert "<b>Prix bas :</b> 30,00 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart estimé :</b> −15,00 €" in summary
 
@@ -156,7 +156,7 @@ def test_comparator_vinted_more_expensive_than_market():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 20,00 €" in summary
+    assert "<b>Prix bas :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart estimé :</b> +5,00 €" in summary
 
@@ -167,7 +167,7 @@ def test_comparator_small_difference_warning():
 
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 20,00 €" in summary
+    assert "<b>Prix bas :</b> 20,00 €" in summary
     assert "Prix du marché" not in summary
     assert "<b>Écart estimé :</b> +0,50 €" in summary
 
@@ -234,7 +234,7 @@ def test_comparator_with_historical_low_1y():
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     assert "Prix du marché" not in summary
-    assert "<b>Prix bas constaté :</b> 18,50 €" in summary
+    assert "<b>Prix bas :</b> 18,50 €" in summary
     assert "<b>Écart estimé :</b> −4,81 €" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
@@ -299,12 +299,12 @@ def test_comparator_historical_low_when_status_unavailable():
     summary = MarketPriceService.get_comparison_summary(listing, book)
     assert summary is not None
     assert "Prix du marché" not in summary
-    assert "<b>Prix bas constaté :</b> 18,50 €" in summary
+    assert "<b>Prix bas :</b> 18,50 €" in summary
     assert "<b>Écart estimé :</b> −4,81 €" in summary
 
     card = MarketPriceService.format_market_details_card(listing, book)
     assert "📊 <b>Prix du marché</b>" in card
-    assert "<b>Prix bas constaté :</b> 18,50 €" in card
+    assert "<b>Prix bas :</b> 18,50 €" in card
     assert "🆕 Vinted" not in card
     assert "💵 Offres" not in card
     assert "Écart" not in card
@@ -325,7 +325,7 @@ def test_comparator_single_book_series_fallback():
         books_in_series=[book],
     )
     assert "📊 <b>Prix du marché</b>" in card
-    assert "<b>Prix bas constaté :</b> 15,48 €" in card
+    assert "<b>Prix bas :</b> 15,48 €" in card
 
 
 def test_comparator_no_price_at_all_returns_unavailable():
@@ -459,7 +459,7 @@ def test_comparator_market_details_card_shows_both_historical_low_and_snapshots_
 
     card = MarketPriceService.format_market_details_card(listing, book)
 
-    assert "<b>Prix bas constaté :</b> 5,48 €" in card
+    assert "<b>Prix bas :</b> 5,48 €" in card
     assert "Dernières offres connues" not in card
     assert "<b>Dernière offre connue :</b> 21,04 €" in card
     assert '<a href="https://momox.fr/indes">Consulter l\'offre</a>' in card
@@ -478,8 +478,8 @@ def test_summary_and_card_share_the_same_reference_price():
     card = MarketPriceService.format_market_details_card(listing, book)
 
     assert summary is not None
-    assert "<b>Prix bas constaté :</b> 5,48 €" in summary
-    assert "<b>Prix bas constaté :</b> 5,48 €" in card
+    assert "<b>Prix bas :</b> 5,48 €" in summary
+    assert "<b>Prix bas :</b> 5,48 €" in card
     assert "<b>Dernière offre connue :</b> 22,00 €" in card
 
 
@@ -543,7 +543,7 @@ def test_inferred_lot_label_says_the_composition_was_deduced():
         listing=listing, book=None, books_in_series=books, tome_result=tome_res
     )
     assert summary is not None
-    assert ("<b>Prix bas constaté "
+    assert ("<b>Prix bas "
             "(Lot de 2 tomes, composition déduite) :</b> ~34,50 €") in summary
 
 

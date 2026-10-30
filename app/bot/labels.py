@@ -104,41 +104,14 @@ FIELD_FALSE_POSITIVES = "Faux positifs"
 FIELD_SUGGESTED_EXCLUDES = "Mots-clés exclus suggérés"
 FIELD_SUGGESTED_EXCLUDES_CUSTOM = "Mots-clés exclus suggérés (personnalisés)"
 
-# Cote d'un tome à la création : trois libellés, jamais un champ vide à la place.
+# Cote d'un tome à la création : les libellés de ses lignes prix, jamais un champ
+# vide à la place.
 FIELD_COTE = "Cote"
 FIELD_PARUTION = "Parution"
+# Un prix bas trouvé se lit « Prix bas » ; une absence de relevé garde son libellé
+# daté, qui dit sur quelle fenêtre elle porte.
+FIELD_LOW = "Prix bas"
 FIELD_LOW_1Y = "Prix bas constaté (1 an)"
-# Fin de phrase d'un prix de cote : le total est toujours port compris.
-COTE_SHIPPING_INCLUDED = "port inclus"
-
-# États d'offre en toutes lettres pour une ligne de cote : les codes du référentiel
-# (NAE, NSE, TBE) sont faits pour les boutons et les filtres, pas pour une phrase.
-COTE_CONDITION_LABELS: dict[str, str] = {
-    "NAE": "neuf avec étiquette",
-    "NSE": "neuf sans étiquette",
-    "TBE": "très bon état",
-}
-
-
-def cote_condition_label(code: str | None) -> str:
-    """État d'une offre retenue, en toutes lettres ; le code brut si inconnu.
-
-    Même règle qu'`abbreviate_condition`, en sens inverse : un état que le
-    référentiel de la cote ne nomme pas est rendu tel quel plutôt que perdu.
-    """
-    if not code:
-        return NOT_PROVIDED
-    return COTE_CONDITION_LABELS.get(code, code)
-
-
-def mid_sentence(label: str) -> str:
-    """Un libellé de marchand dans une phrase : « Très bon état + » → « très bon état + ».
-
-    Le libellé n'est pas traduit — c'est celui du marchand, et son « + » veut dire
-    quelque chose ; seule sa majuscule d'initiale appartient au début de ligne.
-    """
-    stripped = label.strip()
-    return stripped[:1].lower() + stripped[1:] if stripped else stripped
 
 
 def cote_line(outcome: CoteOutcome) -> str:
@@ -147,17 +120,15 @@ def cote_line(outcome: CoteOutcome) -> str:
     Les quatre états du module de décision ont chacun leur phrase : « Non
     renseigné » décrit une donnée absente de la fiche, jamais une source muette,
     une collecte vide ou un plafond qui a filtré — trois faits différents qui se
-    réparaient autrement.
+    réparaient autrement. Une cote trouvée se lit « 23,69 € (Momox Shop) » : le
+    montant, puis le marchand entre parenthèses.
     """
     if outcome.state == "cote_trouvee" and outcome.offre is not None:
         offer = outcome.offre
-        parts = [format_cents(offer.total_cents), escape_display(offer.marchand)]
-        if offer.etat:
-            # Un marchand qui ne qualifie pas l'exemplaire n'a pas d'état à citer :
-            # écrire « Non renseigné » à sa place inventerait un champ manquant.
-            parts.append(cote_condition_label(offer.etat))
-        parts.append(COTE_SHIPPING_INCLUDED)
-        return f"<b>{FIELD_COTE} :</b> {parts[0]} - {', '.join(parts[1:])}"
+        return (
+            f"<b>{FIELD_COTE} :</b> {format_cents(offer.total_cents)} "
+            f"({escape_display(offer.marchand)})"
+        )
     if outcome.state == "aucune_offre":
         return _cote_absence("aucune offre trouvée", outcome)
     if outcome.state == "erreur_recuperation":
@@ -181,13 +152,22 @@ def _cote_absence(explanation: str, outcome: CoteOutcome) -> str:
     )
 
 
+def low_price_line(cents: int, qualifier: str = "", *, approximate: bool = False) -> str:
+    """Ligne d'un prix bas sur douze mois : « Prix bas : 19,99 € ».
+
+    Le libellé vit ici et nulle part ailleurs : le récapitulatif, la fiche d'alerte
+    et le panneau de marché montrent le même minimum sous la même forme. Un
+    `qualifier` nomme la portée du montant — le tome, le lot — sans qualifier le
+    prix lui-même ; `approximate` marque une somme déduite.
+    """
+    amount = f"~{format_cents(cents)}" if approximate else format_cents(cents)
+    return f"<b>{FIELD_LOW}{qualifier} :</b> {amount}"
+
+
 def low_line(outcome: PrixBasOutcome) -> str:
-    """Ligne du plus bas relevé sur douze mois, état marchand conservé tel quel."""
+    """Ligne du plus bas relevé sur douze mois : le montant seul, ou l'absence dite."""
     if outcome.state == "prix_bas_trouve" and outcome.cents is not None:
-        return (
-            f"<b>{FIELD_LOW_1Y} :</b> {format_cents(outcome.cents)} - "
-            f"{escape_display(mid_sentence(outcome.etat or ''))}, {COTE_SHIPPING_INCLUDED}"
-        )
+        return low_price_line(outcome.cents)
     if outcome.state == "aucun_releve_12_mois":
         return f"<b>{FIELD_LOW_1Y} :</b> aucun relevé sur 12 mois"
     return f"<b>{FIELD_LOW_1Y} :</b> historique indisponible"

@@ -246,8 +246,9 @@ Une cote de création retient la moins chère des offres livrées des états acc
 aucune offre, récupération impossible, offres écartées par les filtres — avec leur
 nombre et la moins chère. Le prix maximum filtre, il n'est jamais réécrit. Un prix
 déjà connu n'est jamais présenté comme l'offre du jour : il s'accompagne de la
-mention « dernière offre connue ». Le plus bas sur douze mois est cité avec son
-libellé marchand et son port ; l'absence de relevé et l'historique illisible sont
+mention « dernière offre connue ». Une cote trouvée se lit « montant (marchand) »,
+sans état ni mention de port. Le plus bas sur douze mois est cité sous le libellé
+« Prix bas », montant seul ; l'absence de relevé et l'historique illisible sont
 dits distinctement.
 
 Contrôles : [admission](../../tests/unit/test_tome_admission.py),
@@ -256,7 +257,7 @@ Contrôles : [admission](../../tests/unit/test_tome_admission.py),
 
 ## Minimum source et fraîcheur indépendante
 
-Le panneau conserve « Dernière offre connue » et « Prix bas constaté » quand une
+Le panneau conserve « Dernière offre connue » et « Prix bas » quand une
 valeur existe, ainsi que le lien de l'offre du livre sélectionné. La liste de
 boutiques n'est plus affichée ; ses données sources et les filtres de comparabilité
 restent conservés. Sans valeur, le panneau explique l'indisponibilité sans champ

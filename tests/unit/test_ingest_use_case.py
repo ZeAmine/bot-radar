@@ -119,7 +119,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
     """La ligne de cote locale est transmise à l'envoi Telegram."""
     mock_send_alert = AsyncMock(side_effect=acknowledged_delivery)
 
-    market_line = ("<b>Prix bas constaté (T6) :</b> 5,12 €\n"
+    market_line = ("<b>Prix bas (T6) :</b> 5,12 €\n"
                    "<b>Écart estimé :</b> +13,16 €")
     with (
         patch(
@@ -192,7 +192,7 @@ async def test_process_listing_bd_resolves_local_market_comparison(mock_db: Asyn
         mock_send_alert.assert_awaited_once()
         _, kwargs = mock_send_alert.call_args
         assert kwargs["market_comparison_line"] == (
-            "<b>Prix bas constaté (T6) :</b> 5,12 €\n"
+            "<b>Prix bas (T6) :</b> 5,12 €\n"
             "<b>Écart estimé :</b> +13,16 €"
         )
 
