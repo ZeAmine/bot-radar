@@ -340,7 +340,7 @@ class NaturalAddModule(BaseAIModule):
 
         # Une suggestion de série du moteur ne confirme jamais l'identité.
         is_series = is_series and not typed_isbn
-        use_case = BookSearchUseCase()
+        use_case = BookSearchUseCase(declared_source=True)
 
         result = None
         try:

@@ -173,7 +173,10 @@ async def test_typed_isbn_card_reports_real_sources(
         bnf_status=bnf_status, ol_status=ol_status, ol_author="Neyef" if bnf_status == 503 else None
     ) as client:
         service = BookMetadataService(http_client=client)
-        monkeypatch.setattr(alerts_helpers, "BookSearchUseCase", lambda: BookSearchUseCase(service))
+        # L'ajout demande la source déclarée : le double accepte l'option, sans réseau.
+        monkeypatch.setattr(
+            alerts_helpers, "BookSearchUseCase", lambda **_: BookSearchUseCase(service)
+        )
         alignment = await alerts_helpers.realign_draft_to_isbn(
             {"name": "Les Enfants perdus", "author": "Ancien auteur"}, ISBN
         )
@@ -208,7 +211,10 @@ async def test_isbn_contradiction_never_uses_a_fallback(monkeypatch):
     async with _client(records=[different_book], ol_author="Neyef") as client:
         service = BookMetadataService(http_client=client)
         result = await BookSearchUseCase(service).search_by_isbn(ISBN, "Les Enfants perdus")
-        monkeypatch.setattr(alerts_helpers, "BookSearchUseCase", lambda: BookSearchUseCase(service))
+        # L'ajout demande la source déclarée : le double accepte l'option, sans réseau.
+        monkeypatch.setattr(
+            alerts_helpers, "BookSearchUseCase", lambda **_: BookSearchUseCase(service)
+        )
         alignment = await alerts_helpers.realign_draft_to_isbn({"name": "Les Enfants perdus"}, ISBN)
     assert result.consulted == ("bnf",)
     assert alignment.updates == {}

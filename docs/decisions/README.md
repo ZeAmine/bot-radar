@@ -69,3 +69,4 @@ Conserver les identifiants et expliciter tout remplacement plutôt que renuméro
 | ADR-052 | Leboncoin entre dans les alertes, avec une sortie résidentielle auto-hébergée | [marketplace](marketplace.md#adr-052) |
 | ADR-053 | Les seuils de mesure Leboncoin sont pré-enregistrés, sans oracle de rappel | [marketplace](marketplace.md#adr-053) |
 | ADR-054 | Exception Leboncoin à la clause anti-contournement | [marketplace](marketplace.md#adr-054) |
+| ADR-055 | Une parution déclarée par l'éditeur peut nommer un livre que le catalogue ignore encore | [catalogue-market](catalogue-market.md#adr-055) |

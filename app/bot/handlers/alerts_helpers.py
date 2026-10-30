@@ -71,6 +71,7 @@ from app.services.alert_service import AlertServiceError, parse_price_to_cents
 from app.services.book_metadata_service import (
     AUTORITE_BNF,
     AUTORITE_GOOGLE_BOOKS,
+    AUTORITE_NOUVEAUTES_EDITEURS,
     AUTORITE_OPENLIBRARY,
     TITLE_SIMILARITY_MIN,
     CatalogueVerdict,
@@ -360,7 +361,8 @@ def creation_card(
         language_label = {"en": "Anglais", "fr": "Français", "de": "Allemand",
                           "es": "Espagnol", "it": "Italien", "pt": "Portugais",
                           "ja": "Japonais"}.get(language, language if language != "und" else "")
-        sources = {"bnf": "BNF", "openlibrary": "OpenLibrary", "google_books": "Google Books"}
+        sources = {"bnf": "BNF", "openlibrary": "OpenLibrary", "google_books": "Google Books",
+                   AUTORITE_NOUVEAUTES_EDITEURS: "Nouveautés Éditeurs (BnF)"}
         provenance = ", ".join(sources.get(source, source)
                                for source in data.get("identification_sources") or [])
         for label, value in (
@@ -1136,6 +1138,7 @@ def draft_updates_from_search(
 
     name = query_title
     includes, excludes, variants = generate_recommended_keywords(name, None)
+    note: str | None
     if result.status == BookSearchStatus.PARTIAL:
         note = (
             "Livre repéré, mais aucune édition avec ISBN n'a pu être confirmée."
@@ -1145,7 +1148,7 @@ def draft_updates_from_search(
     elif result.status == BookSearchStatus.UNAVAILABLE:
         note = "Vérification impossible pour l'instant. Tu peux créer l'alerte à partir du titre."
     else:
-        note = None
+        note = result.declared_refusal
     return {
         "category_id": category_id,
             **creation_bibliographic_identity(result),
@@ -1184,7 +1187,7 @@ async def _resolve_edition_choices(
     bloquer la création de l'alerte, il prive seulement l'utilisateur du choix.
     """
     try:
-        result = await BookSearchUseCase().search_by_title(title, author_hint)
+        result = await BookSearchUseCase(declared_source=True).search_by_title(title, author_hint)
     except Exception as exc:
         logger.debug("Éditions concurrentes indisponibles pour « %s » : %s", title, exc)
         return []
@@ -1227,6 +1230,7 @@ def _isbn_verification_note(result: BookSearchResult | None) -> str:
         AUTORITE_BNF: "BNF",
         AUTORITE_OPENLIBRARY: "OpenLibrary",
         AUTORITE_GOOGLE_BOOKS: "Google Books",
+        AUTORITE_NOUVEAUTES_EDITEURS: "Nouveautés Éditeurs (BnF)",
     }
     if result is None:
         return "ISBN saisi, non confirmé : vérification impossible, réessaie plus tard."
@@ -1245,6 +1249,8 @@ def _isbn_verification_note(result: BookSearchResult | None) -> str:
         note = "ISBN saisi, non confirmé : vérification incomplète, réessaie plus tard."
     else:
         note = "ISBN saisi, non confirmé : aucune notice exploitable dans les sources consultées."
+        if result.declared_refusal:
+            note += f" {result.declared_refusal}"
     if result.consulted:
         sources = ", ".join(source_names.get(source, source) for source in result.consulted)
         note += f" Sources consultées : {sources}."
@@ -1283,7 +1289,8 @@ async def realign_draft_to_isbn(draft: dict[str, Any], isbn: str, *, replace_ide
         title = volume_title(title, number)
 
     try:
-        result: BookSearchResult | None = await BookSearchUseCase().search_by_isbn(
+        searcher = BookSearchUseCase(declared_source=True)
+        result: BookSearchResult | None = await searcher.search_by_isbn(
             isbn.strip(), expected_title=(None if replace_identity or draft.get("book_unidentified")
                 or draft.get("identity_unconfirmed") or title.startswith("Livre ISBN ")
                 else title or None)
@@ -1568,12 +1575,12 @@ async def process_bd_query_lookup(
 
     try:
         if is_isbn_form:
-            result = await BookSearchUseCase().search_by_isbn(
+            result = await BookSearchUseCase(declared_source=True).search_by_isbn(
                 extract_clean_isbn(clean_query) or clean_query,
             )
         else:
             query_title, author_hint = parse_query_title_and_author(clean_query)
-            result = await BookSearchUseCase().search_by_title(
+            result = await BookSearchUseCase(declared_source=True).search_by_title(
                 query_title, author_hint, include_series_catalogue=True,
             )
     except InvalidIsbnError:

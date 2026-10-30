@@ -354,8 +354,9 @@ async def test_cas_usage_titre_delegue_sans_base_ni_llm() -> None:
 
     resultat = await cas_usage.search_by_title("La couleur des choses", "Panchaud")
 
+    # L'indice d'éditeur est un critère de vérification, absent ici.
     service.resolve_for_alert_report.assert_awaited_once_with(
-        "La couleur des choses", "Panchaud"
+        "La couleur des choses", "Panchaud", publisher_hint=None
     )
     assert resultat.status == BookSearchStatus.FOUND
 

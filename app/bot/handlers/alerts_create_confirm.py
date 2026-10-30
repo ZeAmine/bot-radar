@@ -149,7 +149,9 @@ async def select_alert_creation_edition(
     # Un clic ne confirme pas un ISBN : repasse par la politique d'autorité.
     title = str(data.get("name") or "").strip()
     try:
-        confirmed = await BookSearchUseCase().search_by_isbn(isbn13, expected_title=title or None)
+        confirmed = await BookSearchUseCase(declared_source=True).search_by_isbn(
+            isbn13, expected_title=title or None
+        )
     except Exception as exc:
         logger.debug("Revalidation d'édition impossible pour %s : %s", isbn13, exc)
         await callback.answer(
@@ -230,7 +232,9 @@ async def select_alert_creation_work(
 
     # Lever l'ambiguïté n'est pas confirmer : repasse par la politique d'autorité.
     try:
-        confirmed = await BookSearchUseCase().search_by_isbn(isbn13, expected_title=title or None)
+        confirmed = await BookSearchUseCase(declared_source=True).search_by_isbn(
+            isbn13, expected_title=title or None
+        )
     except Exception as exc:
         logger.debug("Revalidation d'œuvre impossible pour %s : %s", isbn13, exc)
         await callback.answer(

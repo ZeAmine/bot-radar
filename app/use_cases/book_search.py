@@ -50,8 +50,10 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from app.domain.enums import BookSearchStatus, ProviderQueryStatus
+from app.providers.nouveautes_editeurs import NouveautesEditeursClient
 from app.services.book_metadata_service import (
     AUTORITE_BNF,
+    DECLARED_SOURCE_TIMEOUT_SECONDS,
     TITLE_SIMILARITY_MIN,
     BibliographicReport,
     BookMetadata,
@@ -62,6 +64,7 @@ from app.services.book_metadata_service import (
     SeriesVolume,
     ambiguity_note,
     consulted_authorities,
+    decisive_failures,
     failed_authorities,
     matches_requested_volume,
     provenance_note,
@@ -152,6 +155,7 @@ class BookSearchResult:
     series_truncated: bool = False
     series_total: int | None = None
     series_inconsistent: bool = False
+    declared_refusal: str | None = None
 
     def __post_init__(self) -> None:
         if (self.reference is None) == (self.status == BookSearchStatus.FOUND):
@@ -365,7 +369,7 @@ def result_from_report(
     failed = failed_authorities(attempts)
     resolution = report.resolution
     if resolution is None:
-        if failed:
+        if decisive_failures(attempts):
             return BookSearchResult(
                 status=BookSearchStatus.UNAVAILABLE,
                 consulted=consulted,
@@ -376,7 +380,9 @@ def result_from_report(
         return BookSearchResult(
             status=BookSearchStatus.NOT_FOUND,
             consulted=consulted,
+            unavailable=failed,
             attempts=attempts,
+            declared_refusal=report.declared_refusal,
         )
     base = result_from_resolution(resolution, query_title)
     if (
@@ -423,7 +429,7 @@ def result_from_verdict_report(
         base.status == BookSearchStatus.NOT_FOUND
         and not base.works
         and base.conflict is None
-        and failed
+        and decisive_failures(report.attempts)
     ):
         return replace(
             base,
@@ -438,6 +444,7 @@ def result_from_verdict_report(
         consulted=consulted,
         unavailable=failed,
         attempts=report.attempts,
+        declared_refusal=report.declared_refusal,
     )
 
 
@@ -517,15 +524,40 @@ class BookSearchUseCase:
     LLM, ne pose aucun cache, et n'est branché sur aucun chemin d'alerte.
     """
 
-    def __init__(self, service: BookMetadataService | None = None) -> None:
-        self._service = service or BookMetadataService()
+    def __init__(
+        self, service: BookMetadataService | None = None, *, declared_source: bool = False
+    ) -> None:
+        """Le contrat de recherche, et l'accès éventuel à une source **déclarée**.
+
+        `declared_source` n'est ouvert qu'à l'ajout d'un livre : quand le catalogue ne
+        connaît pas encore une parution récente, les annonces de la BnF peuvent nommer
+        l'ouvrage. La veille marché, elle, garde son budget HTTP — confirmer une annonce
+        Vinted ne justifie pas trois requêtes de plus par annonce non confirmée.
+        """
+        self._service = service or BookMetadataService(
+            declared_source_client=(
+                NouveautesEditeursClient(
+                    timeout_seconds=DECLARED_SOURCE_TIMEOUT_SECONDS
+                )
+                if declared_source
+                else None
+            )
+        )
 
     async def search_by_title(
         self, title: str, author_hint: str | None = None, *,
         include_series_catalogue: bool = False,
+        publisher_hint: str | None = None,
     ) -> BookSearchResult:
-        """Recherche par titre (+ indice d'auteur), adaptée au contrat."""
-        report = await self._service.resolve_for_alert_report(title, author_hint)
+        """Recherche par titre (+ indices d'auteur et d'éditeur), adaptée au contrat.
+
+        `publisher_hint` ne sert qu'à vérifier une déclaration d'éditeur : fourni par
+        l'usager, il devient un motif de refus nommé quand la déclaration nomme une
+        autre maison, et il ne change rien aux requêtes d'autorité.
+        """
+        report = await self._service.resolve_for_alert_report(
+            title, author_hint, publisher_hint=publisher_hint
+        )
         result = result_from_report(report, query_title=title)
         if result.is_series and include_series_catalogue:
             catalogue = await self._service.lookup_series_notices(

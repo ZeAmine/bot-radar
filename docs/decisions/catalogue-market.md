@@ -301,3 +301,38 @@ Date : 2026-10-08 · Statut : **accepté**. Première déclaration : `3c742f3311
   preuves de livraisons sont conservés. Aucun déploiement n'est autorisé par cet ADR.
   Les preuves de consolidation antérieures gardent leur révision et leur portée,
   mais ne prescrivent plus de double présentation dans les messages.
+
+<a id="adr-055"></a>
+
+## ADR-055 : Une parution déclarée par l'éditeur peut nommer un livre que le catalogue ignore encore
+
+Date : 2026-10-30 · Statut : **accepté**. Première déclaration : `d368a83`.
+
+- Contexte : Un livre paru en France il y a quelques jours est déclaré par son éditeur
+  avant d'être catalogué. `add` refusait alors une identité que l'éditeur nommait
+  déjà, faute de notice BNF, OpenLibrary ou Google Books.
+- Décision et raison : Dernier recours des seuls parcours d'ajout, les
+  [Nouveautés Éditeurs de la BnF](../../app/providers/nouveautes_editeurs.py) —
+  site public des annonces de parution — sont interrogés **après** un silence de la
+  BNF puis d'OpenLibrary et de Google Books, et **jamais** quand la BNF confirme.
+  Une déclaration n'est admise que sur un ISBN-13 valide et égal au code demandé,
+  une date de parution passée, un titre au seuil de similarité du service, un auteur
+  et un éditeur cohérents avec ceux fournis ; tout doute résiduel refuse, avec son
+  motif nommé.
+- Conséquences : La BNF reste la seule autorité d'identité. Une identité déclarée est
+  visible comme telle — provenance et état de dépôt légal dans la réponse, jamais une
+  confirmation de catalogue. Une parution future est refusée comme annonce
+  (« parution annoncée, pas encore parue »), pas comme absence. Une source
+  injoignable, en délai dépassé ou dont la page a changé laisse le comportement
+  actuel intact : le motif de refus existant, et l'échec nommé dans le rapport.
+  La veille marché garde son budget HTTP ; cote et Chasse-aux-livres ne changent pas.
+- Conditions d'usage de la source : ses conditions réservent la réutilisation
+  substantielle de la base à une autorisation préalable de la BnF. L'usage ici est
+  ponctuel — une recherche bornée par livre ajouté, trois requêtes au plus, session
+  neuve, sans pagination, sans moissonnage et sans flux RSS.
+- Preuve et limites : [évaluation du 30 octobre](../evaluations/nouveautes-editeurs-2026-10-30.md),
+  45 déclarations dont 40 dans la fenêtre de 90 jours, 170 requêtes publiques :
+  5 des 38 déclarations portant un ISBN-13 étaient présentes au SRU (13 %), donc
+  87 % des déclarations récentes échappent au catalogue par ISBN. La mesure ne
+  prouve pas la couverture générale : un ISBN absent n'est pas une œuvre absente,
+  et l'échantillon penche vers les petits éditeurs.
