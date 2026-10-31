@@ -41,6 +41,10 @@ Les règles du contrat, toutes tenues par ce module :
    réécrite pour entrer dans ce modèle.
 5. Rien n'est écrit hors de ``record_component`` et de
    ``app.services.administrative_deferral``.
+6. **La péremption s'affiche.** Au-delà du rythme de la zone plus la tolérance de
+   48 h, une cote ne se présente plus comme un prix : elle dit son âge et la date
+   de son dernier relevé. Ce module fournit le fait (``cote_display``), la phrase
+   reste dans ``app.bot.labels`` — un seul endroit écrit ce que lit l'utilisateur.
 
 Le rythme de la cote dépend de la **zone** du livre, recalculée à chaque relevé
 de cote : c'est le voisinage du plafond de l'alerte qui justifie la fréquence,
@@ -60,6 +64,7 @@ jamais dans une collecte de routine.
 """
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
@@ -195,7 +200,9 @@ def component_success_at(
         found = cache.last_successful_collection_at
     else:
         found = cache.historical_checked_at
-    return aware(found) if found is not None else None
+    # Une valeur qui n'est pas une date n'en est pas une : elle ne devient pas un
+    # âge, et l'affichage retombe sur « jamais relevé » au lieu de calculer faux.
+    return aware(found) if isinstance(found, datetime) else None
 
 
 def cote_zone_of(cache: BookMarketCache | None) -> str:
@@ -351,6 +358,37 @@ def fresh_cote_cents(cache: BookMarketCache | None, now: datetime) -> int | None
         return None
     price = cache.lowest_delivered_price_cents
     return price if isinstance(price, int) and not isinstance(price, bool) and price > 0 else None
+
+
+@dataclass(frozen=True)
+class CoteDisplay:
+    """Ce qu'un écran peut dire d'une cote : son montant, et l'âge qui va avec.
+
+    Les deux voyagent ensemble parce qu'ils ne se décident pas séparément : un
+    montant périmé ne s'affiche pas, et un âge sans montant n'a de sens que
+    rapporté à celui qu'il périme. L'écran ne recalcule ni cadence ni tolérance ;
+    il reçoit le fait et choisit sa phrase, qui vit dans ``app.bot.labels``.
+    """
+
+    cents: int | None
+    age: timedelta | None
+    since: datetime | None
+    stale: bool
+
+
+def cote_display(cache: BookMarketCache | None, now: datetime | None = None) -> CoteDisplay:
+    """Le montant de la cote et son âge, lus une seule fois pour tout l'affichage."""
+    moment = now or datetime.now(UTC)
+    price = cache.lowest_delivered_price_cents if cache is not None else None
+    cents = (
+        price if isinstance(price, int) and not isinstance(price, bool) and price > 0 else None
+    )
+    return CoteDisplay(
+        cents=cents,
+        age=cote_age(cache, moment),
+        since=cote_success_at(cache),
+        stale=cote_is_stale(cache, moment),
+    )
 
 
 # --------------------------------------------------------------------------- #

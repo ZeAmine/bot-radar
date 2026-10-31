@@ -30,7 +30,11 @@ def test_market_card_dates_the_last_successful_check_at_the_bottom():
     assert "<b>Prix bas :</b> 22,00 €" in card
     assert "(06/10" not in card
     assert "relevé(s) conservé(s)" not in card
-    assert "<b>Dernière offre connue :</b> 22,00 €" in card
+    # Contrat : une cote plus vieille que son rythme + 48 h ne s'affiche plus comme un
+    # prix mais comme son âge daté — le montant retenu n'est donc plus écrit en clair.
+    assert "<b>Dernière offre connue :</b> non vérifié depuis" in card
+    assert "(relevé du 7 octobre" in card
+    assert "<b>Dernière offre connue :</b> 22,00 €" not in card
     assert "Dernière MAJ : 07/10 à 17:04" in card
     assert card.count("07/10 à 17:04") == 1
     assert "Dernière tentative" not in card
@@ -49,7 +53,10 @@ def test_failed_refresh_keeps_the_last_successful_check_and_retained_prices():
     assert "Actualisation" not in card
     assert "Dernière MAJ : 07/10 à 17:04" in card
     assert "08/10 à 17:04" not in card
-    assert "<b>Dernière offre connue :</b> 22,00 €" in card
+    # Contrat : le prix retenu n'est jamais effacé ; périmé, il dit son âge au lieu
+    # de son montant, et c'est la dernière offre connue qui reste nommée.
+    assert "<b>Dernière offre connue :</b> non vérifié depuis" in card
+    assert "<b>Dernière offre connue :</b> 22,00 €" not in card
     assert "Meilleure offre actuelle" not in card
 
 

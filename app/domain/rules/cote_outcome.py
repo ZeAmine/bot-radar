@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Literal
 
 # États d'offre acceptés pour une cote de création, en codes du référentiel.
@@ -82,45 +83,83 @@ class OffreCote:
 
 
 @dataclass(frozen=True)
+class Releve:
+    """L'âge d'un relevé de cote : ce qui décide si son prix s'affiche encore.
+
+    L'âge ne change jamais l'état de la décision — une cote trouvée reste une cote
+    trouvée —, il change la **forme** de sa ligne : montant tant qu'il tient son
+    rythme, âge daté ensuite. Porter l'âge avec le prix évite qu'un écran ait à le
+    recalculer, donc à se tromper seul.
+    """
+
+    age: timedelta | None = None
+    le: datetime | None = None
+    perimee: bool = False
+
+
+@dataclass(frozen=True)
+class DerniereOffre:
+    """Un prix retenu par une collecte précédente, et l'âge qui décide de son rendu.
+
+    Le montant seul ne dit pas s'il peut encore s'afficher comme un prix : ce qui
+    le rend citable ou périmé est son âge. Les deux voyagent donc ensemble, pour
+    qu'aucun écran ne cite un montant dont il ignore la fraîcheur.
+    """
+
+    cents: int
+    releve: Releve = Releve()
+
+
+@dataclass(frozen=True)
 class CoteOutcome:
     """Résultat de la sélection, état nommé et offre retenue s'il y en a une.
 
-    `derniere_offre_cents` n'est pas une cote du jour : c'est le prix retenu lors
-    d'une collecte précédente, cité quand celle du jour n'a rien donné. Le taire
+    `derniere_offre` n'est pas une cote du jour : c'est le prix retenu lors d'une
+    collecte précédente, cité quand celle du jour n'a rien donné. Le taire
     effacerait un prix connu ; le présenter comme l'offre du jour mentirait sur sa
-    fraîcheur. Il accompagne donc l'absence, il ne la remplace pas.
+    fraîcheur. Il accompagne donc l'absence, il ne la remplace pas — et il porte
+    son âge, sans quoi il ne pourrait pas dire qu'il a péri.
     """
 
     state: CoteState
     offre: OffreCote | None = None
     offres_examinees: int = 0
     moins_chere_ecartee_cents: int | None = None
-    derniere_offre_cents: int | None = None
+    derniere_offre: DerniereOffre | None = None
+    releve: Releve | None = None
 
     @property
     def found(self) -> bool:
         return self.state == "cote_trouvee"
+
+    @property
+    def derniere_offre_cents(self) -> int | None:
+        """Le montant retenu, sans son âge — pour les décisions, pas pour l'affichage."""
+        return self.derniere_offre.cents if self.derniere_offre is not None else None
 
 
 def select_cote_offer(
     offres: Sequence[OffreCote] | None,
     etats_acceptes: Iterable[str] = ETATS_COTE_ACCEPTES,
     prix_max: int | None = None,
-    derniere_offre_cents: int | None = None,
+    derniere_offre: DerniereOffre | None = None,
+    releve: Releve | None = None,
 ) -> CoteOutcome:
     """Retient la moins chère des offres admissibles, ou nomme pourquoi il n'y en a pas.
 
     `offres is None` distingue l'échec de collecte d'une collecte vide : une source
     muette n'est pas une absence d'offre, et les confondre rejouerait le mensonge
     que ce module corrige. `prix_max` n'est lu que pour filtrer, jamais réécrit.
-    `derniere_offre_cents` ne sert qu'à documenter l'absence : une cote trouvée ne
-    le cite jamais, puisqu'elle a sa propre offre.
+    `derniere_offre` ne sert qu'à documenter l'absence : une cote trouvée ne le
+    cite jamais, puisqu'elle a sa propre offre. `releve` est l'âge de la cote
+    rendue : absent quand elle vient d'être collectée, il fait basculer sa ligne
+    vers la phrase d'âge quand le relevé est trop vieux pour être garanti.
     """
     if offres is None:
-        return CoteOutcome("erreur_recuperation", derniere_offre_cents=derniere_offre_cents)
+        return CoteOutcome("erreur_recuperation", derniere_offre=derniere_offre, releve=releve)
     examined = tuple(offres)
     if not examined:
-        return CoteOutcome("aucune_offre", derniere_offre_cents=derniere_offre_cents)
+        return CoteOutcome("aucune_offre", derniere_offre=derniere_offre, releve=releve)
     accepted_states = frozenset(etats_acceptes)
     admissible = sorted(
         (offre for offre in examined
@@ -132,7 +171,8 @@ def select_cote_offer(
             "offres_ecartees_par_les_filtres",
             offres_examinees=len(examined),
             moins_chere_ecartee_cents=_cheapest_cents(examined),
-            derniere_offre_cents=derniere_offre_cents,
+            derniere_offre=derniere_offre,
+            releve=releve,
         )
     cheapest = admissible[0]
     if prix_max is not None and cheapest.total_cents > prix_max:
@@ -140,9 +180,12 @@ def select_cote_offer(
             "offres_ecartees_par_les_filtres",
             offres_examinees=len(examined),
             moins_chere_ecartee_cents=cheapest.total_cents,
-            derniere_offre_cents=derniere_offre_cents,
+            derniere_offre=derniere_offre,
+            releve=releve,
         )
-    return CoteOutcome("cote_trouvee", offre=cheapest, offres_examinees=len(examined))
+    return CoteOutcome(
+        "cote_trouvee", offre=cheapest, offres_examinees=len(examined), releve=releve,
+    )
 
 
 def _state_accepted(offre: OffreCote, accepted_states: frozenset[str]) -> bool:
