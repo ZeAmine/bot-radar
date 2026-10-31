@@ -127,7 +127,7 @@ async def test_chasse_missing_search_payload_is_a_failure():
 
 
 @pytest.mark.asyncio
-async def test_cancelled_delivery_releases_occurrence_without_acknowledging_incident(monkeypatch):
+async def test_cancelled_delivery_keeps_the_fact_undelivered(monkeypatch, market_clock):
     from app.providers.base import CollectionAttempt
     from app.services import market_health
     from tests.unit.test_refresh_notifications import result
@@ -138,13 +138,21 @@ async def test_cancelled_delivery_releases_occurrence_without_acknowledging_inci
     monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
     send = AsyncMock(side_effect=[asyncio.CancelledError, True])
     monkeypatch.setattr(market_health, "notify_admins", send)
-    report = result(attempts=[CollectionAttempt("source", status="failed", reason="timeout")])
+    failure = CollectionAttempt("source", status="failed", reason="timeout")
+
+    async def observe():
+        market_clock.advance(30)
+        await market_health.notify_refresh_result(result(attempts=[failure]))
+
+    await observe()
+    await observe()
     with pytest.raises(asyncio.CancelledError):
-        await market_health.notify_refresh_result(report)
-    assert not market_health._incident_states
-    await market_health.notify_refresh_result(report)
+        await observe()
+    assert "source/current" in market_health._incident_pending
+    await observe()
     assert send.await_count == 2
-    assert "Nouvel incident" in send.call_args.args[0]
+    assert "Nouvel incident : source/current" in send.call_args.args[0]
+    assert market_health._incident_pending == {}
 
 
 @pytest.mark.asyncio

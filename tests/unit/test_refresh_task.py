@@ -261,8 +261,17 @@ async def test_refresh_processes_several_books_in_one_wave():
         Book(id=uuid.uuid4(), title=f"Livre {index}", normalized_title=f"livre {index}")
         for index in range(3)
     ]
+    appels = {"n": 0}
+
+    async def une_collection_sur_trois_echoue(*_args, **_kwargs):
+        rang = appels["n"] % 3
+        appels["n"] += 1
+        if rang == 1:
+            raise RuntimeError("timeout")
+        return []
+
     mock_registry = MagicMock()
-    mock_registry.fetch_all_offers = AsyncMock(side_effect=[[], RuntimeError("timeout"), []])
+    mock_registry.fetch_all_offers = AsyncMock(side_effect=une_collection_sur_trois_echoue)
     mock_registry.select_best_offer = MagicMock(return_value=None)
 
     # Sans ce garde-fou, l'alerte part pour de vrai à chaque pytest : le bot local
@@ -297,16 +306,21 @@ async def test_refresh_processes_several_books_in_one_wave():
             "app.services.book_market_pricing.MarketPriceRepository", lambda _s: mock_market_repo
         )
 
-        stats = await refresh_book_prices_task(
-            registry=mock_registry, session=AsyncMock(), concurrency=3
-        )
+        horloge = {"maintenant": 1_800_000_000.0}
+        mp.setattr("app.services.market_health._now_seconds", lambda: horloge["maintenant"])
+        for _ in range(3):
+            stats = await refresh_book_prices_task(
+                registry=mock_registry, session=AsyncMock(), concurrency=3
+            )
+            horloge["maintenant"] += 1800
 
     assert stats["processed"] == 3
     assert stats["errors"] == 1
     assert stats["unavailable"] == 2
 
-    # Contrat : une exception de traitement est un fait nommé, sans compteur de passe.
-    assert len(sends) == 1, "une seule vague, un seul fait à signaler"
+    # Contrat : une exception de traitement qui dure une heure est un fait nommé
+    # une fois — la première vague seule ne dit rien —, et sans compteur de passe.
+    assert len(sends) == 1
     assert "Nouvel incident : traitement" in sends[0]
     assert "Traités :" not in sends[0]
 
@@ -443,20 +457,30 @@ async def test_provider_failure_is_degraded_not_a_book_error():
         client.set = AsyncMock(return_value=fenetre_ouverte)
         mp.setattr("app.services.market_health.get_redis_client", lambda: client)
         mp.setattr("app.tasks.refresh_book_prices.asyncio.sleep", AsyncMock())
+        horloge["maintenant"] += 1800
         return await refresh_book_prices_task(
             registry=registry, session=AsyncMock(), batch_size=8
         )
 
+    horloge = {"maintenant": 1_800_000_000.0}
     with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.services.market_health._now_seconds", lambda: horloge["maintenant"])
         premiere = await _passe(mp, fenetre_ouverte=True)
         seconde = await _passe(mp, fenetre_ouverte=False)
+        troisieme = await _passe(mp, fenetre_ouverte=False)
+        quatrieme = await _passe(mp, fenetre_ouverte=False)
 
     assert premiere["errors"] == 0
     assert premiere["degraded"] == 8
     assert seconde["errors"] == 0
+    assert troisieme["errors"] == 0
+    assert quatrieme["errors"] == 0
     # Contrat : la source muette est nommée une fois, et rien d'autre ne s'ajoute.
     assert len(sends) == 1
-    assert sends[0] == "Nouvel incident : chasse_aux_livres/current"
+    assert sends[0].startswith(
+        "Nouvel incident : chasse_aux_livres/current — en échec depuis "
+    )
+    assert "(échec non classé)" in sends[0]
 
 
 class _CacheEcrit:
