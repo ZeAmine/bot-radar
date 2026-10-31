@@ -654,7 +654,6 @@ def suite(
                 "scripts/chasse_prices.py",
                 "scripts/chasse_release_backup.py",
                 "scripts/exercise_chasse_release.py",
-                "scripts/deploy.py",
             ],
         ):
             out, err, code = api.run(["--no-incremental", "--explicit-package-bases", *targets])

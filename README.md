@@ -113,7 +113,7 @@ contrôle Ruff, mypy et pytest, plus les tests d'intégration PostgreSQL.
 | `make dev` / `make up` | Démarre application/services ; pas une vérification isolée |
 | `make migrate` | Modifie la base cible |
 | `make pr` / `make verify` | Livraison Git et contrôles GitHub : réseau et mandat |
-| `make deploy` | Production : lire obligatoirement la procédure ci-dessous |
+| `make deploy` | Production : même script que la chaîne GitHub Actions ; lire obligatoirement la procédure ci-dessous |
 
 Pour un agent sans services/secrets, utiliser les recettes décrites dans
 [le workflow](docs/agent-workflow.md). Un résultat est attribué à la révision,
@@ -122,7 +122,8 @@ au diff et à la sélection exécutée, jamais à un nombre de tests permanent.
 ## Opérations et diagnostics
 
 - [Déploiement et interruption](docs/operations/deployment.md) : procédure canonique,
-  contrôles et limites ; un push ne déploie rien.
+  contrôles et limites ; un push vert sur `main` déclenche la chaîne, le même script
+  se rejoue à la main si GitHub Actions est indisponible.
 - [Préparation BD](docs/bd-preparation.md), [pause protégée](docs/pause-actions.md)
   et [retrait ISBN](docs/isbn-removal.md) : transactions, version et reprise.
 - [Notification durable](docs/notification-delivery.md) et [latence](docs/alert-latency.md) :

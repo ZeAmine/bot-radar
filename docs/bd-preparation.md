@@ -127,10 +127,12 @@ Le healthcheck reste exécuté sans contournement ; il ne contrôle actuellement
 le schéma DB. L'ancien ordre expose donc un intervalle de code incompatible avec
 la DB, même si le déploiement finit ensuite par réussir.
 
-**Correction intégrée dans `scripts/deploy.py` :** pré-vol, arrêt confirmé de l'app,
-synchronisation, construction de l'image cible sans démarrer l'application,
-migration ponctuelle utilisant explicitement cette image, puis démarrage et attente du vrai healthcheck,
-vérification stricte, notification. Exemple des étapes intermédiaires :
+**Correction intégrée à l'époque dans `scripts/deploy.py`, déployeur retiré depuis :**
+pré-vol, arrêt confirmé de l'app, synchronisation, construction de l'image cible
+sans démarrer l'application, migration ponctuelle utilisant explicitement cette
+image, puis démarrage et attente du vrai healthcheck, vérification stricte,
+notification. Exemple des étapes intermédiaires, toujours la référence pour
+appliquer une migration :
 
 ```sh
 set -eu
@@ -148,18 +150,25 @@ docker compose up -d --no-build --pull never app
 
 Le one-shot ne lance ni scheduler ni poller et ne vise pas l'ancien conteneur.
 L'échec de construction empêche la migration ; l'échec de migration ou de lecture
-de révision arrête la chaîne avant démarrage cible. Aucun contrôle de santé ou de
-révision n'est retiré. La [procédure de déploiement](operations/deployment.md) décrit ce même ordre. L'échec d'arrêt ou de sa
-confirmation empêche toute synchronisation ; l'échec de synchronisation empêche
-le build. L’ancienne application est arrêtée avant synchronisation. Le code est
-embarqué dans l’image cible, sans bind mount `app/` ou `scripts/`.
-L'interruption couvre synchronisation, construction, migration et redémarrage
-jusqu'à la santé réelle, sans durée garantie. Un échec après arrêt peut laisser
-l'app arrêtée et les fichiers runtime partiellement synchronisés. Un échec de santé ou de vérification
-après démarrage laisse la cible potentiellement en cours : la procédure s'arrête
-sans arrêt ou restauration automatique. Les tests de
-procédure exécutent les scripts shell avec Docker doublé ; ils ne constituent
-pas un déploiement éprouvé sur le Compose de production.
+de révision arrête la séquence avant démarrage cible.
+
+Ce déployeur n'existe plus : la [procédure de déploiement](operations/deployment.md)
+**n'applique aucune migration**. Un commit qui ajoute ou retire une révision dans
+`alembic/versions` est **refusé** avant toute copie, et la migration ci-dessus
+reste une opération autorisée séparément, appliquée puis vérifiée avant de relancer
+le déploiement, qui l'acquitte par `DEPLOY_SCHEMA_ACK_TARGET=<sha>` pour ce seul
+commit. Sans cet acquittement, refuser est le comportement attendu : servir du code
+qui attend une révision absente est exactement ce que la correction ci-dessus
+évitait.
+
+Le code est embarqué dans l’image cible, sans bind mount `app/` ou `scripts/`.
+L'interruption couvre la construction et la recréation du conteneur `app` jusqu'à
+la santé réelle, sans durée garantie. Un échec de construction ou de copie laisse
+l'application précédente en service. Un échec de santé après recréation déclenche
+le retour à l'image en marche d'avant ; un échec de vérification laisse la cible
+potentiellement en cours, et la séquence s'arrête sans autre restauration que ce
+retour. Les tests de procédure exécutent la séquence avec `ssh` et `rsync` doublés ;
+ils ne constituent pas un déploiement éprouvé sur le Compose de production.
 
 Après un échec, le bilan opérateur doit relever l'état réel du conteneur, les
 empreintes du code et la révision effective (one-shot d'une image compatible si

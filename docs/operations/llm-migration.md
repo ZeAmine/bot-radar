@@ -975,7 +975,7 @@ Ils préexistent au diff. Aucune dépendance ni configuration hors IA n'a été 
 pour les masquer. Les 124 tests ignorés restent explicitement non attestés.
 
 Le manifeste historique généré `docs/consolidation-nodeids.json` n'est pas un
-inventaire à jour de cette base : 18 références n'y correspondent déjà plus
+inventaire à jour de cette base : 18 références n'y correspondaient déjà plus à cette date
 (13 fonctions absentes de HEAD, 5 anciens identifiants de paramétrage). Aucun de ces
 écarts n'est introduit ici ; aucun fichier concerné par ces changements historiques
 n'est modifié pour les corriger. Le manifeste n'est ni réécrit ni présenté comme

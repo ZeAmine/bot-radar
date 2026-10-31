@@ -22,7 +22,7 @@ help:
 	@echo "  make check-history       Rejouer Ruff et Pytest sur chaque commit (Mypy sur option)"
 	@echo "  make preflight           Vérifier le VPS avant une synchronisation"
 	@echo "  make verify-deploy       Revérifier le VPS après une synchronisation"
-	@echo "  make deploy              Déployer (pré-vol → arrêt confirmé → synchro → build → migration → démarrage → contrôle)"
+	@echo "  make deploy              Déployer (même script que la chaîne GitHub Actions ; DEPLOY_ARGS=--dry-run pour lire la séquence)"
 	@echo "  make pr                  Branche, commit, push et PR (MESSAGE=… ou MESSAGE_FILE=… TITLE=… [BRANCH=…] [STAGE=…])"
 	@echo "  make verify              Attendre la CI verte (contrôles locaux selon AGENTS.md)"
 	@echo "  make format              Formater le code avec Ruff"
@@ -69,16 +69,17 @@ check-history:
 	$(PYTHON) scripts/check_history.py $(if $(BASE),--base $(BASE),) \
 		$(if $(STEPS),--steps $(STEPS),) $(if $(MAX_COMMITS),--max-commits $(MAX_COMMITS),)
 
-# preflight/verify-deploy : encadrent la sync rsync pour rendre l'écart visible (push ne déploie rien).
+# preflight/verify-deploy : contrôles d'état du VPS, distincts du déploiement.
 preflight:
 	$(PYTHON) scripts/preflight_deploy.py
 
 verify-deploy:
 	$(PYTHON) scripts/preflight_deploy.py --post-sync
 
-# deploy : procédure complète dans l'ordre, s'arrêtant au premier échec ; reprise manuelle possible.
+# deploy : le propriétaire unique de la séquence est deploy/deploy.sh, appelé
+# ici et par .github/workflows/deploy.yml ; le repli manuel ne diverge pas.
 deploy:
-	$(PYTHON) scripts/deploy.py $(if $(DEPLOY_ARGS),$(DEPLOY_ARGS),)
+	./deploy/deploy.sh $(if $(DEPLOY_ARGS),$(DEPLOY_ARGS),)
 
 # pr : branche puis PR, gestes enchaînés jusqu'au premier échec (push direct sur main refusé).
 # Le commit porte sur STAGE (pas git add -A) pour ne pas balayer le travail d'autres tâches.
