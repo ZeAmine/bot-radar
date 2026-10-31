@@ -14,7 +14,7 @@ from app.services.book_market_pricing import (
     _reserve_next_refresh,
     persist_market_result,
 )
-from app.services.market_refresh_policy import aware, next_refresh_slot
+from app.services.market_refresh_policy import aware
 from tests.database import postgres_replayed_database
 
 pytestmark = [
@@ -64,9 +64,16 @@ async def cache_for(session, book_id):
     )
 
 
-async def test_concurrent_independent_reservations_keep_capacity_until_commit():
+async def test_concurrent_independent_reservations_serialize_until_commit():
+    """Deux réservations concurrentes se sérialisent ; la seconde attend le commit.
+
+    L'ancienne version vérifiait que huit livres tenaient dans un créneau commun.
+    Il n'y a plus de créneaux à remplir : ce qui reste à prouver est la réservation
+    elle-même — la session qui la détient garde le verrou jusqu'à la fin de sa
+    transaction, et elle ne réécrit l'échéance d'aucun autre livre.
+    """
     now = datetime.now(UTC)
-    slot = next_refresh_slot(now) + timedelta(minutes=30)
+    slot = (now + timedelta(minutes=30)).replace(microsecond=0)
     async with postgres_replayed_database() as db:
         books = await seed(db.session, [slot] * 7 + [None, None], due_at=slot)
         first_ready = asyncio.Event()
@@ -91,6 +98,9 @@ async def test_concurrent_independent_reservations_keep_capacity_until_commit():
         try:
             await asyncio.wait_for(first_ready.wait(), timeout=3)
             await asyncio.wait({participants[1]}, timeout=0.25)
+            assert not participants[1].done(), (
+                "la seconde réservation doit attendre le commit de la première"
+            )
             release_first.set()
             await asyncio.wait_for(asyncio.gather(*participants), timeout=5)
         finally:
@@ -104,9 +114,10 @@ async def test_concurrent_independent_reservations_keep_capacity_until_commit():
         async with db.maker() as reader:
             slots = list((await reader.scalars(select(BookMarketCache.next_refresh_at))).all())
             assert all(value is not None for value in slots)
+            # Les sept livres déjà datés gardent leur échéance : réserver ne
+            # redistribue pas une file que personne n'a demandée.
             occupancy = Counter(aware(value) for value in slots)
-            assert max(occupancy.values()) <= 8, dict(occupancy)
-            assert occupancy[slot] == 8
+            assert occupancy[slot] >= 7, dict(occupancy)
 
 
 @pytest.mark.parametrize("report_active", [False, True], ids=["expired", "active"])
@@ -149,8 +160,11 @@ async def test_history_only_after_administrative_report_keeps_a_valid_reservatio
             if report_active:
                 assert aware(written.next_refresh_at) == retry
             else:
+                # Plus de grille : quand le report a expiré, l'échéance repart du
+                # modèle de fraîcheur — la cote est due depuis ``retry`` — et non
+                # d'un créneau horaire à retrouver.
                 assert aware(written.next_refresh_at) > now
-                assert written.next_refresh_at.minute in {15, 45}
+                assert aware(written.next_refresh_at) != retry
 
 
 async def test_targeted_reservation_preserves_another_books_administrative_deadline():

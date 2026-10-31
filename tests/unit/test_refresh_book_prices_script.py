@@ -55,13 +55,13 @@ async def test_un_livre_absent_du_catalogue_n_est_pas_collecte(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_la_relance_demande_les_deux_composantes_sans_cache_charge(monkeypatch):
-    """La garde locale de fraîcheur est écartée en ne chargeant pas le cache.
+async def test_la_relance_demande_les_deux_composantes(monkeypatch):
+    """La relance demande la cote et l'historique, sans lire les échéances.
 
-    `fetch_offers_for_book` ne demande que les composantes échues : c'est le cache
-    du livre qui le dit. La relance d'exploitation part donc sans cache, comme une
-    création — sinon elle n'interrogerait rien et rapporterait un silence qui
-    n'est que le sien.
+    Une collecte de routine ne demande qu'une composante et s'arrête à une
+    échéance ; ce script existe pour un état qu'on juge faux, il doit donc forcer
+    les deux — sinon il n'interrogerait rien et rapporterait un silence qui n'est
+    que le sien.
     """
     from types import SimpleNamespace
 
@@ -85,14 +85,14 @@ async def test_la_relance_demande_les_deux_composantes_sans_cache_charge(monkeyp
         livre.market_cache = SimpleNamespace(collection_status="partial")
         return livre
 
-    async def collecte(_session, book, **_kwargs):
-        vus["cache_charge"] = "market_cache" in book.__dict__
+    async def collecte(_session, _book, **kwargs):
+        vus["portee"] = kwargs.get("scope")
         return cache
 
     monkeypatch.setattr(BookRepository, "get_by_isbn13", livre_cote)
     monkeypatch.setattr("app.services.book_market_pricing.price_book", collecte)
     result = await refresh_book_prices._relance("9782857085737")
-    assert vus["cache_charge"] is False
+    assert vus["portee"] == "forced"
     assert result["relance"] == "refus_source"
 
 

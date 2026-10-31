@@ -77,10 +77,13 @@ async def test_legacy_state_does_not_neutralize_scheduled_operations(tmp_path, m
     monkeypatch.setattr(module, 'refresh_book_prices_task', refresh)
     scheduler = module.create_scheduler()
     await scheduler.get_job('recover_notifications').func()
-    await scheduler.get_job('refresh_prices_incremental').func()
+    await scheduler.get_job('refresh_prices').func()
     recover.assert_awaited_once()
     refresh.assert_awaited_once()
-    assert refresh.call_args.kwargs['batch_size'] == 8
+    # Une seule passe : aucun mode à transmettre, et aucun lot imposé d'avance —
+    # le nombre de livres est la capacité libre lue au régulateur.
+    assert 'incremental' not in refresh.call_args.kwargs
+    assert refresh.call_args.kwargs.get('batch_size') is None
     for job in scheduler.get_jobs():
         assert job.max_instances == 1
         assert job.coalesce is True

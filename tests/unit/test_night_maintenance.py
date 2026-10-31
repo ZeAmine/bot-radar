@@ -109,9 +109,11 @@ async def test_a_lot_uses_the_configured_batch_the_long_pauses_and_a_bounded_bud
         stats = await run_night_book_maintenance()
 
     assert stats == STATS
+    # Le lot de nuit est un tour de zone froide, pas une passe d'un autre mode :
+    # il ne transmet plus « incremental » mais restreint la sélection au froid.
     pass_task.assert_awaited_once_with(
-        incremental=True,
         batch_size=4,
+        zones=("cold",),
         max_duration_seconds=3600.0 - NIGHT_MAINTENANCE_END_MARGIN_SECONDS,
         job_id="night_book_maintenance",
         pause_range=NIGHT_MAINTENANCE_PAUSE_RANGE,
@@ -198,7 +200,7 @@ async def test_a_restart_in_the_middle_of_the_window_keeps_the_reservations():
         first = await _linked_book(session, user, category, title="Premier")
         second = await _linked_book(session, user, category, title="Second")
         await session.commit()
-        await BookRepository(session).plan_price_refreshes(now=now, capacity=8)
+        await BookRepository(session).plan_price_refreshes(now=now)
         await session.commit()
 
         async with database.maker() as restarted:
@@ -224,7 +226,7 @@ async def test_night_lots_rotate_through_the_whole_population_without_repeating(
         seen: set = set()
         for lot in range(3):
             planned_at = now + timedelta(minutes=31 * lot)
-            await repo.plan_price_refreshes(now=planned_at, capacity=5)
+            await repo.plan_price_refreshes(now=planned_at)
             selected = await repo.get_books_needing_price_refresh(
                 limit=5, now=planned_at + timedelta(minutes=31),
             )
@@ -260,14 +262,14 @@ async def test_a_known_book_is_not_recollected_after_a_restart_while_still_fresh
         cache.source_history = {"price_cents": 900, "condition": "Très bon état +"}
         await session.commit()
 
-        await BookRepository(session).plan_price_refreshes(now=now, capacity=10)
+        await BookRepository(session).plan_price_refreshes(now=now)
         assert await BookRepository(session).get_books_needing_price_refresh(
             limit=10, now=now,
         ) == []
         await session.commit()
 
         async with database.maker() as restarted:
-            await BookRepository(restarted).plan_price_refreshes(now=now, capacity=10)
+            await BookRepository(restarted).plan_price_refreshes(now=now)
             assert await BookRepository(restarted).get_books_needing_price_refresh(
                 limit=10, now=now,
             ) == []

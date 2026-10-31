@@ -48,6 +48,8 @@ Six règles de présentation, valables sur **tous** les écrans :
 """
 
 import html
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from app.domain.enums import ItemCondition
 from app.domain.rules.cote_outcome import CoteOutcome, PrixBasOutcome
@@ -108,6 +110,11 @@ FIELD_SUGGESTED_EXCLUDES_CUSTOM = "Mots-clés exclus suggérés (personnalisés)
 # vide à la place.
 FIELD_COTE = "Cote"
 FIELD_PARUTION = "Parution"
+# Le prix retenu par une collecte précédente : sa forme d'affichage est la même
+# partout (fiche, récapitulatif, panneau de marché), y compris quand il a péri.
+FIELD_LAST_OFFER = "Dernière offre connue"
+# La phrase qui remplace un montant périmé, dans les mots du capitaine.
+COTE_UNVERIFIED = "Non vérifié depuis"
 # Un prix bas trouvé se lit « Prix bas » ; une absence de relevé garde son libellé
 # daté, qui dit sur quelle fenêtre elle porte.
 FIELD_LOW = "Prix bas"
@@ -121,9 +128,15 @@ def cote_line(outcome: CoteOutcome) -> str:
     renseigné » décrit une donnée absente de la fiche, jamais une source muette,
     une collecte vide ou un plafond qui a filtré — trois faits différents qui se
     réparaient autrement. Une cote trouvée se lit « 23,69 € (Momox Shop) » : le
-    montant, puis le marchand entre parenthèses.
+    montant, puis le marchand entre parenthèses. Quand le relevé qui l'a produite
+    a dépassé son rythme, la ligne perd son montant et son marchand : un prix
+    qu'on ne garantit plus ne se présente pas comme garanti, même trouvé.
     """
     if outcome.state == "cote_trouvee" and outcome.offre is not None:
+        if outcome.releve is not None and outcome.releve.perimee:
+            return cote_age_line(
+                FIELD_COTE, age=outcome.releve.age, since=outcome.releve.le,
+            )
         offer = outcome.offre
         return (
             f"<b>{FIELD_COTE} :</b> {format_cents(offer.total_cents)} "
@@ -143,13 +156,130 @@ def cote_line(outcome: CoteOutcome) -> str:
 
 def _cote_absence(explanation: str, outcome: CoteOutcome) -> str:
     """Une cote absente, et le prix déjà connu s'il y en a un — daté, pas promu."""
-    retained = outcome.derniere_offre_cents
-    if retained is None:
+    retained = outcome.derniere_offre
+    if retained is None or retained.cents is None:
         return f"<b>{FIELD_COTE} :</b> {explanation}"
-    return (
-        f"<b>{FIELD_COTE} :</b> {explanation} "
-        f"(dernière offre connue : {format_cents(retained)})"
+    aside = cote_aside(
+        cents=retained.cents,
+        stale=retained.releve.perimee,
+        age=retained.releve.age,
+        since=retained.releve.le,
     )
+    return f"<b>{FIELD_COTE} :</b> {explanation} ({aside})"
+
+
+# Les dates d'affichage se lisent à l'heure de Paris : c'est l'heure du capitaine.
+_DISPLAY_TZ: ZoneInfo = ZoneInfo("Europe/Paris")
+
+_MONTHS: tuple[str, ...] = (
+    "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+    "septembre", "octobre", "novembre", "décembre",
+)
+
+
+def format_day(moment: datetime) -> str:
+    """Un jour en toutes lettres, heure de Paris : « 7 octobre 2026 ».
+
+    Un relevé est stocké en UTC ; le lire à l'écran dans un autre fuseau que celui
+    du lecteur décalerait la date d'un jour au voisinage de minuit, et la date du
+    dernier relevé est justement ce qui rend l'âge vérifiable.
+    """
+    local = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    local = local.astimezone(_DISPLAY_TZ)
+    return f"{local.day} {_MONTHS[local.month - 1]} {local.year}"
+
+
+def format_age(age: timedelta) -> str:
+    """Un âge en toutes lettres : « moins d'un jour », « 1 jour », « 9 jours », « 4 mois »."""
+    days = int(age.total_seconds() // 86400)
+    if days < 1:
+        return "moins d'un jour"
+    if days == 1:
+        return "1 jour"
+    if days < 60:
+        return f"{days} jours"
+    months = days // 30
+    return "1 mois" if months < 2 else f"{months} mois"
+
+
+def _unverified_phrase(
+    age: timedelta | None, since: datetime | None, *, joined_by_parenthesis: bool = True,
+) -> str:
+    """« non vérifié depuis 9 jours (relevé du 7 octobre 2026) », ou ce qu'on en sait.
+
+    L'âge et la date vont ensemble : « depuis 9 jours » seul oblige à compter, une
+    date seule oblige à soustraire. Quand l'un des deux manque, la phrase dit ce
+    qu'elle sait au lieu de compléter par un chiffre inventé. La date entre
+    parenthèses sur une ligne à elle, après une virgule dans une incise déjà
+    parenthésée : deux parenthèses imbriquées ne se lisent pas.
+    """
+    if age is not None and since is not None:
+        separator = (
+            f" (relevé du {format_day(since)})" if joined_by_parenthesis
+            else f", relevé du {format_day(since)}"
+        )
+        return f"non vérifié depuis {format_age(age)}{separator}"
+    if age is not None:
+        return f"non vérifié depuis {format_age(age)}"
+    if since is not None:
+        return f"dernier relevé du {format_day(since)}"
+    return "date du dernier relevé inconnue"
+
+
+def cote_age_line(
+    heading: str,
+    *,
+    age: timedelta | None = None,
+    since: datetime | None = None,
+    qualifier: str = "",
+) -> str:
+    """La cote dite par son âge, jamais par un montant : « Non vérifié depuis 9 jours ».
+
+    Un prix qu'on ne peut plus garantir ne se présente pas comme garanti. La ligne
+    perd donc son montant *et* ce qui le qualifiait — marchand, état —, car un
+    marchand sans prix garanti n'apprend rien.
+    """
+    return f"<b>{heading}{qualifier} :</b> {_unverified_phrase(age, since)}"
+
+
+def cote_value_line(
+    heading: str,
+    cents: int | None,
+    *,
+    stale: bool = False,
+    age: timedelta | None = None,
+    since: datetime | None = None,
+    qualifier: str = "",
+    suffix: str = "",
+) -> str:
+    """La cote en montant tant qu'elle tient son rythme, sinon la phrase de son âge.
+
+    Point de passage unique de **tout** affichage de cote : le montant et sa
+    péremption ne peuvent donc pas diverger d'un écran à l'autre. ``qualifier``
+    nomme la portée (un tome, un lot) et reste collé au libellé ; ``suffix``
+    qualifie la valeur (le marchand) et disparaît avec elle.
+    """
+    if stale:
+        return cote_age_line(heading, age=age, since=since, qualifier=qualifier)
+    return f"<b>{heading}{qualifier} :</b> {format_cents(cents or 0)}{suffix}"
+
+
+def cote_aside(
+    *,
+    cents: int | None,
+    stale: bool = False,
+    age: timedelta | None = None,
+    since: datetime | None = None,
+) -> str:
+    """Une cote citée entre parenthèses, sans libellé gras : son montant ou son âge.
+
+    C'est la forme du prix retenu qui accompagne une cote absente : il documente
+    l'absence, il ne la remplace pas — donc pas de gras, et pas de montant quand
+    sa fraîcheur n'est plus garantie.
+    """
+    if stale:
+        return _unverified_phrase(age, since, joined_by_parenthesis=False)
+    return f"dernière offre connue : {format_cents(cents or 0)}"
 
 
 def low_price_line(cents: int, qualifier: str = "", *, approximate: bool = False) -> str:

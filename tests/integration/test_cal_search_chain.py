@@ -62,8 +62,10 @@ async def test_partial_source_stores_observations_and_history_without_refreshing
         books = await seed(database.session)
         book = books[0]
         old = datetime.now(UTC) - timedelta(days=8)
+        # L'historique n'a jamais été lu : il est dû au premier passage. Un
+        # historique relevé il y a huit jours, lui, attendrait son mois.
         database.session.add(BookMarketCache(
-            book_id=book.id, historical_checked_at=old,
+            book_id=book.id, historical_checked_at=None,
             lowest_delivered_price_cents=1700, comparison_status=ComparisonStatus.AVAILABLE,
             checked_at=old, last_successful_collection_at=old,
             current_offers=[{'provider_name': 'chasse_aux_livres', 'item_price_cents': 1450,
@@ -138,23 +140,27 @@ async def test_partial_source_stores_observations_and_history_without_refreshing
             URL.removeprefix('https://www.chasse-aux-livres.fr')]
 
 
-async def test_initial_zero_eligible_is_followed_by_the_reserved_batch_without_date_invention():
+async def test_un_livre_jamais_planifie_est_du_tout_de_suite_sans_inventer_de_date():
+    """Un livre sans relevé est dû immédiatement — et rien n'invente de date.
+
+    L'ancienne planification réservait un créneau : à 16:09 la sélection était vide,
+    et le premier lot partait à 16:15. Sans grille, la sélection appartient au
+    modèle de fraîcheur : un livre jamais coté est dû au moment où on le planifie.
+    L'absence de relevé, elle, ne devient ni une date ni un succès.
+    """
+    now = datetime(2026, 10, 19, 16, 9, tzinfo=UTC)
     async with postgres_replayed_database() as database:
         books = await seed(database.session)
         repo = BookRepository(database.session)
-        first = datetime(2026, 10, 19, 16, 9, tzinfo=UTC)
-        await repo.plan_price_refreshes(now=first, capacity=3)
-        assert await repo.get_books_needing_price_refresh(now=first) == []
-        scheduled = await repo.get_books_for_active_bd_alerts()
-        assert all(book.market_cache.next_refresh_at is not None for book in scheduled)
-        next_run = datetime(2026, 10, 19, 16, 15, tzinfo=UTC) + timedelta(microseconds=1)
-        await repo.plan_price_refreshes(now=next_run, capacity=3)
-        selected = await repo.get_books_needing_price_refresh(limit=3, now=next_run)
+        await repo.plan_price_refreshes(now=now)
+        selected = await repo.get_books_needing_price_refresh(limit=3, now=now)
         assert len(selected) == 3
         assert {book.id for book in selected} <= {book.id for book in books}
+        scheduled = await repo.get_books_for_active_bd_alerts()
+        assert all(book.market_cache.next_refresh_at is not None for book in scheduled)
+        assert all(aware(book.market_cache.next_refresh_at) == now for book in scheduled)
         assert all(book.market_cache.last_successful_collection_at is None for book in scheduled)
         assert all(book.market_cache.historical_checked_at is None for book in scheduled)
-        assert len({book.market_cache.next_refresh_at for book in scheduled}) >= 3
 
 
 async def test_empty_search_recovers_once_and_stores_history_independently_of_partial_offers(

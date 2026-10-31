@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -61,6 +62,7 @@ async def test_refresh_book_prices_task_success():
 
         mock_market_repo = MagicMock()
         mock_market_repo.refresh_annual_references = AsyncMock()
+        mock_market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -101,8 +103,14 @@ async def test_refresh_book_prices_task_success():
 
 
 @pytest.mark.asyncio
-async def test_refresh_book_prices_task_incremental():
-    """Vérifie que le mode incrémental interroge uniquement le micro-lot prioritaire."""
+async def test_la_passe_ne_demande_que_les_places_libres_du_regulateur():
+    """Une passe ne sélectionne que ce que le régulateur accepte encore.
+
+    L'ancienne passe demandait huit livres pour deux places : six collectes étaient
+    refusées avant leur première requête, et le bilan annonçait un lot de huit. La
+    capacité est désormais lue au régulateur — la seule autorité qui sache combien
+    de collectes la source accepte — et c'est elle qui borne le lot.
+    """
     mock_book = Book(
         id=uuid.uuid4(),
         title="1629",
@@ -121,6 +129,7 @@ async def test_refresh_book_prices_task_incremental():
 
         mock_market_repo = MagicMock()
         mock_market_repo.refresh_annual_references = AsyncMock()
+        mock_market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -133,14 +142,56 @@ async def test_refresh_book_prices_task_incremental():
             "app.services.book_market_pricing.MarketPriceRepository", lambda _s: mock_market_repo
         )
 
+        mp.setattr(
+            "app.tasks.refresh_book_prices.cal_governor",
+            MagicMock(free_places=AsyncMock(return_value=2)),
+        )
+
         stats = await refresh_book_prices_task(
-            registry=mock_registry, session=mock_session, incremental=True, batch_size=5
+            registry=mock_registry, session=mock_session, batch_size=5
         )
 
         assert stats["processed"] == 1
-        assert mock_book_repo.get_books_needing_price_refresh.call_count == 2
-        mock_book_repo.get_books_needing_price_refresh.assert_called_with(limit=5)
+        # Une seule sélection par passe : il n'y a plus de seconde sélection pour
+        # replanifier une grille de créneaux qui n'existe plus.
+        assert mock_book_repo.get_books_needing_price_refresh.call_count == 1
+        # Le plafond local (cinq) est plus large que la capacité réelle (deux) :
+        # c'est la capacité qui borne, jamais l'ambition.
+        mock_book_repo.get_books_needing_price_refresh.assert_called_with(
+            limit=2, zones=None
+        )
         mock_book_repo.get_books_for_active_bd_alerts.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_une_capacite_nulle_ne_selectionne_aucun_livre():
+    """Source au repos : la passe ne sélectionne rien et n'ouvre rien.
+
+    Demander des livres à un catalogue fermé ne les sert pas — cela produit des
+    refus avant requête, qui se lisent ensuite comme des pannes de collecte.
+    """
+    mock_registry = MagicMock()
+    mock_registry.fetch_all_offers = AsyncMock(return_value=[])
+    mock_registry.select_best_offer = MagicMock(return_value=None)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mock_book_repo = MagicMock()
+        mock_book_repo.plan_price_refreshes = AsyncMock()
+        mock_book_repo.get_books_needing_price_refresh = AsyncMock(return_value=[])
+        mp.setattr("app.tasks.refresh_book_prices.BookRepository", lambda _s: mock_book_repo)
+        mp.setattr(
+            "app.tasks.refresh_book_prices.cal_governor",
+            MagicMock(free_places=AsyncMock(return_value=0)),
+        )
+        mp.setattr("app.services.market_health.notify_admins", AsyncMock())
+
+        stats = await refresh_book_prices_task(
+            registry=mock_registry, session=AsyncMock()
+        )
+
+    assert stats["processed"] == 0
+    mock_book_repo.get_books_needing_price_refresh.assert_not_awaited()
+    mock_registry.fetch_all_offers.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -156,10 +207,17 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
     mock_registry.fetch_all_offers = AsyncMock(return_value=[])
     mock_registry.select_best_offer = MagicMock(return_value=None)
 
-    existing_cache = MagicMock()
-    existing_cache.lowest_delivered_price_cents = 470
-    existing_cache.comparison_status = ComparisonStatus.AVAILABLE
-    existing_cache.historical_low_1y_cents = 900
+    # Un vrai cache : la passe lit son échéance pour décider si le livre est dû.
+    existing_cache = BookMarketCache(
+        book_id=mock_book.id,
+        lowest_delivered_price_cents=470,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        historical_low_1y_cents=900,
+        collection_status="complete",
+        last_successful_collection_at=datetime.now(UTC) - timedelta(days=8),
+        historical_checked_at=datetime.now(UTC) - timedelta(days=1),
+        checked_at=datetime.now(UTC) - timedelta(days=8),
+    )
 
     with pytest.MonkeyPatch.context() as mp:
         mock_book_repo = MagicMock()
@@ -168,6 +226,7 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
 
         mock_market_repo = MagicMock()
         mock_market_repo.refresh_annual_references = AsyncMock()
+        mock_market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
         mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -225,6 +284,7 @@ async def test_refresh_processes_several_books_in_one_wave():
 
         mock_market_repo = MagicMock()
         mock_market_repo.refresh_annual_references = AsyncMock()
+        mock_market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -245,12 +305,10 @@ async def test_refresh_processes_several_books_in_one_wave():
     assert stats["errors"] == 1
     assert stats["unavailable"] == 2
 
-    # L'alerte reste produite : seule sa destination change.
-    alertes = [s for s in sends if "Collecte de prix en échec" in s]
-    assert len(alertes) == 1, "la passe complète doit signaler l'absence totale de cote"
-    assert "Traités : 3/3 livres" in alertes[0]
-    assert "Actualisées : 0 collectes" in alertes[0]
-    assert "Exceptions de traitement : 1" in alertes[0]
+    # Contrat : une exception de traitement est un fait nommé, sans compteur de passe.
+    assert len(sends) == 1, "une seule vague, un seul fait à signaler"
+    assert "Nouvel incident : traitement" in sends[0]
+    assert "Traités :" not in sends[0]
 
 
 def _livres(n: int) -> list[Book]:
@@ -264,7 +322,6 @@ def _livres(n: int) -> list[Book]:
 async def _passe_sans_offres(
     mp: pytest.MonkeyPatch,
     *,
-    incremental: bool,
     livres: list[Book],
     sends: list[str],
     fenetre_ouverte: bool = True,
@@ -281,6 +338,7 @@ async def _passe_sans_offres(
 
     market_repo = MagicMock()
     market_repo.refresh_annual_references = AsyncMock()
+    market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -304,21 +362,21 @@ async def _passe_sans_offres(
     mp.setattr("app.tasks.refresh_book_prices.asyncio.sleep", AsyncMock())
 
     return await refresh_book_prices_task(
-        registry=mock_registry, session=AsyncMock(), incremental=incremental, batch_size=8
+        registry=mock_registry, session=AsyncMock(), batch_size=8
     )
 
 
 @pytest.mark.asyncio
-async def test_passe_incremental_sans_cote_n_alerte_personne():
+async def test_une_passe_sans_cote_n_alerte_personne():
     """Le scénario exact du message reçu : 8 livres, aucune cote, aucune alerte.
 
-    Le lot incrémental ne couvre pas la sélection : le dire « toutes les sources
-    sont muettes » serait accuser quatre fournisseurs sur huit livres, alors que
-    la base en compte des dizaines.
+    Une passe ne couvre jamais sa sélection : le dire « toutes les sources sont
+    muettes » serait accuser quatre fournisseurs sur huit livres, alors que la
+    base en compte des dizaines.
     """
     sends: list[str] = []
     with pytest.MonkeyPatch.context() as mp:
-        stats = await _passe_sans_offres(mp, incremental=True, livres=_livres(8), sends=sends)
+        stats = await _passe_sans_offres(mp, livres=_livres(8), sends=sends)
 
     assert stats["processed"] == 8
     assert stats["available"] == 0
@@ -330,16 +388,10 @@ async def test_passe_complete_sans_offre_ne_signale_pas_un_incident():
     """La passe complète, elle, a le droit de conclure — et ne le fait qu'une fois."""
     sends: list[str] = []
     with pytest.MonkeyPatch.context() as mp:
-        premiere = await _passe_sans_offres(
-            mp, incremental=False, livres=_livres(12), sends=sends
-        )
+        premiere = await _passe_sans_offres(mp, livres=_livres(12), sends=sends)
         # Deuxième passe identique, fenêtre Redis fermée : rien ne doit partir.
         seconde = await _passe_sans_offres(
-            mp,
-            incremental=False,
-            livres=_livres(12),
-            sends=sends,
-            fenetre_ouverte=False,
+            mp, livres=_livres(12), sends=sends, fenetre_ouverte=False,
         )
 
     assert premiere["processed"] == 12
@@ -354,7 +406,8 @@ async def test_provider_failure_is_degraded_not_a_book_error():
 
     C'est le 5/8 du message « Rafraîchissement dégradé ». La collecte a répondu
     « cette source a échoué, aucune offre », et le compteur d'erreurs le lisait
-    comme un livre cassé — assez pour franchir le seuil à chaque lot.
+    comme un livre cassé — assez pour franchir le seuil à chaque lot. Le fait à
+    signaler est l'échec de la source, nommée, et une seule fois.
     """
     livres = _livres(8)
     sends: list[str] = []
@@ -372,6 +425,7 @@ async def test_provider_failure_is_degraded_not_a_book_error():
         book_repo.get_books_needing_price_refresh = AsyncMock(return_value=livres)
         market_repo = MagicMock()
         market_repo.refresh_annual_references = AsyncMock()
+        market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         market_repo.save_snapshot = AsyncMock()
         market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -390,7 +444,7 @@ async def test_provider_failure_is_degraded_not_a_book_error():
         mp.setattr("app.services.market_health.get_redis_client", lambda: client)
         mp.setattr("app.tasks.refresh_book_prices.asyncio.sleep", AsyncMock())
         return await refresh_book_prices_task(
-            registry=registry, session=AsyncMock(), incremental=True, batch_size=8
+            registry=registry, session=AsyncMock(), batch_size=8
         )
 
     with pytest.MonkeyPatch.context() as mp:
@@ -400,9 +454,9 @@ async def test_provider_failure_is_degraded_not_a_book_error():
     assert premiere["errors"] == 0
     assert premiere["degraded"] == 8
     assert seconde["errors"] == 0
-    alertes = [s for s in sends if "Rafraîchissement dégradé" in s]
-    assert len(alertes) == 1
-    assert "chasse_aux_livres" in alertes[0]
+    # Contrat : la source muette est nommée une fois, et rien d'autre ne s'ajoute.
+    assert len(sends) == 1
+    assert sends[0] == "Nouvel incident : chasse_aux_livres/current"
 
 
 class _CacheEcrit:
@@ -524,7 +578,7 @@ async def _passe_sur(
     """
     import asyncio as _asyncio
 
-    async def selection_imposee(_session, _incremental, _batch_size):
+    async def selection_imposee(_session, _limit, _zones=None):
         return list(selection)
 
     async def offres_vides(_book, **_kwargs):
@@ -535,6 +589,12 @@ async def _passe_sur(
         return _CacheEcrit()
 
     mp.setattr("app.tasks.refresh_book_prices._select_books", selection_imposee)
+    # La capacité est lue au régulateur réel, qui interroge Redis : hors sujet ici,
+    # et son attente déformerait l'horloge pilotée du test.
+    mp.setattr(
+        "app.tasks.refresh_book_prices.cal_governor",
+        MagicMock(free_places=AsyncMock(return_value=len(selection))),
+    )
     mp.setattr("app.db.repositories.book_repo.BookRepository.plan_price_refreshes", AsyncMock())
     mp.setattr("app.tasks.refresh_book_prices.fetch_offers_for_book", offres_vides)
     mp.setattr("app.tasks.refresh_book_prices.persist_market_result", ecrit)
@@ -546,7 +606,6 @@ async def _passe_sur(
     return await refresh_book_prices_task(
         registry=registre,
         session=AsyncMock(),
-        incremental=False,
         concurrency=concurrency,
         max_duration_seconds=max_duration_seconds,
     )

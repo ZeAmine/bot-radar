@@ -275,30 +275,33 @@ en base. Elle ne certifie pas leur fraîcheur commune. Ni tentative ni date de
 changement du prix ne remplace une collecte réussie ; sans date réelle, la ligne
 est omise. Une date historique mal formée n'efface pas la date courante connue.
 
-Chaque composante devient éligible sept jours après sa réussite. Le scheduler
-existant réserve des créneaux persistés `next_refresh_at` aux passages de :15 et
-:45, huit livres au plus, concurrence deux. Les reprises catalogue sont bornées à
-quatre alertes par passe. Les réservations en retard excédant le lot courant sont
-reportées dans de futurs créneaux. « Prochaine MAJ » affiche uniquement une réservation
-future réellement enregistrée ; sans réservation, la ligne est omise. La persistance
-centrale réserve la prochaine passe, y compris après un historique seul ou un échec.
+Chaque composante suit son propre rythme, tiré de la zone de la cote face au
+plafond de l'alerte : six heures en chaud, deux jours en tiède, sept jours en froid,
+trente jours pour l'historique. Une seule passe existe : elle lit les échéances
+(`refresh_state`), les ordonne chaud → tiède → froid, la plus ancienne d'abord, et
+n'en sert que la capacité réellement libre du régulateur. Aucune grille horaire ne
+réserve de créneau, et une échéance déjà écrite n'est jamais déplacée.
+« Prochaine MAJ » affiche uniquement l'échéance réellement enregistrée ; sans
+échéance, la ligne est omise. Une collecte de routine ne demande qu'une composante ;
+seule la création d'alerte demande les deux. Le bilan quotidien de 09:00 (Paris)
+donne trois nombres — à jour, hors de leur rythme, nouveaux prix bas de la veille.
 Un cache récent sans réservation exploitable est replanifié sans nouvelle collecte.
 La réservation conserve son verrou jusqu’à la fin de la transaction, commit ou
 annulation. Une planification ciblée ne modifie pas les échéances des autres livres.
 Un report administratif encore actif garde sa reprise datée, y compris après un
 historique seul, sans replanification métier ni faux succès. Après échec, les reprises
-sont espacées de six heures, un jour puis sept jours ; elles conservent les valeurs
+retombent simplement au rythme de leur zone ; elles conservent les valeurs
 et dates de réussite. Les appels simultanés d'un même livre sont mutualisés dans
 l'unique processus ; deux passes de prix ne s'exécutent pas simultanément.
 
-Pendant la plage `NIGHT_MODE_*`, le même scheduler traite à :20 et :50 un lot
-borné (dix éditions uniques par défaut), avec les pauses longues entre vagues,
-puis rend la main ; il ne démarre plus de lot à la fin de la plage et le travail
-restant suit les réservations persistées. Ce rythme nocturne ne rend aucune
-composante éligible avant ses sept jours et ne modifie pas les passes de jour. Il
-est inactif si le mode nuit est désactivé, et les bilans Telegram restent ceux des
-incidents. Sa fin de plage suit l'heure locale du fuseau configuré, comme la pause
-du poller.
+Pendant la plage `NIGHT_MODE_*`, la maintenance nocturne fait un vrai tour de
+nuit : une passe de la seule zone froide, avec les pauses longues entre vagues,
+puis rend la main ; elle ne démarre plus de vague à la fin de la plage et le
+travail restant suit les échéances persistées. Ce tour ne rend aucune composante
+éligible avant son rythme et ne modifie pas les passes de jour. Il est inactif si
+le mode nuit est désactivé, et les messages Telegram restent ceux des incidents et
+du bilan quotidien. Sa fin de plage suit l'heure locale du fuseau configuré, comme
+la pause du poller.
 
 La migration 0015 ajoute les champs de provenance et programmation sans créer de
 réussite historique. La [reprise progressive](../operations/chasse-weekly-prices.md)
@@ -322,13 +325,16 @@ structurellement valide : objet, `stats` en liste de séries avec `label` textue
 `statValues` en liste. Le [diagnostic ciblé](../operations/chasse-search-results.md)
 distingue les observations réseau des tests isolés.
 
-## Diagnostic et bilans de rafraîchissement
+## Diagnostic, incidents et bilan quotidien
 
-Le bilan automatique est consolidé par occurrence de passe complète, y compris
-si la sélection est vide ou interrompue. Les listes détaillées de fraîcheur
-restent des diagnostics ; elles ne sont plus envoyées séparément dans ce flux.
-Les compteurs distinguent traitement, offre actualisée, absence normale d'offre,
-dégradation fournisseur, exception, caches réutilisés, tentatives non effectuées et livres non parcourus.
+Il n'y a plus de bilan de passe : ni compteurs de traitement, ni modes, ni promesse
+d'une « prochaine passe complète », ni alerte « aucune cote » ou « rafraîchissement
+dégradé ». Un message immédiat ne part que pour un fait actionnable — un incident
+de source nommé, son aggravation, son rétablissement, une passe interrompue par une
+exception. Le reste est silence. Ce qui décrit l'état du marché tient dans un bilan
+quotidien de trois lignes, à 09:00 heure de Paris : livres à jour sur le total,
+livres hors de leur rythme, nouveaux prix bas de la veille. Les listes détaillées de
+fraîcheur restent des diagnostics, écrits dans les journaux et non envoyés.
 Un incident historique ne transforme pas une collecte courante réussie en panne.
 Le diagnostic distingue les composantes partiellement actualisées sans attribuer
 une panne globale à un fournisseur dont la collecte courante a répondu.
@@ -343,8 +349,8 @@ durée. Une réponse invalide ne vaut pas recherche vide. Le silence des snapsho
 ne suffit pas à établir une panne. Un timeout global porte un diagnostic de
 collecte, sans désigner tous les sites comme défaillants.
 
-Les passages incrémentaux signalent les nouveaux incidents, les aggravations et
-les rétablissements observés. L'absence de sollicitation ne rétablit pas une source.
+Chaque passe signale les nouveaux incidents, les aggravations et les
+rétablissements observés. L'absence de sollicitation ne rétablit pas une source.
 La dernière observation est distincte de l'état effectivement notifié : une
 amélioration partielle silencieuse actualise la référence ; le retour à une panne
 totale peut donc produire une aggravation. Les changements non remis restent en
@@ -358,7 +364,9 @@ pas la source. Une nouvelle panne avant remise conserve la synthèse précédent
 signale séparément le nouvel incident en cours. La remise confirmée retire les
 changements en attente ; elle ne garantit pas une livraison exactement une fois.
 L'état utilise Redis avec repli local dans l'unique processus ; le repli ne survit
-pas au redémarrage. Le dédoublonnage de bilan conserve sa fenêtre d'une heure.
+pas au redémarrage. Le dédoublonnage ne dépend plus d'une clé par occurrence de
+passe : c'est l'état de l'incident qui décide, donc un incident déjà annoncé reste
+silencieux et un rétablissement se dit une fois.
 Un échec ou une annulation d'envoi libère le créneau ; une remise Telegram ambiguë
 ou partielle ne permet pas de garantir exactement un message par destinataire.
 

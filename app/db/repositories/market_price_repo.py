@@ -256,6 +256,24 @@ class MarketPriceRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def alert_price_ceiling_cents(self, book_id: uuid.UUID) -> int | None:
+        """Plafond le plus strict des alertes qui suivent ce livre.
+
+        C'est lui qui donne sa zone au livre : un livre porté par plusieurs
+        alertes suit le plafond le plus contraignant, parce que c'est celui dont
+        l'utilisateur attend le plus vite la nouvelle. Sans plafond connu, il n'y
+        a pas de voisinage à surveiller et le livre est froid.
+        """
+        values = (await self.session.scalars(
+            select(Alert.max_item_price_cents).join(AlertBook).where(
+                AlertBook.book_id == book_id, Alert.deleted_at.is_(None),
+                Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+            )
+        )).all()
+        positives = [value for value in values
+                     if isinstance(value, int) and not isinstance(value, bool) and value > 0]
+        return min(positives) if positives else None
+
     async def set_series_total(self, alert_id: uuid.UUID, total_cents: int | None) -> None:
         """Écrit le total de série persisté d'une alerte, sans commit.
 
@@ -344,6 +362,27 @@ class MarketPriceRepository:
         ).where(Book.id.in_(watched))
         row = (await self.session.execute(statement)).one()
         return int(row[0]), int(row[1]), int(row[2])
+
+    async def count_lows_observed_since(self, *, since: datetime) -> int:
+        """Livres dont le prix bas sur douze mois a été **constaté** depuis `since`.
+
+        La date lue est celle de l'observation du minimum (`annual_low_observed_at`),
+        pas celle du calcul : un cache recalculé sans offre nouvelle garde la date
+        de l'offre qui a établi le minimum, donc un prix bas d'il y a trois mois ne
+        se compte pas comme neuf. Un livre sans prix bas connu ne compte jamais.
+        """
+        watched = select(AlertBook.book_id).join(Alert).join(Category).where(
+            Category.slug == "bd_comics",
+            Alert.deleted_at.is_(None),
+            Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+        )
+        statement = select(func.count()).select_from(BookMarketCache).where(
+            BookMarketCache.book_id.in_(watched),
+            BookMarketCache.annual_low_cents.is_not(None),
+            BookMarketCache.annual_low_observed_at.is_not(None),
+            BookMarketCache.annual_low_observed_at >= since,
+        )
+        return int((await self.session.execute(statement)).scalar() or 0)
 
     async def find_stale_current_collections(
         self, *, stale_after: datetime, limit: int = 8,

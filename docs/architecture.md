@@ -40,9 +40,11 @@ n'est pas attaché au handler ; relire les relations nécessaires dans sa sessio
 ## Scheduler et schéma
 
 APScheduler démarre même sans poller. Jobs sans chevauchement : `max_instances=1`,
-`coalesce=True`. Prix à 07:00/19:00 configurables, lot incrémental à :15/:45,
-cleanup à 03:30, auto-tuning à 10:00/14:00/18:00/22:00 Europe/Paris ; reprise BD
-au démarrage puis cinq minutes, reprise des notifications trente secondes.
+`coalesce=True`. Une seule passe de prix, toutes les `PRICE_PASS_INTERVAL_MINUTES`
+(quinze minutes par défaut), sans grille horaire ni mode ; bilan quotidien du marché
+à 09:00 Europe/Paris ; cleanup à 03:30, auto-tuning à 10:00/14:00/18:00/22:00
+Europe/Paris ; reprise BD au démarrage puis cinq minutes, reprise des notifications
+trente secondes.
 Les tests [scheduler](../tests/unit/test_scheduler_jobs.py) et
 [lifespan](../tests/unit/test_unified_lifespan.py) couvrent des aspects locaux,
 pas l'unicité effective d'un processus en production.
@@ -55,9 +57,10 @@ table, arbitrage préalable. Rebuild puis `upgrade head` seulement dans un manda
 autorisant la migration. Aucun scheduler séparé ou verrou Redis préventif à ajouter.
 
 La cotation planifiée couvre livres et tomes des alertes actives et en pause,
-hors suppressions, avec déduplication. Passes complètes 07:00/19:00 et lots à :15/:45,
-repris aussi au démarrage : cible de réussite 24 h, avertissement après 48 h.
-Les lots s'adaptent à la population et les reprises suivent les tentatives persistées,
-avec repos de six heures après résultat partiel/échoué. La résolution quotidienne
-rattache les séries et alertes sans lien sans déclencher de prix hors des vagues bornées.
+hors suppressions, avec déduplication. La passe unique reprend au démarrage, puis
+sert les échéances les plus anciennes dans l'ordre chaud → tiède → froid, dans la
+limite des places libres du régulateur : cible de réussite 24 h pour un livre chaud,
+avertissement après 48 h de retard sur son rythme. Un échec ne déplace jamais
+l'échéance — il la laisse due au rythme normal. La résolution quotidienne rattache
+les séries et alertes sans lien sans déclencher de prix hors des vagues bornées.
 Une panne externe persistante ne devient jamais une réussite pour satisfaire le délai.

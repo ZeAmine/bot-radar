@@ -6,12 +6,11 @@ l'application ne sait plus relancer avant l'échéance. Il n'écrit aucune valeu
 la main : il appelle `price_book`, la collecte partagée qui décide, persiste et
 replanifie (mêmes décisions, mêmes traces que le bouton « Prix du marché »).
 
-La garde locale de fraîcheur, elle, est écartée : le cache du livre n'est pas
-chargé, donc la collecte demande les deux composantes (« cote » et
-« historique »), comme à la création d'une alerte — un livre déjà coté n'est
-donc pas réinterrogé par ce script. C'est la seule entorse, et elle est nommée :
-elle ne touche pas au régulateur, qui reste seul juge du droit d'interroger la
-source.
+La garde locale de fraîcheur, elle, est écartée : la collecte demande
+explicitement les deux composantes (« cote » et « historique »), comme à la
+création d'une alerte, au lieu d'attendre une échéance qu'on vient précisément
+contester. C'est la seule entorse, et elle est nommée : elle ne touche pas au
+régulateur, qui reste seul juge du droit d'interroger la source.
 
 Trois limites sont celles de la source, pas de ce script : deux livres par
 fenêtre de quinze minutes, douze requêtes par collecte, une collecte à la fois et
@@ -72,15 +71,14 @@ async def _relance(isbn13: str) -> dict[str, Any]:
         book = await BookRepository(session).get_by_isbn13(code)
         if book is None:
             return {**result, "relance": "refus", "raison": "livre_inconnu"}
-        # La garde de fraîcheur se lit sur le cache chargé : `fetch_offers_for_book`
-        # ne demande que les composantes échues. Sans cache, la collecte demande
-        # « cote » et « historique », exactement comme à la création d'une alerte.
-        # C'est le seul contournement de ce script, et il est nommé ici : la garde
-        # locale cède, le régulateur CAL garde ses plafonds (deux livres par
+        # Portée « forced » : `fetch_offers_for_book` ne demande, en routine, que
+        # la composante la plus anciennement due, et c'est la garde locale de
+        # fraîcheur. Ce script existe pour un état qu'on juge faux, il demande
+        # donc la cote et l'historique sans lire les échéances. C'est son seul
+        # contournement : le régulateur CAL garde ses plafonds (deux livres par
         # fenêtre, douze requêtes, une collecte à la fois).
-        book.__dict__.pop("market_cache", None)
         result.update(book_id=str(book.id), titre=book.title)
-        cache = await price_book(session, book, result_sink=results)
+        cache = await price_book(session, book, result_sink=results, scope="forced")
         await session.commit()
     result["statut_collecte"] = cache.collection_status
     result.update(

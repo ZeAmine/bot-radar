@@ -8,10 +8,10 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers
 from app.services.book_market_pricing import BookPricingResult, _stamp_collection
 from app.services.market_refresh_policy import (
-    REFRESH_INTERVAL,
-    RETRY_DELAYS,
+    COLD_CADENCE,
     collection_due,
     component_due,
+    due_components,
     record_component,
 )
 
@@ -309,30 +309,25 @@ def test_direct_partial_price_without_confirmation_is_not_usable() -> None:
     assert result.current_collection_complete is False
 
 
-def test_retry_schedule_is_six_hours_then_one_day_then_seven_days() -> None:
+def test_an_attempt_that_fails_keeps_the_same_delay() -> None:
+    """L'échelle de relance a disparu : un échec replace le livre à son rythme."""
     cache = BookMarketCache()
 
-    for index, expected in enumerate(RETRY_DELAYS):
-        record_component(cache, "current", succeeded=False, now=NOW + timedelta(days=index))
-        assert component_due(cache, "current", NOW + timedelta(days=index)) == (
-            NOW + timedelta(days=index) + expected
-        )
+    for index in range(4):
+        moment = NOW + timedelta(days=index)
+        record_component(cache, "current", succeeded=False, now=moment)
+        assert component_due(cache, "current", moment) == moment + COLD_CADENCE
         assert cache.refresh_state["current"]["failures"] == index + 1
-
-    record_component(cache, "current", succeeded=False, now=NOW + timedelta(days=4))
-    assert cache.refresh_state["current"]["failures"] == len(RETRY_DELAYS)
-    assert component_due(cache, "current", NOW + timedelta(days=4)) == (
-        NOW + timedelta(days=4) + RETRY_DELAYS[-1]
-    )
 
     record_component(cache, "current", succeeded=True, now=NOW + timedelta(days=5))
     assert cache.refresh_state["current"]["failures"] == 0
     assert component_due(cache, "current", NOW + timedelta(days=5)) == (
-        NOW + timedelta(days=5) + REFRESH_INTERVAL
+        NOW + timedelta(days=5) + COLD_CADENCE
     )
 
 
-def test_due_boundaries_cover_six_hours_and_seven_days() -> None:
+def test_due_boundaries_follow_the_component_rhythm() -> None:
+    """Chaque composante est due à sa propre échéance, jamais à un délai partagé."""
     partial = _result(
         attempts=(CollectionAttempt("source", "current", "partial"),),
         failed_providers=("source",),
@@ -341,9 +336,10 @@ def test_due_boundaries_cover_six_hours_and_seven_days() -> None:
     retry_cache = BookMarketCache()
     _stamp_collection(retry_cache, partial)
 
-    assert not collection_due(retry_cache, NOW + timedelta(hours=5, minutes=59, seconds=59))
-    assert collection_due(retry_cache, NOW + timedelta(hours=6))
-    assert collection_due(retry_cache, NOW + timedelta(hours=6, minutes=59, seconds=59))
+    # L'historique n'a jamais été lu : il est dû tout de suite, indépendamment
+    # de la cote — c'est tout l'objet de la séparation des deux composantes.
+    assert due_components(retry_cache, NOW) == ("history",)
+    assert component_due(retry_cache, "current", NOW) == NOW + COLD_CADENCE
 
     success = _result(
         attempts=(
@@ -357,10 +353,7 @@ def test_due_boundaries_cover_six_hours_and_seven_days() -> None:
     _stamp_collection(success_cache, success)
 
     assert not collection_due(success_cache, NOW + timedelta(days=6, hours=23))
-    assert not collection_due(success_cache, NOW + timedelta(days=6, hours=23, minutes=59,
-                                                            seconds=59))
-    assert collection_due(success_cache, NOW + timedelta(days=7))
-
+    assert collection_due(success_cache, NOW + COLD_CADENCE)
 
 def test_naive_cached_dates_are_normalized() -> None:
     naive = datetime(2026, 10, 1, 12, 0)
@@ -370,5 +363,5 @@ def test_naive_cached_dates_are_normalized() -> None:
         collection_status="partial",
     )
 
-    assert component_due(cache, "current", NOW) == naive.replace(tzinfo=UTC) + REFRESH_INTERVAL
+    assert component_due(cache, "current", NOW) == naive.replace(tzinfo=UTC) + COLD_CADENCE
     assert collection_due(cache, NOW) is True

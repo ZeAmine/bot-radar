@@ -222,3 +222,60 @@ async def test_normalized_observations_replace_the_unbounded_minimum():
         assert cache.annual_low_cents == 1357
         assert cache.annual_count == 2
         assert cache.historical_low_1y_cents == 1
+
+
+@pytest.mark.asyncio
+async def test_the_alert_ceiling_is_the_strictest_one_that_follows_the_book():
+    """La zone d'un livre suit le plafond le plus contraignant de ses alertes.
+
+    Un livre porté par deux alertes doit être surveillé au rythme de la plus
+    exigeante : c'est d'elle que l'utilisateur attend la nouvelle le plus vite.
+    """
+    from app.core.constants import AlertStatus
+    from app.db.models.alert import Alert
+    from app.db.models.alert_book import AlertBook
+    from app.db.models.book import Book
+    from app.db.models.category import Category
+    from app.db.models.user import User
+    from tests.database import sqlite_only_database
+
+    async with sqlite_only_database() as database:
+        session = database.session
+        user = User(telegram_user_id=7, is_allowed=True)
+        category = Category(slug="bd_comics", label="BD", emoji="B", is_active=True)
+        session.add_all([user, category])
+        await session.flush()
+        book = Book(title="Livre", normalized_title="livre")
+        session.add(book)
+        await session.flush()
+        for ceiling, status in ((4000, AlertStatus.ACTIVE), (2500, AlertStatus.PAUSED),
+                                (900, AlertStatus.DELETED), (None, AlertStatus.ACTIVE)):
+            alert = Alert(
+                user_id=user.id, category_id=category.id, name=f"Alerte {ceiling}",
+                max_item_price_cents=ceiling, status=status,
+            )
+            session.add(alert)
+            await session.flush()
+            session.add(AlertBook(alert_id=alert.id, book_id=book.id))
+        await session.commit()
+
+        ceiling = await MarketPriceRepository(session).alert_price_ceiling_cents(book.id)
+
+    # L'alerte supprimée ne compte pas : son plafond de 9 € ne suit plus le livre.
+    assert ceiling == 2500
+
+
+@pytest.mark.asyncio
+async def test_a_book_without_ceiling_is_cold():
+    from app.db.models.book import Book
+    from tests.database import sqlite_only_database
+
+    async with sqlite_only_database() as database:
+        book = Book(title="Orphelin", normalized_title="orphelin")
+        database.session.add(book)
+        await database.session.flush()
+        ceiling = await MarketPriceRepository(
+            database.session,
+        ).alert_price_ceiling_cents(book.id)
+
+    assert ceiling is None

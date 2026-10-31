@@ -157,6 +157,7 @@ async def test_price_book_keeps_the_lowest_historical_across_merchants() -> None
     )
     market_repo = MagicMock()
     market_repo.refresh_annual_references = AsyncMock()
+    market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -218,6 +219,7 @@ async def test_price_book_with_a_real_registry_uses_partial_cal_and_a_healthy_so
     )
     market_repo = MagicMock()
     market_repo.refresh_annual_references = AsyncMock()
+    market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
     market_repo.update_or_create_cache = AsyncMock(return_value=written)
@@ -278,6 +280,7 @@ async def test_price_book_does_not_advance_for_partial_cal_and_empty_healthy_sou
     )
     market_repo = MagicMock()
     market_repo.refresh_annual_references = AsyncMock()
+    market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -300,7 +303,7 @@ async def test_price_book_does_not_advance_for_partial_cal_and_empty_healthy_sou
     assert written.last_successful_collection_at == old
     assert written.refresh_state["current"]["failures"] == 1
     assert component_due(written, "current", result.collected_at) == (
-        result.collected_at + timedelta(hours=6)
+        result.collected_at + timedelta(days=7)
     )
 
 
@@ -309,6 +312,7 @@ async def test_price_book_saves_a_silent_book_as_unavailable() -> None:
     """Aucun marchand ne répond : la cote est marquée indisponible, pas laissée vide."""
     market_repo = MagicMock()
     market_repo.refresh_annual_references = AsyncMock()
+    market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -361,6 +365,7 @@ async def test_persist_keeps_a_fresh_price_when_every_provider_is_silent() -> No
     )
     market_repo = MagicMock()
     market_repo.refresh_annual_references = AsyncMock()
+    market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=existing)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -460,6 +465,7 @@ async def test_a_successful_check_advances_the_date_even_when_the_price_is_uncha
     repo = MagicMock()
     repo.save_snapshot = AsyncMock()
     repo.refresh_annual_references = AsyncMock()
+    repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     repo.update_or_create_cache = AsyncMock(return_value=existing)
     repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
 
@@ -501,6 +507,7 @@ async def test_a_successful_check_with_a_new_price_advances_the_date():
     repo = MagicMock()
     repo.save_snapshot = AsyncMock()
     repo.refresh_annual_references = AsyncMock()
+    repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     repo.update_or_create_cache = AsyncMock(return_value=updated)
     repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
 
@@ -542,6 +549,7 @@ async def test_a_failed_attempt_after_a_success_keeps_the_successful_date():
     repo = MagicMock()
     repo.save_snapshot = AsyncMock()
     repo.refresh_annual_references = AsyncMock()
+    repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     repo.get_cache_by_book_id = AsyncMock(return_value=existing)
     repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
 
@@ -675,10 +683,10 @@ def test_partial_current_source_with_a_confirmed_price_is_usable() -> None:
     assert result.current_collection_usable is True
     assert result.price_confirmed is True
     assert cache.last_successful_collection_at == now
-    assert cache.refresh_state["current"] == {
-        "due_at": (now + timedelta(days=7)).isoformat(),
-        "failures": 0,
-    }
+    # Sans plafond connu, la cote est froide : elle attend son rythme hebdomadaire.
+    assert cache.refresh_state["current"]["due_at"] == (now + timedelta(days=7)).isoformat()
+    assert cache.refresh_state["current"]["failures"] == 0
+    assert cache.refresh_state["current"]["zone"] == "cold"
     assert cache.collection_status == "partial"
     assert component_due(cache, "current", now) == now + timedelta(days=7)
 
@@ -702,12 +710,10 @@ def test_partial_current_source_without_a_confirmed_price_stays_retryable() -> N
     assert result.current_collection_complete is False
     assert result.current_collection_usable is False
     assert cache.last_successful_collection_at == old
-    assert cache.refresh_state["current"] == {
-        "due_at": (now + timedelta(hours=6)).isoformat(),
-        "failures": 1,
-    }
+    assert cache.refresh_state["current"]["due_at"] == (now + timedelta(days=7)).isoformat()
+    assert cache.refresh_state["current"]["failures"] == 1
     assert cache.collection_status == "partial"
-    assert component_due(cache, "current", now) == now + timedelta(hours=6)
+    assert component_due(cache, "current", now) == now + timedelta(days=7)
 
 
 def test_confirmed_current_price_wins_over_a_retained_partial_cal_offer() -> None:
@@ -777,7 +783,7 @@ def test_partial_cal_alone_does_not_replace_the_last_known_price() -> None:
     assert cache.lowest_delivered_price_cents == 800
     assert cache.current_offers == [retained]
     assert cache.last_successful_collection_at == old
-    assert component_due(cache, "current", now) == now + timedelta(hours=6)
+    assert component_due(cache, "current", now) == now + timedelta(days=7)
 
 
 def test_fully_successful_collection_replaces_the_known_offers_normally() -> None:
@@ -986,7 +992,7 @@ def test_partial_current_source_alone_stays_retryable() -> None:
     assert result.current_collection_usable is False
     assert cache.last_successful_collection_at == old
     assert cache.refresh_state["current"]["failures"] == 1
-    assert component_due(cache, "current", now) == now + timedelta(hours=6)
+    assert component_due(cache, "current", now) == now + timedelta(days=7)
 
 
 def test_a_price_derived_from_a_partial_cal_offer_is_not_usable() -> None:
@@ -1011,7 +1017,7 @@ def test_a_price_derived_from_a_partial_cal_offer_is_not_usable() -> None:
     assert result.current_collection_usable is False
     assert cache.last_successful_collection_at == old
     assert cache.refresh_state["current"]["failures"] == 1
-    assert component_due(cache, "current", now) == now + timedelta(hours=6)
+    assert component_due(cache, "current", now) == now + timedelta(days=7)
 
 
 def test_empty_current_collection_is_usable_only_when_every_source_succeeded() -> None:
@@ -1055,4 +1061,4 @@ def test_failed_current_source_keeps_a_confirmed_price_retryable() -> None:
     assert result.current_collection_usable is False
     assert cache.last_successful_collection_at == old
     assert cache.refresh_state["current"]["failures"] == 1
-    assert component_due(cache, "current", now) == now + timedelta(hours=6)
+    assert component_due(cache, "current", now) == now + timedelta(days=7)

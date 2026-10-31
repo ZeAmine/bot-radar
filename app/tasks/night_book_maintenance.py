@@ -10,6 +10,11 @@ from app.tasks.vinted_poller import get_night_mode_remaining_seconds, is_night_t
 logger = logging.getLogger(__name__)
 
 NIGHT_MAINTENANCE_JOB_ID = "night_book_maintenance"
+# Le balayage nocturne ne marche qu'une zone : la froide. C'est la seule que la
+# file de jour ne sert qu'une fois chauds et tièdes écoulés — autrement dit jamais
+# quand le marché bouge. Le laisser reprendre « toutes zones » en ferait une copie
+# de la passe ordinaire, ce qu'il était devenu.
+NIGHT_SWEEP_ZONES: tuple[str, ...] = ("cold",)
 NIGHT_MAINTENANCE_END_MARGIN_SECONDS = 120.0
 NIGHT_MAINTENANCE_PAUSE_RANGE = (2.5, 3.8)
 
@@ -56,11 +61,17 @@ def _log_window_close() -> None:
 
 
 async def run_night_book_maintenance() -> dict[str, int]:
-    """Traite un lot de maintenance si la plage nocturne est ouverte.
+    """Balaye une vague de livres froids si la plage nocturne est ouverte.
 
-    Une seule passe par déclenchement : le lot reste borné, la progression est
-    persistée par les réservations de prix, et la fin de plage ne peut pas être
-    franchie puisqu'elle borne aussi la durée de la passe.
+    Ce n'est pas « la passe de jour, la nuit » : c'est un tour de rôle réservé à
+    la zone froide. La file ordinaire sert les zones par urgence, si bien qu'un
+    livre à quatre fois le plafond de son alerte peut attendre indéfiniment que
+    les livres chauds se calment. La nuit, quand rien ne presse, la place libre
+    lui revient.
+
+    Une seule vague par déclenchement : le lot reste borné, la progression est
+    persistée par les échéances, et la fin de plage ne peut pas être franchie
+    puisqu'elle borne aussi la durée de la passe.
     """
     global _lots_done, _editions_done
 
@@ -76,24 +87,35 @@ async def run_night_book_maintenance() -> dict[str, int]:
         return empty_stats()
 
     batch_size = max(1, settings.NIGHT_MAINTENANCE_BATCH_SIZE)
+    zones_label = ", ".join(NIGHT_SWEEP_ZONES)
     logger.info(
-        "Maintenance nocturne : lot de %d édition(s) au plus, fin de plage dans %.0f min.",
+        "Balayage nocturne : %d livre(s) %s au plus, fin de plage dans %.0f min.",
         batch_size,
+        zones_label,
         budget / 60.0,
         extra={
             "event": "night_maintenance",
             "phase": "lot",
             "batch_size": batch_size,
+            "zones": zones_label,
             "remaining_s": round(budget, 1),
         },
     )
     stats = await refresh_book_prices_task(
-        incremental=True,
         batch_size=batch_size,
+        zones=NIGHT_SWEEP_ZONES,
         max_duration_seconds=budget,
         job_id=NIGHT_MAINTENANCE_JOB_ID,
         pause_range=NIGHT_MAINTENANCE_PAUSE_RANGE,
     )
     _lots_done += 1
     _editions_done += stats["processed"]
+    logger.info(
+        "Balayage nocturne : %d livre(s) servi(s) hors de leur rythme rattrapé(s).",
+        stats["processed"],
+        extra={"event": "night_maintenance", "phase": "progress",
+               "processed": stats["processed"]},
+    )
+    if stats["processed"] == 0:
+        logger.info("Balayage nocturne : aucun livre froid en retard à servir.")
     return stats

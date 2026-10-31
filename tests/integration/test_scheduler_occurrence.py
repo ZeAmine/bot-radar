@@ -24,11 +24,15 @@ from typing import Any
 
 import pytest
 from apscheduler.events import EVENT_SCHEDULER_SHUTDOWN
-from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 import app.tasks.scheduler  # noqa: F401 - nécessaire pour résoudre le module ci-dessous
 
 scheduler_module = sys.modules["app.tasks.scheduler"]
+
+# Il n'y a plus qu'un job de rafraîchissement : une passe unique, à intervalle
+# régulier, dont la taille de lot est la capacité lue au régulateur.
+REFRESH_JOB_ID = "refresh_prices"
 
 # Jobs planifiés par `create_scheduler()` et opération métier à neutraliser : un job
 # non couvert fait échouer le helper plutôt que de s'exécuter réellement.
@@ -40,6 +44,9 @@ _OPERATIONS_METIER = (
     "run_proactive_autotune_scan",
     "refresh_book_prices_task",
     "run_night_book_maintenance",
+    # Le bilan quotidien du marché lit la base et parle : il est neutralisé comme les
+    # autres, il n'a pas d'occurrence à vérifier.
+    "send_daily_market_summary",
 )
 
 
@@ -70,7 +77,7 @@ def _substituer_operations_metier(
                 # implémentation fautive : il doit différer de l'occurrence transmise.
                 scheduler = observations.get("scheduler")
                 if scheduler is not None:
-                    job = scheduler.get_job("refresh_prices_07_00")
+                    job = scheduler.get_job(REFRESH_JOB_ID)
                     observations["prochaine_execution"] = getattr(
                         job, "next_run_time", None
                     )
@@ -137,9 +144,9 @@ async def _declencher_et_capturer(
     observations["scheduler"] = scheduler
     _verifier_jobs_sans_operation_metier_reelle(scheduler, espions)
 
-    job = scheduler.get_job("refresh_prices_07_00")
+    job = scheduler.get_job(REFRESH_JOB_ID)
     assert job is not None
-    assert isinstance(job.trigger, CronTrigger)
+    assert isinstance(job.trigger, IntervalTrigger)
     assert job.max_instances == 1
     assert job.coalesce is True
     for other in scheduler.get_jobs():
@@ -175,8 +182,8 @@ async def test_the_real_scheduler_hands_the_intended_run_time_to_the_job(
 ) -> None:
     """Le scheduler déclenche le job et lui transmet l'instant qu'il visait.
 
-    On ne se contente pas d'appeler l'enveloppe : le job part d'un cron réel et
-    c'est l'exécuteur qui l'invoque. L'instant reçu est comparé à celui que le
+    On ne se contente pas d'appeler l'enveloppe : le job part d'un déclencheur réel
+    et c'est l'exécuteur qui l'invoque. L'instant reçu est comparé à celui que le
     déclenchement visait, à la tolérance d'ordonnancement près.
     """
     resultat = await _declencher_et_capturer(monkeypatch)
@@ -208,7 +215,7 @@ async def test_the_transmitted_time_is_the_triggered_run_not_the_next_one(
     )
     assert ecart_a_lexecution < 1.0
 
-    # La prochaine exécution du cron de 07:00 ne peut pas être l'occurrence transmise.
+    # La prochaine exécution de la passe ne peut pas être l'occurrence transmise.
     prochaine = resultat["prochaine_execution"]
     assert prochaine is not None, "la prochaine exécution doit être observable"
     assert recu.astimezone(UTC) != prochaine.astimezone(UTC), (

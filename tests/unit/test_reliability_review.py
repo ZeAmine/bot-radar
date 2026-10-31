@@ -148,7 +148,7 @@ async def test_cancelled_delivery_releases_occurrence_without_acknowledging_inci
 
 
 @pytest.mark.asyncio
-async def test_reused_cache_is_reported_without_a_successful_collection(monkeypatch):
+async def test_a_reused_cache_is_measured_but_never_announced(monkeypatch):
     from app.db.models.book_market_cache import BookMarketCache
     from app.services import market_health
     from app.tasks.refresh_book_prices import _book_result, _run_wave
@@ -171,8 +171,9 @@ async def test_reused_cache_is_reported_without_a_successful_collection(monkeypa
     report = result()
     report.stats = stats
     await market_health.notify_refresh_result(report)
-    assert "Caches réutilisés : 1" in send.call_args.args[0]
-    assert "Actualisées : 0" in send.call_args.args[0]
+    # Contrat : les compteurs restent mesurés (`reused`), mais ne sont plus publiés —
+    # une passe faite uniquement de caches réutilisés ne dit rien.
+    send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

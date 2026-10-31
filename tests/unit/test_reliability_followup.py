@@ -88,7 +88,7 @@ async def test_partial_improvement_is_observed_and_total_failure_is_notified_aga
     success = CollectionAttempt("momox")
 
     async def observe(attempts):
-        await market_health.notify_refresh_result(result(incremental=True, attempts=attempts))
+        await market_health.notify_refresh_result(result(attempts=attempts))
         if redis_available:
             assert json.loads(stored[market_health._INCIDENT_KEY])
             market_health._incident_states.clear()
@@ -121,7 +121,7 @@ async def test_failed_first_incident_delivery_is_retried(monkeypatch):
     monkeypatch.setattr(market_health, "get_redis_client", lambda: AsyncMock())
     send = AsyncMock(side_effect=[False, True])
     monkeypatch.setattr(market_health, "notify_admins", send)
-    report = result(incremental=True, attempts=[CollectionAttempt("source", status="failed")])
+    report = result(attempts=[CollectionAttempt("source", status="failed")])
     await market_health.notify_refresh_result(report)
     await market_health.notify_refresh_result(report)
     assert send.await_count == 2
@@ -135,12 +135,12 @@ async def test_legacy_incident_state_is_read_without_a_false_recovery(monkeypatc
     monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
     send = AsyncMock(return_value=True)
     monkeypatch.setattr(market_health, "notify_admins", send)
-    await market_health.notify_refresh_result(result(incremental=True, attempts=[
+    await market_health.notify_refresh_result(result(attempts=[
         CollectionAttempt("source", status="skipped"),
         CollectionAttempt("source", operation="history"),
     ]))
     send.assert_not_awaited()
-    await market_health.notify_refresh_result(result(incremental=True, attempts=[
+    await market_health.notify_refresh_result(result(attempts=[
         CollectionAttempt("source"),
     ]))
     assert send.await_count == 1
@@ -306,7 +306,7 @@ async def test_undelivered_incident_and_recovery_are_summarized_until_delivery(
     failure = CollectionAttempt("source", status="failed", reason="timeout")
 
     async def observe(attempts):
-        report = result(incremental=True, attempts=attempts)
+        report = result(attempts=attempts)
         report.stats.update(degraded=0, available=3)
         await market_health.notify_refresh_result(report)
         snapshot = copy.deepcopy({
@@ -340,7 +340,6 @@ async def test_undelivered_incident_and_recovery_are_summarized_until_delivery(
     assert "rétabli" in text.lower()
     assert "source/current" in text
     assert "Nouvel incident" not in text
-    assert "Échecs observés" not in text
     assert snapshot["observed"] == snapshot["notified"] == {}
     if summary_fails:
         assert "source/current" in snapshot["pending"]
@@ -364,21 +363,21 @@ async def test_new_failure_keeps_the_undelivered_summary_of_the_previous_inciden
     send = AsyncMock(return_value=False)
     monkeypatch.setattr(market_health, "notify_admins", send)
     failed = CollectionAttempt("source", status="failed", reason="timeout")
-    await market_health.notify_refresh_result(result(incremental=True, attempts=[failed]))
+    await market_health.notify_refresh_result(result(attempts=[failed]))
     await market_health.notify_refresh_result(result(
-        incremental=True, attempts=[CollectionAttempt("source")],
+        attempts=[CollectionAttempt("source")],
     ))
     for _ in range(2):
-        await market_health.notify_refresh_result(result(incremental=True, attempts=[failed]))
+        await market_health.notify_refresh_result(result(attempts=[failed]))
         text = send.call_args.args[0]
         assert "rétabli avant remise" in text
         assert "incident en cours" in text
     send.return_value = True
-    await market_health.notify_refresh_result(result(incremental=True, attempts=[failed]))
+    await market_health.notify_refresh_result(result(attempts=[failed]))
     assert market_health._incident_pending == {}
     assert market_health._incident_states["source/current"]["ratio"] == 1
     deliveries = send.await_count
-    await market_health.notify_refresh_result(result(incremental=True, attempts=[failed]))
+    await market_health.notify_refresh_result(result(attempts=[failed]))
     assert send.await_count == deliveries
 
 
@@ -408,7 +407,7 @@ async def test_new_failure_and_past_recovery_survive_persisted_restarts(monkeypa
         return client, send
 
     async def observe(status):
-        report = result(incremental=True, attempts=[
+        report = result(attempts=[
             CollectionAttempt(
                 "source", status=status, reason="timeout" if status == "failed" else None,
             ),
@@ -455,9 +454,12 @@ async def test_new_failure_and_past_recovery_survive_persisted_restarts(monkeypa
     }
     client.get.assert_awaited_once_with(market_health._INCIDENT_KEY)
     send.assert_awaited_once()
-    assert "Incident observé puis rétabli avant remise : source/current\n" \
-        "Nouvel incident en cours : source/current" in send.call_args.args[0]
-    assert "Échecs observés : source/current (timeout)" in send.call_args.args[0]
+    # Contrat : le message est exactement les faits d'incident — aucune ligne de
+    # détail de la famille « bilan de passe » ne s'y ajoute (« Échecs observés »).
+    assert send.call_args.args[0] == (
+        "Incident observé puis rétabli avant remise : source/current\n"
+        "Nouvel incident en cours : source/current"
+    )
 
     client, send = restart(delivered=True)
     assert await observe("failed") == {
@@ -467,9 +469,12 @@ async def test_new_failure_and_past_recovery_survive_persisted_restarts(monkeypa
     }
     client.get.assert_awaited_once_with(market_health._INCIDENT_KEY)
     send.assert_awaited_once()
-    assert "Incident observé puis rétabli avant remise : source/current\n" \
-        "Nouvel incident en cours : source/current" in send.call_args.args[0]
-    assert "Échecs observés : source/current (timeout)" in send.call_args.args[0]
+    # Contrat : le message est exactement les faits d'incident — aucune ligne de
+    # détail de la famille « bilan de passe » ne s'y ajoute (« Échecs observés »).
+    assert send.call_args.args[0] == (
+        "Incident observé puis rétabli avant remise : source/current\n"
+        "Nouvel incident en cours : source/current"
+    )
 
     client, send = restart(delivered=True)
     assert await observe("failed") == {

@@ -15,7 +15,14 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
-from app.bot.labels import cote_line, escape_display, low_line, low_price_line
+from app.bot.labels import (
+    FIELD_LAST_OFFER,
+    cote_line,
+    cote_value_line,
+    escape_display,
+    low_line,
+    low_price_line,
+)
 from app.core.constants import (
     CATEGORY_EMOJIS,
     LEBONCOIN_SOURCE_NAME,
@@ -30,8 +37,10 @@ from app.domain.rules.book_volume import notice_volume
 from app.domain.rules.cote_outcome import (
     ETATS_COTE_ACCEPTES,
     CoteOutcome,
+    DerniereOffre,
     OffreCote,
     PrixBasOutcome,
+    Releve,
     ReleveHistorique,
     select_cote_offer,
     select_historical_low,
@@ -42,6 +51,7 @@ from app.domain.rules.market_offer import (
     is_merchant_excluded,
 )
 from app.providers.base import MarketOffer, MarketOffers
+from app.services.market_refresh_policy import CoteDisplay, cote_display
 from app.services.price_calculator import calculate_estimated_total
 from app.utils.isbn import isbn_from_identifier
 from app.utils.price import format_cents
@@ -342,7 +352,7 @@ def _current_collection_is_empty(cache: BookMarketCache) -> bool:
     )
 
 
-def format_cote_lines(book: Book | None) -> list[str]:
+def format_cote_lines(book: Book | None, *, now: datetime | None = None) -> list[str]:
     """Lignes de cote déjà connues d'un livre, pour un message qui n'attend rien.
 
     Aucun prix n'est inventé : une ligne absente signifie « inconnu », et c'est
@@ -350,6 +360,9 @@ def format_cote_lines(book: Book | None) -> list[str]:
 
     Le cache doit être chargé : `BookRepository` le fait par défaut, et une
     lecture paresseuse ici lèverait au lieu de renvoyer une ligne.
+
+    ``now`` fixe l'instant où la fraîcheur est jugée ; l'appelant qui rend plusieurs
+    livres d'un même message le passe pour que tous soient jugés au même moment.
     """
     cache = book.market_cache if book is not None else None
 
@@ -357,10 +370,13 @@ def format_cote_lines(book: Book | None) -> list[str]:
         return []
 
     lines: list[str] = []
-    market_cents = _positive(cache.lowest_delivered_price_cents)
+    display = cote_display(cache, now)
 
-    if market_cents is not None:
-        lines.append(f"<b>Dernière offre connue :</b> {format_cents(market_cents)}")
+    if display.cents is not None:
+        lines.append(cote_value_line(
+            FIELD_LAST_OFFER, display.cents,
+            stale=display.stale, age=display.age, since=display.since,
+        ))
     historical_cents, historical = reference_price(cache)
 
     if historical and historical_cents is not None:
@@ -380,25 +396,37 @@ def cache_cote_outcomes(
     que la collecte vivante : mêmes états acceptés, même plafond de prix.
     """
     cache = _loaded_market_cache(book) if book is not None else None
+    display = cote_display(cache)
     return (
         select_cote_offer(
             _cache_offres(cache), ETATS_COTE_ACCEPTES, prix_max,
-            derniere_offre_cents=_retained_offer_cents(cache),
+            derniere_offre=_retained_offer(cache, display),
+            releve=Releve(age=display.age, le=display.since, perimee=display.stale),
         ),
         select_historical_low(_cache_releves(cache)),
     )
 
 
-def _retained_offer_cents(cache: BookMarketCache | None) -> int | None:
-    """Prix de la dernière offre retenue par une collecte précédente.
+def _retained_offer(
+    cache: BookMarketCache | None, display: CoteDisplay | None = None,
+) -> DerniereOffre | None:
+    """Prix de la dernière offre retenue par une collecte précédente, et son âge.
 
     Une cote en base garde le prix qu'elle a retenu même quand la collecte du jour
     échoue ou ne rend rien : ce prix n'est pas la cote du jour, mais il existe, et
-    l'effacer ferait perdre une information que l'utilisateur avait déjà lue.
+    l'effacer ferait perdre une information que l'utilisateur avait déjà lue. Son
+    âge l'accompagne : au-delà de son rythme plus la tolérance, il ne s'affiche
+    plus comme un montant.
     """
     if cache is None or cache.comparison_status != ComparisonStatus.AVAILABLE:
         return None
-    return _positive(cache.lowest_delivered_price_cents)
+    facts = display or cote_display(cache)
+    if facts.cents is None:
+        return None
+    return DerniereOffre(
+        cents=facts.cents,
+        releve=Releve(age=facts.age, le=facts.since, perimee=facts.stale),
+    )
 
 
 def _cache_offres(cache: BookMarketCache | None) -> list[OffreCote] | None:
@@ -767,7 +795,7 @@ class MarketPriceService:
         book: Book | None,
         books_in_series: list[Book] | None = None,
         tome_result: "TomeMatchResult | None" = None,
-        *, for_creation: bool = False,
+        *, for_creation: bool = False, now: datetime | None = None,
     ) -> str | None:
         """Génère la ligne de comparaison épurée pour la légende Telegram."""
 
@@ -783,7 +811,9 @@ class MarketPriceService:
 
 
         if book and book.market_cache and not (tome_result and tome_result.is_lot):
-            summary = MarketPriceService._single_book_summary(listing, book, tome_result)
+            summary = MarketPriceService._single_book_summary(
+                listing, book, tome_result, now,
+            )
 
             if summary is not None:
                 return summary
@@ -835,6 +865,7 @@ class MarketPriceService:
         listing: Listing,
         book: Book,
         tome_result: "TomeMatchResult | None",
+        now: datetime | None = None,
     ) -> str | None:
         """Ligne de cote d'un tome unique, comparée au prix le plus bas connu."""
         cache = book.market_cache
@@ -861,7 +892,7 @@ class MarketPriceService:
             low_price_line(reference_cents, tome_suffix)
 
             if is_historical
-            else MarketPriceService._market_price_line(cache, tome_suffix)
+            else MarketPriceService._market_price_line(cache, tome_suffix, now)
         ]
 
         vinted_total = _vinted_total_cents(listing)
@@ -882,12 +913,18 @@ class MarketPriceService:
         return aware < datetime.now(UTC)
 
     @staticmethod
-    def _market_price_line(cache: BookMarketCache, tome_suffix: str = "") -> str:
+    def _market_price_line(
+        cache: BookMarketCache, tome_suffix: str = "", now: datetime | None = None,
+    ) -> str:
         """Ligne de repli : prix du marché du jour, avec le marchand le moins cher."""
         provider = (cache.best_provider_name or "").replace("_", " ").title()
         provider_suffix = f" ({provider})" if provider else ""
-        price = format_cents(_positive(cache.lowest_delivered_price_cents) or 0)
-        return f"<b>Dernière offre connue{tome_suffix} :</b> {price}{provider_suffix}"
+        display = cote_display(cache, now)
+        return cote_value_line(
+            FIELD_LAST_OFFER, display.cents,
+            stale=display.stale, age=display.age, since=display.since,
+            qualifier=tome_suffix, suffix=provider_suffix,
+        )
 
     @staticmethod
     def _lot_summary(
@@ -937,6 +974,7 @@ class MarketPriceService:
         next_check_at: datetime | None = None,
         series_title: str | None = None,
         preferred_isbns: dict[int, str] | None = None,
+        now: datetime | None = None,
     ) -> str:
         """Génère le texte complet du panneau callback « Prix du marché ».
 
@@ -952,6 +990,9 @@ class MarketPriceService:
         `next_check_at` n'est fourni que lorsque le planificateur confirme que ce
         livre entre dans une prochaine passe ; la ligne « Prochaine » est absente
         dans tous les autres cas.
+
+        `now` est l'instant où la fraîcheur des cotes est jugée : un seul pour tout
+        le panneau, pour que deux lignes du même écran ne puissent pas se contredire.
         """
         books_in_series = books_in_series or []
         initial_book = book
@@ -997,7 +1038,9 @@ class MarketPriceService:
             # La sélection d'un tome garde ses détails, jamais d'écart avec le total de l'annonce.
             card = MarketPriceService._lot_card(books_in_series, tome_result.lot_tomes)
             if book:
-                details = MarketPriceService._single_book_card(book, [], latest_snapshot, None)
+                details = MarketPriceService._single_book_card(
+                    book, [], latest_snapshot, None, now=now,
+                )
                 card = details + "\n\n" + card.split("\n\n", 1)[-1]
             books_in_series = _match_lot_books(books_in_series, tome_result.lot_tomes or [])
         elif not book and tome_result and tome_result.tome_number is not None:
@@ -1015,7 +1058,7 @@ class MarketPriceService:
         else:
             card = MarketPriceService._single_book_card(
                 book, books_in_series, latest_snapshot, series_total_cents,
-                series_title, preferred_isbns,
+                series_title, preferred_isbns, now,
             )
 
         if (ambiguous_number is not None or (
@@ -1167,8 +1210,14 @@ class MarketPriceService:
         series_total_cents: int | None = None,
         series_title: str | None = None,
         preferred_isbns: dict[int, str] | None = None,
+        now: datetime | None = None,
     ) -> str:
-        """Panneau d'un tome résolu : cote 1 an, comparatif par boutique, série."""
+        """Panneau d'un tome résolu : cote 1 an, comparatif par boutique, série.
+
+        ``now`` fixe l'instant où la fraîcheur de la cote est jugée : le même pour
+        tout le panneau, pour qu'une ligne ne puisse pas être fraîche pendant qu'une
+        autre, rendue une milliseconde plus tard, ne le soit plus.
+        """
         cache = book.market_cache if book else None
         reference_cents, is_historical = reference_price(cache)
         snapshots = book.__dict__.get("snapshots") if book else None
@@ -1198,10 +1247,13 @@ class MarketPriceService:
             )
         if book is not None and book.isbn13:
             lines.append(f"<b>ISBN :</b> <code>{html.escape(book.isbn13)}</code>")
-        current_price = _positive(cache.lowest_delivered_price_cents)
+        display = cote_display(cache, now)
 
-        if current_price is not None:
-            lines.append(f"<b>Dernière offre connue :</b> {format_cents(current_price)}")
+        if display.cents is not None:
+            lines.append(cote_value_line(
+                FIELD_LAST_OFFER, display.cents,
+                stale=display.stale, age=display.age, since=display.since,
+            ))
         else:
             lines.append("Offre actuelle indisponible.")
 

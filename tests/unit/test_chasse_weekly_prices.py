@@ -62,8 +62,9 @@ def test_partial_and_failed_collections_preserve_values_and_component_freshness(
     assert cache.source_history == history
     assert cache.historical_checked_at == historical_checked
     assert cache.last_successful_collection_at == current_checked
+    # Un échec n'avance pas l'échéance : l'historique reprend son rythme mensuel.
     assert component_due(cache, "history", failure.collected_at) == (
-        failure.collected_at + timedelta(hours=6)
+        failure.collected_at + timedelta(days=30)
     )
     assert component_due(cache, "current", failure.collected_at) == (
         initial.collected_at + timedelta(days=7)
@@ -98,7 +99,7 @@ def test_verified_empty_history_is_dated_without_source_history():
     assert component_success_at(cache, "current") == checked
     assert component_success_at(cache, "history") == checked
     assert component_due(cache, "history", checked + timedelta(days=6)) == (
-        checked + timedelta(days=7)
+        checked + timedelta(days=30)
     )
     assert not collection_due(cache, checked + timedelta(days=6))
     assert collection_due(cache, checked + timedelta(days=7))
@@ -125,7 +126,9 @@ def test_creation_and_panel_use_the_same_source_minimum_without_diagnostics(titl
                           "relevé(s)", "non vérifiable", "Dernière vérif."):
             assert forbidden not in text
     assert "Dernière MAJ :" in panel
-    assert "Prochaine MAJ :" not in panel
+    # L'échéance est celle que la politique vient de calculer : le panneau la
+    # publie telle quelle, il ne la recalcule pas.
+    assert "Prochaine MAJ :" in panel
 
 
 def test_explicit_second_volume_is_not_replaced_by_the_only_first_volume():
@@ -263,8 +266,11 @@ async def test_current_retry_preserves_the_history_obtained_in_the_first_attempt
             ))
 
     book = Book(title="Jean Doux", isbn13="9782756079332", market_cache=None)
+    # Portée « creation » : une journée de collecte ne demande plus qu'une
+    # composante, mais une reprise de cote ne doit pas emporter l'historique déjà
+    # reçu avec elle. Le contrat vérifié ici est celui de la reprise.
     offers = await fetch_offers_for_book(book, registry=ProviderRegistry(providers=[Source()]),
-                                         retry_transient=True)
+                                         retry_transient=True, scope="creation")
     assert scopes == [frozenset({"current", "history"}), frozenset({"current"})]
     assert point in offers
     assert current in offers

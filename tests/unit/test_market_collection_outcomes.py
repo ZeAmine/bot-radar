@@ -27,22 +27,27 @@ async def test_successful_empty_catalogue_has_no_failed_provider():
     assert collection.failed_providers == ()
 
 
-async def test_empty_catalogue_does_not_emit_an_incident(monkeypatch):
+async def test_a_collection_without_any_offer_emits_no_incident(monkeypatch):
+    """Contrat : « aucune offre » n'est pas un incident de source, la passe se tait.
+
+    L'alerte « aucune cote » a disparu avec la famille du bilan de passe : un
+    catalogue vide est un fait par livre, pas une panne de fournisseur. Ce qui
+    reste immédiat, c'est l'échec nommé d'une source (`notify_refresh_result`).
+    """
     sent = AsyncMock()
     monkeypatch.setattr(market_health, "notify_admins", sent)
     client = MagicMock()
     client.set = AsyncMock(return_value=True)
     monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
-    await market_health.notify_no_prices_found(3, 3, 0, incremental=False, mode_label="complet")
+    report = market_health.RefreshPassResult(
+        total=3,
+        stats={"processed": 3, "refreshed": 0, "available": 0, "unavailable": 3,
+               "degraded": 0, "errors": 0},
+        attempts=[],
+    )
+    await market_health.notify_refresh_result(report)
     sent.assert_not_awaited()
-
-
-async def test_redis_failure_does_not_repeat_the_same_incident(monkeypatch):
-    client = MagicMock()
-    client.set = AsyncMock(side_effect=ConnectionError())
-    monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
-    assert await market_health._claim_no_prices_notification_slot()
-    assert not await market_health._claim_no_prices_notification_slot()
+    assert not hasattr(market_health, "notify_no_prices_found")
 
 
 async def test_scheduler_and_panel_share_one_collection(monkeypatch):

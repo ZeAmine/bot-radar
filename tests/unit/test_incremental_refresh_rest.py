@@ -41,9 +41,16 @@ async def _linked_book(session, user: User, category: Category, *, title: str) -
 
 
 @pytest.mark.asyncio
-async def test_a_recent_failed_collection_waits_before_the_next_incremental_pass():
-    """Le lot de 8 rejouait les mêmes échecs : checked_at restait vide, donc en tête."""
+async def test_a_recent_failed_collection_waits_before_its_next_rhythm():
+    """Un échec replace le livre à son rythme, il ne le renvoie pas dans la file.
+
+    L'ancienne politique interrogeait un livre toutes les six heures après un
+    échec ; la nouvelle le remet au rythme de sa zone. Un livre tenté il y a une
+    heure n'est donc plus candidat, un livre tenté il y a huit jours l'est, et un
+    livre jamais lu l'est aussi.
+    """
     now = datetime.now(UTC)
+    fresh_reading = now - timedelta(days=1)
     async with sqlite_only_database() as database:
         session = database.session
         user, category = await _catalogue(session)
@@ -57,16 +64,24 @@ async def test_a_recent_failed_collection_waits_before_the_next_incremental_pass
                     comparison_status=ComparisonStatus.UNAVAILABLE,
                     collection_status="failed",
                     checked_at=None,
+                    historical_checked_at=fresh_reading,
                     last_attempt_at=now - timedelta(hours=1),
                     failed_provider_names=["chasse_aux_livres"],
+                    refresh_state={"current": {
+                        "due_at": (now + timedelta(days=7)).isoformat(), "failures": 1,
+                    }},
                 ),
                 BookMarketCache(
                     book_id=due.id,
                     comparison_status=ComparisonStatus.UNAVAILABLE,
                     collection_status="failed",
                     checked_at=None,
-                    last_attempt_at=now - timedelta(hours=FAILED_COLLECTION_REST_HOURS, minutes=5),
+                    historical_checked_at=fresh_reading,
+                    last_attempt_at=now - timedelta(hours=1),
                     failed_provider_names=["chasse_aux_livres"],
+                    refresh_state={"current": {
+                        "due_at": (now - timedelta(hours=1)).isoformat(), "failures": 1,
+                    }},
                 ),
             ]
         )
@@ -128,25 +143,38 @@ async def test_paused_books_are_refreshed_but_deleted_books_are_not():
         assert deleted.id != paused.id
 
 
-async def test_failed_retry_does_not_starve_an_older_unattempted_book():
+async def test_la_file_sert_l_echeance_la_plus_ancienne_pas_la_plus_recente_tentative():
+    """Un échec récent ne passe pas devant une échéance plus ancienne.
+
+    L'ancienne sélection donnait au livre jamais tenté une priorité absolue et au
+    livre en échec un droit de retour permanent. Ici l'ordre est l'échéance par
+    composante : celle qui attend depuis deux jours passe avant celle qui vient
+    d'échouer, quel que soit le nombre de tentatives ratées.
+    """
     now = datetime.now(UTC)
     async with sqlite_only_database() as database:
         session = database.session
         user, category = await _catalogue(session)
         failure = await _linked_book(session, user, category, title="Échec")
         waiting = await _linked_book(session, user, category, title="Attente")
+        echec = now - timedelta(minutes=5)
+        attente = now - timedelta(days=2)
         session.add_all([
-            BookMarketCache(book_id=failure.id, collection_status="failed",
-                            last_attempt_at=now-timedelta(hours=7)),
-            BookMarketCache(book_id=waiting.id, checked_at=now-timedelta(days=3),
-                            expires_at=now-timedelta(days=2)),
+            BookMarketCache(
+                book_id=failure.id, collection_status="failed",
+                last_attempt_at=echec, next_refresh_at=echec,
+                refresh_state={"current": {"due_at": echec.isoformat(), "failures": 1}},
+            ),
+            BookMarketCache(
+                book_id=waiting.id, collection_status="failed",
+                last_attempt_at=attente, next_refresh_at=attente,
+                refresh_state={"current": {"due_at": attente.isoformat()}},
+            ),
         ])
         await session.commit()
         repo = BookRepository(session)
-        await repo.plan_price_refreshes(now=now, capacity=1)
-        selected = await repo.get_books_needing_price_refresh(
-            limit=1, now=now+timedelta(minutes=31),
-        )
+        await repo.plan_price_refreshes(now=now)
+        selected = await repo.get_books_needing_price_refresh(limit=1, now=now)
         assert [book.id for book in selected] == [waiting.id]
 
 
@@ -274,6 +302,7 @@ async def test_resting_book_with_past_slot_is_not_selected():
     créneau échu et occupait sinon un des 8 créneaux de chaque passe.
     """
     now = datetime.now(UTC)
+    fresh_reading = now - timedelta(days=1)
     async with sqlite_only_database() as database:
         session = database.session
         user, category = await _catalogue(session)
@@ -282,14 +311,21 @@ async def test_resting_book_with_past_slot_is_not_selected():
         session.add_all([
             BookMarketCache(
                 book_id=resting.id, collection_status="failed",
+                historical_checked_at=fresh_reading,
                 last_attempt_at=now - timedelta(hours=1),
                 next_refresh_at=now - timedelta(hours=3),
+                refresh_state={"current": {
+                    "due_at": (now + timedelta(days=7)).isoformat(), "failures": 1,
+                }},
             ),
             BookMarketCache(
                 book_id=due.id, collection_status="failed",
-                last_attempt_at=now - timedelta(hours=FAILED_COLLECTION_REST_HOURS,
-                                              minutes=5),
+                historical_checked_at=fresh_reading,
+                last_attempt_at=now - timedelta(hours=1),
                 next_refresh_at=now - timedelta(hours=3),
+                refresh_state={"current": {
+                    "due_at": (now - timedelta(hours=1)).isoformat(), "failures": 1,
+                }},
             ),
         ])
         await session.commit()
@@ -323,8 +359,15 @@ async def test_due_book_with_open_slot_is_selected():
     assert [b.id for b in selected] == [book.id]
 
 
-async def test_batch_size_and_half_hour_slots_are_unchanged():
-    """Le lot reste borné à 8 et les créneaux restent à :15/:45."""
+async def test_planifier_ne_pose_plus_de_grille_et_ne_deplace_pas_une_echeance():
+    """L'échéance vient du relevé, jamais d'un créneau horaire.
+
+    L'ancienne planification rangeait les livres dans les créneaux :15/:45 des
+    passes de 07:00 et 19:00. Il ne reste qu'un travail : donner une échéance aux
+    livres qui n'en ont pas — ici « dû maintenant » pour un livre jamais coté — et
+    laisser intacte toute échéance déjà écrite. Le lot de huit n'est plus un rang
+    dans une grille mais le plafond de sécurité d'un appel qui n'en donne pas.
+    """
     now = datetime.now(UTC).replace(minute=50, second=0, microsecond=0)
     async with sqlite_only_database() as database:
         session = database.session
@@ -342,8 +385,9 @@ async def test_batch_size_and_half_hour_slots_are_unchanged():
         await repo.plan_price_refreshes(now=now)
         first = await repo.get_books_needing_price_refresh(limit=8, now=now)
         assert len(first) == 8
-        planned = {book.market_cache.next_refresh_at for book in books
-                   if book not in first}
-        assert all(slot.replace(tzinfo=UTC) > now for slot in planned)
-        assert all(slot.replace(tzinfo=UTC).minute in (15, 45) for slot in planned)
-        assert all(slot.replace(tzinfo=UTC).second == 0 for slot in planned)
+        assert {book.id for book in first} == {book.id for book in books[:8]}
+        deja_datees = [book.market_cache.next_refresh_at for book in books[:8]]
+        assert all(moment.replace(tzinfo=UTC) == now - timedelta(hours=2)
+                   for moment in deja_datees)
+        planifiees = [book.market_cache.next_refresh_at for book in books[8:]]
+        assert all(moment.replace(tzinfo=UTC) == now for moment in planifiees)

@@ -12,6 +12,7 @@ import pytest
 from app.bot.labels import cote_line, low_line
 from app.domain.rules.cote_outcome import (
     ETATS_COTE_ACCEPTES,
+    DerniereOffre,
     OffreCote,
     ReleveHistorique,
     select_cote_offer,
@@ -71,7 +72,7 @@ def test_an_unanswered_source_is_a_failure_not_an_absence():
 
 
 def test_a_previous_price_accompanies_the_absence_without_becoming_the_cote():
-    outcome = select_cote_offer(None, derniere_offre_cents=2059)
+    outcome = select_cote_offer(None, derniere_offre=DerniereOffre(cents=2059))
 
     assert outcome.state == "erreur_recuperation"
     line = cote_line(outcome)
@@ -80,7 +81,7 @@ def test_a_previous_price_accompanies_the_absence_without_becoming_the_cote():
 
 
 def test_a_found_cote_never_quotes_a_previous_price():
-    outcome = select_cote_offer([offre("Momox", 2369)], derniere_offre_cents=2059)
+    outcome = select_cote_offer([offre("Momox", 2369)], derniere_offre=DerniereOffre(cents=2059))
 
     assert "dernière offre connue" not in cote_line(outcome)
 
@@ -163,7 +164,7 @@ def test_every_line_without_a_price_keeps_its_wording():
     assert cote_line(select_cote_offer(None)) == (
         "<b>Cote :</b> récupération impossible, la source n'a pas répondu"
     )
-    assert cote_line(select_cote_offer(None, derniere_offre_cents=2059)) == (
+    assert cote_line(select_cote_offer(None, derniere_offre=DerniereOffre(cents=2059))) == (
         "<b>Cote :</b> récupération impossible, la source n'a pas répondu"
         " (dernière offre connue : 20,59 €)"
     )
