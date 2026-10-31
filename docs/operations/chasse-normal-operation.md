@@ -28,15 +28,13 @@ les limites de concurrence et les reprises CAL restent en place. L'erreur CAL
 3. Maintenir neutralisé l'ancien cron CAL déjà identifié : la maintenance de
    session et les prix sont pris en charge par l'unique scheduler applicatif.
    Ne pas réactiver ce cron ni modifier d'autres tâches système.
-4. Livrer via `scripts/deploy.py`, sans argument pilote ni backfill. Le déployeur
-   garde l'ordre arrêt, sync, build, migration, démarrage, vérification et ses
-   contrôles d'identité PostgreSQL/Redis. Après rsync et avant le build, il supprime
-   seulement sept fichiers obsolètes explicitement nommés : les modules
-   `app/core/pilot_mode.py`, `app/utils/pilot_manifest.py`, la commande
+4. Livrer par la [chaîne de déploiement](deployment.md), sans argument pilote ni
+   backfill. La copie se fait avec suppression : les sept fichiers obsolètes — les
+   modules `app/core/pilot_mode.py`, `app/utils/pilot_manifest.py`, la commande
    `scripts/chasse_pilot.py`, ses trois fichiers de tests et l'ancienne procédure
-   `docs/operations/chasse-pilot-release.md`. Aucun `rsync --delete` général.
-   Un échec de synchronisation ou de retrait interdit le build et le démarrage.
-   Aucun downgrade ni effacement de cache.
+   `docs/operations/chasse-pilot-release.md` — disparaissent du serveur parce
+   qu'ils ne sont plus dans le dépôt. Un échec de copie interdit la construction et
+   le redémarrage. Aucun downgrade ni effacement de cache.
    La notification ordinaire de livraison redevient disponible ; son émission
    doit être comprise dans le mandat de livraison.
 5. Vérifier santé, commandes Telegram, accès ingestion protégé, présence des jobs
