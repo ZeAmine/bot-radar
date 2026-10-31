@@ -639,7 +639,11 @@ async def read_sent_cote_states() -> dict[str, int]:
 class RefreshPassResult:
     total: int
     stats: dict[str, int]
-    incremental: bool = False
+    # Toute passe est désormais bornée : elle sert ce que le régulateur accorde,
+    # jamais la population entière. Il n'y a donc plus deux modes de passe ; ce
+    # champ ne dit plus qu'une chose, et la même pour toutes : couvrir sa sélection
+    # ne prouve rien sur la population.
+    incremental: bool = True
     occurrence: str | None = None
     interrupted: bool = False
     technical_interruption: bool = False
@@ -648,6 +652,11 @@ class RefreshPassResult:
     never_collected: int | None = None
     stale_current: int | None = None
     stale_history: int | None = None
+    # Livres dont une composante dépasse son échéance au-delà de la tolérance
+    # d'affichage : ce sont eux qui, à l'écran, ne montrent plus un montant mais
+    # une phrase d'âge. Le compte est publié à chaque passe pour que ce retard
+    # soit une mesure et non une impression.
+    out_of_rhythm: int | None = None
 
 
 _incident_states: dict[str, dict[str, float]] = {}
@@ -658,14 +667,33 @@ _incident_lock = asyncio.Lock()
 _INCIDENT_KEY = "radar:market:incidents:v2"
 
 
+async def count_out_of_rhythm_books(session: Any) -> int:
+    """Livres dont une composante a dépassé son échéance au-delà de la tolérance.
+
+    C'est la mesure du modèle par composante : un livre est hors de son rythme
+    quand son retard ne tient plus dans la tolérance d'affichage, c'est-à-dire
+    quand sa cote ne peut plus se lire comme un montant. Le seuil est celui de
+    l'écran, pas un seuil de surveillance à part — un livre « en retard » pour la
+    mesure et « frais » pour l'affichage serait un mensonge de l'un ou de l'autre.
+    """
+    from app.db.repositories.book_repo import BookRepository
+    from app.services.market_refresh_policy import out_of_rhythm
+
+    moment = datetime.now(UTC)
+    books = await BookRepository(session).get_books_for_active_bd_alerts()
+    return sum(1 for book in books if out_of_rhythm(book.market_cache, moment))
+
+
 async def read_refresh_health(result: RefreshPassResult, session: Any) -> None:
     try:
         counts = await MarketPriceRepository(session).collection_health_counts(
             stale_after=datetime.now(UTC) - timedelta(days=STALE_AFTER_DAYS),
         )
         result.never_collected, result.stale_current, result.stale_history = counts
+        result.out_of_rhythm = await count_out_of_rhythm_books(session)
         logger.info("Fraîcheur des collectes", extra={"never_collected": counts[0],
-                    "stale_current": counts[1], "stale_history": counts[2]})
+                    "stale_current": counts[1], "stale_history": counts[2],
+                    "out_of_rhythm": result.out_of_rhythm})
     except Exception:
         logger.warning("Diagnostic de fraîcheur indisponible", exc_info=True)
 
@@ -778,8 +806,7 @@ async def notify_refresh_result(result: RefreshPassResult) -> None:
                      if result.selection_known else "inconnu")
         skipped = sum(a.status == "skipped" for a in result.attempts)
         lines = [
-            "🔄 <b>Rafraîchissement "
-            + ("incrémental" if result.incremental else "complet") + "</b>",
+            "🔄 <b>Rafraîchissement des cotes</b>",
             f"Traités : {stats['processed']}/{population} livres",
             f"Actualisées : {stats['refreshed']} collectes avec offre",
             f"Caches réutilisés : {stats.get('reused', 0)}",

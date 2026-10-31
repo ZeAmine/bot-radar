@@ -8,6 +8,7 @@ from typing import Any
 from apscheduler.events import EVENT_JOB_SUBMITTED, JobSubmissionEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.config import settings
 from app.services.market_health import check_cal_storage_health
@@ -86,42 +87,20 @@ def create_scheduler() -> AsyncIOScheduler:
         id="check_cal_storage_health", max_instances=1, coalesce=True, replace_existing=True,
     )
 
-    # Format attendu : « 07:00,19:00 ».
-    times = [t.strip() for t in settings.PRICE_REFRESH_TIMES.split(",") if ":" in t]
-    for time_str in times:
-        try:
-            hour_str, minute_str = time_str.split(":")
-            hour = int(hour_str)
-            minute = int(minute_str)
-
-            scheduler.add_job(
-                refresh_job(f"refresh_prices_{hour:02d}_{minute:02d}"),
-                trigger=CronTrigger(hour=hour, minute=minute, timezone="Europe/Paris"),
-                id=f"refresh_prices_{hour:02d}_{minute:02d}",
-                name=f"Rafraîchissement des prix BD à {hour:02d}:{minute:02d}",
-                replace_existing=True,
-                max_instances=1,
-                coalesce=True,
-            )
-            logger.info(
-                "Job planifié : rafraîchissement BD à %02d:%02d Europe/Paris.", hour, minute
-            )
-        except Exception as exc:
-            logger.error(
-                "Format d'horaire invalide pour PRICE_REFRESH_TIMES '%s': %s", time_str, exc
-            )
-
     scheduler.add_job(
-        refresh_job("refresh_prices_incremental", incremental=True, batch_size=8),
-        trigger=CronTrigger(minute="15,45", timezone="Europe/Paris"),
-        id="refresh_prices_incremental",
-        name="Rafraîchissement glissant des prix BD",
+        refresh_job("refresh_prices"),
+        trigger=IntervalTrigger(minutes=max(1, settings.PRICE_PASS_INTERVAL_MINUTES)),
+        id="refresh_prices",
+        name="Rafraîchissement des prix BD",
         next_run_time=datetime.now(UTC),
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    logger.info("Job planifié : rafraîchissement BD toutes les 30 min, huit livres au plus.")
+    logger.info(
+        "Job planifié : rafraîchissement BD toutes les %d min, à la capacité du régulateur.",
+        max(1, settings.PRICE_PASS_INTERVAL_MINUTES),
+    )
 
     scheduler.add_job(
         run_night_book_maintenance,

@@ -204,7 +204,7 @@ class AlertRepository:
             return None
         return current if snapshot.matches(current) else None
 
-    async def scheduled_catalogue_ids(self, *, incremental: bool) -> list[uuid.UUID]:
+    async def scheduled_catalogue_ids(self) -> list[uuid.UUID]:
         """Résout les alertes sans livre et redécouvre quotidiennement les séries."""
         stmt = select(Alert.id).join(Category).where(
             Category.slug == "bd_comics", Alert.deleted_at.is_(None),
@@ -217,7 +217,6 @@ class AlertRepository:
              | (Alert.catalogue_refresh_attempted_at <= datetime.now(UTC)-timedelta(hours=24))),
         ).order_by(Alert.catalogue_refresh_attempted_at.asc().nulls_first(),
                    Alert.created_at, Alert.id)
-        _ = incremental
         stmt = stmt.limit(4)
         return list((await self.session.scalars(stmt)).all())
 

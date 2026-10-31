@@ -53,7 +53,10 @@ class Settings(BaseSettings):
     # interrogée ni annoncée, et l'app démarre sans.
     GOOGLE_BOOKS_API_KEY: SecretStr = SecretStr("")
 
-    PRICE_REFRESH_TIMES: str = "07:00,19:00"
+    # Cadence de la passe de cote. Une seule passe, donc un seul intervalle : la
+    # longueur de la fenêtre du régulateur (15 min), pour que chaque place libérée
+    # soit réclamée par la passe suivante sans jamais en demander plus.
+    PRICE_PASS_INTERVAL_MINUTES: int = 15
 
     RADAR_API_URL: str = "http://127.0.0.1:8000"
     BOTRADAR_API_URL: str | None = None

@@ -3,7 +3,7 @@
 import re
 import uuid
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import cast
 
 from sqlalchemy import delete, select, update
@@ -227,62 +227,70 @@ class BookRepository:
         return books
 
     async def plan_price_refreshes(self, *, now: datetime | None = None,
-                                  capacity: int = 8,
                                   book_ids: set[uuid.UUID] | None = None) -> None:
-        from app.services.market_refresh_policy import aware, component_due, next_refresh_slot
+        """Donne une échéance aux livres qui n'en ont pas encore.
+
+        La grille de créneaux a disparu avec les passes de 07:00 et 19:00. Un
+        livre n'attend plus un rang dans un lot : il attend **son** échéance, et
+        c'est la capacité réelle du régulateur, lue à chaque passe, qui décide
+        combien de livres partent. Distribuer des créneaux ici reviendrait à
+        réinventer une file parallèle qui ne dit rien de la vraie.
+
+        Reste donc le seul travail qu'aucune autre écriture ne fait : créer le
+        cache d'un livre jamais coté et combler une ligne antérieure au modèle par
+        composante. Une échéance déjà écrite n'est jamais déplacée.
+        """
+        from app.services.market_refresh_policy import aware, next_component_due
 
         moment = now or datetime.now(UTC)
         books = await self.get_books_for_active_bd_alerts()
-        occupied: dict[datetime, int] = {}
-        pending: list[Book] = []
-        for book in sorted(books, key=lambda item: (
-            aware(item.market_cache.next_refresh_at)
-            if item.market_cache and item.market_cache.next_refresh_at else moment,
-        )):
-            cache = book.market_cache
-            if cache is not None and cache.next_refresh_at is not None:
-                slot = aware(cache.next_refresh_at)
-                if book_ids is not None and book.id in book_ids:
-                    due = min(component_due(cache, component, moment)
-                              for component in ("current", "history"))
-                    if slot < due and cache.collection_status != "deferred":
-                        cache.next_refresh_at = None
-                        pending.append(book)
-                        continue
-                if slot > moment:
-                    slot = next_refresh_slot(slot)
-                    if cache.collection_status != "deferred" and (
-                        book_ids is None or book.id in book_ids
-                    ):
-                        cache.next_refresh_at = slot
-                occupied[slot] = occupied.get(slot, 0) + 1
-            elif book_ids is None or book.id in book_ids:
-                pending.append(book)
-        for book in pending:
+        for book in books:
+            if book_ids is not None and book.id not in book_ids:
+                continue
             cache = book.market_cache
             if cache is None:
                 cache = BookMarketCache(book_id=book.id)
                 self.session.add(cache)
                 book.market_cache = cache
-            due = max(moment, min(component_due(cache, component, moment)
-                                  for component in ("current", "history")))
-            slot = next_refresh_slot(due)
-            while occupied.get(slot, 0) >= capacity:
-                slot += timedelta(minutes=30)
-            cache.next_refresh_at = slot
-            occupied[slot] = occupied.get(slot, 0) + 1
+            if cache.next_refresh_at is not None:
+                continue
+            if cache.collection_status == "deferred":
+                continue
+            cache.next_refresh_at = max(moment, aware(next_component_due(cache, moment)))
         await self.session.flush()
 
     async def get_books_needing_price_refresh(self, limit: int = 8, *,
-                                            now: datetime | None = None) -> list[Book]:
-        from app.services.market_refresh_policy import aware, collection_due
+                                            now: datetime | None = None,
+                                            zones: tuple[str, ...] | None = None) -> list[Book]:
+        """Les livres dus, servis par zone puis du plus ancien relevé au plus récent.
 
-        now = now or datetime.now(UTC)
+        L'ordre est la politique, pas un détail d'implémentation : un livre proche
+        du plafond de son alerte passe avant un livre lointain, parce que c'est lui
+        dont la cote peut déclencher quelque chose. À zone égale, l'échéance la plus
+        ancienne passe d'abord — le service est monotone, donc aucun livre ne peut
+        être doublé indéfiniment.
+
+        Un livre jamais lu est froid (aucune cote à comparer à un plafond) et son
+        échéance vaut maintenant : il arrive donc **après** les livres dont la cote
+        a déjà servi à une décision, jamais devant eux.
+
+        ``zones`` restreint la sélection à certaines zones : c'est ainsi que le
+        balayage nocturne marche les livres froids, au lieu de repasser sur les
+        mêmes livres chauds que la passe de jour.
+        """
+        from app.services.market_refresh_policy import (
+            aware,
+            collection_due,
+            cote_zone_of,
+            zone_rank,
+        )
+
+        moment = now or datetime.now(UTC)
 
         def slot_open(book: Book) -> bool:
             cache = book.market_cache
             return (cache is not None and cache.next_refresh_at is not None
-                    and aware(cache.next_refresh_at) <= now)
+                    and aware(cache.next_refresh_at) <= moment)
 
         def scheduled(book: Book) -> datetime:
             cache = cast(BookMarketCache, book.market_cache)
@@ -290,8 +298,10 @@ class BookRepository:
 
         books = await self.get_books_for_active_bd_alerts()
         eligible = [book for book in books
-                    if slot_open(book) and collection_due(book.market_cache, now)]
-        eligible.sort(key=lambda book: (scheduled(book), str(book.id)))
+                    if slot_open(book) and collection_due(book.market_cache, moment)
+                    and (zones is None or cote_zone_of(book.market_cache) in zones)]
+        eligible.sort(key=lambda book: (zone_rank(cote_zone_of(book.market_cache)),
+                                        scheduled(book), str(book.id)))
         return eligible[:limit]
 
     async def get_book_for_alert(self, alert_id: uuid.UUID) -> Book | None:

@@ -46,7 +46,7 @@ async def _select(repository: BookRepository, now: datetime):
 
 
 async def _plan(repository: BookRepository, now: datetime) -> None:
-    await repository.plan_price_refreshes(now=now, capacity=CAPACITY)
+    await repository.plan_price_refreshes(now=now)
 
 
 async def _persist(

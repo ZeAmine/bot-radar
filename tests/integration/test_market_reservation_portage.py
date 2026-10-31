@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.db.models import Alert, AlertBook, Book, BookMarketCache, Category, User
+from app.db.repositories.book_repo import BookRepository
 from app.providers.base import CollectionAttempt, MarketOffer, MarketOffers
 from app.services.book_market_pricing import (
     BookPricingResult,
@@ -85,7 +86,9 @@ async def test_direct_persistence_reserves_the_next_eligible_pass(outcome):
             cache = await reader.get(BookMarketCache, written.id)
             assert cache.next_refresh_at is not None
             assert cache.next_refresh_at.replace(tzinfo=UTC) > now
-            assert cache.next_refresh_at.minute in {15, 45}
+            # Plus de grille de créneaux : l'échéance vient de l'état des
+            # composantes, et c'est à leur rythme qu'elle est datée.
+            assert cache.refresh_state, "l'échéance doit venir de l'état des composantes"
             if outcome == "history":
                 assert cache.last_successful_collection_at is None
                 assert cache.lowest_delivered_price_cents is None
@@ -93,7 +96,15 @@ async def test_direct_persistence_reserves_the_next_eligible_pass(outcome):
 
 
 @pytest.mark.parametrize("slot", ["missing", "past", "before_due"])
-async def test_a_fresh_cache_repairs_its_reservation_without_collecting(monkeypatch, slot):
+async def test_a_fresh_cache_is_neither_collected_nor_requeued(monkeypatch, slot):
+    """Un cache frais n'est ni collecté, ni remis dans la file, ni crédité d'un relevé.
+
+    L'ancienne version exigeait que la réservation « répare » l'échéance d'un livre
+    frais (>= due). Le modèle de fraîcheur rend cette réparation inutile : un livre
+    frais n'est pas dû, donc il n'est pas sélectionné, qu'il porte une échéance
+    passée ou aucune. Ce qui reste à prouver : aucune collecte, aucun succès
+    inventé, et une échéance posée quand il n'y en a aucune.
+    """
     async with postgres_replayed_database() as db:
         book = await seed(db.session)
         now = datetime.now(UTC)
@@ -120,8 +131,13 @@ async def test_a_fresh_cache_repairs_its_reservation_without_collecting(monkeypa
         async with db.maker() as reader:
             persisted = await reader.get(BookMarketCache, cache.id)
             assert persisted.next_refresh_at is not None
-            assert persisted.next_refresh_at.replace(tzinfo=UTC) >= due
+            if slot == "missing":
+                assert persisted.next_refresh_at.replace(tzinfo=UTC) == due
             assert persisted.last_successful_collection_at.replace(tzinfo=UTC) == success
+            selected = await BookRepository(reader).get_books_needing_price_refresh(
+                limit=8, now=now,
+            )
+            assert book.id not in {chosen.id for chosen in selected}
 
 
 async def test_recovery_reserves_without_inventing_a_success(monkeypatch):

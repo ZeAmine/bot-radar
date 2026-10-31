@@ -116,6 +116,21 @@ end
 return {'admitted', 'pass', ''}
 """
 
+FREE_PLACES_SCRIPT = """
+local now = tonumber(ARGV[1])
+local pass_window = tonumber(ARGV[2])
+local max_books = tonumber(ARGV[3])
+
+local open_until = tonumber(redis.call('HGET', KEYS[1], 'open_until') or '0')
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - pass_window)
+local free = max_books - redis.call('ZCARD', KEYS[2])
+if free < 0 then free = 0 end
+if now < open_until then
+  return {'0', redis.call('HGET', KEYS[1], 'reason') or 'rest'}
+end
+return {tostring(free), ''}
+"""
+
 ACQUIRE_SCRIPT = """
 local now = tonumber(ARGV[1])
 local token = ARGV[2]
@@ -413,6 +428,30 @@ class CalGovernor:
         if not self.is_open():
             return None
         return datetime.now(UTC) + timedelta(seconds=self._local.open_until - self.wall_now())
+
+    async def free_places(self) -> int:
+        """Places de livre encore libres dans la fenêtre de passe en cours.
+
+        C'est la seule capacité qu'une passe a le droit de demander : le plafond
+        est tenu ici, pas dans une constante recopiée ailleurs. Demander huit
+        livres quand il n'y a deux places ne fait pas travailler la file, cela
+        fait refuser six collectes avant leur première requête.
+
+        Une source au repos rend zéro : rien n'est dû à un catalogue fermé. Un
+        stockage muet, lui, n'invente pas une capacité nulle — il rend la capacité
+        nominale, que l'admission bornera de toute façon.
+        """
+        raw = await self._run(
+            FREE_PLACES_SCRIPT,
+            str(self.wall_now()), str(self.pass_window_seconds), str(self.max_books_per_pass),
+            keys=[self.key, self.admit_key],
+        )
+        if not isinstance(raw, list) or not raw:
+            return self.max_books_per_pass
+        try:
+            return max(0, int(float(raw[0])))
+        except (TypeError, ValueError):
+            return self.max_books_per_pass
 
     async def suspend(self, reason: str, seconds: float) -> None:
         until = self.wall_now() + max(1.0, seconds)

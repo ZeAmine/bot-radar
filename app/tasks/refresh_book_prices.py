@@ -17,7 +17,7 @@ from app.db.repositories.book_repo import BookRepository
 from app.db.session import AsyncSessionLocal
 from app.domain.enums import AlertStatus
 from app.providers.base import CollectionAttempt, MarketOffer, extract_best_historical_low
-from app.providers.cal_governor import pass_occurrence
+from app.providers.cal_governor import cal_governor, pass_occurrence
 from app.providers.registry import ProviderRegistry
 from app.services.book_market_pricing import (
     BookPricingResult,
@@ -39,13 +39,10 @@ logger = logging.getLogger(__name__)
 BOOK_FETCH_CONCURRENCY = 2
 # Durée maximale d'une passe : au-delà, les livres restants attendront la suivante.
 MAX_PASS_DURATION_SECONDS = 900.0
-DEFAULT_BATCH_SIZE = 8
 
-# Pause anti-rate-limit entre deux vagues, en mode incrémental puis complet.
-PAUSE_RANGES: dict[bool, tuple[float, float]] = {
-    True: (1.2, 2.2),
-    False: (2.5, 3.8),
-}
+# Pause anti-rate-limit entre deux vagues. Une seule valeur : il n'y a plus qu'une
+# sorte de passe, donc plus de pause « de jour » et « de nuit » à distinguer.
+PAUSE_RANGE: tuple[float, float] = (1.2, 2.2)
 
 
 def _iter_chunks[T](items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
@@ -56,24 +53,39 @@ def _iter_chunks[T](items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
 
 async def _select_books(
     session: AsyncSession | None,
-    incremental: bool,
-    batch_size: int,
+    limit: int,
+    zones: tuple[str, ...] | None = None,
 ) -> list[Book]:
-    """Liste les livres à rafraîchir, en session dédiée en production."""
+    """Liste les livres à rafraîchir, en session dédiée en production.
 
-    _ = incremental
+    ``limit`` est la capacité, jamais une ambition : demander plus de livres que
+    de places libres ne fait pas avancer la file, cela fait refuser des collectes
+    avant leur première requête.
+    """
 
     async def _read(read_session: AsyncSession) -> list[Book]:
         book_repo = BookRepository(read_session)
         async with reservation_lock():
-            await book_repo.plan_price_refreshes(capacity=batch_size)
+            await book_repo.plan_price_refreshes()
             await read_session.commit()
-        return await book_repo.get_books_needing_price_refresh(limit=batch_size)
+        return await book_repo.get_books_needing_price_refresh(limit=limit, zones=zones)
 
     if session is not None:
         return await _read(session)
     async with AsyncSessionLocal() as read_session:
         return await _read(read_session)
+
+
+async def _capacity(batch_size: int | None) -> int:
+    """Places réellement libres, lues au régulateur, bornées par l'appelant.
+
+    Le plafond de livres par fenêtre est tenu par le régulateur partagé : c'est
+    lui qui sait combien de collectes la source accepte encore, et lui seul. Une
+    constante recopiée ici aurait le défaut de ne jamais dire la vérité — le
+    catalogue en a déjà refusé six sur huit pendant des mois.
+    """
+    free = await cal_governor.free_places()
+    return free if batch_size is None else min(batch_size, free)
 
 
 def _pass_stat(cache: BookMarketCache | None) -> str:
@@ -215,12 +227,12 @@ def _occurrence_token(
     return f"{job_id}@{slot.isoformat()}"
 
 
-async def resolve_scheduled_catalogues(*, incremental: bool, deadline: float) -> None:
+async def resolve_scheduled_catalogues(*, deadline: float) -> None:
     """Réutilise la résolution existante sans activer une alerte en pause."""
     from app.use_cases.view_market_details import ViewMarketDetailsUseCase
 
     async with AsyncSessionLocal() as reader:
-        ids = await AlertRepository(reader).scheduled_catalogue_ids(incremental=incremental)
+        ids = await AlertRepository(reader).scheduled_catalogue_ids()
     for alert_id in ids:
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
@@ -250,8 +262,8 @@ _pass_lock: asyncio.Lock | None = None
 async def refresh_book_prices_task(
     registry: ProviderRegistry | None = None,
     session: AsyncSession | None = None,
-    incremental: bool = False,
-    batch_size: int = DEFAULT_BATCH_SIZE,
+    batch_size: int | None = None,
+    zones: tuple[str, ...] | None = None,
     concurrency: int = BOOK_FETCH_CONCURRENCY,
     max_duration_seconds: float = MAX_PASS_DURATION_SECONDS,
     job_id: str | None = None,
@@ -267,18 +279,17 @@ async def refresh_book_prices_task(
                               "unavailable", "degraded", "errors"), 0)
     async with _pass_lock:
         return await _refresh_book_prices_pass(
-            registry=registry, session=session, incremental=incremental,
-            batch_size=batch_size, concurrency=concurrency,
-            max_duration_seconds=max_duration_seconds, job_id=job_id,
-            scheduled_for=scheduled_for, pause_range=pause_range,
+            registry=registry, session=session, batch_size=batch_size, zones=zones,
+            concurrency=concurrency, max_duration_seconds=max_duration_seconds,
+            job_id=job_id, scheduled_for=scheduled_for, pause_range=pause_range,
         )
 
 
 async def _refresh_book_prices_pass(
     registry: ProviderRegistry | None = None,
     session: AsyncSession | None = None,
-    incremental: bool = False,
-    batch_size: int = DEFAULT_BATCH_SIZE,
+    batch_size: int | None = None,
+    zones: tuple[str, ...] | None = None,
     concurrency: int = BOOK_FETCH_CONCURRENCY,
     max_duration_seconds: float = MAX_PASS_DURATION_SECONDS,
     job_id: str | None = None,
@@ -287,13 +298,21 @@ async def _refresh_book_prices_pass(
 ) -> dict[str, int]:
     """Rafraîchit les prix de marché pour les livres associés à des alertes BD actives.
 
+    Il n'y a qu'une sorte de passe. L'ancienne distinction « incrémental / complet »
+    ne décrivait rien : les deux passes de 07:00 et 19:00 lisaient un drapeau puis
+    l'ignoraient, si bien qu'elles prenaient exactement le même lot que la passe
+    glissante. Reste une seule file, servie par ordre de zone puis d'échéance, et
+    bornée par la capacité que le régulateur veut bien accorder sur le moment.
+
     Args:
         registry: Registre des fournisseurs de marché (par défaut: tous les providers).
         session: Session SQLAlchemy optionnelle (utilisée principalement par les tests).
-        incremental: Si True, traite uniquement un micro-lot prioritaire (cache expiré ou absent)
-                     afin de lisser la charge 24h/24 sans aucun pic de performance.
-        batch_size: Taille du lot en mode incrémental (défaut: 8 livres).
-        concurrency: Livres interrogés simultanément (défaut: 4).
+        batch_size: Plafond local de livres pour cette passe ; la capacité du
+                    régulateur reste la borne stricte. Absent, elle seule décide.
+        zones: Restreint la passe à certaines zones. Le balayage nocturne s'en
+               sert pour marcher les livres froids, que la file de jour ne sert
+               qu'une fois les chauds et les tièdes écoulés.
+        concurrency: Livres interrogés simultanément (défaut: 2).
         max_duration_seconds: Plafond de durée de la passe ; les livres non atteints
                               sont reportés au prochain passage du scheduler.
         job_id: Identifiant du job planifié qui a déclenché la passe. Il sert à
@@ -302,11 +321,9 @@ async def _refresh_book_prices_pass(
                 deux exécutions distinctes non.
         scheduled_for: Instant que le planificateur **visait** pour cette exécution.
                        C'est lui qui date l'occurrence, jamais l'heure à laquelle le
-                       code tourne : une passe de 19:00 lancée à 19:31 reste
-                       l'occurrence de 19:00.
-        pause_range: Bornes de la pause anti-rate-limit entre deux vagues. Absent,
-                     elles suivent le mode de passe ; une maintenance nocturne
-                     impose les bornes longues sans changer le mode de bilan.
+                       code tourne : une passe lancée à 19:31 reste l'occurrence de
+                       19:30.
+        pause_range: Bornes de la pause anti-rate-limit entre deux vagues.
     """
     if registry is None:
         if session is None:
@@ -334,18 +351,21 @@ async def _refresh_book_prices_pass(
     # Passe coupée par le plafond de durée : fonctionnement prévu d'un lot qui ne
     # tient pas dans sa fenêtre, transmis comme information et non comme alerte.
     interrupted = False
-    report = RefreshPassResult(0, stats, incremental, occurrence, selection_known=False)
+    report = RefreshPassResult(0, stats, occurrence=occurrence, selection_known=False)
+    capacity = await _capacity(batch_size)
     try:
         if session is None:
-            await resolve_scheduled_catalogues(incremental=incremental, deadline=deadline)
-        books = await _select_books(session, incremental, batch_size)
+            await resolve_scheduled_catalogues(deadline=deadline)
+        books = await _select_books(session, capacity, zones) if capacity > 0 else []
 
-
-        mode_label = (
-            f"incrémental ({len(books)} livres)" if incremental
-            else f"complet ({len(books)} livres)"
+        scope_label = "toutes zones" if zones is None else ", ".join(zones)
+        logger.info(
+            "Début du rafraîchissement des prix BD : %d livre(s) retenus sur %d place(s) "
+            "libre(s) (%s).",
+            len(books),
+            capacity,
+            scope_label,
         )
-        logger.info("Début du rafraîchissement des prix BD en mode %s.", mode_label)
 
         report.total = len(books)
         report.selection_known = True
@@ -368,14 +388,11 @@ async def _refresh_book_prices_pass(
             if has_more:
                 # Pause anti-rate-limit une fois par vague : la pression sur les
                 # partenaires reste équivalente à un traitement séquentiel.
-                await asyncio.sleep(
-                    random.uniform(*(pause_range or PAUSE_RANGES[bool(incremental)]))
-                )
+                await asyncio.sleep(random.uniform(*(pause_range or PAUSE_RANGE)))
 
         logger.info(
-            "Rafraîchissement BD terminé (%s) : %d traités, %d mis à jour, "
+            "Rafraîchissement BD terminé : %d traités, %d mis à jour, "
             "%d indisponibles, %d dégradés, %d erreurs.",
-            mode_label,
             stats["processed"],
             stats["refreshed"],
             stats["unavailable"],
@@ -398,5 +415,4 @@ async def _refresh_book_prices_pass(
             logger.warning("Diagnostic de fin de passe indisponible", exc_info=True)
         await notify_refresh_result(report)
 
-    await _select_books(session, incremental, batch_size)
     return stats

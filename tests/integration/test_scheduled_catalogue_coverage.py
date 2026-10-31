@@ -30,7 +30,7 @@ async def test_scheduler_resolves_a_paused_unlinked_book_without_activating_it(m
             return await self.add_book(title=title, isbn13=isbn13), MatchConfidence.HIGH
 
         monkeypatch.setattr(BookCatalogService, "identify_book", identify)
-        await refresh.resolve_scheduled_catalogues(incremental=False, deadline=monotonic()+60)
+        await refresh.resolve_scheduled_catalogues(deadline=monotonic()+60)
         async with db.maker() as reader:
             current = await reader.get(Alert, alert.id)
             assert current.status == AlertStatus.PAUSED
@@ -69,7 +69,7 @@ async def test_scheduled_series_resolution_leaves_pricing_to_bounded_waves(monke
 
         monkeypatch.setattr(BookMetadataService, "lookup_series_notices", discover)
         monkeypatch.setattr(catalog, "schedule_book_pricing", no_unbounded_pricing)
-        await refresh.resolve_scheduled_catalogues(incremental=False, deadline=monotonic()+60)
+        await refresh.resolve_scheduled_catalogues(deadline=monotonic()+60)
         async with db.maker() as session:
             assert await session.scalar(select(AlertBook).where(AlertBook.alert_id == alert.id))
         assert scheduled_requests == []
