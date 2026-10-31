@@ -1,9 +1,21 @@
+"""Une passe ne parle que pour un fait actionnable ; le reste est silence.
+
+Le bilan de passe à quatre compteurs a disparu, avec ses modes « incrémental » et
+« complet » : aucun de ses nombres ne permettait de décider quoi que ce soit. Ce
+qui reste immédiat, c'est le fait — une source durablement en échec, un
+rétablissement, une passe interrompue par une exception —, et rien d'autre.
+"""
+
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.providers.base import CollectionAttempt
 from app.services import market_health
+
+
+def _failed(reason: str = "timeout") -> CollectionAttempt:
+    return CollectionAttempt("momox", status="failed", reason=reason)
 
 
 @pytest.fixture
@@ -18,7 +30,7 @@ def notifier(monkeypatch):
     return AsyncMock(return_value=True)
 
 
-def result(*, incremental=False, occurrence="pass-1", attempts=()):
+def result(*, occurrence="pass-1", attempts=()):
     return market_health.RefreshPassResult(
         total=3,
         stats={
@@ -29,16 +41,15 @@ def result(*, incremental=False, occurrence="pass-1", attempts=()):
             "degraded": 3,
             "errors": 0,
         },
-        incremental=incremental,
         occurrence=occurrence,
         attempts=list(attempts),
     )
 
 
 @pytest.mark.asyncio
-async def test_complete_pass_consolidates_failures_and_freshness_once(notifier):
-    report = result(attempts=[CollectionAttempt("momox", status="failed", reason="timeout"),
-                              CollectionAttempt("gibert", status="skipped")])
+async def test_a_source_incident_is_named_once_and_carries_no_counter(notifier):
+    """Contrat : le message nomme la source et s'arrête là — aucun compteur de passe."""
+    report = result(attempts=[_failed(), CollectionAttempt("gibert", status="skipped")])
     report.never_collected = 2
     report.stale_current = 1
     with patch.object(market_health, "notify_admins", notifier):
@@ -46,29 +57,25 @@ async def test_complete_pass_consolidates_failures_and_freshness_once(notifier):
         await market_health.notify_refresh_result(report)
     assert notifier.await_count == 1
     text = notifier.call_args.args[0]
-    assert "Actualisées : 0" in text
     assert "momox" in text
-    assert "Jamais collectés : 2" in text
-    assert "Tentatives fournisseur non effectuées : 1" in text
-    assert "Offres non actualisées" not in text
+    for counter in ("Actualisées", "Traités", "Jamais collectés", "Non parcourus",
+                    "Restants à traiter", "incrémental", "complet"):
+        assert counter not in text
 
 
 @pytest.mark.asyncio
-async def test_incremental_incident_changes_and_recovery(notifier):
-    failed = CollectionAttempt("momox", status="failed", reason="timeout")
+async def test_an_incident_stays_silent_while_it_lasts_and_reports_its_recovery(notifier):
+    """Contrat : un incident déjà annoncé ne se répète pas ; son rétablissement se dit."""
     with patch.object(market_health, "notify_admins", notifier):
-        await market_health.notify_refresh_result(result(incremental=True, attempts=[failed]))
-        await market_health.notify_refresh_result(result(incremental=True, attempts=[failed]))
-        await market_health.notify_refresh_result(result(incremental=True, attempts=[]))
+        await market_health.notify_refresh_result(result(attempts=[_failed()]))
+        await market_health.notify_refresh_result(result(attempts=[_failed()]))
+        await market_health.notify_refresh_result(result(attempts=[]))
         await market_health.notify_refresh_result(
-            result(incremental=True, attempts=[CollectionAttempt("momox", status="skipped")])
+            result(attempts=[CollectionAttempt("momox", status="skipped")])
         )
         assert notifier.await_count == 1
         await market_health.notify_refresh_result(
-            result(
-                incremental=True,
-                attempts=[CollectionAttempt("momox")],
-            )
+            result(attempts=[CollectionAttempt("momox")])
         )
     assert notifier.await_count == 2
     assert "Rétablissement" in notifier.call_args.args[0]
@@ -76,10 +83,11 @@ async def test_incremental_incident_changes_and_recovery(notifier):
 
 @pytest.mark.asyncio
 async def test_failed_notification_can_be_retried(notifier):
+    """Contrat : un incident non remis n'est pas perdu, la tentative suivante le renvoie."""
     notifier.side_effect = [False, True]
     with patch.object(market_health, "notify_admins", notifier):
-        await market_health.notify_refresh_result(result())
-        await market_health.notify_refresh_result(result())
+        await market_health.notify_refresh_result(result(attempts=[_failed()]))
+        await market_health.notify_refresh_result(result(attempts=[_failed()]))
     assert notifier.await_count == 2
 
 
@@ -90,35 +98,32 @@ async def test_new_incident_aggravation_and_recovery_with_redis_down(notifier, m
     client.set.side_effect = ConnectionError
     monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
     partial = [
-        CollectionAttempt("momox", status="failed", reason="timeout"),
+        _failed(),
         CollectionAttempt("momox"),
         CollectionAttempt("momox"),
     ]
-    worse = [CollectionAttempt("momox", status="failed", reason="timeout")] * 3
+    worse = [_failed()] * 3
     with patch.object(market_health, "notify_admins", notifier):
-        await market_health.notify_refresh_result(result(incremental=True, attempts=partial))
-        await market_health.notify_refresh_result(result(incremental=True, attempts=worse))
+        await market_health.notify_refresh_result(result(attempts=partial))
+        await market_health.notify_refresh_result(result(attempts=worse))
         assert "Aggravation" in notifier.call_args.args[0]
-        await market_health.notify_refresh_result(result(incremental=True, attempts=worse))
+        await market_health.notify_refresh_result(result(attempts=worse))
         assert notifier.await_count == 2
         await market_health.notify_refresh_result(
-            result(
-                incremental=True,
-                attempts=[CollectionAttempt("momox")],
-            )
+            result(attempts=[CollectionAttempt("momox")])
         )
     assert notifier.await_count == 3
 
 
 @pytest.mark.asyncio
-async def test_empty_complete_pass_still_reports(notifier):
+async def test_a_pass_without_a_single_fact_says_nothing(notifier):
+    """Contrat : zéro livre traité et rien à signaler, c'est une passe qui se tait."""
     report = result()
     report.total = 0
     report.stats = dict.fromkeys(report.stats, 0)
     with patch.object(market_health, "notify_admins", notifier):
         await market_health.notify_refresh_result(report)
-    assert notifier.await_count == 1
-    assert "Traités : 0/0" in notifier.call_args.args[0]
+    assert notifier.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -142,20 +147,25 @@ async def test_selection_exception_is_reported_and_still_raised(notifier):
             registry=AsyncMock(), session=AsyncMock()
         )
     assert notifier.await_count == 1
-    assert "Interruption technique" in notifier.call_args.args[0]
+    # Contrat : l'interruption par exception est un fait, et c'est la seule ligne.
+    assert notifier.call_args.args[0] == (
+        "⚠️ Passe de rafraîchissement interrompue avant la fin."
+    )
 
 
 @pytest.mark.asyncio
-async def test_normal_deadline_does_not_create_an_incident(notifier):
+async def test_a_pass_cut_by_the_ceiling_is_the_normal_case_and_is_silent(notifier):
+    """Contrat : une passe coupée par le plafond de durée ne dit plus rien du tout.
+
+    Le message partait deux fois par jour pour décrire un fonctionnement prévu ;
+    la durée d'une passe n'est pas un fait de marché.
+    """
     report = result()
     report.interrupted = True
     report.stats["degraded"] = 0
     with patch.object(market_health, "notify_admins", notifier):
         await market_health.notify_refresh_result(report)
-    text = notifier.call_args.args[0]
-    assert "Plafond de durée atteint" in text
-    assert "incident" not in text
-    assert "⚠️" not in text
+    assert notifier.await_count == 0
 
 
 def test_current_offer_counts_as_refreshed_when_history_fails():

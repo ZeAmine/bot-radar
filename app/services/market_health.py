@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from app.bot.labels import escape_display
 from app.core.alert_latency import observe_background
@@ -257,30 +256,17 @@ async def _notify_stale_collections(
         return 0
 
 
-ERROR_RATIO_THRESHOLD = 0.5
-MIN_ERRORS_FOR_ALERT = 3
-
 SILENT_PROVIDER_AFTER_HOURS = 192
-NO_PRICES_NOTIFY_KEY = "radar:market:no_prices:notified"
-NO_PRICES_NOTIFY_TTL_SECONDS = 20 * 3600
-HIGH_ERROR_NOTIFY_KEY = "radar:market:high_error:notified"
-HIGH_ERROR_NOTIFY_TTL_SECONDS = 20 * 3600
 PROVIDER_RECENT_WINDOW_DAYS = 14
 SILENT_PROVIDER_MIN_OBSERVATIONS = 3
 
 SILENT_NOTIFY_KEY = "radar:market:silent_provider:notified"
 SILENT_NOTIFY_TTL_SECONDS = 20 * 3600
 
-INCOMPLETE_NOTIFY_KEY_PREFIX = "radar:market:pass_report:"
-INCOMPLETE_NOTIFY_TTL_SECONDS = 3600
-
-
-async def _claim_no_prices_notification_slot() -> bool:
-    return await _claim_slot(NO_PRICES_NOTIFY_KEY, NO_PRICES_NOTIFY_TTL_SECONDS)
-
-
-async def _claim_high_error_notification_slot() -> bool:
-    return await _claim_slot(HIGH_ERROR_NOTIFY_KEY, HIGH_ERROR_NOTIFY_TTL_SECONDS)
+# Le bilan quotidien : une fois par jour, trois lignes, trois faits.
+MARKET_SUMMARY_JOB_ID = "market_daily_summary"
+MARKET_SUMMARY_HOUR = 9
+MARKET_SUMMARY_TIMEZONE = "Europe/Paris"
 
 
 async def _claim_silent_notification_slot() -> bool:
@@ -344,249 +330,6 @@ async def notify_silent_providers(session: Any) -> int:
         return 0
 
 
-def next_full_pass_at() -> datetime | None:
-    """Instant de la prochaine passe **complète** planifiée, ou ``None``.
-
-    Les identifiants des passes complètes sont dynamiques (`refresh_prices_HH_MM`,
-    dérivés de `PRICE_REFRESH_TIMES`) : ils se cherchent par préfixe, jamais par un
-    nom écrit en dur qui cesserait de correspondre au premier changement d'horaire.
-    Les passes glissantes à :15/:45 ne sont pas retenues : leur lot ne garantit pas
-    qu'un livre donné en fasse partie.
-    """
-    try:
-        from app.tasks.scheduler import scheduler
-
-        now = datetime.now(UTC)
-        upcoming = []
-        for job in scheduler.get_jobs():
-            if not job.id.startswith("refresh_prices_") or job.id.endswith("_incremental"):
-                continue
-            run_at = getattr(job, "next_run_time", None)
-            if run_at is None:
-                continue
-            aware = run_at if run_at.tzinfo else run_at.replace(tzinfo=UTC)
-            if aware > now:
-                upcoming.append(aware)
-    except Exception as exc:  # pragma: no cover - dépend de l'état du planificateur
-        logger.debug("Prochaine passe complète inconnue : %s", exc)
-        return None
-    return min(upcoming) if upcoming else None
-
-
-def next_full_pass_note() -> str:
-    """Annonce la prochaine passe **complète** planifiée, ou rien si elle est inconnue.
-
-    La règle tient en une phrase : on n'annonce que ce que le planificateur confirme.
-    Les passes glissantes à :15/:45 ne peuvent pas prendre en charge les livres
-    restants — un lot de huit livres par passage ne résorbe pas un arriéré —, donc
-    promettre « le reste suivra » sans nommer la passe complète serait une promesse
-    que rien ne tient. Si le planificateur ne répond pas, on ne dit rien : une phrase
-    en moins vaut mieux qu'une date fausse.
-    """
-    moment = next_full_pass_at()
-    if moment is None:
-        return ""
-    local = (
-        moment.astimezone(ZoneInfo("Europe/Paris"))
-        if moment.tzinfo
-        else moment.replace(tzinfo=UTC).astimezone(ZoneInfo("Europe/Paris"))
-    )
-    return f"\nProchaine passe complète prévue : {local:%d/%m à %H:%M}."
-
-
-async def notify_incomplete_refresh(
-    processed: int,
-    total: int,
-    *,
-    refreshed: int,
-    interrupted: bool,
-    incremental: bool,
-    batch_size: int = 0,
-    occurrence: str | None = None,
-) -> None:
-    """Le bilan d'une passe, quand elle a quelque chose à dire.
-
-    Le silence se décide sur le **type** de passe, pas sur sa réussite :
-
-    - un passage glissant qui a traité sa sélection se tait — huit livres toutes
-      les trente minutes ne se racontent pas, et un message de routine à cette
-      fréquence rendrait invisible celui qui compte ;
-    - une passe **complète** rend son bilan, qu'elle aille au bout ou non. C'est un
-      rendez-vous planifié deux fois par jour, et le seul moment où la file entière
-      est reprise : la taire quand elle réussit laissait l'utilisateur sans nouvelle
-      du passage qui a effectivement tout rafraîchi. Le bilan d'une passe réussie est
-      **court** — quatre nombres et une phrase, sans paragraphe de reprise ;
-    - une passe interrompue, complète ou glissante, décrit sa coupure : par le
-      plafond de durée — fonctionnement normal d'un lot qui ne tient pas dans sa
-      fenêtre, décrit sans devenir un avertissement — ou par une autre raison, qui
-      est alors signalée comme telle.
-
-    Le titre dit le type de passe, jamais son achèvement : une passe complète coupée
-    reste un « Rafraîchissement complet », et c'est la ligne « Restants à traiter »
-    qui dit où elle s'est arrêtée.
-
-    **Un bilan au plus par occurrence planifiée.** `occurrence` est l'identité de
-    l'exécution prévue — l'identifiant du job et l'instant qu'il visait —, fournie
-    par le planificateur. Deux tentatives pour la même occurrence partagent la clé
-    et une seule passe ; deux occurrences distinctes ont deux clés, donc deux
-    bilans, même à douze heures d'écart.
-
-    Les nombres publiés satisfont deux identités, et le lecteur peut les vérifier
-    de tête : `Traités = Mis à jour + Sans mise à jour`, et
-    `Total = Traités + Restants à traiter`. La première vient de ce que « sans mise
-    à jour » est **dérivée** de `processed - refreshed` — jamais comptée à part —,
-    donc un compteur ne peut pas contredire l'autre. La seconde tient à ce que
-    `remaining` est `total - processed`, borné à zéro.
-
-    La garantie est **bornée dans le temps**, et il faut le dire ainsi : la clé
-    expire avec `INCOMPLETE_NOTIFY_TTL_SECONDS`. Deux tentatives séparées par moins
-    que ce délai produisent un seul bilan ; une reprise plus tardive en produit un
-    second, la clé étant retombée. La borne couvre la fenêtre de réexécution prise en
-    charge, elle ne prétend pas à l'éternité.
-
-    Ce qui distingue cette clé d'une fenêtre de temps des autres alertes, c'est sa
-    durée : à vingt heures elle supprimait le bilan de la seconde passe quotidienne,
-    séparée de douze heures seulement. Ici la borne reste très inférieure à l'écart
-    entre deux occurrences, donc elle ne peut jamais avaler la suivante.
-
-    Sans `occurrence` — un appel hors planificateur —, le bilan part sans
-    dédoublonnage : mieux vaut un doublon qu'un incident passé sous silence.
-    """
-    if incremental and processed >= total and not interrupted:
-        return
-
-    if occurrence is not None:
-        claimed = await _claim_slot(
-            f"{INCOMPLETE_NOTIFY_KEY_PREFIX}{occurrence}", INCOMPLETE_NOTIFY_TTL_SECONDS
-        )
-        if not claimed:
-            logger.debug("Bilan déjà envoyé pour l'occurrence %s.", occurrence)
-            return
-
-    mode = "complet" if not incremental else "incrémental"
-    if incremental and batch_size:
-        mode = f"incrémental ({batch_size} livres)"
-
-    remaining = max(total - processed, 0)
-    unchanged = max(processed - refreshed, 0)
-    lines = [
-        f"🔄 <b>Rafraîchissement {mode}</b>",
-        "",
-        f"Traités : {processed}/{total} livres",
-        f"Mis à jour : {refreshed} livres",
-        f"Sans mise à jour : {unchanged} livres",
-    ]
-    if remaining:
-        lines.append(f"Restants à traiter : {remaining} livres")
-    else:
-        lines.append("Tous les livres du lot ont été traités.")
-
-    if interrupted:
-        lines.append("")
-        lines.append("<i>Plafond de durée atteint : les livres restants seront repris "
-                     "selon l'ordre de la file.</i>")
-        if not incremental:
-            lines.append(next_full_pass_note())
-
-    await notify_admins("\n".join(lines))
-    logger.info(
-        "Bilan de passe (%s) : %d/%d traités, %d mis à jour, %d sans mise à jour, "
-        "coupée=%s.",
-        mode, processed, total, refreshed, unchanged, interrupted,
-    )
-
-
-def _ratio_is_high(processed: int, count: int) -> bool:
-    """Vrai quand le nombre et la part dépassent les deux seuils de la passe."""
-    return (
-        processed > 0
-        and count >= MIN_ERRORS_FOR_ALERT
-        and count / processed >= ERROR_RATIO_THRESHOLD
-    )
-
-
-async def notify_high_error_ratio(
-    processed: int,
-    errors: int,
-    *,
-    mode_label: str,
-    failed_providers: tuple[str, ...] = (),
-    degraded: int = 0,
-) -> None:
-    """Prévient quand une part des livres a échoué au lieu de simplement manquer.
-
-    Une exception réelle et une collecte où les fournisseurs nommés n'ont rien
-    rendu sont deux pannes. Un livre sans offre, lui, n'en est pas une. La
-    fenêtre est la même que les autres alertes de cote : une panne qui dure ne
-    se répète pas à chaque lot.
-    """
-    provider_outage = bool(failed_providers) and _ratio_is_high(processed, degraded)
-    if not _ratio_is_high(processed, errors) and not provider_outage:
-        return
-    if not await _claim_high_error_notification_slot():
-        logger.debug("Rafraîchissement dégradé déjà signalé dans la fenêtre.")
-        return
-    counted = errors if _ratio_is_high(processed, errors) else degraded
-    sources = f"Sources en échec : {', '.join(failed_providers)}.\n" if failed_providers else ""
-    message = (
-        f"⚠️ <b>Rafraîchissement dégradé</b>\n\n"
-        f"Mode {mode_label} : {counted}/{processed} livres en erreur.\n"
-        f"{sources}"
-        "Les derniers prix connus sont conservés."
-    )
-    await notify_admins(message)
-    logger.warning("Rafraîchissement dégradé : %d/%d livres en erreur.", counted, processed)
-
-
-async def notify_no_prices_found(
-    processed: int,
-    total: int,
-    available: int,
-    *,
-    incremental: bool,
-    mode_label: str,
-    errors: int = 0,
-    failed_providers: tuple[str, ...] = (),
-) -> None:
-    """Signale une passe complète sans prix seulement si un échec est attesté.
-
-    Une absence normale d'offres reste dans le panneau du livre. Les lots
-    incrémentaux et les passes partielles ne prouvent jamais un incident global.
-    """
-    if not errors and not failed_providers:
-        logger.debug("Collecte terminée sans offre : aucun incident technique.")
-        return
-    if processed == 0 or available > 0:
-        return
-    if incremental:
-        logger.debug(
-            "Lot incrémental de %d livres sans cote : aucun verdict, "
-            "la sélection est le lot lui-même.",
-            processed,
-        )
-        return
-    if processed < total:
-        logger.debug(
-            "Passe partielle (%d/%d) sans cote : aucun verdict.", processed, total
-        )
-        return
-    if not await _claim_no_prices_notification_slot():
-        logger.debug("Passe sans cote déjà signalée dans la fenêtre.")
-        return
-
-    message = (
-        f"⚠️ <b>Collecte de prix en échec</b>\n\n"
-        f"Passe {mode_label} : {processed} livres traités, 0 cote disponible.\n\n"
-        f"{errors} livre(s) en erreur. Les derniers prix connus sont conservés.\n"
-        + (f"Sources en échec : {', '.join(failed_providers)}.\n" if failed_providers else "")
-        + "La prochaine collecte réessaiera automatiquement."
-
-    )
-    await notify_admins(message)
-    logger.warning("Collecte de prix en échec sur une passe complète (%d livres).", processed)
-
-
-
 COTE_STATE_KEY_PREFIX = "radar:cote_sent_state:"
 COTE_STATES = ("real", "pending", "no_offer", "searching", "uncatalogued", "unavailable")
 
@@ -639,11 +382,9 @@ async def read_sent_cote_states() -> dict[str, int]:
 class RefreshPassResult:
     total: int
     stats: dict[str, int]
-    # Toute passe est désormais bornée : elle sert ce que le régulateur accorde,
-    # jamais la population entière. Il n'y a donc plus deux modes de passe ; ce
-    # champ ne dit plus qu'une chose, et la même pour toutes : couvrir sa sélection
-    # ne prouve rien sur la population.
-    incremental: bool = True
+    # Toute passe est bornée : elle sert ce que le régulateur accorde. Il n'y a donc
+    # plus de modes à distinguer — ni « incrémental », ni « complet » —, et plus de
+    # compteurs publiés ; `occurrence` ne sert qu'à étiqueter les traces.
     occurrence: str | None = None
     interrupted: bool = False
     technical_interruption: bool = False
@@ -667,6 +408,18 @@ _incident_lock = asyncio.Lock()
 _INCIDENT_KEY = "radar:market:incidents:v2"
 
 
+def _split_by_rhythm(books: Any, moment: datetime) -> tuple[int, int]:
+    """Sépare une population de livres en « à jour » et « hors de leur rythme ».
+
+    Le couple est rendu ensemble pour que les deux nombres publiés ne puissent pas
+    décrire deux populations différentes, ni se contredire.
+    """
+    from app.services.market_refresh_policy import out_of_rhythm
+
+    late = sum(1 for book in books if out_of_rhythm(book.market_cache, moment))
+    return len(books) - late, late
+
+
 async def count_out_of_rhythm_books(session: Any) -> int:
     """Livres dont une composante a dépassé son échéance au-delà de la tolérance.
 
@@ -677,11 +430,10 @@ async def count_out_of_rhythm_books(session: Any) -> int:
     mesure et « frais » pour l'affichage serait un mensonge de l'un ou de l'autre.
     """
     from app.db.repositories.book_repo import BookRepository
-    from app.services.market_refresh_policy import out_of_rhythm
 
     moment = datetime.now(UTC)
     books = await BookRepository(session).get_books_for_active_bd_alerts()
-    return sum(1 for book in books if out_of_rhythm(book.market_cache, moment))
+    return _split_by_rhythm(books, moment)[1]
 
 
 async def read_refresh_health(result: RefreshPassResult, session: Any) -> None:
@@ -708,7 +460,6 @@ def _incident_changes(
             samples.setdefault(f"{attempt.provider}/{attempt.operation}", []).append(
                 attempt.status in {"partial", "failed"},
             )
-    samples["passe"] = [result.technical_interruption]
     samples["traitement"] = [True] * result.stats.get("errors", 0) + [False] * max(
         result.stats["processed"] - result.stats.get("errors", 0), 0,
     )
@@ -746,6 +497,27 @@ async def _persist_incidents(client: Any) -> None:
 
 
 async def notify_refresh_result(result: RefreshPassResult) -> None:
+    """Ne dit que les **faits actionnables** d'une passe ; se tait pour le reste.
+
+    Une passe produit un message pour deux raisons, et deux seulement :
+
+    - une source est durablement en échec, ou elle se rétablit — la ligne nomme la
+      source et l'opération, c'est un fait qu'on peut corriger ;
+    - la passe a été interrompue par une exception, ce qui n'est pas le
+      fonctionnement prévu d'un lot.
+
+    Tout le reste se tait. Les compteurs d'une passe — traités, mis à jour, sans
+    mise à jour, restants — décrivent le travail de l'application, pas l'état du
+    marché : aucun ne permet de décider quoi que ce soit. C'est pourquoi le bilan
+    de passe, les modes « incrémental » et « complet », et la promesse d'une
+    « prochaine passe complète » ont disparu ; leur contenu quotidien vit dans
+    ``send_daily_market_summary``, en trois lignes.
+
+    Dédoublonnage : un incident déjà annoncé n'est pas ré-annoncé tant qu'il ne
+    s'aggrave pas, et son rétablissement est annoncé une fois. La mémoire de cet
+    état est partagée via Redis, donc un redémarrage ne rejoue pas les incidents
+    en cours.
+    """
     global _incident_loaded
     async with _incident_lock:
         client = get_redis_client()
@@ -794,62 +566,89 @@ async def notify_refresh_result(result: RefreshPassResult) -> None:
         _incident_observations.update(updated)
         changes = list(_incident_pending.values())
         await _persist_incidents(client)
-        if result.incremental and not changes:
+        if not changes and not result.technical_interruption:
+            # Une passe qui n'a produit aucun fait actionnable ne dit rien : ses
+            # compteurs décrivent le travail de l'application, pas l'état du marché.
             return
-        key = (f"{INCOMPLETE_NOTIFY_KEY_PREFIX}{result.occurrence}"
-               if not result.incremental and result.occurrence else None)
-        if key and not await _claim_slot(key, INCOMPLETE_NOTIFY_TTL_SECONDS):
-            return
-        stats = result.stats
-        population = str(result.total) if result.selection_known else "?"
-        remaining = (str(max(result.total - stats["processed"], 0))
-                     if result.selection_known else "inconnu")
-        skipped = sum(a.status == "skipped" for a in result.attempts)
-        lines = [
-            "🔄 <b>Rafraîchissement des cotes</b>",
-            f"Traités : {stats['processed']}/{population} livres",
-            f"Actualisées : {stats['refreshed']} collectes avec offre",
-            f"Caches réutilisés : {stats.get('reused', 0)}",
-            f"Tentatives fournisseur non effectuées : {skipped}",
-            f"Sans offre admissible : {stats.get('empty', stats['unavailable'])}",
-            f"Collectes dégradées : {stats['degraded']}",
-            f"Exceptions de traitement : {stats['errors']}",
-            f"Non parcourus : {remaining}",
-        ]
+        # Un fait par ligne, et rien d'autre : ni titre de mode, ni compteurs.
+        lines = list(changes)
         if result.technical_interruption:
-            lines.append("⚠️ Interruption technique de la passe.")
-        elif result.interrupted:
-            lines.append("Plafond de durée atteint.")
-        if result.never_collected is not None:
-            lines.extend([f"Jamais collectés : {result.never_collected}",
-                          f"Dernière collecte trop ancienne : {result.stale_current}",
-                          f"Historique non actualisé : {result.stale_history}"])
-        elif not result.incremental:
-            lines.append("Diagnostic de fraîcheur indisponible.")
-        lines.extend(changes)
-        failed = sorted({f"{a.provider}/{a.operation} ({a.reason or 'cause inconnue'})"
-                         for a in result.attempts if a.status in {"partial", "failed"}})
-        if stats["errors"] and not stats["refreshed"]:
-            lines.append("⚠️ Collecte de prix en échec ; aucun relevé courant actualisé.")
-        if stats["degraded"]:
-            lines.append("⚠️ Rafraîchissement dégradé")
-        if failed:
-            lines.append("Échecs observés : " + html.escape(", ".join(failed)))
+            lines.append("⚠️ Passe de rafraîchissement interrompue avant la fin.")
         try:
             if await notify_admins("\n".join(lines)) is False:
                 raise RuntimeError("notification non remise")
         except (Exception, asyncio.CancelledError) as exc:
-            if key:
-                _notification_deadlines.pop(key, None)
-                try:
-                    await client.delete(key)
-                except Exception:
-                    logger.warning("Créneau de bilan non libéré", exc_info=True)
             if isinstance(exc, asyncio.CancelledError):
                 raise
-            logger.warning("Bilan de rafraîchissement non remis", exc_info=True)
+            logger.warning("Incident de rafraîchissement non remis", exc_info=True)
             return
         _incident_states.clear()
         _incident_states.update(updated)
         _incident_pending.clear()
         await _persist_incidents(client)
+
+
+# --------------------------------------------------------------------------- #
+# Le bilan quotidien : trois lignes, trois faits
+# --------------------------------------------------------------------------- #
+
+
+def format_daily_market_summary(
+    *, up_to_date: int, total: int, out_of_rhythm: int, new_lows: int,
+) -> str:
+    """Trois lignes, trois faits : à jour, hors de leur rythme, nouveaux prix bas.
+
+    Chaque ligne répond à une question qu'on se pose vraiment : « est-ce que le
+    marché est suivi ? », « qu'est-ce qui ne l'est plus ? », « qu'ai-je raté
+    hier ? ». Aucun compteur de travail de l'application n'y figure : ni passes,
+    ni lots, ni requêtes. Le nombre de livres à jour est dérivé du total et des
+    livres hors de leur rythme, donc les deux chiffres ne peuvent pas se
+    contredire.
+    """
+    return "\n".join((
+        f"📊 <b>Marché des livres</b> — à jour : {up_to_date}/{total} livres",
+        f"Hors de leur rythme : {out_of_rhythm} livre(s)",
+        f"Nouveaux prix bas de la veille : {new_lows}",
+    ))
+
+
+async def build_daily_market_summary(session: Any) -> str:
+    """Le bilan d'aujourd'hui, lu une seule fois en base.
+
+    Les trois nombres sortent de la même population — les livres des alertes BD
+    actives ou en pause — pour qu'un total et un retard parlent du même ensemble.
+    """
+    from app.db.repositories.book_repo import BookRepository
+
+    moment = datetime.now(UTC)
+    books = await BookRepository(session).get_books_for_active_bd_alerts()
+    up_to_date, late = _split_by_rhythm(books, moment)
+    new_lows = await MarketPriceRepository(session).count_lows_observed_since(
+        since=moment - timedelta(days=1),
+    )
+    return format_daily_market_summary(
+        up_to_date=up_to_date,
+        total=len(books),
+        out_of_rhythm=late,
+        new_lows=new_lows,
+    )
+
+
+async def send_daily_market_summary() -> str | None:
+    """Envoie le bilan quotidien, une fois par jour ; renvoie le texte envoyé.
+
+    Un bilan qu'on ne peut pas construire ne s'invente pas : l'erreur est
+    journalisée et rien n'est envoyé. Un message d'erreur quotidien serait un
+    second bruit, pas une information.
+    """
+    from app.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as session:
+            message = await build_daily_market_summary(session)
+    except Exception:
+        logger.warning("Bilan quotidien du marché indisponible", exc_info=True)
+        return None
+    await notify_admins(message)
+    logger.info("Bilan quotidien du marché envoyé")
+    return message

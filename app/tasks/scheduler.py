@@ -11,7 +11,13 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.config import settings
-from app.services.market_health import check_cal_storage_health
+from app.services.market_health import (
+    MARKET_SUMMARY_HOUR,
+    MARKET_SUMMARY_JOB_ID,
+    MARKET_SUMMARY_TIMEZONE,
+    check_cal_storage_health,
+    send_daily_market_summary,
+)
 from app.tasks.cleanup import cleanup_old_data_task
 from app.tasks.night_book_maintenance import (
     NIGHT_MAINTENANCE_JOB_ID,
@@ -114,6 +120,23 @@ def create_scheduler() -> AsyncIOScheduler:
     logger.info(
         "Job planifié : maintenance nocturne des livres à :20 et :50, "
         "pendant la plage du mode nuit."
+    )
+
+    scheduler.add_job(
+        send_daily_market_summary,
+        trigger=CronTrigger(
+            hour=MARKET_SUMMARY_HOUR, minute=0, timezone=MARKET_SUMMARY_TIMEZONE
+        ),
+        id=MARKET_SUMMARY_JOB_ID,
+        name="Bilan quotidien du marché des livres",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "Job planifié : bilan quotidien du marché à %02d:00 %s.",
+        MARKET_SUMMARY_HOUR,
+        MARKET_SUMMARY_TIMEZONE,
     )
 
     scheduler.add_job(

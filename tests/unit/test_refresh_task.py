@@ -305,12 +305,10 @@ async def test_refresh_processes_several_books_in_one_wave():
     assert stats["errors"] == 1
     assert stats["unavailable"] == 2
 
-    # L'alerte reste produite : seule sa destination change.
-    alertes = [s for s in sends if "Collecte de prix en échec" in s]
-    assert len(alertes) == 1, "la passe complète doit signaler l'absence totale de cote"
-    assert "Traités : 3/3 livres" in alertes[0]
-    assert "Actualisées : 0 collectes" in alertes[0]
-    assert "Exceptions de traitement : 1" in alertes[0]
+    # Contrat : une exception de traitement est un fait nommé, sans compteur de passe.
+    assert len(sends) == 1, "une seule vague, un seul fait à signaler"
+    assert "Nouvel incident : traitement" in sends[0]
+    assert "Traités :" not in sends[0]
 
 
 def _livres(n: int) -> list[Book]:
@@ -408,7 +406,8 @@ async def test_provider_failure_is_degraded_not_a_book_error():
 
     C'est le 5/8 du message « Rafraîchissement dégradé ». La collecte a répondu
     « cette source a échoué, aucune offre », et le compteur d'erreurs le lisait
-    comme un livre cassé — assez pour franchir le seuil à chaque lot.
+    comme un livre cassé — assez pour franchir le seuil à chaque lot. Le fait à
+    signaler est l'échec de la source, nommée, et une seule fois.
     """
     livres = _livres(8)
     sends: list[str] = []
@@ -455,9 +454,9 @@ async def test_provider_failure_is_degraded_not_a_book_error():
     assert premiere["errors"] == 0
     assert premiere["degraded"] == 8
     assert seconde["errors"] == 0
-    alertes = [s for s in sends if "Rafraîchissement dégradé" in s]
-    assert len(alertes) == 1
-    assert "chasse_aux_livres" in alertes[0]
+    # Contrat : la source muette est nommée une fois, et rien d'autre ne s'ajoute.
+    assert len(sends) == 1
+    assert sends[0] == "Nouvel incident : chasse_aux_livres/current"
 
 
 class _CacheEcrit:

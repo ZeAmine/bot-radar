@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.db.models.alert import Alert
 from app.db.models.book import Book
 from app.db.models.book_market_cache import BookMarketCache
@@ -203,27 +204,29 @@ async def _run_wave(
 def _occurrence_token(
     job_id: str, *, scheduled_for: datetime | None = None, now: datetime | None = None,
 ) -> str:
-    """Identifie l'exécution **prévue** d'un job, pour dédoublonner son bilan.
+    """Identifie l'exécution **prévue** d'un job, pour étiqueter ses traces.
 
     L'identité est celle de l'exécution *planifiée*, pas de l'instant où le code
-    tourne : c'est ce qui permet à une reprise de retrouver l'occurrence qu'elle
-    reprend. `scheduled_for` est l'instant que le planificateur visait, transmis par
+    tourne : une passe lancée en retard reste l'exécution qu'elle devait être.
+    `scheduled_for` est l'instant que le planificateur visait, transmis par
     l'enveloppe du job (`app/tasks/scheduler.py`) ; sans lui, on retombe sur l'heure
     courante, ce qui suffit hors planificateur mais ne distingue plus une exécution
     retardée de l'exécution suivante.
 
     Le jeton est figé au **début** de la passe et voyage avec elle : une collecte qui
-    traverse une frontière de tranche garde donc son identité jusqu'à sa notification.
+    traverse une frontière de tranche garde donc son identité jusqu'à la fin.
 
-    Deux exécutions de la même occurrence — une reprise, un doublon d'ordonnancement —
-    produisent un seul bilan ; deux occurrences distinctes produisent chacune le leur.
-    Cette garantie est **bornée par le TTL** de la clé (voir
-    `INCOMPLETE_NOTIFY_TTL_SECONDS`) : au-delà, la clé a expiré et une nouvelle
-    tentative repartirait pour un second bilan. La borne est choisie pour couvrir la
-    fenêtre de réexécution réellement prise en charge, pas pour être éternelle.
+    La passe n'en fait plus qu'un usage : étiqueter les traces (journal, tentatives
+    fournisseur) d'une exécution reconnaissable. Le bilan de passe qui s'en servait
+    pour se dédoublonner a disparu — un incident est désormais dédoublonné par son
+    état, pas par l'occurrence qui l'a vu.
     """
     moment = scheduled_for or now or datetime.now(UTC)
-    slot = moment.replace(minute=moment.minute - moment.minute % 30, second=0, microsecond=0)
+    # La tranche est la période de la passe : deux passes consécutives ne partagent
+    # jamais un jeton, deux tentatives de la même passe toujours.
+    minutes = max(1, settings.PRICE_PASS_INTERVAL_MINUTES)
+    slot = moment.replace(minute=moment.minute - moment.minute % minutes,
+                          second=0, microsecond=0)
     return f"{job_id}@{slot.isoformat()}"
 
 

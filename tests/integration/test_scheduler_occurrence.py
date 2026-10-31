@@ -44,6 +44,9 @@ _OPERATIONS_METIER = (
     "run_proactive_autotune_scan",
     "refresh_book_prices_task",
     "run_night_book_maintenance",
+    # Le bilan quotidien du marché lit la base et parle : il est neutralisé comme les
+    # autres, il n'a pas d'occurrence à vérifier.
+    "send_daily_market_summary",
 )
 
 

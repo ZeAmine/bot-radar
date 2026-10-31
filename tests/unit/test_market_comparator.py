@@ -1036,25 +1036,17 @@ def test_the_freshness_footer_shows_the_year_when_it_is_ambiguous():
     assert "Prochaine MAJ :" not in card
 
 
-def test_next_full_pass_ignores_incremental_jobs(monkeypatch):
-    """Une tâche glissante ne garantit pas que ce livre sera traité : aucune ligne."""
-    from types import SimpleNamespace
+def test_no_pass_promises_a_next_full_pass_date():
+    """Contrat : il n'y a plus de « prochaine passe complète » à annoncer.
 
+    Il n'existe qu'une passe, celle de l'intervalle courant, et elle ne reprend que
+    ce que les échéances rendent dues : promettre une reprise complète était une
+    promesse que le planificateur ne tenait plus.
+    """
     from app.services import market_health
-    from app.tasks.scheduler import scheduler as real_scheduler
 
-    now = datetime.now(UTC)
-    incremental = SimpleNamespace(
-        id="refresh_prices_incremental", next_run_time=now + timedelta(minutes=15)
-    )
-    monkeypatch.setattr(real_scheduler, "get_jobs", lambda: [incremental])
-    assert market_health.next_full_pass_at() is None
-
-    full = SimpleNamespace(
-        id="refresh_prices_07_00", next_run_time=now + timedelta(hours=8)
-    )
-    monkeypatch.setattr(real_scheduler, "get_jobs", lambda: [incremental, full])
-    assert market_health.next_full_pass_at() == full.next_run_time
+    assert not hasattr(market_health, "next_full_pass_at")
+    assert not hasattr(market_health, "next_full_pass_note")
 
 
 def test_next_check_is_only_announced_for_a_book_in_an_active_alert():

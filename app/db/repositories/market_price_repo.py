@@ -363,6 +363,27 @@ class MarketPriceRepository:
         row = (await self.session.execute(statement)).one()
         return int(row[0]), int(row[1]), int(row[2])
 
+    async def count_lows_observed_since(self, *, since: datetime) -> int:
+        """Livres dont le prix bas sur douze mois a été **constaté** depuis `since`.
+
+        La date lue est celle de l'observation du minimum (`annual_low_observed_at`),
+        pas celle du calcul : un cache recalculé sans offre nouvelle garde la date
+        de l'offre qui a établi le minimum, donc un prix bas d'il y a trois mois ne
+        se compte pas comme neuf. Un livre sans prix bas connu ne compte jamais.
+        """
+        watched = select(AlertBook.book_id).join(Alert).join(Category).where(
+            Category.slug == "bd_comics",
+            Alert.deleted_at.is_(None),
+            Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]),
+        )
+        statement = select(func.count()).select_from(BookMarketCache).where(
+            BookMarketCache.book_id.in_(watched),
+            BookMarketCache.annual_low_cents.is_not(None),
+            BookMarketCache.annual_low_observed_at.is_not(None),
+            BookMarketCache.annual_low_observed_at >= since,
+        )
+        return int((await self.session.execute(statement)).scalar() or 0)
+
     async def find_stale_current_collections(
         self, *, stale_after: datetime, limit: int = 8,
     ) -> tuple[list[tuple[str, str | None, int, datetime | None]], int]:
