@@ -48,7 +48,6 @@ jobs:
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
       DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
       DEPLOY_REMOTE_DIR: ${{ secrets.DEPLOY_REMOTE_DIR }}
-      DEPLOY_EVIDENCE: ${{ runner.temp }}/deploy-evidence.env
     steps:
       - name: Résoudre le SHA visé
         id: target
@@ -113,23 +112,28 @@ jobs:
       - name: Déployer
         env:
           DEPLOY_SHA: ${{ steps.target.outputs.sha }}
+          # Le contexte `runner` n'est pas évaluable dans un `env` de workflow
+          # ni de job : le chemin du fichier de preuves est donc posé ici, sur
+          # les deux étapes qui s'en servent.
+          DEPLOY_EVIDENCE: ${{ runner.temp }}/deploy-evidence.env
         run: ./deploy/deploy.sh
 
       - name: Résumé du passage
         if: always()
         env:
           SHA: ${{ steps.target.outputs.sha }}
+          EVIDENCE: ${{ runner.temp }}/deploy-evidence.env
         run: |
           set -eu
           {
             echo "### Déploiement de production"
             echo
             echo "- commit visé : \`$SHA\`"
-            if [ -f "${DEPLOY_EVIDENCE:-/nonexistent}" ]; then
+            if [ -f "${EVIDENCE:-/nonexistent}" ]; then
               while IFS='=' read -r key value; do
                 [ -n "$key" ] || continue
                 echo "- $key : \`$value\`"
-              done < "$DEPLOY_EVIDENCE"
+              done < "$EVIDENCE"
             else
               echo "- aucune preuve écrite : la chaîne s'est arrêtée avant de relever l'état"
             fi
