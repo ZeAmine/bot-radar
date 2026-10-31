@@ -1,0 +1,137 @@
+name: Déploiement
+
+# Une poussée sur main met la production dans le même état que GitHub, sans
+# autre geste. Ce workflow n'écrit rien lui-même : il appelle `deploy/deploy.sh`,
+# le même fichier que le repli manuel, pour qu'il n'existe pas deux séquences.
+#
+# Garde : la production ne reçoit un commit que si la CI de CE commit est verte.
+# `workflow_run` déclenche la chaîne à la fin de la CI, et la conclusion est la
+# condition ; une main rouge ne part donc jamais en production. Le second
+# contrôle par l'API couvre le cas d'un lancement manuel.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "SHA à déployer (vide : la tête de main)"
+        required: false
+        type: string
+
+# Deux poussées rapprochées ne déploient jamais en parallèle. Le second passage
+# attend, il n'annule pas le premier : une annulation au milieu d'une recréation
+# laisserait la production dans un état que personne n'a décidé.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+
+jobs:
+  deploy:
+    # workflow_run : seulement une CI verte, et seulement pour une poussée sur
+    # main (pas pour une PR ni un tag). workflow_dispatch : toujours, le contrôle
+    # de CI verte est alors fait par l'étape suivante.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_REMOTE_DIR: ${{ secrets.DEPLOY_REMOTE_DIR }}
+      DEPLOY_EVIDENCE: ${{ runner.temp }}/deploy-evidence.env
+    steps:
+      - name: Résoudre le SHA visé
+        id: target
+        env:
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_SHA: ${{ inputs.sha }}
+          FALLBACK_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          sha="${EVENT_SHA:-${INPUT_SHA:-$FALLBACK_SHA}}"
+          case "$sha" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) echo "SHA visé invalide : '$sha'" >&2; exit 1 ;;
+          esac
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "SHA visé : $sha"
+
+      - name: Vérifier que la CI de ce commit est verte
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -eu
+          # Un commit sans CI verte ne part jamais en production, y compris
+          # quand le passage est lancé à la main.
+          greens=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA" \
+            --jq '[.workflow_runs[] | select(.status == "completed" and .conclusion == "success")] | length')
+          if [ "${greens:-0}" -lt 1 ]; then
+            echo "Aucune exécution verte de ci.yml pour $SHA : déploiement refusé." >&2
+            exit 1
+          fi
+          echo "CI verte confirmée pour $SHA ($greens exécution(s))."
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          # L'historique complet est nécessaire : la chaîne compare le commit
+          # déployé au commit visé pour refuser une révision Alembic non appliquée.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Installer la clé de déploiement
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          if [ -z "${SSH_KEY:-}" ]; then
+            echo "Secret DEPLOY_SSH_KEY manquant : à poser avec « gh secret set DEPLOY_SSH_KEY »." >&2
+            exit 1
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          if [ -n "${KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" >> ~/.ssh/known_hosts
+            chmod 600 ~/.ssh/known_hosts
+          fi
+          echo "DEPLOY_SSH_KEY=$HOME/.ssh/deploy_key" >> "$GITHUB_ENV"
+
+      - name: Déployer
+        env:
+          DEPLOY_SHA: ${{ steps.target.outputs.sha }}
+        run: ./deploy/deploy.sh
+
+      - name: Résumé du passage
+        if: always()
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -eu
+          {
+            echo "### Déploiement de production"
+            echo
+            echo "- commit visé : \`$SHA\`"
+            if [ -f "${DEPLOY_EVIDENCE:-/nonexistent}" ]; then
+              while IFS='=' read -r key value; do
+                [ -n "$key" ] || continue
+                echo "- $key : \`$value\`"
+              done < "$DEPLOY_EVIDENCE"
+            else
+              echo "- aucune preuve écrite : la chaîne s'est arrêtée avant de relever l'état"
+            fi
+            echo "- issue du passage : ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
