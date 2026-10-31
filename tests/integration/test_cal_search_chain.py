@@ -62,8 +62,10 @@ async def test_partial_source_stores_observations_and_history_without_refreshing
         books = await seed(database.session)
         book = books[0]
         old = datetime.now(UTC) - timedelta(days=8)
+        # L'historique n'a jamais été lu : il est dû au premier passage. Un
+        # historique relevé il y a huit jours, lui, attendrait son mois.
         database.session.add(BookMarketCache(
-            book_id=book.id, historical_checked_at=old,
+            book_id=book.id, historical_checked_at=None,
             lowest_delivered_price_cents=1700, comparison_status=ComparisonStatus.AVAILABLE,
             checked_at=old, last_successful_collection_at=old,
             current_offers=[{'provider_name': 'chasse_aux_livres', 'item_price_cents': 1450,

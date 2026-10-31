@@ -41,9 +41,16 @@ async def _linked_book(session, user: User, category: Category, *, title: str) -
 
 
 @pytest.mark.asyncio
-async def test_a_recent_failed_collection_waits_before_the_next_incremental_pass():
-    """Le lot de 8 rejouait les mêmes échecs : checked_at restait vide, donc en tête."""
+async def test_a_recent_failed_collection_waits_before_its_next_rhythm():
+    """Un échec replace le livre à son rythme, il ne le renvoie pas dans la file.
+
+    L'ancienne politique interrogeait un livre toutes les six heures après un
+    échec ; la nouvelle le remet au rythme de sa zone. Un livre tenté il y a une
+    heure n'est donc plus candidat, un livre tenté il y a huit jours l'est, et un
+    livre jamais lu l'est aussi.
+    """
     now = datetime.now(UTC)
+    fresh_reading = now - timedelta(days=1)
     async with sqlite_only_database() as database:
         session = database.session
         user, category = await _catalogue(session)
@@ -57,16 +64,24 @@ async def test_a_recent_failed_collection_waits_before_the_next_incremental_pass
                     comparison_status=ComparisonStatus.UNAVAILABLE,
                     collection_status="failed",
                     checked_at=None,
+                    historical_checked_at=fresh_reading,
                     last_attempt_at=now - timedelta(hours=1),
                     failed_provider_names=["chasse_aux_livres"],
+                    refresh_state={"current": {
+                        "due_at": (now + timedelta(days=7)).isoformat(), "failures": 1,
+                    }},
                 ),
                 BookMarketCache(
                     book_id=due.id,
                     comparison_status=ComparisonStatus.UNAVAILABLE,
                     collection_status="failed",
                     checked_at=None,
-                    last_attempt_at=now - timedelta(hours=FAILED_COLLECTION_REST_HOURS, minutes=5),
+                    historical_checked_at=fresh_reading,
+                    last_attempt_at=now - timedelta(hours=1),
                     failed_provider_names=["chasse_aux_livres"],
+                    refresh_state={"current": {
+                        "due_at": (now - timedelta(hours=1)).isoformat(), "failures": 1,
+                    }},
                 ),
             ]
         )
@@ -274,6 +289,7 @@ async def test_resting_book_with_past_slot_is_not_selected():
     créneau échu et occupait sinon un des 8 créneaux de chaque passe.
     """
     now = datetime.now(UTC)
+    fresh_reading = now - timedelta(days=1)
     async with sqlite_only_database() as database:
         session = database.session
         user, category = await _catalogue(session)
@@ -282,14 +298,21 @@ async def test_resting_book_with_past_slot_is_not_selected():
         session.add_all([
             BookMarketCache(
                 book_id=resting.id, collection_status="failed",
+                historical_checked_at=fresh_reading,
                 last_attempt_at=now - timedelta(hours=1),
                 next_refresh_at=now - timedelta(hours=3),
+                refresh_state={"current": {
+                    "due_at": (now + timedelta(days=7)).isoformat(), "failures": 1,
+                }},
             ),
             BookMarketCache(
                 book_id=due.id, collection_status="failed",
-                last_attempt_at=now - timedelta(hours=FAILED_COLLECTION_REST_HOURS,
-                                              minutes=5),
+                historical_checked_at=fresh_reading,
+                last_attempt_at=now - timedelta(hours=1),
                 next_refresh_at=now - timedelta(hours=3),
+                refresh_state={"current": {
+                    "due_at": (now - timedelta(hours=1)).isoformat(), "failures": 1,
+                }},
             ),
         ])
         await session.commit()

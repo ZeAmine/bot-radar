@@ -42,6 +42,7 @@ from app.services.market_refresh_policy import (
     aware,
     collection_due,
     component_due,
+    due_components,
     record_component,
     reservation_lock,
 )
@@ -578,6 +579,7 @@ async def persist_market_result(
     repo = MarketPriceRepository(session)
     for offer in result.offers:
         await repo.save_snapshot(book_id, offer)
+    ceiling_cents = await repo.alert_price_ceiling_cents(book_id)
 
     if _history_only(result):
         cache = await repo.get_cache_by_book_id(book_id)
@@ -586,7 +588,7 @@ async def persist_market_result(
             session.add(cache)
             await session.flush()
         deferred_until = cache.next_refresh_at if cache.collection_status == "deferred" else None
-        _stamp_collection(cache, result)
+        _stamp_collection(cache, result, ceiling_cents)
         if deferred_until is not None and aware(deferred_until) > datetime.now(UTC):
             cache.next_refresh_at = deferred_until
         await repo.refresh_annual_references([book_id], force=True)
@@ -612,7 +614,7 @@ async def persist_market_result(
                 existing.lowest_delivered_price_cents,
             )
             await repo.refresh_annual_references([book_id], force=True)
-            _stamp_collection(existing, result)
+            _stamp_collection(existing, result, ceiling_cents)
             # Conserver le relevé informatif, jamais renouveler sa validité sans observation.
             await _refresh_series_totals(session, book_id)
             await _reserve_next_refresh(session, book_id, existing)
@@ -631,14 +633,23 @@ async def persist_market_result(
                      else result.collected_at if result.current_collection_succeeded else None),
     )
     await repo.refresh_annual_references([book_id], force=True)
-    _stamp_collection(cache, result)
+    _stamp_collection(cache, result, ceiling_cents)
     await _refresh_series_totals(session, book_id)
     await _reserve_next_refresh(session, book_id, cache)
     return cache
 
 
-def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None:
-    """Conserve le résultat de tentative séparément de la date du dernier prix."""
+def _stamp_collection(
+    cache: BookMarketCache, result: BookPricingResult,
+    ceiling_cents: int | None = None,
+) -> None:
+    """Conserve le résultat de tentative séparément de la date du dernier prix.
+
+    `ceiling_cents` est le plafond le plus strict des alertes qui suivent le
+    livre : il donne sa zone — donc son rythme — à la cote qui vient d'être
+    relevée. Ignoré, le livre retombe en zone froide, ce qui ralentit sans
+    jamais inventer une fraîcheur.
+    """
     if administrative_deferral_only(result):
         retry_at = record_administrative_deferral(cache, result.attempts, result.collected_at)
         cache.next_refresh_at = retry_at
@@ -665,8 +676,13 @@ def _stamp_collection(cache: BookMarketCache, result: BookPricingResult) -> None
         )
         if result.current_collection_usable:
             cache.last_successful_collection_at = result.collected_at
-        record_component(cache, "current", succeeded=result.current_collection_usable,
-                         now=result.collected_at)
+        record_component(
+            cache, "current", succeeded=result.current_collection_usable,
+            now=result.collected_at,
+            price_cents=(result.lowest_delivered_price_cents
+                         if result.current_collection_usable else None),
+            ceiling_cents=ceiling_cents,
+        )
     if result.historical_checked:
         cache.historical_checked_at = result.collected_at
         points = [offer for offer in result.offers
@@ -804,6 +820,18 @@ async def price_book_now(
     return cache
 
 
+def _record_interrupted_attempt(cache: BookMarketCache, moment: datetime) -> None:
+    """Un essai interrompu est un échec des composantes qui attendaient leur lecture.
+
+    Sans cette écriture, un livre dont la collecte n'a même pas pu commencer
+    garderait une échéance « due » et reviendrait à chaque passe : c'est la
+    boucle qui saturait la file. L'échéance repart donc de l'essai, au rythme
+    ordinaire — elle n'est pas avancée, seulement replacée.
+    """
+    for component in due_components(cache, moment):
+        record_component(cache, component, succeeded=False, now=moment)
+
+
 async def _price_book_once(
     book_id: uuid.UUID,
     *,
@@ -859,6 +887,7 @@ async def _price_book_once(
                     if changed is not None:
                         cache = await MarketPriceRepository(recovery).get_cache_by_book_id(book_id)
                         if cache is not None:
+                            _record_interrupted_attempt(cache, attempted_at)
                             await _reserve_next_refresh(recovery, book_id, cache)
                     await recovery.commit()
             except Exception as persistence_error:

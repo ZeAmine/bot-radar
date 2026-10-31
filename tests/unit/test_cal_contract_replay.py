@@ -95,7 +95,11 @@ async def test_raw_cal_partial_and_empty_history_replay_through_pricing(monkeypa
     assert cache.historical_checked_at == pricing.collected_at
     assert cache.source_history is None
     assert cache.historical_low_1y_cents is None
-    assert component_due(cache, "history", pricing.collected_at + timedelta(days=6)) == (
+    # L'historique a son propre rythme mensuel, indépendant de la cote.
+    assert component_due(cache, "history", pricing.collected_at) == (
+        pricing.collected_at + timedelta(days=30)
+    )
+    assert component_due(cache, "current", pricing.collected_at) == (
         pricing.collected_at + timedelta(days=7)
     )
 

@@ -84,6 +84,7 @@ async def _persist(cache: BookMarketCache, result: BookPricingResult, _now: date
     repo = MagicMock()
     repo.save_snapshot = AsyncMock()
     repo.refresh_annual_references = AsyncMock()
+    repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     repo.get_cache_by_book_id = AsyncMock(return_value=cache)
     repo.update_or_create_cache = AsyncMock(return_value=cache)
     with patch(

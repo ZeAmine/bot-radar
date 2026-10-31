@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -61,6 +62,7 @@ async def test_refresh_book_prices_task_success():
 
         mock_market_repo = MagicMock()
         mock_market_repo.refresh_annual_references = AsyncMock()
+        mock_market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -121,6 +123,7 @@ async def test_refresh_book_prices_task_incremental():
 
         mock_market_repo = MagicMock()
         mock_market_repo.refresh_annual_references = AsyncMock()
+        mock_market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -156,10 +159,17 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
     mock_registry.fetch_all_offers = AsyncMock(return_value=[])
     mock_registry.select_best_offer = MagicMock(return_value=None)
 
-    existing_cache = MagicMock()
-    existing_cache.lowest_delivered_price_cents = 470
-    existing_cache.comparison_status = ComparisonStatus.AVAILABLE
-    existing_cache.historical_low_1y_cents = 900
+    # Un vrai cache : la passe lit son échéance pour décider si le livre est dû.
+    existing_cache = BookMarketCache(
+        book_id=mock_book.id,
+        lowest_delivered_price_cents=470,
+        comparison_status=ComparisonStatus.AVAILABLE,
+        historical_low_1y_cents=900,
+        collection_status="complete",
+        last_successful_collection_at=datetime.now(UTC) - timedelta(days=8),
+        historical_checked_at=datetime.now(UTC) - timedelta(days=1),
+        checked_at=datetime.now(UTC) - timedelta(days=8),
+    )
 
     with pytest.MonkeyPatch.context() as mp:
         mock_book_repo = MagicMock()
@@ -168,6 +178,7 @@ async def test_refresh_keeps_existing_price_when_provider_is_silent():
 
         mock_market_repo = MagicMock()
         mock_market_repo.refresh_annual_references = AsyncMock()
+        mock_market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=existing_cache)
         mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -225,6 +236,7 @@ async def test_refresh_processes_several_books_in_one_wave():
 
         mock_market_repo = MagicMock()
         mock_market_repo.refresh_annual_references = AsyncMock()
+        mock_market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         mock_market_repo.save_snapshot = AsyncMock()
         mock_market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         mock_market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -281,6 +293,7 @@ async def _passe_sans_offres(
 
     market_repo = MagicMock()
     market_repo.refresh_annual_references = AsyncMock()
+    market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     market_repo.save_snapshot = AsyncMock()
     market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
     market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])
@@ -372,6 +385,7 @@ async def test_provider_failure_is_degraded_not_a_book_error():
         book_repo.get_books_needing_price_refresh = AsyncMock(return_value=livres)
         market_repo = MagicMock()
         market_repo.refresh_annual_references = AsyncMock()
+        market_repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
         market_repo.save_snapshot = AsyncMock()
         market_repo.get_cache_by_book_id = AsyncMock(return_value=None)
         market_repo.get_alert_ids_linked_to_book = AsyncMock(return_value=[])

@@ -1,9 +1,14 @@
-"""Effet réel d'un report CAL sur la fraîcheur d'un livre.
+"""Effet réel d'un report CAL et d'un échec sur la fraîcheur d'un livre.
 
 Ces tests traversent `persist_market_result`, qui appelle la vraie
 `_stamp_collection` et la vraie `record_component` : ils disent ce que le
 pipeline applicatif fait d'une collecte reportée par le régulateur, et non ce
 qu'un montage de test voudrait qu'il fasse.
+
+La règle qui a remplacé l'échelle de relance à six heures, un jour, sept jours :
+**un échec n'avance jamais une échéance**. Le livre reprend sa place dans la
+file ordinaire au rythme de sa zone ; le compteur d'échecs sert à mesurer une
+panne, jamais à calculer une date.
 """
 
 import uuid
@@ -16,8 +21,9 @@ from app.db.models.book_market_cache import BookMarketCache
 from app.providers.base import CollectionAttempt, MarketOffers
 from app.services.book_market_pricing import BookPricingResult, persist_market_result
 from app.services.market_refresh_policy import (
-    REFRESH_INTERVAL,
-    RETRY_DELAYS,
+    COLD_CADENCE,
+    HISTORY_CADENCE,
+    HOT_CADENCE,
     collection_due,
     component_due,
     record_component,
@@ -29,16 +35,16 @@ async def _persist(cache: BookMarketCache, attempts: tuple) -> BookMarketCache:
     repo = MagicMock()
     repo.save_snapshot = AsyncMock()
     repo.refresh_annual_references = AsyncMock()
+    repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     repo.get_cache_by_book_id = AsyncMock(return_value=cache)
     repo.update_or_create_cache = AsyncMock(return_value=cache)
+    repo.alert_price_ceiling_cents = AsyncMock(return_value=None)
     with patch(
         "app.services.book_market_pricing.MarketPriceRepository", return_value=repo,
     ), patch(
         "app.services.book_market_pricing._refresh_series_totals", AsyncMock(),
     ), patch(
         "app.services.book_market_pricing.AsyncSessionLocal", MagicMock(),
-    ), patch(
-        "app.db.repositories.book_repo.BookRepository.plan_price_refreshes", AsyncMock(),
     ), patch(
         "app.services.book_market_pricing._reserve_next_refresh", AsyncMock(),
     ):
@@ -65,13 +71,13 @@ async def test_a_never_queried_book_deferred_by_the_governor_is_not_marked_serve
 
 @pytest.mark.asyncio
 async def test_a_never_queried_book_deferred_by_the_governor_keeps_its_turn():
+    """Un report n'invente ni relevé ni échéance : le livre reste dû."""
     cache = BookMarketCache(book_id=uuid.uuid4())
     cache.next_refresh_at = datetime.now(UTC)
     written = await _persist(cache, _administrative_deferral())
 
     moment = datetime.now(UTC)
-    assert component_due(written, "current", moment) <= moment + RETRY_DELAYS[0]
-    assert component_due(written, "current", moment) < moment + REFRESH_INTERVAL
+    assert component_due(written, "current", moment) <= moment
 
 
 @pytest.mark.asyncio
@@ -86,57 +92,65 @@ async def test_a_deferred_collection_invents_no_network_attempt():
     assert (written.refresh_state or {})["administrative"]["count"] == 1
 
 
-def test_a_component_failure_backs_off_six_hours_then_one_day_then_seven():
+def test_a_failure_waits_for_the_next_rhythm_instead_of_backing_off():
+    """Un échec replace le livre au rythme suivant, sans barreau intermédiaire."""
+    cache = BookMarketCache(book_id=uuid.uuid4())
+    moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
+
+    record_component(cache, "current", succeeded=False, now=moment)
+
+    assert component_due(cache, "current", moment) == moment + COLD_CADENCE
+    assert cache.refresh_state["current"]["failures"] == 1
+
+
+def test_repeated_failures_do_not_shorten_the_next_attempt():
+    """Le délai d'un échec est le même au premier et au cinquième : plus d'escalade."""
     cache = BookMarketCache(book_id=uuid.uuid4())
     moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
 
     delays = []
-    for _ in range(3):
+    for _ in range(5):
         record_component(cache, "current", succeeded=False, now=moment)
         due = component_due(cache, "current", moment)
         delays.append(due - moment)
         moment = due
 
-    assert delays[0] == RETRY_DELAYS[0]
-    assert delays[1] == RETRY_DELAYS[1]
-    assert delays[2] == RETRY_DELAYS[2]
+    assert set(delays) == {COLD_CADENCE}
+    assert cache.refresh_state["current"]["failures"] == 5
 
 
-def test_the_component_backoff_is_bounded_to_three_steps():
+def test_a_failed_hot_book_comes_back_at_the_hot_rhythm():
+    """Le rythme d'une relance est celui de la zone, pas celui de la panne."""
     cache = BookMarketCache(book_id=uuid.uuid4())
     moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
 
-    for _ in range(6):
-        record_component(cache, "current", succeeded=False, now=moment)
-        moment = component_due(cache, "current", moment)
+    record_component(cache, "current", succeeded=True, now=moment,
+                     price_cents=1000, ceiling_cents=1000)
+    record_component(cache, "current", succeeded=False, now=moment)
 
-    assert cache.refresh_state["current"]["failures"] == len(RETRY_DELAYS)
-    assert moment <= datetime(2026, 12, 31, tzinfo=UTC)
-
-
-def test_a_failed_component_returns_before_a_served_one():
-    served = BookMarketCache(book_id=uuid.uuid4())
-    failed = BookMarketCache(book_id=uuid.uuid4())
-    moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
-
-    record_component(served, "current", succeeded=True, now=moment)
-    served.last_successful_collection_at = moment
-    record_component(failed, "current", succeeded=False, now=moment)
-
-    assert component_due(failed, "current", moment) < component_due(
-        served, "current", moment,
-    )
+    assert cache.refresh_state["current"]["zone"] == "hot"
+    assert component_due(cache, "current", moment) == moment + HOT_CADENCE
 
 
-def test_a_failed_component_stays_due_for_the_next_pass():
+def test_a_failed_component_leaves_the_pass_and_returns_at_its_rhythm():
     cache = BookMarketCache(book_id=uuid.uuid4())
     moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
 
     record_component(cache, "current", succeeded=False, now=moment)
     record_component(cache, "history", succeeded=False, now=moment)
 
-    assert collection_due(cache, moment + RETRY_DELAYS[0]) is True
     assert collection_due(cache, moment + timedelta(minutes=30)) is False
+    assert collection_due(cache, moment + COLD_CADENCE) is True
+
+
+def test_history_failures_wait_a_month():
+    """L'historique ne repart pas à chaque passe : son rythme est mensuel."""
+    cache = BookMarketCache(book_id=uuid.uuid4())
+    moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
+
+    record_component(cache, "history", succeeded=False, now=moment)
+
+    assert component_due(cache, "history", moment) == moment + HISTORY_CADENCE
 
 
 @pytest.mark.asyncio
@@ -170,21 +184,12 @@ async def test_a_served_book_does_not_come_back_before_a_deferred_one():
     )
 
 
-def test_deferred_status_is_outside_the_retry_backoff_of_the_shared_policy():
-    """Comportement réel de `component_due`, sans modification de la politique.
-
-    La politique applique son recul de six heures aux statuts `failed`,
-    `partial` et `skipped` — pas à `deferred`, qui n'y figure pas. Un livre
-    reporté avant toute requête ne subit donc pas le recul d'un échec.
-    """
+def test_a_deferred_book_keeps_its_administrative_retry_date():
+    """Le report administratif reste daté par le régulateur, hors du modèle de rythme."""
     moment = datetime(2026, 10, 21, 12, 15, tzinfo=UTC)
-
     deferred = BookMarketCache(book_id=uuid.uuid4())
-    deferred.last_attempt_at = moment
     deferred.collection_status = "deferred"
-    skipped = BookMarketCache(book_id=uuid.uuid4())
-    skipped.last_attempt_at = moment
-    skipped.collection_status = "skipped"
 
+    # Le report n'écrit aucune composante : le livre reste dû, sans fausse fraîcheur.
+    assert (deferred.refresh_state or {}).get("current") is None
     assert component_due(deferred, "current", moment) == moment
-    assert component_due(skipped, "current", moment) == moment + RETRY_DELAYS[0]
