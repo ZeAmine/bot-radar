@@ -7,7 +7,10 @@ n'autorise ni accès production ni modification de passerelle.
 Cible documentée : `${VPS_USER}@${VPS_HOST}` (définis dans l'environnement local,
 jamais dans ce dépôt), clé SSH désignée par `$VPS_SSH_KEY`,
 répertoire `~/bot-radar/`, domaine `https://radar.aminezegmou.fr`.
-La cible est un arbre rsync, **pas un dépôt Git** : un push ne déploie rien.
+La cible est un arbre rsync, **pas un dépôt Git** : c'est le serveur qui déclare
+le commit qu'il exécute, dans `~/bot-radar/.deployed_commit`. Un push sur `main`
+dont la CI est verte déclenche la chaîne automatique décrite plus bas ; sans
+GitHub Actions, la même séquence se rejoue à la main depuis un poste.
 Le gateway Caddy partagé vit hors dépôt dans `~/gateway/`, sur `web_gateway`.
 Ne pas réintroduire un Caddy local ni modifier les autres applications du gateway.
 
@@ -20,40 +23,149 @@ GPG ni restauration de contrôle.
 
 Les contrôles complets de code prévus dans [AGENTS](../../AGENTS.md) doivent
 être satisfaits. La confirmation de merge ne vaut pas autorisation de déploiement :
-cette dernière doit être explicite. Relire [deploy.py](../../scripts/deploy.py),
+cette dernière doit être explicite. La séquence vit dans un seul fichier,
+[`deploy/deploy.sh`](../../deploy/deploy.sh) ; la chaîne GitHub Actions et le repli
+manuel appellent ce même fichier, il n'en existe pas de seconde copie. Relire aussi
 [preflight_deploy.py](../../scripts/preflight_deploy.py) et la
 [procédure BD](../bd-preparation.md), notamment pour une reprise ou un retour.
 Exécuter soi-même les opérations autorisées, sans demander à l'utilisateur de
 copier-coller des commandes. Sans permission réseau/clé, signaler le blocage.
 
 ```sh
-make deploy
+./deploy/deploy.sh --check      # compare seulement le SHA visé et l'état du serveur
+./deploy/deploy.sh --dry-run    # énonce la séquence, n'écrit rien
+make deploy                     # exécute (DEPLOY_ARGS=--dry-run pour lire l'ordre)
 ```
 
-Cette commande : pré-vol → arrêt et confirmation de l'arrêt de l'ancienne app →
-rsync → construction de l'image cible sans app → migration ponctuelle de cette
-image via entrypoint Alembic → lecture de révision → démarrage → santé et contrôles
-stricts. Aucun scheduler ou poller dans le conteneur de migration. Arrêt au premier
-échec ; pas de lancement de l'étape suivante. `DEPLOY_ARGS=--dry-run` affiche l'ordre.
-`make preflight` et `make verify-deploy` restent disponibles pour les étapes distinctes.
-Ne pas recopier une autre séquence de commandes à côté de celle du script.
+La séquence : lecture du commit déployé déclaré par le serveur → refus si cet état
+de départ n'est pas celui attendu → succès immédiat si le serveur tourne déjà sur le
+SHA visé → relevé de l'identité de PostgreSQL et Redis → refus si une révision
+Alembic change → filet de retour sur l'image en marche, vérifié → copie de `app/`,
+`alembic/`, `scripts/` et des fichiers racine **avec suppression** → construction de
+l'image → recréation du **seul** conteneur `app` → attente de `healthy`, 180 s au
+plus → retour arrière **uniquement** si l'application ne démarre pas → écriture puis
+relecture de `.deployed_commit`.
 
-Les deux transports du déploiement — `rsync` de [`deploy.py`](../../scripts/deploy.py)
-et la commande distante de [`preflight_deploy.py`](../../scripts/preflight_deploy.py) —
-imposent `StrictHostKeyChecking=yes`. Une clé d'hôte non vérifiée laisserait un
-intermédiaire se faire passer pour le VPS et recevoir le code synchronisé ; le
-premier contact avec un hôte inconnu se fait donc une fois, explicitement, et
-`known_hosts` porte ensuite la référence.
+Arrêt au premier échec, avec un code de sortie distinct par cause (0 à jour ou
+déployé, 2 état de départ inattendu, 3 retour arrière, 4 invariance des
+dépendances, 5 serveur injoignable, 7 preuve invalide). Une vérification qui reste
+bloquée n'est pas un feu vert : le script échoue au lieu de conclure.
+
+L'application n'est **pas** arrêtée avant la copie : elle sert pendant la copie et
+la construction, puis le conteneur est remplacé en une fois. Aucune migration n'est
+appliquée par cette séquence — la base est une opération autorisée séparément, et
+un commit qui ajoute une révision est refusé plutôt que servi avec un schéma
+incompatible. Ce que la séquence ne touche jamais : `.env`, `compose.yml`, la base,
+les volumes, la cadence de scrutation, la passerelle et les autres conteneurs.
+`make preflight` et `make verify-deploy` restent des contrôles d'état distincts.
+Ne pas recopier une autre séquence de commandes à côté de ce script.
+
+### Chaîne automatique : un push vert met la production à jour
+
+[`deploy.yml`](../../.github/workflows/deploy.yml) part à la fin du workflow `CI`
+sur `main`, et seulement si **ce** commit est vert (`workflow_run` +
+`conclusion == success`). Le workflow revérifie lui-même par l'API qu'une exécution
+verte de `ci.yml` existe pour le SHA visé : un lancement manuel ne contourne pas
+cette exigence. Une `main` rouge ne part jamais en production.
+
+Deux poussées rapprochées ne déploient jamais en parallèle : le groupe de
+concurrence `deploy-production` a `cancel-in-progress: false`, donc le second
+passage attend au lieu d'annuler une recréation en cours.
+
+Le passage est aussi lançable à la main (`workflow_dispatch`, entrée `sha`
+facultative, tête de `main` par défaut).
+
+Le SHA déployé se lit **sans se connecter** dans le résumé du passage (clés
+`target_sha`, `deployed_before_sha`, `deployed_after_sha`, `rollback_tag`, `outcome`),
+et sur le serveur dans `~/bot-radar/.deployed_commit`.
+
+#### Secrets à poser une fois (par le capitaine, hors de ma portée)
+
+| Secret | Contenu | Obligatoire |
+| --- | --- | --- |
+| `DEPLOY_HOST` | hôte du VPS | oui |
+| `DEPLOY_USER` | compte SSH utilisé pour le déploiement | oui |
+| `DEPLOY_SSH_KEY` | clé privée OpenSSH dédiée, contenu complet avec en-têtes | oui |
+| `DEPLOY_KNOWN_HOSTS` | lignes `known_hosts` du VPS (`ssh-keyscan -H <hôte>`) | oui |
+| `DEPLOY_PORT` | port SSH si différent de 22 | non |
+| `DEPLOY_REMOTE_DIR` | arbre de production si différent de `/home/ubuntu/bot-radar` | non |
+
+Aucune clé ni aucun secret n'est créé par le dépôt. Marche à suivre :
+
+```sh
+ssh-keygen -t ed25519 -C "bot-radar-deploy" -f ~/.ssh/bot-radar-deploy -N ''
+# Publier ~/.ssh/bot-radar-deploy.pub dans ~/.ssh/authorized_keys du VPS,
+# pour le compte choisi dans DEPLOY_USER.
+ssh-keyscan -H <hôte> > ~/.ssh/bot-radar-known_hosts
+gh secret set DEPLOY_HOST          --body '<hôte>'
+gh secret set DEPLOY_USER          --body '<compte>'
+gh secret set DEPLOY_SSH_KEY       < ~/.ssh/bot-radar-deploy
+gh secret set DEPLOY_KNOWN_HOSTS   < ~/.ssh/bot-radar-known_hosts
+```
+
+Les deux transports (`ssh` et `rsync -e ssh`) imposent
+`StrictHostKeyChecking=yes` : une clé d'hôte non vérifiée laisserait un
+intermédiaire se faire passer pour le VPS et recevoir le code copié. Un
+`DEPLOY_KNOWN_HOSTS` absent fait donc échouer le passage au lieu de faire
+confiance à l'inconnu ; le premier contact avec un hôte nouveau se fait une fois,
+explicitement. Un secret manquant est nommé dans le message d'échec, avant tout
+contact avec le serveur.
+
+### Rejouer à la main : GitHub Actions indisponible
+
+L'indisponibilité d'Actions ne rend pas le projet indéployable : la chaîne
+n'ajoute aucun propriétaire, elle appelle le script. Deux cas se présentent et
+appellent le même repli : Actions indisponible, ou compte bloqué pour facturation —
+dans ce dernier cas aucun passage n'existe, donc la condition de CI verte ne peut
+pas être satisfaite et le déploiement doit se faire à la main. Depuis un poste
+autorisé :
+
+```sh
+git fetch origin && git switch --detach origin/main   # commit à déployer, propre
+export DEPLOY_HOST=... DEPLOY_USER=...
+export DEPLOY_SSH_KEY=~/.ssh/bot-radar-deploy
+./deploy/deploy.sh --check   # écart entre le serveur et ce commit
+./deploy/deploy.sh           # même séquence que la CI
+```
+
+En local, `known_hosts` est celui de l'utilisateur (`~/.ssh/known_hosts`) :
+`DEPLOY_KNOWN_HOSTS` n'a de sens que comme contenu du secret homonyme en CI, où le
+workflow l'installe à cet endroit. La copie locale doit être **sur le SHA visé et
+propre** (`git status`), sinon le script refuse avant toute copie.
+
+### Revenir en arrière
+
+Le retour arrière automatique n'existe que pour une cause : l'application ne
+démarre pas (code 3). Le script réapplique alors l'image d'avant, recrée `app`
+seule et restaure `.deployed_commit` au commit d'avant. Il ne restaure jamais la
+base et ne répare jamais une dépendance.
+
+À la main, la référence est le tag posé par le dernier passage, affiché par le
+script et présent dans le résumé : `bot-radar-app:rollback-<sha court>-<horodatage>`.
+Les commandes de restauration et de contrôle sont détaillées dans « Retour arrière
+de l'application », plus bas.
 
 Compose utilise le code embarqué dans l’image, sans montage `app/` ou `scripts/`.
-Les trois paramètres PostgreSQL sont obligatoires. Le pré-vol vérifie le modèle
-Compose cible avec la configuration distante avant arrêt ; après démarrage, les
-empreintes du code sont aussi vérifiées dans le conteneur actif. Cela ne prouve
-ni construction reproductible, ni réception Telegram, ni récupération opérationnelle.
+Les trois paramètres PostgreSQL sont obligatoires. La séquence ne lit ni ne modifie
+`compose.yml` : elle construit et recrée avec le modèle déjà présent sur le serveur.
+Après démarrage, l'image du conteneur actif est comparée à l'image construite, et
+`.deployed_commit` est relu : une preuve qui ne correspond pas fait échouer le
+passage. Cela ne prouve ni construction reproductible, ni réception Telegram, ni
+récupération opérationnelle.
 
-Le rsync exclut `.git` et `.env` : il préserve la configuration distante et ne
-transfère pas le secret local. Contrôler `APP_ENV=production`, code synchronisé,
-conteneur, schéma et scheduler. `.env.example` ne doit jamais écraser un `.env` réel.
+La copie ne vise que `app/`, `alembic/`, `scripts/` et trois fichiers racine
+(`alembic.ini`, `pyproject.toml`, `requirements.lock`). `.env`, `compose.yml`, les
+volumes et la passerelle ne sont jamais dans ce périmètre : la configuration
+distante survit à la copie. Les trois arbres sont copiés **avec suppression** —
+c'est le défaut corrigé du 31 octobre, où cinq modules retirés du dépôt avaient
+survécu des jours sur le serveur. Contrôler `APP_ENV=production`, conteneur, schéma
+et scheduler. `.env.example` ne doit jamais écraser un `.env` réel.
+
+### Ce que la chaîne ne fait pas
+
+Pas de pré-production, pas de registre d'images, pas de bleu/vert, aucun
+changement de la composition Docker, de la cadence, de la passerelle ni de la base.
+Les autres applications du serveur ne sont pas concernées.
 
 ### Les dépendances ne font pas partie du déploiement
 
@@ -84,9 +196,9 @@ l'environnement résolu, et l'attribuer à la syntaxe `${VAR:?}` serait faux.
 autorisée avant l'implémentation. Aucun accès serveur supplémentaire n'a été
 effectué pour écrire cette page.)*
 
-La parade est `--no-deps` sur le démarrage applicatif, et l'invariance est
+La parade est `--no-deps` sur la recréation applicative, et l'invariance est
 contrôlée : `Id`, `StartedAt` et l'état d'exécution des deux services sont relevés
-avant l'arrêt de l'app, puis relus après son démarrage. Un écart — recréation,
+avant toute mutation, puis relus après le redémarrage. Un écart — recréation,
 redémarrage ou disparition — fait **échouer** le déploiement et est nommé
 explicitement. Aucune réparation automatique n'est tentée. Les dépendances sont
 aussi vérifiées opérationnelles **avant** l'arrêt : interrompre l'app alors qu'un
@@ -102,8 +214,8 @@ redémarrage et aucun retour arrière n'est déclenché sur cette seule base.
 Cette règle vaut pour les **trois** entrées du contrôle, y compris l'absence
 d'identité d'avant : sans relevé initial, il n'y a rien à comparer, donc
 l'invariance n'est pas établie et le déploiement échoue. Ce cas ne se produit pas
-dans le parcours nominal — l'étape d'arrêt capture toujours avant — mais il est
-refusé plutôt que supposé conforme, et un test le vérifie.
+dans le parcours nominal — la capture précède toujours la moindre écriture — mais
+il est refusé plutôt que supposé conforme, et un test le vérifie.
 
 Dans ce parcours borné à `app`, un changement de PostgreSQL ou de Redis est **un
 écart à signaler**, jamais un comportement autorisé. Modifier volontairement une
@@ -273,12 +385,15 @@ en place exige un mandat d'exploitation explicite.
 
 ## Échec et retour
 
-L'interruption couvre synchronisation, construction, migration et démarrage jusqu'à
-la santé réelle, sans durée garantie. Un échec après arrêt peut laisser le service
-arrêté et l'arbre partiellement synchronisé ; ne pas redémarrer automatiquement
-l'ancien code sur cet arbre. Après démarrage, la cible peut être active malgré un
-contrôle échoué. Constater conteneur, code et schéma avant de choisir la reprise.
-Aucune restauration automatique, aucun downgrade destructeur ou version falsifiée.
+L'interruption couvre la recréation du seul conteneur `app` jusqu'à la santé
+réelle, sans durée garantie. L'application précédente sert pendant la copie et la
+construction ; un échec à ces étapes laisse la production intacte, code compris
+seulement en partie copié dans l'arbre serveur. Après démarrage, la cible peut être
+active malgré un contrôle échoué : ne pas supposer qu'une étape échouée n'a rien
+changé. Constater conteneur, image, code et schéma avant de choisir la reprise.
+Le retour arrière automatique ne couvre qu'une cause — l'application ne démarre
+pas — et ne touche ni la base ni les dépendances. Aucun downgrade destructeur,
+aucune version falsifiée.
 
 ### Retour arrière de l'application, sans toucher la base
 
@@ -289,12 +404,12 @@ Pour un lot sans migration — c'est le cas des lots #120 et #121, le schéma re
 **La référence de retour est l'image réellement en production juste avant le
 déploiement.** Elle est capturée automatiquement, dans cet ordre :
 
-1. **Avant le build**, l'identifiant exact de l'image du conteneur `radar_app`
+1. **Avant toute copie**, l'identifiant exact de l'image du conteneur `radar_app`
    est lu (`docker inspect --format '{{.Image}}'`), un tag de sauvegarde unique
-   `bot-radar-app:rollback-<horodatage>` est créé sur cet identifiant, et le tag
-   est **vérifié** en comparant son `.Id` à l'identifiant capturé. Une
-   incohérence arrête le déploiement avant l'arrêt de l'app.
-2. **Après le build**, la présence de ce tag est revérifiée : c'est le moment où
+   `bot-radar-app:rollback-<sha court>-<horodatage>` est créé sur cet identifiant,
+   et le tag est **vérifié** en comparant son `.Id` à l'identifiant capturé. Une
+   incohérence arrête le déploiement avant que quoi que ce soit ne soit copié.
+2. **Après le build**, l'identité de ce tag est revérifiée : c'est le moment où
    `latest` a été réécrit, donc celui où l'image d'avant doit encore être
    atteignable. Un tag disparu se découvrirait sinon au moment du retour
    arrière, c'est-à-dire trop tard.
@@ -303,8 +418,8 @@ La copie est nécessaire parce que `docker compose build app` réécrit
 `bot-radar-app:latest` **en place**. Le tag conservé reste utile comme filet
 historique, mais un tag ancien n'est **pas** le retour du prochain déploiement :
 le seul retour immédiat correct est celui créé lors de ce déploiement-là, et son
-nom est affiché par le script. `dc88692` est l'état connu de la production
-actuelle, pas une valeur à coder en dur.
+nom est affiché par le script et inscrit dans le résumé du passage. Le commit de
+production est une valeur lue, jamais codée en dur.
 
 **Pour restaurer**, utiliser la référence applicative réellement attendue par la
 commande Compose, sans se fier au nom d'un tag supposé correct. `compose.yml` ne
@@ -326,7 +441,7 @@ docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep 'rollback-'
 Aligner l'image de retour, puis démarrer **seulement** `app` :
 
 ```sh
-docker tag bot-radar-app:rollback-<horodatage> bot-radar-app:latest
+docker tag bot-radar-app:rollback-<sha court>-<horodatage> bot-radar-app:latest
 docker compose up -d --no-build --pull never --no-deps app
 ```
 
@@ -338,6 +453,10 @@ docker inspect radar_app --format '{{.Image}}'
 docker inspect radar_app --format '{{.State.Health.Status}}'
 docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep 'rollback-'
 ```
+
+Réécrire ensuite le SHA restauré dans `~/bot-radar/.deployed_commit` : sans cette
+ligne, `./deploy/deploy.sh --check` continuerait d'annoncer à jour un serveur
+revenu en arrière, et l'écart redeviendrait invisible.
 
 Le `--no-deps` est ici aussi indispensable : sans lui, un retour arrière pourrait
 recréer une dépendance, exactement comme le déploiement du 16 octobre. Contrôler
