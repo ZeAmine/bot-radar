@@ -1,6 +1,7 @@
 """Cotation partagée et persistance des prix par composante."""
 
 import asyncio
+import contextlib
 import logging
 import threading
 import uuid
@@ -39,12 +40,13 @@ from app.services.administrative_deferral import (
 )
 from app.services.market_price_service import series_reference_total
 from app.services.market_refresh_policy import (
+    CollectionScope,
     aware,
     collection_due,
-    component_due,
     due_components,
     record_component,
     reservation_lock,
+    scope_components,
 )
 from app.utils.price import format_cents
 from app.utils.text import normalize_text
@@ -56,6 +58,23 @@ BOOK_FETCH_TIMEOUT_SECONDS = 20.0
 # Durée de validité du cache selon la qualité de la donnée collectée.
 CACHE_HOURS_WITH_PRICE = 168
 CACHE_HOURS_WITHOUT_PRICE = 6
+
+# Raisons qui demandent les deux composantes d'un coup. La création d'une alerte
+# en est une : c'est le seul moment où attendre est légitime, et c'est une
+# dépense par livre, pas par jour. La correction d'ISBN en est une autre : ce que
+# la base sait de l'historique parle de l'ancien livre, il n'est plus réutilisable.
+FULL_COLLECTION_REASONS: frozenset[str] = frozenset({"alert_created", "isbn_edited"})
+
+
+def scope_for(reason: str) -> CollectionScope:
+    """Portée d'une collecte, selon la raison qui la lance.
+
+    Une création — ou une correction d'ISBN, dont l'historique en cache parle de
+    l'ancien livre — demande tout ce qui manque. Tout le reste est de la routine
+    et ne demande qu'une composante.
+    """
+    return "creation" if reason in FULL_COLLECTION_REASONS else "routine"
+
 
 # Livres dont la cotation est déjà en vol : un seul passage à la fois par livre.
 _pricing_in_flight: set[uuid.UUID] = set()
@@ -360,6 +379,10 @@ async def collect_offers_for_creation(
     n'a jamais été cotée. La collecte part donc de ce que le brouillon sait déjà —
     ISBN, titre, auteur —, par le même chemin que la cotation des alertes, pour
     qu'un prix ne puisse pas différer selon l'écran qui l'affiche.
+
+    C'est une création : elle demande la cote **et** le prix bas sur douze mois,
+    en une seule collecte. Attendre est légitime ici, et c'est une dépense par
+    livre, pas par jour.
     """
     book = Book(
         title=title,
@@ -367,13 +390,14 @@ async def collect_offers_for_creation(
         isbn13=isbn13,
         author=author,
     )
-    return await fetch_offers_for_book(book)
+    return await fetch_offers_for_book(book, scope="creation")
 
 
 async def fetch_offers_for_book(
     book: Book,
     registry: ProviderRegistry | None = None,
     *, retry_transient: bool = False,
+    scope: CollectionScope = "routine",
 ) -> MarketOffers:
     """Interroge tous les fournisseurs pour un livre, ISBN valide et titre ensemble.
 
@@ -381,13 +405,18 @@ async def fetch_offers_for_book(
     code sait retrouver l'ouvrage par son titre, et c'était précisément ce repli
     qui manquait à la création d'une alerte — d'où une cote vide en base, donc
     une alerte partie sans prix alors que le bouton, lui, trouvait la cote.
+
+    ``scope`` nomme ce que la collecte a le droit de demander. En routine, c'est
+    **une seule** composante, la plus anciennement due : jamais les deux. C'est
+    ce partage qui rend à l'historique le budget que la cote absorbait — et une
+    lecture d'historique seule coûte deux requêtes là où la cote en coûte dix ou
+    onze. Une création d'alerte, elle, demande tout ce qui manque.
     """
     active_registry = registry or (ProviderRegistry(single_attempt=True)
                                    if retry_transient else ProviderRegistry())
     now = datetime.now(UTC)
     cache = book.__dict__.get("market_cache")
-    components = frozenset(component for component in ("current", "history")
-                           if component_due(cache, component, now) <= now)
+    components = scope_components(cache, now, scope)
     from app.providers.chasse_aux_livres import ChasseAuxLivresProvider, verified_product_url
 
     history = cache.source_history if cache and isinstance(cache.source_history, dict) else {}
@@ -759,10 +788,16 @@ async def price_book(
     registry: ProviderRegistry | None = None,
     result_sink: list[BookPricingResult] | None = None,
     retry_transient: bool = False,
+    scope: CollectionScope = "routine",
 ) -> BookMarketCache:
-    """Cote un livre et écrit sa cote dans la session courante (sans commit)."""
+    """Cote un livre et écrit sa cote dans la session courante (sans commit).
+
+    ``scope`` dit ce que la collecte a le droit de demander : une composante en
+    routine, tout ce qui manque à une création.
+    """
     offers = await fetch_offers_for_book(
-        book, registry=registry, **({"retry_transient": True} if retry_transient else {}),
+        book, registry=registry, scope=scope,
+        **({"retry_transient": True} if retry_transient else {}),
     )
     result = BookPricingResult.from_offers(
         offers=offers,
@@ -787,6 +822,8 @@ async def price_book(
 
 _pricing_tasks: dict[uuid.UUID, asyncio.Task[BookMarketCache | None]] = {}
 _pricing_results: dict[uuid.UUID, list[BookPricingResult]] = {}
+# Portée de la cotation en vol, pour savoir si elle couvre une création.
+_pricing_scopes: dict[uuid.UUID, CollectionScope] = {}
 
 
 async def price_book_now(
@@ -796,25 +833,39 @@ async def price_book_now(
     registry: ProviderRegistry | None = None,
     result_sink: list[BookPricingResult] | None = None,
 ) -> BookMarketCache | None:
-    """Partage une collecte déjà en vol pour le même livre."""
-    task = _pricing_tasks.get(book_id)
-    if task is None:
+    """Partage une collecte déjà en vol pour le même livre.
+
+    Une collecte de routine ne demande qu'une composante : une création qui
+    tomberait sur une cotation déjà en vol attendrait donc un résultat sans son
+    historique. Elle la laisse finir, puis collecte à son tour — la place de la
+    source est rendue avant, et la création obtient bien ce qu'elle demande.
+    """
+    scope = scope_for(reason)
+    in_flight = _pricing_tasks.get(book_id)
+    if in_flight is not None and scope == "creation" and _pricing_scopes.get(book_id) != "creation":
+        with contextlib.suppress(Exception):
+            await asyncio.shield(in_flight)
+        in_flight = None
+    if in_flight is None:
         results: list[BookPricingResult] = []
-        task = safe_create_task(
-            _price_book_once(book_id, reason=reason, registry=registry, result_sink=results),
+        in_flight = safe_create_task(
+            _price_book_once(book_id, reason=reason, registry=registry,
+                             result_sink=results, scope=scope),
             name=f"price_book_{book_id}",
         )
-        _pricing_tasks[book_id] = task
+        _pricing_tasks[book_id] = in_flight
         _pricing_results[book_id] = results
+        _pricing_scopes[book_id] = scope
 
         def release(done: asyncio.Task[BookMarketCache | None]) -> None:
             if _pricing_tasks.get(book_id) is done:
                 _pricing_tasks.pop(book_id, None)
                 _pricing_results.pop(book_id, None)
+                _pricing_scopes.pop(book_id, None)
 
-        task.add_done_callback(release)
+        in_flight.add_done_callback(release)
     results = _pricing_results[book_id]
-    cache = await asyncio.shield(task)
+    cache = await asyncio.shield(in_flight)
     if result_sink is not None:
         result_sink.extend(results)
     return cache
@@ -838,11 +889,16 @@ async def _price_book_once(
     reason: str,
     registry: ProviderRegistry | None = None,
     result_sink: list[BookPricingResult] | None = None,
+    scope: CollectionScope = "routine",
 ) -> BookMarketCache | None:
     """Cote un livre dans sa propre session. N'élève jamais.
 
     Un marchand muet n'a pas le droit de faire échouer l'écran qui a demandé la
     cote : l'appelant reçoit ``None`` et affiche ce qu'il sait déjà.
+
+    Une collecte ``forced`` écarte la garde de fraîcheur : l'appelant dit que ce
+    que la base sait du livre ne vaut plus. Une création, elle, la garde : un
+    livre déjà coté il y a une heure n'a rien à redemander.
     """
     attempted_at: datetime | None = None
     try:
@@ -852,7 +908,10 @@ async def _price_book_once(
                 logger.warning("Cotation ignorée : livre ID %s introuvable (%s).", book_id, reason)
                 return None
             cache = await MarketPriceRepository(session).get_cache_by_book_id(book_id)
-            if cache is not None and not collection_due(cache, datetime.now(UTC)):
+            if (
+                cache is not None and scope != "forced"
+                and not collection_due(cache, datetime.now(UTC))
+            ):
                 await _reserve_next_refresh(session, book_id, cache)
                 await session.commit()
                 return cache
@@ -864,7 +923,8 @@ async def _price_book_once(
             # L'essai est validé avant la collecte : il reste acquis si elle échoue.
             await session.commit()
             cache = await price_book(session, book, registry=registry, result_sink=result_sink,
-                                     retry_transient=reason == "alert_created")
+                                     retry_transient=reason == "alert_created",
+                                     scope=scope)
             await session.commit()
             return cache
     except Exception as exc:

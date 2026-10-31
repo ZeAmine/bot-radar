@@ -266,8 +266,11 @@ async def test_current_retry_preserves_the_history_obtained_in_the_first_attempt
             ))
 
     book = Book(title="Jean Doux", isbn13="9782756079332", market_cache=None)
+    # Portée « creation » : une journée de collecte ne demande plus qu'une
+    # composante, mais une reprise de cote ne doit pas emporter l'historique déjà
+    # reçu avec elle. Le contrat vérifié ici est celui de la reprise.
     offers = await fetch_offers_for_book(book, registry=ProviderRegistry(providers=[Source()]),
-                                         retry_transient=True)
+                                         retry_transient=True, scope="creation")
     assert scopes == [frozenset({"current", "history"}), frozenset({"current"})]
     assert point in offers
     assert current in offers

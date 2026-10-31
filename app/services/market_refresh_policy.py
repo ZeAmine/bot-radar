@@ -80,6 +80,16 @@ def reservation_lock() -> asyncio.Lock:
 Component = Literal["current", "history"]
 COMPONENTS: tuple[Component, ...] = ("current", "history")
 
+# Ce qu'une création d'alerte demande en une fois : le seul moment où attendre
+# est légitime, et une dépense par livre, pas par jour.
+ALL_COMPONENTS: frozenset[str] = frozenset(COMPONENTS)
+
+# Portée d'une collecte. Trois verbes, trois besoins distincts :
+#   routine  — une seule composante, la plus anciennement due (jamais les deux) ;
+#   creation — tout ce qui manque, donc les deux sur un livre jamais lu ;
+#   forced   — les deux, sans lire les échéances : un état qu'on conteste.
+CollectionScope = Literal["routine", "creation", "forced"]
+
 # Zones de risque, de la plus proche du plafond à la plus lointaine. L'ordre de
 # service de la file suit cette liste.
 ZONE_HOT = "hot"
@@ -240,6 +250,44 @@ def due_components(cache: BookMarketCache | None, now: datetime) -> tuple[Compon
 def collection_due(cache: BookMarketCache | None, now: datetime) -> bool:
     """Vrai si au moins une composante attend sa lecture."""
     return bool(due_components(cache, now))
+
+
+def scope_components(
+    cache: BookMarketCache | None, now: datetime, scope: CollectionScope = "routine",
+) -> frozenset[str]:
+    """Ce qu'une collecte a le droit de demander, selon sa portée.
+
+    ``routine`` ne demande jamais les deux composantes : c'est le partage qui
+    rend à l'historique le budget que la cote absorbait. ``creation`` demande
+    tout ce qui manque — les deux sur un livre jamais lu, une seule si l'autre
+    vient d'être relevé —, car une alerte qui naît sans son prix bas naît sans
+    son filet anti-oubli. ``forced`` ne consulte aucune échéance : l'appelant
+    sait que l'état en base est faux.
+    """
+    if scope == "forced":
+        return ALL_COMPONENTS
+    if scope == "creation":
+        return frozenset(due_components(cache, now))
+    routine = routine_component(cache, now)
+    return frozenset({routine}) if routine else frozenset()
+
+
+def routine_component(cache: BookMarketCache | None, now: datetime) -> Component | None:
+    """La composante qu'une collecte de routine demande — une seule, jamais deux.
+
+    C'est la plus ancienne échéance qui passe : celle qui attend depuis le plus
+    longtemps. Le choix est donc *monotone* — après sa lecture, son échéance
+    repart devant l'autre —, ce qui garantit qu'aucune composante n'est affamée
+    par une autre, même sur un livre chaud relu toutes les six heures. À
+    échéances égales la cote passe : c'est elle qui sert à décider.
+
+    ``None`` quand rien n'est dû : la collecte n'a alors rien à demander.
+    """
+    due = due_components(cache, now)
+    if not due:
+        return None
+    return min(due, key=lambda component: (component_due(cache, component, now),
+                                           COMPONENTS.index(component)))
 
 
 def component_late_by(
