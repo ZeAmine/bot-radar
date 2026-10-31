@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.bot.labels import escape_display
 from app.core.alert_latency import observe_background
@@ -400,12 +401,120 @@ class RefreshPassResult:
     out_of_rhythm: int | None = None
 
 
-_incident_states: dict[str, dict[str, float]] = {}
-_incident_observations: dict[str, dict[str, float]] = {}
-_incident_pending: dict[str, str] = {}
+# --------------------------------------------------------------------------- #
+# Ce qui mérite un message : une panne de source prouvée, jamais un échantillon
+# --------------------------------------------------------------------------- #
+
+# Mesure du 31 octobre (journaux de production, 11:22 → 12:26) : une passe toutes
+# les quinze minutes, la moitié sans aucune collecte, et une à deux collectes par
+# couple quand il y en a — `CAL_MAX_BOOKS_PER_PASS = 2` et une seule composante
+# demandée par passe. Un échantillon en échec y vaut donc un taux de 1,0 sans rien
+# prouver : une règle en taux déclare une panne de source sur un accident de
+# passage. Les règles ci-dessous se comptent en observations **consécutives** et
+# en durée ; un échec isolé, et une alternance succès/échec, ne peuvent donc
+# jamais produire de message.
+INCIDENT_MIN_FAILURES = 3
+INCIDENT_MIN_SPAN_SECONDS = 3600.0
+RECOVERY_MIN_ANSWERS = 3
+RECOVERY_MIN_SPAN_SECONDS = 3600.0
+
+# Douze heures : deux fois le repos maximal du régulateur (défi), pour qu'un
+# sommeil de la source ne l'efface pas. Passé ce délai sans une seule tentative,
+# le couple n'existe plus (source purgée, renommée) : il sort de l'état sans
+# message, puisque sa panne comme son rétablissement ne concernent plus personne.
+INCIDENT_FORGET_SECONDS = 12 * 3600.0
+
+ANSWERED = "answered"
+FAILED = "failed"
+
+# Un échec qui n'accuse pas la source : elle a répondu, c'est le livre qui n'était
+# pas là (mauvais tome, mauvaise édition) ou notre budget de requêtes qui a manqué
+# (`incomplete_offers`, mesuré en HTTP 200). C'est un relevé incomplet, pas une
+# panne.
+NOT_A_SOURCE_FAULT = frozenset({
+    "incomplete_offers", "identity_mismatch", "volume_mismatch", "empty_response",
+})
+
+# En 4xx la requête est fautive — un 404 dit que ce livre-là n'est plus en vente —
+# sauf ces codes, qui accusent la source : quota, authentification refusée. Un 5xx
+# et l'absence de réponse sont déjà des échecs.
+SOURCE_FAULT_STATUSES = frozenset({401, 403, 429})
+
+SOURCE_REASON_LABELS = {
+    "timeout": "délai dépassé",
+    "connection": "connexion impossible",
+    "rate_limited": "quota refusé (HTTP 429)",
+    "bot_challenge": "défi anti-robot",
+    "session_unavailable": "session refusée",
+    "invalid_response": "réponse illisible",
+    "http_status": "erreur HTTP",
+    "internal_error": "erreur interne",
+    "unclassified": "échec non classé",
+}
+
+# L'heure des messages est celle du capitaine, comme les dates d'affichage.
+_INCIDENT_TZ = ZoneInfo("Europe/Paris")
+
+
+@dataclass
+class SourceRun:
+    """La suite d'observations identiques la plus récente d'un couple."""
+
+    outcome: str
+    samples: int
+    first_at: float
+    last_at: float
+    causes: list[str] = field(default_factory=list)
+
+    def extended(self, outcome: str, cause: str | None, at: float) -> "SourceRun":
+        if outcome != self.outcome:
+            return SourceRun(outcome, 1, at, at, [cause] if cause else [])
+        causes = list(self.causes)
+        if cause and cause not in causes:
+            causes.append(cause)
+        return SourceRun(outcome, self.samples + 1, self.first_at, at, causes)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "outcome": self.outcome, "samples": self.samples,
+            "first_at": self.first_at, "last_at": self.last_at, "causes": list(self.causes),
+        }
+
+    @classmethod
+    def from_json(cls, raw: Any) -> "SourceRun | None":
+        if not isinstance(raw, dict) or raw.get("outcome") not in {ANSWERED, FAILED}:
+            return None
+        samples = _number(raw.get("samples"))
+        first_at = _number(raw.get("first_at"))
+        last_at = _number(raw.get("last_at"))
+        if samples is None or first_at is None or last_at is None:
+            return None
+        causes = raw.get("causes", [])
+        return cls(
+            outcome=raw["outcome"], samples=int(samples),
+            first_at=first_at, last_at=last_at,
+            causes=[cause for cause in causes if isinstance(cause, str)]
+            if isinstance(causes, list) else [],
+        )
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+_incident_sources: dict[str, SourceRun] = {}
+_incident_announced: set[str] = set()
+# Les faits décidés mais pas encore remis, avec leur nature : un incident et le
+# rétablissement qui l'annule partent ensemble plutôt que de s'effacer l'un l'autre.
+_incident_pending: dict[str, tuple[str, str]] = {}
 _incident_loaded = False
 _incident_lock = asyncio.Lock()
-_INCIDENT_KEY = "radar:market:incidents:v2"
+# La version entre dans le nom de la clé : l'état de la règle précédente n'a pas
+# d'observations datées et ne peut pas servir. Il n'est pas effacé — le retour en
+# arrière doit le retrouver.
+_INCIDENT_KEY = "radar:market:incidents:v3"
 
 
 def _split_by_rhythm(books: Any, moment: datetime) -> tuple[int, int]:
@@ -450,50 +559,176 @@ async def read_refresh_health(result: RefreshPassResult, session: Any) -> None:
         logger.warning("Diagnostic de fraîcheur indisponible", exc_info=True)
 
 
-def _incident_changes(
-    result: RefreshPassResult, previous: dict[str, dict[str, float]],
-) -> tuple[dict[str, dict[str, float]], dict[str, str]]:
-    updated = dict(previous)
-    samples: dict[str, list[bool]] = {}
+def source_observation(attempt: CollectionAttempt) -> tuple[str, str | None] | None:
+    """Ce que cette tentative dit de la **source** — ou rien du tout.
+
+    Trois verdicts, et ce sont les tentatives réelles du 31 octobre qui les
+    séparent :
+
+    - ``None`` : la tentative n'a pas eu lieu (report du régulateur, plafond de la
+      passe). Elle ne dit rien de la source et ne doit pas interrompre une suite
+      d'observations ;
+    - ``ANSWERED`` : la source a répondu. Un relevé incomplet — budget de douze
+      requêtes dépassé, mesuré en HTTP 200 avec ``incomplete_offers`` — ou un livre
+      écarté (mauvais tome, mauvaise édition) prouvent que la source est debout ;
+    - ``FAILED`` : la source ne répond pas ou refuse, c'est-à-dire un délai
+      dépassé, une connexion impossible, un quota (HTTP 429), un défi, une
+      authentification refusée ou une erreur serveur.
+    """
+    if attempt.status == "skipped":
+        return None
+    if attempt.status in {"success", "partial"} or attempt.reason in NOT_A_SOURCE_FAULT:
+        return (ANSWERED, None)
+    if attempt.http_status is not None and 400 <= attempt.http_status < 500 \
+            and attempt.http_status not in SOURCE_FAULT_STATUSES:
+        return (ANSWERED, None)
+    return (FAILED, attempt.reason or "unclassified")
+
+
+def _now_seconds() -> float:
+    return datetime.now(UTC).timestamp()
+
+
+def _pass_observations(result: RefreshPassResult) -> dict[str, list[tuple[str, str | None]]]:
+    """Les observations d'une passe, couple par couple, dans l'ordre des collectes."""
+    observations: dict[str, list[tuple[str, str | None]]] = {}
     for attempt in result.attempts:
-        if attempt.status != "skipped":
-            samples.setdefault(f"{attempt.provider}/{attempt.operation}", []).append(
-                attempt.status in {"partial", "failed"},
-            )
-    samples["traitement"] = [True] * result.stats.get("errors", 0) + [False] * max(
-        result.stats["processed"] - result.stats.get("errors", 0), 0,
+        verdict = source_observation(attempt)
+        if verdict is not None:
+            observations.setdefault(f"{attempt.provider}/{attempt.operation}", []).append(verdict)
+    processed = result.stats.get("processed", 0)
+    if processed > 0:
+        errors = result.stats.get("errors", 0)
+        observations["traitement"] = [
+            (FAILED, "internal_error") if errors else (ANSWERED, None),
+        ]
+    return observations
+
+
+def _record_pass(result: RefreshPassResult, sources: dict[str, SourceRun], now: float) -> None:
+    for component, verdicts in _pass_observations(result).items():
+        run: SourceRun | None = sources.get(component)
+        for outcome, cause in verdicts:
+            run = SourceRun(outcome, 0, now, now, []) if run is None else run
+            run = run.extended(outcome, cause, now)
+        if run is not None:
+            sources[component] = run
+
+
+def _sustained(run: SourceRun, outcome: str, minimum: int, span: float) -> bool:
+    return (
+        run.outcome == outcome and run.samples >= minimum
+        and run.last_at - run.first_at >= span
     )
-    changes = {}
-    for key, observations in samples.items():
-        if not observations:
-            continue
-        failed = sum(observations)
-        old = previous.get(key)
-        if failed:
-            state = {"ratio": failed / len(observations), "count": float(len(observations))}
-            if old is None:
-                changes[key] = f"Nouvel incident : {html.escape(key)}"
-            elif (state["ratio"] == 1 and old["ratio"] < 1) or (
-                len(observations) >= 3 and old["count"] >= 3
-                and state["ratio"] - old["ratio"] >= 0.25
-            ):
-                changes[key] = f"Aggravation : {html.escape(key)}"
-            updated[key] = state
-        elif old is not None:
-            changes[key] = f"Rétablissement : {html.escape(key)}"
-            updated.pop(key, None)
-    return updated, changes
+
+
+def _local_time(moment: float) -> str:
+    return datetime.fromtimestamp(moment, _INCIDENT_TZ).strftime("%H:%M")
+
+
+def _cause_label(run: SourceRun) -> str:
+    labels = [SOURCE_REASON_LABELS.get(cause, cause) for cause in run.causes]
+    return ", ".join(labels) if labels else "cause non classée"
+
+
+def _incident_line(component: str, run: SourceRun) -> str:
+    return (f"Nouvel incident : {html.escape(component)} — en échec depuis "
+            f"{_local_time(run.first_at)} ({_cause_label(run)})")
+
+
+def _recovery_line(component: str, run: SourceRun) -> str:
+    return (f"Rétablissement : {html.escape(component)} — la source répond depuis "
+            f"{_local_time(run.first_at)}")
+
+
+def source_decisions(
+    sources: dict[str, SourceRun], announced: set[str],
+) -> tuple[dict[str, tuple[str, str]], set[str]]:
+    """Décide, couple par couple, s'il y a un fait à annoncer — et lequel.
+
+    Un incident n'est annoncé qu'une fois par épisode ; tant qu'il dure, la source
+    se tait. Son rétablissement exige la même persistance que l'incident : trois
+    réponses consécutives couvrant une heure. L'alternance échec/succès ne forme
+    donc jamais ni trois échecs ni trois réponses de suite, et ne dit rien.
+    """
+    decisions: dict[str, tuple[str, str]] = {}
+    next_announced = {component for component in announced if component in sources}
+    for component, run in sources.items():
+        if component not in next_announced:
+            if _sustained(run, FAILED, INCIDENT_MIN_FAILURES, INCIDENT_MIN_SPAN_SECONDS):
+                decisions[component] = ("incident", _incident_line(component, run))
+                next_announced.add(component)
+        elif _sustained(run, ANSWERED, RECOVERY_MIN_ANSWERS, RECOVERY_MIN_SPAN_SECONDS):
+            decisions[component] = ("recovery", _recovery_line(component, run))
+            next_announced.discard(component)
+    return decisions, next_announced
+
+
+def _log_decisions(
+    result: RefreshPassResult, decisions: dict[str, tuple[str, str]],
+    sources: dict[str, SourceRun],
+) -> None:
+    """Garde dans les journaux la fenêtre et les échecs qui ont motivé un message."""
+    for component, (kind, _) in decisions.items():
+        run = sources[component]
+        extra = {
+            "component": component, "occurrence": result.occurrence, "outcome": run.outcome,
+            "samples": run.samples, "span_seconds": run.last_at - run.first_at,
+            "first_at": datetime.fromtimestamp(run.first_at, UTC).isoformat(),
+            "last_at": datetime.fromtimestamp(run.last_at, UTC).isoformat(),
+            "causes": list(run.causes),
+        }
+        if kind == "incident":
+            logger.warning("Incident de source annoncé", extra=extra)
+        else:
+            logger.info("Rétablissement de source annoncé", extra=extra)
 
 
 async def _persist_incidents(client: Any) -> None:
     try:
         await client.set(_INCIDENT_KEY, json.dumps({
-            "observed": _incident_observations,
-            "notified": _incident_states,
-            "pending": _incident_pending,
+            "version": 3,
+            "sources": {component: run.to_json() for component, run in _incident_sources.items()},
+            "announced": sorted(_incident_announced),
+            "pending": {component: list(value) for component, value in _incident_pending.items()},
         }))
     except Exception:
         logger.warning("État des incidents conservé localement")
+
+
+async def _load_incidents(client: Any) -> None:
+    global _incident_loaded
+    if _incident_loaded:
+        return
+    try:
+        stored = await client.get(_INCIDENT_KEY)
+        if isinstance(stored, (str, bytes)):
+            loaded = json.loads(stored)
+            if isinstance(loaded, dict):
+                sources = loaded.get("sources", {})
+                if isinstance(sources, dict):
+                    _incident_sources.clear()
+                    for component, raw in sources.items():
+                        run = SourceRun.from_json(raw)
+                        if isinstance(component, str) and run is not None:
+                            _incident_sources[component] = run
+                announced = loaded.get("announced", [])
+                if isinstance(announced, list):
+                    _incident_announced.clear()
+                    _incident_announced.update(
+                        component for component in announced if isinstance(component, str)
+                    )
+                pending = loaded.get("pending", {})
+                if isinstance(pending, dict):
+                    _incident_pending.clear()
+                    _incident_pending.update({
+                        component: (value[0], value[1]) for component, value in pending.items()
+                        if isinstance(value, list) and len(value) == 2
+                        and value[0] in {"incident", "recovery"} and isinstance(value[1], str)
+                    })
+    except Exception:
+        logger.warning("État des incidents Redis indisponible ; repli local", exc_info=True)
+    _incident_loaded = True
 
 
 async def notify_refresh_result(result: RefreshPassResult) -> None:
@@ -501,77 +736,59 @@ async def notify_refresh_result(result: RefreshPassResult) -> None:
 
     Une passe produit un message pour deux raisons, et deux seulement :
 
-    - une source est durablement en échec, ou elle se rétablit — la ligne nomme la
-      source et l'opération, c'est un fait qu'on peut corriger ;
+    - une source est durablement en panne, ou durablement revenue — la ligne nomme
+      la source, l'opération, la cause et l'heure de début, c'est un fait qu'on
+      peut corriger ;
     - la passe a été interrompue par une exception, ce qui n'est pas le
       fonctionnement prévu d'un lot.
 
+    « Durablement » est le contrat de `source_decisions`, et il vaut dans les deux
+    sens : un passage unique en échec ne dit rien, une seule passe propre après un
+    incident non plus. Un incident annoncé se tait jusqu'à son rétablissement, qui
+    n'est annoncé qu'une fois.
+
     Tout le reste se tait. Les compteurs d'une passe — traités, mis à jour, sans
     mise à jour, restants — décrivent le travail de l'application, pas l'état du
-    marché : aucun ne permet de décider quoi que ce soit. C'est pourquoi le bilan
-    de passe, les modes « incrémental » et « complet », et la promesse d'une
-    « prochaine passe complète » ont disparu ; leur contenu quotidien vit dans
-    ``send_daily_market_summary``, en trois lignes.
+    marché : aucun ne permet de décider quoi que ce soit. Leur contenu quotidien
+    vit dans ``send_daily_market_summary``, en trois lignes.
 
-    Dédoublonnage : un incident déjà annoncé n'est pas ré-annoncé tant qu'il ne
-    s'aggrave pas, et son rétablissement est annoncé une fois. La mémoire de cet
-    état est partagée via Redis, donc un redémarrage ne rejoue pas les incidents
-    en cours.
+    Dédoublonnage : l'état est partagé via Redis, donc un redémarrage ne rejoue
+    pas les incidents en cours, et un fait non remis est réessayé à la passe
+    suivante sans être perdu.
     """
-    global _incident_loaded
     async with _incident_lock:
         client = get_redis_client()
-        if not _incident_loaded:
-            try:
-                stored = await client.get(_INCIDENT_KEY)
-                if isinstance(stored, (str, bytes)):
-                    loaded = json.loads(stored)
-                    if isinstance(loaded, dict):
-                        for target, values in (
-                            (_incident_observations, loaded.get("observed", loaded)),
-                            (_incident_states, loaded.get("notified", loaded)),
-                        ):
-                            if isinstance(values, dict):
-                                target.clear()
-                                target.update({key: value for key, value in values.items()
-                                               if isinstance(value, dict)
-                                               and isinstance(value.get("ratio"), (float, int))
-                                               and isinstance(value.get("count"), (float, int))})
-                        pending = loaded.get("pending", {})
-                        if isinstance(pending, dict):
-                            _incident_pending.clear()
-                            _incident_pending.update({key: value for key, value in pending.items()
-                                                      if isinstance(value, str)})
-            except Exception:
-                logger.warning("État des incidents Redis indisponible ; repli local")
-            _incident_loaded = True
-        updated, observed_changes = _incident_changes(result, _incident_observations)
-        for component, change in observed_changes.items():
-            if component not in _incident_states:
-                if component not in updated:
-                    if component not in _incident_pending:
-                        continue
-                    change = (
-                        f"Incident observé puis rétabli avant remise : {html.escape(component)}"
-                    )
-                elif component in _incident_pending:
-                    if component in _incident_observations:
-                        continue
-                    change = (f"{_incident_pending[component]}\n"
-                              f"Nouvel incident en cours : {html.escape(component)}")
-                else:
-                    change = f"Nouvel incident : {html.escape(component)}"
-            _incident_pending[component] = change
-        _incident_observations.clear()
-        _incident_observations.update(updated)
-        changes = list(_incident_pending.values())
+        await _load_incidents(client)
+        now = _now_seconds()
+        _record_pass(result, _incident_sources, now)
+        for component in [
+            component for component, run in _incident_sources.items()
+            if now - run.last_at >= INCIDENT_FORGET_SECONDS
+        ]:
+            # Une source qui n'est plus tentée n'existe plus : rien à annoncer.
+            del _incident_sources[component]
+        decisions, announced = source_decisions(
+            _incident_sources, _incident_announced
+            | {component for component, (kind, _) in _incident_pending.items()
+               if kind == "incident"},
+        )
+        _log_decisions(result, decisions, _incident_sources)
+        # La mémoire des épisodes se tient à jour même quand rien n'est remis : un
+        # couple oublié ne doit pas rouvrir un épisode sous le même nom.
+        _incident_announced.clear()
+        _incident_announced.update(announced)
+        for component, (kind, line) in decisions.items():
+            previous = _incident_pending.get(component)
+            _incident_pending[component] = (
+                (kind, f"{previous[1]}\n{line}") if previous is not None and previous[0] != kind
+                else (kind, line)
+            )
+        lines = [line for _, line in _incident_pending.values()]
         await _persist_incidents(client)
-        if not changes and not result.technical_interruption:
+        if not lines and not result.technical_interruption:
             # Une passe qui n'a produit aucun fait actionnable ne dit rien : ses
             # compteurs décrivent le travail de l'application, pas l'état du marché.
             return
-        # Un fait par ligne, et rien d'autre : ni titre de mode, ni compteurs.
-        lines = list(changes)
         if result.technical_interruption:
             lines.append("⚠️ Passe de rafraîchissement interrompue avant la fin.")
         try:
@@ -582,8 +799,6 @@ async def notify_refresh_result(result: RefreshPassResult) -> None:
                 raise
             logger.warning("Incident de rafraîchissement non remis", exc_info=True)
             return
-        _incident_states.clear()
-        _incident_states.update(updated)
         _incident_pending.clear()
         await _persist_incidents(client)
 

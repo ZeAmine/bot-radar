@@ -30,10 +30,28 @@ async def async_client():
 def isolate_notification_windows(monkeypatch):
     """La fenêtre de repli locale ne doit jamais survivre au test qui l'a ouverte."""
     monkeypatch.setattr("app.services.market_health._notification_deadlines", {})
-    monkeypatch.setattr("app.services.market_health._incident_states", {})
-    monkeypatch.setattr("app.services.market_health._incident_observations", {})
+    monkeypatch.setattr("app.services.market_health._incident_sources", {})
+    monkeypatch.setattr("app.services.market_health._incident_announced", set())
     monkeypatch.setattr("app.services.market_health._incident_pending", {})
     monkeypatch.setattr("app.services.market_health._incident_loaded", False)
+
+
+@pytest.fixture
+def market_clock(monkeypatch):
+    """Horloge murale pilotée : une passe se joue loin de la suivante, sans attendre."""
+
+    class Clock:
+        now = 1_800_000_000.0
+
+        def __call__(self):
+            return self.now
+
+        def advance(self, minutes: float) -> None:
+            self.now += minutes * 60
+
+    clock = Clock()
+    monkeypatch.setattr("app.services.market_health._now_seconds", clock)
+    return clock
 
 
 @pytest.fixture(autouse=True)

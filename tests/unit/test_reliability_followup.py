@@ -20,6 +20,44 @@ from tests.telegram_fakes import telegram_message
 from tests.unit.test_refresh_notifications import result
 
 
+def _redis_client(monkeypatch, stored, *, available=True):
+    """Un Redis de test adossé à un dictionnaire ; injoignable quand on le demande."""
+
+    async def read(key):
+        if not available:
+            raise ConnectionError
+        return stored.get(key)
+
+    async def write(key, value, **_kwargs):
+        if not available:
+            raise ConnectionError
+        stored[key] = value
+        return True
+
+    client = SimpleNamespace(
+        get=AsyncMock(side_effect=read), set=AsyncMock(side_effect=write),
+    )
+    monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
+    return client
+
+
+def _forget_local_state(monkeypatch):
+    """Ce qu'un redémarrage efface : l'état local, relu depuis l'état partagé."""
+    monkeypatch.setattr(market_health, "_incident_sources", {})
+    monkeypatch.setattr(market_health, "_incident_announced", set())
+    monkeypatch.setattr(market_health, "_incident_pending", {})
+    monkeypatch.setattr(market_health, "_incident_loaded", False)
+    monkeypatch.setattr(market_health, "_incident_lock", asyncio.Lock())
+
+
+def _restart(monkeypatch, stored, *, livraison=True):
+    _forget_local_state(monkeypatch)
+    client = _redis_client(monkeypatch, stored)
+    send = AsyncMock(return_value=livraison)
+    monkeypatch.setattr(market_health, "notify_admins", send)
+    return client, send
+
+
 @pytest.mark.asyncio
 async def test_category_callback_cannot_mutate_a_new_creation_after_acknowledgement(monkeypatch):
     state = FSMContext(MemoryStorage(), StorageKey(bot_id=1, chat_id=42, user_id=42))
@@ -64,87 +102,107 @@ async def test_category_callback_cannot_mutate_a_new_creation_after_acknowledgem
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("redis_available", [True, False])
-async def test_partial_improvement_is_observed_and_total_failure_is_notified_again(
-    monkeypatch, redis_available,
+async def test_durability_is_required_in_both_directions_across_restarts(
+    monkeypatch, market_clock, redis_available,
 ):
+    """Le contrat tient par Redis : un redémarrage ne rejoue ni ne perd un épisode.
+
+    Deux passes ne disent rien, trois échecs sur une heure disent un incident ; une
+    réponse isolée ne rétablit rien, trois réponses sur une heure si. Après un
+    rétablissement, un nouvel épisode se dit : c'est un autre fait.
+    """
     stored = {}
-
-    async def read(key):
-        if not redis_available:
-            raise ConnectionError
-        return stored.get(key)
-
-    async def write(key, value, **_kwargs):
-        if not redis_available:
-            raise ConnectionError
-        stored[key] = value
-        return True
-
-    client = SimpleNamespace(get=read, set=write)
-    monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
+    client = _redis_client(monkeypatch, stored, available=redis_available)
+    assert client is not None
     send = AsyncMock(return_value=True)
     monkeypatch.setattr(market_health, "notify_admins", send)
-    failed = CollectionAttempt("momox", status="failed", reason="timeout")
-    success = CollectionAttempt("momox")
+    failure = CollectionAttempt("source", status="failed", reason="timeout")
+    answer = CollectionAttempt("source")
 
     async def observe(attempts):
+        market_clock.advance(30)
         await market_health.notify_refresh_result(result(attempts=attempts))
         if redis_available:
-            assert json.loads(stored[market_health._INCIDENT_KEY])
-            market_health._incident_states.clear()
-            market_health._incident_observations.clear()
-            market_health._incident_pending.clear()
-            market_health._incident_loaded = False
+            _forget_local_state(monkeypatch)
 
-    await observe([failed] * 3)
+    await observe([failure])
+    await observe([failure])
+    assert send.await_count == 0, "deux passes ne font pas une panne"
+    await observe([failure])
     assert send.await_count == 1
-    await observe([failed, success, success])
-    assert send.await_count == 1
-    await observe([CollectionAttempt("momox", status="skipped")])
-    await observe([])
-    assert send.await_count == 1
-    send.side_effect = [False, True, True]
-    await observe([failed] * 3)
+    assert send.call_args.args[0].startswith("Nouvel incident : source/current")
+    for attempts in (
+        [CollectionAttempt("source", status="skipped", reason="pass_budget")],
+        [],
+        [failure],
+        [CollectionAttempt("source", operation="history", status="failed", reason="timeout")],
+    ):
+        await observe(attempts)
+    assert send.await_count == 1, "l'incident se tait, une opération voisine ne le rouvre pas"
+    await observe([answer])
+    await observe([answer])
+    assert send.await_count == 1, "un retour non durable ne rétablit rien"
+    await observe([answer])
     assert send.await_count == 2
-    await observe([failed] * 3)
-    assert send.await_count == 3
-    assert "Aggravation" in send.call_args.args[0]
-    await observe([failed] * 3)
-    assert send.await_count == 3
-    await observe([success] * 3)
-    assert send.await_count == 4
-    assert "Rétablissement" in send.call_args.args[0]
+    assert "Rétablissement : source/current" in send.call_args.args[0]
+    await observe([answer])
+    assert send.await_count == 2, "un rétablissement ne s'annonce qu'une fois"
+    for _ in range(3):
+        await observe([failure])
+    assert send.await_count == 3, "un nouvel épisode se dit, malgré l'épisode passé"
 
 
 @pytest.mark.asyncio
-async def test_failed_first_incident_delivery_is_retried(monkeypatch):
-    monkeypatch.setattr(market_health, "get_redis_client", lambda: AsyncMock())
-    send = AsyncMock(side_effect=[False, True])
+async def test_an_undelivered_incident_is_retried_after_a_restart(monkeypatch, market_clock):
+    stored = {}
+    _redis_client(monkeypatch, stored)
+    send = AsyncMock(return_value=False)
     monkeypatch.setattr(market_health, "notify_admins", send)
-    report = result(attempts=[CollectionAttempt("source", status="failed")])
-    await market_health.notify_refresh_result(report)
-    await market_health.notify_refresh_result(report)
-    assert send.await_count == 2
-    assert "Nouvel incident" in send.call_args.args[0]
+    failure = CollectionAttempt("source", status="failed", reason="timeout")
+
+    for _ in range(3):
+        market_clock.advance(30)
+        await market_health.notify_refresh_result(result(attempts=[failure]))
+    assert send.await_count == 1
+    assert json.loads(stored[market_health._INCIDENT_KEY])["pending"] != {}
+
+    client, send = _restart(monkeypatch, stored)
+    market_clock.advance(30)
+    await market_health.notify_refresh_result(result(attempts=[failure]))
+    client.get.assert_awaited_once_with(market_health._INCIDENT_KEY)
+    assert send.await_count == 1
+    assert "Nouvel incident : source/current" in send.call_args.args[0]
+    assert json.loads(stored[market_health._INCIDENT_KEY])["pending"] == {}
+
+    client, send = _restart(monkeypatch, stored)
+    market_clock.advance(30)
+    await market_health.notify_refresh_result(result(attempts=[failure]))
+    send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_legacy_incident_state_is_read_without_a_false_recovery(monkeypatch):
+async def test_a_state_of_the_previous_format_is_not_resurrected(monkeypatch, market_clock):
+    """L'ancien état (ratio/count) ne contient aucune observation datée : il s'ignore.
+
+    Le lire comme un incident en cours produisait un « Rétablissement » fantôme sur
+    une source qui n'avait jamais été vue en panne par la nouvelle règle.
+    """
     client = AsyncMock()
     client.get.return_value = json.dumps({"source/current": {"ratio": 1.0, "count": 3.0}})
     monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
     send = AsyncMock(return_value=True)
     monkeypatch.setattr(market_health, "notify_admins", send)
+
+    market_clock.advance(30)
     await market_health.notify_refresh_result(result(attempts=[
         CollectionAttempt("source", status="skipped"),
         CollectionAttempt("source", operation="history"),
     ]))
     send.assert_not_awaited()
-    await market_health.notify_refresh_result(result(attempts=[
-        CollectionAttempt("source"),
-    ]))
-    assert send.await_count == 1
-    assert "Rétablissement : source/current" in send.call_args.args[0]
+    assert "source/current" not in market_health._incident_sources
+    market_clock.advance(30)
+    await market_health.notify_refresh_result(result(attempts=[CollectionAttempt("source")]))
+    send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -281,206 +339,119 @@ async def test_older_category_click_cannot_replace_the_same_drafts_bibliographic
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("redis_available", [True, False])
-@pytest.mark.parametrize("summary_fails", [True, False])
-async def test_undelivered_incident_and_recovery_are_summarized_until_delivery(
-    monkeypatch, redis_available, summary_fails,
+async def test_an_undelivered_fact_keeps_its_evidence_until_delivery(
+    monkeypatch, market_clock, redis_available,
 ):
+    """Un fait non remis garde de quoi répondre « depuis quand » à la passe suivante."""
     stored = {}
-
-    async def read(key):
-        if not redis_available:
-            raise ConnectionError
-        return stored.get(key)
-
-    async def write(key, value, **_kwargs):
-        if not redis_available:
-            raise ConnectionError
-        stored[key] = value
-        return True
-
-    monkeypatch.setattr(market_health, "get_redis_client", lambda: SimpleNamespace(
-        get=read, set=write,
-    ))
+    _redis_client(monkeypatch, stored, available=redis_available)
     send = AsyncMock(return_value=False)
     monkeypatch.setattr(market_health, "notify_admins", send)
     failure = CollectionAttempt("source", status="failed", reason="timeout")
 
     async def observe(attempts):
-        report = result(attempts=attempts)
-        report.stats.update(degraded=0, available=3)
-        await market_health.notify_refresh_result(report)
-        snapshot = copy.deepcopy({
-            "observed": market_health._incident_observations,
-            "notified": market_health._incident_states,
-            "pending": market_health._incident_pending,
-        })
+        market_clock.advance(30)
+        await market_health.notify_refresh_result(result(attempts=attempts))
+        snapshot = {
+            "source": market_health._incident_sources["source/current"].to_json(),
+            "announced": sorted(market_health._incident_announced),
+            "pending": {name: list(value)
+                        for name, value in market_health._incident_pending.items()},
+        }
         if redis_available:
-            assert json.loads(stored[market_health._INCIDENT_KEY]) == snapshot
-            market_health._incident_observations.clear()
-            market_health._incident_states.clear()
-            market_health._incident_pending.clear()
-            market_health._incident_loaded = False
+            persisted = json.loads(stored[market_health._INCIDENT_KEY])
+            assert persisted["sources"]["source/current"] == snapshot["source"]
+            assert persisted["announced"] == snapshot["announced"]
+            assert persisted["pending"] == snapshot["pending"]
+            _forget_local_state(monkeypatch)
         return snapshot
 
-    snapshot = await observe([failure] * 3)
-    assert snapshot["observed"]["source/current"]["ratio"] == 1
-    assert snapshot["notified"] == {}
-    assert "source/current" in snapshot["pending"]
+    for _ in range(3):
+        snapshot = await observe([failure])
+    assert snapshot["announced"] == ["source/current"]
+    assert list(snapshot["pending"]) == ["source/current"]
     for attempts in (
-        [CollectionAttempt("source", status="skipped")], [],
+        [CollectionAttempt("source", status="skipped")],
+        [],
         [CollectionAttempt("source", operation="history")],
     ):
         assert await observe(attempts) == snapshot
-        assert "rétabli" not in send.call_args.args[0].lower()
         assert "Rétablissement" not in send.call_args.args[0]
-    send.return_value = not summary_fails
-    snapshot = await observe([CollectionAttempt("source")] * 3)
-    text = send.call_args.args[0]
-    assert "incident" in text.lower()
-    assert "rétabli" in text.lower()
-    assert "source/current" in text
-    assert "Nouvel incident" not in text
-    assert snapshot["observed"] == snapshot["notified"] == {}
-    if summary_fails:
-        assert "source/current" in snapshot["pending"]
-        send.return_value = True
-        snapshot = await observe([])
-        assert "rétabli" in send.call_args.args[0].lower()
-        assert "Nouvel incident" not in send.call_args.args[0]
+
+    for _ in range(3):
+        snapshot = await observe([CollectionAttempt("source")])
+    lines = snapshot["pending"]["source/current"][1].splitlines()
+    assert [line.split(" :")[0] for line in lines] == ["Nouvel incident", "Rétablissement"]
+
+    send.return_value = True
+    snapshot = await observe([CollectionAttempt("source")])
+    assert send.call_args.args[0].splitlines() == lines
     assert snapshot["pending"] == {}
+    assert snapshot["announced"] == []
     deliveries = send.await_count
-    await observe([CollectionAttempt("source")])
-    await observe([CollectionAttempt("source", status="skipped")])
-    await observe([])
-    assert send.await_count == deliveries
+    for _ in range(3):
+        await observe([CollectionAttempt("source")])
+    assert send.await_count == deliveries, "un rétablissement remis ne se répète pas"
 
 
 @pytest.mark.asyncio
-async def test_new_failure_keeps_the_undelivered_summary_of_the_previous_incident(monkeypatch):
+async def test_a_new_episode_is_appended_to_the_undelivered_one(monkeypatch, market_clock):
+    """Trois faits non remis se lisent dans l'ordre, aucun n'écrase l'autre."""
     client = AsyncMock()
     client.get.return_value = None
     monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
     send = AsyncMock(return_value=False)
     monkeypatch.setattr(market_health, "notify_admins", send)
-    failed = CollectionAttempt("source", status="failed", reason="timeout")
-    await market_health.notify_refresh_result(result(attempts=[failed]))
-    await market_health.notify_refresh_result(result(
-        attempts=[CollectionAttempt("source")],
-    ))
-    for _ in range(2):
-        await market_health.notify_refresh_result(result(attempts=[failed]))
-        text = send.call_args.args[0]
-        assert "rétabli avant remise" in text
-        assert "incident en cours" in text
+    failure = CollectionAttempt("source", status="failed", reason="timeout")
+
+    async def observe(attempts):
+        market_clock.advance(30)
+        await market_health.notify_refresh_result(result(attempts=attempts))
+
+    for _ in range(3):
+        await observe([failure])
+    for _ in range(3):
+        await observe([CollectionAttempt("source")])
+    for _ in range(3):
+        await observe([failure])
+    lines = market_health._incident_pending["source/current"][1].splitlines()
+    assert [line.split(" :")[0] for line in lines] == [
+        "Nouvel incident", "Rétablissement", "Nouvel incident",
+    ]
     send.return_value = True
-    await market_health.notify_refresh_result(result(attempts=[failed]))
+    await observe([failure])
+    assert send.call_args.args[0].splitlines() == lines
     assert market_health._incident_pending == {}
-    assert market_health._incident_states["source/current"]["ratio"] == 1
-    deliveries = send.await_count
-    await market_health.notify_refresh_result(result(attempts=[failed]))
-    assert send.await_count == deliveries
 
 
 @pytest.mark.asyncio
-async def test_new_failure_and_past_recovery_survive_persisted_restarts(monkeypatch):
+async def test_the_persisted_state_is_the_whole_state(monkeypatch, market_clock):
+    """Ce qui est écrit dans Redis suffit à reprendre : ni rejeu, ni perte."""
     stored = {}
+    _redis_client(monkeypatch, stored)
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(market_health, "notify_admins", send)
+    failure = CollectionAttempt("source", status="failed", reason="rate_limited")
 
-    async def read(key):
-        return stored.get(key)
+    for _ in range(3):
+        market_clock.advance(30)
+        await market_health.notify_refresh_result(result(attempts=[failure]))
+    persisted = json.loads(stored[market_health._INCIDENT_KEY])
+    assert persisted["version"] == 3
+    assert persisted["announced"] == ["source/current"]
+    assert persisted["pending"] == {}
+    run = persisted["sources"]["source/current"]
+    assert (run["outcome"], run["samples"], run["causes"]) == ("failed", 3, ["rate_limited"])
+    assert run["last_at"] - run["first_at"] == 3600
 
-    async def write(key, value, **_kwargs):
-        assert isinstance(value, str)
-        stored[key] = value
-        return True
-
-    def restart(*, delivered=False):
-        monkeypatch.setattr(market_health, "_incident_observations", {})
-        monkeypatch.setattr(market_health, "_incident_states", {})
-        monkeypatch.setattr(market_health, "_incident_pending", {})
-        monkeypatch.setattr(market_health, "_incident_loaded", False)
-        monkeypatch.setattr(market_health, "_incident_lock", asyncio.Lock())
-        monkeypatch.setattr(market_health, "_notification_deadlines", {})
-        client = SimpleNamespace(get=AsyncMock(side_effect=read), set=AsyncMock(side_effect=write))
-        monkeypatch.setattr(market_health, "get_redis_client", lambda: client)
-        send = AsyncMock(return_value=delivered)
-        monkeypatch.setattr(market_health, "notify_admins", send)
-        return client, send
-
-    async def observe(status):
-        report = result(attempts=[
-            CollectionAttempt(
-                "source", status=status, reason="timeout" if status == "failed" else None,
-            ),
-        ])
-        report.stats.update(degraded=int(status == "failed"), refreshed=int(status == "success"))
-        await market_health.notify_refresh_result(report)
-        persisted = json.loads(stored[market_health._INCIDENT_KEY])
-        assert persisted == {
-            "observed": market_health._incident_observations,
-            "notified": market_health._incident_states,
-            "pending": market_health._incident_pending,
-        }
-        return persisted
-
-    client, send = restart()
-    assert await observe("failed") == {
-        "observed": {"source/current": {"ratio": 1.0, "count": 1.0}},
-        "notified": {},
-        "pending": {"source/current": "Nouvel incident : source/current"},
-    }
-    send.assert_awaited_once()
-    assert "Nouvel incident : source/current" in send.call_args.args[0]
-    assert "rétabli" not in send.call_args.args[0]
-
-    assert await observe("success") == {
-        "observed": {}, "notified": {},
-        "pending": {
-            "source/current": "Incident observé puis rétabli avant remise : source/current",
-        },
-    }
-    assert send.await_count == 2
-    assert "Incident observé puis rétabli avant remise : source/current" in send.call_args.args[0]
-    assert "Nouvel incident" not in send.call_args.args[0]
-    assert "Échecs observés" not in send.call_args.args[0]
-
-    client, send = restart()
-    assert await observe("failed") == {
-        "observed": {"source/current": {"ratio": 1.0, "count": 1.0}},
-        "notified": {},
-        "pending": {
-            "source/current": "Incident observé puis rétabli avant remise : source/current\n"
-            "Nouvel incident en cours : source/current",
-        },
-    }
+    client, send = _restart(monkeypatch, stored)
+    for _ in range(3):
+        market_clock.advance(30)
+        await market_health.notify_refresh_result(result(attempts=[CollectionAttempt("source")]))
     client.get.assert_awaited_once_with(market_health._INCIDENT_KEY)
-    send.assert_awaited_once()
-    # Contrat : le message est exactement les faits d'incident — aucune ligne de
-    # détail de la famille « bilan de passe » ne s'y ajoute (« Échecs observés »).
-    assert send.call_args.args[0] == (
-        "Incident observé puis rétabli avant remise : source/current\n"
-        "Nouvel incident en cours : source/current"
-    )
-
-    client, send = restart(delivered=True)
-    assert await observe("failed") == {
-        "observed": {"source/current": {"ratio": 1.0, "count": 1.0}},
-        "notified": {"source/current": {"ratio": 1.0, "count": 1.0}},
-        "pending": {},
-    }
-    client.get.assert_awaited_once_with(market_health._INCIDENT_KEY)
-    send.assert_awaited_once()
-    # Contrat : le message est exactement les faits d'incident — aucune ligne de
-    # détail de la famille « bilan de passe » ne s'y ajoute (« Échecs observés »).
-    assert send.call_args.args[0] == (
-        "Incident observé puis rétabli avant remise : source/current\n"
-        "Nouvel incident en cours : source/current"
-    )
-
-    client, send = restart(delivered=True)
-    assert await observe("failed") == {
-        "observed": {"source/current": {"ratio": 1.0, "count": 1.0}},
-        "notified": {"source/current": {"ratio": 1.0, "count": 1.0}},
-        "pending": {},
-    }
-    client.get.assert_awaited_once_with(market_health._INCIDENT_KEY)
-    send.assert_not_awaited()
+    assert send.await_count == 1
+    assert "Rétablissement : source/current" in send.call_args.args[0]
+    persisted = json.loads(stored[market_health._INCIDENT_KEY])
+    assert persisted["announced"] == []
+    answered = persisted["sources"]["source/current"]
+    assert (answered["outcome"], answered["samples"]) == ("answered", 3)

@@ -330,8 +330,8 @@ distingue les observations réseau des tests isolés.
 Il n'y a plus de bilan de passe : ni compteurs de traitement, ni modes, ni promesse
 d'une « prochaine passe complète », ni alerte « aucune cote » ou « rafraîchissement
 dégradé ». Un message immédiat ne part que pour un fait actionnable — un incident
-de source nommé, son aggravation, son rétablissement, une passe interrompue par une
-exception. Le reste est silence. Ce qui décrit l'état du marché tient dans un bilan
+de source durablement établi, son rétablissement durable, une passe interrompue par
+une exception. Le reste est silence. Ce qui décrit l'état du marché tient dans un bilan
 quotidien de trois lignes, à 09:00 heure de Paris : livres à jour sur le total,
 livres hors de leur rythme, nouveaux prix bas de la veille. Les listes détaillées de
 fraîcheur restent des diagnostics, écrits dans les journaux et non envoyés.
@@ -349,13 +349,36 @@ durée. Une réponse invalide ne vaut pas recherche vide. Le silence des snapsho
 ne suffit pas à établir une panne. Un timeout global porte un diagnostic de
 collecte, sans désigner tous les sites comme défaillants.
 
-Chaque passe signale les nouveaux incidents, les aggravations et les
-rétablissements observés. L'absence de sollicitation ne rétablit pas une source.
-La dernière observation est distincte de l'état effectivement notifié : une
-amélioration partielle silencieuse actualise la référence ; le retour à une panne
-totale peut donc produire une aggravation. Les changements non remis restent en
-attente de notification. Observations, état notifié et changements en attente sont
-persistés dans la même clé Redis ; l'ancien format d'incidents reste lisible.
+Une passe ne demande qu'une composante et au plus deux collections : un échantillon
+en échec y vaut un taux de 1,0 sans rien prouver. Un incident se compte donc en
+observations **consécutives** et en durée, jamais en taux ni en seuil de bruit
+abaissé : au moins trois échecs consécutifs couvrant une heure. Le rétablissement
+exige la même persistance : trois réponses consécutives couvrant une heure. Un
+échec isolé, et une alternance succès/échec, ne peuvent donc produire aucun
+message : l'annonce arrive au plus tôt une heure après la première tentative en
+échec, et le retour au plus tôt une heure après la première réponse. C'est le prix
+de la certitude, pas un délai de grâce réglable. Un message d'incident nomme la
+source et l'opération, la cause lisible et l'heure de début ; les échantillons, la
+fenêtre et les causes de la décision figurent dans les journaux, pour que
+« pourquoi ce message ? » reste répondable.
+
+Un échec n'accuse la source que s'il l'accuse vraiment : un délai dépassé, une
+connexion impossible, un quota (HTTP 429), un défi, une authentification refusée ou
+une erreur serveur. Un relevé incomplet `partial` (`incomplete_offers`, HTTP 200) et
+un livre écarté (`volume_mismatch`, `identity_mismatch`, `empty_response`) prouvent
+que la source répond : ce sont des relevés incomplets, jamais une panne. Une
+tentative `skipped` n'est pas une observation ; elle ne juge pas la source et
+n'interrompt pas la suite.
+
+Un couple qui n'est plus tenté depuis douze heures sort de l'état sans message :
+une source retirée du registre n'a ni panne ni rétablissement à annoncer, et son
+état ne survit pas à sa disparition. L'absence de sollicitation ne rétablit pas une source.
+Les changements non remis restent en attente de notification, avec leur nature
+(incident ou rétablissement) pour qu'un incident et son retour ne s'effacent pas
+l'un l'autre. Suites d'observations, couples annoncés et changements en attente
+sont persistés dans la même clé Redis. Une clé portant l'état d'une autre version
+est ignorée plutôt que réinterprétée, et laissée en place pour un retour en
+arrière.
 Si l'incident n'a jamais pu être remis et qu'un rétablissement est réellement
 observé, une synthèse des deux événements reste à remettre. Elle indique que
 l'incident est passé ; elle ne présente pas cette panne comme actuelle. Un échec
@@ -364,9 +387,10 @@ pas la source. Une nouvelle panne avant remise conserve la synthèse précédent
 signale séparément le nouvel incident en cours. La remise confirmée retire les
 changements en attente ; elle ne garantit pas une livraison exactement une fois.
 L'état utilise Redis avec repli local dans l'unique processus ; le repli ne survit
-pas au redémarrage. Le dédoublonnage ne dépend plus d'une clé par occurrence de
-passe : c'est l'état de l'incident qui décide, donc un incident déjà annoncé reste
-silencieux et un rétablissement se dit une fois.
+pas au redémarrage. Le dédoublonnage ne dépend pas d'une clé par occurrence de
+passe : c'est l'épisode qui décide, donc un incident déjà annoncé reste silencieux
+et un rétablissement se dit une fois. Une nouvelle panne durable après un
+rétablissement annoncé est un nouvel épisode : elle se dit.
 Un échec ou une annulation d'envoi libère le créneau ; une remise Telegram ambiguë
 ou partielle ne permet pas de garantir exactement un message par destinataire.
 

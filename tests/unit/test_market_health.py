@@ -484,14 +484,60 @@ async def test_the_seven_day_check_is_computed_from_the_successful_collection_da
     assert before - timedelta(days=7, seconds=1) <= stale_after <= after - timedelta(days=7)
 
 
-def test_partial_offers_cannot_clear_an_existing_source_incident():
+SOURCE_KEY = "chasse_aux_livres/current"
+
+
+def _attempt(status="success", reason=None, http_status=200):
     from app.providers.base import CollectionAttempt
 
-    result = market_health.RefreshPassResult(total=1, stats={"processed": 1, "errors": 0})
-    result.attempts.append(CollectionAttempt('chasse_aux_livres', status='partial',
-                                             reason='incomplete_offers'))
-    key = 'chasse_aux_livres/current'
-    previous = {key: {'ratio': 1.0, 'count': 1.0}}
-    updated, changes = market_health._incident_changes(result, previous)
-    assert updated[key] == previous[key]
-    assert key not in changes
+    return CollectionAttempt("chasse_aux_livres", "current", status, reason, http_status)
+
+
+def test_a_budget_partial_is_a_reading_not_a_source_failure():
+    """Mesure du 31 octobre : `incomplete_offers` arrive en HTTP 200, la source répond."""
+    assert market_health.source_observation(
+        _attempt("partial", "incomplete_offers")
+    ) == (market_health.ANSWERED, None)
+
+
+def test_a_missing_book_is_not_a_source_failure():
+    """Un mauvais tome ou une fiche absente accusent le livre, pas la source."""
+    for reason in ("volume_mismatch", "identity_mismatch", "empty_response"):
+        assert market_health.source_observation(_attempt("failed", reason)) == (
+            market_health.ANSWERED,
+            None,
+        )
+
+
+def test_a_source_that_does_not_answer_is_a_failure_with_its_cause():
+    for reason in ("timeout", "connection", "bot_challenge", "rate_limited"):
+        assert market_health.source_observation(_attempt("failed", reason)) == (
+            market_health.FAILED,
+            reason,
+        )
+    assert market_health.source_observation(_attempt("failed", "http_status", 429)) == (
+        market_health.FAILED,
+        "http_status",
+    )
+
+
+def test_a_request_deferred_by_the_governor_says_nothing_about_the_source():
+    assert market_health.source_observation(_attempt("skipped", "pass_budget")) is None
+
+
+def test_one_partial_reading_cannot_clear_an_announced_incident():
+    """Un relevé incomplet isolé n'est pas un retour durable : il ne dit rien."""
+    run = market_health.SourceRun(market_health.ANSWERED, 1, 0.0, 0.0)
+    decisions, announced = market_health.source_decisions({SOURCE_KEY: run}, {SOURCE_KEY})
+    assert decisions == {}
+    assert announced == {SOURCE_KEY}
+
+
+def test_an_incident_needs_both_the_failures_and_their_span():
+    """Cinq échecs en quinze minutes ne disent rien ; trois sur une heure, si."""
+    short = market_health.SourceRun(market_health.FAILED, 5, 0.0, 900.0)
+    assert market_health.source_decisions({SOURCE_KEY: short}, set())[0] == {}
+    long_enough = market_health.SourceRun(market_health.FAILED, 3, 0.0, 3600.0)
+    decisions, announced = market_health.source_decisions({SOURCE_KEY: long_enough}, set())
+    assert decisions[SOURCE_KEY][0] == "incident"
+    assert announced == {SOURCE_KEY}
